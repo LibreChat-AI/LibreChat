@@ -40,6 +40,7 @@ jest.mock('@librechat/api', () => ({
     return false;
   },
   keyvMongo: {},
+  getBanIp: jest.requireActual('../../../../packages/api/src/middleware/ban').getBanIp,
   removePorts: jest.fn((req) => req.ip),
   redirectToAuthFailure: (res, { clientDomain, authFailedError }) =>
     res.redirect(`${clientDomain}/login?redirect=false&error=${authFailedError}`),
@@ -138,6 +139,93 @@ describe('checkBan middleware', () => {
       expect(next).toHaveBeenCalledWith();
       expect(mockBanCacheGet).toHaveBeenCalled();
       expect(mockBanLogsGet).toHaveBeenCalled();
+    });
+  });
+
+  describe.each([false, true])('verified trigger requests (USE_REDIS=%s)', (useRedis) => {
+    beforeEach(() => {
+      process.env.USE_REDIS = String(useRedis);
+    });
+
+    const userKey = useRedis ? 'ban_cache:user:user123' : 'user123';
+    const ipKey = useRedis ? 'ban_cache:ip:127.0.0.1' : '127.0.0.1';
+    const createTriggerReq = () => createReq({ ip: '127.0.0.1', _isAgentTrigger: true });
+
+    it('ignores cached and persistent loopback bans without querying either IP key', async () => {
+      const ban = { expiresAt: Date.now() + 60000 };
+      mockBanCacheGet.mockImplementation(async (key) => (key === ipKey ? ban : undefined));
+      mockBanLogsGet.mockImplementation(async (key) => (key === '127.0.0.1' ? ban : undefined));
+      const req = createTriggerReq();
+      const next = jest.fn();
+
+      await checkBan(req, createRes(), next);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(req.banned).toBeUndefined();
+      expect(req.ip).toBe('127.0.0.1');
+      expect(mockBanCacheGet.mock.calls).toEqual([[userKey]]);
+      expect(mockBanLogsGet.mock.calls).toEqual([['user123']]);
+      expect(mockBanCacheSet).not.toHaveBeenCalled();
+    });
+
+    it('still rejects a cached user ban', async () => {
+      mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
+      const res = createRes();
+      const next = jest.fn();
+
+      await checkBan(createTriggerReq(), res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(mockBanCacheGet.mock.calls).toEqual([[userKey]]);
+      expect(mockBanLogsGet).not.toHaveBeenCalled();
+    });
+
+    it('caches a persistent user ban only under the user key', async () => {
+      const ban = { expiresAt: Date.now() + 60000 };
+      mockBanLogsGet.mockResolvedValueOnce(ban);
+      const res = createRes();
+      const next = jest.fn();
+
+      await checkBan(createTriggerReq(), res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(mockBanCacheSet).toHaveBeenCalledTimes(1);
+      expect(mockBanCacheSet).toHaveBeenCalledWith(userKey, ban, expect.any(Number));
+    });
+
+    it('cleans up an expired user ban without touching the transport IP', async () => {
+      mockBanLogsGet.mockResolvedValueOnce({ expiresAt: Date.now() - 1000 });
+      const next = jest.fn();
+
+      await checkBan(createTriggerReq(), createRes(), next);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(mockBanLogsDelete.mock.calls).toEqual([['user123']]);
+      expect(mockBanCacheSet).not.toHaveBeenCalled();
+    });
+
+    it('does not treat a trigger header on an ordinary request as an exemption', async () => {
+      mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
+      const req = createReq({
+        ip: '127.0.0.1',
+        headers: { 'x-lc-agent-trigger': '1' },
+        _isAgentTrigger: false,
+      });
+      const res = createRes();
+      const next = jest.fn();
+
+      await checkBan(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(mockBanCacheGet).toHaveBeenCalledWith(ipKey);
+    });
+
+    afterEach(() => {
+      mockBanCacheGet.mockReset().mockResolvedValue(undefined);
+      mockBanLogsGet.mockReset().mockResolvedValue(undefined);
     });
   });
 

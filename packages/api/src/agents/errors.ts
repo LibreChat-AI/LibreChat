@@ -102,6 +102,67 @@ export function resolveLangChainError(error: unknown): string | undefined {
   return type == null ? undefined : JSON.stringify({ type });
 }
 
+export type ModelStreamFailure = 'closed' | 'stalled';
+
+/** A timeout while reading a response body, not while waiting for its headers. */
+const STALLED_TRANSPORT_CODES = new Set(['UND_ERR_BODY_TIMEOUT']);
+const STALLED_TRANSPORT_NAMES = new Set(['BodyTimeoutError']);
+/** Socket errors only describe a mid-response close when Fetch also reports body termination. */
+const CLOSED_TRANSPORT_CODES = new Set(['UND_ERR_SOCKET', 'ECONNRESET', 'EPIPE']);
+
+/**
+ * How a model response died in transit, or `undefined` for any other failure.
+ *
+ * Fetch reports both a provider hanging up mid-stream and our own body timeout as a bare
+ * `TypeError: terminated`; only the undici error in its `cause` tells them apart. A stall wins
+ * over a close found deeper in the chain, since the timeout is what ended the request.
+ */
+export function getModelStreamFailure(error: unknown): ModelStreamFailure | undefined {
+  let current = error;
+  let terminated = false;
+  let closed = false;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current != null; depth++) {
+    if (typeof current !== 'object') {
+      break;
+    }
+    const code = readErrorProperty(current, 'code');
+    const name = readErrorProperty(current, 'name');
+    if (
+      (typeof code === 'string' && STALLED_TRANSPORT_CODES.has(code)) ||
+      (typeof name === 'string' && STALLED_TRANSPORT_NAMES.has(name))
+    ) {
+      return 'stalled';
+    }
+    if (typeof code === 'string' && CLOSED_TRANSPORT_CODES.has(code)) {
+      closed = true;
+    }
+    if (name === 'TypeError' && readErrorProperty(current, 'message') === 'terminated') {
+      terminated = true;
+    }
+    current = readErrorProperty(current, 'cause');
+  }
+  return closed && terminated ? 'closed' : undefined;
+}
+
+const MODEL_STREAM_ERROR_TYPES: Record<ModelStreamFailure, ErrorTypes> = {
+  closed: ErrorTypes.MODEL_STREAM_CLOSED,
+  stalled: ErrorTypes.MODEL_STREAM_STALLED,
+};
+
+/** Safe fallback for an older client that cannot localize these new error types yet. */
+const MODEL_STREAM_FALLBACK: Record<ModelStreamFailure, string> = {
+  closed: 'The model provider closed the connection before the response finished. Try again.',
+  stalled: 'The model provider stopped sending the response, and the request timed out. Try again.',
+};
+
+/** Typed payload for new clients, with useful prose when the client bundle predates these types. */
+export function resolveModelStreamError(error: unknown): string | undefined {
+  const failure = getModelStreamFailure(error);
+  return failure == null
+    ? undefined
+    : `${MODEL_STREAM_FALLBACK[failure]}\n${JSON.stringify({ type: MODEL_STREAM_ERROR_TYPES[failure] })}`;
+}
+
 /**
  * Provider failure text for OpenAI-compatible responses, which carry raw strings rather than the
  * typed payloads the LibreChat client localizes.

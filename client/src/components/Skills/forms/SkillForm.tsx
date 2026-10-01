@@ -152,8 +152,8 @@ export default function SkillForm({ skillId }: SkillFormProps) {
 
   if (skillQuery.isError || !skill) {
     return (
-      <div className="w-full px-4 py-6 text-sm text-text-secondary">
-        <p className="font-medium text-text-primary">{localize('com_ui_skill_not_found')}</p>
+      <div className="text-text-secondary w-full px-4 py-6 text-sm">
+        <p className="text-text-primary font-medium">{localize('com_ui_skill_not_found')}</p>
         <p>{localize('com_ui_skill_not_found_description')}</p>
       </div>
     );
@@ -196,7 +196,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
                     id="skill-name"
                     type="text"
                     readOnly={readOnly}
-                    className="peer mr-2 w-full border border-border-medium p-2 text-2xl text-text-primary"
+                    className="peer border-border-medium text-text-primary mr-2 w-full border p-2 text-2xl"
                     placeholder=" "
                     tabIndex={0}
                     aria-label={localize('com_ui_name')}
@@ -206,14 +206,14 @@ export default function SkillForm({ skillId }: SkillFormProps) {
                   />
                   <label
                     htmlFor="skill-name"
-                    className="pointer-events-none absolute -top-1 left-3 origin-[0] translate-y-3 scale-100 rounded bg-presentation px-1 text-base text-text-secondary transition-transform duration-200 peer-placeholder-shown:translate-y-3 peer-placeholder-shown:scale-100 peer-focus:-translate-y-2 peer-focus:scale-75 peer-focus:text-text-primary peer-[:not(:placeholder-shown)]:-translate-y-2 peer-[:not(:placeholder-shown)]:scale-75"
+                    className="bg-surface-primary-alt text-text-secondary peer-focus:text-text-primary pointer-events-none absolute -top-1 left-3 origin-[0] translate-y-3 scale-100 rounded px-1 text-base transition-transform duration-200 peer-placeholder-shown:translate-y-3 peer-placeholder-shown:scale-100 peer-focus:-translate-y-2 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-2 peer-[:not(:placeholder-shown)]:scale-75"
                   >
                     {localize('com_ui_name')}*
                   </label>
                   <div
                     id="skill-name-error"
                     className={cn(
-                      'mt-1 w-56 text-sm text-text-destructive',
+                      'text-text-destructive mt-1 w-56 text-sm',
                       errors.name ? 'visible h-auto' : 'invisible h-0',
                     )}
                     role={errors.name ? 'alert' : undefined}
@@ -237,7 +237,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
           </div>
         </div>
 
-        <div className="mt-1 flex items-center gap-2 text-xs text-text-secondary">
+        <div className="text-text-secondary mt-1 flex items-center gap-2 text-xs">
           <span>{localize('com_ui_skill_version', { 0: String(skill.version) })}</span>
           <span aria-hidden="true">·</span>
           <span>{skill.authorName}</span>
@@ -246,7 +246,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
         {readOnly && (
           <div
             role="note"
-            className="mt-4 flex items-start gap-2 rounded-md border border-status-warning-border bg-status-warning-subtle p-3 text-sm text-status-warning"
+            className="border-status-warning-border bg-status-warning-subtle text-status-warning mt-4 flex items-start gap-2 rounded-md border p-3 text-sm"
           >
             <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
             <span>{localize('com_ui_skill_no_edit_permission')}</span>
@@ -256,7 +256,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
         {warnings && warnings.length > 0 && (
           <div
             role="alert"
-            className="mt-4 flex flex-col gap-1 rounded-md border border-status-warning-border bg-status-warning-subtle p-3 text-sm text-status-warning"
+            className="border-status-warning-border bg-status-warning-subtle text-status-warning mt-4 flex flex-col gap-1 rounded-md border p-3 text-sm"
           >
             <div className="flex items-center gap-2 font-semibold">
               <AlertTriangle className="size-4" aria-hidden="true" />
@@ -287,12 +287,13 @@ export default function SkillForm({ skillId }: SkillFormProps) {
               <div className="flex flex-col">
                 <Label
                   htmlFor="skill-description"
-                  className="mb-1 text-sm font-medium text-text-secondary"
+                  className="text-text-secondary mb-1 text-sm font-medium"
                 >
                   {localize('com_ui_description')}
-                  <span className="ml-0.5 text-text-destructive">*</span>
+                  <span className="text-text-destructive ml-0.5">*</span>
                 </Label>
                 <TextareaAutosize
+                  focusOutline="hidden"
                   {...field}
                   id="skill-description"
                   readOnly={readOnly}
@@ -301,15 +302,15 @@ export default function SkillForm({ skillId }: SkillFormProps) {
                   aria-label={localize('com_ui_description')}
                   aria-invalid={errors.description ? 'true' : 'false'}
                   aria-describedby={errors.description ? 'skill-description-error' : undefined}
-                  className="w-full resize-none rounded-xl border border-border-medium bg-transparent p-3 text-sm text-text-primary placeholder:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+                  className="border-border-medium text-text-primary placeholder:text-text-secondary focus-visible:ring-ring-primary w-full resize-none rounded-xl border bg-transparent p-3 text-sm focus-visible:ring-2"
                 />
-                <p className="mt-1 text-xs text-text-secondary">
+                <p className="text-text-secondary mt-1 text-xs">
                   {localize('com_ui_skill_description_field_hint')}
                 </p>
                 {errors.description && (
                   <p
                     id="skill-description-error"
-                    className="mt-1 text-sm text-text-destructive"
+                    className="text-text-destructive mt-1 text-sm"
                     role="alert"
                   >
                     {errors.description.message}

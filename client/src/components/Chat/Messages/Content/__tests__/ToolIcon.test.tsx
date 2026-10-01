@@ -26,6 +26,13 @@ describe('getToolIconType - ACTN-01: Action delimiter detection', () => {
     expect(getToolIconType('some_plain_tool')).toBe('generic');
   });
 
+  it('gives native file authoring tools their row glyphs without changing MCP identity', () => {
+    expect(getToolIconType('create_file')).toBe('create_file');
+    expect(getToolIconType('edit_file')).toBe('edit_file');
+    expect(getToolIconType(`create_file${Constants.mcp_delimiter}remote`)).toBe('mcp');
+    expect(getToolIconType(`edit_file${Constants.mcp_delimiter}remote`)).toBe('mcp');
+  });
+
   it('gives the native background-task tool its own icon while preserving MCP identity', () => {
     expect(getToolIconType(Constants.CHECK_BACKGROUND_TASK)).toBe('background_tasks');
     expect(

@@ -153,14 +153,14 @@ export default function LocalizedDateRangePicker({
         <Button variant="outline" className="w-full min-w-0 justify-start px-3">
           <CalendarDays className="size-4 shrink-0" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate text-left">{formattedRange}</span>
-          <ChevronDown className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
+          <ChevronDown className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
         </Button>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
           align="end"
           sideOffset={6}
-          className="z-50 w-[320px] max-w-[calc(100vw-2rem)] rounded-lg border border-border-light bg-surface-primary p-4 text-text-primary shadow-lg"
+          className="border-border-light bg-surface-primary text-text-primary z-50 w-[320px] max-w-[calc(100vw-2rem)] rounded-lg border p-4 shadow-lg"
         >
           <div className="flex flex-col gap-4">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -172,7 +172,7 @@ export default function LocalizedDateRangePicker({
                   max={futureDatesDisabled ? today : undefined}
                   value={pendingStartDate}
                   onChange={(event) => setPendingStartDate(event.target.value)}
-                  className="h-9 min-w-0 rounded-md border border-border-medium bg-surface-primary px-2 text-sm text-text-primary outline-none focus:border-border-heavy"
+                  className="border-border-medium bg-surface-primary text-text-primary focus:border-border-heavy h-9 min-w-0 rounded-md border px-2 text-sm outline-hidden"
                 />
               </label>
               <label className="flex min-w-0 flex-col gap-1.5">
@@ -184,12 +184,12 @@ export default function LocalizedDateRangePicker({
                   max={endDateMax}
                   value={pendingEndDate}
                   onChange={(event) => setPendingEndDate(event.target.value)}
-                  className="h-9 min-w-0 rounded-md border border-border-medium bg-surface-primary px-2 text-sm text-text-primary outline-none focus:border-border-heavy"
+                  className="border-border-medium bg-surface-primary text-text-primary focus:border-border-heavy h-9 min-w-0 rounded-md border px-2 text-sm outline-hidden"
                 />
               </label>
             </div>
             {!isValidRange && pendingStartDate && pendingEndDate && (
-              <span className="text-sm text-status-error">{labels.invalidRange}</span>
+              <span className="text-status-error text-sm">{labels.invalidRange}</span>
             )}
             <div className="flex justify-end gap-2">
               <Button variant="outline" size="sm" onClick={() => setIsOpen(false)}>

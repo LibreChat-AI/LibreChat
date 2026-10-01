@@ -1,4 +1,4 @@
-import { Tools, Constants, ContentTypes, stripToolCallErrorPrefix } from 'librechat-data-provider';
+import { Constants, ContentTypes, stripToolCallErrorPrefix } from 'librechat-data-provider';
 import type {
   Agents,
   TAttachment,
@@ -12,9 +12,8 @@ import { getBatchActivityLabelPart, getActivityLabelText } from '~/utils/activit
 import { hasPendingApprovalInPart, hasPendingAuthInPart } from '~/utils/groupToolCalls';
 import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
 import { getToolDisplayLabel, parseToolName } from '~/utils/toolLabels';
+import { getToolIconName, getToolMeta, summarizeSpan } from './outcome';
 import { boundIntentLabel, getToolCallIntent } from './Parts/intent';
-import { isBashProgrammaticToolCall } from './routing';
-import { getToolMeta, summarizeSpan } from './outcome';
 import { isError } from './ToolOutput';
 
 /** How often a live fold's header may repaint. A streamed intent moves the
@@ -39,15 +38,19 @@ export type LiveActivity = {
    *  only while the line is the tool's own generic label, which is the only
    *  thing a count of that tool can modify. */
   comboCount: number;
+  /** The generic line counts checks of a task rather than independent tool actions. */
+  isBackgroundTaskCheck?: boolean;
   /** Failed and stopped calls anywhere in the span, not just the newest line. */
   outcome: SpanOutcome;
+  /** All calls in the span, including ones still running. */
+  total: number;
 };
 
 type Localize = (phraseKey: TranslationKeys, options?: TOptions) => string;
 
 type LiveToolCall = Agents.ToolCall & { subagent_content?: TMessageContentParts[] } & Pick<
     PartMetadata,
-    'runStepStatus'
+    'runStepStatus' | 'runStepClosedAt' | 'backgrounded'
   > & { progress?: number };
 
 /**
@@ -132,6 +135,16 @@ function toolCallLine(
   }
   if (intent != null) {
     return { text: intent, generic: false };
+  }
+  if (toolCall.name === Constants.CHECK_BACKGROUND_TASK) {
+    return {
+      text: localize(
+        meta?.hasOutput === true
+          ? 'com_ui_background_tasks_checked'
+          : 'com_ui_background_tasks_checking',
+      ),
+      generic: true,
+    };
   }
   if (!label) {
     return { text: localize('com_assistants_running_action'), generic: true };
@@ -234,7 +247,7 @@ export function getSpanIconNames(parts: ReadonlyArray<TMessageContentParts | und
     const toolCall = part == null ? undefined : getStandardToolCall(part);
     if (toolCall != null) {
       const name = toolCall.name ?? '';
-      icons.add(isBashProgrammaticToolCall(name, toolCall.args) ? Tools.bash_tool : name);
+      icons.add(getToolIconName(name, toolCall.args, toolCall.output));
       continue;
     }
     const legacy = part == null ? null : getToolMeta(part);
@@ -270,7 +283,10 @@ function newestLine(
   serverNames: readonly string[],
   span: SpanSummary,
   preferLabels: boolean,
-): Pick<LiveActivity, 'text' | 'source' | 'pendingToolCallId' | 'comboCount'> {
+): Pick<
+  LiveActivity,
+  'text' | 'source' | 'pendingToolCallId' | 'comboCount' | 'isBackgroundTaskCheck'
+> {
   for (let position = parts.length - 1; position >= 0; position -= 1) {
     const part = parts[position];
     if (part == null) {
@@ -284,11 +300,19 @@ function newestLine(
        *  repeating a line of it under the reader's eyes is noise, so the
        *  header keeps to the thought's label. */
       const reasoning = typeof part.think === 'string' ? part.think : (part.think?.value ?? '');
-      const sentence = preferLabels ? undefined : lastReasoningSentence(reasoning);
+      const label = part.reasoning_label?.trim();
+      if (preferLabels) {
+        /** Only a generated label will do: the generic thinking line is what
+         *  the grouped thought row itself says. */
+        if (label) {
+          return { text: label, source: `think:${position}`, comboCount: 1 };
+        }
+        continue;
+      }
+      const sentence = lastReasoningSentence(reasoning);
       if (sentence != null) {
         return { text: sentence, source: `think:${position}`, comboCount: 1 };
       }
-      const label = part.reasoning_label?.trim();
       if (label || reasoning.trim()) {
         return {
           text: label || localize('com_ui_thinking'),
@@ -315,6 +339,11 @@ function newestLine(
       return { text: labelText, source: `label:${position}`, comboCount: 1 };
     }
     const toolCall = getStandardToolCall(part);
+    /** A call's line, intent or generic, is the text of its own row, so an
+     *  open card walks past it to the newest label instead. */
+    if (toolCall != null && preferLabels) {
+      continue;
+    }
     if (toolCall != null) {
       const line = toolCallLine(part, toolCall, localize, serverNames, span);
       return {
@@ -327,9 +356,14 @@ function newestLine(
          *  own work, or reports how it ended, the count has nothing left to
          *  multiply and reads as a claim about that sentence. */
         comboCount: line.generic ? Math.max(1, span.trailingToolCount) : 1,
+        ...(toolCall.name === Constants.CHECK_BACKGROUND_TASK && { isBackgroundTaskCheck: true }),
         ...(isAwaitingStartup(part, toolCall, span) && { pendingToolCallId: toolCall.id }),
       };
     }
+  }
+  /** An open card with no label yet is titled by a line no row uses. */
+  if (preferLabels && parts.some((part) => part != null)) {
+    return { text: localize('com_ui_running'), source: 'running', comboCount: 1 };
   }
   return { text: '', source: '', comboCount: 1 };
 }
@@ -350,16 +384,18 @@ export function getLiveActivity(
   localize: Localize,
   serverNames: readonly string[],
   attachmentsById?: Record<string, TAttachment[] | undefined>,
-  /** Name the span by its newest LABEL: a thought's generated label or the
-   *  generic thinking line, a batch label, a call's line — never a line of
-   *  reasoning or commentary. For a header whose rows are on screen, where
-   *  quoting them back is repetition. */
+  /** Name the span by its newest generated LABEL alone: a batch label or a
+   *  thought's label, else a generic running line. Never a call's intent, a
+   *  reasoning sentence, commentary or the generic thinking line, since each
+   *  of those is the text of a row. For a header whose rows are on screen,
+   *  where quoting any of them back is repetition. */
   preferLabels = false,
 ): LiveActivity {
   const span = summarizeSpan(parts, attachmentsById);
   return {
     ...newestLine(parts, localize, serverNames, span, preferLabels),
     outcome: { failed: span.failed, cancelled: span.cancelled },
+    total: span.total,
     iconNames: getSpanIconNames(parts),
   };
 }
@@ -370,6 +406,8 @@ export type FailedLine = {
   /** The first line of what the tool returned, with the error prefix removed. */
   detail: string;
   iconName: string;
+  /** The failure time, if the host recorded it. Detached tasks use settlement, not dispatch. */
+  failedAt?: number | Date;
 };
 
 const PROCESSING_PREFIX = /^Error processing tool:?\s*/i;
@@ -423,10 +461,14 @@ export function getFailedLines(
     const subject =
       getToolCallIntent(toolCall.args) ??
       (parsed.mcpServer ? parsed.toolName : getToolDisplayLabel(parsed.raw, localize, serverNames));
+    const failedAt =
+      toolCall.backgroundTask?.settledAt ??
+      (meta.background != null || toolCall.backgrounded ? undefined : toolCall.runStepClosedAt);
     lines.push({
       text: subject ? localize('com_ui_failed_subject', { 0: subject }) : localize('com_ui_failed'),
       detail: firstErrorLine(toolCall.output),
       iconName: meta.iconName,
+      ...(failedAt != null && { failedAt }),
     });
   }
   return lines;

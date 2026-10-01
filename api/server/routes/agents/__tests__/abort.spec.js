@@ -26,6 +26,7 @@ const mockGenerationJobManager = {
 const mockSaveMessage = jest.fn();
 const mockHasPersistedPrivateText = jest.fn();
 const mockGetPrivateMessageTexts = jest.fn();
+const mockSaveConvo = jest.fn();
 
 const mockRecordScheduleOutcome = jest.fn();
 const mockBeginScheduledStop = jest.fn();
@@ -48,9 +49,11 @@ jest.mock('@librechat/api', () => ({
 }));
 
 jest.mock('~/models', () => ({
+  initializeMessageBudget: jest.fn(),
   saveMessage: (...args) => mockSaveMessage(...args),
   hasPersistedPrivateText: (...args) => mockHasPersistedPrivateText(...args),
   getPrivateMessageTexts: (...args) => mockGetPrivateMessageTexts(...args),
+  saveConvo: (...args) => mockSaveConvo(...args),
 }));
 
 jest.mock('~/server/services/Schedules', () => ({
@@ -107,6 +110,8 @@ describe('Agent Abort Endpoint', () => {
     mockHasPersistedPrivateText.mockResolvedValue(true);
     mockGetPrivateMessageTexts.mockReset();
     mockGetPrivateMessageTexts.mockResolvedValue([]);
+    mockSaveConvo.mockReset();
+    mockSaveConvo.mockResolvedValue({});
     mockRecordScheduleOutcome.mockReset();
     mockRecordScheduleOutcome.mockResolvedValue(true);
     mockBeginScheduledStop.mockReset();
@@ -349,6 +354,14 @@ describe('Agent Abort Endpoint', () => {
             isCreatedByUser: false,
           }),
           expect.objectContaining({ context: expect.stringContaining('abort endpoint') }),
+        );
+
+        /** The row renders nothing, so a dot raised for it names a reply the user can never
+         * open and no acknowledgement could clear. */
+        expect(mockSaveConvo).not.toHaveBeenCalledWith(
+          expect.anything(),
+          expect.anything(),
+          expect.objectContaining({ stampReply: true }),
         );
 
         /** This is the exact server-side fence hit by the queued submission
@@ -596,6 +609,52 @@ describe('Agent Abort Endpoint', () => {
           ([, message]) => message.messageId === 'response-msg-456',
         );
         expect(savedResponse.contextMeta).toBeNull();
+      });
+
+      it('stamps the aborted reply through an upsert so an early stop still lights the dot', async () => {
+        const jobStreamId = 'test-stream-123';
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'test-user-123' },
+        });
+        const abortResult = {
+          success: true,
+          jobData: {
+            userMessage: { messageId: 'user-msg-123' },
+            responseMessageId: 'response-msg-456',
+            conversationId: jobStreamId,
+            endpoint: 'anthropic',
+            model: 'claude-3',
+          },
+          content: [{ type: 'text', text: 'Partial response...' }],
+          text: 'Partial response...',
+        };
+        mockGenerationJobManager.abortJob.mockImplementation(async (_streamId, options) => {
+          await options.beforePublish(abortResult);
+          return abortResult;
+        });
+        mockSaveMessage.mockImplementation(async (_context, message) => ({
+          ...message,
+          _id: `oid-${message.messageId}`,
+        }));
+        const response = await request(app)
+          .post('/api/agents/chat/abort')
+          .send({ conversationId: jobStreamId });
+
+        expect(response.status).toBe(200);
+        expect(mockSaveConvo).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            conversationId: jobStreamId,
+            endpoint: 'anthropic',
+            model: 'claude-3',
+          }),
+          expect.objectContaining({
+            stampReply: true,
+            replyMessageId: 'response-msg-456',
+            /* Without these `saveConvo` reloads the whole history inside the abort barrier. */
+            appendMessageIds: ['oid-user-msg-123', 'oid-response-msg-456'],
+          }),
+        );
       });
 
       it('saves the aborted partial as temporary from job metadata, not the request body', async () => {

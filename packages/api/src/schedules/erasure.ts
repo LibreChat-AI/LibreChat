@@ -1,4 +1,5 @@
 import { logger, runAsSystem } from '@librechat/data-schemas';
+import { getScheduleMCPDisabledReason } from 'librechat-data-provider';
 import type { ScheduleMethods, IScheduleRun } from '@librechat/data-schemas';
 import type { JobState, ScheduleEngineDeps } from './types';
 import {
@@ -39,6 +40,9 @@ export interface ScheduleErasureDeps {
     | 'markEraseAttempted'
     | 'getActiveRunsForSchedule'
     | 'getRunsForReconciliation'
+    | 'getUnbookkeptRuns'
+    | 'markRunsReconciled'
+    | 'finalizeBookkeeping'
     | 'recordRunOutcome'
   >;
   /** Job state at a run's conversationId; null = confirmed absent, throw = unknown. */
@@ -229,8 +233,9 @@ async function settleFromObservedJob(
  * is observed (a shared store shows the real generation; a process-local store can only be
  * showing this process's own), and a `dead` delivery is shared state proving no generation
  * owns the reservation. This never claims, fires, or advances, and defers anything fenced
- * by an in-flight abort or resume hand-off. Auto-disable policy is deliberately NOT applied
- * (the armed engine owns that): the run settles and frees its slot, the streak is untouched.
+ * by an in-flight abort or resume hand-off. Generic failures retain the fallback's
+ * no-auto-disable policy; a durable MCP configuration receipt still disables via the
+ * run-row transition, including when a retained job originally ended as a success.
  */
 async function settleStrandedRuns(deps: ScheduleErasureDeps): Promise<void> {
   const runs = await deps.methods.getRunsForReconciliation(
@@ -297,8 +302,35 @@ async function settleStrandedRuns(deps: ScheduleErasureDeps): Promise<void> {
   }
 }
 
+/** Replays a crashed permanent-MCP terminal projection where no engine is armed. */
+async function replayUnbookkeptMCPRuns(deps: ScheduleErasureDeps): Promise<void> {
+  const runs = await deps.methods.getUnbookkeptRuns(
+    new Date(Date.now() - STRANDED_RUN_MIN_AGE_MS),
+    SWEEP_BATCH,
+  );
+  for (const run of runs) {
+    if (run.status !== 'error' || !getScheduleMCPDisabledReason(run.mcp)) {
+      continue;
+    }
+    try {
+      await deps.methods.finalizeBookkeeping({
+        scheduleId: run.scheduleId,
+        scheduledFor: run.scheduledFor,
+        status: 'error',
+        conversationId: run.conversationId,
+        error: run.error,
+        mcp: run.mcp,
+        autoDisableAfterFailures: Number.MAX_SAFE_INTEGER,
+      });
+    } catch (error) {
+      logger.warn(`[schedules] MCP bookkeeping replay failed for ${run.scheduleId}:`, error);
+    }
+  }
+  await deps.methods.markRunsReconciled(runs);
+}
+
 /**
- * Erases soft-deleted schedules once they drain — and NOTHING else.
+ * Maintains erasure and positively evidenced stranded-run convergence without arming a scheduler.
  *
  * A `deleting` row is normally erased by whichever actor first observes it drained: the
  * delete request, or the terminal outcome write (erase-on-settle). Both are single
@@ -307,11 +339,9 @@ async function settleStrandedRuns(deps: ScheduleErasureDeps): Promise<void> {
  * retry it (the row is hidden from their list). In the standard entrypoint the
  * reconciler retries it; the clustered entrypoint runs no engine, so nothing does.
  *
- * This is deliberately NOT the engine: it never claims, leases, fires, advances, or
- * reconciles a run, so running it in every replica of a clustered deployment is safe and
- * changes nothing about v1's single-process scheduling. It only re-drives
- * `eraseScheduleIfDrained`, which re-checks drained-ness itself (no active run, no live
- * lease) and is idempotent — concurrent sweepers race harmlessly.
+ * This is deliberately NOT the engine: it never claims, leases, fires or advances.
+ * Every convergence write is idempotent and guarded by the run or schedule's current
+ * state, so concurrent clustered sweepers can re-drive cleanup safely.
  */
 export function startScheduleErasureSweep(deps: ScheduleErasureDeps): ScheduleErasureSweep {
   let stopped = false;
@@ -339,6 +369,9 @@ export function startScheduleErasureSweep(deps: ScheduleErasureDeps): ScheduleEr
         // generation evidence can outlive its run — where no engine is armed.
         await settleStrandedRuns(deps).catch((err) =>
           logger.warn('[schedules] stranded-run convergence pass failed:', err),
+        );
+        await replayUnbookkeptMCPRuns(deps).catch((err) =>
+          logger.warn('[schedules] MCP bookkeeping replay pass failed:', err),
         );
       });
     } catch (err) {

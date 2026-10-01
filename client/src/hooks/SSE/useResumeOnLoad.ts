@@ -7,6 +7,7 @@ import {
   QueryKeys,
   tMessageSchema,
   isAssistantsEndpoint,
+  isForcedTemporaryRetention,
 } from 'librechat-data-provider';
 import type { TMessage, TConversation, TSubmission, Agents } from 'librechat-data-provider';
 import type { GenerationProtocolVersion } from '~/data-provider/SSE/protocol';
@@ -27,6 +28,7 @@ import {
   useStreamStatus,
   useActiveJobs,
   useAgentQueuedTurns,
+  useGetStartupConfig,
   streamStatusQueryKey,
   isQueuedTurnSuccessorOwed,
   extendActiveJobsGrace,
@@ -150,6 +152,7 @@ function buildSubmissionFromResumeState(
   conversationId: string,
   generationCreatedAt?: number,
   generationProtocolVersion: GenerationProtocolVersion = 1,
+  isTemporary = false,
 ): TSubmission {
   const userMessageData = resumeState.userMessage;
   const responseMessageId =
@@ -259,7 +262,7 @@ function buildSubmissionFromResumeState(
     isRegenerate: isRegenerateResume,
     ...(isAnchoredRun && { compact: true }),
     ...(regenerateMessages && { regenerateMessages }),
-    isTemporary: false,
+    isTemporary,
     endpointOption: {},
     // Signal to useResumableSSE to subscribe to existing stream instead of starting new
     resumeStreamId: streamId,
@@ -304,6 +307,8 @@ export default function useResumeOnLoad(
   const endpointType = currentConversation?.endpointType;
   const actualEndpoint = endpointType ?? endpoint;
   const resumableEnabled = !isAssistantsEndpoint(actualEndpoint);
+  const { data: startupConfig, isFetched: startupConfigSettled } = useGetStartupConfig();
+  const isRetentionForced = isForcedTemporaryRetention(startupConfig?.interface?.retentionMode);
   // Track conversations we've already processed (either resumed or skipped)
   const processedConvoRef = useRef<string | null>(null);
   /**
@@ -829,6 +834,7 @@ export default function useResumeOnLoad(
   const shouldCheck =
     resumableEnabled &&
     messagesLoaded && // Wait for messages to load before checking
+    startupConfigSettled && // The forced retention mode decides the rebuilt submission's temporary state
     !hasActiveSubmissionForThisConvo && // Allow if no submission or a confirmed stale submission
     !!conversationId &&
     conversationId !== Constants.NEW_CONVO &&
@@ -863,6 +869,10 @@ export default function useResumeOnLoad(
     // Wait for messages to load to avoid race condition where sync overwrites then DB overwrites
     if (!messagesLoaded) {
       console.log('[ResumeOnLoad] Waiting for messages to load');
+      return;
+    }
+
+    if (!startupConfigSettled) {
       return;
     }
 
@@ -1056,6 +1066,7 @@ export default function useResumeOnLoad(
         conversationId,
         streamStatus.createdAt,
         generationProtocolVersion,
+        streamStatus.isTemporary === true || isRetentionForced,
       );
       setSubmission(submission);
     } else {
@@ -1073,7 +1084,7 @@ export default function useResumeOnLoad(
         } as TMessage,
         conversation: { conversationId, title: 'Resumed Chat' } as TConversation,
         isRegenerate: false,
-        isTemporary: false,
+        isTemporary: streamStatus.isTemporary === true || isRetentionForced,
         endpointOption: {},
         // Signal to useResumableSSE to subscribe to existing stream instead of starting new
         resumeStreamId: streamStatus.streamId,
@@ -1112,6 +1123,8 @@ export default function useResumeOnLoad(
     setActiveGenerationCreatedAt,
     jotaiStore,
     externalRunArm,
+    isRetentionForced,
+    startupConfigSettled,
   ]);
 
   // Reset processedConvoRef when conversation changes to allow re-checking

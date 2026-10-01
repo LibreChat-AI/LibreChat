@@ -171,14 +171,14 @@ export default function ArchivedChatsTable() {
               to={`/c/${conversationId ?? ''}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="group flex items-center gap-1.5 truncate rounded-sm font-medium text-text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+              className="group text-text-primary focus-visible:ring-text-primary flex items-center gap-1.5 truncate rounded-sm font-medium underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:outline-hidden"
               aria-label={localize('com_ui_open_archived_chat_new_tab_title', {
                 title: title ?? localize('com_ui_untitled'),
               })}
             >
               <span className="truncate">{title}</span>
               <ExternalLink
-                className="size-3.5 flex-shrink-0 text-text-tertiary transition-colors group-hover:text-text-secondary"
+                className="text-text-tertiary group-hover:text-text-secondary size-3.5 shrink-0 transition-colors"
                 aria-hidden="true"
               />
             </Link>
@@ -271,7 +271,7 @@ export default function ArchivedChatsTable() {
         columns={columns}
         data={allConversations}
         getRowId={getRowId}
-        className="scrollbar-gutter-stable max-h-[60vh] min-h-80"
+        className="max-h-[60vh] min-h-80 scrollbar-gutter-stable"
         onFilterChange={handleFilterChange}
         filterValue={queryParams.search}
         fetchNextPage={handleFetchNextPage}

@@ -209,6 +209,8 @@ export const scheduleMCPOutcomeSchema = z.object({
   /** Agent whose selected tool requires this server. Used to open the correct
    * recovery chat when the requirement belongs to a handoff or subagent. */
   agentId: z.string().optional(),
+  /** Additional diagnosis; older clients ignore unknown keys and retain the known status. */
+  detail: z.enum(['unattended_auth_required']).optional(),
   status: z.enum([
     'ready',
     'mcp_reauth_required',

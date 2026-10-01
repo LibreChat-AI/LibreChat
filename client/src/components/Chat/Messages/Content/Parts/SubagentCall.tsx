@@ -402,17 +402,17 @@ export default function SubagentCall({
         data-subagent-parent-message={parentMessageId}
         data-subagent-part-index={partIndex}
         className={cn(
-          'my-2 flex w-full flex-col gap-1 rounded-lg border border-border-light bg-surface-secondary px-3 py-2 text-left transition',
+          'border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-1 rounded-lg border px-3 py-2 text-left transition',
           canOpenDetails ? 'group hover:bg-surface-tertiary' : 'cursor-default opacity-80',
           running && !detachedStatusUnknown && 'animate-pulse-slow',
         )}
         aria-label={headerText}
       >
-        <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+        <div className="text-text-primary flex items-center gap-2 text-sm font-medium">
           <div
             className={cn(
               'flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full',
-              running && !subagentAgent && 'animate-pulse text-text-primary',
+              running && !subagentAgent && 'text-text-primary animate-pulse',
             )}
             aria-hidden="true"
           >
@@ -435,7 +435,7 @@ export default function SubagentCall({
           </span>
           {subagentNameLabel ? (
             <span
-              className="min-w-0 flex-1 truncate font-normal text-text-secondary"
+              className="text-text-secondary min-w-0 flex-1 truncate font-normal"
               title={subagentNameLabel}
             >
               {subagentNameLabel}
@@ -446,13 +446,13 @@ export default function SubagentCall({
           {canOpenDetails && (
             <ChevronRight
               size={14}
-              className="shrink-0 text-text-secondary transition group-hover:translate-x-0.5"
+              className="text-text-secondary shrink-0 transition group-hover:translate-x-0.5"
               aria-hidden="true"
             />
           )}
         </div>
 
-        <ul className="w-full space-y-0.5 pl-5 font-mono text-xs text-text-secondary">
+        <ul className="text-text-secondary w-full space-y-0.5 pl-5 font-mono text-xs">
           {displayedTickerLines.length === 0 && running ? (
             <li className="truncate opacity-70">{localize('com_ui_subagent_waiting')}</li>
           ) : null}
@@ -521,7 +521,7 @@ function tickerLineKey(line: SubagentTickerLine): string {
  *  reads as a "code" token rather than plain prose. */
 function ToolNameBadge({ name }: { name: string }): JSX.Element {
   return (
-    <code className="shrink-0 rounded bg-surface-tertiary px-1 text-text-primary">{name}</code>
+    <code className="bg-surface-tertiary text-text-primary shrink-0 rounded px-1">{name}</code>
   );
 }
 
@@ -543,7 +543,7 @@ function ToolIdentifier({
     return (
       <span className="inline-flex min-w-0 shrink items-baseline gap-1">
         <span className="truncate">{parsed.mcpServer}</span>
-        <span className="shrink-0 text-text-tertiary">·</span>
+        <span className="text-text-tertiary shrink-0">·</span>
         <ToolNameBadge name={parsed.toolName} />
       </span>
     );
@@ -572,10 +572,10 @@ function TickerLineView({ line }: { line: SubagentTickerLine }): JSX.Element {
   const mcpServerNames = useMCPServerNames();
   if (line.kind === 'writing') {
     return (
-      <li className="flex w-full items-baseline overflow-hidden text-text-primary">
+      <li className="text-text-primary flex w-full items-baseline overflow-hidden">
         <span
           dir="rtl"
-          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left"
+          className="min-w-0 flex-1 overflow-hidden text-left text-ellipsis whitespace-nowrap"
         >
           {line.body}
         </span>
@@ -584,11 +584,11 @@ function TickerLineView({ line }: { line: SubagentTickerLine }): JSX.Element {
   }
   if (line.kind === 'reasoning') {
     return (
-      <li className="flex w-full items-baseline gap-1 overflow-hidden text-text-primary">
+      <li className="text-text-primary flex w-full items-baseline gap-1 overflow-hidden">
         <span className="shrink-0">{localize('com_ui_subagent_ticker_reasoning')}:</span>
         <span
           dir="rtl"
-          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left"
+          className="min-w-0 flex-1 overflow-hidden text-left text-ellipsis whitespace-nowrap"
         >
           {line.body}
         </span>
@@ -603,12 +603,12 @@ function TickerLineView({ line }: { line: SubagentTickerLine }): JSX.Element {
         <span className="flex min-w-0 flex-1 items-baseline gap-1 overflow-hidden">
           {line.toolNames.map((name, i) => (
             <span key={`${i}-${name}`} className="flex min-w-0 items-baseline gap-1">
-              {i > 0 && <span className="shrink-0 text-text-tertiary">,</span>}
+              {i > 0 && <span className="text-text-tertiary shrink-0">,</span>}
               <ToolIdentifier rawName={name} localize={localize} mcpServerNames={mcpServerNames} />
             </span>
           ))}
           {line.argsSnippet && (
-            <span className="min-w-0 truncate text-text-tertiary">({line.argsSnippet})</span>
+            <span className="text-text-tertiary min-w-0 truncate">({line.argsSnippet})</span>
           )}
         </span>
       </li>
@@ -622,10 +622,10 @@ function TickerLineView({ line }: { line: SubagentTickerLine }): JSX.Element {
           localize={localize}
           mcpServerNames={mcpServerNames}
         />
-        <span className="shrink-0 text-text-tertiary">→</span>
+        <span className="text-text-tertiary shrink-0">→</span>
         <span
           dir="rtl"
-          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left"
+          className="min-w-0 flex-1 overflow-hidden text-left text-ellipsis whitespace-nowrap"
         >
           {line.outputSnippet ?? localize('com_ui_subagent_ticker_tool_done')}
         </span>
@@ -635,7 +635,7 @@ function TickerLineView({ line }: { line: SubagentTickerLine }): JSX.Element {
   /* error */
   const errorPrefix = localize('com_ui_subagent_ticker_error');
   return (
-    <li className="flex w-full items-baseline gap-1 overflow-hidden text-text-warning">
+    <li className="text-text-warning flex w-full items-baseline gap-1 overflow-hidden">
       <span className="shrink-0">{errorPrefix}:</span>
       <span className="min-w-0 flex-1 truncate">{line.message ?? ''}</span>
     </li>

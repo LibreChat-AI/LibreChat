@@ -29,13 +29,14 @@ async function setPhaseLabel(request: APIRequestContext) {
 }
 
 async function selectEphemeralMCP(page: Page) {
-  await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-  const serverItem = page.getByRole('menuitemcheckbox', { name: new RegExp(MCP_SERVER_TITLE) });
-  await expect(serverItem).toBeVisible();
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  const palette = page.getByRole('dialog', { name: 'Attach and tools' });
+  const serverItem = palette.getByRole('button', { name: new RegExp(`^${MCP_SERVER_TITLE}\\b`) });
+  await expect(serverItem).toBeVisible({ timeout: 20_000 });
   await serverItem.click();
-  await expect(serverItem).toHaveAttribute('aria-checked', 'true');
+  await expect(serverItem).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('button', { name: new RegExp(MCP_SERVER_TITLE) })).toBeVisible();
+  await expect(page.getByRole('listitem', { name: MCP_SERVER_TITLE, exact: true })).toBeVisible();
 }
 
 function collectPageProblems(page: Page): string[] {
@@ -89,7 +90,7 @@ test.describe('activity fold', () => {
     const pill = messagesView(page).getByTestId('failed-reveal-pill');
     const peek = messagesView(page).getByTestId('activity-phase-failed-peek');
     await expect(pill).toBeVisible();
-    await expect(pill).toHaveAccessibleName('Show failed call');
+    await expect(pill).toHaveAccessibleName('Show 1 failed call out of 4 calls');
     await expect(peek).toBeVisible();
     await expect(peek).toContainText('Failed:');
     await expect(peek).toContainText('Show error');

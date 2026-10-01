@@ -66,8 +66,8 @@ export default function MessageRow({
       role="group"
       aria-label={ariaLabel}
       className={cn(
-        'message-render group mx-auto flex min-w-0 flex-1 font-theme-ui transition-[max-width] duration-theme-normal motion-reduce:transition-none',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary',
+        'message-render group font-theme-ui duration-theme-normal mx-auto flex min-w-0 flex-1 transition-[max-width] motion-reduce:transition-none',
+        'focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:outline-hidden',
         isUserSide ? 'justify-end' : 'items-start',
         widthClass,
         className,
@@ -85,7 +85,7 @@ export default function MessageRow({
         )}
       >
         {isSystem && (
-          <h2 className="mb-1 flex select-none items-center gap-1.5 pr-1.5 text-xs font-medium uppercase tracking-wide text-text-secondary">
+          <h2 className="text-text-secondary mb-1 flex items-center gap-1.5 pr-1.5 text-xs font-medium tracking-wide uppercase select-none">
             <Zap size={12} aria-hidden="true" />
             {systemLabel}
             <span className="sr-only">
@@ -103,10 +103,10 @@ export default function MessageRow({
             </h2>
           ) : (
             /** `mb-1` keeps the name off its own first line of body text. */
-            <h2 className="mb-1 flex min-h-7 w-full select-none items-center gap-2 text-sm font-semibold text-text-primary">
+            <h2 className="text-text-primary mb-1 flex min-h-7 w-full items-center gap-2 text-sm font-semibold select-none">
               <span
                 aria-hidden="true"
-                className="flex size-6 flex-shrink-0 items-center justify-center overflow-hidden rounded-full"
+                className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full"
               >
                 {icon}
               </span>
@@ -119,11 +119,11 @@ export default function MessageRow({
         <div className={cn('flex w-full flex-col gap-1', isUserSide && 'items-end')}>
           <div
             className={cn(
-              'flex min-h-[20px] max-w-full flex-grow flex-col gap-0',
+              'flex min-h-[20px] max-w-full grow flex-col gap-0',
               isUserSide && !isEditing
                 ? cn(
-                    'w-fit rounded-theme-surface rounded-br-theme-control px-theme-normal',
-                    isSystem ? 'border border-border-medium py-1.5' : 'bg-surface-tertiary py-2.5',
+                    'rounded-theme-surface rounded-br-theme-control px-theme-normal w-fit',
+                    isSystem ? 'border-border-medium border py-1.5' : 'bg-surface-tertiary py-2.5',
                   )
                 : 'w-full',
             )}

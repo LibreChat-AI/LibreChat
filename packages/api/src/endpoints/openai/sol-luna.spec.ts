@@ -1,7 +1,12 @@
 import { createTxMethods } from '@librechat/data-schemas';
 import { HumanMessage } from '@librechat/agents/langchain';
 import { Providers, initializeModel } from '@librechat/agents';
-import { EModelEndpoint, ReasoningEffort, ReasoningParameterFormat } from 'librechat-data-provider';
+import {
+  gpt6Tier,
+  EModelEndpoint,
+  ReasoningEffort,
+  ReasoningParameterFormat,
+} from 'librechat-data-provider';
 import type { AIMessageChunk } from '@librechat/agents/langchain';
 import type { OpenAIConfiguration } from '~/types';
 import { computeUsageCostUSD, recordCollectedUsage } from '~/agents/usage';
@@ -28,7 +33,7 @@ const azure = {
   azureOpenAIApiVersion: '2025-04-01-preview',
 };
 
-describe.each(['gpt-6-sol', 'gpt-6-luna'])('%s requests', (model) => {
+describe.each(['gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-luna'])('%s requests', (model) => {
   const config = (overrides: Partial<Parameters<typeof getOpenAILLMConfig>[0]> = {}) =>
     getOpenAILLMConfig({
       apiKey: 'test-key',
@@ -404,7 +409,7 @@ describe.each(['gpt-6-sol', 'gpt-6-luna'])('%s requests', (model) => {
       if (!chatCompletions) {
         const usage = { ...message.usage_metadata!, provider: Providers.OPENAI, model };
         // Full prompt crosses 272K: all reported categories use premium rates.
-        const expected = model === 'gpt-6-sol' ? 0.8915 : 0.044575;
+        const expected = gpt6Tier(model) === 'sol' ? 0.8915 : 0.044575;
         expect(computeUsageCostUSD(usage, pricing)).toBeCloseTo(expected, 8);
         const spendTokens = jest.fn().mockResolvedValue(undefined);
         const spendStructuredTokens = jest.fn().mockResolvedValue(undefined);

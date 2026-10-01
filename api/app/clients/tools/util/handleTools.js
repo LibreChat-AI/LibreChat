@@ -28,6 +28,7 @@ const {
   codeExecutionAuthHeaders,
   getCodeFileLocation,
   resolveCodeExecutionContext,
+  resolveMCPClientCapabilityProfile,
 } = require('@librechat/api');
 const {
   AuthType,
@@ -37,6 +38,7 @@ const {
   EToolResources,
   PermissionTypes,
   AgentCapabilities,
+  resolveMCPAppsPolicy,
 } = require('librechat-data-provider');
 const {
   availableTools,
@@ -625,6 +627,18 @@ const loadTools = async ({
 
   const loadedTools = (await Promise.all(toolPromises)).flatMap((plugin) => plugin || []);
   const safeUser = createSafeUser(options.req?.user);
+  const admittedAppConfig = options.req?.config;
+  const admittedMCPAppsPolicy = resolveMCPAppsPolicy(
+    admittedAppConfig?.mcpSettings?.apps,
+    admittedAppConfig?.mcpAppSandbox,
+    admittedAppConfig?.mcpAppSandbox?.maxPersistedAppBytes,
+    admittedAppConfig?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+    admittedAppConfig?.mcpAppSandbox?.url,
+    admittedAppConfig?.mcpAppSandbox?.maxActiveViews,
+    admittedAppConfig?.mcpAppSandbox?.maxActionPreviewChars,
+    admittedAppConfig?.mcpAppSandbox?.operationLimits,
+  );
+  const capabilityProfile = resolveMCPClientCapabilityProfile(admittedMCPAppsPolicy);
   const requestScopedConnections =
     options.requestScopedConnections ?? getMCPRequestContext(options.req, options.res);
   /**
@@ -659,12 +673,14 @@ const loadTools = async ({
       availableTools: options.mcpAvailableTools,
       createTools: createMCPTools,
       createTool: createMCPTool,
-      getAvailableTools: getMCPServerTools,
+      getAvailableTools: (userId, serverName, config) =>
+        getMCPServerTools(userId, serverName, config, capabilityProfile),
       context: {
         mcpPermissionContext,
         signal,
         user: safeUser,
         userMCPAuthMap,
+        mcpApps: admittedMCPAppsPolicy,
         configServers,
         requestBody: options.requestBody ?? options.req?.body,
         requestScopedConnections,

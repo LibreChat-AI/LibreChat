@@ -1,4 +1,5 @@
 import React, { createRef } from 'react';
+import { getDefaultStore } from 'jotai';
 import { fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { RecoilRoot } from 'recoil';
@@ -7,6 +8,7 @@ import { HTML5Backend } from 'react-dnd-html5-backend';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { CellMeasurerCache, List } from 'react-virtualized';
 import type { TConversation } from 'librechat-data-provider';
+import { hasAttachmentsAtom, resetFacetsAtom } from '../facets';
 import Conversations from '../Conversations';
 import store from '~/store';
 
@@ -75,6 +77,26 @@ jest.mock('~/hooks', () => ({
 jest.mock('@librechat/client', () => ({
   /* The section headers compose through the shared variant recipe. */
   buttonVariants: () => '',
+  Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
+    <button {...props}>{children}</button>
+  ),
+  /* The empty and error states are the shared panel state, rendered here with the
+     glyph dropped: what these tests read is the line and its action. */
+  EmptyState: ({
+    title,
+    description,
+    action,
+  }: {
+    title?: string;
+    description?: string;
+    action?: React.ReactNode;
+  }) => (
+    <div>
+      {title != null && <p>{title}</p>}
+      {description != null && <p>{description}</p>}
+      {action}
+    </div>
+  ),
   Spinner: () => <div data-testid="spinner" />,
   useMediaQuery: () => false,
   useToastContext: () => ({ showToast: jest.fn() }),
@@ -215,8 +237,42 @@ describe('Conversations: pinned chats live in PinnedSection', () => {
     );
 
   it('does not render a pinned header inside the chats list', () => {
-    const { queryByText } = renderConversations([pinnedConvo]);
+    const { queryByText, queryByTestId } = renderConversations([pinnedConvo]);
     expect(queryByText('com_ui_pinned')).not.toBeInTheDocument();
+    expect(queryByTestId('convo')).not.toBeInTheDocument();
+  });
+
+  it('shows pinned search matches in Chats while the Pinned section is hidden', () => {
+    renderConversations([pinnedConvo, pinnedConvo], 'Pinned Chat');
+
+    expect(screen.getAllByTestId('convo')).toHaveLength(1);
+    expect(screen.getByTestId('convo')).toHaveTextContent('Pinned Chat');
+    expect(screen.queryByText('com_ui_no_search_results')).not.toBeInTheDocument();
+  });
+
+  it('keeps running matches promoted when search includes pinned chats', () => {
+    mockActiveJobIds = ['running'];
+    const running = {
+      ...pinnedConvo,
+      conversationId: 'running',
+      title: 'Running match',
+      pinned: false,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    } as TConversation;
+
+    try {
+      renderConversations([pinnedConvo, running], 'match');
+
+      expect(screen.getAllByTestId('convo').map((row) => row.textContent)).toEqual([
+        'Running match',
+        'Pinned Chat',
+      ]);
+      expect(
+        screen.getByRole('heading', { name: 'com_a11y_chats_running_section' }),
+      ).toBeInTheDocument();
+    } finally {
+      mockActiveJobIds = [];
+    }
   });
 
   it('does not render a duplicate new chat button in the chats header', () => {
@@ -370,5 +426,57 @@ describe('Conversations: all-pin pages still paginate', () => {
     );
 
     expect(loadMoreConversations).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Conversations: the empty state offers the way back', () => {
+  const containerRef = createRef<List>();
+  const jotaiStore = getDefaultStore();
+
+  afterEach(() => {
+    jotaiStore.set(resetFacetsAtom);
+  });
+
+  const renderEmpty = () =>
+    render(
+      <QueryClientProvider client={queryClient}>
+        <DndProvider backend={HTML5Backend}>
+          <RecoilRoot>
+            <Conversations
+              conversations={[]}
+              moveToTop={jest.fn()}
+              toggleNav={jest.fn()}
+              containerRef={containerRef}
+              loadMoreConversations={jest.fn()}
+              isLoading={false}
+              isSearchLoading={false}
+              isChatsExpanded={true}
+              setIsChatsExpanded={jest.fn()}
+              scrollViewport={null}
+              scrollContent={null}
+            />
+          </RecoilRoot>
+        </DndProvider>
+      </QueryClientProvider>,
+    );
+
+  it('says the account is empty, with nothing to clear', () => {
+    const { getByTestId, queryByRole } = renderEmpty();
+
+    expect(getByTestId('convo-list-empty')).toHaveTextContent('com_ui_no_chats');
+    expect(queryByRole('button', { name: 'com_ui_clear_filters' })).not.toBeInTheDocument();
+  });
+
+  /** A facet narrows the same list the bookmark tags do, so an empty result under one
+   *  has to read as "nothing matched" and carry the same way out. */
+  it('offers to clear a facet that matched nothing', () => {
+    jotaiStore.set(hasAttachmentsAtom, true);
+    const { getByTestId, getByRole } = renderEmpty();
+
+    expect(getByTestId('convo-list-empty')).toHaveTextContent('com_ui_no_chats_match_filters');
+
+    fireEvent.click(getByRole('button', { name: 'com_ui_clear_filters' }));
+
+    expect(jotaiStore.get(hasAttachmentsAtom)).toBe(false);
   });
 });

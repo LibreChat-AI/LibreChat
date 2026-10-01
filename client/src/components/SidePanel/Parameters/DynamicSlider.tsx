@@ -171,15 +171,15 @@ function DynamicSlider({
       )}
     >
       <HoverCard openDelay={300}>
-        <HoverCardTrigger className="grid w-full items-center gap-2">
+        <HoverCardTrigger className="grid h-full w-full content-between items-center gap-2">
           <div className="flex w-full items-center justify-between">
             <Label
               htmlFor={`${settingKey}-dynamic-setting`}
-              className="break-words text-left text-xs font-medium"
+              className="text-left text-xs font-medium break-words"
             >
               {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
               {showDefault && (
-                <small className="opacity-40 high-contrast:opacity-100">
+                <small className="high-contrast:opacity-100 opacity-40">
                   ({localize('com_endpoint_default')}: {getDefaultDisplayValue()})
                 </small>
               )}
@@ -202,7 +202,7 @@ function DynamicSlider({
                   defaultTextProps,
                   cn(
                     optionText,
-                    'reset-rc-number-input reset-rc-number-input-text-right h-auto w-12 border-0 py-1 text-xs group-hover/temp:border-border-light',
+                    'reset-rc-number-input reset-rc-number-input-text-right group-hover/temp:border-border-light h-auto w-12 border-0 py-1 text-xs',
                   ),
                 )}
               />
@@ -217,7 +217,7 @@ function DynamicSlider({
                   defaultTextProps,
                   cn(
                     optionText,
-                    'reset-rc-number-input h-auto w-14 border-0 py-1 pl-1 text-center text-xs group-hover/temp:border-border-light',
+                    'reset-rc-number-input group-hover/temp:border-border-light h-auto w-14 border-0 py-1 pl-1 text-center text-xs',
                   ),
                 )}
               />

@@ -11,6 +11,7 @@ import type {
   StatefulCodeEnvironment,
   TAgentsEndpoint,
 } from 'librechat-data-provider';
+import type { WorkspaceEditFileFeature } from '~/code/edits';
 
 export const CODE_API_EXPECTED_PROFILE_HEADER = 'X-CodeAPI-Expected-Profile';
 export const CODE_API_BRIDGE_WORKER_HEADER = 'X-LibreChat-Code-Worker-ID';
@@ -44,8 +45,12 @@ export interface CodeExecutionContext {
   codeWorkspace?: CodeWorkspaceSelection & {
     operations: CodeWorkspaceOperation[];
     workspaceInstanceId?: string;
+    /** The worker schedules each `.worktrees/<name>` of this root as its own lane. */
+    linkedWorktrees?: boolean;
     /** Live Code API execution ceiling. Omitted by older deployments. */
     maxCommandTimeoutMs?: number;
+    /** Edit features the worker negotiated with the Code API. Omitted by older workers. */
+    editFileFeatures?: WorkspaceEditFileFeature[];
     instructions?: CodeWorkspaceDescriptor['instructions'];
     environment?: CodeWorkspaceDescriptor['environment'];
   };

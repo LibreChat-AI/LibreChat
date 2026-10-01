@@ -79,6 +79,10 @@ export type SubagentActivityItem =
       input?: string;
       output?: string;
       status: 'running' | 'completed' | 'failed' | 'cancelled';
+      toolPreparationStartedAt?: number;
+      toolDispatchedAt?: number;
+      toolPreparationDurationMs?: number;
+      toolExecutionDurationMs?: number;
       inputValidationError?: true;
       inputTruncated?: boolean;
       outputTruncated?: boolean;

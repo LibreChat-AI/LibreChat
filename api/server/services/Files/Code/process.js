@@ -1068,6 +1068,7 @@ async function readSandboxFile({
  * @param {string} params.file_path
  * @param {string} params.workspace_id
  * @param {string} [params.workspace_instance_id]
+ * @param {boolean} [params.linked_worktrees]
  * @param {number} params.start_line
  * @param {number} params.max_lines
  * @param {string} params.codeApiBaseUrl
@@ -1080,6 +1081,7 @@ async function readWorkspaceFile({
   file_path,
   workspace_id,
   workspace_instance_id,
+  linked_worktrees,
   start_line,
   max_lines,
   codeApiBaseUrl,
@@ -1088,10 +1090,16 @@ async function readWorkspaceFile({
   req,
   signal,
   maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  deadlineAtMs,
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
+    linkedWorktrees: linked_worktrees,
     maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+    maxRequestTimeoutMs,
+    deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
       ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
@@ -1117,6 +1125,7 @@ async function readWorkspaceFile({
  * @param {string} params.query
  * @param {string} params.workspace_id
  * @param {string} [params.workspace_instance_id]
+ * @param {boolean} [params.linked_worktrees]
  * @param {string} [params.path]
  * @param {number} params.max_results
  * @param {string} params.codeApiBaseUrl
@@ -1129,6 +1138,7 @@ async function searchWorkspace({
   query,
   workspace_id,
   workspace_instance_id,
+  linked_worktrees,
   path,
   max_results,
   codeApiBaseUrl,
@@ -1137,10 +1147,16 @@ async function searchWorkspace({
   req,
   signal,
   maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  deadlineAtMs,
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
+    linkedWorktrees: linked_worktrees,
     maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+    maxRequestTimeoutMs,
+    deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
       ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
@@ -1165,6 +1181,7 @@ async function searchWorkspace({
  * @param {Object} params
  * @param {string} params.workspace_id
  * @param {string} [params.workspace_instance_id]
+ * @param {boolean} [params.linked_worktrees]
  * @param {string} [params.path]
  * @param {string} [params.after_path]
  * @param {number} params.max_results
@@ -1177,6 +1194,7 @@ async function searchWorkspace({
 async function listWorkspaceFiles({
   workspace_id,
   workspace_instance_id,
+  linked_worktrees,
   path,
   after_path,
   max_results,
@@ -1186,10 +1204,16 @@ async function listWorkspaceFiles({
   req,
   signal,
   maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  deadlineAtMs,
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
+    linkedWorktrees: linked_worktrees,
     maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+    maxRequestTimeoutMs,
+    deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
       ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
@@ -1215,16 +1239,23 @@ async function writeWorkspaceFile({
   overwrite,
   workspace_id,
   workspace_instance_id,
+  linked_worktrees,
   codeApiBaseUrl,
   executionProfile,
   bridgeWorkerId,
   req,
   signal,
   maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  deadlineAtMs,
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
+    linkedWorktrees: linked_worktrees,
     maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+    maxRequestTimeoutMs,
+    deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
       ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
@@ -1248,18 +1279,26 @@ async function editWorkspaceFile({
   file_path,
   edits,
   expected_base_sha256,
+  matching,
   workspace_id,
   workspace_instance_id,
+  linked_worktrees,
   codeApiBaseUrl,
   executionProfile,
   bridgeWorkerId,
   req,
   signal,
   maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  deadlineAtMs,
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
+    linkedWorktrees: linked_worktrees,
     maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+    maxRequestTimeoutMs,
+    deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
       ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
@@ -1273,6 +1312,7 @@ async function editWorkspaceFile({
       path: file_path,
       edits,
       ...(expected_base_sha256 ? { expectedBaseSha256: expected_base_sha256 } : {}),
+      matching,
     },
     ...(signal ? { signal } : {}),
   });
@@ -1282,18 +1322,26 @@ async function editWorkspaceFile({
 async function previewWorkspaceEdit({
   file_path,
   edits,
+  matching,
   workspace_id,
   workspace_instance_id,
+  linked_worktrees,
   codeApiBaseUrl,
   executionProfile,
   bridgeWorkerId,
   req,
   signal,
   maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  deadlineAtMs,
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
+    linkedWorktrees: linked_worktrees,
     maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+    maxRequestTimeoutMs,
+    deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
       ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
@@ -1306,6 +1354,7 @@ async function previewWorkspaceEdit({
       ...(workspace_instance_id ? { workspaceInstanceId: workspace_instance_id } : {}),
       path: file_path,
       edits,
+      matching,
     },
     ...(signal ? { signal } : {}),
   });

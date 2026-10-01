@@ -10,10 +10,11 @@ import type { AllMethods, MCPServerDocument, IAgent } from '@librechat/data-sche
 import type { IServerConfigsRepositoryInterface } from '~/mcp/registry/ServerConfigsRepositoryInterface';
 import type { ParsedServerConfig, AddServerResult } from '~/mcp/types';
 import type { ResolvedPrincipal } from '~/types/principal';
-import { requireApiKeyReentryForRebinding } from '~/mcp/registry/binding';
+import { getUserApiKeyVariable, requireApiKeyReentryForRebinding } from '~/mcp/registry/binding';
 import { normalizeLegacyHeaderMaps } from '~/mcp/registry/compat';
 import { MCPOAuthSecretReentryRequiredError } from '~/mcp/errors';
 import { AccessControlService } from '~/acl/accessControlService';
+import { isGeneratedUserApiKeyVariable } from '~/mcp/headers';
 
 /**
  * Regex patterns for credential/env placeholders that should not be allowed in user-provided configs.
@@ -356,9 +357,6 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
       sanitizeConfigHeaderMaps(config),
     );
 
-    /** Transformed user-provided API key config (adds customUserVars and headers) */
-    configToSave = this.transformUserApiKeyConfig(configToSave);
-
     const existingOAuth = existingServer?.config?.oauth;
     const existingOAuthSecret = existingOAuth?.client_secret;
     const preservesOAuthSecret =
@@ -373,6 +371,9 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
         throw new MCPOAuthSecretReentryRequiredError(changedFields);
       }
     }
+
+    /** Transformed user-provided API key config (adds customUserVars and headers) */
+    configToSave = this.transformUserApiKeyConfig(configToSave, existingServer?.config);
 
     /** Encrypted config before storing in database */
     configToSave = await this.encryptConfig(configToSave);
@@ -656,7 +657,10 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
    * @param config - The server config to transform
    * @returns The transformed config with customUserVars and headers set up
    */
-  private transformUserApiKeyConfig(config: ParsedServerConfig): ParsedServerConfig {
+  private transformUserApiKeyConfig(
+    config: ParsedServerConfig,
+    existingConfig?: ParsedServerConfig,
+  ): ParsedServerConfig {
     if (!config.apiKey || config.apiKey.source !== 'user') {
       return config;
     }
@@ -667,18 +671,28 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
         ? result.apiKey!.custom_header || 'X-Api-Key'
         : 'Authorization';
 
+    const variable = getUserApiKeyVariable(config, existingConfig);
+    const placeholder = `{{${variable}}}`;
     let headerValue: string;
     if (result.apiKey!.authorization_type === 'basic') {
-      headerValue = 'Basic {{MCP_API_KEY}}';
+      headerValue = `Basic ${placeholder}`;
     } else if (result.apiKey!.authorization_type === 'bearer') {
-      headerValue = 'Bearer {{MCP_API_KEY}}';
+      headerValue = `Bearer ${placeholder}`;
     } else {
-      headerValue = '{{MCP_API_KEY}}';
+      headerValue = placeholder;
     }
 
-    result.customUserVars = {
+    const customUserVars: NonNullable<ParsedServerConfig['customUserVars']> = {
       ...result.customUserVars,
-      MCP_API_KEY: {
+    };
+    for (const name of Object.keys(customUserVars)) {
+      if (isGeneratedUserApiKeyVariable(name)) {
+        delete customUserVars[name];
+      }
+    }
+    result.customUserVars = {
+      ...customUserVars,
+      [variable]: {
         title: 'API Key',
         description: 'Your API key for this MCP server',
       },

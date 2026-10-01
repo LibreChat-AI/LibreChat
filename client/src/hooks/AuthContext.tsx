@@ -22,9 +22,10 @@ import {
 import type * as t from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
-  SESSION_KEY,
   isSafeRedirect,
   getPostLoginRedirect,
+  dropStoredRedirect,
+  readStoredRedirect,
   clearComposerDraftStorage,
   clearRetainedFileDeletions,
   openFileDeletionRetention,
@@ -38,6 +39,7 @@ import {
 } from '~/data-provider';
 import { resetChatFilterSessionAtom } from '~/components/Conversations/chatFilters';
 import { TAuthConfig, TUserContext, TAuthContext, TResError } from '~/common';
+import { resetFacetsAtom } from '~/components/Conversations/facets';
 import useTimeout from './useTimeout';
 import store from '~/store';
 
@@ -55,6 +57,7 @@ if (import.meta.hot) {
  * path the other was wired into. */
 const endSessionClientState = (): void => {
   getDefaultStore().set(resetChatFilterSessionAtom);
+  getDefaultStore().set(resetFacetsAtom);
   clearRetainedFileDeletions();
   clearComposerDraftStorage();
 };
@@ -224,8 +227,8 @@ const AuthContextProvider = ({
         }
         const { user, token = '' } = data ?? {};
         if (token) {
-          const storedRedirect = sessionStorage.getItem(SESSION_KEY);
-          sessionStorage.removeItem(SESSION_KEY);
+          const storedRedirect = readStoredRedirect();
+          dropStoredRedirect();
           const baseUrl = apiBaseUrl();
           const rawPath = window.location.pathname;
           const strippedPath =

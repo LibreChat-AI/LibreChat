@@ -12,6 +12,7 @@ import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { isMemoryFailureOutput } from './Parts/MemoryCall';
 import { filterAttachmentsForPart } from '~/utils/map';
 import { isBashProgrammaticToolCall } from './routing';
+import { parseCommandOutput } from './Parts/command';
 import { isError } from './ToolOutput';
 
 /**
@@ -36,6 +37,19 @@ export interface ToolMeta {
 
 function hasFailedOutput(output: unknown): boolean {
   return typeof output === 'string' && isError(output);
+}
+
+/** A create_file overwrite displays the edit glyph in its own row. Headers use
+ *  the same identity, without changing the tool name used for labels/counts. */
+export function getToolIconName(
+  name: string,
+  args?: string | Record<string, unknown>,
+  output?: string | null,
+): string {
+  if (name === 'create_file' && output?.startsWith('Updated ')) {
+    return 'edit_file';
+  }
+  return isBashProgrammaticToolCall(name, args) ? Tools.bash_tool : name;
 }
 
 /**
@@ -105,7 +119,7 @@ export function getToolMeta(
      *  agents" on completion even when the child returned no text. */
     const completed = !!tc.output || tc.progress === 1;
     const name = tc.name ?? '';
-    const iconName = isBashProgrammaticToolCall(name, tc.args) ? Tools.bash_tool : name;
+    const iconName = getToolIconName(name, tc.args, tc.output);
     /** Memory tools report failure in prose ("Invalid key ...") that generic
      *  `isError` parsing does not recognize, so `MemoryCall` classifies it with
      *  its own predicate. Reuse that here or a persisted call with no terminal
@@ -122,7 +136,12 @@ export function getToolMeta(
       name === 'set_memory' || name === 'delete_memory'
         ? isMemoryFailureOutput(name, tc.output ?? '') ||
           (ownAttachments ?? []).some((attachment) => attachment[Tools.memory]?.type === 'error')
-        : hasFailedOutput(tc.output);
+        : hasFailedOutput(tc.output) ||
+          /** `BashCall` fails an attached-workspace command that reports a
+           *  non-zero exit; only the server marker says the trailer is real. */
+          (name === Tools.bash_tool &&
+            toolCall.executor === 'attached_workspace' &&
+            parseCommandOutput(tc.output ?? '')?.failed === true);
     /** A backgrounded bash/code task reports its verdict through a
      *  `background_task_status` attachment, not its output: the dispatch step
      *  keeps a benign handle and usually closes as `completed`. The child card
@@ -202,6 +221,8 @@ export function getOutcomeStatus({
 }
 
 export type SpanSummary = SpanOutcome & {
+  /** Actual tool calls, excluding reasoning, labels and sparse slots. */
+  total: number;
   /** Consecutive uses of the last tool, reset by another tool or an agent handoff.
    *  Reasoning and labels describe the work without breaking its sequence. */
   trailingToolCount: number;
@@ -282,6 +303,7 @@ export function summarizeSpan(
   };
   let failed = 0;
   let cancelled = 0;
+  let total = 0;
   let trailingToolCount = 0;
   let trailingTool: string | undefined;
   for (const part of parts) {
@@ -291,6 +313,7 @@ export function summarizeSpan(
     }
     const meta = part == null ? null : metaOf(part);
     if (meta != null) {
+      total += 1;
       /** iconName retains full tool identity (including MCP names), with Bash
        *  wrappers already normalized by the cached metadata resolver. */
       trailingToolCount = meta.iconName === trailingTool ? trailingToolCount + 1 : 1;
@@ -303,5 +326,5 @@ export function summarizeSpan(
       cancelled += 1;
     }
   }
-  return { failed, cancelled, trailingToolCount, metaOf };
+  return { failed, cancelled, total, trailingToolCount, metaOf };
 }

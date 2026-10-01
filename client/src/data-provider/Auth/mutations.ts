@@ -129,6 +129,29 @@ export const useUpdateUserPreferencesMutation = (
   );
 };
 
+export const useRequestEmailChangeMutation = (
+  options?: t.MutationOptions<t.TEmailChangeResponse, t.TRequestEmailChange>,
+): UseMutationResult<t.TEmailChangeResponse, unknown, t.TRequestEmailChange, unknown> => {
+  return useMutation({
+    mutationFn: (payload: t.TRequestEmailChange) => dataService.requestEmailChange(payload),
+    ...(options ?? {}),
+  });
+};
+
+export const useConfirmEmailChangeMutation = (
+  options?: t.MutationOptions<t.TEmailChangeResponse, t.TConfirmEmailChange>,
+): UseMutationResult<t.TEmailChangeResponse, unknown, t.TConfirmEmailChange, unknown> => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: t.TConfirmEmailChange) => dataService.confirmEmailChange(payload),
+    ...(options ?? {}),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries([QueryKeys.user]);
+      options?.onSuccess?.(...args);
+    },
+  });
+};
+
 export const useEnableTwoFactorMutation = (): UseMutationResult<
   t.TEnable2FAResponse,
   unknown,
@@ -213,6 +236,62 @@ export const useVerifyTwoFactorTempMutation = (
       onSuccess: (data, ...args) => {
         queryClient.setQueryData([QueryKeys.user, '2fa'], data);
         options?.onSuccess?.(data, ...args);
+      },
+    },
+  );
+};
+
+/* passkeys */
+export const useRegisterPasskeyMutation = (): UseMutationResult<
+  t.TPasskeyResponse,
+  unknown,
+  t.TVerifyPasskeyRegistrationRequest,
+  unknown
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.registerPasskey],
+    (payload: t.TVerifyPasskeyRegistrationRequest) =>
+      dataService.verifyPasskeyRegistration(payload),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries([QueryKeys.passkeys]);
+      },
+    },
+  );
+};
+
+export const useRenamePasskeyMutation = (): UseMutationResult<
+  t.TPasskeyResponse,
+  unknown,
+  t.TRenamePasskeyRequest,
+  unknown
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.renamePasskey],
+    (payload: t.TRenamePasskeyRequest) => dataService.renamePasskey(payload),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries([QueryKeys.passkeys]);
+      },
+    },
+  );
+};
+
+export const useDeletePasskeyMutation = (): UseMutationResult<
+  { message: string },
+  unknown,
+  t.TDeletePasskeyRequest,
+  unknown
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.deletePasskey],
+    (payload: t.TDeletePasskeyRequest) => dataService.deletePasskey(payload),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries([QueryKeys.passkeys]);
       },
     },
   );

@@ -1,0 +1,460 @@
+import React from 'react';
+import { RecoilRoot } from 'recoil';
+import { MemoryRouter } from 'react-router-dom';
+import { Provider as JotaiProvider, createStore } from 'jotai';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import type { Agents, TConversation, TMessage } from 'librechat-data-provider';
+import type { PendingSteer } from '~/store/families';
+import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
+import { hasLiveRunPause } from '~/hooks/Chat/useSteering';
+import { applyPendingAction } from '~/utils/approval';
+import PendingSteers from '../PendingSteers';
+import store from '~/store';
+
+const mockRetry = jest.fn();
+const mockSendAsNew = jest.fn();
+const mockEscalate = jest.fn();
+const mockMoveToQueue = jest.fn();
+const mockRehome = jest.fn(() => 'composer' as const);
+const mockShowToast = jest.fn();
+
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useToastContext: () => ({ showToast: mockShowToast }),
+}));
+
+jest.mock('~/hooks', () => ({
+  useLocalize: () => (key: string) => key,
+}));
+
+jest.mock('~/hooks/Chat/useSteerEscalate', () => ({
+  __esModule: true,
+  default: () => mockEscalate,
+}));
+
+jest.mock('~/hooks/Chat/useSteerRecovery', () => ({
+  __esModule: true,
+  default: () => ({ retry: mockRetry, sendAsNew: mockSendAsNew }),
+}));
+
+jest.mock('~/hooks/Chat/useSteerCancel', () => ({
+  __esModule: true,
+  default: () => jest.fn(),
+  useSteerMoveToQueue: () => mockMoveToQueue,
+  useSteerRehome: () => mockRehome,
+}));
+
+jest.mock('../SteerPart', () => ({
+  __esModule: true,
+  default: ({ steer }: { steer: string }) => <div data-testid="steer-part">{steer}</div>,
+}));
+
+const CONVO_ID = 'convo-1';
+
+const pending = (over: Partial<PendingSteer> = {}): PendingSteer => ({
+  steerId: 's1',
+  text: 'change of plan',
+  status: 'sending',
+  createdAt: 1,
+  ...over,
+});
+
+function renderPending(
+  steers: PendingSteer[],
+  messages?: TMessage[],
+  activeSiblingIndex?: number,
+  /** Split view: this tree renders in `index`, while pane 0 shows another chat. */
+  pane?: { index: number; siblingKeyId: string; otherConversationId: string },
+  /** Pane 0 still names the previous chat while this one renders from cache. */
+  stalePaneConversationId?: string,
+) {
+  /* The escalation control resolves the cache through the branch-aware
+     latest-message hook, using the same providers the chat view supplies. */
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, staleTime: Infinity },
+      mutations: { retry: false },
+    },
+  });
+  queryClient.setQueryData([QueryKeys.messages, CONVO_ID], messages ?? []);
+  const jotaiStore = createStore();
+  if (activeSiblingIndex != null) {
+    jotaiStore.set(
+      siblingIdxFamily(
+        siblingKey(
+          pane?.siblingKeyId ?? (stalePaneConversationId != null ? CONVO_ID : 'root-user'),
+        ),
+      ),
+      activeSiblingIndex,
+    );
+  }
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <JotaiProvider store={jotaiStore}>
+          <RecoilRoot
+            initializeState={({ set }) => {
+              set(store.conversationByIndex(0), {
+                conversationId: pane?.otherConversationId ?? stalePaneConversationId ?? CONVO_ID,
+              } as TConversation);
+              if (pane != null) {
+                set(store.conversationByIndex(pane.index), {
+                  conversationId: CONVO_ID,
+                } as TConversation);
+              }
+              set(store.pendingSteersByConvoId(CONVO_ID), steers);
+            }}
+          >
+            <PendingSteers conversationId={CONVO_ID} index={pane?.index} />
+          </RecoilRoot>
+        </JotaiProvider>
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+}
+
+describe('PendingSteers', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockMoveToQueue.mockResolvedValue('reclaimed');
+  });
+
+  it('renders nothing with no pending steers', () => {
+    const { container } = renderPending([]);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('renders a dimmed steer part with sending status', () => {
+    renderPending([pending()]);
+    expect(screen.getByTestId('steer-part')).toHaveTextContent('change of plan');
+    expect(screen.getByText('com_ui_sending')).toBeInTheDocument();
+  });
+
+  it('offers retry and send-as-new on failure', () => {
+    renderPending([pending({ status: 'failed' })]);
+    expect(screen.getByText('com_ui_steer_failed_inline')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_retry')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_send_as_new')).toBeInTheDocument();
+  });
+
+  it('shows the quote count carried by a failed steer', () => {
+    renderPending([pending({ status: 'failed', quotes: ['first', 'second'] })]);
+
+    expect(screen.getByText('2')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByText('com_ui_queued_quote_count')).toHaveClass('sr-only');
+  });
+
+  it('locks recovery actions while a protocol-v1 delivery is uncertain', () => {
+    renderPending([
+      pending({
+        status: 'failed',
+        deliveryUncertain: true,
+        generationProtocolVersion: 1,
+      }),
+    ]);
+
+    expect(screen.getByText('com_ui_steer_delivery_uncertain')).toBeInTheDocument();
+    expect(screen.queryByText('com_ui_retry')).not.toBeInTheDocument();
+    expect(screen.queryByText('com_ui_send_as_new')).not.toBeInTheDocument();
+  });
+
+  it('offers only same-id retry for an uncertain protocol-v2 delivery', () => {
+    renderPending([
+      pending({
+        status: 'failed',
+        deliveryUncertain: true,
+        generationProtocolVersion: 2,
+      }),
+    ]);
+
+    expect(screen.getByText('com_ui_steer_delivery_uncertain')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_retry')).toBeInTheDocument();
+    expect(screen.queryByText('com_ui_send_as_new')).not.toBeInTheDocument();
+  });
+
+  it('reclaims an acknowledged steer before moving it to the queue', async () => {
+    const steer = pending({ status: 'pending', steerId: 's-ack' });
+    renderPending([steer]);
+
+    fireEvent.click(screen.getByText('com_ui_convert_to_queue'));
+
+    await waitFor(() => expect(mockMoveToQueue).toHaveBeenCalledWith(steer));
+  });
+
+  it('reports when a steer reached the agent before it could be reclaimed', async () => {
+    mockMoveToQueue.mockResolvedValue('applied');
+    renderPending([pending({ status: 'pending' })]);
+
+    fireEvent.click(screen.getByText('com_ui_convert_to_queue'));
+
+    await waitFor(() =>
+      expect(mockShowToast).toHaveBeenCalledWith({
+        message: 'com_ui_steer_already_applied',
+        status: 'info',
+      }),
+    );
+  });
+
+  it('retries the failed steer by id', () => {
+    renderPending([pending({ status: 'failed', steerId: 's-failed' })]);
+    fireEvent.click(screen.getByText('com_ui_retry'));
+    expect(mockRetry).toHaveBeenCalledWith('s-failed');
+    expect(mockSendAsNew).not.toHaveBeenCalled();
+  });
+
+  it('sends the failed steer as new by id', () => {
+    renderPending([pending({ status: 'failed', steerId: 's-failed' })]);
+    fireEvent.click(screen.getByText('com_ui_send_as_new'));
+    expect(mockSendAsNew).toHaveBeenCalledWith('s-failed');
+    expect(mockRetry).not.toHaveBeenCalled();
+  });
+
+  it('returns a definitively failed steer whole so it can be corrected', () => {
+    const steer = pending({ status: 'failed', steerId: 's-failed', quotes: ['excerpt'] });
+    renderPending([steer]);
+    fireEvent.click(screen.getByText('com_ui_edit'));
+    /* Queued as a fallback it must wait for an explicit send: the server
+       refused this payload, so the run-end drain must not send it anyway. */
+    expect(mockRehome).toHaveBeenCalledWith(steer, { rejectedByServer: true });
+    expect(mockSendAsNew).not.toHaveBeenCalled();
+    expect(mockRetry).not.toHaveBeenCalled();
+  });
+
+  /* An uncertain delivery may still be held by the server, so every action that
+     assumes the words are the client's again stays hidden, editing included. */
+  it('withholds editing while delivery is uncertain', () => {
+    renderPending([pending({ status: 'failed', deliveryUncertain: true })]);
+    expect(screen.queryByText('com_ui_edit')).not.toBeInTheDocument();
+  });
+
+  /* The escalation control is the in-thread half of the `escalateSteer`
+     shortcut: it only exists on a steer the server can still be asked to
+     interrupt, so the shortcut never aims at a row that cannot act. */
+  describe('interrupt escalation', () => {
+    it('offers escalation on an acknowledged steer', () => {
+      renderPending([pending({ status: 'pending', steerId: 's-ack' })]);
+      expect(screen.getByTestId('steer-escalate-now')).toBeEnabled();
+    });
+
+    it('arms the steer by id, carrying its own generation', () => {
+      renderPending([pending({ status: 'pending', steerId: 's-ack', generationCreatedAt: 4141 })]);
+      fireEvent.click(screen.getByTestId('steer-escalate-now'));
+      expect(mockEscalate).toHaveBeenCalledWith(
+        {
+          steerId: 's-ack',
+          generationCreatedAt: 4141,
+        },
+        expect.any(Function),
+      );
+    });
+
+    /* Arming removes the control that was just activated, so a keyboard user
+       would be dropped on the document body in the middle of the thread. */
+    it('moves focus to the row`s cancel action once the arm is confirmed', () => {
+      renderPending([pending({ status: 'pending', steerId: 's-ack' })]);
+      fireEvent.click(screen.getByTestId('steer-escalate-now'));
+
+      const onArmed = mockEscalate.mock.calls[0][1] as () => void;
+      act(() => {
+        onArmed();
+      });
+
+      expect(screen.getByRole('button', { name: 'com_ui_cancel' })).toHaveFocus();
+    });
+
+    it.each([
+      ['still sending, so it has no server id to arm', { status: 'sending' as const }],
+      ['already interrupting', { status: 'pending' as const, preempt: true }],
+      ['failed, where retry is the offer instead', { status: 'failed' as const }],
+    ])('offers nothing on a steer that is %s', (_label, over) => {
+      renderPending([pending(over)]);
+      expect(screen.queryByTestId('steer-escalate-now')).not.toBeInTheDocument();
+    });
+
+    /* One interrupt at a time: a second arm would seal the same run twice. */
+    it('disables escalation while another steer is already interrupting', () => {
+      renderPending([
+        pending({ status: 'pending', steerId: 's-arming', preempt: true }),
+        pending({ status: 'pending', steerId: 's-other' }),
+      ]);
+      expect(screen.getByTestId('steer-escalate-now')).toBeDisabled();
+    });
+
+    /* Both an unresolved tool approval and a live `ask_user_question` suspend
+       the generation while keeping its submission slot occupied, so an arm
+       would be refused either way. Gating on approvals alone left this control
+       enabled through a question while the composer correctly refused. */
+    it('disables escalation while the run is paused on a question', () => {
+      const askAction = {
+        actionId: 'a1',
+        streamId: 's1',
+        createdAt: 0,
+        payload: { type: 'ask_user_question', question: { question: 'Which one?' } },
+      } as unknown as Agents.PendingAction;
+      const paused = applyPendingAction(
+        {
+          messageId: 'm1',
+          parentMessageId: 'root-user',
+          conversationId: CONVO_ID,
+          isCreatedByUser: false,
+          content: [],
+        } as unknown as TMessage,
+        askAction,
+      );
+      expect(hasLiveRunPause([paused])).toBe(true);
+      renderPending([pending({ status: 'pending', steerId: 's-paused' })], [paused]);
+      expect(screen.getByTestId('steer-escalate-now')).toBeDisabled();
+    });
+
+    it('ignores a pause on an inactive sibling branch', () => {
+      const root = {
+        messageId: 'root-user',
+        parentMessageId: '',
+        conversationId: CONVO_ID,
+        isCreatedByUser: true,
+        content: [],
+      } as unknown as TMessage;
+      const active = {
+        messageId: 'active',
+        parentMessageId: root.messageId,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [],
+      } as unknown as TMessage;
+      const inactive = {
+        messageId: 'inactive',
+        parentMessageId: root.messageId,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: {
+              id: 'inactive-call',
+              name: 'shell',
+              approval: { actionId: 'inactive' },
+              output: '',
+            },
+          },
+        ],
+      } as unknown as TMessage;
+
+      renderPending([pending({ status: 'pending' })], [root, active, inactive], 1);
+      expect(screen.getByTestId('steer-escalate-now')).toBeEnabled();
+    });
+
+    it('disables escalation for a pause on the active sibling branch', () => {
+      const root = {
+        messageId: 'root-user',
+        parentMessageId: '',
+        conversationId: CONVO_ID,
+        isCreatedByUser: true,
+        content: [],
+      } as unknown as TMessage;
+      const active = {
+        messageId: 'active-approval',
+        parentMessageId: root.messageId,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: {
+              id: 'active-call',
+              name: 'shell',
+              approval: { actionId: 'active' },
+              output: '',
+            },
+          },
+        ],
+      } as unknown as TMessage;
+      const inactive = {
+        messageId: 'inactive-no-pause',
+        parentMessageId: root.messageId,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [],
+      } as unknown as TMessage;
+
+      renderPending([pending({ status: 'pending' })], [root, active, inactive], 1);
+      expect(screen.getByTestId('steer-escalate-now')).toBeDisabled();
+    });
+
+    it('reads the pause from the branch its own pane has selected', () => {
+      const paused = {
+        messageId: 'root-paused',
+        parentMessageId: Constants.NO_PARENT,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: {
+              id: 'root-call',
+              name: 'shell',
+              approval: { actionId: 'root' },
+              output: '',
+            },
+          },
+        ],
+      } as unknown as TMessage;
+      const plain = {
+        messageId: 'root-plain',
+        parentMessageId: Constants.NO_PARENT,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [],
+      } as unknown as TMessage;
+
+      renderPending([pending({ status: 'pending' })], [paused, plain], 1, {
+        index: 1,
+        siblingKeyId: CONVO_ID,
+        otherConversationId: 'other-conversation',
+      });
+      expect(screen.getByTestId('steer-escalate-now')).toBeDisabled();
+    });
+
+    it('keeps escalation off until the pane owns the rendered conversation', () => {
+      const plain = {
+        messageId: 'root-plain',
+        parentMessageId: Constants.NO_PARENT,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [],
+      } as unknown as TMessage;
+      const paused = {
+        messageId: 'root-paused',
+        parentMessageId: Constants.NO_PARENT,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: {
+              id: 'root-call',
+              name: 'shell',
+              approval: { actionId: 'root' },
+              output: '',
+            },
+          },
+        ],
+      } as unknown as TMessage;
+
+      renderPending(
+        [pending({ status: 'pending' })],
+        [paused, plain],
+        1,
+        undefined,
+        'previous-conversation',
+      );
+      expect(screen.getByTestId('steer-escalate-now')).toBeDisabled();
+    });
+
+    it('labels a steer that is already interrupting', () => {
+      renderPending([pending({ status: 'pending', preempt: true })]);
+      expect(screen.getByText('com_ui_steer_in_flight_preempt')).toBeInTheDocument();
+    });
+  });
+});

@@ -7,6 +7,8 @@ import {
   ArrowRightLeft,
   FileSearch,
   FileText,
+  FilePlus2,
+  FilePenLine,
   MessageCircleQuestion,
   ScrollText,
   Brain,
@@ -32,6 +34,8 @@ export type ToolIconType =
   | 'file_search'
   | 'skill'
   | 'read_file'
+  | 'create_file'
+  | 'edit_file'
   | 'bash_tool'
   | 'background_tasks'
   | 'ask_user_question'
@@ -49,6 +53,8 @@ const ICON_MAP: Record<ToolIconType, React.ComponentType<{ className?: string }>
   file_search: FileSearch,
   skill: ScrollText,
   read_file: FileText,
+  create_file: FilePlus2,
+  edit_file: FilePenLine,
   bash_tool: BashIcon,
   background_tasks: ListChecks,
   ask_user_question: MessageCircleQuestion,
@@ -87,6 +93,9 @@ export function getToolIconType(name: string): ToolIconType {
   }
   if (name === 'read_file') {
     return 'read_file';
+  }
+  if (name === 'create_file' || name === 'edit_file') {
+    return name;
   }
   if (name === 'bash_tool' || name === Constants.BASH_PROGRAMMATIC_TOOL_CALLING) {
     return 'bash_tool';
@@ -132,7 +141,7 @@ export default function ToolIcon({ type, iconUrl, isAnimating = false, className
         src={iconUrl}
         alt=""
         className={cn(
-          'size-4 shrink-0 rounded-full object-cover text-text-secondary',
+          'text-text-secondary size-4 shrink-0 rounded-full object-cover',
           isAnimating && 'animate-pulse',
           className,
         )}
@@ -144,7 +153,7 @@ export default function ToolIcon({ type, iconUrl, isAnimating = false, className
   return (
     <IconComponent
       className={cn(
-        'size-4 shrink-0 text-text-secondary',
+        'text-text-secondary size-4 shrink-0',
         isAnimating && 'animate-pulse',
         className,
       )}

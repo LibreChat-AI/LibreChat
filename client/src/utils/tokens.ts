@@ -94,6 +94,8 @@ export interface BranchTotals {
   containsAnchor: boolean;
   /** Provider usage/cost summed along the active branch */
   usage: BranchUsage;
+  /** Recorded usage of the selected response, never an earlier ancestor's usage. */
+  lastTurnUsage?: BranchUsage;
   /** Compacted-context baseline from the deepest summarized response on the
    *  branch (0 if none). The branch walk stops there, so `input`/`output` cover
    *  only the post-summary messages; the estimate adds this to avoid counting
@@ -429,6 +431,7 @@ export function sumBranch(
    *  message total holding tokens whose tool share had been removed, so both
    *  tail figures are zero for a counted tail. */
   const tailEntry = index.get(tailId);
+  const lastTurnUsage = tailEntry?.isCreatedByUser === false ? tailEntry.usage : undefined;
   const tailCounted = tailEntry != null && tailEntry.tokenCount > 0;
   const tailEstTokens = tailCounted ? 0 : (tailEntry?.estTokens ?? 0);
   const tailEstToolTokens = tailCounted
@@ -485,7 +488,15 @@ export function sumBranch(
     currentId = entry.parentMessageId;
   }
 
-  return { ...totals, tailEstTokens, tailEstToolTokens, tailId, usage, summaryBaseline };
+  return {
+    ...totals,
+    tailEstTokens,
+    tailEstToolTokens,
+    tailId,
+    usage,
+    lastTurnUsage,
+    summaryBaseline,
+  };
 }
 
 /**
@@ -547,7 +558,7 @@ export function prunedBranchTokens(
 /**
  * One persisted snapshot's used-context reading, with the basis it was measured
  * on. `remaining` is the authoritative pre-invoke figure (`budget − remaining`);
- * `breakdown` is the instruction+messages sum a snapshot saved before
+ * `breakdown` is the instructions+summary+messages sum a snapshot saved before
  * `remainingContextTokens` existed still supports. The two measure different
  * quantities (the backend's remaining covers content the breakdown does not),
  * so a growth delta may only compare readings of the same basis.
@@ -615,8 +626,8 @@ export function collectAnchorSeries(
         snapshot.contextBudget ?? snapshot.breakdown?.maxContextTokens,
       );
       const configuration = snapshotConfiguration(snapshot);
-      /** Same precedence as the render path's `baseUsed`: the backend's
-       *  remaining headroom when it was saved, else the breakdown sum. */
+      /** Runway growth keeps the raw remaining basis, even if the gauge floors
+       *  that reading to the breakdown; older snapshots use all breakdown parts. */
       if (snapshot.remainingContextTokens != null && budget > 0) {
         const remaining = normalizeTokenCount(snapshot.remainingContextTokens);
         series.push({ used: Math.max(0, budget - remaining), basis: 'remaining', configuration });
@@ -624,7 +635,9 @@ export function collectAnchorSeries(
         const used =
           normalizeTokenCount(
             snapshot.effectiveInstructionTokens ?? snapshot.breakdown?.instructionTokens,
-          ) + normalizeTokenCount(snapshot.breakdown?.messageTokens);
+          ) +
+          normalizeTokenCount(snapshot.breakdown?.summaryTokens) +
+          normalizeTokenCount(snapshot.breakdown?.messageTokens);
         if (used > 0) {
           series.push({ used, basis: 'breakdown', configuration });
         }

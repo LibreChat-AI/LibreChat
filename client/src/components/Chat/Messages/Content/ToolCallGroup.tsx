@@ -1,8 +1,7 @@
 import { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
-import { Button } from '@librechat/client';
-import { ChevronDown, MessageCircleQuestion, Users } from 'lucide-react';
 import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
+import { ChevronDown, ListChecks, MessageCircleQuestion, Users } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { PartWithIndex } from './ParallelContent';
 import type { ToolMeta } from './outcome';
@@ -28,6 +27,7 @@ import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from './rows';
+import { MCPAppViews } from '~/components/MCPUIResource';
 import { StackedToolIcons } from './ToolOutput';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
@@ -63,6 +63,8 @@ interface ToolCallGroupProps {
    *  blocks the run, and hiding that card behind a second collapsed
    *  disclosure would bury the action the run is waiting on. */
   withinActivityPhase?: boolean;
+  /** The phase header owns the failure pill even while its live groups stay expandable. */
+  parentPhaseOwnsFailurePill?: boolean;
 }
 
 export type ToolCallGroupExpansionState = {
@@ -83,6 +85,7 @@ export default function ToolCallGroup({
   onExpansionChange,
   labelPart,
   withinActivityPhase = false,
+  parentPhaseOwnsFailurePill = false,
 }: ToolCallGroupProps) {
   const localize = useLocalize();
   const mcpIconMap = useMCPIconMap();
@@ -144,6 +147,7 @@ export default function ToolCallGroup({
     let fileSearchCount = 0;
     let subagentCount = 0;
     let askQuestionCount = 0;
+    let taskCheckCount = 0;
     let failedCount = 0;
     let cancelledCount = 0;
 
@@ -156,6 +160,8 @@ export default function ToolCallGroup({
         subagentCount++;
       } else if (tool.name === ASK_USER_QUESTION) {
         askQuestionCount++;
+      } else if (tool.name === Constants.CHECK_BACKGROUND_TASK) {
+        taskCheckCount++;
       }
       if (tool.failed) {
         failedCount++;
@@ -183,6 +189,7 @@ export default function ToolCallGroup({
       fileSearchCount,
       subagentCount,
       askQuestionCount,
+      taskCheckCount,
       failedCount,
       cancelledCount,
       toolNameSummary,
@@ -215,6 +222,8 @@ export default function ToolCallGroup({
    *  tools: ask_user_question") with a question glyph. */
   const allAskQuestions =
     activitySummary.askQuestionCount > 0 && activitySummary.askQuestionCount === count;
+  const allTaskChecks =
+    activitySummary.taskCheckCount > 0 && activitySummary.taskCheckCount === count;
   /**
    * An answered question is the group's completion proof. The `tool_call`
    * part carries no output until the turn finalizes, so `allCompleted` stays
@@ -405,6 +414,11 @@ export default function ToolCallGroup({
         ? localize('com_ui_asked_n_questions', { 0: String(count) })
         : localize('com_ui_asking_n_questions', { 0: String(count) });
     }
+    if (allTaskChecks) {
+      return localize(
+        groupDone ? 'com_ui_background_tasks_checked' : 'com_ui_background_tasks_checking',
+      );
+    }
     if (activitySummary.webSearchCount === count) {
       return localize(groupDone ? 'com_ui_web_searched' : 'com_ui_web_searching');
     }
@@ -430,17 +444,17 @@ export default function ToolCallGroup({
   const groupDetailParts: string[] = [];
   if (searchesOnly && count > 1) {
     groupDetailParts.push(localize('com_ui_n_searches', { 0: String(count) }));
+  } else if (allTaskChecks && count > 1) {
+    groupDetailParts.push(localize('com_ui_background_tasks_n_checks', { 0: String(count) }));
   } else if (!allSubagents && !allAskQuestions && count > 1) {
     groupDetailParts.push(activitySummary.toolNameSummary);
   }
   const failedNote =
     activitySummary.failedCount > 0
-      ? localize(
-          activitySummary.failedCount === 1
-            ? 'com_ui_one_action_failed'
-            : 'com_ui_n_actions_failed',
-          { 0: String(activitySummary.failedCount) },
-        )
+      ? localize('com_ui_n_of_n_actions_failed', {
+          0: String(activitySummary.failedCount),
+          1: String(count),
+        })
       : '';
   if (failedNote !== '') {
     groupDetailParts.push(failedNote);
@@ -466,12 +480,18 @@ export default function ToolCallGroup({
    *  the header, which is also the way to the failed rows; the text keeps it
    *  only for the accessible name. Inside a phase the pill is the phase's,
    *  so the group's detail says it in text. */
-  const showsFailurePill = !withinActivityPhase && activitySummary.failedCount > 0;
+  const showsFailurePill =
+    !withinActivityPhase && !parentPhaseOwnsFailurePill && activitySummary.failedCount > 0;
   const visibleGroupDetail = showsFailurePill
     ? groupDetailParts.filter((part) => part && part !== failedNote).join(' · ')
     : groupDetail;
   /** Single category glyph for homogeneous groups (else StackedToolIcons). */
-  const CategoryIcon = allSubagents ? Users : MessageCircleQuestion;
+  let CategoryIcon = ListChecks;
+  if (allSubagents) {
+    CategoryIcon = Users;
+  } else if (allAskQuestions) {
+    CategoryIcon = MessageCircleQuestion;
+  }
   const iconStatus = getOutcomeStatus({
     failed: activityFailed ? 1 : activitySummary.failedCount,
     cancelled: activitySummary.cancelledCount,
@@ -494,13 +514,12 @@ export default function ToolCallGroup({
   }, [hasActiveToolCall, userOverride, suppressAutoExpand]);
 
   return (
-    <div className="mb-2 mt-1" ref={rootRef}>
+    <div className="mt-1 mb-2" ref={rootRef}>
       <div className="flex w-full items-center gap-2">
-        <Button
-          variant="ghost"
+        <button
           type="button"
           className={cn(
-            'inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-text-secondary hover:bg-transparent hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy focus-visible:ring-offset-0',
+            'text-text-secondary hover:text-text-secondary focus-visible:ring-border-heavy inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none',
             /** An open header is the title of the rows under it, so it is the
              *  one line in the fold set in the primary colour. */
             isExpanded && 'text-text-primary hover:text-text-primary',
@@ -509,17 +528,14 @@ export default function ToolCallGroup({
           aria-expanded={isExpanded}
           aria-label={groupAriaLabel}
         >
-          {iconStatus == null && (allSubagents || allAskQuestions) ? (
-            /** Homogeneous category groups get a single category glyph instead
-             *  of StackedToolIcons' generic wrenches: a Users glyph for
-             *  subagents, a question glyph for ask_user_question — matching
-             *  their individual card headers and reading as the category
-             *  rather than "tools". */
+          {iconStatus == null && (allSubagents || allAskQuestions || allTaskChecks) ? (
+            /** Homogeneous categories keep the same glyph as their individual
+             *  cards instead of stacking identical tool icons. */
             <div
               className={cn(
                 ROW_GLYPH_SLOT,
                 'text-text-secondary',
-                isGroupLive && 'animate-pulse text-text-primary',
+                isGroupLive && 'text-text-primary animate-pulse',
               )}
               aria-hidden="true"
             >
@@ -549,7 +565,7 @@ export default function ToolCallGroup({
           </span>
           {visibleGroupDetail && (
             <span
-              className="min-w-0 max-w-[40%] truncate text-xs font-normal text-text-secondary"
+              className="text-text-secondary max-w-[40%] min-w-0 truncate text-xs font-normal"
               title={visibleGroupDetail}
             >
               · {visibleGroupDetail}
@@ -557,14 +573,18 @@ export default function ToolCallGroup({
           )}
           <ChevronDown
             className={cn(
-              'size-4 shrink-0 text-text-secondary transition-transform duration-200 ease-out',
+              'text-text-secondary size-4 shrink-0 transition-transform duration-200 ease-out',
               isExpanded && 'rotate-180',
             )}
             aria-hidden="true"
           />
-        </Button>
-        {!withinActivityPhase && (
-          <FailedRevealPill count={activitySummary.failedCount} onReveal={handleRevealFailed} />
+        </button>
+        {!withinActivityPhase && !parentPhaseOwnsFailurePill && (
+          <FailedRevealPill
+            count={activitySummary.failedCount}
+            total={count}
+            onReveal={handleRevealFailed}
+          />
         )}
       </div>
       <div
@@ -627,7 +647,7 @@ export default function ToolCallGroup({
                 </div>
               </FailedRevealContext.Provider>
             </ToolAuthWarningContext.Provider>
-            {hasPendingAuthRequest && <ToolAuthWarning className="mb-1 mt-2.5" />}
+            {hasPendingAuthRequest && <ToolAuthWarning className="mt-2.5 mb-1" />}
           </div>
         )}
       </div>
@@ -635,6 +655,7 @@ export default function ToolCallGroup({
         <>
           <SearchVerticals attachments={groupAttachments} />
           <AttachmentGroup attachments={groupAttachments} />
+          <MCPAppViews attachments={groupAttachments} />
         </>
       )}
     </div>

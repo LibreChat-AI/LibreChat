@@ -85,7 +85,6 @@ const { getAppConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const optionalJwtAuth = require('./middleware/optionalJwtAuth');
 const noIndex = require('./middleware/noIndex');
-const routes = require('./routes');
 const agentEventMethods = require('~/models');
 
 /** Route admin file-config MIME patterns through a linear-time engine (ReDoS-safe) on upload. */
@@ -517,6 +516,10 @@ if (cluster.isMaster) {
       await updateInterfacePerms({ appConfig, getRoleByName, updateAccessPermissions });
     });
 
+    /* Route modules build their rate limiters as they load, so they load only after the
+     * startup checks have applied `rateLimits` from librechat.yaml. */
+    const routes = require('./routes');
+
     /** Load index.html for SPA serving */
     const indexPath = path.join(appConfig.paths.dist, 'index.html');
     let indexHTML = fs.readFileSync(indexPath, 'utf8');
@@ -539,7 +542,6 @@ if (cluster.isMaster) {
        so the answer is the deployment's base configuration, like index.js. */
     indexHTML = injectConfiguredFooterBootstrap(indexHTML, {
       customFooter: process.env.CUSTOM_FOOTER,
-      interfaceConfig: baseAppConfig?.interfaceConfig,
     });
 
     const cspPolicy = createCspPolicy();

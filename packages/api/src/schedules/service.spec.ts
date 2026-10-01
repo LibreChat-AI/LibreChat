@@ -1,7 +1,9 @@
 import { logger } from '@librechat/data-schemas';
+import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { SchedulesServiceDeps } from './service';
+import { createSchedulesService, recordScheduledMCPToolAuthFailure } from './service';
+import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { isShutdownInProgress } from '../app/shutdown';
-import { createSchedulesService } from './service';
 
 /** Swappable per test: null keeps the no-job-store harness the drain tests rely on. */
 let mockJobStore: { getJob: jest.Mock; deleteJob?: jest.Mock } | null = null;
@@ -55,6 +57,7 @@ function makeService(
     countActiveRuns: jest.fn(async () => 0),
     requestRunAbort: jest.fn(async () => true),
     getScheduleRunAbortState: jest.fn(async () => null),
+    recordMCPToolAuthFailure: jest.fn(async () => true),
     markRunAbortPersisted: jest.fn(async () => undefined),
     recordRunOutcome,
   };
@@ -721,6 +724,195 @@ describe('erase-on-settle', () => {
       status: 'requires_action',
     });
     expect(methods.eraseScheduleIfDrained).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduled OBO tool failure settlement', () => {
+  const occurrence = '2026-09-09T12:00:00.000Z';
+  const failure = {
+    server: 'Graph',
+    status: 'mcp_configuration_missing' as const,
+    detail: 'unattended_auth_required' as const,
+  };
+
+  function setup() {
+    const service = makeService(jest.fn<Promise<ActiveRun[]>, [string]>(async () => []));
+    const methods = service.engineDeps.methods as unknown as {
+      getScheduleById: jest.Mock;
+      eraseScheduleIfDrained: jest.Mock;
+      getScheduleRunAbortState: jest.Mock;
+      recordMCPToolAuthFailure: jest.Mock;
+      recordRunOutcome: jest.Mock;
+    };
+    methods.getScheduleById = jest.fn(async () => null);
+    methods.eraseScheduleIfDrained = jest.fn(async () => false);
+    methods.getScheduleRunAbortState = jest.fn(async () => ({ status: 'started', mcp: [failure] }));
+    const store = {
+      getJob: jest.fn(async () => ({
+        createdAt: 42,
+        scheduleId: 's1',
+        scheduledFor: occurrence,
+        conversationId: 'c1',
+        userId: 'owner',
+        tenantId: 'tenant-1',
+        status: 'running',
+      })),
+    };
+    mockJobStore = store;
+    return { service, methods, store };
+  }
+
+  it('does not initialize the schedule service for unrelated MCP errors', async () => {
+    const getRecorder = jest.fn();
+    await expect(
+      recordScheduledMCPToolAuthFailure(
+        {
+          error: new Error('Ordinary MCP failure'),
+          streamId: 'c1',
+          jobCreatedAt: 42,
+          userId: 'owner',
+          serverName: 'Graph',
+        },
+        getRecorder,
+      ),
+    ).resolves.toBe(false);
+    expect(getRecorder).not.toHaveBeenCalled();
+  });
+
+  it.each(['job lookup', 'run write'] as const)(
+    'keeps receipt persistence best-effort when the %s fails',
+    async (failurePoint) => {
+      const { service, methods, store } = setup();
+      const persistenceError = new Error('Storage temporarily unavailable');
+      if (failurePoint === 'job lookup') {
+        store.getJob.mockRejectedValueOnce(persistenceError);
+      } else {
+        methods.recordMCPToolAuthFailure.mockRejectedValueOnce(persistenceError);
+      }
+      const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+      const missing = new OboTokenResolutionError('missing_upstream_provider', 'No credentials');
+      const input = {
+        error: missing,
+        streamId: 'c1',
+        jobCreatedAt: 42,
+        userId: 'owner',
+        serverName: 'Graph',
+      };
+
+      await expect(
+        recordScheduledMCPToolAuthFailure(input, () => service.recordMCPToolAuthFailure),
+      ).resolves.toBe(false);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('could not persist'),
+        persistenceError,
+      );
+      warn.mockRestore();
+    },
+  );
+
+  it('records a typed tool failure only for the matching scheduled generation and owner', async () => {
+    const { service, methods, store } = setup();
+    const source = new OboTokenResolutionError('missing_upstream_provider', 'No credentials');
+    const error = Object.assign(new McpError(ErrorCode.InternalError, 'OBO failed'), {
+      cause: source,
+    });
+    const input = { error, streamId: 'c1', jobCreatedAt: 42, userId: 'owner', serverName: 'Graph' };
+    await expect(service.recordMCPToolAuthFailure(input)).resolves.toBe(true);
+    expect(methods.recordMCPToolAuthFailure).toHaveBeenCalledWith({
+      scheduleId: 's1',
+      scheduledFor: new Date(occurrence),
+      conversationId: 'c1',
+      tenantId: 'tenant-1',
+      server: 'Graph',
+    });
+    expect(store.getJob).toHaveBeenCalledWith('c1');
+
+    for (const wrong of [{ jobCreatedAt: 43 }, { userId: 'another' }]) {
+      await expect(service.recordMCPToolAuthFailure({ ...input, ...wrong })).resolves.toBe(false);
+    }
+    await expect(
+      service.recordMCPToolAuthFailure({ ...input, error: new Error('No credentials') }),
+    ).resolves.toBe(false);
+    store.getJob.mockResolvedValueOnce({
+      createdAt: 42,
+      userId: 'owner',
+      scheduleId: '',
+      scheduledFor: occurrence,
+      conversationId: 'c1',
+      tenantId: 'tenant-1',
+      status: 'running',
+    });
+    await expect(service.recordMCPToolAuthFailure(input)).resolves.toBe(false);
+    expect(methods.recordMCPToolAuthFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles a resumed run with missing MCP credentials as an error with old-client-readable guidance', async () => {
+    const { service, methods } = setup();
+    methods.getScheduleRunAbortState.mockResolvedValue({ status: 'started', mcp: [failure] });
+    await service.recordScheduleOutcome({
+      scheduleId: 's1',
+      scheduledFor: occurrence,
+      status: 'requires_action',
+    });
+    expect(methods.getScheduleRunAbortState).not.toHaveBeenCalled();
+    await expect(
+      service.recordScheduleOutcome({
+        scheduleId: 's1',
+        scheduledFor: occurrence,
+        status: 'success',
+        conversationId: 'c1',
+        streamId: 'c1',
+        jobCreatedAt: 42,
+      }),
+    ).resolves.toBe(true);
+    expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'error',
+        mcp: [failure],
+        error: 'MCP unattended authorization unavailable',
+      }),
+    );
+    expect(
+      jest.requireMock('../stream/GenerationJobManager').GenerationJobManager.updateMetadata,
+    ).toHaveBeenCalledWith('c1', expect.objectContaining({ scheduleOutcome: 'error' }), 42);
+  });
+
+  it('retains an error rather than a balance skip for a known missing OBO provider', async () => {
+    const { service, methods } = setup();
+    await service.recordScheduleOutcome({
+      scheduleId: 's1',
+      scheduledFor: occurrence,
+      status: 'skipped_balance',
+      conversationId: 'c1',
+      streamId: 'c1',
+      jobCreatedAt: 42,
+    });
+    expect(methods.recordRunOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'error',
+        error: 'MCP unattended authorization unavailable',
+        mcp: [failure],
+      }),
+    );
+    expect(
+      jest.requireMock('../stream/GenerationJobManager').GenerationJobManager.updateMetadata,
+    ).toHaveBeenCalledWith('c1', expect.objectContaining({ scheduleOutcome: 'error' }), 42);
+  });
+
+  it('keeps ordinary completion and missing-run outcomes unchanged', async () => {
+    const { service, methods } = setup();
+    methods.getScheduleRunAbortState.mockResolvedValueOnce({
+      status: 'started',
+      mcp: [{ server: 'Graph', status: 'ready' }],
+    });
+    await service.recordScheduleOutcome({
+      scheduleId: 's1',
+      scheduledFor: occurrence,
+      status: 'success',
+    });
+    expect(methods.recordRunOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'success' }),
+    );
   });
 });
 

@@ -142,17 +142,17 @@ export default function CodeSettings() {
       <HoverCard openDelay={50}>
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2">
-            <div className={codeEnabled ? 'text-sm' : 'text-sm text-text-tertiary'}>
+            <div className={codeEnabled ? 'text-sm' : 'text-text-tertiary text-sm'}>
               {localize('com_ui_stateful_sessions')}
             </div>
             <HoverCardTrigger>
-              <CircleHelpIcon className="h-4 w-4 text-text-tertiary" />
+              <CircleHelpIcon className="text-text-tertiary h-4 w-4" />
             </HoverCardTrigger>
           </div>
           <HoverCardPortal>
             <HoverCardContent side={ESide.Top} className="w-80">
               <div className="space-y-2">
-                <p className="text-sm text-text-secondary">
+                <p className="text-text-secondary text-sm">
                   {localize('com_nav_info_stateful_sessions')}
                 </p>
               </div>
@@ -174,7 +174,7 @@ export default function CodeSettings() {
           {executionEnvironments.length > 0 && (
             <>
               <label
-                className="text-xs font-medium text-text-secondary"
+                className="text-text-secondary text-xs font-medium"
                 htmlFor="code-environment-id"
               >
                 {localize('com_ui_code_environment')}
@@ -207,13 +207,13 @@ export default function CodeSettings() {
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-text-tertiary">
+              <p className="text-text-tertiary text-xs">
                 {localize('com_nav_info_code_environment')}
               </p>
             </>
           )}
           <label
-            className="text-xs font-medium text-text-secondary"
+            className="text-text-secondary text-xs font-medium"
             htmlFor="stateful-code-environment"
           >
             {localize('com_ui_stateful_code_environment')}
@@ -244,14 +244,14 @@ export default function CodeSettings() {
               ))}
             </SelectContent>
           </Select>
-          <p className="text-xs text-text-tertiary">
+          <p className="text-text-tertiary text-xs">
             {localize('com_nav_info_stateful_code_environment')}
           </p>
           {showGitIdentity && (
             <div className="space-y-2">
               <label
                 htmlFor="code-workspace-default"
-                className="text-xs font-medium text-text-secondary"
+                className="text-text-secondary text-xs font-medium"
               >
                 {localize('com_ui_code_workspace_default')}
               </label>
@@ -297,20 +297,20 @@ export default function CodeSettings() {
                 </SelectContent>
               </Select>
               {workspaceDiscoveryState !== 'ready' && (
-                <p className="text-xs text-text-tertiary" role="status">
+                <p className="text-text-tertiary text-xs" role="status">
                   {localize(WORKSPACE_STATUS_LABELS[workspaceDiscoveryState])}
                 </p>
               )}
-              <p className="text-xs text-text-tertiary">
+              <p className="text-text-tertiary text-xs">
                 {localize('com_ui_code_workspace_default_description')}
               </p>
             </div>
           )}
           {showGitIdentity && (
-            <div className="space-y-2 border-t border-border-light pt-3">
+            <div className="border-border-light space-y-2 border-t pt-3">
               <label
                 htmlFor="repository-instructions"
-                className="text-xs font-medium text-text-secondary"
+                className="text-text-secondary text-xs font-medium"
               >
                 {localize('com_ui_repository_instructions')}
               </label>
@@ -336,10 +336,10 @@ export default function CodeSettings() {
                   </SelectItem>
                 </SelectContent>
               </Select>
-              <p className="text-xs text-text-tertiary">
+              <p className="text-text-tertiary text-xs">
                 {localize('com_ui_repository_instructions_description')}
               </p>
-              <div className="text-xs font-medium text-text-secondary">
+              <div className="text-text-secondary text-xs font-medium">
                 {localize('com_ui_agent_git_identity')}
               </div>
               <Input
@@ -363,11 +363,11 @@ export default function CodeSettings() {
                 aria-label={localize('com_ui_agent_git_email')}
               />
               {(errors.git_identity?.name || errors.git_identity?.email) && (
-                <p className="text-xs text-text-destructive" role="alert">
+                <p className="text-text-destructive text-xs" role="alert">
                   {localize('com_ui_agent_git_identity_both_required')}
                 </p>
               )}
-              <p className="text-xs text-text-tertiary">
+              <p className="text-text-tertiary text-xs">
                 {localize('com_nav_info_agent_git_identity')}
               </p>
             </div>

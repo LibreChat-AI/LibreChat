@@ -1,5 +1,10 @@
 import z from 'zod';
-import { EModelEndpoint, isOpus55Model, supportsContext1m } from 'librechat-data-provider';
+import {
+  EModelEndpoint,
+  supportsContext1m,
+  supportsOutput128k,
+  gptPointReleaseFamily,
+} from 'librechat-data-provider';
 import type { EndpointTokenConfig, TokenConfig } from '~/types';
 
 /**
@@ -181,6 +186,8 @@ const anthropicModels = {
   'claude-sonnet-4-9': 1000000,
   'claude-sonnet-4.9': 1000000,
   'claude-sonnet-5': 1000000,
+  'claude-sonnet-5-5': 1000000,
+  'claude-sonnet-5.5': 1000000,
   'claude-opus-4-6': 1000000,
   'claude-opus-4-7': 1000000,
   'claude-opus-4-8': 1000000,
@@ -194,7 +201,7 @@ const anthropicModels = {
 };
 
 const ANTHROPIC_CONTEXT_1M = 1000000;
-const ANTHROPIC_OPUS_55_OUTPUT = 128000;
+const ANTHROPIC_OUTPUT_128K = 128000;
 const ANTHROPIC_SONNET_4_6_PLUS_OUTPUT = 128000;
 const ANTHROPIC_SONNET_4_6_PLUS_PATTERN =
   /(?:claude-sonnet[-.]?4[-.]?(?:[6-9]|\d{2})|claude[-.]?4[-.]?(?:[6-9]|\d{2})[-.]?sonnet)(?=$|[^0-9])/;
@@ -226,11 +233,11 @@ function getAnthropicSonnet46PlusOutput(
   return ANTHROPIC_SONNET_4_6_PLUS_OUTPUT;
 }
 
-function getAnthropicOpus55Output(modelName: string, endpoint: EModelEndpoint): number | undefined {
-  if (!usesAnthropicContextMap(endpoint) || !isOpus55Model(modelName)) {
+function getAnthropicOutput128k(modelName: string, endpoint: EModelEndpoint): number | undefined {
+  if (!usesAnthropicContextMap(endpoint) || !supportsOutput128k(modelName)) {
     return undefined;
   }
-  return ANTHROPIC_OPUS_55_OUTPUT;
+  return ANTHROPIC_OUTPUT_128K;
 }
 
 const deepseekModels = {
@@ -630,8 +637,20 @@ function findLongestKey(lowerModelName: string, tokensMap: ModelKeyedMap): strin
  * A key that carries the vendor itself is already the most specific answer and
  * is kept. `EndpointTokenConfig` is an arbitrary record, and one built from
  * OpenRouter is keyed by `org/model`, so those must still beat a bare `model`.
+ *
+ * A GPT point release with no key of its own (`gpt-6.1-sol`) resolves to its
+ * family's (`gpt-6-sol`), for context windows, output limits and pricing alike.
  */
 export function findMatchingPattern(modelName: string, tokensMap: ModelKeyedMap): string | null {
+  const direct = findVendorAwarePattern(modelName, tokensMap);
+  if (direct != null) {
+    return direct;
+  }
+  const family = gptPointReleaseFamily(modelName);
+  return family == null ? null : findVendorAwarePattern(family, tokensMap);
+}
+
+function findVendorAwarePattern(modelName: string, tokensMap: ModelKeyedMap): string | null {
   const lowerModelName = modelName.toLowerCase();
   const slashIndex = lowerModelName.lastIndexOf('/');
   if (slashIndex === -1) {
@@ -742,9 +761,9 @@ export function getModelMaxOutputTokens(
       return overrideValue;
     }
   }
-  const opus55Value = getAnthropicOpus55Output(modelName, endpoint);
-  if (opus55Value != null) {
-    return opus55Value;
+  const output128kValue = getAnthropicOutput128k(modelName, endpoint);
+  if (output128kValue != null) {
+    return output128kValue;
   }
   const sonnet46PlusValue = getAnthropicSonnet46PlusOutput(modelName, endpoint);
   if (sonnet46PlusValue != null) {

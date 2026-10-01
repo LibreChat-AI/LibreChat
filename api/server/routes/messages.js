@@ -29,6 +29,7 @@ const {
   withoutTraceRefs,
   createPrivateTextView,
   stripPrivateMessageFields,
+  applyForcedRetention,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 const { findAllArtifacts, replaceArtifactContent } = require('~/server/services/Artifacts/update');
@@ -41,6 +42,8 @@ const {
   prepareMessageRequestValidation,
 } = require('~/server/middleware');
 const db = require('~/models');
+
+const retentionStore = { stampForcedRetention: db.stampForcedRetention };
 
 const router = express.Router();
 const filterStoredMessageContent = createContentFilter({
@@ -380,6 +383,16 @@ router.post('/branch', configMiddleware, async (req, res) => {
       return res.status(500).json({ error: 'Failed to save branch message' });
     }
 
+    await applyForcedRetention(retentionStore, {
+      ctx: {
+        userId,
+        isTemporary: sourceMessage.isTemporary,
+        expiredAt: savedMessage.expiredAt ?? sourceMessage.expiredAt,
+        interfaceConfig: req?.config?.interfaceConfig,
+      },
+      conversationId: sourceMessage.conversationId,
+    });
+
     res.status(201).json(toClientMessage(savedMessage));
   } catch (error) {
     if (isContentFilterError(error)) {
@@ -456,13 +469,15 @@ router.post('/artifact/:messageId', configMiddleware, async (req, res) => {
         : { text: updatedText };
     assertStoredMessageMutationAllowed(req.config?.filters, filteredArtifact);
 
+    const reqCtx = {
+      userId: req?.user?.id,
+      isTemporary: message.isTemporary,
+      expiredAt: message.expiredAt,
+      interfaceConfig: req?.config?.interfaceConfig,
+    };
+    const context = 'POST /api/messages/artifact/:messageId';
     const savedMessage = await db.saveMessage(
-      {
-        userId: req?.user?.id,
-        isTemporary: message.isTemporary,
-        expiredAt: message.expiredAt,
-        interfaceConfig: req?.config?.interfaceConfig,
-      },
+      reqCtx,
       {
         messageId,
         conversationId: message.conversationId,
@@ -476,8 +491,12 @@ router.post('/artifact/:messageId', configMiddleware, async (req, res) => {
         ),
         user: req.user.id,
       },
-      { context: 'POST /api/messages/artifact/:messageId' },
+      { context },
     );
+    await applyForcedRetention(retentionStore, {
+      ctx: reqCtx,
+      conversationId: message.conversationId,
+    });
 
     res.status(200).json({
       conversationId: savedMessage.conversationId,
@@ -605,6 +624,7 @@ router.put('/:conversationId/:messageId', messageMutationMiddleware, async (req,
     if (index !== undefined && (typeof index !== 'number' || index < 0)) {
       return res.status(400).json({ error: 'Invalid index' });
     }
+    const reqCtx = { userId: req?.user?.id, interfaceConfig: req?.config?.interfaceConfig };
 
     if (index === undefined) {
       assertStoredMessageMutationAllowed(req.config?.filters, { text });
@@ -628,6 +648,11 @@ router.put('/:conversationId/:messageId', messageMutationMiddleware, async (req,
         text,
         tokenCount,
         userSubmittedPaths: mergeUserSubmittedPaths(message.userSubmittedPaths, '/text'),
+      });
+      await applyForcedRetention(retentionStore, {
+        ctx: reqCtx,
+        conversationId,
+        messageId,
       });
       return res.status(200).json(result);
     }
@@ -686,6 +711,11 @@ router.put('/:conversationId/:messageId', messageMutationMiddleware, async (req,
         `/content/${index}/${currentPartType}`,
       ),
     });
+    await applyForcedRetention(retentionStore, {
+      ctx: reqCtx,
+      conversationId,
+      messageId,
+    });
     return res.status(200).json(result);
   } catch (error) {
     if (isContentFilterError(error)) {
@@ -743,6 +773,12 @@ router.put(
           },
         }).catch((err) => logger.error('[langfuse] feedback score failed:', err));
       }
+
+      await applyForcedRetention(retentionStore, {
+        ctx: { userId: req?.user?.id, interfaceConfig: req?.config?.interfaceConfig },
+        conversationId: updatedMessage.conversationId,
+        messageId,
+      });
 
       res.json({
         messageId,

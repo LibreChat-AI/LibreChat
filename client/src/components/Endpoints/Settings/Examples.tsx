@@ -32,7 +32,7 @@ function Examples({ readonly, examples, setExample, addExample, removeExample }:
               <div className="grid w-full items-center gap-2">
                 <Label htmlFor={`input-${idx}`} className="text-left text-sm font-medium">
                   {localize('com_ui_input')}{' '}
-                  <small className="opacity-40 high-contrast:opacity-100">
+                  <small className="high-contrast:opacity-100 opacity-40">
                     ({localize('com_endpoint_default_blank')})
                   </small>
                 </Label>
@@ -59,7 +59,7 @@ function Examples({ readonly, examples, setExample, addExample, removeExample }:
               <div className="grid w-full items-center gap-2">
                 <Label htmlFor={`output-${idx}`} className="text-left text-sm font-medium">
                   {localize('com_endpoint_output')}{' '}
-                  <small className="opacity-40 high-contrast:opacity-100">
+                  <small className="high-contrast:opacity-100 opacity-40">
                     ({localize('com_endpoint_default_blank')})
                   </small>
                 </Label>
@@ -82,14 +82,14 @@ function Examples({ readonly, examples, setExample, addExample, removeExample }:
       <div className="flex justify-center">
         <Button
           type="button"
-          className="mr-2 mt-1 h-auto items-center justify-center bg-transparent px-3 py-2 text-xs font-medium font-normal text-text-primary hover:bg-surface-hover hover:text-text-primary focus:ring-0 focus:ring-offset-0 dark:focus:outline-none dark:focus:ring-offset-0"
+          className="text-text-primary hover:bg-surface-hover hover:text-text-primary mt-1 mr-2 h-auto items-center justify-center bg-transparent px-3 py-2 text-xs font-medium font-normal focus:ring-0 focus:ring-offset-0 dark:focus:ring-offset-0"
           onClick={removeExample}
         >
           <Minus className="w-[16px]" aria-hidden="true" />
         </Button>
         <Button
           type="button"
-          className="mt-1 h-auto items-center justify-center bg-transparent px-3 py-2 text-xs font-medium font-normal text-text-primary hover:bg-surface-hover hover:text-text-primary focus:ring-0 focus:ring-offset-0 dark:focus:outline-none dark:focus:ring-offset-0"
+          className="text-text-primary hover:bg-surface-hover hover:text-text-primary mt-1 h-auto items-center justify-center bg-transparent px-3 py-2 text-xs font-medium font-normal focus:ring-0 focus:ring-offset-0 dark:focus:ring-offset-0"
           onClick={addExample}
         >
           <Plus className="w-[16px]" aria-hidden="true" />
