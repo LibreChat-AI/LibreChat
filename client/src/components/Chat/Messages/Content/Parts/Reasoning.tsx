@@ -1,6 +1,6 @@
 import { memo, useMemo, useState, useEffect, useCallback, useRef, useId } from 'react';
+import { useAtom } from 'jotai';
 import copy from 'copy-to-clipboard';
-import { useAtom, useAtomValue } from 'jotai';
 import { Lightbulb, ChevronDown } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
 import { Button, disclosureChevronVariants } from '@librechat/client';
@@ -15,10 +15,8 @@ import {
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import CopyButton from '~/components/Messages/Content/CopyButton';
-import { showThinkingAtom } from '~/store/showThinking';
+import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import { useReasoningDisclosure } from '../disclosure';
-import { fontSizeAtom } from '~/store/fontSize';
-import { useMessageContext } from '~/Providers';
 import { ROW_GLYPH_SLOT } from '../rows';
 import { cn } from '~/utils';
 
@@ -69,7 +67,8 @@ const PEEK_FADE =
  */
 export const StreamingThoughtPeek = memo(({ text }: { text: string }) => {
   const ref = useRef<HTMLDivElement>(null);
-  const fontSize = useAtomValue(fontSizeAtom);
+  const { useFontSize } = useMessagePartsHost();
+  const fontSize = useFontSize();
   const peek = useMemo(() => lastSentences(text), [text]);
 
   /** Pin to the newest content as tokens arrive. `overflow-hidden` elements
@@ -155,7 +154,8 @@ const Reasoning = memo((props: ReasoningProps) => {
   const { reasoning, isLast, reasoningLabel, partKeyIndex = 0 } = props;
   const contentId = useId();
   const localize = useLocalize();
-  const showThinking = useAtomValue(showThinkingAtom);
+  const { useShowThinking, useMessage } = useMessagePartsHost();
+  const showThinking = useShowThinking();
   const smoothStreaming = useSmoothStreaming();
   const [expansionOverride, setIsExpanded] = useAtom(useReasoningDisclosure(partKeyIndex));
   const [defaultExpanded] = useState(showThinking);
@@ -165,7 +165,7 @@ const Reasoning = memo((props: ReasoningProps) => {
   const { ref: headerRef, inViewport: headerInViewport } = useInViewport();
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(isExpanded);
-  const { isSubmitting, isLatestMessage, nextType } = useMessageContext();
+  const { isSubmitting, isLatestMessage, nextType } = useMessage();
 
   // Strip <think> tags from the reasoning content (modern format)
   const reasoningText = useMemo(() => stripThinkTags(reasoning), [reasoning]);
@@ -310,7 +310,8 @@ export const ReasoningCompact = memo(
   }: ReasoningCompactProps) => {
     const contentId = useId();
     const localize = useLocalize();
-    const fontSize = useAtomValue(fontSizeAtom);
+    const { useFontSize } = useMessagePartsHost();
+    const fontSize = useFontSize();
     const [expansionOverride, setIsExpanded] = useAtom(useReasoningDisclosure(partKeyIndex));
     const [defaultExpanded] = useState(showThinking);
     const isExpanded = expansionOverride ?? defaultExpanded;

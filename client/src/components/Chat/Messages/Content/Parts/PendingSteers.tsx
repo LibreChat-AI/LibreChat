@@ -1,8 +1,5 @@
 import { memo, useMemo, useRef, useState } from 'react';
-import { useAtomValue } from 'jotai';
-import { useRecoilValue } from 'recoil';
 import { TextQuote } from 'lucide-react';
-import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, type TMessage } from 'librechat-data-provider';
 import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
@@ -12,12 +9,11 @@ import useSteerEscalate from '~/hooks/Chat/useSteerEscalate';
 import useSteerRecovery from '~/hooks/Chat/useSteerRecovery';
 import { hasLiveRunPause } from '~/hooks/Chat/useSteering';
 import { useGetMessagesByConvoId } from '~/data-provider';
+import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import { cn, isLegacyDeliveryUncertain } from '~/utils';
-import { escalatingSteerFamily } from '~/store/steer';
 import { useLatestMessage } from '~/hooks/Messages';
 import { useLocalize } from '~/hooks';
 import SteerPart from './SteerPart';
-import store from '~/store';
 
 const ACTION_CLASS =
   'rounded text-xs font-medium text-text-secondary hover:text-text-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy';
@@ -38,15 +34,17 @@ interface PendingSteersProps {
 
 function PendingSteers({ conversationId, index = 0 }: PendingSteersProps) {
   const localize = useLocalize();
-  const { showToast } = useToastContext();
-  const steers = useRecoilValue(store.pendingSteersByConvoId(conversationId));
+  const { useToast, usePendingSteers, useSteerEscalating, usePaneConversationId } =
+    useMessagePartsHost();
+  const showToast = useToast();
+  const steers = usePendingSteers(conversationId);
   const { retry, sendAsNew } = useSteerRecovery(conversationId);
   const cancelSteer = useSteerCancel(conversationId);
   const escalate = useSteerEscalate(conversationId);
   const moveToQueue = useSteerMoveToQueue(conversationId);
   const rehomeSteer = useSteerRehome(conversationId);
   const [movingId, setMovingId] = useState<string | null>(null);
-  const escalating = useAtomValue(escalatingSteerFamily(conversationId));
+  const escalating = useSteerEscalating(conversationId);
   /* Resolve the cache to the branch the user is viewing before applying the
      shared pause predicate. The cache contains every sibling branch, while
      `useLatestMessage` follows the same selection state as the message view. */
@@ -54,7 +52,7 @@ function PendingSteers({ conversationId, index = 0 }: PendingSteersProps) {
   const cachedMessages =
     queryClient.getQueryData<TMessage[]>([QueryKeys.messages, conversationId]) ?? [];
   const latestMessage = useLatestMessage(index, conversationId);
-  const paneConversationId = useRecoilValue(store.conversationIdByIndex(index));
+  const paneConversationId = usePaneConversationId(index);
   const { data: fallbackPaused } = useGetMessagesByConvoId<boolean>(conversationId, {
     select: hasLiveRunPause,
   });

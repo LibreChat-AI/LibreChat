@@ -1,14 +1,13 @@
 import { memo, useId, useLayoutEffect, useMemo, useState } from 'react';
 import { Download } from 'lucide-react';
-import { useRecoilState } from 'recoil';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import { fileToArtifact, TOOL_ARTIFACT_TYPES, toolArtifactKey } from '~/utils/artifacts';
 import Mermaid from '~/components/Messages/Content/Mermaid/Mermaid';
+import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import { displayFilename } from './attachmentTypes';
 import { useAttachmentLink } from './LogLink';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
-import store from '~/store';
 
 interface ToolMermaidArtifactProps {
   attachment: TAttachment;
@@ -27,7 +26,8 @@ const ToolMermaidArtifact = memo(({ attachment, text }: ToolMermaidArtifactProps
   const localize = useLocalize();
   const file = attachment as TFile & TAttachmentMetadata;
   const claimKey = useId();
-  const [claim, setClaim] = useRecoilState(store.toolArtifactClaim(toolArtifactKey(file)));
+  const { useToolArtifactClaim } = useMessagePartsHost();
+  const [claim, setClaim] = useToolArtifactClaim(toolArtifactKey(file));
   const isMyClaim = claim === claimKey;
   /* Once the diagram collapses into its trigger row, that row carries the
    * filename and the download itself, so this header would repeat both

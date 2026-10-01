@@ -8,15 +8,13 @@ import {
   useId,
   type MouseEvent,
 } from 'react';
-import { useAtomValue } from 'jotai';
 import { Lightbulb, ChevronDown } from 'lucide-react';
 import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import { ChevronUp as ChevronUpNode, ChevronDown as ChevronDownNode } from 'lucide';
 import type { FocusEvent, FC } from 'react';
 import CopyButton from '~/components/Messages/Content/CopyButton';
+import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import { useLocalize, useExpandCollapse } from '~/hooks';
-import { showThinkingAtom } from '~/store/showThinking';
-import { fontSizeAtom } from '~/store/fontSize';
 import { AnimatedText } from '../animate';
 import { ROW_GLYPH_SLOT } from '../rows';
 import { cn } from '~/utils';
@@ -57,7 +55,8 @@ export const ThinkingContent: FC<{
   children: React.ReactNode;
   animate?: boolean;
 }> = memo(({ children, animate = false }) => {
-  const fontSize = useAtomValue(fontSizeAtom);
+  const { useFontSize } = useMessagePartsHost();
+  const fontSize = useFontSize();
   const content =
     animate && typeof children === 'string' ? <AnimatedText text={children} /> : children;
 
@@ -300,7 +299,8 @@ export const FloatingThinkingBar = memo(
  */
 const Thinking: React.ElementType = memo(({ children }: { children: React.ReactNode }) => {
   const localize = useLocalize();
-  const showThinking = useAtomValue(showThinkingAtom);
+  const { useShowThinking } = useMessagePartsHost();
+  const showThinking = useShowThinking();
   const [isExpanded, setIsExpanded] = useState(showThinking);
   const [isBarVisible, setIsBarVisible] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);

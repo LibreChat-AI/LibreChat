@@ -11,6 +11,7 @@ import {
   useConversationSeen,
 } from '~/hooks';
 import { MessagesViewProvider, useChatContext, useFileMapContext } from '~/Providers';
+import { MessagePartsHostProvider, appMessagePartsHost } from '~/hooks/Chat/parts';
 import { RowMountProvider, useProgressiveRowMount } from '~/hooks/Messages';
 import { useChatSurface } from '~/components/Chat/Subagents/surface';
 import useThreadRows from '~/hooks/Messages/useThreadRows';
@@ -228,7 +229,9 @@ export default function MessagesView({
 }) {
   return (
     <MessagesViewProvider>
-      <MessagesViewContent messagesTree={messagesTree} messages={messages} />
+      <MessagePartsHostProvider host={appMessagePartsHost}>
+        <MessagesViewContent messagesTree={messagesTree} messages={messages} />
+      </MessagePartsHostProvider>
     </MessagesViewProvider>
   );
 }

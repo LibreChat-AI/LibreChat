@@ -1,6 +1,5 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
-import { useAtomValue } from 'jotai';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
@@ -8,7 +7,7 @@ import parseJsonField, { areToolCallArgsComplete } from './parseJsonField';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import LangIcon from '~/components/Messages/Content/LangIcon';
 import { toolPanelSpacingClassName } from '../disclosure';
-import { sandboxStartingByToolCallId } from '~/store';
+import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
 import useFollowScroll from './useFollowScroll';
@@ -59,7 +58,8 @@ export default function BashCall({
   const localize = useLocalize();
   const command = useMemo(() => parseJsonField(args, commandField), [args, commandField]);
   const isWritingCommand = !command || !areToolCallArgsComplete(args);
-  const sandboxStarting = useAtomValue(sandboxStartingByToolCallId(toolCallId ?? ''));
+  const { useSandboxStarting } = useMessagePartsHost();
+  const sandboxStarting = useSandboxStarting(toolCallId ?? '');
 
   /** Only a call the server stamped as attached-workspace carries an exit
    *  status trailer; sandbox output keeps the text heuristic even when it

@@ -1,20 +1,17 @@
 import { memo, useMemo, useState, useEffect, useCallback } from 'react';
-import { useRecoilValue } from 'recoil';
-import { useAtomValue, useSetAtom } from 'jotai';
 import type { TFile, TMessage } from 'librechat-data-provider';
 import SteerReceipt, { type SteerReceiptState } from '~/components/Chat/Steering/Receipt';
 import FilePreviewDialog from '~/components/Chat/Messages/Content/FilePreviewDialog';
-import { liveAppliedSteerFamily, liveAppliedSteerIdsAtom } from '~/store/steer';
 import MessageTimestamp from '~/components/Chat/Messages/ui/MessageTimestamp';
 import MessageQuotes from '~/components/Chat/Messages/Content/MessageQuotes';
 import { cn, hydrateFileDeliveryMetadata, usesImagePreview } from '~/utils';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
-import { useFileMapContext, useShareContext } from '~/Providers';
 import Image from '~/components/Chat/Messages/Content/Image';
+import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import CollapsibleText from './CollapsibleText';
+import { useShareContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
 /**
  * A mid-run steering message rendered as a standard user message inside the
@@ -50,14 +47,13 @@ const SteerPart = memo(function SteerPart({
   receiptState?: SteerReceiptState;
 }) {
   const localize = useLocalize();
-  /** Read the atom rather than the auth context: AuthContextProvider mirrors the
-   *  user into it, and the public share route mounts outside that provider. */
-  const user = useRecoilValue(store.user);
+  const { useUser, useFileMap, useUserTextPreferences, useLiveAppliedSteer } =
+    useMessagePartsHost();
+  const user = useUser();
   const { isSharedConvo } = useShareContext();
-  const fileMap = useFileMapContext();
-  const usernameDisplay = useRecoilValue<boolean>(store.UsernameDisplay);
-  const enableUserMsgMarkdown = useRecoilValue<boolean>(store.enableUserMsgMarkdown);
-  const collapseLongUserMessages = useRecoilValue<boolean>(store.collapseLongUserMessages);
+  const fileMap = useFileMap();
+  const { usernameDisplay, enableUserMsgMarkdown, collapseLongUserMessages } =
+    useUserTextPreferences();
 
   /** The share surface must never label the SHARER's steers with the
    *  viewer's identity; always the generic user label there. */
@@ -97,8 +93,7 @@ const SteerPart = memo(function SteerPart({
    *  identity consumes its id whether it animated or not, so nothing lingers.
    *  The membership selector scopes the subscription to THIS id — stamping or
    *  consuming one steer never re-renders the other mounted parts. */
-  const isLiveApplied = useAtomValue(liveAppliedSteerFamily(steerId ?? ''));
-  const setLiveAppliedIds = useSetAtom(liveAppliedSteerIdsAtom);
+  const [isLiveApplied, consumeLiveApplied] = useLiveAppliedSteer(steerId ?? '');
   const [captured, setCaptured] = useState<{ id: string | undefined; animate: boolean }>({
     id: steerId,
     animate: isLiveApplied,
@@ -111,10 +106,8 @@ const SteerPart = memo(function SteerPart({
     if (steerId == null || steerId.length === 0) {
       return;
     }
-    setLiveAppliedIds((prev) =>
-      prev.includes(steerId) ? prev.filter((id) => id !== steerId) : prev,
-    );
-  }, [steerId, setLiveAppliedIds]);
+    consumeLiveApplied(steerId);
+  }, [steerId, consumeLiveApplied]);
 
   if (typeof steer !== 'string' || steer.length === 0) {
     return null;

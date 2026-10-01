@@ -1,11 +1,10 @@
 import { useMemo } from 'react';
-import { useAtomValue } from 'jotai';
 import { SquareTerminal } from 'lucide-react';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { toolPanelSpacingClassName } from '../disclosure';
-import { sandboxStartingByToolCallId } from '~/store';
+import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import useLazyHighlight from './useLazyHighlight';
 import useToolCallState from './useToolCallState';
 import CodeWindowHeader from './CodeWindowHeader';
@@ -90,7 +89,8 @@ export default function ExecuteCode({
   /** Model-authored live label, streamed as the first args key; persists as
    *  the settled label (completion is a UI state, not a tense change). */
   const intent = useToolCallIntent(args);
-  const sandboxStarting = useAtomValue(sandboxStartingByToolCallId(toolCallId ?? ''));
+  const { useSandboxStarting } = useMessagePartsHost();
+  const sandboxStarting = useSandboxStarting(toolCallId ?? '');
 
   const outputHasError = useMemo(() => ERROR_PATTERNS.test(output), [output]);
   /** A backgrounded call's persisted output stays the dispatch handle until

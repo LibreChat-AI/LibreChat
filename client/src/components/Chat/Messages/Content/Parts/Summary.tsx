@@ -1,12 +1,10 @@
 import { memo, useMemo, useState, useCallback, useRef, useId, useEffect } from 'react';
-import { useAtomValue } from 'jotai';
 import { Copy, Check } from 'lucide';
 import { ScrollText, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import type { SummaryContentPart } from 'librechat-data-provider';
 import type { MouseEvent, FocusEvent } from 'react';
-import { fontSizeAtom } from '~/store/fontSize';
-import { useMessageContext } from '~/Providers';
+import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -41,7 +39,8 @@ function useCopyToClipboard(content?: string) {
 }
 
 const SummaryContent = memo(({ children, meta }: { children: React.ReactNode; meta?: string }) => {
-  const fontSize = useAtomValue(fontSizeAtom);
+  const { useFontSize } = useMessagePartsHost();
+  const fontSize = useFontSize();
 
   return (
     <div className="border-border-medium bg-surface-tertiary text-text-secondary relative rounded-3xl border p-4 pb-10">
@@ -72,7 +71,8 @@ const SummaryButton = memo(
     onCopy: (e: MouseEvent<HTMLButtonElement>) => void;
   }) => {
     const localize = useLocalize();
-    const fontSize = useAtomValue(fontSizeAtom);
+    const { useFontSize } = useMessagePartsHost();
+    const fontSize = useFontSize();
 
     return (
       <div className="group/summary flex w-full items-center justify-between gap-2">
@@ -210,7 +210,8 @@ const Summary = memo(
     const [isExpanded, setIsExpanded] = useState(false);
     const [isBarVisible, setIsBarVisible] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
-    const { isSubmitting, isLatestMessage } = useMessageContext();
+    const { useMessage } = useMessagePartsHost();
+    const { isSubmitting, isLatestMessage } = useMessage();
 
     const text = useMemo(
       () =>
