@@ -638,6 +638,16 @@ describe('MCP Routes', () => {
       { name: 'absent', cookies: [], refresh: true },
       { name: 'invalid', cookies: ['oauth_session=invalid'], refresh: true },
       {
+        name: 'UTF-8 byte-length mismatch',
+        cookies: [`oauth_session=${encodeURIComponent('é'.repeat(32))}`],
+        refresh: true,
+      },
+      {
+        name: 'non-string JSON',
+        cookies: ['oauth_session=j:{"userId":"test-user-id"}'],
+        refresh: true,
+      },
+      {
         name: 'previous account',
         cookies: [`oauth_session=${generateTestCsrfToken('previous-user-id')}`],
         refresh: true,
@@ -1029,6 +1039,10 @@ describe('MCP Routes', () => {
       it.each([
         { cookies: [] },
         { cookies: ['oauth_csrf=invalid'] },
+        { cookies: [`oauth_csrf=${encodeURIComponent('é'.repeat(32))}`] },
+        { cookies: [`oauth_session=${encodeURIComponent('é'.repeat(32))}`] },
+        { cookies: ['oauth_csrf=j:{"flowId":"test-user-id:test-server"}'] },
+        { cookies: ['oauth_session=j:{"userId":"test-user-id"}'] },
         { cookies: [`oauth_session=${generateTestCsrfToken('victim-user-id')}`] },
         {
           cookies: [

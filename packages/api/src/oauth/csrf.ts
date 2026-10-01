@@ -157,14 +157,19 @@ export function validateOAuthCsrf(
 ): boolean {
   const cookie = (req.cookies as Record<string, string> | undefined)?.[OAUTH_CSRF_COOKIE];
   res.clearCookie(OAUTH_CSRF_COOKIE, { path: cookiePath });
-  if (!cookie) {
+  if (typeof cookie !== 'string' || !cookie) {
     return false;
   }
   const expected = generateOAuthCsrfToken(flowId);
   if (cookie.length !== expected.length) {
     return false;
   }
-  return crypto.timingSafeEqual(Buffer.from(cookie), Buffer.from(expected));
+  const cookieBuffer = Buffer.from(cookie);
+  const expectedBuffer = Buffer.from(expected);
+  return (
+    cookieBuffer.length === expectedBuffer.length &&
+    crypto.timingSafeEqual(cookieBuffer, expectedBuffer)
+  );
 }
 
 /**
@@ -193,12 +198,17 @@ export function setOAuthSessionCookie(res: Response, userId: string): void {
 /** Validates the session cookie against the expected userId using timing-safe comparison */
 export function validateOAuthSession(req: Request, userId: string): boolean {
   const cookie = (req.cookies as Record<string, string> | undefined)?.[OAUTH_SESSION_COOKIE];
-  if (!cookie) {
+  if (typeof cookie !== 'string' || !cookie) {
     return false;
   }
   const expected = generateOAuthCsrfToken(userId);
   if (cookie.length !== expected.length) {
     return false;
   }
-  return crypto.timingSafeEqual(Buffer.from(cookie), Buffer.from(expected));
+  const cookieBuffer = Buffer.from(cookie);
+  const expectedBuffer = Buffer.from(expected);
+  return (
+    cookieBuffer.length === expectedBuffer.length &&
+    crypto.timingSafeEqual(cookieBuffer, expectedBuffer)
+  );
 }
