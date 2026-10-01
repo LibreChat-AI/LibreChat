@@ -15,6 +15,9 @@ jest.mock('~/hooks', () => ({
     if (key === 'com_ui_ran_n_actions') {
       return `Ran ${values?.[0]} actions`;
     }
+    if (key === 'com_ui_preparing_n_actions') {
+      return `Preparing ${values?.[0]} actions`;
+    }
     if (key === 'com_ui_running_n_actions') {
       return `Running ${values?.[0]} actions`;
     }
@@ -1375,5 +1378,57 @@ describe('ToolCallGroup failure fast path', () => {
     fireEvent.click(header);
     expect(header).toHaveClass('text-text-primary');
     expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('pl-6');
+  });
+});
+
+describe('grouped tool preparation', () => {
+  it('keeps a collapsed group preparing until at least one call dispatches', () => {
+    const first = makePart('first', '', 'lookup', '{"query":"first');
+    const second = makePart('second', '', 'lookup', '{"query":"second');
+    const parts = [
+      { part: first, idx: 0 },
+      { part: second, idx: 1 },
+    ];
+    const props = {
+      parts,
+      isSubmitting: true,
+      isLast: true,
+      showThinking: false,
+      lastContentIdx: 1,
+      renderPart: (_part: TMessageContentParts, idx: number) => <div key={idx} />,
+    };
+    const { rerender } = renderGroup(props);
+    fireEvent.click(screen.getByRole('button', { name: /^Preparing 2 actions/ }));
+    expect(screen.getByRole('button', { name: /^Preparing 2 actions/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    const dispatched =
+      first.type === ContentTypes.TOOL_CALL
+        ? { ...first, tool_call: { ...first.tool_call, toolDispatchedAt: 100 } }
+        : first;
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props} parts={[{ part: dispatched, idx: 0 }, parts[1]]} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { name: /^Running 2 actions/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    const closed = parts.map(({ part, idx }) => ({
+      idx,
+      part:
+        part.type === ContentTypes.TOOL_CALL
+          ? { ...part, tool_call: { ...part.tool_call, runStepStatus: 'cancelled' as const } }
+          : part,
+    }));
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props} parts={closed} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toBeInTheDocument();
+    expect(screen.queryByText(/^Preparing /)).not.toBeInTheDocument();
   });
 });

@@ -323,14 +323,18 @@ export default function ToolCall({
    *  completion is a UI state, not a tense change. */
   const intent = useToolCallIntent(_args);
   const preparationText = useToolPreparation();
-  const preparing = isToolCallPreparing({
-    args: _args,
-    output,
-    progress: initialProgress,
-    toolPreparationStartedAt,
-    toolDispatchedAt,
-    runStepStatus,
-  });
+  const preparing = useMemo(
+    () =>
+      isToolCallPreparing({
+        args: _args,
+        output,
+        progress: initialProgress,
+        toolPreparationStartedAt,
+        toolDispatchedAt,
+        runStepStatus,
+      }),
+    [_args, output, initialProgress, toolPreparationStartedAt, toolDispatchedAt, runStepStatus],
+  );
   const subject = intent ?? displayFunctionName;
   let inProgressText =
     intent ??

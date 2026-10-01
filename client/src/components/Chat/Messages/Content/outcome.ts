@@ -12,6 +12,7 @@ import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { isMemoryFailureOutput } from './Parts/MemoryCall';
 import { filterAttachmentsForPart } from '~/utils/map';
 import { isBashProgrammaticToolCall } from './routing';
+import { isToolCallPreparing } from './preparation';
 import { isError } from './ToolOutput';
 
 /**
@@ -28,6 +29,7 @@ export interface ToolMeta {
   hasOutput: boolean;
   failed: boolean;
   cancelled: boolean;
+  preparing?: boolean;
   /** Set for a detached task: its dispatch step is long closed, so whether the
    *  WORK is still going is a separate fact — the cards say "Running in
    *  background" until a status marker or harvested files arrive. */
@@ -154,17 +156,22 @@ export function getToolMeta(
       tc.backgroundTask?.cancelled === true ||
       (backgroundHandle != null && backgroundStatus === 'cancelled') ||
       polledOutcome === 'cancelled';
+    const outcome = resolveOutcome(
+      backgroundCancelled ? 'cancelled' : runStepStatus,
+      completed,
+      failedOutput || backgroundFailed || polledOutcome === 'failed',
+    );
     return {
       name,
       iconName,
       ...(backgroundHandle != null && {
         background: backgroundSettled ? ('finished' as const) : ('running' as const),
       }),
-      ...resolveOutcome(
-        backgroundCancelled ? 'cancelled' : runStepStatus,
-        completed,
-        failedOutput || backgroundFailed || polledOutcome === 'failed',
-      ),
+      ...outcome,
+      ...(!outcome.hasOutput &&
+        !outcome.failed &&
+        !outcome.cancelled &&
+        isToolCallPreparing(tc) && { preparing: true }),
     };
   }
 

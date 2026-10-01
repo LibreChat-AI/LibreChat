@@ -63,6 +63,7 @@ export default function OpenAIImageGen({
   runStepStatus?: PartMetadata['runStepStatus'];
 }) {
   const localize = useLocalize();
+  const preparationText = useToolPreparation();
   /** Model-authored live label (injected when the tool is opted into
    *  describe_intent); wins over the phase texts. */
   const intent = useToolCallIntent(_args);

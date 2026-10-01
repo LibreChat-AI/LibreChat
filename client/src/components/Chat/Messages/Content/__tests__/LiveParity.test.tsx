@@ -14,6 +14,7 @@ import { resolveAskUserQuestionPart } from '~/utils/approval';
 import { sandboxStartingByToolCallId } from '~/store';
 import ContentParts from '../ContentParts';
 import { getLiveActivity } from '../live';
+import * as mcpHooks from '~/hooks/MCP';
 import store from '~/store';
 
 /**
@@ -28,7 +29,11 @@ import store from '~/store';
  */
 jest.mock('~/hooks/MCP', () => {
   const mcpServerNames: string[] = [];
-  return { useMCPIconMap: () => new Map(), useMCPServerNames: () => mcpServerNames };
+  return {
+    __esModule: true,
+    useMCPIconMap: () => new Map(),
+    useMCPServerNames: () => mcpServerNames,
+  };
 });
 
 type Verdict = 'running' | 'completed' | 'failed' | 'cancelled';
@@ -882,9 +887,9 @@ describe('live fold parity with the cards it hides', () => {
     );
     const button = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
 
-    expect(button).toHaveTextContent('Querying the graph');
+    expect(button).toHaveTextContent('Preparing lookup');
     expect(within(button).getByTestId('live-phase-outcome')).toHaveTextContent('1/2 failed');
-    expect(button).toHaveAccessibleName(/Querying the graph.*1\/2 failed/);
+    expect(button).toHaveAccessibleName(/Preparing lookup.*1\/2 failed/);
   });
 
   it('announces a failure on the SAME call at once, without waiting for another source', () => {
@@ -1114,11 +1119,20 @@ describe('live activity hardening transitions', () => {
     act(() => {
       jest.advanceTimersByTime(500);
     });
+    expect(header).toHaveAccessibleName('Preparing Code ×2');
+    const dispatched = toPart(
+      { name: Tools.execute_code, args: '{"intent":"Checking the data"}', output: '' },
+      'sandbox-call',
+    );
+    view.rerender(frame([earlier, dispatched]));
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
     expect(header).toHaveAccessibleName('Checking the data');
     expect(screen.queryByTestId('live-phase-combo')).toBeNull();
 
     view.rerender(
-      frame([earlier, named, toPart({ name: Tools.execute_code, output: '' }, 'next-call')]),
+      frame([earlier, dispatched, toPart({ name: Tools.execute_code, output: '' }, 'next-call')]),
     );
     act(() => {
       jest.advanceTimersByTime(500);
@@ -1156,6 +1170,14 @@ describe('live activity hardening transitions', () => {
       frame([
         toPart({ name: Tools.execute_code, args: '{"intent":"Checking the data', output: '' }),
       ]),
+    );
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(screen.getByTestId('activity-phase-card')).toBe(card);
+    expect(screen.getByRole('button')).toHaveAccessibleName('Preparing Code');
+    view.rerender(
+      frame([toPart({ name: Tools.execute_code, args: '{"intent":"Checking the data"}' })]),
     );
     act(() => {
       jest.advanceTimersByTime(500);
@@ -1613,7 +1635,11 @@ describe('preparation labels across rendered tool cards', () => {
     const part = toPart({ name, args: '{"intent":"Checking a record","value":"unfinished' });
     const { container } = mount([part], undefined, false);
     expect(container.textContent).toContain('Preparing ');
-    expect(container.querySelector('.shimmer')?.textContent).toMatch(/^Preparing /);
+    if (name === Constants.SUBAGENT) {
+      expect(screen.getByRole('button', { name: /^Preparing / })).toBeInTheDocument();
+    } else {
+      expect(container.querySelector('.shimmer')).toHaveTextContent(/^Preparing /);
+    }
     expect(container.querySelector('[aria-live]')?.textContent ?? 'Preparing ').not.toMatch(
       /Running/,
     );
@@ -1635,4 +1661,20 @@ describe('preparation labels across rendered tool cards', () => {
     );
     expect(dispatched.text).toBe('com_assistants_running_var');
   });
+});
+
+it('keeps delimiter-bearing MCP server names out of preparation labels', () => {
+  const names = jest.spyOn(mcpHooks, 'useMCPServerNames').mockReturnValue(['Google_mcp_Workspace']);
+  try {
+    mount(
+      [toPart({ name: 'search_mcp_Google_mcp_Workspace', args: '{"query":"partial' })],
+      undefined,
+      false,
+    );
+    const card = screen.getByTestId('tool-call');
+    expect(within(card).getByRole('button')).toHaveTextContent('Preparing search');
+    expect(within(card).getByRole('button')).not.toHaveTextContent('Preparing search_mcp_Google');
+  } finally {
+    names.mockRestore();
+  }
 });

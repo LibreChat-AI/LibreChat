@@ -1,7 +1,8 @@
 import { createContext, useContext } from 'react';
+import { Constants, actionDelimiter } from 'librechat-data-provider';
 import type { PartMetadata } from 'librechat-data-provider';
-import { getToolDisplayLabel, parseToolName } from '~/utils/toolLabels';
 import { areToolCallArgsComplete } from './Parts/parseJsonField';
+import { getToolDisplayLabel } from '~/utils/toolLabels';
 import { useLocalize } from '~/hooks';
 
 export interface ToolPreparationInput
@@ -41,17 +42,16 @@ export function ToolPreparation({
   children: React.ReactNode;
 }) {
   const localize = useLocalize();
-  const parsed = parseToolName(call.name ?? '');
-  const label = parsed.mcpServer
-    ? parsed.toolName === 'oauth'
-      ? parsed.mcpServer
-      : parsed.toolName
-    : getToolDisplayLabel(call.name ?? '', localize);
-  const text =
-    isSubmitting && isToolCallPreparing(call)
-      ? label
-        ? localize('com_ui_tool_preparing', { 0: label })
-        : localize('com_assistants_preparing_action')
-      : undefined;
+  const name = call.name ?? '';
+  let text: string | undefined;
+  /** Generic integration cards own their configured MCP/action name parsing. */
+  const usesIntegrationName =
+    name.includes(Constants.mcp_delimiter) || name.includes(actionDelimiter);
+  if (isSubmitting && !usesIntegrationName && isToolCallPreparing(call)) {
+    const label = getToolDisplayLabel(name, localize);
+    text = label
+      ? localize('com_ui_tool_preparing', { 0: label })
+      : localize('com_assistants_preparing_action');
+  }
   return <ToolPreparationContext.Provider value={text}>{children}</ToolPreparationContext.Provider>;
 }

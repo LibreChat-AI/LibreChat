@@ -150,8 +150,17 @@ export default function ToolCallGroup({
     let taskCheckCount = 0;
     let failedCount = 0;
     let cancelledCount = 0;
+    let preparingCount = 0;
+    let executingCount = 0;
 
     for (const tool of toolMetadata) {
+      if (!tool.hasOutput && !tool.failed && !tool.cancelled) {
+        if (tool.preparing) {
+          preparingCount++;
+        } else {
+          executingCount++;
+        }
+      }
       if (tool.name === Tools.web_search) {
         webSearchCount++;
       } else if (tool.name === 'file_search' || tool.name === 'retrieval') {
@@ -192,6 +201,8 @@ export default function ToolCallGroup({
       taskCheckCount,
       failedCount,
       cancelledCount,
+      preparingCount,
+      executingCount,
       toolNameSummary,
     };
   }, [toolMetadata, localize, mcpServerNames]);
@@ -396,6 +407,17 @@ export default function ToolCallGroup({
    *  read as the activity the assistant performed. Mixed implementation-level
    *  tool calls fall back to the user-facing concept of "actions". */
   const resolveGroupLabel = (): string => {
+    if (isGroupLive && activitySummary.preparingCount > 0 && activitySummary.executingCount === 0) {
+      if (count === 1) {
+        return singleToolLabel
+          ? localize('com_ui_tool_preparing', { 0: singleToolLabel })
+          : localize('com_assistants_preparing_action');
+      }
+      return localize('com_ui_preparing_n_actions', {
+        0: String(activitySummary.preparingCount),
+        count: activitySummary.preparingCount,
+      });
+    }
     if (allSubagents) {
       if (count === 1) {
         return localize(subagentsDone ? 'com_ui_subagent_complete' : 'com_ui_subagent_running');
