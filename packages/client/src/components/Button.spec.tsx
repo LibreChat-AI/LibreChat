@@ -258,10 +258,13 @@ describe('Button', () => {
     expect(header).not.toMatch(/(^|\s)(hover:)?active:bg-/);
   });
 
-  it('gives an option row an instant fill and its own height', () => {
+  it('gives an option row an instant fill, a slow disabled fade and its own height', () => {
     const row = cn(buttonVariants({ variant: 'option' }));
 
-    expect(row).toContain('transition-none');
+    /** Only opacity eases while enabled, so the hover fill stays instant. */
+    expect(row).toContain('transition-opacity');
+    expect(row).toContain('enabled:duration-500');
+    expect(row).toContain('disabled:duration-500');
     expect(row).toContain('h-auto');
     expect(row).not.toContain('h-theme-button');
     expect(row).not.toMatch(/(^|\s)transition-colors(\s|$)/);

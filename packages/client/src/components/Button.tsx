@@ -161,11 +161,16 @@ const buttonVariantRecipe = cva(
         /**
          * A full-width answer row in an option list, such as the choices of an
          * `ask_user_question`. The fill follows the pointer instantly rather than
-         * easing, so moving down a list reads as a cursor, and `data-selected`
-         * marks the highlighted or chosen row.
+         * easing, so moving down a list reads as a cursor, while locking and
+         * unlocking fades slowly: only opacity transitions while enabled, and a
+         * disabled row, which cannot be hovered, eases its theme colors too.
+         * The duration rides on `enabled:`/`disabled:` so it outranks the base
+         * `duration-theme-fast` by specificity, which tailwind-merge cannot
+         * resolve between the two. `data-selected` marks the highlighted or
+         * chosen row.
          */
         option:
-          'w-full justify-start gap-2.5 whitespace-normal text-left font-normal text-text-primary transition-none hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
+          'w-full justify-start gap-2.5 whitespace-normal text-left font-normal text-text-primary transition-opacity enabled:duration-500 disabled:duration-500 disabled:transition-all hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
         card: 'justify-start whitespace-normal rounded-2xl text-left font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
       },
       size: {
