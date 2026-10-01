@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { useTheme, clickHouseTheme } from '@librechat/client';
 import { act, render, waitFor } from '@testing-library/react';
-import { QueryKeys, dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryKeys, MutationKeys, dataService } from 'librechat-data-provider';
 import type { TStartupConfig, TUser } from 'librechat-data-provider';
 import type { ThemeDefinition } from '@librechat/client';
 import { buildThemeCache, writeThemeCache, THEME_CACHE_KEY } from '../themeCache';
@@ -553,5 +553,22 @@ describe('DeploymentTheme cache', () => {
     act(() => signOut());
     await waitFor(() => expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull());
     expect(root().dataset.theme).toBeUndefined();
+  });
+
+  it('clears the cache as soon as a logout starts, before any identity-provider redirect', () => {
+    cacheTheme();
+    pending();
+    renderTheme(queryClient, user);
+
+    act(() => {
+      void queryClient
+        .getMutationCache()
+        .build(queryClient, {
+          mutationKey: [MutationKeys.logoutUser],
+          mutationFn: () => new Promise(() => undefined),
+        })
+        .execute();
+    });
+    expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
   });
 });

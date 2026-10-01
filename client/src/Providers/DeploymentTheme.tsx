@@ -10,7 +10,7 @@ import {
 } from 'react';
 import { useRecoilValue } from 'recoil';
 import { notifyManager, useQueryClient } from '@tanstack/react-query';
-import { QueryKeys, isBundledThemeName } from 'librechat-data-provider';
+import { QueryKeys, MutationKeys, isBundledThemeName } from 'librechat-data-provider';
 import {
   ThemeProvider,
   clickHouseTheme,
@@ -140,10 +140,16 @@ function useRebindOnStartupConfigRebuild() {
 /**
  * The cached deployment theme, as last read or written. Losing the signed-in user drops
  * it, whichever way the session ended (logout, an empty silent refresh, a failed user
- * query, account deletion), so the next person on this browser does not get the
+ * query, account deletion), and so does starting a logout or an account deletion, so the next person on this browser does not get the
  * previous identity's theme painted before their own config answers.
  */
+const SESSION_ENDING_MUTATIONS: readonly unknown[] = [
+  MutationKeys.logoutUser,
+  MutationKeys.deleteUser,
+];
+
 function useThemeCache(owner?: string) {
+  const queryClient = useQueryClient();
   const [cached, setCached] = useState(() =>
     isPublicRoute(window.location.pathname, appBasePath()) ? undefined : readThemeCache(),
   );
@@ -155,6 +161,21 @@ function useThemeCache(owner?: string) {
     }
     signedIn.current = owner;
   }, [owner]);
+  /** A logout that redirects to an identity provider unloads the page without clearing the
+   *  user, so the cache goes as soon as the logout (or account deletion) starts. */
+  useEffect(
+    () =>
+      queryClient.getMutationCache().subscribe((event) => {
+        if (
+          event?.type === 'added' &&
+          SESSION_ENDING_MUTATIONS.includes(event.mutation.options.mutationKey?.[0])
+        ) {
+          clearThemeCache();
+          setCached(undefined);
+        }
+      }),
+    [queryClient],
+  );
   return [cached, setCached] as const;
 }
 
