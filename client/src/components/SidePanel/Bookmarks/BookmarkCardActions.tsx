@@ -12,6 +12,7 @@ import type { TConversationTag } from 'librechat-data-provider';
 import { useDeleteConversationTagMutation } from '~/data-provider';
 import { BookmarkEditDialog } from '~/components/Bookmarks';
 import { NotificationSeverity } from '~/common';
+import { rowActionSlotClasses } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 interface BookmarkCardActionsProps {
@@ -47,7 +48,7 @@ export default function BookmarkCardActions({ bookmark }: BookmarkCardActionsPro
   }, [bookmark.tag, deleteBookmarkMutation]);
 
   return (
-    <div className="flex items-center gap-1">
+    <div className={rowActionSlotClasses({ open: editOpen || deleteOpen })}>
       {/* Edit button */}
       <BookmarkEditDialog
         context="BookmarkCardActions"
@@ -63,9 +64,10 @@ export default function BookmarkCardActions({ bookmark }: BookmarkCardActionsPro
             render={
               <Button
                 ref={editTriggerRef}
-                variant="ghost"
-                size="icon"
-                className="size-7"
+                type="button"
+                variant="row-action-reveal"
+                size="icon-xs"
+                data-open={editOpen || undefined}
                 aria-label={localize('com_ui_bookmarks_edit')}
                 onClick={() => setEditOpen(true)}
               >
@@ -85,9 +87,10 @@ export default function BookmarkCardActions({ bookmark }: BookmarkCardActionsPro
             render={
               <Button
                 ref={deleteTriggerRef}
-                variant="ghost"
-                size="icon"
-                className="size-7"
+                type="button"
+                variant="row-action-reveal"
+                size="icon-xs"
+                data-open={deleteOpen || undefined}
                 aria-label={localize('com_ui_bookmarks_delete')}
                 onClick={() => setDeleteOpen(true)}
               >
@@ -101,8 +104,13 @@ export default function BookmarkCardActions({ bookmark }: BookmarkCardActionsPro
           title={localize('com_ui_bookmarks_delete')}
           className="max-w-[450px]"
           main={
-            <p className="text-left text-sm text-text-secondary">
-              {localize('com_ui_bookmark_delete_confirm')} <strong>{bookmark.tag}</strong>
+            <p className="text-text-secondary text-left text-sm">
+              {localize('com_ui_bookmark_delete_confirm')}{' '}
+              {/* The name is the user's and can be one unbroken run of characters. It
+                  breaks anywhere rather than wrapping on spaces it does not have,
+                  which is also what stops it setting the dialog's width. The sentence
+                  around it still breaks on its own words. */}
+              <strong className="break-all">{bookmark.tag}</strong>
             </p>
           }
           selection={{

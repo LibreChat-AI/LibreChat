@@ -105,7 +105,7 @@ export default function AskUserQuestions({
   return (
     <div className={cn('flex min-h-0 flex-col', className)}>
       {(onExpand != null || onDismiss != null) && (
-        <div className="flex shrink-0 items-center justify-end border-b border-border-light px-2 py-1">
+        <div className="border-border-light flex shrink-0 items-center justify-end border-b px-2 py-1">
           {onExpand != null && (
             <Button
               variant="ghost"
@@ -134,8 +134,8 @@ export default function AskUserQuestions({
         </div>
       )}
       {stepped && (
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border-light px-3 py-2">
-          <p className="text-xs font-medium text-text-secondary" aria-live="polite">
+        <div className="border-border-light flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
+          <p className="text-text-secondary text-xs font-medium" aria-live="polite">
             {localize('com_ui_question_step', { 0: activeIndex + 1, 1: total })}
           </p>
           <div
@@ -182,19 +182,19 @@ export default function AskUserQuestions({
           ref={stepRef}
           tabIndex={-1}
           aria-labelledby={promptId}
-          className={cn('py-3 outline-none', stepped && 'min-h-40')}
+          className={cn('py-3 outline-hidden', stepped && 'min-h-40')}
         >
           {legend != null && (
-            <legend className="mb-1 text-xs font-medium text-text-secondary">{legend}</legend>
+            <legend className="text-text-secondary mb-1 text-xs font-medium">{legend}</legend>
           )}
           <p
             id={promptId}
-            className="text-sm font-medium text-text-primary [overflow-wrap:anywhere]"
+            className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]"
           >
             {question.question}
           </p>
           {question.description != null && question.description.length > 0 && (
-            <p className="mt-1 text-sm text-text-secondary [overflow-wrap:anywhere]">
+            <p className="text-text-secondary mt-1 text-sm [overflow-wrap:anywhere]">
               {question.description}
             </p>
           )}
@@ -212,7 +212,7 @@ export default function AskUserQuestions({
                     aria-checked={question.multiSelect === true ? isSelected : undefined}
                     aria-pressed={question.multiSelect === true ? undefined : isSelected}
                     disabled={form.locked}
-                    className="h-auto min-h-9 max-w-full whitespace-normal py-1.5 text-left [overflow-wrap:anywhere]"
+                    className="h-auto min-h-9 max-w-full py-1.5 text-left [overflow-wrap:anywhere] whitespace-normal"
                     onClick={() => handleSelectOption(question, option.value)}
                   >
                     {question.multiSelect === true && isSelected && (
@@ -231,13 +231,13 @@ export default function AskUserQuestions({
             minRows={1}
             maxRows={6}
             placeholder={otherLabel ?? localize('com_ui_your_answer')}
-            className="mt-2 w-full resize-none rounded-md border border-border-xheavy bg-surface-primary p-2 text-sm text-text-primary"
+            className="border-border-xheavy bg-surface-primary text-text-primary mt-2 w-full resize-none rounded-md border p-2 text-sm"
             aria-label={`${question.question} ${localize('com_ui_your_answer')}`}
           />
         </fieldset>
       </div>
       {(form.status === 'error' || form.status === 'expired') && (
-        <div className="flex items-center gap-1.5 px-3 py-1 text-xs text-text-warning">
+        <div className="text-text-warning flex items-center gap-1.5 px-3 py-1 text-xs">
           <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
           {form.status === 'expired'
             ? localize('com_ui_approval_expired')
@@ -247,7 +247,7 @@ export default function AskUserQuestions({
       {showRemaining && (
         <button
           type="button"
-          className="shrink-0 px-3 py-1 text-left text-xs text-text-secondary hover:text-text-primary hover:underline"
+          className="text-text-secondary hover:text-text-primary shrink-0 px-3 py-1 text-left text-xs hover:underline"
           onClick={() => goToStep(firstUnanswered)}
         >
           {localize(
@@ -258,7 +258,7 @@ export default function AskUserQuestions({
       )}
       <div
         className={cn(
-          'flex shrink-0 items-center gap-2 border-t border-border-light p-3',
+          'border-border-light flex shrink-0 items-center gap-2 border-t p-3',
           stepped ? 'justify-between' : 'justify-end',
         )}
       >

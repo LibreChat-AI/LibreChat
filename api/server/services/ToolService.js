@@ -66,6 +66,9 @@ const {
   getTransactionsConfig,
   checkToolRolePermission,
   resolveToolRolePermissions,
+  splitAssistantMCPToolResult,
+  appendAssistantMCPAppArtifact,
+  resolveMCPClientCapabilityProfile,
 } = require('@librechat/api');
 const {
   Time,
@@ -91,6 +94,7 @@ const {
   actionDomainSeparator,
   defaultAgentCapabilities,
   validateAndParseOpenAPISpec,
+  resolveMCPAppsPolicy,
 } = require('librechat-data-provider');
 const {
   createActionTool,
@@ -385,13 +389,13 @@ const getRequiredActionContentInspection = (client, input) => {
   return inspectContentWithTraversal(() => extractToolArgumentContent(selectedInput), { filters });
 };
 
-const getSafeRequiredActionOutput = (client, currentAction, output) => {
+const getRequiredActionOutputDecision = (client, currentAction, output) => {
   const { finding, traversalError } = getRequiredActionContentInspection(client, {
     name: currentAction.tool,
     output,
   });
   if (finding == null && traversalError == null) {
-    return output;
+    return { output, accepted: true };
   }
   const blockResponse =
     finding == null ? traversalError.body : contentFilterModelBoundBlockResponse(finding);
@@ -400,8 +404,11 @@ const getSafeRequiredActionOutput = (client, currentAction, output) => {
     source: blockResponse.source,
     field: blockResponse.field,
   });
-  return JSON.stringify(blockResponse);
+  return { output: JSON.stringify(blockResponse), accepted: false };
 };
+
+const getSafeRequiredActionOutput = (client, currentAction, output) =>
+  getRequiredActionOutputDecision(client, currentAction, output).output;
 
 /**
  * Processes return required actions from run.
@@ -492,7 +499,15 @@ async function processRequiredActions(client, requiredActions) {
     let tool = ToolMap[currentAction.tool] ?? ActionToolMap[currentAction.tool];
 
     const handleToolOutput = async (rawOutput) => {
-      const output = getSafeRequiredActionOutput(client, currentAction, rawOutput);
+      const { output: toolOutput, uiResources } = splitAssistantMCPToolResult(
+        rawOutput,
+        tool?.mcp === true,
+      );
+      const { output, accepted } = getRequiredActionOutputDecision(
+        client,
+        currentAction,
+        toolOutput,
+      );
       requiredActions[i].output = output;
 
       /** @type {FunctionToolCall & PartMetadata} */
@@ -555,6 +570,13 @@ async function processRequiredActions(client, requiredActions) {
         // TODO: to append tool properties to stream, pass metadata rest to addContentData
         // result: tool.result,
       });
+      if (accepted && uiResources) {
+        appendAssistantMCPAppArtifact({
+          host: client,
+          toolCallId: currentAction.toolCallId,
+          uiResources,
+        });
+      }
 
       return {
         tool_call_id: currentAction.toolCallId,
@@ -826,6 +848,17 @@ async function loadToolDefinitionsWrapper({
   }
 
   const appConfig = req.config;
+  const mcpApps = resolveMCPAppsPolicy(
+    appConfig?.mcpSettings?.apps,
+    undefined,
+    appConfig?.mcpAppSandbox?.maxPersistedAppBytes,
+    appConfig?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+    appConfig?.mcpAppSandbox?.url,
+    appConfig?.mcpAppSandbox?.maxActiveViews,
+    appConfig?.mcpAppSandbox?.maxActionPreviewChars,
+    appConfig?.mcpAppSandbox?.operationLimits,
+  );
+  const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
   const runtimeRequestBody = requestBody ?? req.body;
   const hasExpectedMCPTools = agent.tools.some(isExpectedMCPTool);
   const enabledCapabilities = await resolveAgentCapabilities(req, appConfig, agent.id);
@@ -1172,7 +1205,7 @@ async function loadToolDefinitionsWrapper({
       return mcpAvailableTools[serverName];
     }
 
-    const cached = await getMCPServerTools(userId, serverName, serverConfig);
+    const cached = await getMCPServerTools(userId, serverName, serverConfig, capabilityProfile);
     if (cached) {
       rememberMCPAvailableTools(serverName, cached);
       await addPendingOAuthServer();
@@ -1206,6 +1239,7 @@ async function loadToolDefinitionsWrapper({
       upstreamTokenProviderResolver,
       oboIdentityContext,
       recoveryPolicy: appConfig?.mcpSettings?.catalogRecovery,
+      mcpApps,
     });
 
     rememberMCPAvailableTools(serverName, result?.availableTools);
@@ -1240,6 +1274,7 @@ async function loadToolDefinitionsWrapper({
       upstreamTokenProviderResolver,
       oboIdentityContext,
       recoveryPolicy: appConfig?.mcpSettings?.catalogRecovery,
+      mcpApps,
     });
 
     rememberMCPAvailableTools(serverName, result?.availableTools);
@@ -1395,6 +1430,7 @@ async function loadToolDefinitionsWrapper({
           upstreamTokenProviderResolver,
           oboIdentityContext,
           recoveryPolicy: appConfig?.mcpSettings?.catalogRecovery,
+          mcpApps,
         });
 
         if (result?.availableTools && Object.keys(result.availableTools).length > 0) {

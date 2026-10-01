@@ -698,6 +698,7 @@ function anonymizeMessages(
       ...(message.manualSkills && { manualSkills: message.manualSkills }),
       ...(message.alwaysAppliedSkills && { alwaysAppliedSkills: message.alwaysAppliedSkills }),
       ...(message.quotes && { quotes: message.quotes }),
+      ...(message.reasoningOverride && { reasoningOverride: message.reasoningOverride }),
       ...(files && { files }),
       ...(attachments && { attachments }),
     };

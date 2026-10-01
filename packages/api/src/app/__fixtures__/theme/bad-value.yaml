@@ -1,0 +1,13 @@
+version: 1.3.17
+cache: true
+interface:
+  modelSelect: true
+  theme:
+    version: 1
+    name: acme
+    modes:
+      dark:
+        colors:
+          rgb-surface-primary: '300 16 32'
+        appearance:
+          controlRadius: 4 pixels

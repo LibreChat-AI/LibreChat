@@ -45,6 +45,11 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
       required: true,
       default: false,
     },
+    /** Set when a confirmed email change commits; password resets use it to refuse
+     * address-less legacy tokens that a mixed-version deployment could still mint. */
+    emailChangedAt: {
+      type: Date,
+    },
     password: {
       type: String,
       trim: true,
@@ -115,6 +120,14 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
       type: [BackupCodeSchema],
       select: false,
       default: undefined,
+    },
+    /**
+     * Instant of the last credential change (password reset). Access tokens issued
+     * before it are rejected at JWT verification, so a token that outlives the reset
+     * cannot keep authenticating.
+     */
+    credentialsChangedAt: {
+      type: Date,
     },
     refreshToken: {
       type: [SessionSchema],
@@ -206,6 +219,12 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
 userSchema.index({ email: 1, tenantId: 1 }, { unique: true });
 userSchema.index({ role: 1, tenantId: 1 });
 userSchema.index({ idOnTheSource: 1, openidIssuer: 1, tenantId: 1 });
+/* Tenant first: the popular sort's only predicates are the caller's tenant and
+   `favorites.agentId: { $exists: true }`, and a multikey existence field in the leading
+   position cannot seek into one tenant, so the count would scan favourites across all of
+   them. The rare cleanup that pulls a deleted agent from every user names the tenant too;
+   the one that does not (`$in` over a batch of ids) is a maintenance write, not a page. */
+userSchema.index({ tenantId: 1, 'favorites.agentId': 1 });
 
 const oAuthIdFields = [
   'googleId',

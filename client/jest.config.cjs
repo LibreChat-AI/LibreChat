@@ -33,6 +33,7 @@ module.exports = {
       'jest-file-loader',
     '^test/(.*)$': '<rootDir>/test/$1',
     '^~/(.*)$': '<rootDir>/src/$1',
+    '^@librechat/client$': '<rootDir>/../packages/client/dist/index.cjs',
     '^librechat-data-provider/react-query$':
       '<rootDir>/../node_modules/librechat-data-provider/src/react-query',
   },

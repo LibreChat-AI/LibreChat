@@ -536,6 +536,7 @@ describe('MCP OAuth Token Expiry Scenarios', () => {
           tokenMethods: {
             findToken: tokenStore.findToken,
             createToken: tokenStore.createToken,
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: tokenStore.updateToken,
             deleteTokens: tokenStore.deleteTokens,
           },
@@ -651,6 +652,7 @@ describe('MCP OAuth Token Expiry Scenarios', () => {
           tokenMethods: {
             findToken: tokenStore.findToken,
             createToken: tokenStore.createToken,
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: tokenStore.updateToken,
             deleteTokens: tokenStore.deleteTokens,
           },

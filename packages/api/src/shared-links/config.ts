@@ -1,3 +1,4 @@
+import { deploymentThemeSchema } from 'librechat-data-provider';
 import { tenantStorage, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import type { TSharedLinkStartupConfig } from 'librechat-data-provider';
 import type { Request, Response, NextFunction } from 'express';
@@ -14,27 +15,35 @@ interface SharedLinkConfigRequest extends Request {
 
 interface SharedLinkConfigMiddlewareDeps {
   getAppConfig: (options?: GetAppConfigOptions) => Promise<AppConfig>;
+  /** Reject instead of substituting the base config when the tenant's overrides fail to load. */
+  failClosed?: boolean;
 }
 
 /** Resolve shared-link policy independently of the authenticated viewer. */
 export async function resolveSharedLinkConfig(
   getAppConfig: SharedLinkConfigMiddlewareDeps['getAppConfig'],
   tenantId?: string,
+  failClosed?: boolean,
 ): Promise<AppConfig> {
   if (tenantId && tenantId !== SYSTEM_TENANT_ID) {
-    return tenantStorage.run({ tenantId }, () => getAppConfig({ tenantId }));
+    return tenantStorage.run({ tenantId }, () =>
+      getAppConfig({ tenantId, ...(failClosed && { failClosed }) }),
+    );
   }
   return getAppConfig({ baseOnly: true });
 }
 
-export function createSharedLinkConfigMiddleware({ getAppConfig }: SharedLinkConfigMiddlewareDeps) {
+export function createSharedLinkConfigMiddleware({
+  getAppConfig,
+  failClosed,
+}: SharedLinkConfigMiddlewareDeps) {
   return async function sharedLinkConfigMiddleware(
     req: SharedLinkConfigRequest,
     _res: Response,
     next: NextFunction,
   ): Promise<void> {
     try {
-      req.config = await resolveSharedLinkConfig(getAppConfig, req.shareTenantId);
+      req.config = await resolveSharedLinkConfig(getAppConfig, req.shareTenantId, failClosed);
       next();
     } catch (error) {
       next(error);
@@ -96,11 +105,14 @@ export function buildSharedLinkStartupPayload(
 
   const { privacyPolicy, termsOfService, codeHighlightThrottleMs } =
     appConfig?.interfaceConfig ?? {};
-  if (privacyPolicy || termsOfService || codeHighlightThrottleMs != null) {
+  const parsedTheme = deploymentThemeSchema.safeParse(appConfig?.interfaceConfig?.theme);
+  const theme = parsedTheme.success ? parsedTheme.data : undefined;
+  if (privacyPolicy || termsOfService || codeHighlightThrottleMs != null || theme) {
     payload.interface = {
       ...(codeHighlightThrottleMs != null ? { codeHighlightThrottleMs } : {}),
       ...(privacyPolicy ? { privacyPolicy } : {}),
       ...(termsOfService ? { termsOfService } : {}),
+      ...(theme ? { theme } : {}),
     };
   }
 

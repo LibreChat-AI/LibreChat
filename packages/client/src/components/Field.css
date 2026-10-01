@@ -2,10 +2,36 @@
    only. Text inputs match :focus-visible on pointer focus too (a UA heuristic
    CSS cannot distinguish), so the ring is gated on the input modality tracked
    by useInputModality (mount it once near the app root). Without the hook the
-   attribute is absent and the ring always shows, which is the safe fallback. */
+   attribute is absent and the ring always shows, which is the safe fallback.
+   A theme that focuses fields by swapping their edge (`fieldFocusStyle: border`)
+   keeps that edge on pointer focus too, so it puts the edge back over the
+   reset. The style is read from the `--theme-field-focus-style` property of the
+   nearest themed root, so a field under a ring root nested in a border root is
+   reset again, and a browser without style queries keeps the default reset. */
 html[data-input-modality='pointer'] .lc-field:focus,
 html[data-input-modality='pointer'] .lc-field:focus-visible {
   border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
   box-shadow: none;
   outline: none;
+}
+
+@container style(--theme-field-focus-style: border) {
+  html[data-input-modality='pointer'] .lc-field:is(:root *):focus,
+  html[data-input-modality='pointer'] .lc-field:is(:root *):focus-visible {
+    border-color: rgb(var(--border-field-focus, var(--focus-control)));
+  }
+}
+
+/* A field focused by its edge draws no outline either. The app's dark-mode
+   `:focus-visible` outline is unlayered, so it outranks the field's own
+   `focus-visible:outline-hidden` utility and would add a second indicator
+   around the swapped edge; `:is(:root *)` keeps this rule's weight above it.
+   Forced colors drop the edge color and the ring, so there the outline stays
+   as the only indicator. */
+@media not (forced-colors: active) {
+  @container style(--theme-field-focus-style: border) {
+    .lc-field:is(:root *):focus-visible {
+      outline: none;
+    }
+  }
 }

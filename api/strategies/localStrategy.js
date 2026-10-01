@@ -2,12 +2,13 @@ const bcrypt = require('bcryptjs');
 const { logger } = require('@librechat/data-schemas');
 const { errorsToString } = require('librechat-data-provider');
 const { Strategy: PassportLocalStrategy } = require('passport-local');
-const { isEnabled, checkEmailConfig, comparePassword } = require('@librechat/api');
+const {
+  isEnabled,
+  comparePassword,
+  grandfatherLegacyEmailVerification,
+} = require('@librechat/api');
 const { findUser, updateUser } = require('~/models');
 const { loginSchema } = require('./validators');
-
-// Unix timestamp for 2024-06-07 15:20:18 Eastern Time
-const verificationEnabledTimestamp = 1717788018;
 
 async function validateLoginRequest(req) {
   const { error } = loginSchema.safeParse(req.body);
@@ -43,17 +44,7 @@ async function passportLogin(req, email, password, done) {
       return done(null, false, { message: 'Incorrect password.' });
     }
 
-    const emailEnabled = checkEmailConfig();
-    const userCreatedAtTimestamp = Math.floor(new Date(user.createdAt).getTime() / 1000);
-
-    if (
-      !emailEnabled &&
-      !user.emailVerified &&
-      userCreatedAtTimestamp < verificationEnabledTimestamp
-    ) {
-      await updateUser(user._id, { emailVerified: true });
-      user.emailVerified = true;
-    }
+    await grandfatherLegacyEmailVerification({ updateUser }, user);
 
     const unverifiedAllowed = isEnabled(process.env.ALLOW_UNVERIFIED_EMAIL_LOGIN);
     if (user.expiresAt && unverifiedAllowed) {

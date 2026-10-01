@@ -2478,24 +2478,25 @@ describe('useStepHandler', () => {
       expect(mockOnSkillAuthoringComplete).not.toHaveBeenCalled();
     });
 
-    it('should warn when step not found for completed event', () => {
+    it('buffers a completion that arrives before its run step and applies it once the step lands', () => {
       const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
 
       const { result } = renderHook(() => useStepHandler(createHookParams()));
-
+      const submission = createSubmission();
       const completedEvent = {
         result: {
-          id: 'nonexistent-step',
+          id: 'step-tool-1',
           index: 0,
           tool_call: {
             id: 'tool-call-1',
-            name: 'test_tool',
-            args: '{}',
+            name: 'create_file',
+            args: JSON.stringify({ file_path: 'skills/demo/SKILL.md' }),
+            output: 'early output',
             type: ToolCallTypes.TOOL_CALL,
           },
         },
       };
-      const submission = createSubmission();
 
       act(() => {
         result.current.stepHandler(
@@ -2507,9 +2508,24 @@ describe('useStepHandler', () => {
         );
       });
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        'No run step or runId found for completed tool call event',
-      );
+      expect(mockOnSkillAuthoringComplete).not.toHaveBeenCalled();
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() },
+          submission,
+        );
+      });
+
+      const lastCall = mockSetMessages.mock.calls[mockSetMessages.mock.calls.length - 1][0];
+      const responseMsg = lastCall.find((m: TMessage) => !m.isCreatedByUser);
+      expect(responseMsg?.content?.[0]?.tool_call).toMatchObject({
+        id: 'tool-call-1',
+        output: 'early output',
+        progress: 1,
+      });
+      expect(mockOnSkillAuthoringComplete).toHaveBeenCalledTimes(1);
+      expect(consoleSpy).not.toHaveBeenCalled();
       consoleSpy.mockRestore();
     });
 

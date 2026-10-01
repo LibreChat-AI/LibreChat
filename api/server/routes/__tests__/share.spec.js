@@ -128,27 +128,29 @@ jest.mock('@librechat/data-schemas', () => ({
   SystemCapabilities: { ACCESS_ADMIN: 'access:admin' },
 }));
 
-jest.mock('librechat-data-provider', () => ({
-  PermissionTypes: {
-    SHARED_LINKS: 'SHARED_LINKS',
-  },
-  Permissions: {
-    CREATE: 'CREATE',
-    SHARE_PUBLIC: 'SHARE_PUBLIC',
-  },
-  RetentionMode: {
-    ALL: 'all',
-    TEMPORARY: 'temporary',
-  },
-  FileSources: {
-    local: 'local',
-    s3: 's3',
-    cloudfront: 'cloudfront',
-    azure_blob: 'azure_blob',
-    firebase: 'firebase',
-    text: 'text',
-  },
-}));
+jest.mock('librechat-data-provider', () => {
+  const RetentionMode = { ALL: 'all', TEMPORARY: 'temporary', EPHEMERAL: 'ephemeral' };
+  return {
+    PermissionTypes: {
+      SHARED_LINKS: 'SHARED_LINKS',
+    },
+    Permissions: {
+      CREATE: 'CREATE',
+      SHARE_PUBLIC: 'SHARE_PUBLIC',
+    },
+    RetentionMode,
+    isAllDataRetention: (mode) => mode === RetentionMode.ALL || mode === RetentionMode.EPHEMERAL,
+    isForcedTemporaryRetention: (mode) => mode === RetentionMode.EPHEMERAL,
+    FileSources: {
+      local: 'local',
+      s3: 's3',
+      cloudfront: 'cloudfront',
+      azure_blob: 'azure_blob',
+      firebase: 'firebase',
+      text: 'text',
+    },
+  };
+});
 
 jest.mock('mongoose', () => ({
   models: {

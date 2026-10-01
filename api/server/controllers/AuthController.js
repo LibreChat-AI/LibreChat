@@ -5,6 +5,7 @@ const { logger, runAsSystem, tenantStorage } = require('@librechat/data-schemas'
 const {
   math,
   isEnabled,
+  createResetPasswordController,
   createAuthIdentityContext,
   createOpenIDRefreshOwnershipError,
   isOpenIDRefreshOwnershipError,
@@ -22,6 +23,8 @@ const {
 } = require('~/server/services/AuthService');
 const {
   deleteAllUserSessions,
+  deletePasskeysByUser,
+  awaitAuthUserDocEviction,
   getUserById,
   findSession,
   updateUser,
@@ -320,24 +323,12 @@ const resetPasswordRequestController = async (req, res) => {
   }
 };
 
-const resetPasswordController = async (req, res) => {
-  try {
-    const resetPasswordService = await resetPassword(
-      req.body.userId,
-      req.body.token,
-      req.body.password,
-    );
-    if (resetPasswordService instanceof Error) {
-      return res.status(400).json(resetPasswordService);
-    } else {
-      await deleteAllUserSessions({ userId: req.body.userId });
-      return res.status(200).json(resetPasswordService);
-    }
-  } catch (e) {
-    logger.error('[resetPasswordController]', e);
-    return res.status(400).json({ message: e.message });
-  }
-};
+const resetPasswordController = createResetPasswordController({
+  resetPassword,
+  deleteAllUserSessions,
+  deletePasskeysByUser,
+  awaitAuthUserDocEviction,
+});
 
 const refreshController = async (req, res) => {
   const parsedCookies = req.headers.cookie ? cookies.parse(req.headers.cookie) : {};

@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo } from 'react';
+import { useId, useContext, useEffect, useMemo } from 'react';
 import { Button, TextareaAutosize } from '@librechat/client';
 import { Check, X, Pencil, MessageSquare, ShieldQuestion, TriangleAlert } from 'lucide-react';
 import type { Agents } from 'librechat-data-provider';
@@ -89,6 +89,7 @@ export default function ToolApproval({
   surface?: 'thread' | 'composer';
 }) {
   const localize = useLocalize();
+  const invalidJsonId = useId();
   const { actionId, allowed_decisions: allowedDecisions, description } = approval;
   const conversationId = useContext(ChatContext)?.conversation?.conversationId;
   const composerPresents = useComposerPresentsApproval(conversationId, actionId);
@@ -218,18 +219,18 @@ export default function ToolApproval({
   }
 
   const descriptionNode = safeDescription != null && safeDescription.length > 0 && (
-    <p className="text-sm text-text-secondary">{safeDescription}</p>
+    <p className="text-text-secondary text-sm">{safeDescription}</p>
   );
 
   if (deferToComposer) {
     return (
       <div
-        className="my-2 flex w-full flex-col gap-2 rounded-lg border border-border-light bg-surface-secondary p-3"
+        className="border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-2 rounded-lg border p-3"
         data-testid="tool-approval"
         data-tool-call-id={toolCallId}
       >
         {descriptionNode}
-        <p className="flex items-center gap-1.5 text-xs text-text-secondary">
+        <p className="text-text-secondary flex items-center gap-1.5 text-xs">
           <ShieldQuestion className="size-4 shrink-0" aria-hidden="true" />
           {localize('com_ui_approval_review_in_composer')}
         </p>
@@ -239,7 +240,7 @@ export default function ToolApproval({
 
   return (
     <div
-      className="my-2 flex w-full flex-col gap-2 rounded-lg border border-border-light bg-surface-secondary p-3"
+      className="border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-2 rounded-lg border p-3"
       data-testid="tool-approval"
       data-tool-call-id={toolCallId}
     >
@@ -272,11 +273,15 @@ export default function ToolApproval({
             onChange={(e) => updateDecisionDraft({ editText: e.target.value })}
             minRows={3}
             maxRows={16}
-            className={cn(fieldClasses, 'font-mono text-xs', !editIsValid && 'border-red-500')}
+            className={cn(fieldClasses, 'font-mono text-xs')}
             aria-label={localize('com_ui_edit')}
+            aria-invalid={!editIsValid}
+            aria-describedby={editIsValid ? undefined : invalidJsonId}
           />
           {!editIsValid && (
-            <span className="text-xs text-text-warning">{localize('com_ui_invalid_json')}</span>
+            <span id={invalidJsonId} className="text-text-warning text-xs">
+              {localize('com_ui_invalid_json')}
+            </span>
           )}
         </div>
       )}
@@ -318,13 +323,13 @@ export default function ToolApproval({
             {submitLabel}
           </Button>
           {status === 'expired' && (
-            <span className="flex items-center text-xs text-text-warning">
+            <span className="text-text-warning flex items-center text-xs">
               <TriangleAlert className="mr-1.5 h-4 w-4" aria-hidden="true" />
               {localize('com_ui_approval_expired')}
             </span>
           )}
           {status === 'error' && (
-            <span className="flex items-center text-xs text-text-warning">
+            <span className="text-text-warning flex items-center text-xs">
               <TriangleAlert className="mr-1.5 h-4 w-4" aria-hidden="true" />
               {localize('com_ui_approval_error')}
             </span>

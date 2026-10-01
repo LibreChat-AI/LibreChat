@@ -119,7 +119,7 @@ describe('CodeApprovalMenu', () => {
     expect(screen.getByTestId('code-approval-mode')).toHaveClass(
       'h-theme-control',
       'rounded-theme-control-round',
-      'gap-theme-compact',
+      'gap-theme-control-gap',
       'border-border-medium',
     );
   });

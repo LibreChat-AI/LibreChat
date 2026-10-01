@@ -49,11 +49,15 @@ import {
   configSchema,
 } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
-import type { Agent, TFile } from 'librechat-data-provider';
+import type { Agent, TFile, FiltersConfig } from 'librechat-data-provider';
 import type { ServerRequest, InitializeResultBase, EndpointTokenConfig } from '~/types';
 import type { InitializeAgentDbMethods } from '../initialize';
 import type { CodeExecutionContext } from '../execution';
+import type { GraphSubagentHostConfig } from '../discovery';
+import type { ProjectFileRecord } from '../../projects/resources';
+import { toCanonicalProjectResource } from '../../projects/resources';
 import { DEFAULT_MAX_CONTEXT_TOKENS } from '../initialize';
+import { discoverConnectedAgents, resolveSubagentGraphs } from '../discovery';
 
 // Mock logger — `format` must be a callable factory so @librechat/data-schemas
 // dist module-load completes cleanly; see api/test/__mocks__/logger.js.
@@ -236,6 +240,7 @@ function createMocks(overrides?: {
   });
 
   const db: InitializeAgentDbMethods = {
+    getProjectFiles: jest.fn().mockResolvedValue([]),
     getFiles: jest.fn().mockResolvedValue([]),
     getConvoFiles: jest.fn().mockResolvedValue([]),
     updateFilesUsage: jest.fn().mockResolvedValue([]),
@@ -458,6 +463,450 @@ describe('initializeAgent — execution context', () => {
 
     expect(loadTools).toHaveBeenCalledWith(expect.not.objectContaining({ req: expect.anything() }));
     expect(loadTools).toHaveBeenCalledWith(expect.not.objectContaining({ res: expect.anything() }));
+  });
+});
+
+describe('initializeAgent: ChatProject context', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  const projectFile: TFile = {
+    file_id: 'project-file',
+    filename: 'project.txt',
+    filepath: '/uploads/project.txt',
+    type: 'text/plain',
+    object: 'file',
+    bytes: 12,
+    usage: 0,
+    user: 'user-1',
+    embedded: true,
+    context: FileContext.message_attachment,
+  };
+  const canonicalFile: ProjectFileRecord = {
+    ...projectFile,
+    _id: '507f1f77bcf86cd799439012',
+    user: projectFile.user,
+    expiredAt: undefined,
+    createdAt: new Date('2020-01-01'),
+    updatedAt: new Date('2020-01-01'),
+    text: 'Safe canonical Project content.',
+  };
+  const projectContext = {
+    projectId: 'project-1',
+    contextRevision: 3,
+    instructions: 'Prefer concise project answers.',
+    file_ids: ['project-file'],
+    resources: [toCanonicalProjectResource(canonicalFile)],
+  };
+  const projectFilePolicy: FiltersConfig = {
+    files: {
+      pii: {
+        fields: ['extracted_text'],
+        starterPatterns: [],
+        customPatterns: [{ id: 'project-policy', label: 'Project policy', regex: 'BLOCKED' }],
+      },
+    },
+  };
+
+  function projectRuntime() {
+    return {
+      user: createMocks().req.user,
+      appConfig: {
+        endpoints: {
+          [EModelEndpoint.agents]: {
+            capabilities: [AgentCapabilities.file_search],
+          },
+        },
+      } as NonNullable<ServerRequest['config']>,
+      requestBody: {},
+      turnStartedAt: 1,
+      chatProjectContext: projectContext,
+    };
+  }
+
+  it('keeps Agent and Project guidance exactly once in initialized output without mutating the definition', async () => {
+    const { agent, loadTools, db } = createMocks();
+    agent.instructions = 'Follow the Agent instructions.';
+    agent.additional_instructions = 'Agent dynamic guidance.';
+    const originalAdditionalInstructions = agent.additional_instructions;
+
+    const result = await initializeAgent(
+      {
+        runtime: projectRuntime(),
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        useChatProjectContext: true,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBe('Follow the Agent instructions.');
+    expect(result.additional_instructions).toContain('Agent dynamic guidance.');
+    expect(result.additional_instructions).toContain(projectContext.instructions);
+    const additionalInstructions = result.additional_instructions ?? '';
+    expect(additionalInstructions.split('Agent dynamic guidance.').length - 1).toBe(1);
+    expect(additionalInstructions.split(projectContext.instructions).length - 1).toBe(1);
+    expect(additionalInstructions.split('Project guidance (user-provided context').length - 1).toBe(
+      1,
+    );
+    expect(agent.additional_instructions).toBe(originalAdditionalInstructions);
+  });
+  it('propagates Project guidance and files to a discovered child through real initialization', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.id = 'child-agent';
+    agent._id = 'mongo-child-agent';
+    agent.instructions = 'Child Agent instructions.';
+    agent.tools = [Tools.file_search];
+    req.config = projectRuntime().appConfig;
+    req.chatProjectContext = projectContext;
+    const getProjectFiles = jest.fn().mockResolvedValue([canonicalFile]);
+    const projectDb = { ...db, getProjectFiles };
+    const primaryConfig = await initializeAgent(
+      {
+        runtime: projectRuntime(),
+        agent: {
+          ...agent,
+          id: 'primary-agent',
+          edges: [{ from: 'primary-agent', to: 'child-agent', edgeType: 'handoff' }],
+          tools: [],
+        },
+        loadTools,
+        allowedProviders: new Set([Providers.OPENAI]),
+        useChatProjectContext: true,
+      },
+      projectDb,
+    );
+
+    const result = await discoverConnectedAgents(
+      {
+        req,
+        res,
+        primaryConfig,
+        allowedProviders: new Set([Providers.OPENAI]),
+        modelsConfig: { openai: ['test-model'] },
+        loadTools,
+        useChatProjectContext: true,
+      },
+      {
+        getAgent: jest.fn().mockResolvedValue(agent),
+        checkPermission: jest.fn().mockResolvedValue(true),
+        logViolation: jest.fn(),
+        db: projectDb,
+        validateAgentModel: jest.fn().mockResolvedValue({ isValid: true }),
+      },
+    );
+
+    const childConfig = result.agentConfigs.get('child-agent');
+    expect(childConfig?.additional_instructions).toContain(projectContext.instructions);
+    expect(childConfig?.tool_resources?.[EToolResources.file_search]?.files).toEqual([projectFile]);
+  });
+  it('propagates Project guidance and files to a saved graph member through real initialization', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.id = 'graph-agent';
+    agent._id = 'mongo-graph-agent';
+    agent.instructions = 'Graph Agent instructions.';
+    agent.tools = [Tools.file_search];
+    req.config = projectRuntime().appConfig;
+    req.chatProjectContext = projectContext;
+    const getProjectFiles = jest.fn().mockResolvedValue([canonicalFile]);
+    const projectDb = { ...db, getProjectFiles };
+    const primaryConfig: GraphSubagentHostConfig = await initializeAgent(
+      {
+        runtime: projectRuntime(),
+        agent: {
+          ...agent,
+          id: 'primary-agent',
+          tools: [],
+          subagents: {
+            enabled: true,
+            graphs: [
+              {
+                type: 'team',
+                name: 'Project team',
+                description: 'Project-aware graph',
+                agent_ids: ['graph-agent'],
+                edges: [],
+                entry_agent_id: 'graph-agent',
+                result_agent_id: 'graph-agent',
+              },
+            ],
+          },
+        },
+        loadTools,
+        allowedProviders: new Set([Providers.OPENAI]),
+        useChatProjectContext: true,
+      },
+      projectDb,
+    );
+
+    await resolveSubagentGraphs(
+      {
+        req,
+        res,
+        primaryConfig,
+        rootConfigs: [primaryConfig],
+        allowedProviders: new Set([Providers.OPENAI]),
+        modelsConfig: { openai: ['test-model'] },
+        loadTools,
+        useChatProjectContext: true,
+      },
+      {
+        getAgent: jest.fn().mockResolvedValue(agent),
+        checkPermission: jest.fn().mockResolvedValue(true),
+        logViolation: jest.fn(),
+        db: projectDb,
+        validateAgentModel: jest.fn().mockResolvedValue({ isValid: true }),
+      },
+    );
+
+    const graphMember = primaryConfig.subagentGraphConfigs?.[0]?.memberConfigs[0];
+    expect(graphMember?.additional_instructions).toContain(projectContext.instructions);
+    expect(graphMember?.tool_resources?.[EToolResources.file_search]?.files).toEqual([projectFile]);
+  });
+
+  it('adds ready Project files only to enabled File Search resources', async () => {
+    const { agent, loadTools, db } = createMocks();
+    agent.tools = [Tools.file_search];
+    const originalTools = [...agent.tools];
+
+    const result = await initializeAgent(
+      {
+        runtime: projectRuntime(),
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        useChatProjectContext: true,
+      },
+      db,
+    );
+
+    expect(result.tool_resources).toEqual({
+      [EToolResources.file_search]: { files: [projectFile] },
+    });
+    expect(result.tool_resources?.[EToolResources.file_search]).not.toHaveProperty('file_ids');
+    expect(agent.tools).toEqual(originalTools);
+    expect(agent).not.toHaveProperty('tool_resources');
+    expect(db.getFiles).not.toHaveBeenCalled();
+  });
+  it('adds Project files for file_search supplied by a manual Skill', async () => {
+    const { agent, req, loadTools, db } = createMocks();
+    const { Types } = await import('mongoose');
+    const skillId = new Types.ObjectId();
+    agent.tools = [];
+    loadTools.mockImplementation(async ({ tools }: { tools: string[] }) => ({
+      tools: [],
+      toolContextMap: {},
+      toolDefinitions: tools.map((name) => ({ name, description: '', parameters: {} })),
+      hasDeferredTools: false,
+    }));
+    const getSkillByName: InitializeAgentDbMethods['getSkillByName'] = jest.fn().mockResolvedValue({
+      _id: skillId,
+      name: 'project-file-search',
+      body: 'Search project files.',
+      author: { toString: () => req.user!.id } as unknown as import('mongoose').Types.ObjectId,
+      allowedTools: [Tools.file_search],
+    });
+
+    const result = await initializeAgent(
+      {
+        runtime: projectRuntime(),
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        useChatProjectContext: true,
+        accessibleSkillIds: [skillId],
+        manualSkills: ['project-file-search'],
+      },
+      {
+        ...db,
+        listSkillsByAccess: async () => ({ skills: [], has_more: false, after: null }),
+        getSkillByName,
+      },
+    );
+
+    expect(loadTools).toHaveBeenCalledWith(expect.objectContaining({ tools: [Tools.file_search] }));
+    expect(result.tool_resources?.[EToolResources.file_search]?.files).toEqual([projectFile]);
+  });
+
+  it('does not hydrate or inject Project files when file_search is role-disabled', async () => {
+    const { agent, loadTools, db } = createMocks();
+    const { Types } = await import('mongoose');
+    const skillId = new Types.ObjectId();
+    const getSkillByName: InitializeAgentDbMethods['getSkillByName'] = jest.fn().mockResolvedValue({
+      _id: skillId,
+      name: 'denied-project-file-search',
+      body: 'Search project files.',
+      author: { toString: () => 'user-1' } as unknown as import('mongoose').Types.ObjectId,
+      allowedTools: [Tools.file_search],
+    });
+    const projectDb = {
+      ...db,
+      getProjectFiles: jest
+        .fn()
+        .mockRejectedValue(new Error('Project resource lookup unavailable')),
+      listSkillsByAccess: async () => ({ skills: [], has_more: false, after: null }),
+      getSkillByName,
+    };
+
+    const result = await initializeAgent(
+      {
+        runtime: {
+          ...projectRuntime(),
+          chatProjectContext: { ...projectContext, resources: [] },
+          chatProjectFiles: undefined,
+        },
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        useChatProjectContext: true,
+        accessibleSkillIds: [skillId],
+        manualSkills: ['denied-project-file-search'],
+        fileSearchAvailable: false,
+      },
+      projectDb,
+    );
+
+    expect(projectDb.getProjectFiles).not.toHaveBeenCalled();
+    expect(db.getFiles).not.toHaveBeenCalled();
+    expect(result.tool_resources).toBeUndefined();
+  });
+
+  it('shares policy hydration across concurrent graph agents without injecting file text', async () => {
+    const { agent, loadTools, db } = createMocks();
+    agent.tools = [Tools.file_search];
+    const getProjectFiles = jest.fn().mockResolvedValue([canonicalFile]);
+    const projectDb = { ...db, getProjectFiles };
+    const runtime = { ...projectRuntime(), chatProjectFiles: undefined };
+    runtime.appConfig.filters = projectFilePolicy;
+    const params = {
+      runtime,
+      agent,
+      loadTools,
+      endpointOption: { endpoint: EModelEndpoint.agents },
+      allowedProviders: new Set([Providers.OPENAI]),
+      useChatProjectContext: true,
+    };
+    const results = await Promise.all([
+      initializeAgent(params, projectDb),
+      initializeAgent(params, projectDb),
+    ]);
+    for (const result of results) {
+      expect(result.tool_resources?.[EToolResources.file_search]?.files).toEqual([
+        expect.objectContaining({ file_id: 'project-file', filepath: '/uploads/project.txt' }),
+      ]);
+      expect(result.tool_resources?.[EToolResources.file_search]?.files?.[0]).not.toHaveProperty(
+        'text',
+      );
+      expect(result.attachments).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ file_id: projectFile.file_id })]),
+      );
+    }
+    expect(getProjectFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects prohibited Project content before tool setup or usage mutation', async () => {
+    const { agent, loadTools, db } = createMocks();
+    agent.tools = [Tools.file_search];
+    const runtime = projectRuntime();
+    runtime.appConfig.filters = projectFilePolicy;
+    const getProjectFiles = jest.fn().mockResolvedValue([{ ...canonicalFile, text: 'BLOCKED' }]);
+    await expect(
+      initializeAgent(
+        {
+          runtime,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.OPENAI]),
+          useChatProjectContext: true,
+        },
+        { ...db, getProjectFiles },
+      ),
+    ).rejects.toMatchObject({ code: 'content_filter_block' });
+    expect(loadTools).not.toHaveBeenCalled();
+    expect(db.updateFilesUsage).not.toHaveBeenCalled();
+  });
+
+  it.each(['expired', 'changed-version'])(
+    'rejects a %s resource during policy hydration instead of replacing the admitted snapshot',
+    async (change) => {
+      const { agent, loadTools, db } = createMocks();
+      agent.tools = [Tools.file_search];
+      const runtime = projectRuntime();
+      runtime.appConfig.filters = projectFilePolicy;
+      const changedFile =
+        change === 'expired'
+          ? { ...canonicalFile, expiredAt: new Date(0) }
+          : { ...canonicalFile, updatedAt: new Date('2030-01-01') };
+      await expect(
+        initializeAgent(
+          {
+            runtime,
+            agent,
+            loadTools,
+            endpointOption: { endpoint: EModelEndpoint.agents },
+            allowedProviders: new Set([Providers.OPENAI]),
+            useChatProjectContext: true,
+          },
+          { ...db, getProjectFiles: jest.fn().mockResolvedValue([changedFile]) },
+        ),
+      ).rejects.toMatchObject({
+        code: 'PROJECT_RESOURCES_CHANGED',
+        status: 409,
+        retryable: true,
+      });
+      expect(loadTools).not.toHaveBeenCalled();
+      expect(db.updateFilesUsage).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not inject Project guidance or resources into an auxiliary opt-out', async () => {
+    const { agent, loadTools, db } = createMocks();
+    agent.tools = [Tools.file_search];
+    agent.additional_instructions = 'Auxiliary Agent guidance.';
+
+    const result = await initializeAgent(
+      {
+        runtime: projectRuntime(),
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        useChatProjectContext: false,
+      },
+      db,
+    );
+
+    expect(result.additional_instructions).toBe('Auxiliary Agent guidance.');
+    expect(result.additional_instructions).not.toContain('Project guidance');
+    expect(result.tool_resources).toBeUndefined();
+  });
+
+  it('never enables disabled File Search for Project files', async () => {
+    const { agent, loadTools, db } = createMocks();
+
+    const result = await initializeAgent(
+      {
+        runtime: { ...projectRuntime(), chatProjectFiles: undefined },
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        useChatProjectContext: true,
+      },
+      db,
+    );
+
+    expect(result.tools).toEqual([]);
+    expect(result.toolDefinitions).toEqual([]);
+    expect(result.tool_resources).toBeUndefined();
+    expect(db.getFiles).not.toHaveBeenCalled();
   });
 });
 
@@ -2441,6 +2890,88 @@ describe('initializeAgent — skill `allowed-tools` union (Phase 6)', () => {
     const definedNames = result.toolDefinitions?.map((d) => d.name) ?? [];
     expect(definedNames).toContain('web_search');
     expect(definedNames).not.toContain('mcp__broken__tool');
+  });
+  it('removes skill-added Project resources before retrying without denied tools', async () => {
+    const { agent, req, loadTools, db } = createMocks();
+    const { Types } = await import('mongoose');
+    const skillId = new Types.ObjectId();
+    const projectFile = {
+      file_id: 'project-file',
+      filename: 'project.txt',
+      type: 'text/plain',
+      embedded: true,
+    } as TFile;
+    agent.tools = [];
+
+    let call = 0;
+    loadTools.mockImplementation(async ({ tools }: { tools: string[] }) => {
+      call += 1;
+      if (call === 1) {
+        return undefined;
+      }
+      return {
+        tools: [],
+        toolContextMap: {},
+        toolDefinitions: tools.map((name) => ({ name, description: '', parameters: {} })),
+        hasDeferredTools: false,
+      };
+    });
+
+    const getSkillByName = buildGetSkillByName(
+      'project-file-search-fallback',
+      [Tools.file_search],
+      skillId,
+      req.user!.id,
+    );
+
+    const result = await initializeAgent(
+      {
+        runtime: {
+          user: req.user,
+          appConfig: {
+            endpoints: {
+              [EModelEndpoint.agents]: {
+                capabilities: [AgentCapabilities.file_search],
+              },
+            },
+          } as NonNullable<ServerRequest['config']>,
+          requestBody: {},
+          turnStartedAt: 1,
+          chatProjectContext: {
+            projectId: 'project-1',
+            contextRevision: 1,
+            instructions: '',
+            file_ids: [projectFile.file_id],
+            resources: [
+              {
+                file_id: projectFile.file_id,
+                identity: 'canonical-project-file',
+                availability: 'ready',
+                version: 'fixture-version',
+                file: projectFile,
+              },
+            ],
+          },
+        },
+        req,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        useChatProjectContext: true,
+        accessibleSkillIds: [skillId],
+        manualSkills: ['project-file-search-fallback'],
+      },
+      { ...db, listSkillsByAccess: emptyListSkillsByAccess, getSkillByName },
+    );
+
+    expect(loadTools).toHaveBeenCalledTimes(2);
+    expect(loadTools.mock.calls[0][0].tool_resources).toEqual({
+      [EToolResources.file_search]: { files: [projectFile] },
+    });
+    expect(loadTools.mock.calls[1][0].tools).toEqual([]);
+    expect(loadTools.mock.calls[1][0].tool_resources).toBeUndefined();
+    expect(result.tool_resources).toBeUndefined();
   });
 
   it('retries loadTools without extras when the union call throws (agent tools must still load)', async () => {

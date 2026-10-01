@@ -108,8 +108,8 @@ const BackupCodesItem: React.FC = () => {
           >
             {Array.isArray(user?.backupCodes) && user?.backupCodes.length > 0 ? (
               <>
-                <div className="mb-6 rounded-lg border border-status-warning-border bg-status-warning-subtle p-4">
-                  <p className="text-sm text-text-secondary">
+                <div className="border-status-warning-border bg-status-warning-subtle mb-6 rounded-lg border p-4">
+                  <p className="text-text-secondary text-sm">
                     {localize('com_ui_backup_codes_security_info')}
                   </p>
                 </div>
@@ -142,14 +142,14 @@ const BackupCodesItem: React.FC = () => {
                           });
                           document.dispatchEvent(announcement);
                         }}
-                        className={`flex flex-col rounded-xl border p-4 backdrop-blur-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary ${
+                        className={`focus-visible:ring-text-primary flex flex-col rounded-xl border p-4 backdrop-blur-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden ${
                           isUsed
                             ? 'border-status-error-border bg-status-error-subtle'
                             : 'border-status-success-border bg-status-success-subtle'
                         } `}
                       >
                         <div className="flex items-center justify-between" aria-hidden="true">
-                          <span className="text-sm font-medium text-text-secondary">
+                          <span className="text-text-secondary text-sm font-medium">
                             {localize('com_ui_backup_code_number', { number: index + 1 })}
                           </span>
                           <TooltipAnchor
@@ -255,7 +255,7 @@ const BackupCodesItem: React.FC = () => {
                     setUseBackup(!useBackup);
                     setOtpToken('');
                   }}
-                  className="h-auto p-0 text-sm text-text-primary hover:underline"
+                  className="text-text-primary h-auto p-0 text-sm hover:underline"
                 >
                   {useBackup ? localize('com_ui_use_2fa_code') : localize('com_ui_use_backup_code')}
                 </Button>

@@ -12,7 +12,7 @@ import {
 } from '@ariakit/react';
 import './AnimatePopover.css';
 import { JSX } from 'react/jsx-runtime';
-import { cn } from '~/utils';
+import { cn, disabledFillClasses } from '~/utils';
 
 type MultiSelectItem<T extends string> = T | { label: string; value: T };
 
@@ -135,7 +135,7 @@ export default function MultiSelect<T extends string>({
         setOpen={handleOpenChange}
       >
         {label && (
-          <SelectLabel className={cn('mb-1 block text-sm text-text-primary', labelClassName)}>
+          <SelectLabel className={cn('text-text-primary mb-1 block text-sm', labelClassName)}>
             {label}
           </SelectLabel>
         )}
@@ -145,9 +145,10 @@ export default function MultiSelect<T extends string>({
           data-state={isPopoverOpen ? 'open' : 'closed'}
           className={cn(
             'flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-sm',
-            'bg-surface-tertiary text-text-primary shadow-sm hover:cursor-pointer hover:bg-surface-hover',
-            'disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-surface-tertiary',
-            'outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary',
+            'bg-surface-tertiary text-text-primary hover:bg-surface-hover shadow-xs hover:cursor-pointer',
+            'disabled:hover:bg-surface-tertiary disabled:cursor-not-allowed disabled:opacity-60',
+            disabledFillClasses,
+            'focus-visible:ring-focus-control outline-hidden focus-visible:ring-2 focus-visible:outline-hidden',
             selectClassName,
             selectedValues.length > 0 && selectItemsClassName != null && selectItemsClassName,
           )}
@@ -176,22 +177,22 @@ export default function MultiSelect<T extends string>({
           className={cn(
             'animate-popover z-40 flex max-h-[300px]',
             'flex-col overflow-hidden rounded-xl',
-            'bg-surface-secondary px-1.5 py-1 text-text-primary shadow-lg',
-            'border border-border-light',
-            'outline-none',
+            'bg-surface-secondary text-text-primary px-1.5 py-1 shadow-lg',
+            'border-border-light border',
+            'outline-hidden',
             popoverClassName,
           )}
         >
           <div className="shrink-0">
             {searchPlaceholder && (
-              <div className="flex items-center gap-2 border-b border-border-light px-4 py-2">
-                <Search aria-hidden="true" className="size-4 shrink-0 text-text-secondary" />
+              <div className="border-border-light flex items-center gap-2 border-b px-4 py-2">
+                <Search aria-hidden="true" className="text-text-secondary size-4 shrink-0" />
                 <input
                   aria-label={searchPlaceholder}
                   placeholder={searchPlaceholder}
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
-                  className="min-w-0 flex-1 bg-transparent text-sm outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+                  className="focus-visible:ring-focus-control min-w-0 flex-1 bg-transparent text-sm outline-hidden focus-visible:ring-2"
                 />
               </div>
             )}
@@ -208,14 +209,14 @@ export default function MultiSelect<T extends string>({
                     <span
                       aria-hidden="true"
                       className={cn(
-                        'flex size-4 shrink-0 items-center justify-center rounded-sm border border-border-xheavy',
+                        'border-border-xheavy flex size-4 shrink-0 items-center justify-center rounded-sm border',
                         isCurrentItemSelected && 'bg-surface-inverted text-text-inverted',
                       )}
                     >
                       {isCurrentItemSelected && <Check className="size-3.5" strokeWidth={2} />}
                     </span>
                   ) : (
-                    <SelectItemCheck className="mr-0.5 text-text-primary" />
+                    <SelectItemCheck className="text-text-primary mr-0.5" />
                   )}
                   <span className="truncate">{label}</span>
                 </>
@@ -227,7 +228,7 @@ export default function MultiSelect<T extends string>({
                   aria-label={label}
                   className={cn(
                     'flex items-center gap-2 rounded-lg px-2 py-1.5 hover:cursor-pointer',
-                    'scroll-m-1 outline-none transition-colors',
+                    'scroll-m-1 outline-hidden transition-colors',
                     'hover:bg-surface-hover',
                     'data-[active-item]:bg-surface-active',
                     'w-full min-w-0 text-sm',
@@ -246,7 +247,7 @@ export default function MultiSelect<T extends string>({
             })}
           </SelectList>
           {visibleItems.length === 0 && searchEmptyText && (
-            <div role="status" className="px-4 py-3 text-sm text-text-secondary">
+            <div role="status" className="text-text-secondary px-4 py-3 text-sm">
               {searchEmptyText}
             </div>
           )}

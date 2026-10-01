@@ -435,15 +435,23 @@ describe('pinned list cache synchronization', () => {
     );
   });
 
-  it('withoutListFlags drops only the sidebar-owned flags', () => {
+  it('withoutListFlags drops the sidebar-owned flags and read state', () => {
+    /* The chat's own state snapshots both when the chat is opened: writing them back would
+       drop the chat out of Pinned, or relight a dot the user has already cleared. */
     const stripped = withoutListFlags({
       ...pinnedConvo,
       pinned: false,
       isShared: true,
+      lastResponseAt: '2026-08-16T10:00:00.000Z',
+      lastResponseIsManual: true,
+      lastSeenAt: '2026-08-16T10:01:00.000Z',
     } as TConversation);
 
     expect('pinned' in stripped).toBe(false);
     expect('isShared' in stripped).toBe(false);
+    expect('lastResponseAt' in stripped).toBe(false);
+    expect('lastResponseIsManual' in stripped).toBe(false);
+    expect('lastSeenAt' in stripped).toBe(false);
     expect(stripped.conversationId).toBe(pinnedConversationId);
     expect(stripped.title).toBe(pinnedConvo.title);
   });

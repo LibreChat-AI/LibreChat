@@ -4,8 +4,8 @@ export default function AgentPanelSkeleton() {
   return (
     <div className="h-auto pt-1" aria-hidden="true">
       {/* IDENTITY — inline avatar + name/description */}
-      <div className="mb-3 mt-1 flex items-center gap-3">
-        <Skeleton className="h-16 w-16 flex-shrink-0 rounded-full" />
+      <div className="mt-1 mb-3 flex items-center gap-3">
+        <Skeleton className="h-16 w-16 shrink-0 rounded-full" />
         <div className="flex min-w-0 flex-1 flex-col gap-2">
           <Skeleton className="h-9 w-full rounded-xl" />
           <Skeleton className="h-9 w-full rounded-xl" />

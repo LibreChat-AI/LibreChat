@@ -4,7 +4,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Constants, QueryKeys, dataService } from 'librechat-data-provider';
 import type { UseQueryOptions, QueryObserverResult, QueryClient } from '@tanstack/react-query';
 import type * as t from 'librechat-data-provider';
-import { isNotFoundError, logger } from '~/utils';
+import {
+  beginMessagesReplyFetch,
+  completeMessagesReplyFetch,
+  findConvoInAllQueries,
+  isNotFoundError,
+  logger,
+} from '~/utils';
 
 type StableMessagesParams = {
   pathname: string;
@@ -106,6 +112,11 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
         return messagesAtRequestStart ?? [];
       }
 
+      const request = beginMessagesReplyFetch(
+        queryClient,
+        id,
+        findConvoInAllQueries(queryClient, id)?.lastResponseAt,
+      );
       let result: t.TMessage[];
       try {
         result = await dataService.getMessagesByConvoId(id);
@@ -116,6 +127,7 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
           currentMessages != null &&
           currentMessages !== messagesAtRequestStart
         ) {
+          completeMessagesReplyFetch(queryClient, id, request, false);
           return currentMessages;
         }
 
@@ -134,9 +146,11 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
             `Messages query for convo ${id} returned 404 while cache has a pending assistant tail; path: "${location.pathname}"`,
             currentMessages,
           );
+          completeMessagesReplyFetch(queryClient, id, request, false);
           return currentMessages;
         }
 
+        completeMessagesReplyFetch(queryClient, id, request, false);
         throw error;
       }
 
@@ -146,6 +160,7 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
         currentMessages != null &&
         currentMessages !== messagesAtRequestStart
       ) {
+        completeMessagesReplyFetch(queryClient, id, request, false);
         return currentMessages;
       }
 
@@ -165,6 +180,7 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
         );
       }
 
+      completeMessagesReplyFetch(queryClient, id, request, stableMessages === result);
       return stableMessages;
     },
     {

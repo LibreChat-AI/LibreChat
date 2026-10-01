@@ -53,7 +53,7 @@ function ExternalEventTrigger({
   let body: ReactNode;
   if (details == null) {
     body = (
-      <div className="flex items-center gap-2 py-1 text-sm text-text-secondary">
+      <div className="text-text-secondary flex items-center gap-2 py-1 text-sm">
         <SystemEventHeader icon={<TriggerIcon kind="external_event" />} label={label} />
       </div>
     );
@@ -71,20 +71,20 @@ function ExternalEventTrigger({
             <span className="sr-only">{details.occurredAt}</span>
           </Button>
         </CollapsibleTrigger>
-        <CollapsibleContent className="pb-1 pt-0.5 text-xs text-text-secondary">
+        <CollapsibleContent className="text-text-secondary pt-0.5 pb-1 text-xs">
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
             <dt>{localize('com_ui_subagent_event_type')}</dt>
-            <dd className="break-words text-text-primary">{details.eventType}</dd>
+            <dd className="text-text-primary break-words">{details.eventType}</dd>
             <dt>{localize('com_ui_subagent_event_source')}</dt>
-            <dd className="break-words text-text-primary">{details.sourceType}</dd>
+            <dd className="text-text-primary break-words">{details.sourceType}</dd>
             <dt>{localize('com_ui_subagent_event_received')}</dt>
-            <dd className="break-words text-text-primary">
+            <dd className="text-text-primary break-words">
               {new Date(details.occurredAt).toLocaleString()}
             </dd>
             {details.expectedActionToolName != null && (
               <>
                 <dt>{localize('com_ui_subagent_event_expected_action')}</dt>
-                <dd className="break-words text-text-primary">{details.expectedActionToolName}</dd>
+                <dd className="text-text-primary break-words">{details.expectedActionToolName}</dd>
               </>
             )}
           </dl>
@@ -142,7 +142,7 @@ function TriggerMessage({ turn, fullWidth }: { turn: ChildConversationTurn; full
       systemLabel={localize('com_ui_system_event')}
       fullWidth={fullWidth}
     >
-      <div className="flex items-center gap-2 py-1 text-sm text-text-secondary">
+      <div className="text-text-secondary flex items-center gap-2 py-1 text-sm">
         <SystemEventHeader icon={<TriggerIcon kind={turn.trigger.kind} />} label={label} />
       </div>
       {content.length > 0 && (
@@ -158,7 +158,7 @@ function TriggerMessage({ turn, fullWidth }: { turn: ChildConversationTurn; full
         />
       )}
       {turn.trigger.summaryTruncated === true && (
-        <div className="mt-1 text-xs italic text-text-secondary">
+        <div className="text-text-secondary mt-1 text-xs italic">
           {localize('com_ui_subagent_trigger_truncated')}
         </div>
       )}
@@ -246,10 +246,10 @@ function ChildMessage({
         onCancelControl={onCancelControl}
       />
       {detailsLimited && detailState !== 'loading' && (
-        <div className="mt-2 text-xs text-text-secondary">{limitedNotice}</div>
+        <div className="text-text-secondary mt-2 text-xs">{limitedNotice}</div>
       )}
       {detailState === 'loading' && (
-        <div className="mt-2 text-xs text-text-secondary" aria-live="polite">
+        <div className="text-text-secondary mt-2 text-xs" aria-live="polite">
           {localize('com_ui_loading')}
         </div>
       )}
