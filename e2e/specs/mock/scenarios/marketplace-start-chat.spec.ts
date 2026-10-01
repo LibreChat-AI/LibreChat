@@ -66,9 +66,11 @@ test.describe('marketplace start chat', () => {
       await page.getByRole('button', { name, exact: true }).click();
 
       await page.getByRole('button', { name: 'Start Chat' }).click();
-      /** The chat route applies `agent_id` and then drops it from the URL, so the turn's
-       *  request body is what proves which agent the chat started with. */
+      /** The chat route applies `agent_id` on its query-param poll and then drops it from the
+       *  URL, so waiting for it to go is waiting for the agent to be selected. The turn's request
+       *  body is what proves which agent the chat started with. */
       await expect(page).toHaveURL(/\/c\/new/, { timeout: 15_000 });
+      await expect(page).not.toHaveURL(/agent_id=/, { timeout: 15_000 });
 
       const label = `marketplace-start-${Date.now()}`;
       const response = await sendMessage(page, replyPrompt(label));
