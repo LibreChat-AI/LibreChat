@@ -17,7 +17,7 @@ import { NEW_CHAT_PATH } from '../helpers';
 const DRAWER = '#mobile-drawer';
 const SCRIM = '#mobile-drawer-scrim';
 /** The layer inside the scrim button that paints the theme's scrim role. */
-const SCRIM_FILL = `${SCRIM} > span`;
+const SCRIM_FILL = `${SCRIM} > span:first-child`;
 /** WCAG 1.4.11: a boundary that carries meaning needs 3:1 against its surround. */
 const BOUNDARY_CONTRAST = 3;
 /** WCAG 1.4.3: body text needs 4.5:1 against its background. */
@@ -314,28 +314,75 @@ test.describe('mobile drawer controls', () => {
     });
   }
 
-  test('the scrim follows the theme scrim role and shows its focus inside the shell @scenario:mobile-drawer-scrim-role-and-focus', async ({
-    page,
-  }) => {
-    await openDrawer(page, 'light', undefined, true);
-    const scrim = page.locator(SCRIM);
-    /** The dialogs' theme-owned role: surface-overlay at the theme's scrim opacity. */
-    const role = await page.evaluate(() => {
-      const probe = document.createElement('div');
-      probe.className = 'bg-scrim';
-      document.body.append(probe);
-      const color = getComputedStyle(probe).backgroundColor;
-      probe.remove();
-      return color;
-    });
-    await expect(page.locator(SCRIM_FILL)).toHaveCSS('background-color', role);
+  /** Each tag is written out whole: the runner finds a scenario by its literal tag. */
+  const FOCUS_CASES: Array<{ title: string; mode: Mode; definition?: { name: string } }> = [
+    {
+      title:
+        'the scrim follows the theme scrim role and shows its focus in the default light theme @scenario:mobile-drawer-scrim-focus-default-light',
+      mode: 'light',
+    },
+    {
+      title:
+        'the scrim follows the theme scrim role and shows its focus in the default dark theme @scenario:mobile-drawer-scrim-focus-default-dark',
+      mode: 'dark',
+    },
+    {
+      title:
+        'the scrim follows the theme scrim role and shows its focus in the ClickHouse light theme @scenario:mobile-drawer-scrim-focus-clickhouse-light',
+      mode: 'light',
+      definition: clickHouseTheme,
+    },
+    {
+      title:
+        'the scrim follows the theme scrim role and shows its focus in the ClickHouse dark theme @scenario:mobile-drawer-scrim-focus-clickhouse-dark',
+      mode: 'dark',
+      definition: clickHouseTheme,
+    },
+  ];
 
-    /** Keyboard modality, so `:focus-visible` matches as it does for a Tab. */
-    await page.keyboard.press('Shift');
-    await scrim.focus();
-    await expect(scrim).toBeFocused();
-    /** The shell is overflow-hidden, so only an inset indicator actually paints. */
-    const shadow = await scrim.evaluate((node) => getComputedStyle(node).boxShadow);
-    expect(shadow).toContain('inset');
-  });
+  for (const { title, mode, definition } of FOCUS_CASES) {
+    test(title, async ({ page }) => {
+      await openDrawer(page, mode, definition, true);
+      const scrim = page.locator(SCRIM);
+      /** The dialogs' theme-owned role: surface-overlay at the theme's scrim opacity. */
+      const role = await page.evaluate(() => {
+        const probe = document.createElement('div');
+        probe.className = 'bg-scrim';
+        document.body.append(probe);
+        const color = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return color;
+      });
+      await expect(page.locator(SCRIM_FILL)).toHaveCSS('background-color', role);
+
+      /** Keyboard modality, so `:focus-visible` matches as it does for a Tab. */
+      await page.keyboard.press('Shift');
+      await scrim.focus();
+      await expect(scrim).toBeFocused();
+      /**
+       * The shell is overflow-hidden, so only an inset indicator shows, and it has to paint above
+       * the fill. Hit-testing follows paint order, so the topmost layer just inside the scrim's
+       * edge must be the one drawing the inset indicator, and one of its tones has to stand out
+       * from the fill.
+       */
+      const top = await scrim.evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        const hit = document.elementsFromPoint(box.right - 1, box.top + box.height / 2)[0];
+        const fill = node.querySelector(':scope > span:first-child');
+        return {
+          inside: node.contains(hit),
+          shadow: hit ? getComputedStyle(hit).boxShadow : '',
+          fill: fill ? getComputedStyle(fill).backgroundColor : '',
+          page: getComputedStyle(document.body).backgroundColor,
+        };
+      });
+      expect(top.inside).toBe(true);
+      expect(top.shadow).toContain('inset');
+      const tones = top.shadow.match(/rgba?\([^)]*\)/g) ?? [];
+      expect(tones.length).toBeGreaterThan(0);
+      const dimmed = over(top.fill, top.page);
+      const best = Math.max(...tones.map((tone) => contrast(parseRgb(tone).rgb, dimmed)));
+      expect(best).toBeGreaterThanOrEqual(BOUNDARY_CONTRAST);
+    });
+  }
 });
