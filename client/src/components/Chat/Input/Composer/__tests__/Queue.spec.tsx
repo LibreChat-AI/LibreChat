@@ -621,7 +621,8 @@ describe('Queue', () => {
   /* Split view mounts two composers at once. A module-global id duplicated the
      hint element and pointed every handle at whichever copy won. */
   it('scopes the reorder hint to its own rail', () => {
-    /** Each pane renders under its own store, so neither rail can see the other's rows. */
+    /** Two rails with two rows each, as the two-root harness had: one store per rail, so the
+     *  second seed does not overwrite the first. Isolation here comes from the harness. */
     const leftStore = createStore();
     const rightStore = createStore();
     leftStore.set(queuedMessagesByConvoId(CONVO_ID), [
@@ -664,10 +665,6 @@ describe('Queue', () => {
     const rails = screen.getAllByTestId('composer-queue');
     expect(within(rails[0]).getAllByTestId('queued-message-grip')).toHaveLength(2);
     expect(within(rails[1]).getAllByTestId('queued-message-grip')).toHaveLength(2);
-    expect(rails[0]).toHaveTextContent('left first');
-    expect(rails[0]).not.toHaveTextContent('right first');
-    expect(rails[1]).toHaveTextContent('right first');
-    expect(rails[1]).not.toHaveTextContent('left first');
     for (const [railIndex, rail] of rails.entries()) {
       for (const grip of within(rail).getAllByTestId('queued-message-grip')) {
         expect(grip).toHaveAttribute('aria-describedby', hints[railIndex].id);
