@@ -12,7 +12,6 @@ export {
 } from './context/ThemeProvider';
 
 // Export utility functions
-export { readThemeColor } from './utils/color';
 export {
   default as applyTheme,
   applyResolvedTheme,
@@ -43,6 +42,9 @@ export {
 
 // Export theme atoms for persistence
 export { themeModeAtom, themeColorsAtom, themeNameAtom } from './atoms/themeAtoms';
+
+// Read a theme color role for code that paints outside the stylesheet
+export { readThemeColor } from './utils/color';
 
 // Export predefined themes
 export * from './themes';
