@@ -61,6 +61,7 @@ const {
   markNativeCodeToolApprovalRequests,
   markToolApprovalAllowAlways,
   resolveRunToolApprovalAllows,
+  getRunMCPToolAliases,
   agentRunUsesCheckpointer,
   canAgentGraphPause,
   getPluginHookSource,
@@ -4357,6 +4358,7 @@ class AgentClient extends BaseClient {
             {
               policy: appConfig?.endpoints?.[EModelEndpoint.agents]?.toolApproval,
               agents: reachableAgents,
+              aliases: getRunMCPToolAliases(this.run),
               storedTools: resolveRunToolApprovalAllows(
                 appConfig?.endpoints?.[EModelEndpoint.agents]?.toolApproval,
                 this.options.req?.resolvedConversation,

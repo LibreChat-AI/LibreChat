@@ -160,6 +160,8 @@ export interface MarkToolApprovalAllowAlwaysOptions {
   policy: TToolApprovalPolicy | undefined;
   /** Reachable agents of the paused run; their MCP aliases heal `deny`/`ask`. */
   agents?: readonly (ToolAllowAlwaysAgent | null | undefined)[];
+  /** Aliases the paused run discovered at runtime, such as from lazily resolved subagents. */
+  aliases?: readonly MCPToolAlias[];
   /** Tools the conversation already remembers, to keep offers within the cap. */
   storedTools?: readonly string[];
   /** Request context the run resolves programmatic approval hooks with. */
@@ -180,6 +182,7 @@ export function markToolApprovalAllowAlways(
   {
     policy,
     agents,
+    aliases: runAliases = [],
     storedTools = [],
     hookContext = {},
     pluginHookSource,
@@ -188,10 +191,12 @@ export function markToolApprovalAllowAlways(
   if (!isToolAllowAlwaysEnabled(policy)) {
     return payload;
   }
-  const aliases = collectAgentAliases(agents);
+  const aliases = [...collectAgentAliases(agents), ...runAliases];
   const effective = buildEffectiveToolApprovalPolicy(policy, aliases);
-  const stored = new Set(storedTools);
-  let room = getToolAllowAlwaysMaxTools(policy) - stored.size;
+  const maxTools = getToolAllowAlwaysMaxTools(policy);
+  /** Only the prefix the run honors counts as remembered; see `applyConversationToolAllows`. */
+  const stored = new Set(storedTools.slice(0, maxTools));
+  let room = maxTools - stored.size;
   const nameByToolCallId = new Map(
     payload.action_requests.map((request) => [request.tool_call_id, request.name]),
   );

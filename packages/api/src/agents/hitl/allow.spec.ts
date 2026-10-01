@@ -122,6 +122,13 @@ describe('markToolApprovalAllowAlways', () => {
     expect(markToolApprovalAllowAlways(payload, { policy, agents })).toBe(payload);
   });
 
+  it('heals against aliases the run discovered after its agents were collected', () => {
+    const payload = payloadFor(GITHUB_SEARCH);
+    const policy = enabled({ ask: ['legacy_search_mcp_github'] });
+    const aliases = [{ name: GITHUB_SEARCH, aliasName: 'legacy_search_mcp_github' }];
+    expect(markToolApprovalAllowAlways(payload, { policy, agents: [{}], aliases })).toBe(payload);
+  });
+
   it('stops offering new tools once the configured cap is reached', () => {
     const payload = payloadFor(GITHUB_SEARCH, GITLAB_SEARCH, GITHUB_SEARCH);
     const policy = enabled({ allowAlwaysMaxTools: 2 });
@@ -134,6 +141,14 @@ describe('markToolApprovalAllowAlways', () => {
     expect(offers(['other', 'another'])).toEqual([undefined, undefined, undefined]);
     // A tool already remembered costs no room, so it is still offered at the cap.
     expect(offers(['other', GITLAB_SEARCH])).toEqual([undefined, true, undefined]);
+  });
+
+  it('counts only the stored prefix the run honors after the cap is lowered', () => {
+    const payload = payloadFor(GITHUB_SEARCH);
+    const policy = enabled({ allowAlwaysMaxTools: 1 });
+    const storedTools = ['other', GITHUB_SEARCH];
+    expect(applyConversationToolAllows(policy, storedTools)?.allow).toEqual(['other']);
+    expect(markToolApprovalAllowAlways(payload, { policy, storedTools })).toBe(payload);
   });
 
   it('uses the configured tool name length cap', () => {

@@ -219,6 +219,14 @@ export function extractDiscoveredToolsFromHistory(messages: BaseMessage[]): Set<
   return discoveredTools;
 }
 
+/** MCP key-spelling aliases each run knows, including those its lazy subagents reported. */
+const runMCPToolAliases = new WeakMap<object, readonly MCPToolAlias[]>();
+
+/** The run's live alias list, so a pause can be judged against the aliases the run used. */
+export function getRunMCPToolAliases(run: object | null | undefined): readonly MCPToolAlias[] {
+  return run == null ? [] : (runMCPToolAliases.get(run) ?? []);
+}
+
 export interface RunDiscoverySnapshot {
   getDiscoveredTools?: () => string[];
   getRunMessages?: () => BaseMessage[] | undefined;
@@ -3039,6 +3047,7 @@ export async function createRun({
     ...(streamLimits && { streamLimits }),
   };
   const run = await Run.create(runConfig);
+  runMCPToolAliases.set(run, mcpToolAliases);
 
   applyCustomHandoffPromptKeyCompatibility(run, runConfig.graphConfig);
   applyTestRunHook(run, {
