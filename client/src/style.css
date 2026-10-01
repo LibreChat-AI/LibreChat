@@ -1230,7 +1230,7 @@ html {
 
 .markdown blockquote {
   --tw-border-opacity: 1;
-  border-color: rgb(var(--gray-400));
+  border-color: rgb(var(--border-medium));
   border-left-width: 2px;
   line-height: 1rem;
   padding-left: 1rem;
@@ -1245,7 +1245,7 @@ html {
 }
 
 .markdown th {
-  background-color: rgba(236, 236, 241, 0.2);
+  background-color: rgb(var(--table-header-fill));
   border-bottom-width: 1px;
   border-left-width: 1px;
   border-top-width: 1px;
@@ -1258,7 +1258,7 @@ html {
 
 .markdown th:last-child {
   border-right-width: 1px;
-  border-color: #d1d5db;
+  border-color: rgb(var(--border-medium));
   border-top-right-radius: 0.375rem;
 }
 
@@ -1373,13 +1373,10 @@ html {
 }
 .markdown blockquote {
   --tw-border-opacity: 1;
-  border-color: rgb(var(--gray-300));
+  border-color: rgb(var(--border-medium));
   border-left-width: 2px;
   line-height: 1rem;
   padding-left: 1rem;
-}
-.dark .markdown blockquote {
-  border-color: rgb(var(--gray-600));
 }
 .markdown table {
   --tw-border-spacing-x: 0px;
@@ -1387,49 +1384,40 @@ html {
   border-collapse: separate;
   border-spacing: var(--tw-border-spacing-x) var(--tw-border-spacing-y);
   width: 100%;
-  border-color: rgb(var(--gray-300));
+  border-color: rgb(var(--border-medium));
 }
 .markdown th {
-  background-color: rgb(var(--gray-100));
+  background-color: rgb(var(--table-header-fill));
+  color: rgb(var(--table-header-text));
   border-bottom-width: 1px;
   border-left-width: 1px;
   border-top-width: 1px;
-  border-color: rgb(var(--gray-300));
+  border-color: rgb(var(--border-medium));
   padding: 0.25rem 0.75rem;
   font-weight: 600;
 }
-.dark .markdown th {
-  border-color: rgb(var(--gray-600));
-  background-color: rgb(var(--gray-600));
-}
 .markdown th:first-child {
-  border-top-left-radius: 0.75rem;
+  border-top-left-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown th:last-child {
   border-right-width: 1px;
-  border-top-right-radius: 0.75rem;
+  border-top-right-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown td {
   border-bottom-width: 1px;
   border-left-width: 1px;
-  border-color: rgb(var(--gray-300));
+  border-color: rgb(var(--border-medium));
   padding: 0.25rem 0.75rem;
 }
 .markdown td:last-child {
   border-right-width: 1px;
-  border-color: rgb(var(--gray-300));
-}
-.dark .markdown td {
-  border-color: rgb(var(--gray-600));
-}
-.dark .markdown td:last-child {
-  border-color: rgb(var(--gray-600));
+  border-color: rgb(var(--border-medium));
 }
 .markdown tbody tr:last-child td:first-child {
-  border-bottom-left-radius: 0.75rem;
+  border-bottom-left-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown tbody tr:last-child td:last-child {
-  border-bottom-right-radius: 0.75rem;
+  border-bottom-right-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown a {
   text-decoration-line: underline;

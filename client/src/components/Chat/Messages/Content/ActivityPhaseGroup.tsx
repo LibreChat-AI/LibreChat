@@ -799,7 +799,7 @@ export default function ActivityPhaseGroup({
         /** Pinned while open, so a run long enough to scroll keeps its name
          *  at the top of the viewport. The containing block is this card, so
          *  the header stops pinning where its own rows end. */
-        className={cn(isExpanded && 'bg-presentation sticky top-0 z-[1]')}
+        className={cn(isExpanded && 'bg-surface-primary-alt sticky top-0 z-[1]')}
       >
         <div className="flex items-center gap-2 overflow-hidden">
           <button

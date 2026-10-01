@@ -671,7 +671,8 @@ describe('ActivityPhaseGroup open header', () => {
     const pinned = header.parentElement?.parentElement;
     expect(pinned).not.toHaveClass('sticky');
     fireEvent.click(header);
-    expect(pinned).toHaveClass('sticky', 'top-0');
+    expect(pinned).toHaveClass('sticky', 'top-0', 'bg-surface-primary-alt');
+    expect(pinned).not.toHaveClass('bg-presentation');
     expect(screen.getByTestId('activity-phase-panel').firstElementChild).toHaveClass('pl-6');
   });
 });
