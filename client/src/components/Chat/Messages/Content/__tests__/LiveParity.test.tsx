@@ -1631,6 +1631,7 @@ describe('preparation labels across rendered tool cards', () => {
     'file_search',
     Constants.SUBAGENT,
     'image_gen_oai',
+    Constants.CHECK_BACKGROUND_TASK,
   ])('does not present %s as executing while its args are streaming', (name) => {
     const part = toPart({ name, args: '{"intent":"Checking a record","value":"unfinished' });
     const { container } = mount([part], undefined, false);
@@ -1640,9 +1641,9 @@ describe('preparation labels across rendered tool cards', () => {
     } else {
       expect(container.querySelector('.shimmer')).toHaveTextContent(/^Preparing /);
     }
-    expect(container.querySelector('[aria-live]')?.textContent ?? 'Preparing ').not.toMatch(
-      /Running/,
-    );
+    for (const announcement of container.querySelectorAll('[aria-live]')) {
+      expect(announcement).toHaveTextContent(/^Preparing /);
+    }
   });
 
   it('keeps collapsed activity in preparation until dispatch, without a sandbox-startup override', () => {
