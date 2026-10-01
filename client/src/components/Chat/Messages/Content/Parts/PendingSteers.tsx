@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, type TMessage } from 'librechat-data-provider';
 import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
 import useSteerCancel, { useSteerMoveToQueue, useSteerRehome } from '~/hooks/Chat/useSteerCancel';
+import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
 import useSteerEscalate from '~/hooks/Chat/useSteerEscalate';
 import useSteerRecovery from '~/hooks/Chat/useSteerRecovery';
@@ -30,9 +31,10 @@ interface PendingSteersProps {
   /** The pane rendering this tree: its sibling selection picks the branch the
    *  pause check reads, which another pane's selection would get wrong. */
   index?: number;
+  fullWidth?: boolean;
 }
 
-function PendingSteers({ conversationId, index = 0 }: PendingSteersProps) {
+function PendingSteers({ conversationId, index = 0, fullWidth = false }: PendingSteersProps) {
   const localize = useLocalize();
   const { useToast, usePendingSteers, useSteerEscalating, usePaneConversationId } =
     useMessagePartsHost();
@@ -131,7 +133,12 @@ function PendingSteers({ conversationId, index = 0 }: PendingSteersProps) {
   };
 
   return (
-    <div role="list" aria-label={localize('com_ui_steer_in_flight')} data-testid="pending-steers">
+    <div
+      role="list"
+      aria-label={localize('com_ui_steer_in_flight')}
+      className={cn('mx-auto min-w-0 px-4', getMessageRowWidthClass({ fullWidth }))}
+      data-testid="pending-steers"
+    >
       {steers.map((steer) => {
         const deliveryUncertain = steer.deliveryUncertain === true;
         const retrySafe = !isLegacyDeliveryUncertain(steer);

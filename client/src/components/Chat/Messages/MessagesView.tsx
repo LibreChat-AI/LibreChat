@@ -197,7 +197,11 @@ function MessagesViewContent({
                * and Escalate actions would mutate that run while sitting at
                * the destination thread's tail. */}
               {treeConversationId != null && (
-                <PendingSteers conversationId={treeConversationId} index={index} />
+                <PendingSteers
+                  conversationId={treeConversationId}
+                  index={index}
+                  fullWidth={maximizeChatSpace}
+                />
               )}
               <div id="messages-end" className="group h-0 w-full shrink-0" ref={messagesEndRef} />
             </div>
