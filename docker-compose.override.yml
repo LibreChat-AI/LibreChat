@@ -36,9 +36,7 @@ services:
       # Legacy runtime value inherited from docker-compose.yml:
       # MONGO_URI: mongodb://mongodb:27017/LibreChat
       MONGO_URI: ""
-      # Legacy runtime value inherited from docker-compose.yml:
-      # RAG_API_URL: http://rag_api:${RAG_PORT:-8000}
-  RAG_API_URL: http://rag_api:${RAG_PORT:-8000}
+      RAG_API_URL: http://rag_api:${RAG_PORT:-8000}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION: ${AWS_REGION}
@@ -177,17 +175,6 @@ services:
     # Legacy service remains declared in docker-compose.yml but is inactive by default.
     profiles:
       - legacy-mongodb
-
-  rag_api:
-    # Legacy service remains declared in docker-compose.yml but is inactive by default.
-    profiles:
-      - legacy-rag
-
-  vectordb:
-    # Legacy service remains declared in docker-compose.yml but is inactive by default.
-    profiles:
-      - legacy-rag
-
 
 networks:
   infra-network:
