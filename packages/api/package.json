@@ -140,7 +140,7 @@
     "axios": "^1.20.0",
     "connect-redis": "^8.1.0",
     "dedent": "^1.5.3",
-    "dompurify": "^3.4.12",
+    "dompurify": "^3.4.16",
     "eventsource": "^3.0.2",
     "express": "^5.1.0",
     "express-session": "^1.18.2",
