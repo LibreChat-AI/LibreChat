@@ -1241,8 +1241,11 @@ export default function useResumeOnLoad(
    */
   const [resumeRequests, setResumeRequests] = useAtom(resumeRequestsAtom);
   const resumeRequested = !!conversationId && resumeRequests.has(conversationId);
+  /** The route can name a conversation before this pane has loaded it; until then the endpoint
+   *  that decides resumability is the previous conversation's, so the request waits. */
+  const routeConversationLoaded = currentConversation?.conversationId === conversationId;
   useEffect(() => {
-    if (!resumeRequested || !conversationId) {
+    if (!resumeRequested || !conversationId || !routeConversationLoaded) {
       return;
     }
     setResumeRequests((pending) => {
@@ -1267,6 +1270,7 @@ export default function useResumeOnLoad(
   }, [
     conversationId,
     resumeRequested,
+    routeConversationLoaded,
     setResumeRequests,
     resumableEnabled,
     hasActiveSubmissionForThisConvo,

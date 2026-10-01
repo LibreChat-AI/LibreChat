@@ -30,12 +30,13 @@ import { mapAttachments } from '~/utils/map';
 export type ChatStatus = 'submitted' | 'streaming' | 'ready' | 'error';
 
 /**
- * A user turn in the AI SDK's `sendMessage` shape: its text parts, plus where it attaches.
+ * A user turn in the AI SDK's `sendMessage` shape: its text parts, plus the message it attaches
+ * under. It goes to the facade's own chat, as AI SDK `useChat` does, so it names no conversation.
  * File parts are left out because the turn takes its files from the composer, not the message.
  */
 export type SendMessageInput = {
   parts: UITextPart[];
-  metadata?: Partial<Pick<UIMessageMetadata, 'conversationId' | 'parentMessageId'>>;
+  metadata?: Partial<Pick<UIMessageMetadata, 'parentMessageId'>>;
 };
 
 /**
@@ -355,10 +356,9 @@ const toAskProps = (message: TAskProps | SendMessageInput): TAskProps => {
   if (!('parts' in message)) {
     return message;
   }
-  const { conversationId, parentMessageId } = message.metadata ?? {};
+  const { parentMessageId } = message.metadata ?? {};
   return {
     text: message.parts.map((part) => part.text).join(''),
-    ...(conversationId !== undefined && { conversationId }),
     /** A root message's view carries a `null` parent, which `ask` would read as "append to the
      *  branch tail"; the turn asked to attach at the root. */
     ...(parentMessageId !== undefined && {

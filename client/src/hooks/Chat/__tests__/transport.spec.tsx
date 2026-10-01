@@ -1,9 +1,9 @@
 import React from 'react';
-import { useAtomValue, getDefaultStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
-import { RecoilRoot, useRecoilValue } from 'recoil';
+import { useAtomValue, getDefaultStore } from 'jotai';
 import { QueryKeys, request } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type {
   TEnqueueAgentQueuedTurnRequest,
@@ -513,7 +513,8 @@ describe('chat transport boundary', () => {
       useResumeOnLoad('convo-1', helpers.getMessages, 0, true);
       const submission = useRecoilValue(store.submissionByIndex(0));
       useResumableSSE(submission, helpers, false, 0);
-      return useChat();
+      const showConversation = useSetRecoilState(store.conversationByIndex(0));
+      return { ...useChat(), showConversation };
     };
 
     const seedConversation = ({ set }: MutableSnapshot) =>
@@ -569,8 +570,11 @@ describe('chat transport boundary', () => {
       queryClient.setQueryData([QueryKeys.messages, 'convo-1'], [buildSubmission().userMessage]);
     };
 
-    const renderPane = (transport: Transport) => {
-      const Wrapper = createWrapper(transport, seedConversation, seedStartupConfig);
+    const renderPane = (
+      transport: Transport,
+      seed: (snapshot: MutableSnapshot) => void = seedConversation,
+    ) => {
+      const Wrapper = createWrapper(transport, seed, seedStartupConfig);
       return renderHook(useResumablePane, {
         wrapper: ({ children }) => (
           <Wrapper>
@@ -611,6 +615,36 @@ describe('chat transport boundary', () => {
       await waitFor(() => expect(statusReads()).toBe(2));
       expect(fake.streams).toHaveLength(0);
       expect(result.current.status).toBe('ready');
+    });
+
+    it('holds a request until the pane has loaded the conversation the route names', async () => {
+      const store$ = getDefaultStore();
+      const fake = createFakeTransport();
+      /** The pane still shows the Assistants conversation it is navigating away from. */
+      const { result } = renderPane(fake.transport, ({ set }) =>
+        set(store.conversationByIndex(0), {
+          conversationId: 'assistants-convo',
+          endpoint: 'assistants',
+        } as TConversation),
+      );
+      status = runningStatus();
+
+      await act(async () => {
+        await result.current.resumeStream();
+      });
+      expect([...store$.get(resumeRequestsAtom)]).toEqual(['convo-1']);
+      expect(fake.streams).toHaveLength(0);
+
+      act(() =>
+        result.current.showConversation({
+          conversationId: 'convo-1',
+          endpoint: 'agents',
+        } as TConversation),
+      );
+
+      await waitFor(() => expect(fake.streams).toHaveLength(1));
+      expect(fake.streams[0].url).toContain('resume=true');
+      expect([...store$.get(resumeRequestsAtom)]).toEqual([]);
     });
 
     it("answers its own conversation's request and leaves another pane's pending", async () => {
