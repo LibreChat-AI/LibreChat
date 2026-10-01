@@ -72,12 +72,28 @@ node -e "console.log(require('crypto').randomBytes(96).toString('base64'))"
 | `GCP_KMS_LOCATION` | `europe-west1` |
 | `GCP_KMS_KEY_RING` | `mongodb-csfle` |
 | `GCP_KMS_KEY_NAME` | `csfle-cmk` |
+| `CSFLE_GCP_USE_ADC` | `true` to force ADC / GKE Workload Identity Federation |
 | `CSFLE_GCP_SERVICE_ACCOUNT_FILE` | `/run/secrets/csfle-sa.json` *(optional)* |
 
 **GCP auth resolution order** (when `GCP_KMS_PROJECT_ID` is set):
-1. `CSFLE_GCP_SERVICE_ACCOUNT_FILE` — path to a GCP service account JSON key file (preferred)
-2. `GOOGLE_SERVICE_KEY_FILE` — fallback to the shared GCP key file used by other app integrations
-3. Neither set → **ADC / K8s Workload Identity** (recommended in production, no file needed)
+1. `CSFLE_GCP_USE_ADC=true` — **ADC / GKE Workload Identity Federation**, ignoring both file variables
+2. `CSFLE_GCP_SERVICE_ACCOUNT_FILE` — path to a GCP service account JSON key file
+3. `GOOGLE_SERVICE_KEY_FILE` — fallback to the shared GCP key file used by other app integrations
+4. Neither set → **ADC / K8s Workload Identity** (recommended in production, no file needed)
+
+The ADC option supports GKE Workload Identity Federation direct resource access:
+grant the KMS role directly to the Kubernetes ServiceAccount principal and set
+`CSFLE_GCP_USE_ADC=true`, without creating a Google service account or adding an
+`iam.gke.io/gcp-service-account` annotation. The startup log reports the resolved
+source as `ADC/WIF`, `CSFLE_GCP_SERVICE_ACCOUNT_FILE`, or
+`GOOGLE_SERVICE_KEY_FILE`. If ADC is enabled alongside the CSFLE-specific file
+variable, LibreChat logs a warning and ADC wins; `GOOGLE_SERVICE_KEY_FILE` is
+ignored intentionally because it may be used by Vertex AI.
+
+ADC requires the `gcp-metadata` package to be resolvable from the top-level
+`node_modules` directory. It is declared explicitly for the backend because the
+MongoDB driver's optional peer dependency otherwise may not be installed where
+the driver can resolve it; without it, ADC can fail silently at encryption time.
 
 The JSON file must contain `client_email` and `private_key`. If a path is configured but the file is missing, unreadable, or malformed, LibreChat throws an explicit startup error naming the env var and path.
 
@@ -114,7 +130,7 @@ The JSON file must contain `client_email` and `private_key`. If a path is config
 
 **Auth options** (mutually exclusive, use one):
 
-- **K8s Workload Identity / ADC** *(recommended in production)* — leave `CSFLE_GCP_SERVICE_ACCOUNT_FILE` and `GOOGLE_SERVICE_KEY_FILE` unset. libmongocrypt picks up credentials from the environment automatically.
+- **K8s Workload Identity / ADC** *(recommended in production)* — set `CSFLE_GCP_USE_ADC=true`. This explicitly selects metadata-server credentials and ignores both file variables, which is useful when `GOOGLE_SERVICE_KEY_FILE` is set for Vertex AI.
 - **Service account JSON file** *(local docker / CI)* — mount the key file into the container and set `CSFLE_GCP_SERVICE_ACCOUNT_FILE=/path/to/sa.json`.
 
 ```yaml

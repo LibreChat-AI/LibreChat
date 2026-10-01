@@ -1,9 +1,17 @@
 'use strict';
 
 const fs = require('fs');
+const { isEnabled } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 
 let providerSelectionLogged = false;
+let credentialSourceLogged = false;
+
+function logCredentialSource(source) {
+  if (credentialSourceLogged) return;
+  logger.info(`[CSFLE] GCP KMS credential source: ${source}`);
+  credentialSourceLogged = true;
+}
 
 /**
  * Normalises a GCP service-account `private_key` value for libmongocrypt.
@@ -62,14 +70,28 @@ function normalisePemToBase64(raw, context) {
  * @returns {{ email: string, privateKey: string } | null}
  */
 function loadGcpCredentials() {
+  if (isEnabled(process.env.CSFLE_GCP_USE_ADC)) {
+    if (process.env.CSFLE_GCP_SERVICE_ACCOUNT_FILE) {
+      logger.warn(
+        '[CSFLE] CSFLE_GCP_USE_ADC=true overrides CSFLE_GCP_SERVICE_ACCOUNT_FILE; using ADC/WIF',
+      );
+    }
+    logCredentialSource('ADC/WIF');
+    return null;
+  }
+
   const filePath =
     process.env.CSFLE_GCP_SERVICE_ACCOUNT_FILE || process.env.GOOGLE_SERVICE_KEY_FILE || null;
 
-  if (!filePath) return null;
+  if (!filePath) {
+    logCredentialSource('ADC/WIF');
+    return null;
+  }
 
   const sourceVar = process.env.CSFLE_GCP_SERVICE_ACCOUNT_FILE
     ? 'CSFLE_GCP_SERVICE_ACCOUNT_FILE'
     : 'GOOGLE_SERVICE_KEY_FILE';
+  logCredentialSource(sourceVar);
   const context = `GCP service account file at ${filePath} (from ${sourceVar})`;
 
   let raw;
@@ -107,10 +129,12 @@ function loadGcpCredentials() {
  * compatibility:
  *
  * GCP mode (when GCP_KMS_PROJECT_ID is set):
- *   - If CSFLE_GCP_SERVICE_ACCOUNT_FILE or GOOGLE_SERVICE_KEY_FILE is set,
+ *   - If CSFLE_GCP_USE_ADC is enabled, uses ADC / Workload Identity and
+ *     ignores both credential file variables.
+ *   - Otherwise, if CSFLE_GCP_SERVICE_ACCOUNT_FILE or GOOGLE_SERVICE_KEY_FILE is set,
  *     reads the JSON key file and supplies explicit credentials to libmongocrypt.
  *     The private_key PEM value is automatically normalised to bare base64.
- *   - Otherwise falls back to ADC / Workload Identity (kmsProviders.gcp = {}).
+ *   - Otherwise falls back to ADC / Workload Identity.
  *
  * Local mode (dev / CI):
  *   - Requires MONGO_CSFLE_LOCAL_MASTER_KEY (base64-encoded 96-byte key).

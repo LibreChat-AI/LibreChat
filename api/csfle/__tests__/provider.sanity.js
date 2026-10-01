@@ -255,6 +255,67 @@ assert('uses ADC when no file vars set', () => {
   );
 });
 
+assert('explicit ADC overrides both credential files', () => {
+  const missingPath = path.join(os.tmpdir(), `csfle-missing-${Date.now()}.json`);
+  withEnv(
+    {
+      CSFLE_KMS_PROVIDER: 'gcp',
+      CSFLE_GCP_USE_ADC: 'true',
+      GCP_KMS_PROJECT_ID: 'my-project',
+      GCP_KMS_KEY_NAME: 'my-key',
+      CSFLE_GCP_SERVICE_ACCOUNT_FILE: missingPath,
+      GOOGLE_SERVICE_KEY_FILE: missingPath,
+    },
+    () => {
+      const result = buildKmsProviders();
+      assertEqual(result.kmsProviders.gcp.email, undefined);
+      assertEqual(result.kmsProviders.gcp.privateKey, undefined);
+      assertEqual(Object.keys(result.kmsProviders.gcp).length, 0);
+    },
+  );
+});
+
+assert('explicit ADC works without credential files', () => {
+  withEnv(
+    {
+      CSFLE_KMS_PROVIDER: 'gcp',
+      CSFLE_GCP_USE_ADC: 'TRUE',
+      GCP_KMS_PROJECT_ID: 'my-project',
+      GCP_KMS_KEY_NAME: 'my-key',
+      CSFLE_GCP_SERVICE_ACCOUNT_FILE: undefined,
+      GOOGLE_SERVICE_KEY_FILE: undefined,
+    },
+    () => {
+      assertEqual(Object.keys(buildKmsProviders().kmsProviders.gcp).length, 0);
+    },
+  );
+});
+
+assert('false, empty, and whitespace ADC values preserve file precedence', () => {
+  const p = tmpFile(
+    JSON.stringify({
+      client_email: 'file@proj.iam',
+      private_key: Buffer.from('file-key').toString('base64'),
+    }),
+  );
+  cleanup.push(p);
+  for (const flag of ['false', '', '   ']) {
+    withEnv(
+      {
+        CSFLE_KMS_PROVIDER: 'gcp',
+        CSFLE_GCP_USE_ADC: flag,
+        GCP_KMS_PROJECT_ID: 'my-project',
+        GCP_KMS_KEY_NAME: 'my-key',
+        CSFLE_GCP_SERVICE_ACCOUNT_FILE: p,
+        GOOGLE_SERVICE_KEY_FILE: undefined,
+      },
+      () => {
+        assertEqual(buildKmsProviders().kmsProviders.gcp.email, 'file@proj.iam');
+      },
+    );
+  }
+});
+
 assert('explicit GCP provider returns GCP configuration', () => {
   withEnv(
     {
@@ -317,6 +378,24 @@ assert('accepts case-insensitive and trimmed provider values', () => {
     },
     () => {
       assertEqual(buildKmsProviders().provider, 'local');
+    },
+  );
+});
+
+assert('ADC flag does not affect local mode', () => {
+  withEnv(
+    {
+      CSFLE_KMS_PROVIDER: 'local',
+      CSFLE_GCP_USE_ADC: 'true',
+      GCP_KMS_PROJECT_ID: 'gcp-project',
+      GCP_KMS_KEY_NAME: 'gcp-key',
+      MONGO_CSFLE_LOCAL_MASTER_KEY: localKey,
+    },
+    () => {
+      assertEqual(buildKmsProviders().provider, 'local');
+      if (!buildKmsProviders().kmsProviders.local?.key) {
+        throw new Error('local key buffer missing');
+      }
     },
   );
 });
