@@ -21,7 +21,6 @@ const IMAGE_URL = 'https://media.e2e.invalid/media.png';
 const IMAGE_NAME = 'media.png';
 const PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAHUlEQVQ4jWNwaDjwnxLMMGrA/9EwODAaBg3DIgwACY9/HwbtciYAAAAASUVORK5CYII=';
-const BLACK_SCRIM = 'rgba(0, 0, 0, 0.9)';
 const WHITE_INK = 'rgb(255, 255, 255)';
 
 /** A theme that moves both media roles off black and white, to prove they are reachable. */
@@ -109,6 +108,31 @@ const scrimColor = (dialog: Locator) =>
 
 const inkOf = (control: Locator) => control.evaluate((node) => getComputedStyle(node).color);
 
+/**
+ * The RGBA a colour paints, whatever syntax the browser serialises it in: an alpha utility
+ * computes to `oklab(0 0 0 / 0.9)` where the same colour written by hand reads `rgba(...)`.
+ */
+const painted = (page: Page, color: string): Promise<number[]> =>
+  page.evaluate((value) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      return [];
+    }
+    context.fillStyle = value;
+    context.fillRect(0, 0, 1, 1);
+    return Array.from(context.getImageData(0, 0, 1, 1).data);
+  }, color);
+
+/** Both colours paint the same pixel, within the one-step rounding of an oklab round trip. */
+async function expectSamePaint(page: Page, actual: string, expected: string) {
+  const [got, want] = await Promise.all([painted(page, actual), painted(page, expected)]);
+  expect(got).toHaveLength(4);
+  got.forEach((channel, index) => expect(Math.abs(channel - want[index])).toBeLessThanOrEqual(1));
+}
+
 /** Opens the message image lightbox and reads its scrim and close control at rest and on hover. */
 async function lightboxPaint(page: Page, conversationId: string, mode: Mode) {
   await page.goto(`/c/${conversationId}?${THEME_PARAM}=${mode}`);
@@ -124,6 +148,7 @@ async function lightboxPaint(page: Page, conversationId: string, mode: Mode) {
   await expect(close).toBeVisible();
 
   const scrim = await scrimColor(dialog);
+  expect(scrim).not.toBe('');
   const ink = await inkOf(close);
   await close.hover();
   const hoverInk = await inkOf(close);
@@ -143,11 +168,9 @@ test.describe('media overlay roles', () => {
 
     try {
       for (const mode of MODES) {
-        expect(await lightboxPaint(page, conversationId, mode)).toEqual({
-          scrim: BLACK_SCRIM,
-          ink: WHITE_INK,
-          hoverInk: WHITE_INK,
-        });
+        const { scrim, ...controls } = await lightboxPaint(page, conversationId, mode);
+        await expectSamePaint(page, scrim, 'rgb(0 0 0 / 0.9)');
+        expect(controls).toEqual({ ink: WHITE_INK, hoverInk: WHITE_INK });
       }
     } finally {
       await deleteConversations([conversationId]);
@@ -164,9 +187,10 @@ test.describe('media overlay roles', () => {
 
     try {
       for (const mode of MODES) {
-        const paint = await lightboxPaint(page, conversationId, mode);
+        const { scrim, ...controls } = await lightboxPaint(page, conversationId, mode);
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
-        expect(paint).toEqual({ scrim: BLACK_SCRIM, ink: WHITE_INK, hoverInk: WHITE_INK });
+        await expectSamePaint(page, scrim, 'rgb(0 0 0 / 0.9)');
+        expect(controls).toEqual({ ink: WHITE_INK, hoverInk: WHITE_INK });
       }
     } finally {
       await deleteConversations([conversationId]);
@@ -182,15 +206,13 @@ test.describe('media overlay roles', () => {
     await serveImage(page);
 
     try {
-      for (const [mode, scrim, ink] of [
-        ['light', 'rgba(20, 30, 40, 0.9)', 'rgb(250, 240, 200)'],
-        ['dark', 'rgba(40, 20, 30, 0.9)', 'rgb(200, 240, 250)'],
+      for (const [mode, expectedScrim, ink] of [
+        ['light', 'rgb(20 30 40 / 0.9)', 'rgb(250, 240, 200)'],
+        ['dark', 'rgb(40 20 30 / 0.9)', 'rgb(200, 240, 250)'],
       ] as const) {
-        expect(await lightboxPaint(page, conversationId, mode)).toEqual({
-          scrim,
-          ink,
-          hoverInk: ink,
-        });
+        const { scrim, ...controls } = await lightboxPaint(page, conversationId, mode);
+        await expectSamePaint(page, scrim, expectedScrim);
+        expect(controls).toEqual({ ink, hoverInk: ink });
       }
     } finally {
       await deleteConversations([conversationId]);
@@ -226,7 +248,7 @@ test.describe('media overlay roles', () => {
         const layer = overlay?.previousElementSibling;
         return layer ? getComputedStyle(layer).backgroundColor : '';
       });
-      expect(backdrop).toBe('rgba(0, 0, 0, 0.4)');
+      await expectSamePaint(page, backdrop, 'rgb(0 0 0 / 0.4)');
 
       await input.dispatchEvent('dragleave', { dataTransfer });
     }
