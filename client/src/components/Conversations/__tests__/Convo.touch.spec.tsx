@@ -9,6 +9,7 @@ let mockCloseMenu: () => void = () => undefined;
 
 jest.mock('@librechat/client', () => ({
   useMediaQuery: () => mockIsSmallScreen,
+  useRemScale: () => 1,
   useToastContext: () => ({ showToast: jest.fn() }),
   Spinner: () => <div data-testid="spinner" />,
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (

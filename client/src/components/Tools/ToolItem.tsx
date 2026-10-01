@@ -29,26 +29,26 @@ function ToolItem({ tool, onAddTool, onRemoveTool, isInstalled = false }: ToolIt
   const icon = (tool as AgentToolType).metadata?.icon || (tool as TPlugin).icon;
 
   return (
-    <div className="flex flex-col gap-4 rounded border border-border-medium bg-transparent p-6">
+    <div className="border-border-medium flex flex-col gap-4 rounded border bg-transparent p-6">
       <div className="flex gap-4">
-        <div className="h-[70px] w-[70px] shrink-0">
+        <div className="h-[4.375rem] w-[4.375rem] shrink-0">
           <div className="relative h-full w-full">
             {icon ? (
               <img
                 src={icon}
                 alt={localize('com_ui_logo', { 0: name })}
-                className="h-full w-full rounded-[5px] bg-surface-fixed"
+                className="bg-surface-fixed h-full w-full rounded-[0.3125rem]"
               />
             ) : (
-              <div className="flex h-full w-full items-center justify-center rounded-[5px] border border-border-medium bg-transparent">
-                <Wrench className="h-8 w-8 text-text-secondary" />
+              <div className="border-border-medium flex h-full w-full items-center justify-center rounded-[0.3125rem] border bg-transparent">
+                <Wrench className="text-text-secondary h-8 w-8" />
               </div>
             )}
-            <div className="absolute inset-0 rounded-[5px] ring-1 ring-inset ring-border-light"></div>
+            <div className="ring-border-light absolute inset-0 rounded-[0.3125rem] ring-1 ring-inset"></div>
           </div>
         </div>
         <div className="flex min-w-0 flex-col items-start justify-between">
-          <div className="mb-2 line-clamp-1 max-w-full text-lg leading-5 text-text-primary">
+          <div className="text-text-primary mb-2 line-clamp-1 max-w-full text-lg leading-5">
             {name}
           </div>
           {!isInstalled ? (
@@ -78,7 +78,7 @@ function ToolItem({ tool, onAddTool, onRemoveTool, isInstalled = false }: ToolIt
           )}
         </div>
       </div>
-      <div className="line-clamp-3 h-[60px] text-sm text-text-secondary">{description}</div>
+      <div className="text-text-secondary line-clamp-3 h-[3.75rem] text-sm">{description}</div>
     </div>
   );
 }

@@ -139,7 +139,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({
       {allowExecution === true && toolCalls && toolCalls.length > 0 && (
         <>
           <div className="border-border-light bg-surface-code border-t p-4 text-xs">
-            <div className="text-text-secondary mb-1 text-[10px] font-medium tracking-wide uppercase">
+            <div className="text-text-secondary mb-1 text-[0.625rem] font-medium tracking-wide uppercase">
               {localize('com_ui_output')}
             </div>
             <div className="text-text-primary flex flex-col-reverse">

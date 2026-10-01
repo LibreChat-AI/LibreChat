@@ -119,7 +119,7 @@ export default function MessageRow({
         <div className={cn('flex w-full flex-col gap-1', isUserSide && 'items-end')}>
           <div
             className={cn(
-              'flex min-h-[20px] max-w-full grow flex-col gap-0',
+              'flex min-h-[1.25rem] max-w-full grow flex-col gap-0',
               isUserSide && !isEditing
                 ? cn(
                     'rounded-theme-surface rounded-br-theme-control px-theme-normal w-fit',

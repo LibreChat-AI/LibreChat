@@ -1,6 +1,6 @@
 import { Feather } from 'lucide-react';
 import { EModelEndpoint, alternateName } from 'librechat-data-provider';
-import { Sparkles, ProviderIcon, getProviderIconDef } from '@librechat/client';
+import { pxToRem, Sparkles, ProviderIcon, getProviderIconDef } from '@librechat/client';
 import type { IconProps } from '~/common';
 import { useProviderIcon } from '~/hooks/Endpoint';
 import { cn } from '~/utils';
@@ -28,17 +28,17 @@ const MinimalIcon: React.FC<IconProps> = (props) => {
       title={name}
       aria-hidden="true"
       style={{
-        width: size,
-        height: size,
+        width: pxToRem(size),
+        height: pxToRem(size),
       }}
       className={cn(
-        'relative flex items-center justify-center rounded-sm text-text-secondary',
+        'text-text-secondary relative flex items-center justify-center rounded-sm',
         props.className ?? '',
       )}
     >
       {icon}
       {error === true && (
-        <span className="absolute right-0 top-[20px] -mr-2 flex h-4 w-4 items-center justify-center rounded-full border border-surface-primary bg-status-error-strong text-[10px] text-text-on-status">
+        <span className="border-surface-primary bg-status-error-strong text-text-on-status absolute top-[1.25rem] right-0 -mr-2 flex h-4 w-4 items-center justify-center rounded-full border text-[0.625rem]">
           !
         </span>
       )}

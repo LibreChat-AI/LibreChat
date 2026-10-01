@@ -296,7 +296,7 @@ export default function ActionsInput({
           variant="submit"
           onClick={saveAction}
           disabled={!functions || !functions.length}
-          className="min-w-[100px]"
+          className="min-w-[6.25rem]"
         >
           {getButtonContent()}
         </Button>
@@ -319,7 +319,7 @@ export default function ActionsInput({
               spellCheck="false"
               placeholder={localize('com_ui_enter_openapi_schema')}
               aria-label={localize('com_ui_schema')}
-              className="min-h-0 flex-1 resize-none border-0 bg-transparent p-4 font-mono text-[13px] leading-relaxed focus-visible:ring-0"
+              className="min-h-0 flex-1 resize-none border-0 bg-transparent p-4 font-mono text-[0.8125rem] leading-relaxed focus-visible:ring-0"
             />
           </div>
           {validationError && (

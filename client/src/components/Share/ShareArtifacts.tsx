@@ -1,19 +1,16 @@
 import { lazy, Suspense, useState, useMemo } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
-import {
-  useMediaQuery,
-  ResizablePanel,
-  ResizableHandleAlt,
-  ResizablePanelGroup,
-} from '@librechat/client';
+import { ResizablePanel, ResizableHandleAlt, ResizablePanelGroup } from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
 import type { ArtifactsContextValue } from '~/Providers';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
 import { artifactsUndocked } from '~/components/Artifacts/state';
 import { ArtifactsProvider, EditorProvider } from '~/Providers';
+import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import { useGetSharedStartupConfig } from '~/data-provider';
+import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import { isCodeOnlyArtifact } from '~/utils/artifacts';
 import { useShareContext } from '~/Providers';
 import { getLatestText } from '~/utils';
@@ -64,7 +61,7 @@ export function ShareArtifactsContainer({
   const artifacts = useRecoilValue(store.artifactsState);
   const artifactsVisibility = useRecoilValue(store.artifactsVisibility);
   const currentArtifactId = useRecoilValue(store.currentArtifactId);
-  const isSmallScreen = useMediaQuery('(max-width: 1023px)');
+  const isSmallScreen = useScaledMaxWidth(ARTIFACTS_SHEET_MAX_WIDTH);
   const isUndocked = useAtomValue(artifactsUndocked);
   const [artifactPanelSize, setArtifactPanelSize] = useState(getInitialArtifactPanelSize);
   /* This is the shared conversation's identity, not the chat tab's Recoil
@@ -197,7 +194,7 @@ function ShareArtifactsPanel({ contextValue }: ShareArtifactsPanelProps) {
 function ShareArtifactsOverlay({ contextValue }: ShareArtifactsPanelProps) {
   return (
     <div
-      className="fixed inset-y-0 right-0 z-40 flex w-full max-w-full sm:max-w-[420px]"
+      className="fixed inset-y-0 right-0 z-40 flex w-full max-w-full sm:max-w-[26.25rem]"
       role="complementary"
       aria-label="Artifacts panel"
     >

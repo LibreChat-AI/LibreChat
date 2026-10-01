@@ -9,7 +9,7 @@ function ShortcutKbd({ children, className = '' }: { children: ReactNode; classN
   return (
     <kbd
       className={cn(
-        'inline-flex h-[22px] min-w-[22px] items-center justify-center rounded-md border border-border-light bg-surface-primary-alt px-1.5 font-sans text-[11px] font-medium leading-none text-text-primary',
+        'border-border-light bg-surface-primary-alt text-text-primary inline-flex h-[1.375rem] min-w-[1.375rem] items-center justify-center rounded-md border px-1.5 font-sans text-[0.6875rem] leading-none font-medium',
         className,
       )}
     >

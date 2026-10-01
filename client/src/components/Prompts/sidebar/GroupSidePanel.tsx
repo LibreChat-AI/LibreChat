@@ -62,7 +62,7 @@ export default function GroupSidePanel({
   return (
     <div id="prompts-panel" className={cn('flex h-full w-full flex-col', className)}>
       {onClose && (
-        <div className="flex items-center justify-end px-2 py-[2px] md:py-2">
+        <div className="flex items-center justify-end px-2 py-[0.125rem] md:py-2">
           <TooltipAnchor
             description={localize('com_nav_close_sidebar')}
             render={

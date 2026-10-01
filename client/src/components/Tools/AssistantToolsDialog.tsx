@@ -158,10 +158,10 @@ function AssistantToolsDialog({
     >
       <OGDialogContent
         className="bg-surface-dialog gap-0 overflow-hidden overflow-y-auto p-0 text-left max-sm:h-full sm:mx-7 sm:my-8 sm:max-w-2xl lg:max-w-5xl xl:max-w-7xl"
-        style={{ minHeight: '610px' }}
+        style={{ minHeight: 'min(38.125rem, 90vh)' }}
       >
         <div>
-          <div className="border-border-medium flex items-center justify-between border-b-[1px] px-4 pt-5 pb-4 sm:p-6">
+          <div className="border-border-medium flex items-center justify-between border-b-[0.0625rem] px-4 pt-5 pb-4 sm:p-6">
             <div className="flex items-center">
               <div className="text-center sm:text-left">
                 <OGDialogTitle className="text-lg leading-6 font-medium">
@@ -191,21 +191,21 @@ function AssistantToolsDialog({
           )}
           <div className="p-4 sm:p-6 sm:pt-4">
             <div className="mt-4 flex flex-col gap-4">
-              <div className="flex items-center justify-center space-x-4">
-                <Search className="text-text-tertiary h-6 w-6" aria-hidden="true" />
+              <div className="flex min-w-0 items-center justify-center gap-4">
+                <Search className="text-text-tertiary h-6 w-6 shrink-0" aria-hidden="true" />
                 <Input
                   type="text"
                   value={searchValue}
                   onChange={handleSearch}
                   placeholder={localize('com_nav_tool_search')}
                   aria-label={localize('com_nav_tool_search')}
-                  className="border-border-medium text-text-primary w-64 rounded border bg-transparent px-2 py-1"
+                  className="border-border-medium text-text-primary max-w-64 min-w-0 flex-1 rounded border bg-transparent px-2 py-1"
                 />
               </div>
               <div
                 ref={gridRef}
                 className="grid grid-cols-1 grid-rows-2 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
-                style={{ minHeight: '410px' }}
+                style={{ minHeight: '25.625rem' }}
               >
                 {filteredTools &&
                   filteredTools
@@ -229,7 +229,7 @@ function AssistantToolsDialog({
                   onChangePage={handleChangePage}
                 />
               ) : (
-                <div style={{ height: '21px' }}></div>
+                <div className="h-[1.3125rem]"></div>
               )}
             </div>
           </div>

@@ -185,7 +185,7 @@ export default function ExecuteCode({
               <pre
                 ref={codePaneRef}
                 onScroll={onCodePaneScroll}
-                className="bg-surface-code-body max-h-[300px] overflow-auto p-4 font-mono text-xs"
+                className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
               >
                 <code className={`hljs language-${lang} !whitespace-pre`}>
                   {highlighted ?? code}
@@ -206,12 +206,12 @@ export default function ExecuteCode({
                   code && 'border-border-light border-t',
                 )}
               >
-                <div className="text-text-secondary mb-1.5 text-[10px] font-medium tracking-wide uppercase">
+                <div className="text-text-secondary mb-1.5 text-[0.625rem] font-medium tracking-wide uppercase">
                   {localize('com_ui_output')}
                 </div>
                 <div
                   className={cn(
-                    'max-h-[200px] overflow-auto',
+                    'max-h-[12.5rem] overflow-auto',
                     outputHasError ? 'text-status-error' : 'text-text-primary',
                   )}
                 >

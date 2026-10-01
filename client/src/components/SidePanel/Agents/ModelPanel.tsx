@@ -144,7 +144,7 @@ export default function ModelPanel({
           <label
             id="provider-label"
             className={cn(
-              'text-text-secondary mb-1 block text-[11px] font-medium tracking-wide uppercase',
+              'text-text-secondary mb-1 block text-[0.6875rem] font-medium tracking-wide uppercase',
               modelsPending && 'opacity-60',
             )}
             htmlFor="provider"
@@ -213,7 +213,7 @@ export default function ModelPanel({
           <label
             id="model-label"
             className={cn(
-              'text-text-secondary mb-1 block text-[11px] font-medium tracking-wide uppercase',
+              'text-text-secondary mb-1 block text-[0.6875rem] font-medium tracking-wide uppercase',
               (!provider || modelsPending) && 'opacity-60',
             )}
             htmlFor="model"

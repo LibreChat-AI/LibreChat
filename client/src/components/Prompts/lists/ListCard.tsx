@@ -28,7 +28,7 @@ export default function ListCard({
     : localize('com_ui_prompt_group_button_no_category', { name });
 
   return (
-    <div className="relative flex w-full cursor-pointer flex-col gap-2 rounded-xl px-3 pt-3 pb-4 text-start align-top text-[15px]">
+    <div className="relative flex w-full cursor-pointer flex-col gap-2 rounded-xl px-3 pt-3 pb-4 text-start align-top text-[0.9375rem]">
       {onClick && (
         <button
           type="button"

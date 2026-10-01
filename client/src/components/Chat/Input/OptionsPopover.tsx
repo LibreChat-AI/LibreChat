@@ -44,7 +44,7 @@ export default function OptionsPopover({
 
   const localize = useLocalize();
   const cardStyle =
-    'shadow-xl rounded-md min-w-[75px] font-normal bg-surface-secondary border-border-light border text-text-primary';
+    'shadow-xl rounded-md min-w-[4.6875rem] font-normal bg-surface-secondary border-border-light border text-text-primary';
 
   if (!visible) {
     return null;
@@ -57,18 +57,18 @@ export default function OptionsPopover({
           <div
             className={cn(
               cardStyle,
-              'flex w-full flex-col overflow-hidden rounded-none border-s-0 border-t bg-surface-secondary px-0 pb-[10px] md:rounded-md md:border lg:w-[736px]',
+              'bg-surface-secondary flex w-full flex-col overflow-hidden rounded-none border-s-0 border-t px-0 pb-[0.625rem] md:rounded-md md:border lg:w-[46rem] lg:max-w-[calc(100vw-2rem)]',
             )}
           >
-            <div className="flex w-full items-center bg-surface-tertiary px-2 py-2">
+            <div className="bg-surface-tertiary flex w-full items-center px-2 py-2">
               {presetsDisabled ? null : (
                 <Button
                   variant="default"
                   type="button"
-                  className="h-8 w-[150px] justify-start rounded-md px-2 text-xs font-normal"
+                  className="h-8 w-[9.375rem] justify-start rounded-md px-2 text-xs font-normal"
                   onClick={saveAsPreset}
                 >
-                  <Save className="mr-1 w-[14px]" aria-hidden="true" />
+                  <Save className="mr-1 w-[0.875rem]" aria-hidden="true" />
                   {localize('com_endpoint_save_as_preset')}
                 </Button>
               )}
@@ -77,7 +77,7 @@ export default function OptionsPopover({
                 variant="ghost"
                 size="icon"
                 type="button"
-                className="ml-auto size-8 text-text-primary"
+                className="text-text-primary ml-auto size-8"
                 onClick={closePopover}
                 aria-label={localize('com_ui_close')}
               >

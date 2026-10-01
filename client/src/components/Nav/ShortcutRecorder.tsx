@@ -182,13 +182,13 @@ export function RecorderPill({
       onKeyDown={onKeyDown}
       onKeyUp={onKeyUp}
       className={cn(
-        'bg-surface-primary flex h-[30px] items-center gap-1.5 rounded-md border px-2 outline-hidden transition-colors',
+        'bg-surface-primary flex h-[1.875rem] items-center gap-1.5 rounded-md border px-2 outline-hidden transition-colors',
         'focus-visible:ring-text-primary focus-visible:ring-offset-surface-primary-alt focus-visible:ring-2 focus-visible:ring-offset-1',
         stateBorder,
       )}
     >
       {showHint ? (
-        <span className="text-text-secondary text-[11.5px]">
+        <span className="text-text-secondary text-[0.71875rem]">
           {localize('com_shortcut_recorder_placeholder')}
         </span>
       ) : (
@@ -216,7 +216,7 @@ export function RecorderInfo({
     return (
       <div
         id={`${ownerId}-recorder-hint`}
-        className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1 pl-1 text-[11.5px]"
+        className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1 pl-1 text-[0.71875rem]"
       >
         <span className="text-text-secondary">
           {localize('com_shortcut_recorder_conflict_prefix')}{' '}
@@ -246,7 +246,7 @@ export function RecorderInfo({
     <div id={`${ownerId}-recorder-hint`} className="flex items-center justify-end gap-2 pl-1">
       <span
         className={cn(
-          'text-[11.5px]',
+          'text-[0.71875rem]',
           showInvalid ? 'text-text-destructive' : 'text-text-secondary',
         )}
       >

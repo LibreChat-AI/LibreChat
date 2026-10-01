@@ -26,6 +26,7 @@ jest.mock('@librechat/client', () => ({
   BirthdayIcon: () => <span data-testid="birthday-icon" />,
   TooltipAnchor: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
   SplitText: ({ text }: { text: string }) => <span>{text}</span>,
+  useRemScale: () => 1,
 }));
 
 jest.mock('~/Providers', () => ({

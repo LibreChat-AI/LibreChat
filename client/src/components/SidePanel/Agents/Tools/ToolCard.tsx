@@ -50,7 +50,7 @@ function ItemIconView({ item, size }: ItemIconProps) {
 
   const tileClasses =
     size === 'md' ? 'h-10 w-10 rounded-xl text-base' : 'h-9 w-9 rounded-lg text-sm';
-  const iconClasses = size === 'md' ? 'h-[18px] w-[18px]' : 'h-[18px] w-[18px]';
+  const iconClasses = size === 'md' ? 'h-[1.125rem] w-[1.125rem]' : 'h-[1.125rem] w-[1.125rem]';
 
   if (iconUrl && !imgError) {
     return (
@@ -161,7 +161,7 @@ function ToolCardImpl({
                 <span className="truncate">{status.label}</span>
               </p>
             ) : (
-              <p className="text-text-secondary truncate text-[11px] tracking-wide uppercase">
+              <p className="text-text-secondary truncate text-[0.6875rem] tracking-wide uppercase">
                 {kindLabel}
               </p>
             )}
@@ -177,7 +177,7 @@ function ToolCardImpl({
         {(item.kind === 'action' && item.endpointCount > 0) || isPublicSkill || isSharedSkill ? (
           <div className="mt-auto flex w-full flex-wrap items-center gap-1.5">
             {item.kind === 'action' && item.endpointCount > 0 && (
-              <span className="bg-surface-tertiary text-text-tertiary inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px]">
+              <span className="bg-surface-tertiary text-text-tertiary inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.625rem]">
                 {localize(
                   item.endpointCount === 1
                     ? 'com_ui_tools_endpoint_count_one'
@@ -188,7 +188,7 @@ function ToolCardImpl({
             )}
             {isSharedSkill && skill && (
               <span
-                className="bg-surface-tertiary text-text-tertiary inline-flex max-w-[60%] items-center gap-1 rounded-full px-2 py-0.5 text-[10px]"
+                className="bg-surface-tertiary text-text-tertiary inline-flex max-w-[60%] items-center gap-1 rounded-full px-2 py-0.5 text-[0.625rem]"
                 title={localize('com_ui_tools_shared_by', { name: skill.authorName })}
                 aria-label={localize('com_ui_tools_shared_by', { name: skill.authorName })}
               >
@@ -198,7 +198,7 @@ function ToolCardImpl({
             )}
             {isPublicSkill && (
               <span
-                className="bg-surface-tertiary text-text-tertiary inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px]"
+                className="bg-surface-tertiary text-text-tertiary inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.625rem]"
                 title={localize('com_ui_sr_public_skill')}
                 aria-label={localize('com_ui_sr_public_skill')}
               >

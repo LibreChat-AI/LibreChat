@@ -191,7 +191,7 @@ export function ListMeta({ label, count, max }: ListMetaProps) {
   return (
     <div className="flex items-center justify-between gap-2">
       <span className="text-text-secondary text-xs font-medium">{label}</span>
-      <span className="text-text-tertiary text-[10px] font-medium whitespace-nowrap tabular-nums">
+      <span className="text-text-tertiary text-[0.625rem] font-medium whitespace-nowrap tabular-nums">
         {count} / {max}
       </span>
     </div>

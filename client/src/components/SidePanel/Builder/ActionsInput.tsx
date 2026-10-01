@@ -226,7 +226,7 @@ export default function ActionsInput({
             <select
               id="example-schema"
               onChange={(e) => console.log(e.target.value)}
-              className="border-border-medium h-8 min-w-[100px] rounded-lg border bg-transparent px-2 py-0 text-sm"
+              className="border-border-medium h-8 min-w-[6.25rem] rounded-lg border bg-transparent px-2 py-0 text-sm"
             >
               <option value="label">{localize('com_ui_examples')}</option>
               <option value="0">Weather (JSON)</option>
@@ -286,7 +286,7 @@ export default function ActionsInput({
         <button
           disabled={!functions || !functions.length}
           onClick={saveAction}
-          className="bg-surface-submit text-text-on-status hover:bg-surface-submit-hover focus-visible:ring-text-primary focus-visible:ring-offset-surface-primary mt-1 flex min-w-[100px] items-center justify-center rounded px-4 py-2 font-semibold focus:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50"
+          className="bg-surface-submit text-text-on-status hover:bg-surface-submit-hover focus-visible:ring-text-primary focus-visible:ring-offset-surface-primary mt-1 flex min-w-[6.25rem] items-center justify-center rounded px-4 py-2 font-semibold focus:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50"
           type="button"
         >
           {submitContext()}

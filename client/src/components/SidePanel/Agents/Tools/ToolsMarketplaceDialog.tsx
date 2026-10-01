@@ -228,14 +228,14 @@ export default function ToolsMarketplaceDialog({
           space below the catalog on a tall screen. Below md the shell is the
           full-bleed sheet and the body is capped to the same 100dvh, because its
           `h-full` resolves against a grid area sized to the whole catalog. */}
-      <OGDialogContent className="h-[100dvh] max-h-[100dvh] w-full max-w-full overflow-hidden rounded-none border-border-medium p-0 shadow-xl md:h-auto md:max-h-[92vh] md:w-11/12 md:max-w-[1200px] md:rounded-2xl">
+      <OGDialogContent className="border-border-medium h-[100dvh] max-h-[100dvh] w-full max-w-full overflow-hidden rounded-none p-0 shadow-xl md:h-auto md:max-h-[92vh] md:w-11/12 md:max-w-[75rem] md:rounded-2xl">
         <OGDialogTitle className="sr-only">{localize('com_ui_tools_marketplace')}</OGDialogTitle>
         <OGDialogDescription className="sr-only">
           {localize('com_ui_tools_marketplace_description')}
         </OGDialogDescription>
         {/* min-w-0: as a grid item of the dialog content, an `auto` minimum would
             size this column to the chip row's min-content and overflow the viewport. */}
-        <div className="flex h-full max-h-[100dvh] min-w-0 flex-col md:h-[88vh] md:max-h-[840px] md:flex-row">
+        <div className="flex h-full max-h-[100dvh] min-w-0 flex-col md:h-[88vh] md:max-h-[52.5rem] md:flex-row">
           {isDesktop && (
             <MarketplaceSidebar
               activeView={view}
@@ -254,7 +254,7 @@ export default function ToolsMarketplaceDialog({
             <div className="flex items-center gap-2 px-4 py-3 pr-12 md:py-4 md:pl-6">
               <div className="relative flex-1">
                 <Search
-                  className="pointer-events-none absolute left-3 top-1/2 z-[1] size-4 -translate-y-1/2 text-text-tertiary"
+                  className="text-text-tertiary pointer-events-none absolute top-1/2 left-3 z-[1] size-4 -translate-y-1/2"
                   aria-hidden="true"
                 />
                 <Input

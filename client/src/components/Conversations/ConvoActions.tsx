@@ -1,7 +1,8 @@
 import { memo, useState } from 'react';
 import { Ellipsis } from 'lucide-react';
-import { Button, useMediaQuery } from '@librechat/client';
+import { Button } from '@librechat/client';
 import type { MouseEvent } from 'react';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { ConvoOptions } from './ConvoOptions';
 import { useLocalize } from '~/hooks';
 
@@ -57,7 +58,7 @@ function ConvoActions({
   ...options
 }: ConvoActionsProps) {
   const localize = useLocalize();
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
   const [hasOpenedMenu, setHasOpenedMenu] = useState(false);
 
   const handleOpenChange = (open: boolean) => {

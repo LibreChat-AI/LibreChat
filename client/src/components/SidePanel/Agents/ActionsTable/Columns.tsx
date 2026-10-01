@@ -34,7 +34,7 @@ function MethodBadge({ method }: { method: string }) {
   return (
     <SeriesLabel
       hue={METHOD_HUES[method.toLowerCase()]}
-      className="font-mono text-[11px] font-semibold tracking-wide uppercase"
+      className="font-mono text-[0.6875rem] font-semibold tracking-wide uppercase"
     >
       {method}
     </SeriesLabel>

@@ -48,7 +48,7 @@ function SourceFaviconStack({ sources }: { sources: ValidSource[] }) {
           key={source.link}
           className={cn(
             'border-border-medium bg-surface-secondary relative flex items-center justify-center rounded-full border',
-            'h-[22px] w-[22px]',
+            'h-[1.375rem] w-[1.375rem]',
             i > 0 && '-ml-2.5',
           )}
           style={{ zIndex: MAX_VISIBLE_FAVICONS - i }}
@@ -351,7 +351,7 @@ export default function WebSearch({
                 <div
                   className={cn(
                     toolPanelSpacingClassName,
-                    'border-border-light mt-1.5 max-h-[280px] overflow-y-auto rounded-lg border',
+                    'border-border-light mt-1.5 max-h-[17.5rem] overflow-y-auto rounded-lg border',
                   )}
                 >
                   {allSources.map((source, i) => {
@@ -378,15 +378,17 @@ export default function WebSearch({
                             {source.title || domain}
                           </span>
                           {snippet && (
-                            <span className="text-text-secondary mt-0.5 line-clamp-2 block text-[11px] leading-relaxed">
+                            <span className="text-text-secondary mt-0.5 line-clamp-2 block text-[0.6875rem] leading-relaxed">
                               {snippet}
                             </span>
                           )}
                         </span>
                         <span className="shrink-0 text-right">
-                          <span className="text-text-secondary block text-[11px]">{domain}</span>
+                          <span className="text-text-secondary block text-[0.6875rem]">
+                            {domain}
+                          </span>
                           {source.date && (
-                            <span className="text-text-secondary block text-[10px]">
+                            <span className="text-text-secondary block text-[0.625rem]">
                               {source.date}
                             </span>
                           )}

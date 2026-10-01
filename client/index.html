@@ -29,6 +29,20 @@
     </style>
     <script>
       (function () {
+        /* Applied before first paint so the app does not flash at the wrong scale.
+         * A stored value outside the supported range is clamped rather than ignored,
+         * so the rendered scale cannot disagree with the value the setting shows. */
+        let uiScale = 1;
+        try {
+          const storedScale = JSON.parse(localStorage.getItem('uiScale'));
+          if (typeof storedScale === 'number' && Number.isFinite(storedScale)) {
+            uiScale = Math.min(1.5, Math.max(0.5, storedScale));
+          }
+        } catch (e) {
+          /* Web Storage denied or unparsable: the default scale applies. */
+        }
+        document.documentElement.style.setProperty('--ui-scale', String(uiScale));
+
         let theme = null;
         try {
           theme = localStorage.getItem('color-theme');

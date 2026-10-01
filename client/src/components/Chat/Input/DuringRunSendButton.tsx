@@ -180,7 +180,7 @@ const DuringRunSendButton = React.memo(
             type="submit"
           >
             <span data-state="closed">
-              <SendIcon size={24} />
+              <SendIcon className="size-6" />
             </span>
           </button>
         }

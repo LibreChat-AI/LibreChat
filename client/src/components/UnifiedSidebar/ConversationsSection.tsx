@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState, useMemo, memo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
-import { useMediaQuery } from '@librechat/client';
 import type { InfiniteQueryObserverResult } from '@tanstack/react-query';
 import type { ConversationListResponse } from 'librechat-data-provider';
 import type { List } from 'react-virtualized';
@@ -27,6 +26,7 @@ import { chatFacetParamsAtom, useFreshLocalDay } from '~/components/Conversation
 import ProjectsSection from '~/components/Conversations/ProjectsSection';
 import ChatFilterMenu from '~/components/Conversations/ChatFilterMenu';
 import PinnedSection from '~/components/Conversations/PinnedSection';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import { Conversations } from '~/components/Conversations';
 import { cn, collectPinnedConversations } from '~/utils';
@@ -37,7 +37,7 @@ const chatsHeaderTrailing = <ChatFilterMenu />;
 
 const ConversationsSection = memo(() => {
   const localize = useLocalize();
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
   const { setSidebarOpen } = useSidebarToggle();
   const { isAuthenticated } = useAuthContext();
   useTitleGeneration(isAuthenticated);
