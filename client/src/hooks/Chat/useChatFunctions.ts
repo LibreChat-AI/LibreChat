@@ -1,4 +1,6 @@
+import { useCallback, useEffect, useRef } from 'react';
 import { v4 } from 'uuid';
+import { useStore } from 'jotai';
 import { cloneDeep } from 'lodash';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -14,8 +16,11 @@ import {
   replaceSpecialVars,
   isAssistantsEndpoint,
   getDefaultParamsEndpoint,
+  isReasoningOverrideSupported,
+  resolveReasoningSettingForTarget,
 } from 'librechat-data-provider';
 import type {
+  Agent,
   TMessage,
   TSubmission,
   TConversation,
@@ -29,6 +34,7 @@ import type { TAskFunction, ExtendedFile } from '~/common';
 import {
   logger,
   requestChatFocus,
+  resolveAgentTarget,
   markPasteSubmitted,
   hasStreamStartFailed,
   isSubmittableMessage,
@@ -36,9 +42,21 @@ import {
   getRouteChatProjectId,
   stripStreamedIndexStamps,
 } from '~/utils';
+import {
+  getReasoningStateKey,
+  pendingReasoningOverrideFamily,
+} from '~/components/Chat/Input/Composer/state';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
+import useGetConversation from '~/hooks/Conversations/useGetConversation';
+import { withSubmittedCodeDecision } from '~/hooks/Agents/codeDecision';
+import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
+import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
+import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useGetSender from '~/hooks/Conversations/useGetSender';
+import { activeUsageResponseIdFamily } from '~/store/usage';
+import { revealedQueuedTurnFamily } from '~/store/steer';
 import store, { useGetEphemeralAgent } from '~/store';
 import { startupConfigKey } from '~/data-provider';
 import useUserKey from '~/hooks/Input/useUserKey';
@@ -160,12 +178,12 @@ export function getRegenerateSubmissionMessages({
 }): TMessage[] {
   if (targetResponseMessage?.messageId) {
     /**
-     * Remove the response being regenerated and its descendants only — NOT a
+     * Remove the response being regenerated and its descendants only: NOT a
      * flat `slice(0, targetIndex)`, which also drops unrelated sibling branches
      * that merely sit later in the array. That collapse made the optimistic
      * render briefly lose other branches mid-regenerate (visible flash, and the
-     * scroll jumping to the shrunken content). Keeping them holds the thread —
-     * and scroll — steady. This array is render-only; the server regenerates
+     * scroll jumping to the shrunken content). Keeping them holds the thread
+     * (and scroll) steady. This array is render-only; the server regenerates
      * from `parentMessageId`, so removing by subtree never affects the payload.
      */
     const removed = new Set<string>([targetResponseMessage.messageId]);
@@ -199,6 +217,7 @@ export default function useChatFunctions({
   isSubmitting,
   latestMessage,
   setSubmission,
+  setConversation,
   conversation: immutableConversation,
 }: {
   index?: number;
@@ -211,19 +230,51 @@ export default function useChatFunctions({
   files?: Map<string, ExtendedFile>;
   setFiles?: SetterOrUpdater<Map<string, ExtendedFile>>;
   setSubmission: SetterOrUpdater<TSubmission | null>;
+  /** Supplied by the host that owns the conversation atom, so a send records the decision it
+   *  established without this hook becoming a second writer of that state. */
+  setConversation: SetterOrUpdater<TConversation | null>;
 }) {
   const navigate = useNavigate();
+  const reasoningStore = useStore();
   const getSender = useGetSender();
   const { user } = useAuthContext();
   const queryClient = useQueryClient();
   const setFilesToDelete = useSetFilesToDelete();
   const getEphemeralAgent = useGetEphemeralAgent();
-  const isTemporary = useRecoilValue(store.isTemporary);
+  const agentsMap = useAgentsMapContext();
+  const { isTemporary } = useChatSettings();
   const { getExpiry } = useUserKey(immutableConversation?.endpoint ?? '');
   const setIsSubmitting = useSetRecoilState(store.isSubmittingFamily(index));
   const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(index));
   const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(index));
   const focusRegeneratedResponse = useFocusRegeneratedResponse();
+  const jotaiStore = useStore();
+  const getConversation = useGetConversation(index);
+  const addedConversation = useRecoilValue(store.conversationByKeySelector(1));
+  const { modes: codeApprovalModes, selected: fallbackCodeApprovalMode } = useCodeApprovalMode(
+    immutableConversation,
+    addedConversation,
+  );
+  const codeWorkspaceState = useCodeWorkspace(immutableConversation, addedConversation);
+
+  /**
+   * `ask` refuses while `isSubmitting`, but that Recoil value only reads true
+   * from the next commit onwards: a double Enter or a double click inside one
+   * browser task would both pass that check and start two generations. This
+   * ref closes the gap synchronously, matching the queue send lock shared by
+   * `useSteering` and `useQueueDrain`.
+   *
+   * Released on every commit that is not submitting rather than only on a
+   * `true -> false` transition: a start that never flips `isSubmitting` here
+   * (Assistants set it from the SSE handler, and a start that fails outright
+   * never sets it at all) would otherwise latch the composer shut for good.
+   */
+  const askInFlightRef = useRef(false);
+  useEffect(() => {
+    if (!isSubmitting) {
+      askInFlightRef.current = false;
+    }
+  });
 
   /**
    * Atomically read + reset the per-conversation queue of manually-invoked
@@ -268,6 +319,18 @@ export default function useChatFunctions({
     [],
   );
 
+  const drainPendingReasoning = useCallback(
+    (stateKey: string): TMessage['reasoningOverride'] => {
+      const reasoningAtom = pendingReasoningOverrideFamily(stateKey);
+      const reasoningOverride = reasoningStore.get(reasoningAtom);
+      if (reasoningOverride != null) {
+        reasoningStore.set(reasoningAtom, undefined);
+      }
+      return reasoningOverride;
+    },
+    [reasoningStore],
+  );
+
   const ask: TAskFunction = (
     {
       text,
@@ -283,11 +346,13 @@ export default function useChatFunctions({
       isRegenerate = false,
       isContinued = false,
       isEdited = false,
+      compact = false,
       overrideMessages,
       overrideFiles,
       targetResponseMessageId,
       overrideManualSkills,
       overrideQuotes,
+      overrideReasoning,
       addedConvo,
       overrideClientRequestId,
       overrideRecoverySteerId,
@@ -298,20 +363,43 @@ export default function useChatFunctions({
     text = text.trim();
     /**
      * Attached files make an otherwise empty draft submittable, e.g. replying
-     * to an agent that asked for a document upload. Replayed turns (regenerate,
-     * or save-and-submit carrying `overrideFiles`) reuse stored attachments that
-     * aren't in the compose `files` map, so count those too and never re-block a
-     * regenerate of an already-validated file-only turn.
+     * to an agent that asked for a document upload. When a caller supplies
+     * `overrideFiles`, that array is authoritative, even when empty. A text-only
+     * App action must not become submittable just because the user has staged
+     * a file for a different, unsent composer message.
      */
-    const replayFileCount = overrideFiles?.length ?? 0;
+    const availableFileCount = overrideFiles == null ? (files?.size ?? 0) : overrideFiles.length;
+    /** A compaction sends no text: it replays the branch, like a regenerate,
+     *  with the response placeholder parented onto the leaf. */
+    const regenerateShaped = isRegenerate || compact;
     if (
+      askInFlightRef.current ||
       !!isSubmitting ||
-      (!isRegenerate && !isSubmittableMessage(text, (files?.size ?? 0) + replayFileCount))
+      jotaiStore.get(revealedQueuedTurnFamily(immutableConversation?.conversationId ?? '')) !=
+        null ||
+      (!regenerateShaped && !isSubmittableMessage(text, availableFileCount))
     ) {
       return false;
     }
 
     const conversation = cloneDeep(immutableConversation);
+    const latestCodeApprovalMode = getConversation()?.codeApprovalMode;
+    const codeApprovalMode =
+      latestCodeApprovalMode != null && codeApprovalModes.includes(latestCodeApprovalMode)
+        ? latestCodeApprovalMode
+        : fallbackCodeApprovalMode;
+    const latestCodeWorkspaces = getConversation()?.codeWorkspaces ?? conversation?.codeWorkspaces;
+    const latestCodeEnvironmentMode =
+      getConversation()?.codeEnvironmentMode ?? conversation?.codeEnvironmentMode;
+    const workspaceSubmission = codeWorkspaceState.resolveSubmission(
+      latestCodeWorkspaces,
+      latestCodeEnvironmentMode,
+    );
+    if (workspaceSubmission == null) {
+      logger.warn('[useChatFunctions] Refusing to send without an available code workspace');
+      return false;
+    }
+    const { codeEnvironmentMode, codeWorkspaces } = workspaceSubmission;
 
     const endpoint = conversation?.endpoint;
     if (endpoint === null) {
@@ -336,7 +424,7 @@ export default function useChatFunctions({
      * Warm-switch revalidation guard: a navigation invalidates the target's
      * cache and renders it while a background refetch reconciles. Deriving
      * parentMessageId from that cache could fork from an outdated tail, so
-     * refuse (composer keeps the text) until the refetch settles — but only
+     * refuse (composer keeps the text) until the refetch settles, but only
      * when the cache is actually old: a just-streamed cache (fresh
      * `dataUpdatedAt`) is locally authoritative, and gating it would block
      * rapid follow-ups during the post-run reconcile.
@@ -371,11 +459,15 @@ export default function useChatFunctions({
     setShowStopButton(false);
 
     const ephemeralAgent = getEphemeralAgent(conversationId ?? Constants.NEW_CONVO);
+    const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
+    const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
+    const endpointType = getEndpointField(endpointsConfig, endpoint, 'type');
+    const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
     /**
      * Manual skill selection resolution:
      *  - Explicit `overrideManualSkills` wins (regenerate / save-and-submit
      *    pass the original user message's persisted `manualSkills` so the
-     *    resubmitted turn primes the same skills — the pills are still
+     *    resubmitted turn primes the same skills: the pills are still
      *    visible to the user, it would be strange to quietly drop them).
      *  - Regenerate / continue / edit without an override → empty, and the
      *    compose-time atom is deliberately NOT drained (those flows replay
@@ -385,7 +477,7 @@ export default function useChatFunctions({
     let manualSkills = overrideManualSkills;
     if (manualSkills == null) {
       manualSkills =
-        isRegenerate || isContinued || isEdited
+        regenerateShaped || isContinued || isEdited
           ? []
           : drainPendingManualSkills(conversationId ?? Constants.NEW_CONVO);
     }
@@ -406,8 +498,40 @@ export default function useChatFunctions({
     if (quotesSupported) {
       if (overrideQuotes != null) {
         quotes = overrideQuotes;
-      } else if (!isRegenerate && !isContinued && !isEdited) {
+      } else if (!regenerateShaped && !isContinued && !isEdited) {
         quotes = drainPendingQuotes(conversationId ?? Constants.NEW_CONVO);
+      }
+    }
+    let reasoningOverride = overrideReasoning ?? undefined;
+    if (overrideReasoning === undefined && !regenerateShaped && !isContinued && !isEdited) {
+      reasoningOverride = drainPendingReasoning(getReasoningStateKey(conversationId, index));
+    }
+    if (reasoningOverride != null) {
+      const isAgent = isAgentsEndpoint(endpoint);
+      const agentId = isAgent ? conversation?.agent_id : undefined;
+      const savedAgent =
+        agentId != null
+          ? (queryClient.getQueryData<Agent>([QueryKeys.agent, agentId]) ?? agentsMap?.[agentId])
+          : undefined;
+      const agentTarget = isAgent ? resolveAgentTarget(agentId, savedAgent) : undefined;
+      const effectiveEndpoint = isAgent ? agentTarget?.provider : endpoint;
+      const effectiveModel = isAgent ? agentTarget?.model : conversation?.model;
+      const effectiveEndpointType = getEndpointField(endpointsConfig, effectiveEndpoint, 'type');
+      const customParams =
+        effectiveEndpoint == null ? undefined : endpointsConfig?.[effectiveEndpoint]?.customParams;
+      const supportedSetting =
+        effectiveEndpoint == null
+          ? undefined
+          : resolveReasoningSettingForTarget({
+              endpoint: effectiveEndpointType ?? effectiveEndpoint,
+              model: effectiveModel,
+              isAgent,
+              defaultParamsEndpoint: customParams?.defaultParamsEndpoint,
+              reasoningFormat: customParams?.reasoningFormat,
+              paramDefinitions: customParams?.paramDefinitions,
+            });
+      if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
+        reasoningOverride = undefined;
       }
     }
     const isEditOrContinue = isEdited || isContinued;
@@ -458,7 +582,7 @@ export default function useChatFunctions({
       navigate(`/c/new${projectSearch}`);
     }
 
-    const targetParentMessageId = isRegenerate ? messageId : latestMessage?.parentMessageId;
+    const targetParentMessageId = regenerateShaped ? messageId : latestMessage?.parentMessageId;
     /**
      * If the user regenerated or resubmitted the message, the current parent is technically
      * the latest user message, which is passed into `ask`; otherwise, we can rely on the
@@ -481,11 +605,7 @@ export default function useChatFunctions({
       thread_id = currentMessages.find((message) => message.thread_id)?.thread_id;
     }
 
-    const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
-    const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
-    const endpointType = getEndpointField(endpointsConfig, endpoint, 'type');
     const iconURL = conversation?.iconURL;
-    const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
 
     /** This becomes part of the `endpointOption` */
     const convo = parseCompactConvo({
@@ -501,7 +621,11 @@ export default function useChatFunctions({
         endpoint,
         endpointType,
         overrideConvoId,
-        overrideUserMessageId,
+        overrideUserMessageId:
+          overrideUserMessageId ??
+          (endpoint === EModelEndpoint.agents && !regenerateShaped && !isContinued
+            ? `${intermediateId}${Constants.COMMON_DIVIDER}0`
+            : undefined),
       },
       convo,
       chatProjectId ? { chatProjectId } : {},
@@ -522,7 +646,9 @@ export default function useChatFunctions({
       isCreatedByUser: true,
       parentMessageId,
       conversationId,
-      messageId: isContinued && messageId != null && messageId ? messageId : intermediateId,
+      /** A compaction's "user message" is the leaf itself, so an error lands under it. */
+      messageId:
+        (isContinued || compact) && messageId != null && messageId ? messageId : intermediateId,
       thread_id,
       error: false,
       /**
@@ -539,9 +665,11 @@ export default function useChatFunctions({
        * also merges these into the model-facing user text at request time.
        */
       quotes: quotes.length > 0 ? quotes : undefined,
+      reasoningOverride,
     };
 
-    const submissionFiles = overrideFiles ?? targetParentMessage?.files;
+    /** The leaf's files already sit in history; a compaction re-attaches nothing. */
+    const submissionFiles = compact ? undefined : (overrideFiles ?? targetParentMessage?.files);
     const reuseFiles =
       (isRegenerate || (overrideFiles != null && overrideFiles.length)) &&
       submissionFiles &&
@@ -556,13 +684,15 @@ export default function useChatFunctions({
         markPasteSubmitted(file.temp_file_id);
       });
       // Caller-supplied overrideFiles were consumed elsewhere (queued
-      // during-run messages take theirs out of the composer at queue time,
-      // so clearing here would eat attachments staged for the user's NEXT send.
+      // during-run messages take theirs out of the composer at queue time);
+      // clearing here would eat attachments staged for the user's NEXT send.
       if (isRegenerate) {
         setFiles(new Map());
         setFilesToDelete({});
       }
-    } else if (setFiles && files && files.size > 0 && overrideFiles == null) {
+    } else if (!compact && setFiles && files && files.size > 0 && overrideFiles == null) {
+      /** A compaction attaches nothing and must not consume files the user
+       *  staged in the composer for their next message. */
       // `overrideFiles` (even empty) is authoritative for the submission:
       // auto-drained queued messages must never vacuum up attachments the
       // user has staged in the composer for their NEXT message.
@@ -571,6 +701,7 @@ export default function useChatFunctions({
         filepath: file.filepath,
         filename: file.filename,
         type: file.type ?? '', // Ensure type is not undefined
+        llmDeliveryPath: file.llmDeliveryPath,
         height: file.height,
         width: file.width,
       }));
@@ -596,13 +727,14 @@ export default function useChatFunctions({
     /** Set only for edited resubmissions; see `TSubmission.editPrefixLength`. */
     let editPrefixLength: number | undefined;
     const initialResponseId =
-      responseMessageId ?? `${isRegenerate ? messageId : intermediateId}`.replace(/_+$/, '') + '_';
+      responseMessageId ??
+      `${regenerateShaped ? messageId : intermediateId}`.replace(/_+$/, '') + '_';
 
     const initialResponse: TMessage = {
       sender: responseSender,
       text: '',
       endpoint: endpoint ?? '',
-      parentMessageId: isRegenerate ? messageId : intermediateId,
+      parentMessageId: regenerateShaped ? messageId : intermediateId,
       messageId: initialResponseId,
       thread_id,
       conversationId,
@@ -611,10 +743,11 @@ export default function useChatFunctions({
       model: convo?.model,
       error: false,
       iconURL,
+      clientQueueParentMessageId: regenerateShaped ? (messageId ?? undefined) : intermediateId,
       /**
        * Seed the assistant placeholder with the turn's manually-invoked
        * skill names so `ContentParts` can render interim `SkillCall` cards
-       * from the very first render — no round-trip through the `created`
+       * from the very first render: no round-trip through the `created`
        * SSE event required. Rides along with every subsequent spread
        * (`useStepHandler` response construction, `updateContent` result
        * spreads) and drops out naturally at `finalHandler` when the
@@ -684,20 +817,21 @@ export default function useChatFunctions({
       currentMessages = currentMessages.filter((msg) => msg.messageId !== responseMessageId);
     }
 
-    const submissionMessages = isRegenerate
+    const submissionMessages = regenerateShaped
       ? getRegenerateSubmissionMessages({
           messages: currentMessages,
           targetResponseMessage,
           initialResponseId: initialResponse.messageId,
         })
       : currentMessages;
-    const regenerateMessages = isRegenerate ? [...currentMessages] : undefined;
+    const regenerateMessages = regenerateShaped ? [...currentMessages] : undefined;
 
     logger.log('message_state', initialResponse);
     const submission: TSubmission = {
       conversation: {
         ...conversation,
         ...(chatProjectId ? { chatProjectId } : {}),
+        ...(latestCodeApprovalMode != null ? { codeApprovalMode: latestCodeApprovalMode } : {}),
         conversationId,
       },
       endpointOption,
@@ -710,7 +844,8 @@ export default function useChatFunctions({
       regenerateMessages,
       isEdited: isEditOrContinue,
       isContinued,
-      isRegenerate,
+      isRegenerate: regenerateShaped,
+      ...(compact && { compact: true }),
       initialResponse,
       isTemporary,
       ephemeralAgent,
@@ -718,19 +853,41 @@ export default function useChatFunctions({
       editPrefixLength,
       addedConvo,
       manualSkills: manualSkills.length > 0 ? manualSkills : undefined,
+      codeApprovalMode,
+      codeEnvironmentMode,
+      codeWorkspaces,
       clientRequestId,
       recoverySteerId: overrideRecoverySteerId,
       expectedPredecessorCreatedAt: overrideExpectedPredecessorCreatedAt,
       queuedMessageOrigin: overrideQueuedMessageOrigin,
     };
 
-    if (isRegenerate) {
+    /** Bind before publishing the optimistic tail, not after the first provider
+     * event: a waiting request already owns a turn even when no usage exists. */
+    jotaiStore.set(
+      activeUsageResponseIdFamily(conversationId ?? Constants.NEW_CONVO),
+      initialResponse.messageId,
+    );
+
+    if (regenerateShaped) {
       setMessages([...submissionMessages, initialResponse]);
       focusRegeneratedResponse(initialResponse.parentMessageId);
     } else {
       setMessages([...submissionMessages, currentMsg, initialResponse]);
     }
 
+    /** Carry the submitted choice through the first saved-chat event instead of re-deriving it
+     *  from agent defaults. This is optimistic: the SSE error path reconciles an existing chat
+     *  with its authoritative server decision if admission fails. */
+    setConversation((current) =>
+      current == null || current.conversationId !== conversation?.conversationId
+        ? current
+        : withSubmittedCodeDecision(current, workspaceSubmission),
+    );
+    /** Armed at the point of no return: every refusal above returns before it,
+     *  so a rejected send never has to unwind the guard, and `ask` runs to
+     *  completion synchronously, which is the whole window it has to cover. */
+    askInFlightRef.current = true;
     setSubmissionStart(Date.now());
     setSubmission(submission);
     logger.dir('message_stream', submission, { depth: null });
@@ -763,6 +920,8 @@ export default function useChatFunctions({
           /** Carry the original user message's quoted excerpts forward so the
            *  regenerated response is sent the same referenced context. */
           overrideQuotes: parentMessage.quotes,
+          /** Replay the exact request-scoped reasoning selection used by this turn. */
+          overrideReasoning: parentMessage.reasoningOverride ?? null,
         },
       );
     } else {

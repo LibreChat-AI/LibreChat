@@ -50,6 +50,7 @@ describe('rum diagnostics', () => {
 
     expect(addAction).toHaveBeenCalledTimes(1);
     expect(addAction).toHaveBeenCalledWith('early-sw-controller', {
+      clientBuildId: 'unknown',
       at: 2,
       visibilityState: 'hidden',
       scriptPath: '/service-worker.js',
@@ -86,6 +87,7 @@ describe('rum diagnostics', () => {
     flushEarlyRumQueue({ addAction });
 
     expect(addAction).toHaveBeenCalledWith('spa-route-change', {
+      clientBuildId: 'unknown',
       fromPath: '/login',
       toPath: '/c/:conversationId',
       at: 1234,

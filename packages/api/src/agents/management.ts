@@ -69,11 +69,16 @@ export type AgentManagementListResponse = {
   has_more: boolean;
   after: string | null;
 };
+export type AgentManagementDeleteResponse = {
+  id: string;
+  deleted: true;
+};
 export type AgentManagementErrorCode =
   | 'invalid_request'
   | 'not_found'
   | 'permission_denied'
-  | 'internal_error';
+  | 'internal_error'
+  | 'conflict';
 export type AgentManagementError = {
   error: {
     code: AgentManagementErrorCode;
@@ -176,7 +181,8 @@ export const agentManagementResponseSchema: z.ZodType<AgentManagementResponse> =
   })
   .strict();
 
-export const agentManagementListResponseSchema: z.ZodType<AgentManagementListResponse> = z
+/** The list envelope as a plain object, so the OpenAPI contract can reuse it and override only `data`. */
+export const agentManagementListEnvelopeSchema: z.ZodType<AgentManagementListResponse> = z
   .object({
     object: z.literal('list'),
     data: z.array(agentManagementResponseSchema),
@@ -185,8 +191,10 @@ export const agentManagementListResponseSchema: z.ZodType<AgentManagementListRes
     has_more: z.boolean(),
     after: agentManagementCursorSchema.nullable(),
   })
-  .strict()
-  .superRefine(({ has_more, after }, context) => {
+  .strict();
+
+export const agentManagementListResponseSchema: z.ZodType<AgentManagementListResponse> =
+  agentManagementListEnvelopeSchema.superRefine(({ has_more, after }, context) => {
     if (has_more !== (after != null)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -196,11 +204,20 @@ export const agentManagementListResponseSchema: z.ZodType<AgentManagementListRes
     }
   });
 
+/** Minimal tombstone returned after an Agent is successfully deleted. */
+export const agentManagementDeleteResponseSchema: z.ZodType<AgentManagementDeleteResponse> = z
+  .object({
+    id: z.string().min(1),
+    deleted: z.literal(true),
+  })
+  .strict();
+
 export const agentManagementErrorCodeSchema: z.ZodType<AgentManagementErrorCode> = z.enum([
   'invalid_request',
   'not_found',
   'permission_denied',
   'internal_error',
+  'conflict',
 ]);
 
 const agentManagementValidationIssueSchema = z
@@ -265,6 +282,9 @@ export function projectAgentManagementResponse(
     stateful_code_sessions: source.stateful_code_sessions,
     stateful_code_environment: source.stateful_code_environment,
     code_environment_id: source.code_environment_id,
+    code_workspace_id: source.code_workspace_id,
+    repositoryInstructions: source.repositoryInstructions,
+    git_identity: source.git_identity,
     artifacts: source.artifacts,
     recursion_limit: source.recursion_limit,
     conversation_starters: source.conversation_starters,
@@ -295,6 +315,7 @@ const ERROR_STATUS: Record<AgentManagementErrorCode, number> = {
   not_found: 404,
   permission_denied: 403,
   internal_error: 500,
+  conflict: 409,
 };
 
 const ERROR_MESSAGE: Record<AgentManagementErrorCode, string> = {
@@ -302,6 +323,7 @@ const ERROR_MESSAGE: Record<AgentManagementErrorCode, string> = {
   not_found: 'Agent not found',
   permission_denied: 'Permission denied',
   internal_error: 'Internal server error',
+  conflict: 'Resource conflict',
 };
 
 /** Map known failure classes to a stable envelope without exposing internal error messages. */

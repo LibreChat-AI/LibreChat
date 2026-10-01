@@ -25,6 +25,29 @@ export const useGetFiles = <TData = t.TFile[] | boolean>(
   });
 };
 
+/**
+ * A short, server-sorted page of the user's files for surfaces that only show
+ * a handful of recent uploads (composer palette). Kept on a separate query key
+ * so it never replaces the full `QueryKeys.files` list used by the files panel.
+ */
+export const useGetRecentFiles = <TData = t.TFile[]>(
+  limit: number,
+  config?: UseQueryOptions<t.TFile[], unknown, TData>,
+): QueryObserverResult<TData, unknown> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  return useQuery<t.TFile[], unknown, TData>(
+    [QueryKeys.files, 'recent', limit],
+    () => dataService.getFiles({ limit }),
+    {
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      refetchOnMount: false,
+      ...config,
+      enabled: (config?.enabled ?? true) === true && queriesEnabled && limit > 0,
+    },
+  );
+};
+
 export const useGetAgentFiles = <TData = t.TFile[]>(
   agentId: string | undefined,
   config?: UseQueryOptions<t.TFile[], unknown, TData>,
@@ -160,6 +183,26 @@ export const useSharedFileDownload = (
     },
   );
 };
+
+/** Preview consumers share immutable bytes, never a revocable download URL. */
+export const useFilePreviewBlob = (
+  userId?: string,
+  fileId?: string,
+  shareId?: string,
+): QueryObserverResult<Blob> =>
+  useQuery(
+    [QueryKeys.fileDownload, 'previewBlob', shareId ? 'share' : 'owner', shareId ?? userId, fileId],
+    async () => {
+      if (!fileId || (!shareId && !userId)) {
+        throw new Error('Preview identity unavailable');
+      }
+      const response = shareId
+        ? await dataService.getSharedFileDownload(shareId, fileId)
+        : await dataService.getFileDownload(userId!, fileId);
+      return response.data;
+    },
+    { enabled: false, retry: false, cacheTime: 0 },
+  );
 
 export const useCodeOutputDownload = (url = ''): QueryObserverResult<string> => {
   return useQuery(

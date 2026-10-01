@@ -356,14 +356,31 @@ export async function getLangfuseTraceDestinationIds(
   return destinations.map(({ id }) => id as string);
 }
 
+/** The trace sampling record a response message stores. */
+export type LangfuseTraceMessageFields = {
+  langfuseSampled?: boolean;
+  langfuseDestinationIds?: string[];
+  langfuseRunId?: string;
+};
+
+/**
+ * The sampling record a response stores for its run's trace. `runId` names the
+ * run when it is not the response's own id, as for a failed turn's error row;
+ * it is then stored too, so feedback and the trace viewer follow that run.
+ */
 export async function getLangfuseTraceMessageFields(
   appConfig: AppConfig | undefined,
   messageId: string,
   {
     centralTraceExportEnabled = true,
-  }: Pick<LangfuseScoreDestinationOptions, 'centralTraceExportEnabled'> = {},
-): Promise<{ langfuseSampled: boolean; langfuseDestinationIds?: string[] }> {
-  const traceId = traceIdForMessage(messageId);
+    runId = messageId,
+  }: Pick<LangfuseScoreDestinationOptions, 'centralTraceExportEnabled'> & { runId?: string } = {},
+): Promise<{
+  langfuseSampled: boolean;
+  langfuseDestinationIds?: string[];
+  langfuseRunId?: string;
+}> {
+  const traceId = traceIdForMessage(runId);
   const langfuseSampled = isLangfuseTraceSampled(traceId);
   return {
     langfuseSampled,
@@ -373,7 +390,33 @@ export async function getLangfuseTraceMessageFields(
       langfuseSampled,
       { centralTraceExportEnabled },
     ),
+    ...(runId !== messageId ? { langfuseRunId: runId } : {}),
   };
+}
+
+/**
+ * The sampling record for a failed turn's error row, which keeps its own id and
+ * so names the run that failed. A turn that failed before its run was created
+ * has no trace to name, and a destination lookup that fails leaves the row
+ * without one rather than failing the error write.
+ */
+export async function getFailedTurnTraceFields(
+  appConfig: AppConfig | undefined,
+  {
+    messageId,
+    runId,
+    runCreated,
+  }: { messageId: string; runId?: string | null; runCreated: boolean },
+): Promise<LangfuseTraceMessageFields> {
+  if (!runCreated || typeof runId !== 'string' || runId.length === 0) {
+    return {};
+  }
+  try {
+    return await getLangfuseTraceMessageFields(appConfig, messageId, { runId });
+  } catch (error) {
+    logger.warn('[langfuse] Could not record the failed run trace:', error);
+    return {};
+  }
 }
 
 const centralPublicKey = normalizeString(process.env.LANGFUSE_PUBLIC_KEY);

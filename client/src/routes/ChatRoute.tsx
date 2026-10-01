@@ -1,10 +1,15 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRecoilCallback, useRecoilValue } from 'recoil';
-import { Spinner, useToastContext } from '@librechat/client';
 import { useParams, useSearchParams } from 'react-router-dom';
+import { Button, Spinner, useToastContext } from '@librechat/client';
 import { useGetModelsQuery } from 'librechat-data-provider/react-query';
-import { Constants, EModelEndpoint, PermissionBits } from 'librechat-data-provider';
+import {
+  Constants,
+  EModelEndpoint,
+  PermissionBits,
+  isForcedTemporaryRetention,
+} from 'librechat-data-provider';
 import type { TPreset, TAgentsMap } from 'librechat-data-provider';
 import {
   defaultSpecAwaitsAgents,
@@ -55,8 +60,6 @@ export default function ChatRoute() {
       },
     [],
   );
-  useAppStartup({ startupConfig, user });
-
   const index = 0;
   const [searchParams, setSearchParams] = useSearchParams();
   const { conversationId = '' } = useParams();
@@ -64,6 +67,19 @@ export default function ChatRoute() {
   const chatProjectId = isValidChatProjectId(projectIdParam) ? projectIdParam : null;
   useIdChangeEffect(conversationId);
   const { hasSetConversation, conversation } = store.useCreateConversationAtom(index);
+  const [routeState, setRouteState] = useState({
+    conversationId,
+    pending: conversation != null && conversation.conversationId !== conversationId,
+  });
+  /** History navigation changes the route without running the sidebar's conversation setter.
+   * Only a route change may request reconciliation: a newly submitted conversation can acquire
+   * its server id before the URL catches up, and must not be reset to a new chat. */
+  if (routeState.conversationId !== conversationId) {
+    setRouteState({ conversationId, pending: conversation?.conversationId !== conversationId });
+  } else if (routeState.pending && conversation?.conversationId === conversationId) {
+    setRouteState({ conversationId, pending: false });
+  }
+  useAppStartup({ startupConfig, user });
   const { newConversation } = useNewConvo();
   const { showToast } = useToastContext();
   const localize = useLocalize();
@@ -123,14 +139,16 @@ export default function ChatRoute() {
   });
   const initialConvoQuery = useGetConvoIdQuery(conversationId, {
     enabled:
-      isAuthenticated && conversationId !== Constants.NEW_CONVO && !hasSetConversation.current,
+      isAuthenticated &&
+      conversationId !== Constants.NEW_CONVO &&
+      (!hasSetConversation.current || routeState.pending),
   });
   const endpointsQuery = useGetEndpointsQuery({ enabled: isAuthenticated });
   const assistantListMap = useAssistantListMap();
   /** The map comes from Root's shared context (one mapping pass app-wide); the
    * select-less observer only tracks settle state. Only a loaded list may
-   * invalidate a stored agent pick: on a transient catalog failure (retries are
-   * disabled) the map stays unknown, the pick stays trusted, and the gate below
+   * invalidate a stored agent pick: on a transient catalog failure after retries,
+   * the map stays unknown, the pick stays trusted, and the gate below
    * releases so the landing never hangs on the error. */
   const agentsMap: TAgentsMap | undefined = useAgentsMapContext();
   const agentsQuery = useListAgentsQuery(
@@ -139,16 +157,17 @@ export default function ChatRoute() {
   );
 
   const isTemporaryChat = isTemporaryConversation(conversation);
+  const forceTemporaryChat = isForcedTemporaryRetention(startupConfig?.interface?.retentionMode);
 
   useEffect(() => {
     if (conversationId === Constants.NEW_CONVO) {
-      setIsTemporary(defaultTemporaryChat);
-    } else if (isTemporaryChat) {
-      setIsTemporary(isTemporaryChat);
+      setIsTemporary(forceTemporaryChat || defaultTemporaryChat);
+    } else if (forceTemporaryChat || isTemporaryChat) {
+      setIsTemporary(true);
     } else {
       setIsTemporary(false);
     }
-  }, [conversationId, isTemporaryChat, setIsTemporary, defaultTemporaryChat]);
+  }, [conversationId, isTemporaryChat, setIsTemporary, defaultTemporaryChat, forceTemporaryChat]);
 
   /** This effect is mainly for the first conversation state change on first load of the page.
    *  Adjusting this may have unintended consequences on the conversation state.
@@ -166,7 +185,7 @@ export default function ChatRoute() {
     const shouldSetConvo =
       (startupConfig &&
         rolesLoaded &&
-        (!hasSetConversation.current || newConvoNeedsInit) &&
+        (!hasSetConversation.current || newConvoNeedsInit || routeState.pending) &&
         !modelsQuery.data?.initial) ??
       false;
     /* Early exit if startupConfig is not loaded and conversation is already set and only initial models have loaded */
@@ -287,6 +306,7 @@ export default function ChatRoute() {
       });
       hasSetConversation.current = true;
     } else if (
+      initialConvoQuery.data &&
       assistantListMap[EModelEndpoint.assistants] &&
       assistantListMap[EModelEndpoint.azureAssistants]
     ) {
@@ -301,6 +321,8 @@ export default function ChatRoute() {
     /* Creates infinite render if all dependencies included due to newConversation invocations exceeding call stack before hasSetConversation.current becomes truthy */
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    conversationId,
+    routeState.pending,
     roles,
     agentsMap,
     agentsQuery.isError,
@@ -346,7 +368,23 @@ export default function ChatRoute() {
 
   return (
     <ToolCallsMapProvider conversationId={conversation.conversationId ?? ''}>
-      <ChatView index={index} project={verifiedChatProjectId ? projectQuery.data : undefined} />
+      {routeState.pending && (
+        <div className="flex h-screen items-center justify-center" aria-live="polite" role="status">
+          {initialConvoQuery.isError && !initialConvoQuery.isFetching ? (
+            <div className="flex flex-col items-center gap-3" role="alert">
+              <p>{localize('com_ui_conversation_load_error')}</p>
+              <Button onClick={() => initialConvoQuery.refetch()}>
+                {localize('com_ui_retry')}
+              </Button>
+            </div>
+          ) : (
+            <Spinner className="text-text-primary" />
+          )}
+        </div>
+      )}
+      <div hidden={routeState.pending} className={routeState.pending ? 'hidden' : 'contents'}>
+        <ChatView index={index} project={verifiedChatProjectId ? projectQuery.data : undefined} />
+      </div>
     </ToolCallsMapProvider>
   );
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useAtomValue } from 'jotai';
 import { Button } from '@librechat/client';
 import { ContentTypes } from 'librechat-data-provider';
 import { CSSTransition } from 'react-transition-group';
@@ -17,6 +18,7 @@ import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import Container from '~/components/Chat/Messages/Content/Container';
 import { EmptyText } from '~/components/Chat/Messages/Content/Parts';
 import ScrollToBottom from '~/components/Messages/ScrollToBottom';
+import { showThinkingAtom } from '~/store/showThinking';
 import { useChatSurface } from './surface';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -76,17 +78,32 @@ function SubagentControlHistory({
         return (
           <div
             key={control.invocationId}
-            className="rounded-lg border border-border-light bg-surface-secondary px-3 py-2 text-sm"
+            className="border-border-light bg-surface-secondary rounded-lg border px-3 py-2 text-sm"
           >
-            <div className="flex items-center gap-2">
-              <StatusIcon size={14} aria-hidden className="shrink-0 text-text-secondary" />
-              <span className="font-medium">{localize(CONTROL_ACTION_LABELS[control.action])}</span>
-              <span className="ml-auto text-xs text-text-secondary" aria-live="polite">
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusIcon size={14} aria-hidden className="text-text-secondary shrink-0" />
+              <span className="min-w-0 flex-1 font-medium">
+                {localize(CONTROL_ACTION_LABELS[control.action])}
+              </span>
+              <span className="text-text-secondary ml-auto shrink-0 text-xs" aria-live="polite">
                 {localize(CONTROL_STATUS_LABELS[control.status])}
               </span>
+              {control.status === 'accepted' &&
+                control.controlId != null &&
+                onCancelControl != null && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    onClick={() => onCancelControl(control.controlId as string)}
+                  >
+                    {localize('com_ui_subagent_control_withdraw')}
+                  </Button>
+                )}
             </div>
             {control.message != null && control.message !== '' && (
-              <div className="mt-1 break-words text-text-secondary">
+              <div className="text-text-secondary mt-1 break-words">
                 {control.message}
                 {control.messageTruncated === true && (
                   <span className="ml-1 text-xs italic">
@@ -96,26 +113,13 @@ function SubagentControlHistory({
               </div>
             )}
             {control.reason != null && (
-              <div className="mt-1 text-xs text-status-error">
+              <div className="text-status-error mt-1 text-xs">
                 {localize(
                   CONTROL_REASON_LABELS[control.reason] ??
                     'com_ui_subagent_control_reason_invalid_command',
                 )}
               </div>
             )}
-            {control.status === 'accepted' &&
-              control.controlId != null &&
-              onCancelControl != null && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="mt-1 h-7 px-2 text-xs"
-                  onClick={() => onCancelControl(control.controlId as string)}
-                >
-                  {localize('com_ui_subagent_control_withdraw')}
-                </Button>
-              )}
           </div>
         );
       })}
@@ -139,7 +143,7 @@ export function SubagentActivityScrollSurface({
   const scrollButtonRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [isSettled, setIsSettled] = useState(false);
-  const { showScrollButton: scrollButtonPreference } = useChatSurface();
+  const { showScrollButton: scrollButtonPreference, maximizeChatSpace } = useChatSurface();
 
   useEffect(() => {
     const scroll = scrollRef.current;
@@ -192,6 +196,7 @@ export function SubagentActivityScrollSurface({
         <ScrollToBottom
           ref={scrollButtonRef}
           scrollHandler={scrollToBottom}
+          maximizeChatSpace={maximizeChatSpace}
           interactive={isSettled}
         />
       </CSSTransition>
@@ -245,6 +250,16 @@ const toContentPart = (item: ChildActivityItem): TMessageContentParts => {
       output: item.output ?? '',
       progress: item.status === 'running' ? 0.1 : 1,
       ...(item.status === 'running' ? {} : { runStepStatus: item.status }),
+      ...(item.toolPreparationStartedAt == null
+        ? {}
+        : { toolPreparationStartedAt: item.toolPreparationStartedAt }),
+      ...(item.toolDispatchedAt == null ? {} : { toolDispatchedAt: item.toolDispatchedAt }),
+      ...(item.toolPreparationDurationMs == null
+        ? {}
+        : { toolPreparationDurationMs: item.toolPreparationDurationMs }),
+      ...(item.toolExecutionDurationMs == null
+        ? {}
+        : { toolExecutionDurationMs: item.toolExecutionDurationMs }),
       ...(item.inputValidationError === true ? { inputValidationError: true } : {}),
       ...(item.approval == null ? {} : { approval: item.approval }),
     },
@@ -260,10 +275,10 @@ function SubagentPrompt({ prompt }: { prompt: string }) {
   return (
     <section
       aria-labelledby={headingId}
-      className="mb-3 shrink-0 overflow-hidden rounded-lg border border-border-light bg-surface-secondary text-text-primary"
+      className="border-border-light bg-surface-secondary text-text-primary mb-3 shrink-0 overflow-hidden rounded-lg border"
     >
-      <div className="flex min-h-[2.75rem] items-center justify-between gap-3 border-b border-border-light px-3 py-2">
-        <h3 id={headingId} className="text-sm font-medium text-text-primary">
+      <div className="border-border-light flex min-h-[2.75rem] items-center justify-between gap-3 border-b px-3 py-2">
+        <h3 id={headingId} className="text-text-primary text-sm font-medium">
           {localize('com_ui_prompt')}
         </h3>
         <Button
@@ -274,7 +289,7 @@ function SubagentPrompt({ prompt }: { prompt: string }) {
           aria-expanded={expanded}
           aria-label={toggleLabel}
           title={toggleLabel}
-          className="h-8 gap-1.5 rounded-md px-2 text-xs font-medium text-text-secondary transition hover:bg-surface-tertiary hover:text-text-primary focus:outline-none focus:ring-2 focus:ring-text-primary"
+          className="text-text-secondary hover:bg-surface-tertiary hover:text-text-primary focus:ring-text-primary h-8 gap-1.5 rounded-md px-2 text-xs font-medium transition focus:ring-2"
         >
           {expanded ? <Minimize2 size={14} aria-hidden /> : <Maximize2 size={14} aria-hidden />}
           <span className="hidden sm:inline">{toggleLabel}</span>
@@ -287,12 +302,12 @@ function SubagentPrompt({ prompt }: { prompt: string }) {
           expanded ? 'overflow-visible' : 'max-h-32 overflow-hidden',
         )}
       >
-        <div className="markdown prose prose-sm message-content light dark:prose-invert w-full max-w-none break-words text-text-primary">
+        <div className="markdown prose prose-sm message-content light dark:prose-invert text-text-primary w-full max-w-none break-words">
           <MarkdownLite content={prompt} codeExecution={false} />
         </div>
         {!expanded && (
           <div
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-surface-secondary to-transparent"
+            className="from-surface-secondary pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t to-transparent"
             aria-hidden
           />
         )}
@@ -322,6 +337,7 @@ export function SubagentActivityContent({
   onCancelControl?: (controlId: string) => void;
 }) {
   const localize = useLocalize();
+  const showThinking = useAtomValue(showThinkingAtom);
   const isSubmitting = isLiveSubagentStatus(activity.status);
   const parts = useMemo(() => activity.items.map(toContentPart), [activity.items]);
 
@@ -334,7 +350,7 @@ export function SubagentActivityContent({
     );
   } else if (state === 'error') {
     body = (
-      <div className="rounded-lg border border-status-error-border bg-status-error-subtle p-3 text-sm text-status-error">
+      <div className="border-status-error-border bg-status-error-subtle text-status-error rounded-lg border p-3 text-sm">
         {localize('com_ui_subagent_thread_load_error')}
       </div>
     );
@@ -353,7 +369,9 @@ export function SubagentActivityContent({
         isCreatedByUser={false}
         isLast
         isSubmitting={isSubmitting}
+        showThinking={showThinking}
         isLatestMessage={isSubmitting}
+        foldLiveActivity={false}
       />
     );
   }
@@ -366,7 +384,7 @@ export function SubagentActivityContent({
         onCancelControl={onCancelControl}
       />
       {activity.controlsTruncated === true && (
-        <div className="mb-3 text-xs italic text-text-secondary">
+        <div className="text-text-secondary mb-3 text-xs italic">
           {localize('com_ui_subagent_control_history_truncated')}
         </div>
       )}
@@ -381,7 +399,7 @@ export function SubagentStatus({ activity }: { activity: ChildActivity }) {
   return (
     <div
       className={cn(
-        'flex items-center gap-1 text-xs text-text-secondary',
+        'text-text-secondary flex items-center gap-1 text-xs',
         activity.status === 'failed' || activity.status === 'interrupted'
           ? 'text-status-error'
           : '',
@@ -412,7 +430,7 @@ export default function SubagentActivity({
   onCancelControl?: (controlId: string) => void;
 }) {
   const statusHeader = isAbnormalTerminalStatus(activity.status) ? (
-    <div className="shrink-0 border-b border-border-light px-4 py-2">
+    <div className="border-border-light shrink-0 border-b px-4 py-2">
       <SubagentStatus activity={activity} />
     </div>
   ) : null;
@@ -428,7 +446,7 @@ export default function SubagentActivity({
 
   if (embedded) {
     return (
-      <section className="border-b border-border-light last:border-b-0" data-subagent-thread-turn>
+      <section className="border-border-light border-b last:border-b-0" data-subagent-thread-turn>
         {statusHeader}
         <div className="px-4 py-4">{content}</div>
       </section>

@@ -91,12 +91,15 @@ jobs:
         run: cp .env.example .env
 
       # Read from the checkout rather than github.sha, so a caller that builds a
-      # specific ref (main-image-workflow) stamps that ref's commit.
+      # specific ref (main-image-workflow) stamps that ref's commit. Registry names
+      # must be lowercase, and the repository owner is not guaranteed to be.
       - name: Compute build metadata
         env:
           BUILD_BRANCH_INPUT: ${{ inputs.build_branch }}
+          IMAGE_NAME: ${{ matrix.image.image_name }}
         run: |
           set -euo pipefail
+          printf 'GHCR_IMAGE=ghcr.io/%s/%s\n' "${GITHUB_REPOSITORY_OWNER,,}" "$IMAGE_NAME" >> "$GITHUB_ENV"
           printf 'BUILD_COMMIT=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           printf 'BUILD_BRANCH=%s\n' "$BUILD_BRANCH_INPUT" >> "$GITHUB_ENV"
           printf 'BUILD_DATE=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
@@ -113,9 +116,9 @@ jobs:
           file: ${{ matrix.image.file }}
           platforms: linux/${{ matrix.arch }}
           target: ${{ matrix.image.target }}
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/${{ matrix.image.image_name }}:buildcache-${{ matrix.arch }}
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/${{ matrix.image.image_name }}:buildcache-${{ matrix.arch }},mode=max
-          outputs: type=image,"name=ghcr.io/${{ github.repository_owner }}/${{ matrix.image.image_name }},docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image.image_name }}",push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache-${{ matrix.arch }},mode=max
+          outputs: type=image,"name=${{ env.GHCR_IMAGE }},docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image.image_name }}",push-by-digest=true,name-canonical=true,push=true
           build-args: |
             BUILD_COMMIT=${{ env.BUILD_COMMIT }}
             BUILD_BRANCH=${{ env.BUILD_BRANCH }}
@@ -163,6 +166,12 @@ jobs:
         image: ${{ fromJSON(inputs.images) }}
 
     steps:
+      # Registry names must be lowercase, and the repository owner is not guaranteed to be.
+      - name: Resolve GHCR image name
+        env:
+          IMAGE_NAME: ${{ matrix.image.image_name }}
+        run: printf 'GHCR_IMAGE=ghcr.io/%s/%s\n' "${GITHUB_REPOSITORY_OWNER,,}" "$IMAGE_NAME" >> "$GITHUB_ENV"
+
       - name: Download digests
         uses: actions/download-artifact@v7
         with:
@@ -191,7 +200,6 @@ jobs:
       - name: Create manifest lists and push
         working-directory: /tmp/digests
         env:
-          GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.image_name }}
           DOCKERHUB_IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image.image_name }}
           EXPECTED_ARCHES: ${{ join(fromJSON(inputs.arches), ' ') }}
           TAG_SUFFIXES: ${{ inputs.tag_suffixes }}
@@ -229,7 +237,6 @@ jobs:
 
       - name: Inspect image
         env:
-          GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.image_name }}
           TAG_SUFFIXES: ${{ inputs.tag_suffixes }}
         run: |
           set -euo pipefail

@@ -6,6 +6,7 @@ import { Skeleton, Sidebar, Button, TooltipAnchor } from '@librechat/client';
 import type { NavLink } from '~/common';
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
 import { useActivePanel, resolveActivePanel, DEFAULT_PANEL } from '~/Providers';
+import AgentMarketplaceButton from '~/components/Nav/AgentMarketplaceButton';
 import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import useNewChat from '~/hooks/Chat/useNewChat';
 import { useLocalize } from '~/hooks';
@@ -42,10 +43,10 @@ const NewChatButton = memo(function NewChatButton({
           data-testid="new-chat-button"
           aria-label={localize('com_ui_new_chat')}
           aria-keyshortcuts={ariaKey}
-          className="flex h-9 w-9 items-center justify-center rounded-lg transition-colors hover:bg-surface-hover"
+          className="hover:bg-surface-hover flex h-9 w-9 items-center justify-center rounded-lg transition-colors"
           onClick={handleNewChatClick}
         >
-          <SquarePen className="h-5 w-5 text-text-primary" />
+          <SquarePen className="text-text-primary h-5 w-5" />
         </a>
       }
     />
@@ -106,6 +107,7 @@ const NavIconButton = memo(function NavIconButton({
           variant="ghost"
           aria-label={localize(link.title)}
           aria-pressed={isActive}
+          disabled={link.disabled}
           data-testid={`nav-panel-${link.id}`}
           className={cn(
             'h-9 w-9 rounded-lg',
@@ -147,7 +149,7 @@ function ExpandedPanel({
   const toggleSidebarAriaKey = useShortcutAriaKey('toggleSidebar');
 
   return (
-    <div className="flex h-full flex-shrink-0 flex-col gap-2 border-r border-border-light bg-surface-primary-alt px-2 py-2">
+    <div className="border-border-light bg-surface-primary-alt flex h-full shrink-0 flex-col gap-2 border-r px-2 py-2">
       <TooltipAnchor
         side="right"
         description={toggleSidebarHint}
@@ -163,12 +165,13 @@ function ExpandedPanel({
             className="h-9 w-9 rounded-lg"
             onClick={toggleClick}
           >
-            <Sidebar aria-hidden="true" className="h-5 w-5 text-text-primary" />
+            <Sidebar aria-hidden="true" className="text-text-primary h-5 w-5" />
           </Button>
         }
       />
       <NewChatButton setActive={setActive} />
-      <div className="mx-2 border-b border-border-light" />
+      <AgentMarketplaceButton />
+      <div className="border-border-light mx-2 border-b" />
       <div className="flex flex-col gap-1 overflow-y-auto">
         {links.map((link) => (
           <NavIconButton

@@ -1,6 +1,6 @@
 import { createContext, useRef, useContext, RefObject, ReactNode } from 'react';
 import { toCanvas } from 'html-to-image';
-import { ThemeContext, isDark } from '@librechat/client';
+import { ThemeContext, isDark, readThemeColor } from '@librechat/client';
 import { completeProgressiveRowMounts } from '~/hooks/Messages/useProgressiveRowMount';
 
 type ScreenshotContextType = {
@@ -58,7 +58,12 @@ export const useScreenshot = () => {
       );
     }
 
-    const backgroundColor = isDark(theme) ? '#171717' : 'white';
+    /** Read the canvas the app is actually painting rather than a fixed pair, so
+     *  an export matches the selected appearance and the state colours keep the
+     *  contrast they were calibrated against. The token is a channel triplet,
+     *  not a colour, so it has to be wrapped before html-to-image sees it. */
+    const fallbackBackground = isDark(theme) ? '#171717' : 'white';
+    const backgroundColor = readThemeColor('--surface-primary') ?? fallbackBackground;
     const canvas = await toCanvas(node, {
       backgroundColor,
       pixelRatio,

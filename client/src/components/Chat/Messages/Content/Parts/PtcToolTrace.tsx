@@ -1,11 +1,9 @@
-import { useRecoilValue } from 'recoil';
 import { useTranslation } from 'react-i18next';
 import { isReportableRunStepDuration } from 'librechat-data-provider';
+import type { PtcTraceEntry } from '~/hooks/Chat/contract';
 import type { TranslationKeys } from '~/hooks';
-import type { PtcTraceEntry } from '~/store';
 import { cn, parseToolName, getRunStepDurationLabels } from '~/utils';
-import { useMessageContext } from '~/Providers/MessageContext';
-import { ptcTraceByToolCallId, ptcTraceKey } from '~/store';
+import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import { useMCPServerNames } from '~/hooks/MCP';
 import useFollowScroll from './useFollowScroll';
 import { useLocalize } from '~/hooks';
@@ -59,7 +57,7 @@ function PtcTraceLine({ entry }: { entry: PtcTraceEntry }) {
           {STATUS_GLYPH[entry.status]}
         </span>
         <span className="sr-only">{localize(STATUS_LABEL_KEYS[entry.status])}</span>
-        <span className="shrink-0 text-text-primary">
+        <span className="text-text-primary shrink-0">
           {parsed.mcpServer && (
             <>
               <span className="text-text-secondary">{parsed.mcpServer}</span>
@@ -68,10 +66,10 @@ function PtcTraceLine({ entry }: { entry: PtcTraceEntry }) {
           )}
           {parsed.friendlyKey ? localize(parsed.friendlyKey) : parsed.toolName}
         </span>
-        <span className="min-w-0 flex-1 truncate text-text-tertiary">{entry.args ?? ''}</span>
+        <span className="text-text-tertiary min-w-0 flex-1 truncate">{entry.args ?? ''}</span>
         {duration ? (
           <>
-            <span className="shrink-0 tabular-nums text-text-tertiary" aria-hidden="true">
+            <span className="text-text-tertiary shrink-0 tabular-nums" aria-hidden="true">
               {localize(duration.key, duration.values)}
             </span>
             <span className="sr-only">
@@ -80,7 +78,7 @@ function PtcTraceLine({ entry }: { entry: PtcTraceEntry }) {
           </>
         ) : (
           /* The sr-only status above already speaks this cell's meaning. */
-          <span className="shrink-0 text-text-tertiary" aria-hidden="true">
+          <span className="text-text-tertiary shrink-0" aria-hidden="true">
             {running ? localize('com_ui_ptc_trace_running') : ''}
           </span>
         )}
@@ -88,7 +86,7 @@ function PtcTraceLine({ entry }: { entry: PtcTraceEntry }) {
       {failed && (
         <div className="flex items-baseline gap-1.5">
           <span className="w-2 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 flex-1 truncate text-status-error">
+          <span className="text-status-error min-w-0 flex-1 truncate">
             {entry.error ?? localize('com_ui_ptc_trace_failed')}
           </span>
         </div>
@@ -120,10 +118,9 @@ export default function PtcToolTrace({
   const localize = useLocalize();
   /** Scope to this card's own message: providers reuse `tool_call_id` across
    *  turns, so the raw id alone would show a later program's calls here. */
-  const { messageId } = useMessageContext();
-  const trace = useRecoilValue(
-    ptcTraceByToolCallId(toolCallId && messageId ? ptcTraceKey(messageId, toolCallId) : ''),
-  );
+  const { useMessage, usePtcTrace } = useMessagePartsHost();
+  const { messageId } = useMessage();
+  const trace = usePtcTrace(messageId, toolCallId ?? '');
 
   /** One character per row, so the pin re-fires both when a call is appended
    *  and when one settles — a settle can add an error line and change height. */
@@ -145,7 +142,7 @@ export default function PtcToolTrace({
    *  intended separation under a custom theme. */
   return (
     <div className={cn('p-4 text-xs', className)}>
-      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-text-secondary">
+      <div className="text-text-secondary mb-1.5 text-[10px] font-medium tracking-wide uppercase">
         {localize('com_ui_ptc_trace_title')}
       </div>
       <ol
@@ -157,7 +154,7 @@ export default function PtcToolTrace({
         {/* The retained tail is a window, not the whole program — say so
             rather than let the reader assume these are all the calls. */}
         {trace.dropped > 0 && (
-          <li className="leading-5 text-text-tertiary">
+          <li className="text-text-tertiary leading-5">
             {localize('com_ui_ptc_trace_earlier', { count: trace.dropped })}
           </li>
         )}

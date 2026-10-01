@@ -6,6 +6,12 @@ import GenericGrantAccessDialog from '../GenericGrantAccessDialog';
 
 const mockRefetchPermissions = jest.fn();
 const mockUseResourcePermissionState = jest.fn();
+const mockUseAuthContext = jest.fn(() => ({ user: { role: 'ADMIN' } }));
+const mockUsePeoplePickerPermissions = jest.fn(() => ({
+  hasPeoplePickerAccess: true,
+  peoplePickerTypeFilter: '' as string | null,
+}));
+const mockUseCanSharePublic = jest.fn(() => true);
 
 const config = {
   defaultViewerRoleId: 'viewer',
@@ -34,10 +40,11 @@ const baseState = (overrides: Record<string, unknown> = {}) => ({
 });
 
 jest.mock('~/hooks', () => ({
+  useAuthContext: () => mockUseAuthContext(),
   useLocalize: () => (key: string) => key,
   useResourcePermissionState: () => mockUseResourcePermissionState(),
-  usePeoplePickerPermissions: () => ({ hasPeoplePickerAccess: true, peoplePickerTypeFilter: '' }),
-  useCanSharePublic: () => true,
+  usePeoplePickerPermissions: () => mockUsePeoplePickerPermissions(),
+  useCanSharePublic: () => mockUseCanSharePublic(),
   useCopyToClipboard: () => jest.fn(),
 }));
 
@@ -77,6 +84,12 @@ describe('GenericGrantAccessDialog - permissions load failure', () => {
   beforeEach(() => {
     mockUseResourcePermissionState.mockReset();
     mockRefetchPermissions.mockReset();
+    mockUseAuthContext.mockReturnValue({ user: { role: 'ADMIN' } });
+    mockUsePeoplePickerPermissions.mockReturnValue({
+      hasPeoplePickerAccess: true,
+      peoplePickerTypeFilter: '',
+    });
+    mockUseCanSharePublic.mockReturnValue(true);
   });
 
   it('renders a compact alert button (not the share trigger, not raw text) when permissions fail to load', () => {
@@ -149,6 +162,24 @@ describe('GenericGrantAccessDialog - permissions load failure', () => {
     expect(saveButton).toHaveClass('sm:w-auto');
     expect(saveButton).not.toHaveClass('min-w-[140px]');
     expect(screen.queryByRole('button', { name: 'com_ui_cancel' })).not.toBeInTheDocument();
+  });
+
+  it('lets an admin manage agent principals without people picker or public sharing permissions', () => {
+    mockUseResourcePermissionState.mockReturnValue(baseState());
+    mockUsePeoplePickerPermissions.mockReturnValue({
+      hasPeoplePickerAccess: false,
+      peoplePickerTypeFilter: null,
+    });
+    mockUseCanSharePublic.mockReturnValue(false);
+
+    renderDialog();
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_share_var' }));
+
+    expect(screen.getByTestId('unified-people-search')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 3, name: 'com_ui_user_group_permissions' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('public-toggle')).not.toBeInTheDocument();
   });
 
   it('discards the draft through the shared close path', () => {

@@ -32,6 +32,7 @@ jest.mock('@librechat/api', () => ({
 }));
 
 jest.mock('~/models', () => ({
+  initializeMessageBudget: jest.fn(),
   saveMessage: jest.fn(async (req, message) => message),
   getConvo: jest.fn(async () => null),
   getMessages: jest.fn(async () => []),
@@ -215,7 +216,8 @@ describe('HITL checkpoint lifecycle (full wiring)', () => {
       initialMetadata: { generationProtocolVersion: 2 },
     });
     const checkpointNamespace = job.metadata.checkpointNamespace;
-    expect(checkpointNamespace).toBe(String(job.createdAt));
+    expect(checkpointNamespace).toEqual(expect.any(String));
+    expect(checkpointNamespace).not.toBe(String(job.createdAt));
 
     // --- Turn 1: the model calls the gated tool → PreToolUse 'ask' → interrupt. ---
     const run = await buildHitlRun({

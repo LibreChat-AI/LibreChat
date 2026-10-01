@@ -114,12 +114,13 @@ describe('URL elicitation (-32042) integration', () => {
   });
 
   beforeEach(() => {
-    // callTool calls MCPServersRegistry.getInstance() unconditionally; it is
-    // only *used* for the paths we bypass (providedConfig + no OAuth), so a bare
-    // stub keeps the singleton-init requirement out of the test.
-    jest
-      .spyOn(MCPServersRegistry, 'getInstance')
-      .mockReturnValue({} as unknown as MCPServersRegistry);
+    // callTool calls MCPServersRegistry.getInstance() unconditionally; only the
+    // app-connection ownership check is reached (providedConfig + no OAuth), and
+    // these configs are user-scoped, so a minimal stub keeps the singleton-init
+    // requirement out of the test.
+    jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+      isAppServerConfig: jest.fn().mockResolvedValue(false),
+    } as unknown as MCPServersRegistry);
   });
 
   afterEach(async () => {

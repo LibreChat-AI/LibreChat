@@ -31,6 +31,7 @@ import type {
   UrlBuilder,
   S3FileRef,
 } from '~/storage/types';
+import type { StoredFileRef } from '~/storage/path';
 import type { ServerRequest } from '~/types';
 import {
   assertRemoteFileURL,
@@ -50,6 +51,7 @@ import {
   assertPathSegment,
   sanitizeContentDispositionFilename,
 } from '~/storage/validation';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { initializeS3 } from '~/cdn/s3';
 import { deleteRagFile } from '~/files';
 import { s3Config } from './s3Config';
@@ -280,9 +282,7 @@ export function getStorageMetadataForKey(
   };
 }
 
-export function resolveStoredS3Key(
-  file: Pick<TFile, 'filepath'> & { storageKey?: string | null },
-): string {
+export function resolveStoredS3Key(file: StoredFileRef): string {
   return file.storageKey || extractKeyFromS3Url(file.filepath);
 }
 
@@ -638,6 +638,27 @@ export async function saveURLToS3(
   return filepath;
 }
 
+/**
+ * Decodes a key taken from a URL path.
+ *
+ * `URL.pathname` is percent-encoded, but S3 object keys are raw UTF-8 and the AWS SDK encodes
+ * them again when it signs the request. Returning the encoded pathname therefore asks S3 for a
+ * literally different key (`%C3%81rsreikningur.pdf` instead of `Ársreikningur.pdf`) and every
+ * read of a file whose name contains a non-ASCII character fails with `NoSuchKey`. Keys made of
+ * ASCII are unaffected, which is why this only shows up for non-English filenames.
+ *
+ * Malformed sequences fall back to the raw value rather than throwing — a key that cannot be
+ * decoded is still worth attempting.
+ */
+function decodeKeyFromUrlPath(key: string): string {
+  try {
+    return decodeURIComponent(key);
+  } catch {
+    logger.warn('[extractKeyFromS3Url] Could not decode key, using it as-is');
+    return key;
+  }
+}
+
 export function extractKeyFromS3Url(fileUrlOrKey: string): string {
   if (!fileUrlOrKey) {
     throw new Error('Invalid input: URL or key is empty');
@@ -659,13 +680,9 @@ export function extractKeyFromS3Url(fileUrlOrKey: string): string {
         (endpointUrl.pathname.endsWith('/') ? 0 : 1) +
         bucketName.length +
         1;
-      const key = url.pathname.substring(startPos);
+      const key = decodeKeyFromUrlPath(url.pathname.substring(startPos));
       if (!key) {
-        logger.warn(
-          `[extractKeyFromS3Url] Extracted key is empty for endpoint path-style URL: ${fileUrlOrKey}`,
-        );
-      } else {
-        logger.debug(`[extractKeyFromS3Url] fileUrlOrKey: ${fileUrlOrKey}, Extracted key: ${key}`);
+        logger.warn('[extractKeyFromS3Url] Extracted key is empty for endpoint path-style URL');
       }
       return key;
     }
@@ -677,45 +694,21 @@ export function extractKeyFromS3Url(fileUrlOrKey: string): string {
     ) {
       const firstSlashIndex = pathname.indexOf('/');
       if (firstSlashIndex > 0) {
-        const key = pathname.substring(firstSlashIndex + 1);
+        const key = decodeKeyFromUrlPath(pathname.substring(firstSlashIndex + 1));
         if (key === '') {
-          logger.warn(
-            `[extractKeyFromS3Url] Extracted key is empty after removing bucket name from URL: ${fileUrlOrKey}`,
-          );
-        } else {
-          logger.debug(
-            `[extractKeyFromS3Url] fileUrlOrKey: ${fileUrlOrKey}, Extracted key: ${key}`,
-          );
+          logger.warn('[extractKeyFromS3Url] Extracted key is empty after removing bucket name');
         }
         return key;
       }
-      logger.warn(
-        `[extractKeyFromS3Url] Unable to extract key from path-style URL: ${fileUrlOrKey}`,
-      );
+      logger.warn('[extractKeyFromS3Url] Unable to extract key from path-style URL');
       return '';
     }
 
-    logger.debug(`[extractKeyFromS3Url] fileUrlOrKey: ${fileUrlOrKey}, Extracted key: ${pathname}`);
-    return pathname;
-  } catch (error) {
-    if (fileUrlOrKey.startsWith('http://') || fileUrlOrKey.startsWith('https://')) {
-      logger.error(
-        `[extractKeyFromS3Url] Error parsing URL: ${fileUrlOrKey}, Error: ${(error as Error).message}`,
-      );
-    } else {
-      logger.debug(`[extractKeyFromS3Url] Non-URL input, using fallback: ${fileUrlOrKey}`);
-    }
-
-    const parts = fileUrlOrKey.split('/');
-    if (parts.length >= 3 && !fileUrlOrKey.startsWith('http') && !fileUrlOrKey.startsWith('/')) {
-      return fileUrlOrKey;
-    }
-
-    const key = fileUrlOrKey.startsWith('/') ? fileUrlOrKey.substring(1) : fileUrlOrKey;
-    logger.debug(
-      `[extractKeyFromS3Url] FALLBACK. fileUrlOrKey: ${fileUrlOrKey}, Extracted key: ${key}`,
-    );
+    const key = decodeKeyFromUrlPath(pathname);
     return key;
+  } catch {
+    logger.error('[extractKeyFromS3Url] Error parsing URL');
+    return fileUrlOrKey;
   }
 }
 
@@ -856,7 +849,11 @@ export async function uploadFileToS3({
   }
 }
 
-export async function getS3FileStream(_req: ServerRequest, filePath: string): Promise<Readable> {
+export async function getS3FileStream(
+  _req: ServerRequest,
+  filePath: string,
+  { signal }: { signal?: AbortSignal } = {},
+): Promise<Readable> {
   try {
     const Key = extractKeyFromS3Url(filePath);
     const params = { Bucket: bucketName, Key };
@@ -866,13 +863,13 @@ export async function getS3FileStream(_req: ServerRequest, filePath: string): Pr
       throw new Error('[getS3FileStream] S3 not initialized');
     }
 
-    const data = await s3.send(new GetObjectCommand(params));
+    const data = await s3.send(new GetObjectCommand(params), { abortSignal: signal });
     if (!data.Body) {
-      throw new Error(`[getS3FileStream] S3 response body is empty for key: ${Key}`);
+      throw new Error('[getS3FileStream] S3 response body is empty');
     }
     return data.Body as Readable;
   } catch (error) {
-    logger.error('[getS3FileStream] Error retrieving S3 file stream:', error);
+    logger.error('[getS3FileStream] Error retrieving S3 file stream', getSafeErrorMetadata(error));
     throw error;
   }
 }

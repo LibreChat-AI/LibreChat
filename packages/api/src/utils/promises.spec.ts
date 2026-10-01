@@ -5,6 +5,10 @@ describe('detachOnAbort', () => {
     await expect(detachOnAbort(Promise.resolve('value'))).resolves.toBe('value');
   });
 
+  it('accepts an already-resolved operation value', async () => {
+    await expect(detachOnAbort('value', new AbortController().signal)).resolves.toBe('value');
+  });
+
   it('resolves normally when the signal never aborts', async () => {
     const controller = new AbortController();
     await expect(detachOnAbort(Promise.resolve('value'), controller.signal)).resolves.toBe('value');

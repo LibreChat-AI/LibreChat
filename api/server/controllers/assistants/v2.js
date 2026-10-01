@@ -1,4 +1,5 @@
 const { logger } = require('@librechat/data-schemas');
+const { resolveAssistantToolPermissions } = require('@librechat/api');
 const { ToolCallTypes } = require('librechat-data-provider');
 const validateAuthor = require('~/server/middleware/assistants/validateAuthor');
 const { validateAndUpdateTool } = require('~/server/services/ActionService');
@@ -8,7 +9,7 @@ const {
   toProviderToolDefinition,
 } = require('~/server/services/MCP');
 const { manifestToolMap, isAgentsOnlyTool } = require('~/app/clients/tools');
-const { updateAssistantDoc } = require('~/models');
+const { updateAssistantDoc, getRoleByName } = require('~/models');
 const { getOpenAIClient } = require('./helpers');
 
 /**
@@ -43,6 +44,11 @@ const createAssistant = async (req, res) => {
       toolDefinitions,
       accessibleServerNames,
     });
+    const isNativeToolPermitted = await resolveAssistantToolPermissions({
+      req,
+      tools,
+      getRoleByName,
+    });
 
     assistantData.tools = healedTools
       .map((tool) => {
@@ -71,7 +77,16 @@ const createAssistant = async (req, res) => {
       })
       .filter((tool) => tool)
       .flat()
-      .map(toProviderToolDefinition);
+      .map(toProviderToolDefinition)
+      .filter((tool) => {
+        if (isNativeToolPermitted(tool)) {
+          return true;
+        }
+        logger.warn(
+          `[/assistants] Dropping role-denied native tool from assistant payload: ${tool?.type}`,
+        );
+        return false;
+      });
 
     let azureModelIdentifier = null;
     if (openai.locals?.azureOptions) {
@@ -94,7 +109,7 @@ const createAssistant = async (req, res) => {
       createData.append_current_datetime = append_current_datetime;
     }
 
-    const document = await updateAssistantDoc({ assistant_id: assistant.id }, createData);
+    const document = await updateAssistantDoc({ assistantId: assistant.id }, createData);
 
     if (azureModelIdentifier) {
       assistant.model = azureModelIdentifier;
@@ -135,7 +150,7 @@ const updateAssistant = async ({ req, openai, assistant_id, updateData }) => {
 
   if (updateData?.conversation_starters) {
     const conversationStartersUpdate = await updateAssistantDoc(
-      { assistant_id: assistant_id },
+      { assistantId: assistant_id },
       { conversation_starters: updateData.conversation_starters },
     );
     conversation_starters = conversationStartersUpdate.conversation_starters;
@@ -145,7 +160,7 @@ const updateAssistant = async ({ req, openai, assistant_id, updateData }) => {
 
   if (updateData?.append_current_datetime !== undefined) {
     await updateAssistantDoc(
-      { assistant_id: assistant_id },
+      { assistantId: assistant_id },
       { append_current_datetime: updateData.append_current_datetime },
     );
     delete updateData.append_current_datetime;
@@ -162,6 +177,11 @@ const updateAssistant = async ({ req, openai, assistant_id, updateData }) => {
     tools: updateData.tools,
     toolDefinitions,
     accessibleServerNames,
+  });
+  const isNativeToolPermitted = await resolveAssistantToolPermissions({
+    req,
+    tools: updateData.tools,
+    getRoleByName,
   });
   for (const tool of healedTools) {
     /** Agents-runtime-only tools (e.g. ask_user_question) cannot execute on
@@ -196,6 +216,13 @@ const updateAssistant = async ({ req, openai, assistant_id, updateData }) => {
           tools.push(updatedTool);
         }
       }
+      continue;
+    }
+
+    if (!isNativeToolPermitted(actualTool)) {
+      logger.warn(
+        `[/assistants] Dropping role-denied native tool from assistant payload: ${actualTool.type}`,
+      );
       continue;
     }
 

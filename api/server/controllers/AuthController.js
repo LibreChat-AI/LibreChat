@@ -5,9 +5,11 @@ const { logger, runAsSystem, tenantStorage } = require('@librechat/data-schemas'
 const {
   math,
   isEnabled,
+  createResetPasswordController,
   createAuthIdentityContext,
   createOpenIDRefreshOwnershipError,
   isOpenIDRefreshOwnershipError,
+  isOpenIDSessionMissingError,
   isOpenIDSessionIdentityMatch,
   OPENID_EXPIRY_BUFFER_SECONDS,
 } = require('@librechat/api');
@@ -19,7 +21,15 @@ const {
   setAuthTokens,
   registerUser,
 } = require('~/server/services/AuthService');
-const { deleteAllUserSessions, getUserById, findSession, updateUser } = require('~/models');
+const {
+  deleteAllUserSessions,
+  deletePasskeysByUser,
+  awaitAuthUserDocEviction,
+  getUserById,
+  findSession,
+  updateUser,
+  deleteTokens,
+} = require('~/models');
 const { getGraphApiToken } = require('~/server/services/GraphTokenService');
 const { getRefreshTokenBridge } = require('~/server/services/RefreshTokenBridge');
 const {
@@ -52,6 +62,18 @@ const registrationController = async (req, res) => {
   try {
     const response = await registerUser(req.body);
     const { status, message } = response;
+    /** Consume the invite only once the account exists. `registerUser` returns the same
+     * 200 whether it created a user or found the email already in use, so the decision
+     * rests on `userCreated` rather than the status. A failure to delete leaves a
+     * usable invite, which is recoverable; failing the response here would tell a user
+     * whose account was just created that registration failed, which is not. */
+    if (response.userCreated === true && req.invite?.token != null) {
+      try {
+        await deleteTokens({ token: req.invite.token });
+      } catch (error) {
+        logger.error('[registrationController] Failed to consume invite after registration', error);
+      }
+    }
     res.status(status).send({ message });
   } catch (err) {
     logger.error('[registrationController]', err);
@@ -301,24 +323,12 @@ const resetPasswordRequestController = async (req, res) => {
   }
 };
 
-const resetPasswordController = async (req, res) => {
-  try {
-    const resetPasswordService = await resetPassword(
-      req.body.userId,
-      req.body.token,
-      req.body.password,
-    );
-    if (resetPasswordService instanceof Error) {
-      return res.status(400).json(resetPasswordService);
-    } else {
-      await deleteAllUserSessions({ userId: req.body.userId });
-      return res.status(200).json(resetPasswordService);
-    }
-  } catch (e) {
-    logger.error('[resetPasswordController]', e);
-    return res.status(400).json({ message: e.message });
-  }
-};
+const resetPasswordController = createResetPasswordController({
+  resetPassword,
+  deleteAllUserSessions,
+  deletePasskeysByUser,
+  awaitAuthUserDocEviction,
+});
 
 const refreshController = async (req, res) => {
   const parsedCookies = req.headers.cookie ? cookies.parse(req.headers.cookie) : {};
@@ -499,13 +509,17 @@ const refreshController = async (req, res) => {
         );
       });
     } catch (error) {
-      if (isOpenIDRefreshOwnershipError(error)) {
+      if (isOpenIDRefreshOwnershipError(error) || isOpenIDSessionMissingError(error)) {
         clearOpenIDAuthTokens(
           req,
           res,
           req.session?.openidTokens?.appUserId,
           req.session?.openidTokens?.tenantId,
         );
+      }
+      if (isOpenIDSessionMissingError(error)) {
+        logger.warn('[refreshController] OpenID session missing; sign-in required');
+        return res.status(401).send({ code: 'OPENID_SESSION_MISSING' });
       }
       logger.error('[refreshController] OpenID token refresh error', error);
 

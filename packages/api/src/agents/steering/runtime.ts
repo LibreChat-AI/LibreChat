@@ -80,6 +80,8 @@ export interface SteerDrainHookOptions {
    * never dropped because an attachment could not be encoded.
    */
   buildMedia?: (item: SteerQueueItem) => Promise<SteerMediaResult | undefined>;
+  /** Repairs the durable steer part when media degrades to text-only. */
+  onMediaError?: (item: SteerQueueItem, error: unknown) => void | Promise<void>;
 }
 
 /**
@@ -102,7 +104,7 @@ async function drainAndBuildInjections(
   claim: () => Promise<SteerQueueItem[]> = () =>
     GenerationJobManager.steering.drain(opts.streamId, opts.jobCreatedAt),
 ): Promise<InjectedMessage[]> {
-  const { streamId, jobCreatedAt, applySteer, buildMedia } = opts;
+  const { streamId, jobCreatedAt, applySteer, buildMedia, onMediaError } = opts;
   // The replacement guard lives INSIDE the store's atomic drain: a separate
   // check-then-drain could still consume a replacement job's queue if
   // createJob landed between the two steps.
@@ -181,6 +183,14 @@ async function drainAndBuildInjections(
             `[steering] Failed to encode steer media for ${streamId} steer=${item.steerId}; injecting text only:`,
             error,
           );
+          try {
+            await onMediaError?.(item, error);
+          } catch (repairError) {
+            logger.error(
+              `[steering] Failed to repair text-only steer persistence for ${streamId} steer=${item.steerId}:`,
+              repairError,
+            );
+          }
         }
       }
       /** The media path already merged quotes into its text part; the plain

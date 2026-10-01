@@ -17,6 +17,10 @@ permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   select:
     runs-on: ubuntu-latest
@@ -59,7 +63,7 @@ jobs:
           RESP=$(curl -sS --fail-with-body -m 45 -H "Authorization: Bearer $TOKEN" \
             -H 'content-type: application/json' --data-binary @body.json "$URL/v1/select"); RC=$?
           if [ "$RC" -ne 0 ] || [ -z "$RESP" ] || ! echo "$RESP" | jq -e .selected >/dev/null 2>&1; then
-            note "_codegraph unavailable (curl exit $RC: ${RESP:0:120}); skipped — full CI runs as always_"
+            note "_codegraph unavailable (curl exit $RC: ${RESP:0:120}); skipped, full CI runs as always_"
             exit 0
           fi
 

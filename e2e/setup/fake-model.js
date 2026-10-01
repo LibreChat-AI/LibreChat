@@ -13,6 +13,14 @@ const { FakeChatModel } = require('@librechat/agents');
 const { ChatGenerationChunk } = require('@langchain/core/outputs');
 const { AIMessageChunk } = require('@langchain/core/messages');
 const { tryBindReplay } = require('./model-replay');
+const { runFileDeliveryResponses } = require('./run-files-model');
+const { createRunFileLifecycleResponses } = require('./run-files-lifecycle-model');
+
+const runFileLifecycle = createRunFileLifecycleResponses({
+  findLastToolMessage,
+  getContentText,
+  messageType,
+});
 
 const MOCK_REPLY = process.env.MOCK_LLM_REPLY || 'E2E mock reply: pong';
 const CHUNK_DELAY_MS = Number(process.env.MOCK_LLM_CHUNK_DELAY_MS) || 10;
@@ -24,23 +32,42 @@ const ASSERT_MANUAL_SKILL_MARKER = 'E2E_ASSERT_MANUAL_SKILL:';
 const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
+const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
+const ASSERT_PROJECT_CONTEXT_MARKER = 'E2E_ASSERT_PROJECT_CONTEXT:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
 const REPLY_MARKER = 'E2E_REPLY:';
 const THINK_REPLY_MARKER = 'E2E_THINK_REPLY:';
+/** A reasoning part long enough that its settled prefix dwarfs the words still fading in. */
+const LONG_THINK_REPLY_MARKER = 'E2E_LONG_THINK_REPLY:';
+const LONG_THINK_WORDS = 400;
+const SLOW_THINK_REPLY_MARKER = 'E2E_SLOW_THINK_REPLY:';
 const COUNTED_REPLY_MARKER = 'E2E_COUNTED_REPLY:';
 const ORDERED_REPLY_MARKER = 'E2E_ORDERED_REPLY:';
 const SLOW_REPLY_MARKER = 'E2E_SLOW_REPLY:';
 const EMPTY_SLOW_REPLY_MARKER = 'E2E_EMPTY_SLOW_REPLY:';
+/** A run that completes having produced no content at all: the shape a
+ *  summarizer takes when it returns nothing for a manual compaction. */
+const EMPTY_REPLY_MARKER = 'E2E_EMPTY_REPLY:';
 const SLOW_COUNTED_REPLY_MARKER = 'E2E_SLOW_COUNTED_REPLY:';
 const STEER_TOOL_REPLY_MARKER = 'E2E_STEER_TOOL_REPLY:';
+const MCP_APP_MARKER = 'E2E_MCP_APP:';
+const MCP_APP_PHASE_MARKER = 'E2E_MCP_APP_PHASE:';
+const MCP_LINK_APP_MARKER = 'E2E_MCP_LINK_APP:';
+const MCP_LEGACY_MARKER = 'E2E_MCP_LEGACY:';
+const MCP_LEGACY_MIMELESS_MARKER = 'E2E_MCP_LEGACY_MIMELESS:';
+const MCP_LEGACY_ACTION_MARKER = 'E2E_LEGACY_ACTION';
 const STEER_SPLIT_REPLY_MARKER = 'E2E_STEER_SPLIT_REPLY:';
 const STEER_LATE_REPLY_MARKER = 'E2E_STEER_LATE_REPLY:';
 const ACTIVITY_REPLY_MARKER = 'E2E_ACTIVITY_REPLY:';
 const ACTIVITY_PHASE_REPLY_MARKER = 'E2E_ACTIVITY_PHASE_REPLY:';
+const ACTIVITY_FAILED_REPLY_MARKER = 'E2E_ACTIVITY_FAILED_REPLY:';
+const ACTIVITY_PROSE_REPLY_MARKER = 'E2E_ACTIVITY_PROSE_REPLY:';
 const ASK_USER_QUESTION_MARKER = 'E2E_ASK_USER_QUESTION:';
 const RESUME_ICON_REPLY_MARKER = 'E2E_RESUME_ICON_REPLY:';
 const FORCED_ERROR_MARKER = 'E2E_FORCED_ERROR:';
 const MARKDOWN_REPLY_MARKER = 'E2E_MARKDOWN_REPLY';
+const STREAMING_MARKDOWN_REPLY_MARKER = 'E2E_STREAMING_MARKDOWN_REPLY';
+const HIGHLIGHT_CODE_MARKER = 'E2E_HIGHLIGHT_CODE:';
 const STATEFUL_CODE_MARKER = 'E2E_STATEFUL_CODE:';
 /** Two prose paragraphs, so a spec can select the message's *closing* block. */
 const PARAGRAPHS_REPLY_MARKER = 'E2E_PARAGRAPHS_REPLY';
@@ -59,6 +86,11 @@ const SUBAGENT_RESULT_MARKER = 'E2E_SUBAGENT_RESULT:';
 const SUBAGENT_CHILD_MARKER = 'E2E_SUBAGENT_CHILD:';
 const SUBAGENT_ACTIVITY_MARKER = 'E2E_SUBAGENT_ACTIVITY:';
 const SUBAGENT_ACTIVITY_CHILD_MARKER = 'E2E_SUBAGENT_ACTIVITY_CHILD:';
+const RUN_FILES_MARKER = 'E2E_RUN_FILES:';
+const RUN_FILES_CHILD_MARKER = 'E2E_RUN_FILES_CHILD:';
+const RUN_FILES_FOLLOWUP_MARKER = 'E2E_RUN_FILES_FOLLOWUP:';
+const RUN_FILE_VERSIONS_MARKER = 'E2E_RUN_FILE_VERSIONS:';
+const RUN_FILE_VERSIONS_CHILD_MARKER = 'E2E_RUN_FILE_VERSIONS_CHILD:';
 const SUBAGENT_MODEL_OVERRIDE_ERROR =
   '[e2e] Streamed subagent result coverage requires an @librechat/agents release with ' +
   'StandardGraph.setSubagentModelOverride';
@@ -66,10 +98,15 @@ const HANDOFF_TOOL_PREFIX = 'lc_transfer_to_';
 const CREATE_FILE_AUTHORING_FINAL_TEXT = 'E2E file authoring complete';
 const EDIT_FILE_AUTHORING_FINAL_TEXT = 'E2E file edit complete';
 const SKILL_ASSERTION_FINAL_TEXT = 'E2E skill assertion passed';
+/** Summary for a run with no invocable skill yet, but the tool to invoke one it authors. */
+const SKILL_ASSERTION_AUTHORING_ONLY_SUMMARY = 'authoring-only';
 const MANUAL_SKILL_ASSERTION_FINAL_TEXT = 'E2E manual skill assertion passed';
 const SKILL_TOOL_ASSERTION_FINAL_TEXT = 'E2E skill tool assertion passed';
 const PROVIDER_FILE_ASSERTION_FINAL_TEXT = 'E2E provider file assertion passed';
 const AGENT_CONTEXT_ASSERTION_FINAL_TEXT = 'E2E agent context assertion passed';
+const HISTORY_ASSERTION_PRESENT_TEXT = 'E2E history assertion present';
+const HISTORY_ASSERTION_ABSENT_TEXT = 'E2E history assertion absent';
+const PROJECT_CONTEXT_ASSERTION_FINAL_TEXT = 'E2E project context assertion passed';
 const QUOTE_ASSERTION_FINAL_TEXT = 'E2E quote assertion passed';
 const STEER_TOOL_FINAL_TEXT = 'E2E steer tool reply done';
 const STEER_SPLIT_FINAL_TEXT = 'E2E steer split reply done';
@@ -77,9 +114,18 @@ const STEER_LATE_FINAL_TEXT = 'E2E steer late reply done';
 const SLOW_REPLY_CONTINUATION_TEXT = 'E2E slow reply continued';
 const ACTIVITY_FINAL_TEXT = 'E2E activity reply done';
 const ACTIVITY_PHASE_FINAL_TEXT = 'E2E activity phase reply done';
+const MCP_APP_PHASE_FINAL_TEXT = 'E2E MCP App phase complete';
+const ACTIVITY_FAILED_FINAL_TEXT = 'E2E activity failed reply done';
+const SLOW_ECHO_TOOL_NAME_PREFIX = 'slow_echo';
 const STEER_TOOL_NAME_PREFIX = 'remember_fact';
+const MCP_APP_TOOL_NAME_PREFIX = 'show_app';
 const ASK_USER_QUESTION_TOOL_NAME = 'ask_user_question';
 const SLOW_CHUNK_DELAY_MS = Number(process.env.MOCK_LLM_SLOW_CHUNK_DELAY_MS) || 35;
+/** The highlight cancellation scenario has to open the code card and stop the
+ *  run while its arguments are still arriving. At the ordinary slow cadence
+ *  those ~40 chunks are gone in under two seconds, which is not a window a
+ *  loaded runner can be relied on to hit, so that one variant streams wider. */
+const HIGHLIGHT_CANCEL_CHUNK_DELAY_MS = 200;
 const ORDERED_CHUNK_DELAY_MS = 2;
 const ORDERED_REPLY_PIECES = 64;
 const SLOW_REPLY_CHUNKS = 160;
@@ -103,6 +149,27 @@ const APPROVAL_TOOL_NAME = 'approval_probe_mcp_e2e-memory';
 const APPROVAL_TOOL_CALL_PREFIX = 'call_e2e_approval_';
 const BACKGROUND_DISPATCH_TOOL_CALL_ID = 'call_e2e_background_dispatch';
 const BACKGROUND_COLLECT_TOOL_CALL_ID = 'call_e2e_background_collect';
+const EXECUTE_CODE_MARKER = 'E2E_EXECUTE_CODE:';
+const EXEC_UPLOADED_MARKER = 'E2E_EXEC_UPLOADED:';
+const EXEC_PERSIST_MARKER = 'E2E_EXEC_PERSIST:';
+const FILE_SEARCH_MARKER = 'E2E_FILE_SEARCH:';
+/** Code Interpreter advertises bash_tool/read_file at runtime (execute_code is legacy);
+ *  emit whichever the agent actually exposes so the tool batch — and provisioning — fires. */
+const CODE_EXEC_TOOLS = [
+  { name: 'bash_tool', args: { command: 'echo e2e' } },
+  { name: 'read_file', args: { path: '/mnt/data' } },
+  { name: 'execute_code', args: { lang: 'py', code: 'print("e2e")' } },
+];
+const FILE_SEARCH_TOOL_NAME = 'file_search';
+const EXECUTE_CODE_FINAL_TEXT = 'E2E execute_code complete';
+const FILE_SEARCH_FINAL_TEXT = 'E2E file_search complete';
+const EXECUTE_CODE_TOOL_CALL_ID = 'call_e2e_execute_code';
+const EXEC_UPLOADED_TOOL_CALL_ID = 'call_e2e_exec_uploaded';
+const EXEC_PERSIST_TOOL_CALL_ID = 'call_e2e_exec_persist';
+const EXEC_UPLOADED_FINAL_TEXT = 'E2E code exec complete';
+const EXEC_PERSIST_FINAL_TEXT = 'E2E code persistence complete';
+const EXEC_TURN_MARKER_FILE = 'e2e-turn1-marker.txt';
+const FILE_SEARCH_TOOL_CALL_ID = 'call_e2e_file_search';
 const MODEL_SPEC_ACCESSIBLE_SKILL = 'e2e-model-spec-allowed';
 const DEPLOYMENT_SKILL_NAME = 'e2e-deployment-skill';
 const ALWAYS_APPLY_BODY_MARKER = 'E2E_ALWAYS_APPLY_BODY_MARKER';
@@ -175,6 +242,15 @@ function getRequestedSkillName(text, marker) {
   return afterMarker.match(/[a-z0-9][a-z0-9-]*/)?.[0] ?? '';
 }
 
+function getRequestedSandboxFilename(text, marker) {
+  const markerIndex = text.indexOf(marker);
+  if (markerIndex === -1) {
+    return '';
+  }
+  const afterMarker = text.slice(markerIndex + marker.length);
+  return afterMarker.match(/[A-Za-z0-9][A-Za-z0-9._-]*/)?.[0] ?? '';
+}
+
 function getMarkerValue(text, marker) {
   const markerIndex = text.indexOf(marker);
   if (markerIndex === -1) {
@@ -188,22 +264,31 @@ function getMarkerValue(text, marker) {
   );
 }
 
-function collectToolNames(agents) {
-  const names = new Set();
-  const add = (name) => {
-    if (typeof name === 'string' && name) {
-      names.add(name);
+/**
+ * Every tool name the run advertises, mapped to the definition the model sees
+ * for it. `toolDefinitions` is the array handed to the provider, so it wins
+ * over a same-named entry in `tools`; registry-only names keep whatever the
+ * earlier sources carried, which may be nothing. Names alone drive most
+ * assertions, but the `skill` tool ships two descriptions for one name, so the
+ * definition has to survive collection.
+ */
+function collectToolDefinitions(agents) {
+  const definitions = new Map();
+  const add = (name, definition) => {
+    if (typeof name !== 'string' || !name) {
+      return;
     }
+    definitions.set(name, definition ?? definitions.get(name));
   };
   for (const agent of agents ?? []) {
     if (!agent) {
       continue;
     }
     for (const tool of agent.tools ?? []) {
-      add(tool?.name);
+      add(tool?.name, tool);
     }
     for (const def of agent.toolDefinitions ?? []) {
-      add(def?.name);
+      add(def?.name, def);
     }
     if (agent.toolRegistry && typeof agent.toolRegistry.keys === 'function') {
       for (const name of agent.toolRegistry.keys()) {
@@ -211,7 +296,11 @@ function collectToolNames(agents) {
       }
     }
   }
-  return names;
+  return definitions;
+}
+
+function collectToolNames(agents) {
+  return new Set(collectToolDefinitions(agents).keys());
 }
 
 async function getStreamAgentView({ graph, messages, options, runManager }) {
@@ -233,10 +322,12 @@ async function getStreamAgentView({ graph, messages, options, runManager }) {
     systemRunnable && typeof systemRunnable.invoke === 'function'
       ? await systemRunnable.invoke(messages)
       : messages;
+  const toolDefinitions = collectToolDefinitions(agentContext ? [agentContext] : []);
   return {
     agentId,
     messages: promptMessages,
-    toolNames: collectToolNames(agentContext ? [agentContext] : []),
+    toolDefinitions,
+    toolNames: new Set(toolDefinitions.keys()),
   };
 }
 
@@ -359,6 +450,70 @@ function agentContextAssertionResponses({ messages, text }) {
   };
 }
 
+function collectSystemPromptText(messages) {
+  return (messages ?? [])
+    .filter((message) => messageType(message) === 'system')
+    .map((message) => getContentText(message.content))
+    .join('\n');
+}
+
+/**
+ * Project probes deliberately inspect only system messages. The user marker
+ * itself and prior human/history messages must never satisfy this assertion.
+ * An optional second token asserts that a value is absent after a detach/move.
+ */
+function projectContextAssertionResponses({ messages, text }) {
+  const markerIndex = text.indexOf(ASSERT_PROJECT_CONTEXT_MARKER);
+  if (markerIndex === -1) {
+    return null;
+  }
+  const [expected, absent] = text
+    .slice(markerIndex + ASSERT_PROJECT_CONTEXT_MARKER.length)
+    .trim()
+    .split(/\s+/, 2);
+  const systemText = collectSystemPromptText(messages);
+  const foundExpected = expected === '-' || (Boolean(expected) && systemText.includes(expected));
+  const foundAbsent = Boolean(absent) && systemText.includes(absent);
+  if (foundExpected && !foundAbsent) {
+    return {
+      responses: [`${PROJECT_CONTEXT_ASSERTION_FINAL_TEXT}: ${expected || 'absent check'}`],
+    };
+  }
+  return {
+    responses: [
+      `E2E project context assertion failed: expected ${expected || 'a marker'}${
+        absent ? ` without ${absent}` : ''
+      }; saw ${systemText || 'no system context'}`,
+    ],
+  };
+}
+
+/**
+ * Answers whether a token from an EARLIER turn still reaches the model. Scans
+ * every prompt message except the current user turn: the marker line carries
+ * the token itself, so counting that turn would make every history pass.
+ * Presence and absence each get their own sentinel, so a spec asserts what the
+ * model saw rather than matching a failure string — a conversation whose
+ * history was replaced by a checkpoint is a correct absence.
+ */
+function historyAssertionResponses({ messages, text }) {
+  const expected = getMarkerValue(text, ASSERT_HISTORY_MARKER);
+  if (!expected) {
+    return null;
+  }
+
+  const latestUserMessage = getLatestUserMessage(messages);
+  const priorMessages = (messages ?? []).filter((message) => message !== latestUserMessage);
+  const priorText = collectPromptText(priorMessages).join('\n');
+  return {
+    responses: [
+      priorText.includes(expected)
+        ? `${HISTORY_ASSERTION_PRESENT_TEXT}: ${expected}`
+        : `${HISTORY_ASSERTION_ABSENT_TEXT}: ${expected}`,
+    ],
+  };
+}
+
 /**
  * Verifies the quote feature end to end: scans every user message in the prompt
  * the model actually received for a Markdown blockquote line containing the
@@ -439,6 +594,28 @@ function replyResponses(text) {
       ],
     };
   }
+  if (text.includes(STREAMING_MARKDOWN_REPLY_MARKER)) {
+    return {
+      responses: [
+        [
+          '## E2E streaming markdown heading',
+          '',
+          'E2E streaming opening paragraph with 日本語 content.',
+          '',
+          '```javascript',
+          'const e2eIncrementalMarkdown = "complete";',
+          '```',
+          '',
+          '| E2E column | E2E value |',
+          '| --- | --- |',
+          '| completed block | visible |',
+          '',
+          'E2E streaming markdown final paragraph.',
+        ].join('\n'),
+      ],
+      sleep: SLOW_CHUNK_DELAY_MS,
+    };
+  }
 
   if (text.includes(PARAGRAPHS_REPLY_MARKER)) {
     /** The quoted cell sits in the first column, so scrolling the table to its
@@ -494,12 +671,38 @@ function replyResponses(text) {
     };
   }
 
+  const slowThinkName = getMarkerValue(text, SLOW_THINK_REPLY_MARKER);
+  if (slowThinkName) {
+    /** Three sentences of reasoning, word by word at a readable pace, so a
+     *  spec can watch the live header and the thought peek while it streams. */
+    return {
+      responses: [
+        '<think>First I read the request slowly. Then I gather the evidence with some care. ' +
+          `Finally I decide how to answer it.</think>\n\nE2E slow think reply done ${slowThinkName}`,
+      ],
+      sleep: 120,
+    };
+  }
+
   const thinkName = getMarkerValue(text, THINK_REPLY_MARKER);
   if (thinkName) {
     /** The `<think>` tags are parsed downstream by the agents stream pipeline, so this
      *  yields a reasoning part followed by a text part: two separately editable parts. */
     return {
       responses: [`<think>E2E reasoning ${thinkName}</think>\n\nE2E reply ${thinkName}`],
+    };
+  }
+
+  const longThinkName = getMarkerValue(text, LONG_THINK_REPLY_MARKER);
+  if (longThinkName) {
+    const words = Array.from(
+      { length: LONG_THINK_WORDS },
+      (_, index) => `r${String(index).padStart(3, '0')}`,
+    );
+    return {
+      responses: [
+        `<think>E2E long reasoning ${longThinkName} ${words.join(' ')} end</think>\n\nE2E reply ${longThinkName}`,
+      ],
     };
   }
 
@@ -540,6 +743,11 @@ function replyResponses(text) {
     };
   }
 
+  const emptyName = getMarkerValue(text, EMPTY_REPLY_MARKER);
+  if (emptyName) {
+    return { responses: [''] };
+  }
+
   const slowCountedName = getMarkerValue(text, SLOW_COUNTED_REPLY_MARKER);
   if (slowCountedName) {
     const count = (slowCountedReplies.get(slowCountedName) ?? 0) + 1;
@@ -572,16 +780,25 @@ function replyResponses(text) {
 /**
  * Attaches synthetic usage_metadata on a final empty chunk (the OpenAI
  * streaming pattern) so token-usage SSE events flow end to end in mock runs.
+ * Input is counted over the complete prompt a real provider bills — system
+ * instructions included — since the context snapshot calibrates against it.
  */
 class UsageEmittingFakeChatModel extends FakeChatModel {
-  constructor({ resolveInvocation, resolveOnStream, sleep, ...options }) {
+  constructor({ graph, resolveInvocation, resolveOnStream, sleep, ...options }) {
     super({ ...options, sleep });
+    this.graph = graph;
     this.resolveInvocation = resolveInvocation;
     this.resolveOnStream = resolveOnStream;
     this.streamSleep = sleep ?? CHUNK_DELAY_MS;
   }
 
-  async *streamScriptedResponseChunks({ response, toolCalls, textDeltaBlocks, runManager }) {
+  async *streamScriptedResponseChunks({
+    response,
+    toolCalls,
+    textDeltaBlocks,
+    beforeToolsDelayMs,
+    runManager,
+  }) {
     if (this.emitCustomEvent) {
       await runManager?.handleCustomEvent('some_test_event', {
         someval: true,
@@ -604,16 +821,41 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
     }
 
     if (toolCalls?.length) {
-      await new Promise((resolve) => setTimeout(resolve, this.streamSleep));
-      const toolCallChunks = toolCalls.map((toolCall, index) => ({
-        name: toolCall.name,
-        args: JSON.stringify(toolCall.args),
-        id: toolCall.id,
-        index,
-        type: 'tool_call_chunk',
-      }));
-      yield this._createResponseChunk('', toolCallChunks);
-      void runManager?.handleLLMNewToken('');
+      await new Promise((resolve) => setTimeout(resolve, beforeToolsDelayMs ?? this.streamSleep));
+      if (!toolCalls.some((toolCall) => toolCall.streamArgs)) {
+        const toolCallChunks = toolCalls.map((toolCall, index) => ({
+          name: toolCall.name,
+          args: JSON.stringify(toolCall.args),
+          id: toolCall.id,
+          index,
+          type: 'tool_call_chunk',
+        }));
+        yield this._createResponseChunk('', toolCallChunks);
+        void runManager?.handleLLMNewToken('');
+        return;
+      }
+
+      for (const [index, toolCall] of toolCalls.entries()) {
+        const serializedArgs = JSON.stringify(toolCall.args);
+        const chunks = toolCall.streamArgs
+          ? (serializedArgs.match(/.{1,64}/gs) ?? [''])
+          : [serializedArgs];
+        for (const [chunkIndex, args] of chunks.entries()) {
+          const toolCallChunk = {
+            name: chunkIndex === 0 ? toolCall.name : undefined,
+            args,
+            id: chunkIndex === 0 ? toolCall.id : undefined,
+            index,
+            type: 'tool_call_chunk',
+          };
+          yield this._createResponseChunk('', [toolCallChunk]);
+          void runManager?.handleLLMNewToken('');
+          if (chunkIndex < chunks.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, this.streamSleep));
+          }
+        }
+      }
+      return;
     }
   }
 
@@ -651,6 +893,7 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
         response: scriptedResponse.response ?? '',
         toolCalls: scriptedResponse.toolCalls,
         textDeltaBlocks: scriptedResponse.textDeltaBlocks === true,
+        beforeToolsDelayMs: scriptedResponse.beforeToolsDelayMs,
         runManager,
       });
     } else if (dynamicResponse) {
@@ -667,7 +910,13 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
       outputChars += typeof chunk.text === 'string' ? chunk.text.length : 0;
       yield chunk;
     }
-    const inputChars = (messages ?? []).reduce(
+    const { messages: promptMessages } = await getStreamAgentView({
+      graph: this.graph,
+      messages: messages ?? [],
+      options,
+      runManager,
+    });
+    const inputChars = promptMessages.reduce(
       (sum, message) => sum + getContentText(message?.content).length,
       0,
     );
@@ -718,6 +967,7 @@ function overrideModel({
 
   if (!thrownError) {
     const model = new UsageEmittingFakeChatModel({
+      graph,
       responses,
       sleep: sleep ?? CHUNK_DELAY_MS,
       emitCustomEvent: true,
@@ -833,7 +1083,22 @@ function expectedSkillBodyMarker(skillName) {
   return `# ${skillName}`;
 }
 
-function skillAssertionResponses({ messages, assertion, toolNames }) {
+/**
+ * The `skill` tool's authoring-only wording, from `AUTHORED_SKILL_CONSTRAINTS`
+ * in `packages/api/src/agents/tools.ts`. A run that may write
+ * `skills/{skillName}/SKILL.md` gets that variant instead of the SDK's
+ * catalog-only text, which is what makes the two cases below separable from
+ * the prompt alone.
+ */
+const AUTHORED_SKILL_GUIDANCE = 'a skill you created in this conversation';
+
+function isAuthoringSkillTool(definition) {
+  return typeof definition?.description === 'string'
+    ? definition.description.includes(AUTHORED_SKILL_GUIDANCE)
+    : false;
+}
+
+function skillAssertionResponses({ messages, assertion, toolNames, toolDefinitions }) {
   const failures = [];
   if (assertion.error) {
     failures.push(assertion.error);
@@ -841,10 +1106,23 @@ function skillAssertionResponses({ messages, assertion, toolNames }) {
   const promptText = collectPromptText(messages).join('\n');
   const skillPrimeMessages = collectSkillPrimeMessages(messages);
 
-  if (assertion.required.length > 0 && !toolNames.has(SKILL_TOOL_NAME)) {
+  const skillToolAdvertised = toolNames.has(SKILL_TOOL_NAME);
+  /**
+   * An empty catalog no longer implies an absent `skill` tool: a run that can
+   * author skills keeps the tool bound so the model can invoke one it writes
+   * mid-run, and it gets the authoring variant's description to say so. Both
+   * states still have to be told apart, so the pass text names which one
+   * happened — `none` for no tool at all, `authoring-only` for a tool with
+   * nothing yet to invoke — and neither string contains the other, so a spec
+   * asserting one cannot pass on the other.
+   */
+  const authoringSkillTool =
+    skillToolAdvertised && isAuthoringSkillTool(toolDefinitions?.get(SKILL_TOOL_NAME));
+
+  if (assertion.required.length > 0 && !skillToolAdvertised) {
     failures.push(`${SKILL_TOOL_NAME} tool was not advertised`);
   }
-  if (assertion.required.length === 0 && toolNames.has(SKILL_TOOL_NAME)) {
+  if (assertion.required.length === 0 && skillToolAdvertised && !authoringSkillTool) {
     failures.push(`${SKILL_TOOL_NAME} tool was unexpectedly advertised`);
   }
   for (const name of assertion.required) {
@@ -880,11 +1158,16 @@ function skillAssertionResponses({ messages, assertion, toolNames }) {
   }
   return {
     responses: [
-      `${SKILL_ASSERTION_FINAL_TEXT}: ${
-        assertion.required.length > 0 ? assertion.required.join(', ') : 'none'
-      }`,
+      `${SKILL_ASSERTION_FINAL_TEXT}: ${resolveSkillAssertionSummary(assertion, authoringSkillTool)}`,
     ],
   };
+}
+
+function resolveSkillAssertionSummary(assertion, authoringSkillTool) {
+  if (assertion.required.length > 0) {
+    return assertion.required.join(', ');
+  }
+  return authoringSkillTool ? SKILL_ASSERTION_AUTHORING_ONLY_SUMMARY : 'none';
 }
 
 function manualSkillAssertionResponses({ messages, skillName }) {
@@ -1051,6 +1334,155 @@ function steerToolReplyResponses(label, toolNames) {
       }
       return { response: `${STEER_TOOL_FINAL_TEXT} ${label} ${steerEchoSuffix(messages)}` };
     },
+  };
+}
+
+function mcpAppResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(MCP_APP_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    return { responses: ['E2E MCP App unavailable: show_app was not advertised.'] };
+  }
+  return {
+    responses: ['', `E2E MCP App complete: ${label}`],
+    toolCalls: [
+      {
+        id: `call_e2e_mcp_app_${label}`,
+        name: toolName,
+        args: { label },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
+/** Two sequential App calls so Provider F creates two labeled activities and
+ *  one enclosing activity phase through the normal graph lifecycle. */
+function mcpAppPhaseResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(MCP_APP_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    return { responses: ['E2E MCP App phase unavailable: show_app was not advertised.'] };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_mcp_app_phase_alpha_${label}`,
+              name: toolName,
+              args: { label: `phase alpha ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      if (invocation === 2) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_mcp_app_phase_beta_${label}`,
+              name: toolName,
+              args: { label: `phase beta ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `${MCP_APP_PHASE_FINAL_TEXT}: ${label}` };
+    },
+  };
+}
+
+function mcpLinkAppResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith('show_link_app'));
+  if (!toolName) {
+    return { responses: ['E2E MCP link App unavailable: show_link_app was not advertised.'] };
+  }
+  return {
+    responses: ['', `E2E MCP link App complete: ${label}`],
+    toolCalls: [
+      {
+        id: `call_e2e_mcp_link_app_${label}`,
+        name: toolName,
+        args: { label },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
+function legacyResourceResponses(
+  label,
+  toolNames,
+  { toolPrefix, callIdPrefix, completionPrefix, unavailable },
+) {
+  const candidates = Array.from(toolNames);
+  const toolName =
+    candidates.find((name) => name === toolPrefix) ??
+    candidates.find(
+      (name) =>
+        name.startsWith(toolPrefix) &&
+        (toolPrefix !== 'show_legacy' || !name.startsWith('show_legacy_mimeless')),
+    );
+  if (!toolName) {
+    return { responses: [unavailable] };
+  }
+  return {
+    responses: [''],
+    toolCalls: [
+      {
+        id: `${callIdPrefix}_${label}`,
+        name: toolName,
+        args: { label },
+        type: 'tool_call',
+      },
+    ],
+    resolveOnStream: (streamMessages) => {
+      const toolResult = findLastToolMessageText(streamMessages, 'UI Resource ID:');
+      const resourceId = toolResult.match(/UI Resource ID: ([a-f0-9]+)/)?.[1];
+      return resourceId ? { responses: [`${completionPrefix}: \\ui{${resourceId}}`] } : null;
+    },
+  };
+}
+
+function mcpLegacyResponses(label, toolNames) {
+  return legacyResourceResponses(label, toolNames, {
+    toolPrefix: 'show_legacy',
+    callIdPrefix: 'call_e2e_mcp_legacy',
+    completionPrefix: 'Legacy MCP-UI',
+    unavailable: 'E2E legacy MCP-UI unavailable: show_legacy was not advertised.',
+  });
+}
+
+function mcpLegacyMimelessResponses(label, toolNames) {
+  return legacyResourceResponses(label, toolNames, {
+    toolPrefix: 'show_legacy_mimeless',
+    callIdPrefix: 'call_e2e_mcp_legacy_mimeless',
+    completionPrefix: 'MIME-less Legacy MCP-UI',
+    unavailable: 'E2E MIME-less legacy MCP-UI unavailable: tool was not advertised.',
+  });
+}
+
+function mcpLegacyActionResponses(toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith('legacy_action'));
+  if (!toolName) {
+    return { responses: ['E2E legacy action unavailable: legacy_action was not advertised.'] };
+  }
+  return {
+    responses: ['', 'E2E legacy action complete'],
+    toolCalls: [
+      {
+        id: 'call_e2e_mcp_legacy_action',
+        name: toolName,
+        args: { label: 'legacy-view' },
+        type: 'tool_call',
+      },
+    ],
   };
 }
 
@@ -1274,6 +1706,118 @@ function activityPhaseReplyResponses(label, toolNames) {
   };
 }
 
+/** Short prose remains visible while the real tool/label pipeline forms and
+ * dissolves folds. The pause before calls lets the browser finish the initial
+ * word fade and install its identity/animation observer before that transition. */
+function activityProseReplyResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    throw new Error('Activity prose fixture requires the memory MCP tool');
+  }
+  const prose = [
+    "Let me establish today's date and gather independent signals in parallel.",
+    'Today is **2026-09-29 23:20 UTC**. Two things stand out immediately: a config-structure PR landed yesterday, and an image bump went in today. Let me dig into both.',
+    "Important finding: PR #4079 ships the config **disabled by default**. Let me check today's actual runtime state and the image bump.",
+  ];
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      const batch = invocation++;
+      if (batch < prose.length) {
+        return {
+          response: prose[batch],
+          beforeToolsDelayMs: 2000,
+          toolCalls: [
+            {
+              id: `call_e2e_activity_prose_${label}_${batch}`,
+              name: toolName,
+              args: { fact: `activity prose ${label} ${batch}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `E2E activity prose complete ${label}` };
+    },
+  };
+}
+
+/**
+ * A phase whose middle batch holds a failed call beside a slow one: `slow_echo`
+ * called without its required `text` fails schema validation before the tool
+ * runs, and a second `slow_echo` keeps the batch live for `delay` ms so a spec
+ * can watch the fold while it streams.
+ */
+function activityFailedReplyResponses(label, toolNames) {
+  const rememberTool = Array.from(toolNames).find((name) =>
+    name.startsWith(STEER_TOOL_NAME_PREFIX),
+  );
+  const slowTool = Array.from(toolNames).find((name) =>
+    name.startsWith(SLOW_ECHO_TOOL_NAME_PREFIX),
+  );
+  if (!rememberTool || !slowTool) {
+    return {
+      responses: [
+        `E2E activity failed reply unavailable: ${STEER_TOOL_NAME_PREFIX} and ${SLOW_ECHO_TOOL_NAME_PREFIX} tools required.`,
+      ],
+    };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_activity_failed_alpha_${label}`,
+              name: rememberTool,
+              args: { fact: `activity failed alpha ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      if (invocation === 2) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_activity_failed_broken_${label}`,
+              name: slowTool,
+              args: { delay_ms: 10 },
+              type: 'tool_call',
+            },
+            {
+              id: `call_e2e_activity_failed_slow_${label}`,
+              name: slowTool,
+              args: { text: `activity failed slow ${label}`, delay_ms: 4000 },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      if (invocation === 3) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_activity_failed_beta_${label}`,
+              name: rememberTool,
+              args: { fact: `activity failed beta ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `${ACTIVITY_FAILED_FINAL_TEXT} ${label}` };
+    },
+  };
+}
+
 /**
  * Pause a real agent run at the ask_user_question tool. The resume controller
  * rebuilds the graph with an empty input-message list, so the test hook selects
@@ -1375,6 +1919,288 @@ function subagentResultResponses(text) {
             type: 'tool_call',
           },
         ],
+      };
+    },
+  };
+}
+
+function findRunFile(value, filename) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  if ((value.filename ?? value.name) === filename) {
+    const id = value.artifact_id ?? value.file_id ?? value.id;
+    if (typeof id === 'string' && id.length > 0) {
+      return { ...value, id };
+    }
+  }
+  for (const child of Object.values(value)) {
+    const match = findRunFile(child, filename);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
+function parseRunFileResult(message) {
+  try {
+    return JSON.parse(getContentText(message?.content));
+  } catch {
+    return null;
+  }
+}
+
+function runFilesResponses(text) {
+  const followup = getMarkerValue(text, RUN_FILES_FOLLOWUP_MARKER);
+  if (followup) {
+    const [label, fileId] = followup.split(':');
+    const callId = `call_e2e_run_files_followup_${label}`;
+    return {
+      responses: [''],
+      resolveInvocation: (messages) => {
+        const result = findLastToolMessage(messages, callId);
+        if (!result) {
+          return {
+            response: '',
+            toolCalls: [{ id: callId, name: 'list_run_files', args: {}, type: 'tool_call' }],
+          };
+        }
+        const file = findRunFile(parseRunFileResult(result), `e2e-run-files-${label}.csv`);
+        return {
+          response:
+            file?.id === fileId
+              ? `E2E run file followup ${fileId}`
+              : `E2E run files failed: followup missing ${fileId}: ${getContentText(result.content)}`,
+        };
+      },
+    };
+  }
+
+  const marker = getMarkerValue(text, RUN_FILES_MARKER);
+  if (!marker) {
+    return null;
+  }
+  const [childId, label] = marker.split(':');
+  if (!childId || !/^[A-Za-z0-9-]+$/.test(label ?? '')) {
+    return { responses: ['E2E run files failed: malformed scenario marker'] };
+  }
+  const childPrompt = `${RUN_FILES_CHILD_MARKER}${label}`;
+  const inputName = `e2e-run-files-${label}.pdf`;
+  const outputName = `e2e-run-files-${label}.csv`;
+  const call = (phase, name, args = {}) => ({
+    response: '',
+    toolCalls: [{ id: `call_e2e_run_files_${label}_${phase}`, name, args, type: 'tool_call' }],
+  });
+  const resultFor = (messages, phase) =>
+    findLastToolMessage(messages, `call_e2e_run_files_${label}_${phase}`);
+  const failure = (reason, message) => ({
+    response: `E2E run files failed: ${reason}: ${getContentText(message?.content)}`,
+  });
+
+  return {
+    responses: [''],
+    overrideSubagentModel: true,
+    resolveInvocation: (messages) => {
+      const isChild = messages.some(
+        (message) =>
+          ['human', 'user'].includes(messageType(message)) &&
+          getContentText(message.content).includes(childPrompt),
+      );
+      if (isChild) {
+        const inputs = resultFor(messages, 'inputs');
+        if (!inputs) return call('inputs', 'list_run_files');
+        if (!findRunFile(parseRunFileResult(inputs), inputName)) {
+          return failure('child cannot see current PDF', inputs);
+        }
+        const search = resultFor(messages, 'search');
+        if (!search) return call('search', 'file_search', { query: `e2e ${label}` });
+        const code = resultFor(messages, 'code');
+        if (!code) {
+          return call('code', 'bash_tool', {
+            command: `printf 'source,count\\npdf,1\\n' > /mnt/data/${outputName}\n# E2E_RUN_FILE_ARTIFACT:${label}`,
+          });
+        }
+        const catalog = resultFor(messages, 'artifacts');
+        if (!catalog) return call('artifacts', 'list_run_files');
+        const artifact = findRunFile(parseRunFileResult(catalog), outputName);
+        if (!artifact) return failure('child output was not staged', catalog);
+        const publication = resultFor(messages, 'publish');
+        if (!publication) return call('publish', 'publish_artifact', { artifact_id: artifact.id });
+        const published = findRunFile(parseRunFileResult(publication), outputName);
+        if (!published) return failure('publication returned no durable file', publication);
+        return { response: `E2E run file published ${published.id}` };
+      }
+
+      const child = resultFor(messages, 'delegate');
+      if (!child) {
+        return call('delegate', 'subagent', {
+          description: childPrompt,
+          subagent_type: childId,
+        });
+      }
+      const fileId = getContentText(child.content).match(/E2E run file published ([\w.:-]+)/)?.[1];
+      if (!fileId) return failure('child returned no published reference', child);
+      const catalog = resultFor(messages, 'parent');
+      if (!catalog) return call('parent', 'list_run_files');
+      const file = findRunFile(parseRunFileResult(catalog), outputName);
+      if (file?.id !== fileId) return failure('parent cannot see the published reference', catalog);
+      return { response: `E2E run files complete ${label} file=${fileId}` };
+    },
+  };
+}
+
+function runFileVersionsResponses(text) {
+  const marker = getMarkerValue(text, RUN_FILE_VERSIONS_MARKER);
+  if (!marker) return null;
+  const [childId, label] = marker.split(':');
+  if (!childId || !/^[A-Za-z0-9-]+$/.test(label ?? '')) {
+    return { responses: ['E2E run file versions failed: malformed scenario marker'] };
+  }
+  const childPrompt = `${RUN_FILE_VERSIONS_CHILD_MARKER}${label}`;
+  const outputName = 'analysis.csv';
+  const call = (phase, name, args = {}) => ({
+    response: '',
+    toolCalls: [
+      { id: `call_e2e_run_file_versions_${label}_${phase}`, name, args, type: 'tool_call' },
+    ],
+  });
+  const resultFor = (messages, phase) =>
+    findLastToolMessage(messages, `call_e2e_run_file_versions_${label}_${phase}`);
+  const artifactsFor = (message) =>
+    (parseRunFileResult(message)?.artifacts ?? []).filter(
+      (artifact) => artifact.filename === outputName && typeof artifact.artifact_id === 'string',
+    );
+  const failure = (reason, message) => ({
+    response: `E2E run file versions failed: ${reason}: ${getContentText(message?.content)}`,
+  });
+
+  return {
+    responses: [''],
+    overrideSubagentModel: true,
+    resolveInvocation: (messages) => {
+      const isChild = messages.some(
+        (message) =>
+          ['human', 'user'].includes(messageType(message)) &&
+          getContentText(message.content).includes(childPrompt),
+      );
+      if (isChild) {
+        const inputs = resultFor(messages, 'inputs');
+        if (!inputs) return call('inputs', 'list_run_files');
+        const inputCatalog = parseRunFileResult(inputs);
+        if (
+          !findRunFile(inputCatalog?.files, `e2e-run-file-versions-${label}.pdf`) ||
+          !findRunFile(inputCatalog?.files, `e2e-run-file-versions-${label}.csv`)
+        ) {
+          return failure('child cannot see both current inputs', inputs);
+        }
+        const search = resultFor(messages, 'search');
+        if (!search) return call('search', 'file_search', { query: `e2e ${label}` });
+        const firstWrite = resultFor(messages, 'write_v1');
+        if (!firstWrite) {
+          return call('write_v1', 'bash_tool', {
+            command: `printf 'version,total\\n1,30\\n' > /mnt/data/${outputName}\n# E2E_RUN_FILE_VERSION:${label}:write-v1`,
+          });
+        }
+        const firstCatalog = resultFor(messages, 'after_v1');
+        if (!firstCatalog) return call('after_v1', 'list_run_files');
+        const initialIds = new Set(artifactsFor(inputs).map((artifact) => artifact.artifact_id));
+        const firstArtifact = artifactsFor(firstCatalog).find(
+          (artifact) => !initialIds.has(artifact.artifact_id),
+        );
+        if (!firstArtifact) return failure('first write has no private artifact', firstCatalog);
+        const inspection = resultFor(messages, 'inspect');
+        if (!inspection) {
+          return call('inspect', 'bash_tool', {
+            command: `cat /mnt/data/${outputName}\n# E2E_RUN_FILE_VERSION:${label}:inspect`,
+          });
+        }
+        if (!getContentText(inspection.content).includes('version,total\n1,30')) {
+          return failure('later Bash call cannot read version one', inspection);
+        }
+        const inspectionCatalog = resultFor(messages, 'after_inspect');
+        if (!inspectionCatalog) return call('after_inspect', 'list_run_files');
+        const inspectedIds = new Set(
+          artifactsFor(inspectionCatalog).map((artifact) => artifact.artifact_id),
+        );
+        if (!inspectedIds.has(firstArtifact.artifact_id)) {
+          return failure('inspection retired the original artifact ID', inspectionCatalog);
+        }
+        const secondWrite = resultFor(messages, 'write_v2');
+        if (!secondWrite) {
+          return call('write_v2', 'bash_tool', {
+            command: `printf 'version,total\\n2,35\\n' > /mnt/data/${outputName}\n# E2E_RUN_FILE_VERSION:${label}:write-v2`,
+          });
+        }
+        const secondCatalog = resultFor(messages, 'after_v2');
+        if (!secondCatalog) return call('after_v2', 'list_run_files');
+        const secondArtifacts = artifactsFor(secondCatalog);
+        if (
+          !secondArtifacts.some((artifact) => artifact.artifact_id === firstArtifact.artifact_id)
+        ) {
+          return failure('overwrite retired the original artifact ID', secondCatalog);
+        }
+        const secondArtifact = secondArtifacts.find(
+          (artifact) => !inspectedIds.has(artifact.artifact_id),
+        );
+        if (!secondArtifact) return failure('changed write has no new artifact ID', secondCatalog);
+        const firstPublication = resultFor(messages, 'publish_v1');
+        if (!firstPublication) {
+          return call('publish_v1', 'publish_artifact', { artifact_id: firstArtifact.artifact_id });
+        }
+        const firstPublished = findRunFile(parseRunFileResult(firstPublication), outputName);
+        if (!firstPublished) return failure('version one publication failed', firstPublication);
+        const remainingCatalog = resultFor(messages, 'after_publish_v1');
+        if (!remainingCatalog) return call('after_publish_v1', 'list_run_files');
+        if (
+          !artifactsFor(remainingCatalog).some(
+            (artifact) => artifact.artifact_id === secondArtifact.artifact_id,
+          )
+        ) {
+          return failure('publishing version one retired version two', remainingCatalog);
+        }
+        const secondPublication = resultFor(messages, 'publish_v2');
+        if (!secondPublication) {
+          return call('publish_v2', 'publish_artifact', {
+            artifact_id: secondArtifact.artifact_id,
+          });
+        }
+        const secondPublished = findRunFile(parseRunFileResult(secondPublication), outputName);
+        if (!secondPublished || secondPublished.id === firstPublished.id) {
+          return failure('version two has no distinct durable file', secondPublication);
+        }
+        return {
+          response:
+            `E2E run file versions published v1=${firstPublished.id} v2=${secondPublished.id} ` +
+            `artifact_v1=${firstArtifact.artifact_id} artifact_v2=${secondArtifact.artifact_id}`,
+        };
+      }
+
+      const child = resultFor(messages, 'delegate');
+      if (!child) {
+        return call('delegate', 'subagent', {
+          description: childPrompt,
+          subagent_type: childId,
+        });
+      }
+      const proof = getContentText(child.content).match(
+        /E2E run file versions published v1=([\w.:-]+) v2=([\w.:-]+) artifact_v1=([\w.:-]+) artifact_v2=([\w.:-]+)/,
+      );
+      if (!proof) return failure('child returned no version publications', child);
+      const catalog = resultFor(messages, 'parent');
+      if (!catalog) return call('parent', 'list_run_files');
+      const parentFiles = parseRunFileResult(catalog)?.files ?? [];
+      if (
+        ![proof[1], proof[2]].every((fileId) =>
+          parentFiles.some((file) => file.file_id === fileId && file.filename === outputName),
+        )
+      ) {
+        return failure('parent cannot see both published versions', catalog);
+      }
+      return {
+        response:
+          `E2E run file versions complete ${label} v1=${proof[1]} v2=${proof[2]} ` +
+          `artifact_v1=${proof[3]} artifact_v2=${proof[4]}`,
       };
     },
   };
@@ -1657,8 +2483,8 @@ function statefulCodeResponses(operation, toolNames) {
   }
 
   const commands = {
-    write: `printf ${STATEFUL_CODE_VALUE} > /mnt/data/librechat-bridge-state.txt && cat /mnt/data/librechat-bridge-state.txt`,
-    read: 'cat /mnt/data/librechat-bridge-state.txt',
+    write: `printf ${STATEFUL_CODE_VALUE} > librechat-bridge-state.txt && cat librechat-bridge-state.txt`,
+    read: 'cat librechat-bridge-state.txt',
   };
   const command = commands[operation];
   if (!command) {
@@ -2282,10 +3108,157 @@ function buildHandoffResponses(graph, parsed) {
   };
 }
 
+/**
+ * Emit an `execute_code` / `file_search` tool call so the run reaches
+ * ON_TOOL_EXECUTE, where `provisionFiles` lazily uploads message attachments to
+ * the code env / vector DB. The tool's own result is irrelevant to the
+ * provisioning assertion (which inspects the fake servers) — we just need the
+ * batch to fire. Guards assert the resource tool was actually advertised.
+ */
+function provisioningToolResponses({ text, toolNames }) {
+  const uploadedFilename = getRequestedSandboxFilename(text, EXEC_UPLOADED_MARKER);
+  if (uploadedFilename) {
+    return codeExecResponses(
+      {
+        filename: uploadedFilename,
+        toolCallId: EXEC_UPLOADED_TOOL_CALL_ID,
+        finalText: EXEC_UPLOADED_FINAL_TEXT,
+        code: `cat "/mnt/data/${uploadedFilename}" && printf 'turn1-proof-%s\\n' "$((40 + 2))" > "/mnt/data/${EXEC_TURN_MARKER_FILE}"`,
+      },
+      toolNames,
+    );
+  }
+
+  const persistedFilename = getRequestedSandboxFilename(text, EXEC_PERSIST_MARKER);
+  if (persistedFilename) {
+    return codeExecResponses(
+      {
+        filename: persistedFilename,
+        toolCallId: EXEC_PERSIST_TOOL_CALL_ID,
+        finalText: EXEC_PERSIST_FINAL_TEXT,
+        code: `printf 'LINES=%s\\n' "$(wc -l < "/mnt/data/${persistedFilename}")" && cat "/mnt/data/${EXEC_TURN_MARKER_FILE}"`,
+      },
+      toolNames,
+    );
+  }
+  const highlightLabel = getMarkerValue(text, HIGHLIGHT_CODE_MARKER);
+  if (highlightLabel) {
+    const codeTool = CODE_EXEC_TOOLS.find((tool) => toolNames.has(tool.name));
+    if (!codeTool) {
+      return {
+        responses: [`E2E highlight code unavailable: ${JSON.stringify([...toolNames])}`],
+      };
+    }
+    const command = Array.from({ length: 120 }, (_, index) => `printf 'line-${index}-☃\\n'`).join(
+      '\n',
+    );
+    let args = codeTool.args;
+    if (codeTool.name === 'bash_tool') {
+      args = { command };
+    } else if (codeTool.name === 'execute_code') {
+      args = { lang: 'bash', code: command };
+    }
+    return {
+      responses: ['', `E2E highlighted code complete: ${highlightLabel}`],
+      sleep: highlightLabel === 'cancel' ? HIGHLIGHT_CANCEL_CHUNK_DELAY_MS : SLOW_CHUNK_DELAY_MS,
+      toolCalls: [
+        {
+          id: EXECUTE_CODE_TOOL_CALL_ID,
+          name: codeTool.name,
+          args,
+          streamArgs: true,
+          type: 'tool_call',
+        },
+      ],
+    };
+  }
+
+  const codeLabel = getMarkerValue(text, EXECUTE_CODE_MARKER);
+  if (codeLabel) {
+    const codeTool = CODE_EXEC_TOOLS.find((tool) => toolNames.has(tool.name));
+    if (!codeTool) {
+      return {
+        responses: [
+          `E2E execute_code unavailable: no code-execution tool advertised (saw ${
+            JSON.stringify([...toolNames]) || 'none'
+          }).`,
+        ],
+      };
+    }
+    return {
+      responses: ['', `${EXECUTE_CODE_FINAL_TEXT}: ${codeLabel}`],
+      toolCalls: [
+        {
+          id: EXECUTE_CODE_TOOL_CALL_ID,
+          name: codeTool.name,
+          args: codeTool.args,
+          type: 'tool_call',
+        },
+      ],
+    };
+  }
+  const searchLabel = getMarkerValue(text, FILE_SEARCH_MARKER);
+  if (searchLabel) {
+    if (!toolNames.has(FILE_SEARCH_TOOL_NAME)) {
+      return {
+        responses: [`E2E file_search unavailable: ${FILE_SEARCH_TOOL_NAME} was not advertised.`],
+      };
+    }
+    return {
+      responses: ['', `${FILE_SEARCH_FINAL_TEXT}: ${searchLabel}`],
+      toolCalls: [
+        {
+          id: FILE_SEARCH_TOOL_CALL_ID,
+          name: FILE_SEARCH_TOOL_NAME,
+          args: { query: `e2e ${searchLabel}` },
+          type: 'tool_call',
+        },
+      ],
+    };
+  }
+
+  return null;
+}
+
+function codeExecResponses({ filename, toolCallId, finalText, code }, toolNames) {
+  if (!toolNames.has(BASH_TOOL_NAME)) {
+    return {
+      responses: [`E2E code exec unavailable: ${BASH_TOOL_NAME} was not advertised.`],
+    };
+  }
+  return {
+    responses: ['', `${finalText}: ${filename}`],
+    toolCalls: [
+      {
+        id: toolCallId,
+        name: BASH_TOOL_NAME,
+        args: { command: code },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
 function resolveResponses({ graph, messages, text, toolNames }) {
+  const lifecycle = runFileLifecycle.responsesForText(text);
+  if (lifecycle) return lifecycle;
+
+  const runFileDelivery = runFileDeliveryResponses(text);
+  if (runFileDelivery) return runFileDelivery;
+
   const backgroundCompletion = backgroundCompletionResponses(text);
   if (backgroundCompletion) {
     return backgroundCompletion;
+  }
+
+  const runFileVersions = runFileVersionsResponses(text);
+  if (runFileVersions) {
+    return runFileVersions;
+  }
+
+  const runFiles = runFilesResponses(text);
+  if (runFiles) {
+    return runFiles;
   }
 
   const subagentActivity = subagentActivityResponses(text);
@@ -2333,6 +3306,40 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return steerToolReplyResponses(steerToolLabel, toolNames);
   }
 
+  const mcpAppLabel = getMarkerValue(text, MCP_APP_MARKER);
+  if (mcpAppLabel) {
+    return mcpAppResponses(mcpAppLabel, toolNames);
+  }
+
+  const mcpAppPhaseLabel = getMarkerValue(text, MCP_APP_PHASE_MARKER);
+  if (mcpAppPhaseLabel) {
+    return mcpAppPhaseResponses(mcpAppPhaseLabel, toolNames);
+  }
+
+  const mcpLinkAppLabel = getMarkerValue(text, MCP_LINK_APP_MARKER);
+  if (mcpLinkAppLabel) {
+    return mcpLinkAppResponses(mcpLinkAppLabel, toolNames);
+  }
+
+  const mcpLegacyLabel = getMarkerValue(text, MCP_LEGACY_MARKER);
+  if (mcpLegacyLabel) {
+    return mcpLegacyResponses(mcpLegacyLabel, toolNames);
+  }
+
+  const mcpLegacyMimelessLabel = getMarkerValue(text, MCP_LEGACY_MIMELESS_MARKER);
+  if (mcpLegacyMimelessLabel) {
+    return mcpLegacyMimelessResponses(mcpLegacyMimelessLabel, toolNames);
+  }
+
+  if (text.includes(MCP_LEGACY_ACTION_MARKER)) {
+    return mcpLegacyActionResponses(toolNames);
+  }
+
+  const provisioningTool = provisioningToolResponses({ text, toolNames });
+  if (provisioningTool) {
+    return provisioningTool;
+  }
+
   const steerSplitLabel = getMarkerValue(text, STEER_SPLIT_REPLY_MARKER);
   if (steerSplitLabel) {
     return steerSplitReplyResponses(steerSplitLabel, toolNames);
@@ -2353,9 +3360,34 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return activityPhaseReplyResponses(activityPhaseLabel, toolNames);
   }
 
+  const activityProseLabel = getMarkerValue(text, ACTIVITY_PROSE_REPLY_MARKER);
+  if (activityProseLabel) {
+    return activityProseReplyResponses(activityProseLabel, toolNames);
+  }
+
+  const activityFailedLabel = getMarkerValue(text, ACTIVITY_FAILED_REPLY_MARKER);
+  if (activityFailedLabel) {
+    return activityFailedReplyResponses(activityFailedLabel, toolNames);
+  }
+
   const askUserQuestionLabel = getMarkerValue(text, ASK_USER_QUESTION_MARKER);
   if (askUserQuestionLabel) {
     return askUserQuestionResponses(askUserQuestionLabel, toolNames);
+  }
+
+  if (text.includes(ASSERT_PROJECT_CONTEXT_MARKER)) {
+    return {
+      responses: [MOCK_REPLY],
+      resolveOnStream: async (streamMessages, streamOptions, runManager) => {
+        const agentView = await getStreamAgentView({
+          graph,
+          messages: streamMessages,
+          options: streamOptions,
+          runManager,
+        });
+        return projectContextAssertionResponses({ messages: agentView.messages, text });
+      },
+    };
   }
 
   if (text.includes(ASSERT_AGENT_CONTEXT_MARKER)) {
@@ -2363,6 +3395,14 @@ function resolveResponses({ graph, messages, text, toolNames }) {
       responses: [MOCK_REPLY],
       resolveOnStream: (streamMessages) =>
         agentContextAssertionResponses({ messages: streamMessages, text }),
+    };
+  }
+
+  if (text.includes(ASSERT_HISTORY_MARKER)) {
+    return {
+      responses: [MOCK_REPLY],
+      resolveOnStream: (streamMessages) =>
+        historyAssertionResponses({ messages: streamMessages, text }),
     };
   }
 
@@ -2390,6 +3430,7 @@ function resolveResponses({ graph, messages, text, toolNames }) {
           messages: agentView.messages,
           assertion: parseSkillAssertion(text, agentView.agentId),
           toolNames: agentView.toolNames,
+          toolDefinitions: agentView.toolDefinitions,
         });
       },
     };
@@ -2511,9 +3552,11 @@ module.exports = function fakeModelHook(run, context) {
     sleep,
     toolCalls,
     thrownError,
-    overrideSubagentModel,
+    overrideSubagentModel:
+      overrideSubagentModel || runFileLifecycle.isFixtureAgents(context?.agents),
     disableHumanInTheLoop,
     resolveInvocation: async (streamMessages, streamOptions, runManager) =>
+      runFileLifecycle.resolveInvocation(streamMessages) ??
       deferredHitlInvocationResponse({
         graph,
         messages: streamMessages,

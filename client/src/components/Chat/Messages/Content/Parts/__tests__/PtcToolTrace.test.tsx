@@ -71,11 +71,9 @@ describe('PtcToolTrace', () => {
     ]);
 
     expect(screen.getByText('Tool calls')).toBeInTheDocument();
-    expect(screen.getByText('read_file')).toBeInTheDocument();
     expect(screen.getByText('path=a.ts')).toBeInTheDocument();
-    expect(screen.getByText('write_file')).toBeInTheDocument();
-    /* Twice by design: the visible cell plus the screen-reader status. */
-    expect(screen.getAllByText('running')).toHaveLength(2);
+    expect(screen.getByText('path=b.ts')).toBeInTheDocument();
+    expect(screen.getByRole('list')).toHaveTextContent('running');
   });
 
   it('splits an MCP tool id into its server and tool name', () => {
@@ -135,6 +133,6 @@ describe('PtcToolTrace', () => {
   it('does not show another message\u2019s trace in this card', () => {
     renderTrace([{ callId: 'a', name: 'read_file', status: 'success' }], 'a-different-message');
 
-    expect(screen.queryByText('read_file')).not.toBeInTheDocument();
+    expect(screen.queryByRole('list')).not.toBeInTheDocument();
   });
 });

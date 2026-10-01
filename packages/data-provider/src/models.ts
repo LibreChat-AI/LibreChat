@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { AgentSubagentsConfig } from './types/assistants';
+import type { AgentSubagentsConfig } from './types/agents';
 import type { TModelSpecPreset } from './schemas';
 import {
   EModelEndpoint,
@@ -88,6 +88,7 @@ export const modelSpecSubagentsSchema = z
   .object({
     enabled: z.boolean().optional(),
     allowSelf: z.boolean().optional(),
+    shareFiles: z.boolean().optional(),
     agent_ids: z.array(z.string()).optional(),
   })
   .superRefine((subagents, ctx) => {

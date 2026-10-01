@@ -3,6 +3,7 @@ import type { RerankerTypes, SearchProviders, ScraperProviders } from '../config
 import type * as p from '../accessPermissions';
 import type * as a from '../types/agents';
 import type * as s from '../schemas';
+import type { TFile } from './files';
 import type * as t from '../types';
 
 export type Conversation = {
@@ -23,6 +24,19 @@ export type ConversationListParams = {
   tags?: string[];
   search?: string;
   projectId?: string;
+  /**
+   * Absolute cutoffs rather than a named window, so the server validates one thing
+   * (a date) instead of an enum it would have to keep in step with the client, and a
+   * caller can ask for a range the menu does not offer. ISO 8601, inclusive.
+   */
+  updatedAfter?: string;
+  createdAfter?: string;
+  /** OR-matched: a conversation qualifies if it ran on any of these endpoints. */
+  endpoints?: string[];
+  /** Only conversations carrying at least one attachment. */
+  hasFiles?: boolean;
+  /** Only conversations the user is actively sharing through a link. */
+  sharedOnly?: boolean;
 };
 
 export type MinimalConversation = Pick<
@@ -33,9 +47,14 @@ export type MinimalConversation = Pick<
   | 'createdAt'
   | 'updatedAt'
   | 'archivedAt'
+  | 'isArchived'
   | 'user'
   | 'chatProjectId'
   | 'pinned'
+  | 'lastResponseAt'
+  | 'lastResponseMessageId'
+  | 'lastResponseIsManual'
+  | 'lastSeenAt'
 >;
 
 export type ConversationListResponse = {
@@ -63,6 +82,16 @@ export type ProjectListResponse = {
 };
 
 export type ProjectData = InfiniteData<ProjectListResponse>;
+export type ProjectAvailableFilesParams = {
+  cursor?: string;
+  limit?: number;
+  search?: string;
+};
+
+export type ProjectAvailableFilesResponse = {
+  files: TFile[];
+  nextCursor: string | null;
+};
 
 /* Messages */
 export type MessagesListParams = {
@@ -140,6 +169,10 @@ export type MCPServer = {
   name: string;
   icon: string;
   authenticated: boolean;
+  /** Passive discovery found that stored OAuth authorization must be renewed. */
+  authorizationState?: 'reauth_required';
+  /** Shared credential/catalog generation observed by passive discovery. */
+  authorizationGeneration?: string;
   authConfig: s.TPluginAuthConfig[];
   tools: MCPTool[];
 };
@@ -242,6 +275,8 @@ export interface MCPServerStatus {
     | 'authorized'
     | 'needs_authorization'
     | 'error';
+  /** Shared credential/catalog generation observed by the status endpoint. */
+  authorizationGeneration?: string;
 }
 
 export interface MCPConnectionStatusResponse {
@@ -259,6 +294,7 @@ export interface MCPServerConnectionStatusResponse {
   configurationState?: MCPServerStatus['configurationState'];
   connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'error';
   authorizationState?: MCPServerStatus['authorizationState'];
+  authorizationGeneration?: string;
 }
 
 export interface MCPAuthValuesResponse {

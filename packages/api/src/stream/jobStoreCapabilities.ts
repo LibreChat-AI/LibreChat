@@ -30,7 +30,13 @@ export const JOB_STORE_V2_REQUIRED_METHODS = [
   'claimParkedSteersDetailed',
   'consumeParkedSteer',
   'discardSteerLeftover',
-] as const satisfies ReadonlyArray<keyof IJobStoreV2>;
+  'settleEarlyBufferRecovery',
+  'finalizeEarlyBufferOverflow',
+  'hasSubscriberAttached',
+  'claimFirstSubscriber',
+  'detachSubscriber',
+  'hasActiveSubscriber',
+] as const;
 
 export type JobStoreV2RequiredMethod = (typeof JOB_STORE_V2_REQUIRED_METHODS)[number];
 
@@ -46,6 +52,9 @@ type SameUnion<Left, Right> = [Left] extends [Right]
 type AssertTrue<Value extends true> = Value;
 /** Compile-time tripwire: adding a v2-only method requires updating the runtime assertion. */
 type _AllV2MethodsHaveRuntimeChecks = AssertTrue<SameUnion<V2OnlyMethod, JobStoreV2RequiredMethod>>;
+type _AllRuntimeChecksBelongToV2 = AssertTrue<
+  Exclude<JobStoreV2RequiredMethod, keyof IJobStoreV2> extends never ? true : false
+>;
 
 /** Return the v2 capabilities absent from a legacy-compatible store. */
 export function getMissingJobStoreV2Methods(store: IJobStore): JobStoreV2RequiredMethod[] {

@@ -59,11 +59,18 @@ function makeWrapper(skillIds: string[]) {
   };
 }
 
-function renderResolvedSkills(skillIds: string[], pageSkills?: TSkillSummary[]) {
-  return renderHook((props: TSkillSummary[] | undefined) => useResolvedSkills(props), {
-    wrapper: makeWrapper(skillIds),
-    initialProps: pageSkills,
-  });
+function renderResolvedSkills(
+  skillIds: string[],
+  pageSkills?: TSkillSummary[],
+  resolveAllowlist = true,
+) {
+  return renderHook(
+    (props: TSkillSummary[] | undefined) => useResolvedSkills(props, resolveAllowlist),
+    {
+      wrapper: makeWrapper(skillIds),
+      initialProps: pageSkills,
+    },
+  );
 }
 
 describe('useResolvedSkills', () => {
@@ -96,6 +103,16 @@ describe('useResolvedSkills', () => {
     });
     expect(mockGetSkill).toHaveBeenCalledWith('off-page');
     expect(result.current?.[1].name).toBe('Off Page Skill');
+  });
+
+  test('skips the per-id lookups when the caller is not rendering allowlist rows', () => {
+    /** Off and All keep the allowlist but never show it, so resolving ids the
+     *  first page missed would be one request each for a list nobody sees. */
+    const page = [makeSkill({ _id: 's1' })];
+    const { result } = renderResolvedSkills(['s1', 'off-page'], page, false);
+
+    expect(result.current).toBe(page);
+    expect(mockGetSkill).not.toHaveBeenCalled();
   });
 
   test('keeps a confirmed miss (404) visible under a placeholder name', async () => {

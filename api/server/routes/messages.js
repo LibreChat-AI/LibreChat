@@ -22,9 +22,12 @@ const {
   assertStoredMessageMutationAllowed,
   assertChatMutationAllowed,
   assertStoredMessageBranchAllowed,
+  reportLocatorTraversalFailure,
   mergeUserSubmittedPaths,
   mergeUserSubmittedMessageFieldPaths,
   isContentFilterError,
+  withoutTraceRefs,
+  applyForcedRetention,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 const { findAllArtifacts, replaceArtifactContent } = require('~/server/services/Artifacts/update');
@@ -38,8 +41,12 @@ const {
 } = require('~/server/middleware');
 const db = require('~/models');
 
+const retentionStore = { stampForcedRetention: db.stampForcedRetention };
+
 const router = express.Router();
 const filterStoredMessageContent = createContentFilter({
+  messageCount: 1,
+  onTraversalFailure: reportLocatorTraversalFailure,
   getFilters: (req) => req.config?.filters,
   getMessageRoles: (req) => [req.body?.role],
   getOpaqueFileInput: (req) => req.body,
@@ -47,6 +54,7 @@ const filterStoredMessageContent = createContentFilter({
   extract: (req) => extractStoredMessageContent(req.body),
 });
 const filterFeedbackContent = createContentFilter({
+  onTraversalFailure: reportLocatorTraversalFailure,
   getFilters: (req) => req.config?.filters,
   extract: (req) => extractFeedbackContent(req.body),
 });
@@ -61,7 +69,14 @@ router.use(requireJwtAuth);
 
 async function rejectSubagentThreadWrite(req, res, conversationId) {
   const blocked = await isSubagentThreadWriteBlocked(
-    { getConvo: db.getConvo, store: subagentThreadTaskStore },
+    {
+      getConvo: async (...args) => {
+        const conversation = await db.getConvo(...args);
+        req.resolvedConversation = conversation;
+        return conversation;
+      },
+      store: subagentThreadTaskStore,
+    },
     {
       userId: req.user.id,
       conversationId,
@@ -344,13 +359,14 @@ router.post('/branch', configMiddleware, async (req, res) => {
         message: newMessage,
         user: req.user,
       },
-      { getFiles: db.getFiles },
+      { getFiles: db.getFiles, onTraversalFailure: reportLocatorTraversalFailure },
     );
 
     const savedMessage = await db.saveMessage(
       {
         userId: req?.user?.id,
-        isTemporary: req?.body?.isTemporary,
+        isTemporary: sourceMessage.isTemporary,
+        expiredAt: sourceMessage.expiredAt,
         interfaceConfig: req?.config?.interfaceConfig,
       },
       newMessage,
@@ -360,6 +376,16 @@ router.post('/branch', configMiddleware, async (req, res) => {
     if (!savedMessage) {
       return res.status(500).json({ error: 'Failed to save branch message' });
     }
+
+    await applyForcedRetention(retentionStore, {
+      ctx: {
+        userId,
+        isTemporary: sourceMessage.isTemporary,
+        expiredAt: savedMessage.expiredAt ?? sourceMessage.expiredAt,
+        interfaceConfig: req?.config?.interfaceConfig,
+      },
+      conversationId: sourceMessage.conversationId,
+    });
 
     res.status(201).json(toClientMessage(savedMessage));
   } catch (error) {
@@ -437,12 +463,15 @@ router.post('/artifact/:messageId', configMiddleware, async (req, res) => {
         : { text: updatedText };
     assertStoredMessageMutationAllowed(req.config?.filters, filteredArtifact);
 
+    const reqCtx = {
+      userId: req?.user?.id,
+      isTemporary: message.isTemporary,
+      expiredAt: message.expiredAt,
+      interfaceConfig: req?.config?.interfaceConfig,
+    };
+    const context = 'POST /api/messages/artifact/:messageId';
     const savedMessage = await db.saveMessage(
-      {
-        userId: req?.user?.id,
-        isTemporary: req?.body?.isTemporary,
-        interfaceConfig: req?.config?.interfaceConfig,
-      },
+      reqCtx,
       {
         messageId,
         conversationId: message.conversationId,
@@ -456,8 +485,12 @@ router.post('/artifact/:messageId', configMiddleware, async (req, res) => {
         ),
         user: req.user.id,
       },
-      { context: 'POST /api/messages/artifact/:messageId' },
+      { context },
     );
+    await applyForcedRetention(retentionStore, {
+      ctx: reqCtx,
+      conversationId: message.conversationId,
+    });
 
     res.status(200).json({
       conversationId: savedMessage.conversationId,
@@ -509,7 +542,8 @@ router.post('/:conversationId', storedMessageMutationMiddleware, async (req, res
     if (await rejectSubagentThreadWrite(req, res, req.params.conversationId)) {
       return;
     }
-    const message = { ...req.body, conversationId: req.params.conversationId };
+    /** Trace sampling fields are ownership claims only the server writes. */
+    const message = withoutTraceRefs({ ...req.body, conversationId: req.params.conversationId });
     delete message.isUserSubmitted;
     delete message.userSubmittedPaths;
     delete message.userSubmittedMessageFieldPaths;
@@ -518,7 +552,8 @@ router.post('/:conversationId', storedMessageMutationMiddleware, async (req, res
     delete message.contextMeta;
     const reqCtx = {
       userId: req?.user?.id,
-      isTemporary: req?.body?.isTemporary,
+      isTemporary: req.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+      expiredAt: req.resolvedConversation?.expiredAt,
       interfaceConfig: req?.config?.interfaceConfig,
     };
     const savedMessage = await db.saveMessage(
@@ -583,6 +618,7 @@ router.put('/:conversationId/:messageId', messageMutationMiddleware, async (req,
     if (index !== undefined && (typeof index !== 'number' || index < 0)) {
       return res.status(400).json({ error: 'Invalid index' });
     }
+    const reqCtx = { userId: req?.user?.id, interfaceConfig: req?.config?.interfaceConfig };
 
     if (index === undefined) {
       assertStoredMessageMutationAllowed(req.config?.filters, { text });
@@ -606,6 +642,11 @@ router.put('/:conversationId/:messageId', messageMutationMiddleware, async (req,
         text,
         tokenCount,
         userSubmittedPaths: mergeUserSubmittedPaths(message.userSubmittedPaths, '/text'),
+      });
+      await applyForcedRetention(retentionStore, {
+        ctx: reqCtx,
+        conversationId,
+        messageId,
       });
       return res.status(200).json(result);
     }
@@ -664,6 +705,11 @@ router.put('/:conversationId/:messageId', messageMutationMiddleware, async (req,
         `/content/${index}/${currentPartType}`,
       ),
     });
+    await applyForcedRetention(retentionStore, {
+      ctx: reqCtx,
+      conversationId,
+      messageId,
+    });
     return res.status(200).json(result);
   } catch (error) {
     if (isContentFilterError(error)) {
@@ -702,7 +748,7 @@ router.put(
       // Best-effort: Assistants messages do not have deterministic AgentRun traces.
       if (!isAssistantsEndpoint(updatedMessage.endpoint)) {
         sendFeedbackScore({
-          traceId: traceIdForMessage(messageId),
+          traceId: traceIdForMessage(updatedMessage.langfuseRunId ?? messageId),
           sampled: updatedMessage.langfuseSampled,
           destinationIds: updatedMessage.langfuseDestinationIds,
           feedback: updatedMessage.feedback,
@@ -721,6 +767,12 @@ router.put(
           },
         }).catch((err) => logger.error('[langfuse] feedback score failed:', err));
       }
+
+      await applyForcedRetention(retentionStore, {
+        ctx: { userId: req?.user?.id, interfaceConfig: req?.config?.interfaceConfig },
+        conversationId: updatedMessage.conversationId,
+        messageId,
+      });
 
       res.json({
         messageId,

@@ -1,5 +1,5 @@
-import { isEnabled } from './common';
 import type { AzureOptions, GenericClient } from '~/types';
+import { isEnabled } from './common';
 
 /**
  * Sanitizes the model name to be used in the URL by removing or replacing disallowed characters.
@@ -123,4 +123,77 @@ export function constructAzureURL({
   }
 
   return finalURL;
+}
+
+export function isCanonicalAzureURL(baseURL: string): boolean {
+  try {
+    return /\.(?:openai|cognitiveservices|services\.ai)\.azure\.(?:com|us|cn)$/i.test(
+      new URL(baseURL).hostname,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isAzureRootPath(pathname: string): boolean {
+  return /^\/(?:openai(?:\/v1)?\/?|v1\/?)?$/.test(pathname);
+}
+
+/** An instance name that is already a full Azure hostname, which `genAzureEndpoint` also accepts. */
+function getAzureInstanceHost(instanceName?: string): string | undefined {
+  return instanceName && isCanonicalAzureURL(`https://${instanceName}`) ? instanceName : undefined;
+}
+
+/**
+ * The deployments path for a full-hostname instance without a base URL. A resource name needs
+ * none: the client derives `<name>.openai.azure.com` itself, which a full hostname would double.
+ */
+export function constructAzureInstanceBasePath(azureOptions: AzureOptions): string | undefined {
+  const host = getAzureInstanceHost(azureOptions.azureOpenAIApiInstanceName);
+  return host ? `https://${host}/openai/deployments` : undefined;
+}
+
+export function constructAzureChatBasePath(baseURL: string, azureOptions: AzureOptions): string {
+  const resolvedURL = constructAzureURL({ baseURL, azureOptions });
+  if (isCanonicalAzureURL(resolvedURL)) {
+    const url = new URL(resolvedURL);
+    if (isAzureRootPath(url.pathname)) {
+      return `${url.origin}/openai/deployments`;
+    }
+  }
+  return resolvedURL.split(`/${azureOptions.azureOpenAIApiDeploymentName}`)[0];
+}
+
+/** Azure permits the deployment to be supplied entirely by the configured base URL. */
+export function getAzureDeploymentName(
+  baseURL?: string | null,
+  azureOptions?: AzureOptions,
+): string | undefined {
+  if (!baseURL) {
+    return undefined;
+  }
+  try {
+    const url = new URL(constructAzureURL({ baseURL, azureOptions }));
+    const deployment = url.pathname.match(/\/deployments\/([^/]+)/)?.[1];
+    return deployment ? decodeURIComponent(deployment) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function constructAzureResponsesURL(
+  baseURL: string | null | undefined,
+  azureOptions: AzureOptions,
+): URL {
+  const instanceName = azureOptions.azureOpenAIApiInstanceName ?? '';
+  const instanceHost = getAzureInstanceHost(instanceName) ?? `${instanceName}.openai.azure.com`;
+  const resolvedURL = baseURL
+    ? constructAzureURL({ baseURL, azureOptions })
+    : `https://${instanceHost}/openai/v1`;
+  const url = new URL(resolvedURL);
+  url.pathname = url.pathname.replace(/\/deployments(?:\/.*)?$/, '/v1');
+  if (isCanonicalAzureURL(resolvedURL) && isAzureRootPath(url.pathname)) {
+    url.pathname = '/openai/v1';
+  }
+  return url;
 }

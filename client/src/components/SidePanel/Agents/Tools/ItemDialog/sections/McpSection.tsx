@@ -122,8 +122,8 @@ export default function McpSection({ item }: Props) {
   /** Subscribe to the tools field so selection toggles re-render this section.
    * `getValues` is a non-reactive read and left the checkboxes visually stale. */
   const formTools = (useWatch({ control, name: 'tools' }) ?? []) as string[];
-  /** Attached via the server-wide `mcp_all` wildcard — used by request-scoped
-   * servers whose tools resolve at chat-turn time and can't be listed here. */
+  /** Attached via the server-wide `mcp_all` wildcard when tools resolve at
+   * chat-turn time rather than from the instance catalog. */
   const isWildcardAttached = formTools.includes(serverAllToken);
 
   /**
@@ -284,9 +284,8 @@ export default function McpSection({ item }: Props) {
     [getValues, isServerSelection, serverToken, setValue],
   );
 
-  /** Request-scoped servers have no per-tool catalog outside a chat turn. Their
-   *  sole meaningful selection is the runtime wildcard, so clearing it detaches
-   *  the whole server instead of leaving behind an unusable server-only pin. */
+  /** Servers without a visible per-tool catalog attach through the runtime wildcard.
+   * Clearing it detaches the server instead of leaving an unusable server-only pin. */
   const toggleRuntimeTools = useCallback(
     (checked: boolean) => {
       const current = (getValues('tools') ?? []) as string[];
@@ -345,6 +344,7 @@ export default function McpSection({ item }: Props) {
   const isConnected = connectionState === 'connected' || liveServer.isConnected === true;
   const isReadyForAgent = liveServer.isReadyForAgent ?? isConnected;
   const isBusy = isInitializing || connectionState === 'connecting';
+  const canCancel = statusIconProps?.canCancel === true;
 
   /** Close + clear the OAuth dialog once the server is ready, and don't let it
    * reopen on its own if the connection later drops. No useEffect — adjust state
@@ -362,17 +362,12 @@ export default function McpSection({ item }: Props) {
    * connects, polling for OAuth), select them all — an effect because both
    * signals come from external systems, not from anything rendered here.
    *
-   * Request-scoped servers (runtime `{{LIBRECHAT_BODY_*}}` placeholders) defer
-   * their connection to the next chat turn, so no tool list will ever arrive —
-   * attach the whole server via the `mcp_all` wildcard instead; the backend
-   * resolves it into the server's full tool set at turn time. Keying on the
-   * manager's init state (not the awaited response) also covers connects that
-   * happen behind the customUserVars config dialog, which this component does
-   * not await. */
+   * A ready server can still have an empty instance catalog when discovery needs
+   * user credentials or chat fields. Attach its runtime wildcard once loading
+   * settles. Deferred init also covers connects behind the customUserVars dialog. */
   const initConnectionDeferred = isConnectionDeferred(serverName);
-  const requestScoped = liveServer.requestScoped === true;
   const runtimeToolsAvailable =
-    !hasTools && !toolsLoading && (isWildcardAttached || (requestScoped && isReadyForAgent));
+    !hasTools && !toolsLoading && (isWildcardAttached || isReadyForAgent);
   const runtimeToolsMessage = isWildcardAttached
     ? 'com_ui_tools_mcp_runtime_tools'
     : 'com_ui_tools_mcp_runtime_tools_available';
@@ -380,7 +375,7 @@ export default function McpSection({ item }: Props) {
     if (!autoSelectPending) {
       return;
     }
-    if (initConnectionDeferred && !hasTools) {
+    if (!hasTools && (initConnectionDeferred || (!toolsLoading && isReadyForAgent))) {
       setAutoSelectPending(false);
       if (!isWildcardAttached) {
         toggleRuntimeTools(true);
@@ -395,6 +390,8 @@ export default function McpSection({ item }: Props) {
   }, [
     autoSelectPending,
     initConnectionDeferred,
+    toolsLoading,
+    isReadyForAgent,
     isConnected,
     hasTools,
     tools,
@@ -433,22 +430,29 @@ export default function McpSection({ item }: Props) {
     }
   };
 
+  const handleCancel = (e: MouseEvent) => {
+    setAutoSelectPending(false);
+    setOauthOpen(false);
+    setOauthUrl(null);
+    statusIconProps?.onCancel(e);
+  };
+
   return (
     <div className="flex flex-col gap-5">
       {item.description && (
-        <p className="max-h-40 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed text-text-secondary">
+        <p className="text-text-secondary max-h-40 overflow-y-auto text-sm leading-relaxed whitespace-pre-wrap">
           {item.description}
         </p>
       )}
 
       <div className="flex flex-col">
-        <div className="flex items-center justify-between rounded-xl border border-border-light bg-surface-secondary px-3 py-2.5">
+        <div className="border-border-light bg-surface-secondary flex items-center justify-between rounded-xl border px-3 py-2.5">
           <div className="flex items-center gap-2">
             <span
               className={cn('size-2.5 rounded-full', statusDisplay.dotClass)}
               aria-hidden="true"
             />
-            <span className="text-sm font-medium text-text-primary">
+            <span className="text-text-primary text-sm font-medium">
               {localize(statusDisplay.labelKey, { 0: serverName })}
             </span>
           </div>
@@ -467,15 +471,17 @@ export default function McpSection({ item }: Props) {
           <div className="min-h-0 overflow-hidden">
             <Button
               type="button"
-              variant="submit"
+              variant={canCancel ? 'outline' : 'submit'}
               className="mt-5 w-full gap-2"
-              disabled={isBusy}
+              disabled={isBusy && !canCancel}
               tabIndex={isReadyForAgent ? -1 : undefined}
               aria-hidden={isReadyForAgent || undefined}
-              onClick={handleConnect}
+              onClick={canCancel ? handleCancel : handleConnect}
             >
-              {isBusy && <Spinner className="size-4" />}
-              {localize('com_nav_mcp_connect_server', { 0: serverName })}
+              {isBusy && !canCancel && <Spinner className="size-4" />}
+              {canCancel
+                ? localize('com_ui_cancel')
+                : localize('com_nav_mcp_connect_server', { 0: serverName })}
             </Button>
           </div>
         </div>
@@ -483,7 +489,7 @@ export default function McpSection({ item }: Props) {
 
       <div className="flex flex-col gap-2">
         <div className="flex min-h-7 items-center justify-between">
-          <span className="text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+          <span className="text-text-secondary text-[11px] font-medium tracking-wide uppercase">
             {localize('com_ui_tools_mcp_tools_section')}
           </span>
           {(hasTools || runtimeToolsAvailable) && (
@@ -494,7 +500,7 @@ export default function McpSection({ item }: Props) {
                   size="md"
                   pressed={allDeferred}
                   label={localize(allDeferred ? 'com_ui_mcp_undefer_all' : 'com_ui_mcp_defer_all')}
-                  activeClass="text-amber-600 dark:text-amber-500"
+                  activeClass="border-series-4 text-series-4 hover:text-series-4"
                   onToggle={() => toggleDeferAll(tools)}
                 />
               )}
@@ -504,7 +510,7 @@ export default function McpSection({ item }: Props) {
                   size="md"
                   pressed={allProgrammatic}
                   label={programmaticBulkLabel}
-                  activeClass="text-violet-600 dark:text-violet-500"
+                  activeClass="border-series-6 text-series-6 hover:text-series-6"
                   tooltip={programmaticBulkTooltip}
                   disabled={!programmaticToolsAvailable && !allProgrammatic}
                   onToggle={() => toggleProgrammaticAll(tools)}
@@ -518,7 +524,7 @@ export default function McpSection({ item }: Props) {
                   label={localize(
                     allBackground ? 'com_ui_mcp_unbackground_all' : 'com_ui_mcp_background_all',
                   )}
-                  activeClass="text-sky-600 dark:text-sky-500"
+                  activeClass="border-series-1 text-series-1 hover:text-series-1"
                   onToggle={() => toggleBackgroundAll(tools)}
                 />
               )}
@@ -529,7 +535,7 @@ export default function McpSection({ item }: Props) {
                   pressed={allIntent}
                   disabled={intentEligibleTools.length === 0}
                   label={localize(allIntent ? 'com_ui_mcp_unintent_all' : 'com_ui_mcp_intent_all')}
-                  activeClass="text-teal-600 dark:text-teal-500"
+                  activeClass="border-series-3 text-series-3 hover:text-series-3"
                   onToggle={() => toggleIntentAll(intentEligibleTools)}
                 />
               )}
@@ -538,9 +544,9 @@ export default function McpSection({ item }: Props) {
                   programmaticToolsEnabled ||
                   backgroundToolsEnabled ||
                   toolIntentsEnabled) && (
-                  <span className="mx-1 h-4 w-px bg-border-light" aria-hidden="true" />
+                  <span className="bg-border-light mx-1 h-4 w-px" aria-hidden="true" />
                 )}
-              <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs text-text-secondary">
+              <label className="text-text-secondary flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs">
                 <Checkbox
                   checked={hasTools ? allSelected : isWildcardAttached}
                   onCheckedChange={(checked) =>
@@ -551,7 +557,7 @@ export default function McpSection({ item }: Props) {
                       ? localize('com_ui_tools_mcp_deselect_all')
                       : localize('com_ui_tools_mcp_select_all')
                   }
-                  className="size-4 rounded border border-border-medium"
+                  className="border-border-medium size-4 rounded border"
                 />
                 <span>
                   {(hasTools ? allSelected : isWildcardAttached)
@@ -607,7 +613,7 @@ export default function McpSection({ item }: Props) {
             </div>
           </Collapse>
           <Collapse open={!hasTools && !toolsLoading}>
-            <p className="rounded-xl border border-dashed border-border-light p-3 text-center text-xs text-text-tertiary">
+            <p className="border-border-light text-text-tertiary rounded-xl border border-dashed p-3 text-center text-xs">
               {localize(runtimeToolsAvailable ? runtimeToolsMessage : 'com_ui_tools_mcp_no_tools')}
             </p>
           </Collapse>

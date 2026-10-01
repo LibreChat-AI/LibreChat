@@ -65,7 +65,7 @@ export default function Action({
       >
         <MorphIcon
           icon={isToolAuthenticated ? CircleCheck : KeyRound}
-          className={cn('h-4 w-4', isToolAuthenticated && 'text-green-500')}
+          className={cn('h-4 w-4', isToolAuthenticated && 'text-status-success')}
         />
         {localize(
           isToolAuthenticated

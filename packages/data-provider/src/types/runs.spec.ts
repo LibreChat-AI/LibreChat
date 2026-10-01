@@ -1,5 +1,5 @@
 import type { TContextUsageEvent, TTokenUsageEvent } from './runs';
-import { promptTokensFromUsage, reconcileContextUsage } from './runs';
+import { promptTokensFromUsage, outputTokensFromUsage, reconcileContextUsage } from './runs';
 
 describe('promptTokensFromUsage', () => {
   it('adds cache reads/writes for additive providers (Bedrock)', () => {
@@ -31,6 +31,15 @@ describe('promptTokensFromUsage', () => {
 
   it('handles missing fields', () => {
     expect(promptTokensFromUsage({ provider: 'anthropic' })).toBe(0);
+  });
+  it('ignores malformed numeric usage fields', () => {
+    expect(
+      promptTokensFromUsage({
+        input_tokens: Number.NaN,
+        input_token_details: { cache_read: Number.POSITIVE_INFINITY, cache_creation: '4' as never },
+        provider: 'bedrock',
+      }),
+    ).toBe(0);
   });
 
   it('accepts the activity-label usage bucket emitted on the wire', () => {
@@ -73,6 +82,30 @@ describe('promptTokensFromUsage', () => {
       input_token_details: { cache_read: 900, cache_creation: 0 },
     };
     expect(promptTokensFromUsage(event)).toBe(1000);
+  });
+});
+
+describe('outputTokensFromUsage', () => {
+  it('repairs omitted reasoning while excluding additive prompt-cache tokens', () => {
+    expect(
+      outputTokensFromUsage({
+        provider: 'bedrock',
+        input_tokens: 200,
+        output_tokens: 30,
+        total_tokens: 450,
+        input_token_details: { cache_read: 100, cache_creation: 50 },
+      }),
+    ).toBe(100);
+    expect(
+      outputTokensFromUsage({
+        provider: 'bedrock',
+        input_tokens: 200,
+        output_tokens: 30,
+        total_tokens: 380,
+        input_token_details: { cache_read: 100, cache_creation: 50 },
+      }),
+    ).toBe(30);
+    expect(outputTokensFromUsage({ output_tokens: NaN, total_tokens: Infinity })).toBe(0);
   });
 });
 
@@ -119,6 +152,133 @@ describe('reconcileContextUsage', () => {
     const result = reconcileContextUsage(inflatedSnapshot, 3000);
     expect(result.breakdown.messageTokens).toBe(0);
     expect(result.remainingContextTokens).toBe(237500 - 3000);
+  });
+
+  it('rescales toolMessageTokens proportionally to the corrected messageTokens', () => {
+    const snapshot: TContextUsageEvent = {
+      ...inflatedSnapshot,
+      breakdown: { ...inflatedSnapshot.breakdown, toolMessageTokens: 46868 },
+    };
+    const result = reconcileContextUsage(snapshot, 55773);
+    const messageTokens = 55773 - 4205 - 1938;
+    const toolMessageTokens = Math.round((46868 / 187471) * messageTokens);
+    expect(result.breakdown.messageTokens).toBe(messageTokens);
+    expect(result.breakdown.toolMessageTokens).toBe(toolMessageTokens);
+    /** the split stays a subset of the corrected total */
+    expect(result.breakdown.toolMessageTokens).toBeLessThanOrEqual(result.breakdown.messageTokens);
+    /** rows still sum to the real total */
+    expect(
+      result.breakdown.messageTokens +
+        result.breakdown.instructionTokens +
+        result.breakdown.summaryTokens,
+    ).toBe(55773);
+  });
+
+  it('rescales toolMessageTokenCounts with the reconciled total', () => {
+    const snapshot: TContextUsageEvent = {
+      ...inflatedSnapshot,
+      breakdown: {
+        ...inflatedSnapshot.breakdown,
+        toolMessageTokens: 46868,
+        toolMessageTokenCounts: { grep: 40000, read_file: 6868, zero: 0 },
+      },
+    };
+    const result = reconcileContextUsage(snapshot, 55773);
+    const factor = result.breakdown.toolMessageTokens! / 46868;
+    expect(result.breakdown.toolMessageTokenCounts?.grep).toBe(Math.round(40000 * factor));
+    expect(result.breakdown.toolMessageTokenCounts?.read_file).toBe(Math.round(6868 * factor));
+  });
+
+  it('rescales toolMessageTokenCounts without rounding past the total', () => {
+    const snapshot: TContextUsageEvent = {
+      ...inflatedSnapshot,
+      breakdown: {
+        ...inflatedSnapshot.breakdown,
+        messageTokens: 10,
+        toolMessageTokens: 10,
+        toolMessageTokenCounts: { first: 5, second: 5 },
+      },
+    };
+    const result = reconcileContextUsage(snapshot, 4205 + 1938 + 1);
+    expect(result.breakdown.toolMessageTokens).toBe(1);
+    expect(
+      Object.values(result.breakdown.toolMessageTokenCounts ?? {}).reduce(
+        (total, count) => total + count,
+        0,
+      ),
+    ).toBeLessThanOrEqual(result.breakdown.toolMessageTokens ?? 0);
+  });
+
+  it('sanitizes malformed counts and preserves prototype-sensitive names', () => {
+    const counts = JSON.parse('{"__proto__":2,"constructor":2,"invalid":"3"}') as Record<
+      string,
+      number
+    >;
+    const snapshot: TContextUsageEvent = {
+      ...inflatedSnapshot,
+      breakdown: {
+        ...inflatedSnapshot.breakdown,
+        messageTokens: 10,
+        toolMessageTokens: 4,
+        toolMessageTokenCounts: counts,
+      },
+    };
+    const result = reconcileContextUsage(snapshot, 4205 + 1938 + 10);
+    const resultCounts = result.breakdown.toolMessageTokenCounts;
+    expect(resultCounts?.['__proto__']).toBe(2);
+    expect(resultCounts?.constructor).toBe(2);
+    expect(resultCounts?.invalid).toBeUndefined();
+    expect(Object.keys(resultCounts ?? {})).toEqual(['__proto__', 'constructor']);
+  });
+
+  it('keeps a supplied zero tool split distinct from an absent split', () => {
+    const snapshot: TContextUsageEvent = {
+      ...inflatedSnapshot,
+      breakdown: { ...inflatedSnapshot.breakdown, toolMessageTokens: 0 },
+    };
+    const result = reconcileContextUsage(snapshot, 55773);
+    expect(result.breakdown.toolMessageTokens).toBe(0);
+    expect(Object.prototype.hasOwnProperty.call(result.breakdown, 'toolMessageTokens')).toBe(true);
+  });
+
+  it('keeps toolMessageTokenCounts absent when the tool total is absent', () => {
+    const snapshot: TContextUsageEvent = {
+      ...inflatedSnapshot,
+      breakdown: { ...inflatedSnapshot.breakdown, toolMessageTokenCounts: { grep: 100 } },
+    };
+    const result = reconcileContextUsage(snapshot, 55773);
+    expect(result.breakdown.toolMessageTokenCounts).toBeUndefined();
+  });
+
+  it('keeps toolMessageTokens absent on snapshots without the field (older SDK)', () => {
+    const result = reconcileContextUsage(inflatedSnapshot, 55773);
+    expect(result.breakdown.toolMessageTokens).toBeUndefined();
+  });
+
+  it('does not mutate the snapshot while sanitizing malformed values', () => {
+    const snapshot: TContextUsageEvent = {
+      ...inflatedSnapshot,
+      breakdown: {
+        ...inflatedSnapshot.breakdown,
+        toolMessageTokens: Number.NaN,
+        toolMessageTokenCounts: { grep: Number.POSITIVE_INFINITY },
+      },
+    };
+    const result = reconcileContextUsage(snapshot, 55773);
+    expect(snapshot.breakdown.toolMessageTokens).toBeNaN();
+    expect(snapshot.breakdown.toolMessageTokenCounts?.grep).toBe(Infinity);
+    expect(result.breakdown.toolMessageTokens).toBeUndefined();
+    expect(result.breakdown.toolMessageTokenCounts).toBeUndefined();
+  });
+
+  it('clamps an over-sized tool share to the corrected messageTokens', () => {
+    const snapshot: TContextUsageEvent = {
+      ...inflatedSnapshot,
+      breakdown: { ...inflatedSnapshot.breakdown, toolMessageTokens: 187471 },
+    };
+    const result = reconcileContextUsage(snapshot, 6144);
+    expect(result.breakdown.messageTokens).toBe(1);
+    expect(result.breakdown.toolMessageTokens).toBe(1);
   });
 
   it('is a no-op for an unusable prompt count', () => {

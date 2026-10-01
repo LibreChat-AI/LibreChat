@@ -3,6 +3,7 @@ import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { TConfig } from 'librechat-data-provider';
 import type { RequestBody, ServerRequest } from './http';
 import type { EndpointTokenConfig } from './tokens';
+import type { AzureOptions } from './azure';
 
 export type TCustomEndpointsConfig = Partial<{ [key: string]: Omit<TConfig, 'order'> }>;
 
@@ -87,6 +88,8 @@ export function resolveEndpointRuntime(params: ProviderInitializeParams): Endpoi
  * Using a more permissive type to accommodate different provider-specific results
  */
 export interface InitializeResultBase {
+  /** Request-resolved Azure identity, retained when Responses removes the Azure client fields. */
+  azureOptions?: AzureOptions;
   llmConfig: ClientOptions;
   configOptions?: OpenAIClientOptions['configuration'];
   endpointTokenConfig?: EndpointTokenConfig;

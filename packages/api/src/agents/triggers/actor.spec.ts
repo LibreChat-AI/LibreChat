@@ -6,24 +6,34 @@ import type {
 import type { EventActorInterrupt } from '@librechat/agents';
 import {
   captureAgentEventCheckpoint,
-  deleteAgentCheckpoint,
+  deleteOwnedActorCheckpointScope,
+  deleteAgentEventCheckpointReference,
   forkAgentEventCheckpoint,
   getAgentCheckpointer,
 } from '../checkpointer';
 import { cancelAgentEventActor, executeAgentEventActor, resumeAgentEventActor } from './actor';
 import { createAgentEventActionRecorder, findAgentEventAppliedAction } from './outcome';
+import { checkpointOwnerNamespacePrefix } from '../../stream/checkpoints';
 import { createAgentContextFingerprint } from '../compatibility';
+import { drainActorPruning } from '../checkpoints/pruning';
+
+jest.mock('../checkpoints/pruning', () => ({
+  drainActorPruning: jest.fn(async () => undefined),
+  acknowledgeActorPruning: jest.fn(async () => undefined),
+}));
 
 jest.mock('../checkpointer', () => ({
   ...jest.requireActual('../checkpointer'),
   captureAgentEventCheckpoint: jest.fn(),
-  deleteAgentCheckpoint: jest.fn(),
+  deleteOwnedActorCheckpointScope: jest.fn(),
+  deleteAgentEventCheckpointReference: jest.fn(),
   forkAgentEventCheckpoint: jest.fn(),
   getAgentCheckpointer: jest.fn(),
 }));
 
 const mockedCapture = jest.mocked(captureAgentEventCheckpoint);
-const mockedDelete = jest.mocked(deleteAgentCheckpoint);
+const mockedDeleteReference = jest.mocked(deleteAgentEventCheckpointReference);
+const mockedDelete = jest.mocked(deleteOwnedActorCheckpointScope);
 const mockedFork = jest.mocked(forkAgentEventCheckpoint);
 const mockedGetCheckpointer = jest.mocked(getAgentCheckpointer);
 
@@ -42,7 +52,11 @@ describe('event actor host adapter', () => {
     legacyTurn = null;
     nextCheckpoint = 1;
     jest.clearAllMocks();
-    mockedGetCheckpointer.mockResolvedValue({} as never);
+    mockedGetCheckpointer.mockResolvedValue({
+      getTuple: jest.fn(async (config) => ({
+        checkpoint: { id: config.configurable.checkpoint_id },
+      })),
+    } as never);
     mockedFork.mockImplementation(async (source, checkpointNs) => ({
       ...source,
       checkpointNs,
@@ -54,6 +68,8 @@ describe('event actor host adapter', () => {
     }));
     mockedDelete.mockReset();
     mockedDelete.mockResolvedValue();
+    mockedDeleteReference.mockReset();
+    mockedDeleteReference.mockResolvedValue(true);
   });
 
   afterAll(() => {
@@ -124,6 +140,47 @@ describe('event actor host adapter', () => {
     hasActionAdmission: jest.fn(async () => false),
   });
 
+  it.each([false, true])(
+    'starts the snapshot during pruning and gates execution (failure=%s)',
+    async (fail) => {
+      let finish!: () => void;
+      const pruning = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      jest.mocked(drainActorPruning).mockImplementationOnce(async () => {
+        await pruning;
+        if (fail) throw new Error('pruning failed');
+      });
+      const dependencies = deps();
+      const invoke = jest.fn(async () => 'response');
+      const execution = executeAgentEventActor(
+        {
+          user: 'user-1',
+          conversationId,
+          invocationId: 'event-prune',
+          event: { id: 'event-prune', type: 'turn' },
+          signal: new AbortController().signal,
+          invoke,
+          readAppliedAction: () => ({ toolName: 'submit_move' }),
+        },
+        dependencies,
+      );
+      const observed = execution.then(
+        (value) => value,
+        (error: Error) => error,
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(dependencies.getSnapshot).toHaveBeenCalledTimes(1);
+      expect(invoke).not.toHaveBeenCalled();
+      finish();
+      const result = await observed;
+      if (fail) {
+        expect(invoke).not.toHaveBeenCalled();
+        expect(result).toBeDefined();
+      } else expect(invoke).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('publishes a signed durable suspension instead of discarding a paused fork', async () => {
     const dependencies = {
       ...deps(),
@@ -137,7 +194,10 @@ describe('event actor host adapter', () => {
         invocationId: 'event-paused',
         event: { id: 'event-paused', type: 'turn' },
         signal: new AbortController().signal,
-        invoke: async () => 'paused-response',
+        invoke: async ({ checkpointNamespace }) => {
+          expect(checkpointNamespace).toMatch(/^event-actor\//);
+          return 'paused-response';
+        },
         readAppliedAction: () => undefined,
         readSuspension: () => ({
           actionId: 'action-paused',
@@ -158,7 +218,10 @@ describe('event actor host adapter', () => {
         version: 1,
         attempt: 0,
         invocation: { invocationId: 'event-paused' },
-        checkpoint: { checkpointId: 'checkpoint-1' },
+        checkpoint: {
+          checkpointId: 'checkpoint-1',
+          checkpointNs: expect.stringMatching(/^event-actor\//),
+        },
         interrupt: {
           id: 'interrupt-paused',
           payload: { type: 'ask_user_question', question: 'Continue?' },
@@ -175,6 +238,7 @@ describe('event actor host adapter', () => {
     expect(dependencies.storeSuspension).toHaveBeenCalledTimes(1);
     expect(dependencies.commitState).not.toHaveBeenCalled();
     expect(mockedDelete).not.toHaveBeenCalled();
+    expect(mockedDeleteReference).not.toHaveBeenCalled();
   });
 
   it('preserves a pause reached after the expected action in the same fresh segment', async () => {
@@ -256,12 +320,9 @@ describe('event actor host adapter', () => {
     );
     expect(mockedDelete).toHaveBeenCalledWith(
       conversationId,
+      paused.execution.suspension.checkpoint.checkpointNs,
+      checkpointOwnerNamespacePrefix('user-1'),
       undefined,
-      undefined,
-      expect.objectContaining({
-        throwOnError: true,
-        checkpointNamespace: paused.execution.suspension.checkpoint.checkpointNs,
-      }),
     );
   });
 
@@ -334,7 +395,8 @@ describe('event actor host adapter', () => {
         resumeAttemptId: 'resume-cross-executor',
         resumeValue: { approved: true },
         signal: new AbortController().signal,
-        resume: async () => {
+        resume: async ({ checkpointNamespace }) => {
+          expect(checkpointNamespace).toMatch(/^event-actor\//);
           action = { toolName: 'submit_move', toolCallId: 'call-resumed' };
           return 'resumed-response';
         },
@@ -489,12 +551,9 @@ describe('event actor host adapter', () => {
     );
     expect(mockedDelete).toHaveBeenCalledWith(
       conversationId,
+      repaused.execution.suspension.checkpoint.checkpointNs,
+      checkpointOwnerNamespacePrefix('user-1'),
       undefined,
-      undefined,
-      expect.objectContaining({
-        throwOnError: true,
-        checkpointNamespace: repaused.execution.suspension.checkpoint.checkpointNs,
-      }),
     );
     expect(dependencies.commitState).not.toHaveBeenCalled();
   });
@@ -646,6 +705,7 @@ describe('event actor host adapter', () => {
       'event-2',
       undefined,
       undefined,
+      checkpointOwnerNamespacePrefix('user-1'),
     );
     expect(state).toMatchObject({ generation: 2, checkpoint: { checkpointId: 'checkpoint-2' } });
   });
@@ -764,6 +824,7 @@ describe('event actor host adapter', () => {
       'event-skill-context',
       undefined,
       checkpointMessageOverlay,
+      checkpointOwnerNamespacePrefix('user-1'),
     );
   });
 
@@ -1030,12 +1091,9 @@ describe('event actor host adapter', () => {
     expect(dependencies.commitState).not.toHaveBeenCalled();
     expect(mockedDelete).toHaveBeenCalledWith(
       conversationId,
+      expect.stringMatching(/^event-actor\//),
+      checkpointOwnerNamespacePrefix('user-1'),
       undefined,
-      undefined,
-      expect.objectContaining({
-        throwOnError: true,
-        checkpointNamespace: expect.stringMatching(/^event-actor\//),
-      }),
     );
     expect(state.generation).toBe(1);
   });
@@ -1071,6 +1129,7 @@ describe('event actor host adapter', () => {
     );
     expect(dependencies.resolveReconciliation).not.toHaveBeenCalled();
     expect(mockedDelete).not.toHaveBeenCalled();
+    expect(mockedDeleteReference).not.toHaveBeenCalled();
   });
 
   it('retains an applied fork when its terminal checkpoint cannot be observed', async () => {
@@ -1099,6 +1158,7 @@ describe('event actor host adapter', () => {
       }),
     );
     expect(mockedDelete).not.toHaveBeenCalled();
+    expect(mockedDeleteReference).not.toHaveBeenCalled();
   });
 
   it('retains applied-action evidence when result context capture fails', async () => {
@@ -1134,6 +1194,7 @@ describe('event actor host adapter', () => {
     );
     expect(mockedCapture).not.toHaveBeenCalled();
     expect(mockedDelete).not.toHaveBeenCalled();
+    expect(mockedDeleteReference).not.toHaveBeenCalled();
   });
 
   it('recovers an indeterminate cleanup after the actor head was committed', async () => {
@@ -1150,7 +1211,7 @@ describe('event actor host adapter', () => {
         checkpointNs: 'event-actor/old',
       },
     };
-    mockedDelete.mockRejectedValueOnce(new Error('checkpoint cleanup unavailable'));
+    mockedDeleteReference.mockRejectedValueOnce(new Error('checkpoint cleanup unavailable'));
     const dependencies = deps();
     const result = await executeAgentEventActor(
       {
@@ -1223,6 +1284,7 @@ describe('event actor host adapter', () => {
       }),
     );
     expect(mockedDelete).not.toHaveBeenCalled();
+    expect(mockedDeleteReference).not.toHaveBeenCalled();
   });
 
   it('still records reconciliation when an indeterminate commit cannot be read back', async () => {
@@ -1275,6 +1337,7 @@ describe('event actor host adapter', () => {
       }),
     );
     expect(mockedDelete).not.toHaveBeenCalled();
+    expect(mockedDeleteReference).not.toHaveBeenCalled();
   });
 
   it('does not clear a checkpoint marker before durable history is verified', async () => {

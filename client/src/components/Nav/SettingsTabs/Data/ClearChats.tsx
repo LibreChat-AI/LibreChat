@@ -54,7 +54,7 @@ export const ClearChats = () => {
           selection={{
             selectHandler: clearConvos,
             selectClasses:
-              'bg-surface-destructive text-white transition-all duration-200 hover:bg-surface-destructive-hover',
+              'bg-surface-destructive text-text-on-status transition-all duration-200 hover:bg-surface-destructive-hover',
             selectText: clearConvosMutation.isLoading ? <Spinner /> : localize('com_ui_delete'),
           }}
         />

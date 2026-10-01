@@ -5,7 +5,6 @@ import { getAccessToken, requestJson, replyPrompt, replyText } from './helpers';
 const uniqueName = (prefix: string) => `${prefix} ${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
 
 type AgentSummary = { id: string; name?: string };
-type AgentList = { data?: AgentSummary[] };
 type Schedule = {
   id: string;
   name: string;
@@ -19,18 +18,16 @@ type ScheduleList = { schedules: Schedule[] };
 type RunNowResult = { scheduleId: string; conversationId?: string; status?: string };
 
 async function ensureAgent(page: Page, token: string): Promise<AgentSummary> {
-  const list = await requestJson<AgentList>(page, { path: '/api/agents?limit=1', token }).catch(
-    () => ({}) as AgentList,
-  );
-  const existing = list.data?.[0];
-  if (existing?.id) {
-    return existing;
-  }
   const agent = await requestJson<AgentSummary>(page, {
     path: '/api/agents',
     token,
     method: 'POST',
-    body: { name: uniqueName('E2E Agent'), provider: 'Mock Provider A', model: 'mock-model-a' },
+    body: {
+      name: uniqueName('Schedule E2E Agent'),
+      provider: 'Mock Provider A',
+      model: 'mock-model-a',
+      tools: [],
+    },
   });
   expect(agent.id).toBeTruthy();
   return agent;

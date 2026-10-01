@@ -3,8 +3,9 @@ import * as Ariakit from '@ariakit/react';
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import { DropdownPopup, TooltipAnchor, Button } from '@librechat/client';
 import { BookmarkFilledIcon, BookmarkIcon } from '@radix-ui/react-icons';
-import { Ellipsis, PlusCircle, MessageCircleDashed, Check } from 'lucide-react';
+import { Ellipsis, PlusCircle, HatGlasses, Check, ChartNoAxesGantt } from 'lucide-react';
 import type { TStartupConfig } from 'librechat-data-provider';
+import type { TraceControl } from '~/components/Chat/Trace';
 import type * as t from '~/common';
 import { BookmarkContext } from '~/Providers/BookmarkContext';
 import useBookmarkItems from '~/hooks/Chat/useBookmarkItems';
@@ -22,9 +23,12 @@ import { cn } from '~/utils';
  */
 export default function HeaderMenu({
   startupConfig,
+  trace,
   className,
 }: {
   startupConfig?: TStartupConfig;
+  /** Owned by the header, which also renders the desktop trace button from it. */
+  trace?: TraceControl;
   className?: string;
 }) {
   const localize = useLocalize();
@@ -53,7 +57,8 @@ export default function HeaderMenu({
 
   const showBookmarks = hasAccessToBookmarks === true && bookmarks.show;
   const showCompare = hasAccessToMultiConvo === true && multiConvo.show;
-  const showTemporary = hasAccessToTemporaryChat === true && temporary.show;
+  const showTemporary =
+    (hasAccessToTemporaryChat === true || temporary.isEnforced) && temporary.show;
 
   const items: t.MenuItemProps[] = [];
 
@@ -70,9 +75,9 @@ export default function HeaderMenu({
       id: 'header-bookmarks',
       label: localize('com_ui_bookmarks'),
       icon: bookmarks.hasBookmarks ? (
-        <BookmarkFilledIcon className="size-4 text-text-secondary" />
+        <BookmarkFilledIcon className="text-text-secondary size-4" />
       ) : (
-        <BookmarkIcon className="size-4 text-text-secondary" />
+        <BookmarkIcon className="text-text-secondary size-4" />
       ),
       subItems: bookmarks.items,
     });
@@ -82,8 +87,17 @@ export default function HeaderMenu({
     items.push({
       id: 'header-compare',
       label: localize('com_ui_add_multi_conversation'),
-      icon: <PlusCircle className="size-4 text-text-secondary" />,
+      icon: <PlusCircle className="text-text-secondary size-4" />,
       onClick: multiConvo.addConversation,
+    });
+  }
+
+  if (trace?.show === true) {
+    pushGroup({
+      id: 'header-trace',
+      label: localize('com_ui_trace_view'),
+      icon: <ChartNoAxesGantt className="text-text-secondary size-4" />,
+      onClick: trace.open,
     });
   }
 
@@ -94,13 +108,16 @@ export default function HeaderMenu({
   if (showTemporary) {
     pushGroup({
       id: 'header-temporary',
-      label: localize('com_ui_temporary'),
+      label: temporary.isEnforced
+        ? localize('com_ui_temporary_enforced')
+        : localize('com_ui_temporary'),
       ariaChecked: temporary.isTemporary,
+      disabled: temporary.isEnforced,
       className: temporary.isTemporary ? 'bg-surface-active' : undefined,
       icon: temporary.isTemporary ? (
-        <Check className="size-4 text-text-primary" />
+        <Check className="text-text-primary size-4" />
       ) : (
-        <MessageCircleDashed className="size-4 text-text-secondary" />
+        <HatGlasses className="text-text-secondary size-4" />
       ),
       onClick: temporary.toggle,
     });
@@ -139,7 +156,7 @@ export default function HeaderMenu({
                     size="icon"
                     variant="outline"
                     className={cn(
-                      'relative size-9 flex-shrink-0 rounded-xl bg-presentation hover:bg-surface-active-alt',
+                      'bg-presentation hover:bg-surface-active-alt relative size-9 shrink-0 rounded-xl',
                       className,
                     )}
                   />
@@ -148,7 +165,7 @@ export default function HeaderMenu({
                 <Ellipsis className="icon-md" aria-hidden="true" />
                 {exportShare.hasSharedLink && (
                   <span
-                    className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-status-info ring-2 ring-presentation"
+                    className="bg-status-info ring-presentation absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2"
                     data-testid="header-menu-shared-link-indicator"
                     aria-hidden="true"
                   />

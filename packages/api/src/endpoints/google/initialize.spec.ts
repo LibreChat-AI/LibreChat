@@ -129,6 +129,27 @@ describe('initializeGoogle', () => {
     );
   });
 
+  it('loads the stored API key when a resumed request omits expiry metadata', async () => {
+    process.env.GOOGLE_KEY = 'user_provided';
+    const db = createDb();
+
+    await initializeGoogle({
+      req: createReq(),
+      endpoint: EModelEndpoint.google,
+      model_parameters: { model: 'gemini-2.5-flash' },
+      db,
+    });
+
+    expect(db.getUserKey).toHaveBeenCalledWith({
+      userId: 'user-1',
+      name: EModelEndpoint.google,
+    });
+    expect(mockCheckUserKeyExpiry).not.toHaveBeenCalled();
+
+    const [credentials] = getGoogleConfigCall();
+    expect(credentials).toBe('user-google-key');
+  });
+
   it('resolves configured headers at init (merged over endpoints.all) before getGoogleConfig', async () => {
     process.env.GOOGLE_KEY = 'test-api-key';
 

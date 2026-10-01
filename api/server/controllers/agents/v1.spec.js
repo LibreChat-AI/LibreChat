@@ -3,7 +3,12 @@ const express = require('express');
 const request = require('supertest');
 const { nanoid } = require('nanoid');
 const { v4: uuidv4 } = require('uuid');
-const { createModels, tenantStorage } = require('@librechat/data-schemas');
+const {
+  AgentSortCursorError,
+  createModels,
+  tenantStorage,
+  SystemCapabilities,
+} = require('@librechat/data-schemas');
 const {
   Tools,
   SkillsScope,
@@ -104,12 +109,14 @@ const {
   CONTENT_TRAVERSAL_MAX_DEPTH,
   createAgentManagementAuth,
   createAgentManagementCreateHandler,
+  createAgentManagementDeleteHandler,
   createAgentManagementReadHandlers,
   createAgentManagementUpdateHandler,
   mergeDeploymentSkillIds,
   refreshS3Url,
 } = require('@librechat/api');
 const { grantPermission } = require('~/server/services/PermissionService');
+const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const db = require('~/models');
 
 /**
@@ -315,6 +322,76 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(await Agent.countDocuments()).toBe(0);
     });
 
+    test('rejects a workspace default without an explicit attached environment', async () => {
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: {
+              allowedEnvironments: ['user'],
+              environments: [
+                {
+                  id: 'default-vm',
+                  name: 'Default VM',
+                  type: 'attached',
+                  baseURL: 'https://code.example.com/v1',
+                  default: true,
+                },
+              ],
+            },
+          },
+        },
+      };
+      mockReq.body = {
+        name: 'Unbound Workspace Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        code_workspace_id: 'project-a',
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'Code workspace defaults require an explicit attached code environment',
+      });
+      expect(await Agent.countDocuments()).toBe(0);
+    });
+
+    test('rejects a workspace default for a managed environment', async () => {
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: {
+              allowedEnvironments: ['user'],
+              environments: [
+                {
+                  id: 'managed-runtime',
+                  name: 'Managed Runtime',
+                  type: 'managed',
+                  baseURL: 'https://code.example.com/v1',
+                },
+              ],
+            },
+          },
+        },
+      };
+      mockReq.body = {
+        name: 'Managed Workspace Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        code_environment_id: 'managed-runtime',
+        code_workspace_id: 'project-a',
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'Code workspace defaults require an explicit attached code environment',
+      });
+      expect(await Agent.countDocuments()).toBe(0);
+    });
+
     test('should block configured agent instruction content before persistence', async () => {
       mockReq.config = {
         filters: {
@@ -436,12 +513,17 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         getRoleByName,
         createAgent: createAgentHandler,
       });
-      const checkEditPermission = async ({ userId: accessibleUserId, resourceType, resourceId }) =>
+      const checkAgentPermission = async ({
+        userId: accessibleUserId,
+        resourceType,
+        resourceId,
+        requiredPermission,
+      }) =>
         (await AclEntry.exists({
           principalId: accessibleUserId,
           resourceType,
           resourceId,
-          permBits: { $bitsAllSet: PermissionBits.EDIT },
+          permBits: { $bitsAllSet: requiredPermission },
         })) != null;
       const hasCapability = jest.fn().mockResolvedValue(false);
       const reads = createAgentManagementReadHandlers({
@@ -454,15 +536,22 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
             resourceType,
             permBits: { $bitsAllSet: PermissionBits.EDIT },
           }),
-        checkPermission: checkEditPermission,
+        checkPermission: checkAgentPermission,
         hasCapability,
       });
       const update = createAgentManagementUpdateHandler({
         getRoleByName,
         getAgentWithVersionCount: db.getAgentWithVersionCount,
-        checkPermission: checkEditPermission,
+        checkPermission: checkAgentPermission,
         hasCapability,
         updateAgent: updateAgentHandler,
+      });
+      const remove = createAgentManagementDeleteHandler({
+        getRoleByName,
+        getAgentWithVersionCount: db.getAgentWithVersionCount,
+        checkPermission: checkAgentPermission,
+        hasCapability,
+        deleteAgent: db.deleteAgent,
       });
       const app = express();
       app.use(express.json());
@@ -477,6 +566,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         req.config = {};
         return update(req, res);
       });
+      app.delete('/api/agents/v1/agents/:id', remove);
 
       const createdResponse = await request(app)
         .post('/api/agents/v1/agents')
@@ -517,14 +607,47 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(listedResponse.body.data).toEqual([createdResponse.body]);
 
       const otherTenantId = `tenant-${nanoid(8)}`;
-      await tenantStorage.run({ tenantId: otherTenantId }, () =>
-        Agent.create({
-          id: createdResponse.body.id,
-          name: 'Other tenant Agent',
+      const currentTenantGraphId = `agent_${nanoid()}`;
+      const otherTenantGraphId = `agent_${nanoid()}`;
+      await tenantStorage.run({ tenantId }, async () => {
+        await Agent.create({
+          id: currentTenantGraphId,
+          name: 'Current tenant graph',
           provider: 'openai',
           model: 'gpt-4',
-          author: new mongoose.Types.ObjectId(),
-        }),
+          author: principal._id,
+          edges: [{ from: '', to: createdResponse.body.id, edgeType: 'handoff' }],
+        });
+        await User.updateOne(
+          { _id: principal._id },
+          { $set: { favorites: [{ agentId: createdResponse.body.id }] } },
+        );
+      });
+      const otherTenantPrincipal = await tenantStorage.run(
+        { tenantId: otherTenantId },
+        async () => {
+          const owner = await createOwner();
+          await Agent.create({
+            id: createdResponse.body.id,
+            name: 'Other tenant Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            author: owner._id,
+          });
+          await Agent.create({
+            id: otherTenantGraphId,
+            name: 'Other tenant graph',
+            provider: 'openai',
+            model: 'gpt-4',
+            author: owner._id,
+            edges: [{ from: '', to: createdResponse.body.id, edgeType: 'handoff' }],
+          });
+          await User.updateOne(
+            { _id: owner._id },
+            { $set: { favorites: [{ agentId: createdResponse.body.id }] } },
+          );
+          return owner;
+        },
       );
 
       const updatedResponse = await request(app)
@@ -580,6 +703,55 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           resourceType: ResourceType.AGENT,
         }),
       );
+
+      const deletedResponse = await request(app)
+        .delete(`/api/agents/v1/agents/${createdResponse.body.id}`)
+        .set('Authorization', 'Bearer valid-token');
+      expect(deletedResponse.status).toBe(200);
+      expect(deletedResponse.body).toEqual({ id: createdResponse.body.id, deleted: true });
+
+      const [retrievedAfterDelete, repeatedDelete] = await Promise.all([
+        request(app)
+          .get(`/api/agents/v1/agents/${createdResponse.body.id}`)
+          .set('Authorization', 'Bearer valid-token'),
+        request(app)
+          .delete(`/api/agents/v1/agents/${createdResponse.body.id}`)
+          .set('Authorization', 'Bearer valid-token'),
+      ]);
+      expect(retrievedAfterDelete.status).toBe(404);
+      expect(repeatedDelete.status).toBe(404);
+      await expect(Agent.exists({ id: createdResponse.body.id, tenantId })).resolves.toBeNull();
+      await expect(
+        Agent.exists({ id: createdResponse.body.id, tenantId: otherTenantId }),
+      ).resolves.not.toBeNull();
+      await expect(
+        Agent.exists({
+          id: currentTenantGraphId,
+          tenantId,
+          'edges.to': createdResponse.body.id,
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        Agent.exists({
+          id: otherTenantGraphId,
+          tenantId: otherTenantId,
+          'edges.to': createdResponse.body.id,
+        }),
+      ).resolves.not.toBeNull();
+      await expect(
+        User.exists({
+          _id: principal._id,
+          tenantId,
+          'favorites.agentId': createdResponse.body.id,
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        User.exists({
+          _id: otherTenantPrincipal._id,
+          tenantId: otherTenantId,
+          'favorites.agentId': createdResponse.body.id,
+        }),
+      ).resolves.not.toBeNull();
     });
 
     test('management creation rejects caller-controlled ownership', async () => {
@@ -1509,12 +1681,74 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(agentInDb.code_environment_id).toBeUndefined();
     });
 
+    test('allows a workspace-only update for an existing attached environment', async () => {
+      await Agent.updateOne({ id: existingAgentId }, { code_environment_id: 'attached-vm' });
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: {
+              allowedEnvironments: ['user'],
+              environments: [
+                {
+                  id: 'attached-vm',
+                  name: 'Attached VM',
+                  type: 'attached',
+                  baseURL: 'https://bridge.example.com/v1',
+                },
+              ],
+            },
+          },
+        },
+      };
+      mockReq.body = { code_workspace_id: 'project-a' };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).not.toHaveBeenCalledWith(400);
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(agentInDb.code_environment_id).toBe('attached-vm');
+      expect(agentInDb.code_workspace_id).toBe('project-a');
+    });
+
+    test('rejects a workspace-only update without an attached environment', async () => {
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: {
+              allowedEnvironments: ['user'],
+              environments: [
+                {
+                  id: 'default-vm',
+                  name: 'Default VM',
+                  type: 'attached',
+                  baseURL: 'https://bridge.example.com/v1',
+                  default: true,
+                },
+              ],
+            },
+          },
+        },
+      };
+      mockReq.body = { code_workspace_id: 'project-a' };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(agentInDb.code_workspace_id).toBeUndefined();
+    });
+
     test('allows disabling stateful sessions after the configured environment is removed', async () => {
       await Agent.updateOne(
         { id: existingAgentId },
         {
           stateful_code_sessions: true,
           code_environment_id: 'removed-vm',
+          code_workspace_id: 'project-a',
         },
       );
       mockReq.user.id = existingAgentAuthorId.toString();
@@ -1532,6 +1766,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       mockReq.body = {
         stateful_code_sessions: false,
         code_environment_id: 'removed-vm',
+        code_workspace_id: 'project-a',
       };
 
       await updateAgentHandler(mockReq, mockRes);
@@ -1540,6 +1775,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       const agentInDb = await Agent.findOne({ id: existingAgentId });
       expect(agentInDb.stateful_code_sessions).toBe(false);
       expect(agentInDb.code_environment_id).toBe('removed-vm');
+      expect(agentInDb.code_workspace_id).toBe('project-a');
     });
 
     test('restores the deployment-default code environment', async () => {
@@ -1548,6 +1784,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         {
           stateful_code_sessions: true,
           code_environment_id: 'attached-vm',
+          code_workspace_id: 'project-a',
         },
       );
       mockReq.user.id = existingAgentAuthorId.toString();
@@ -1577,6 +1814,22 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.status).not.toHaveBeenCalledWith(400);
       const agentInDb = await Agent.findOne({ id: existingAgentId });
       expect(agentInDb.code_environment_id).toBeUndefined();
+      expect(agentInDb.code_workspace_id).toBe('');
+    });
+
+    test('clears a configured Git identity', async () => {
+      await Agent.updateOne(
+        { id: existingAgentId },
+        { git_identity: { name: 'Coding Agent', email: 'agent@example.com' } },
+      );
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.body = { git_identity: null };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(agentInDb.git_identity).toBeUndefined();
     });
 
     test('allows unrelated edits to an existing scope after policy is tightened', async () => {
@@ -2756,6 +3009,67 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.json.mock.calls[0][0].agent.tool_options).toEqual({});
     });
 
+    test('duplicateAgentHandler preserves a disabled stale workspace binding', async () => {
+      const sourceAgent = await Agent.create({
+        id: `agent_${uuidv4()}`,
+        name: 'Disabled BYOM Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: mockReq.user.id,
+        stateful_code_sessions: false,
+        code_environment_id: 'removed-vm',
+        code_workspace_id: 'project-a',
+      });
+      jest.spyOn(db, 'getActions').mockResolvedValueOnce([]);
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: { environments: [] },
+          },
+        },
+      };
+      mockReq.params.id = sourceAgent.id;
+
+      await duplicateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+      expect(mockRes.json.mock.calls[0][0].agent).toEqual(
+        expect.objectContaining({
+          stateful_code_sessions: false,
+          code_environment_id: 'removed-vm',
+          code_workspace_id: 'project-a',
+        }),
+      );
+    });
+
+    test('duplicateAgentHandler rejects an active stale workspace binding', async () => {
+      const sourceAgent = await Agent.create({
+        id: `agent_${uuidv4()}`,
+        name: 'Active BYOM Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: mockReq.user.id,
+        stateful_code_sessions: true,
+        code_environment_id: 'removed-vm',
+        code_workspace_id: 'project-a',
+      });
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: { environments: [] },
+          },
+        },
+      };
+      mockReq.params.id = sourceAgent.id;
+
+      await duplicateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'Code workspace defaults require an explicit attached code environment',
+      });
+    });
+
     test('revertAgentVersionHandler removes restored programmatic options without Code Interpreter', async () => {
       const agent = await Agent.create({
         id: `agent_${uuidv4()}`,
@@ -2782,6 +3096,83 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       expect(mockRes.json).toHaveBeenCalled();
       expect(mockRes.json.mock.calls[0][0].tool_options).toEqual({});
+    });
+
+    test('revertAgentVersionHandler restores a disabled stale workspace binding', async () => {
+      const agent = await Agent.create({
+        id: `agent_${uuidv4()}`,
+        name: 'Current Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: mockReq.user.id,
+        versions: [
+          {
+            name: 'Disabled Historical BYOM Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            stateful_code_sessions: false,
+            code_environment_id: 'removed-vm',
+            code_workspace_id: 'project-a',
+          },
+        ],
+      });
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: { environments: [] },
+          },
+        },
+      };
+      mockReq.params.id = agent.id;
+      mockReq.body = { version_index: 0 };
+
+      await revertAgentVersionHandler(mockReq, mockRes);
+
+      expect(mockRes.status).not.toHaveBeenCalledWith(400);
+      const persisted = await Agent.findOne({ id: agent.id }).lean();
+      expect(persisted).toEqual(
+        expect.objectContaining({
+          stateful_code_sessions: false,
+          code_environment_id: 'removed-vm',
+          code_workspace_id: 'project-a',
+        }),
+      );
+    });
+
+    test('revertAgentVersionHandler rejects a stale binding that inherits active sessions', async () => {
+      const agent = await Agent.create({
+        id: `agent_${uuidv4()}`,
+        name: 'Current Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: mockReq.user.id,
+        stateful_code_sessions: true,
+        versions: [
+          {
+            name: 'Historical BYOM Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            code_environment_id: 'removed-vm',
+            code_workspace_id: 'project-a',
+          },
+        ],
+      });
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: { environments: [] },
+          },
+        },
+      };
+      mockReq.params.id = agent.id;
+      mockReq.body = { version_index: 0 };
+
+      await revertAgentVersionHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'Code workspace defaults require an explicit attached code environment',
+      });
     });
 
     test('revertAgentVersionHandler does not update unchanged tool options', async () => {
@@ -3005,6 +3396,93 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         ],
       });
     });
+    test('maps cursor contract failures to HTTP 409 without restarting the walk', async () => {
+      const listSpy = jest
+        .spyOn(db, 'getListAgentsByAccess')
+        .mockRejectedValue(new AgentSortCursorError('ordering-mismatch'));
+
+      await getListAgentsHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(409);
+      expect(mockRes.json).toHaveBeenCalledWith({ error: 'cursor_ordering_mismatch' });
+      expect(mockRes.status).not.toHaveBeenCalledWith(500);
+      listSpy.mockRestore();
+    });
+
+    test('lets a manage:agents role discover unshared agents by search', async () => {
+      await db.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'LIST_MANAGER_TEST',
+        capability: SystemCapabilities.MANAGE_AGENTS,
+      });
+      mockReq.user = {
+        id: userB.toString(),
+        role: 'LIST_MANAGER_TEST',
+        idOnTheSource: null,
+      };
+      mockReq.query.search = 'A2';
+      findAccessibleResources.mockResolvedValue([]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+
+      expect(await hasCapability(mockReq.user, SystemCapabilities.MANAGE_AGENTS)).toBe(true);
+      await getListAgentsHandler(mockReq, mockRes);
+
+      const response = mockRes.json.mock.calls[0][0];
+      expect(response.data.map((agent) => agent.id)).toEqual([agentA2.id]);
+      expect(response.data[0].isEditable).toBe(true);
+      expect(findAccessibleResources).toHaveBeenCalledWith(
+        expect.objectContaining({ resourceType: ResourceType.AGENT }),
+      );
+    });
+
+    test('restricts a manager to the authenticated tenant even without ambient tenant context', async () => {
+      const tenantA = `tenant-a-${uuidv4()}`;
+      const tenantB = `tenant-b-${uuidv4()}`;
+      const name = 'Tenant-Scoped Discovery';
+      const agentInA = await tenantStorage.run({ tenantId: tenantA }, () =>
+        Agent.create({
+          id: `agent_${nanoid(12)}`,
+          name,
+          provider: 'openai',
+          model: 'gpt-4',
+          author: userA,
+        }),
+      );
+      await tenantStorage.run({ tenantId: tenantB }, () =>
+        Agent.create({
+          id: `agent_${nanoid(12)}`,
+          name,
+          provider: 'openai',
+          model: 'gpt-4',
+          author: userB,
+        }),
+      );
+      await db.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'LIST_TENANT_MANAGER',
+        capability: SystemCapabilities.MANAGE_AGENTS,
+      });
+      mockReq.user = {
+        id: userB.toString(),
+        role: 'LIST_TENANT_MANAGER',
+        idOnTheSource: null,
+        tenantId: tenantA,
+      };
+      mockReq.query.search = name;
+      findAccessibleResources.mockResolvedValue([]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+
+      await getListAgentsHandler(mockReq, mockRes);
+      expect(mockCache.get).toHaveBeenCalledWith(
+        `${userB.toString()}:${tenantA}:agents_avatar_refresh`,
+      );
+      expect(mockRes.json.mock.calls[0][0].data.map((agent) => agent.id)).toEqual([agentInA.id]);
+
+      mockRes.json.mockClear();
+      mockReq.user.tenantId = undefined;
+      await getListAgentsHandler(mockReq, mockRes);
+      expect(mockRes.json.mock.calls[0][0].data).toHaveLength(0);
+    });
 
     test('should return empty list when user has no accessible agents', async () => {
       // User B has no permissions and no owned agents
@@ -3221,16 +3699,20 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(Object.keys(agent).sort()).toEqual(
         [
           '_id',
+          'agent_ids',
           'author',
           'avatar',
           'category',
           'conversation_starters',
           'description',
+          'edges',
           'id',
           'isEditable',
           'is_promoted',
           'name',
+          'subagents',
           'support_contact',
+          'tools',
           'updatedAt',
         ].sort(),
       );
@@ -3242,6 +3724,9 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           author: userA.toString(),
           category: 'general',
           is_promoted: true,
+          tools: ['execute_code'],
+          edges: [{ from: agentA1.id, to: agentA2.id }],
+          subagents: { enabled: true, agent_ids: [agentA2.id] },
         }),
       );
     });
@@ -3719,8 +4204,76 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       });
     });
 
-    test('should skip avatar refresh if cache hit', async () => {
-      mockCache.get.mockResolvedValue({ urlCache: {} });
+    test('refreshes only manager search results without writing or losing later cursor pages', async () => {
+      const db = require('~/models');
+      const name = 'Paged Manager Avatar';
+      const firstAgent = await Agent.create({
+        id: `agent_${nanoid(12)}`,
+        name,
+        provider: 'openai',
+        model: 'gpt-4',
+        author: userA,
+        avatar: { source: FileSources.s3, filepath: 'first.jpg' },
+      });
+      const secondAgent = await Agent.create({
+        id: `agent_${nanoid(12)}`,
+        name,
+        provider: 'openai',
+        model: 'gpt-4',
+        author: userA,
+        avatar: { source: FileSources.s3, filepath: 'second.jpg' },
+      });
+      await db.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'LIST_AVATAR_MANAGER',
+        capability: SystemCapabilities.MANAGE_AGENTS,
+      });
+      const mockReq = {
+        user: { id: userB.toString(), role: 'LIST_AVATAR_MANAGER', idOnTheSource: null },
+        query: { search: name, limit: '1' },
+      };
+      const mockRes = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
+      const listSpy = jest.spyOn(db, 'getListAgentsByAccess');
+      const updateSpy = jest.spyOn(db, 'updateAgent');
+      findAccessibleResources.mockResolvedValue([]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+      refreshS3Url.mockImplementation(async ({ filepath }) => `signed:${filepath}`);
+
+      try {
+        await getListAgentsHandler(mockReq, mockRes);
+        const pageOne = mockRes.json.mock.calls[0][0];
+        expect(pageOne.data).toHaveLength(1);
+        expect(pageOne.after).toBeTruthy();
+        expect(pageOne.data[0].avatar.filepath).toMatch(/^signed:/);
+        expect(listSpy).toHaveBeenCalledTimes(1);
+        expect(refreshS3Url).toHaveBeenCalledTimes(1);
+        expect(updateSpy).not.toHaveBeenCalled();
+
+        mockRes.json.mockClear();
+        mockReq.query.cursor = pageOne.after;
+        await getListAgentsHandler(mockReq, mockRes);
+        const pageTwo = mockRes.json.mock.calls[0][0];
+        expect(pageTwo.data).toHaveLength(1);
+        expect([pageOne.data[0].id, pageTwo.data[0].id].sort()).toEqual(
+          [firstAgent.id, secondAgent.id].sort(),
+        );
+        expect(pageTwo.data[0].avatar.filepath).toMatch(/^signed:/);
+        expect(refreshS3Url).toHaveBeenCalledTimes(2);
+        expect(updateSpy).not.toHaveBeenCalled();
+      } finally {
+        listSpy.mockRestore();
+        updateSpy.mockRestore();
+      }
+    });
+
+    test('should skip avatar refresh if cache already covers the page', async () => {
+      /* Coverage is only coverage while it names the filepath it was taken for: a cached
+         URL for a replaced avatar is a link to a file the agent no longer shows. */
+      mockCache.get.mockResolvedValue({
+        urlCache: {},
+        coveredIds: [agentWithS3Avatar.id],
+        coveredFilepaths: { [agentWithS3Avatar.id]: 'old-s3-path.jpg' },
+      });
       findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
       findPubliclyAccessibleResources.mockResolvedValue([]);
 
@@ -3737,6 +4290,22 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       // Should not call refreshS3Url when cache hit
       expect(refreshS3Url).not.toHaveBeenCalled();
+    });
+
+    test('does not treat a manager page cache as an ACL-wide refresh after role downgrade', async () => {
+      mockCache.get.mockResolvedValue({ urlCache: {}, scope: 'page' });
+      findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+      refreshS3Url.mockResolvedValue('refreshed-after-downgrade.jpg');
+      const mockReq = { user: { id: userA.toString(), role: 'USER' }, query: {} };
+      const mockRes = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
+
+      await getListAgentsHandler(mockReq, mockRes);
+
+      expect(refreshS3Url).toHaveBeenCalledTimes(1);
+      expect(mockRes.json.mock.calls[0][0].data[0].avatar.filepath).toBe(
+        'refreshed-after-downgrade.jpg',
+      );
     });
 
     test('should refresh and persist S3 avatars on cache miss', async () => {
@@ -3770,28 +4339,24 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.json).toHaveBeenCalled();
     });
 
-    test('should finish avatar writes before snapshotting the paginated list query', async () => {
-      /** `updateAgent` bumps `updatedAt`, which is the field `getListAgentsByAccess`
-       *  sorts and cursors on. If the list query snapshots before a refresh write
-       *  lands, that agent jumps ahead of the returned cursor and vanishes from every
-       *  later page. Assert the ordering rather than the symptom, which only shows up
-       *  on multi-page S3 accounts under a specific interleaving. */
+    test('should load the requested page before refreshing its avatars', async () => {
       const db = require('~/models');
       const order = [];
-      /** Yield a macrotask so a parallelized refresh would lose the race, the way a real
-       *  S3 presign round trip does. */
       refreshS3Url.mockImplementation(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        order.push('avatar-write');
+        order.push('avatar-refresh');
         return 'new-s3-path.jpg';
       });
-      const realList = db.getListAgentsByAccess;
       const listSpy = jest.spyOn(db, 'getListAgentsByAccess').mockImplementation(async (params) => {
+        order.push('list-query');
         if (params.includeSkillConfig) {
-          order.push('list-query');
-          return { object: 'list', data: [], has_more: false, after: null };
+          return {
+            object: 'list',
+            data: [agentWithS3Avatar.toObject()],
+            has_more: false,
+            after: null,
+          };
         }
-        return realList(params);
+        return { object: 'list', data: [], has_more: false, after: null };
       });
       mockCache.get.mockResolvedValue(false);
       findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
@@ -3802,8 +4367,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       try {
         await getListAgentsHandler(mockReq, mockRes);
-        expect(order).toContain('avatar-write');
-        expect(order.indexOf('avatar-write')).toBeLessThan(order.indexOf('list-query'));
+        expect(order).toEqual(['list-query', 'avatar-refresh']);
       } finally {
         listSpy.mockRestore();
         refreshS3Url.mockReset();
@@ -3830,12 +4394,11 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       const responseData = mockRes.json.mock.calls[0][0];
       const agent = responseData.data.find((a) => a.id === agentId);
-      /** The refresh runs alongside the list query, so the refreshed path must reach the
-       *  response through `urlCache` rather than through what the list query read. */
+      /** The page was read before avatar refresh, so the new path must be applied from the cache. */
       expect(agent.avatar.filepath).toBe('new-s3-path.jpg');
     });
 
-    test('should scope the refresh query to S3 avatars without filtering the list query', async () => {
+    test('should keep the page query unfiltered while selecting only S3 rows for refresh', async () => {
       const db = require('~/models');
       const listSpy = jest.spyOn(db, 'getListAgentsByAccess');
       mockCache.get.mockResolvedValue(false);
@@ -3854,17 +4417,10 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       try {
         await getListAgentsHandler(mockReq, mockRes);
 
-        /** The refresh pass must query only S3-avatar agents — `refreshListAvatars`
-         *  skips non-S3 entries anyway, so without this assertion the filter could
-         *  regress to `{}` (reloading the whole accessible set) unnoticed. */
-        expect(listSpy).toHaveBeenCalledWith(
-          expect.objectContaining({ otherParams: { 'avatar.source': FileSources.s3 } }),
-        );
-        /** The user-facing list query keeps the request filter, not the refresh scope. */
+        expect(listSpy).toHaveBeenCalledTimes(1);
         expect(listSpy).toHaveBeenCalledWith(
           expect.objectContaining({ includeSkillConfig: true, otherParams: {} }),
         );
-
         expect(refreshS3Url).not.toHaveBeenCalled();
         const responseData = mockRes.json.mock.calls[0][0];
         const agent = responseData.data.find((a) => a.id === agentWithLocalAvatar.id);
@@ -4063,24 +4619,48 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.json).toHaveBeenCalled();
     });
 
-    test('should use MAX_AVATAR_REFRESH_AGENTS limit for full list query', async () => {
+    test('should refresh rows on a non-default page ordering beyond the old warm-up cap', async () => {
+      const db = require('~/models');
+      const accessibleIds = [
+        agentWithS3Avatar._id,
+        ...Array.from({ length: 1000 }, () => new mongoose.Types.ObjectId()),
+      ];
+      const listSpy = jest.spyOn(db, 'getListAgentsByAccess').mockImplementation(async (params) => {
+        if (!params.includeSkillConfig) {
+          return { object: 'list', data: [], has_more: false, after: null };
+        }
+        return {
+          object: 'list',
+          data: [agentWithS3Avatar.toObject()],
+          has_more: false,
+          after: null,
+        };
+      });
       mockCache.get.mockResolvedValue(false);
-      findAccessibleResources.mockResolvedValue([]);
+      findAccessibleResources.mockResolvedValue(accessibleIds);
       findPubliclyAccessibleResources.mockResolvedValue([]);
+      refreshS3Url.mockResolvedValue('oldest-page-presigned-url.jpg');
 
       const mockReq = {
         user: { id: userA.toString(), role: 'USER' },
-        query: {},
+        query: { sort: 'oldest', limit: '32' },
       };
       const mockRes = {
         status: jest.fn().mockReturnThis(),
         json: jest.fn().mockReturnThis(),
       };
 
-      await getListAgentsHandler(mockReq, mockRes);
+      try {
+        await getListAgentsHandler(mockReq, mockRes);
 
-      // Verify that the handler completed successfully
-      expect(mockRes.json).toHaveBeenCalled();
+        expect(listSpy).toHaveBeenCalledTimes(1);
+        expect(listSpy).toHaveBeenCalledWith(expect.objectContaining({ sort: 'oldest' }));
+        expect(refreshS3Url).toHaveBeenCalledTimes(1);
+        const responseData = mockRes.json.mock.calls[0][0];
+        expect(responseData.data[0].avatar.filepath).toBe('oldest-page-presigned-url.jpg');
+      } finally {
+        listSpy.mockRestore();
+      }
     });
 
     test('should treat legacy boolean cache entry as a miss and run refresh', async () => {
@@ -4115,7 +4695,11 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       const agentId = agentWithS3Avatar.id;
       const cachedUrl = 'cached-presigned-url.jpg';
 
-      mockCache.get.mockResolvedValue({ urlCache: { [agentId]: cachedUrl } });
+      mockCache.get.mockResolvedValue({
+        urlCache: { [agentId]: { filepath: 'old-s3-path.jpg', url: cachedUrl } },
+        coveredIds: { [agentId]: Date.now() + 30 * 60 * 1000 },
+        coveredFilepaths: { [agentId]: 'old-s3-path.jpg' },
+      });
       findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
       findPubliclyAccessibleResources.mockResolvedValue([]);
 
@@ -4138,10 +4722,11 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(agent.avatar.filepath).toBe(cachedUrl);
     });
 
-    test('should preserve DB filepath for agents absent from urlCache on cache hit', async () => {
-      mockCache.get.mockResolvedValue({ urlCache: {} });
+    test('should refresh page rows absent from a prior cache coverage entry', async () => {
+      mockCache.get.mockResolvedValue({ urlCache: {}, coveredIds: [] });
       findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
       findPubliclyAccessibleResources.mockResolvedValue([]);
+      refreshS3Url.mockResolvedValue('new-s3-path.jpg');
 
       const mockReq = {
         user: { id: userA.toString(), role: 'USER' },
@@ -4154,11 +4739,10 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       await getListAgentsHandler(mockReq, mockRes);
 
-      expect(refreshS3Url).not.toHaveBeenCalled();
-
+      expect(refreshS3Url).toHaveBeenCalledTimes(1);
       const responseData = mockRes.json.mock.calls[0][0];
       const agent = responseData.data.find((a) => a.id === agentWithS3Avatar.id);
-      expect(agent.avatar.filepath).toBe('old-s3-path.jpg');
+      expect(agent.avatar.filepath).toBe('new-s3-path.jpg');
     });
   });
 
@@ -4175,7 +4759,6 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         tools: [],
       });
     });
-
     test('createAgentHandler should return 403 when user lacks VIEW on an edge-referenced agent', async () => {
       const permMap = new Map();
       getResourcePermissionsMap.mockResolvedValueOnce(permMap);

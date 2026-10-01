@@ -41,7 +41,23 @@ jest.mock('../OrchestrationPattern', () => ({
 }));
 
 jest.mock('../ui', () => ({
-  ToggleSetting: () => null,
+  ToggleSetting: ({
+    label,
+    checked,
+    onCheckedChange,
+  }: {
+    label: string;
+    checked: boolean;
+    onCheckedChange: (checked: boolean) => void;
+  }) => (
+    <button
+      type="button"
+      role="switch"
+      aria-label={label}
+      aria-checked={checked}
+      onClick={() => onCheckedChange(!checked)}
+    />
+  ),
 }));
 
 describe('AgentSubagents', () => {
@@ -51,10 +67,16 @@ describe('AgentSubagents', () => {
     mockSubmit.mockReset();
   });
 
-  function Harness() {
+  function Harness({
+    fileSharingEnabled = false,
+    initialSubagents,
+  }: {
+    fileSharingEnabled?: boolean;
+    initialSubagents?: AgentForm['subagents'];
+  }) {
     const methods = useForm<AgentForm>({
       defaultValues: {
-        subagents: {
+        subagents: initialSubagents ?? {
           enabled: true,
           allowSelf: false,
           agent_ids: [],
@@ -69,7 +91,12 @@ describe('AgentSubagents', () => {
           name="subagents"
           control={methods.control}
           render={({ field }) => (
-            <AgentSubagents field={field} currentAgentId="parent" maxSubagents={10} />
+            <AgentSubagents
+              field={field}
+              currentAgentId="parent"
+              maxSubagents={10}
+              fileSharingEnabled={fileSharingEnabled}
+            />
           )}
         />
       </form>
@@ -101,5 +128,52 @@ describe('AgentSubagents', () => {
         expect.anything(),
       ),
     );
+  });
+
+  it('uses the semantic warning role for an empty configuration', () => {
+    render(<Harness />);
+
+    expect(screen.getByText('com_ui_agent_subagents_empty')).toHaveClass('text-text-warning');
+  });
+
+  it('keeps file sharing unavailable until the deployment enables it', () => {
+    const initialSubagents = { enabled: true, shareFiles: true, agent_ids: ['child'] };
+    render(<Harness initialSubagents={initialSubagents} />);
+
+    expect(
+      screen.queryByRole('switch', { name: 'com_ui_agent_subagents_share_files' }),
+    ).not.toBeInTheDocument();
+    expect(mockGetValues?.('subagents')).toEqual(initialSubagents);
+  });
+
+  it('saves the opt-in immediately while preserving the configured roster', async () => {
+    render(
+      <Harness
+        fileSharingEnabled
+        initialSubagents={{ enabled: true, allowSelf: false, agent_ids: ['child'] }}
+      />,
+    );
+    const sharing = screen.getByRole('switch', { name: 'com_ui_agent_subagents_share_files' });
+    expect(sharing).toHaveAttribute('aria-checked', 'false');
+
+    fireEvent.click(sharing);
+    fireEvent.submit(screen.getByRole('form', { name: 'agent form' }));
+
+    await waitFor(() =>
+      expect(mockSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          subagents: {
+            enabled: true,
+            allowSelf: false,
+            shareFiles: true,
+            agent_ids: ['child'],
+          },
+        }),
+        expect.anything(),
+      ),
+    );
+
+    fireEvent.click(sharing);
+    expect(mockGetValues?.('subagents.shareFiles')).toBe(false);
   });
 });

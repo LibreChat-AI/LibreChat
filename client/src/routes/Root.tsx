@@ -3,6 +3,18 @@ import { useRecoilValue } from 'recoil';
 import { Outlet } from 'react-router-dom';
 import { useMediaQuery } from '@librechat/client';
 import {
+  useFileMap,
+  useAgentsMap,
+  useAuthContext,
+  useReplyAlerts,
+  useUnseenBadge,
+  useReplyWatcher,
+  useSearchEnabled,
+  useCatalogWarmup,
+  useAssistantsMap,
+  useUnseenConversations,
+} from '~/hooks';
+import {
   UnifiedSidebar,
   SIDEBAR_TRANSITION,
   MOBILE_DRAWER_WIDTH_VAR,
@@ -16,15 +28,12 @@ import {
   AgentsMapContext,
   SetConvoProvider,
   FileMapContext,
+  MCPAppsPolicyProvider,
 } from '~/Providers';
 import {
-  useSearchEnabled,
-  useAssistantsMap,
-  useAuthContext,
-  useCatalogWarmup,
-  useAgentsMap,
-  useFileMap,
-} from '~/hooks';
+  CodeHighlightThrottleContext,
+  normalizeCodeHighlightThrottleMs,
+} from '~/components/Chat/Messages/Content/Parts/useLazyHighlight';
 import KeyboardShortcutsDialog from '~/components/Nav/KeyboardShortcutsDialog';
 import KeyboardDeleteDialog from '~/components/Nav/KeyboardDeleteDialog';
 import { useUserTermsQuery, useGetStartupConfig } from '~/data-provider';
@@ -35,9 +44,19 @@ import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import useSidebarState from '~/hooks/Nav/useSidebarState';
 import { TermsAndConditionsModal } from '~/components/ui';
 import useDrawerSwipe from '~/hooks/Nav/useDrawerSwipe';
+import ChatSettingsProvider from './ChatSettings';
 import { useHealthCheck } from '~/data-provider';
 import { Banner } from '~/components/Banners';
 import store from '~/store';
+
+/** Isolates the unseen-reply subscription so its updates re-render only this node, not `Root`. */
+function ReplyNotifications() {
+  const replyState = useUnseenConversations();
+  useReplyWatcher();
+  useUnseenBadge(replyState?.unseen.length ?? 0);
+  useReplyAlerts(replyState);
+  return null;
+}
 
 /** Isolates keyboard shortcut listeners so they only mount after auth. */
 function KeyboardShortcutsProvider() {
@@ -50,7 +69,7 @@ function KeyboardShortcutsProvider() {
   );
 }
 
-export default function Root() {
+function RootLayout() {
   const [showTerms, setShowTerms] = useState(false);
   const [bannerHeight, setBannerHeight] = useState(0);
   /** Shared with the drawer so the two agree on the breakpoint-transition frame. */
@@ -90,7 +109,7 @@ export default function Root() {
     },
     [setSidebarExpanded],
   );
-  const { isAuthenticated, logout } = useAuthContext();
+  const { isAuthenticated, logout, user } = useAuthContext();
   /** Releases feature-catalog queries after first paint on browser idle. */
   useCatalogWarmup(isAuthenticated);
 
@@ -110,10 +129,13 @@ export default function Root() {
   const agentsMap = useAgentsMap({ isAuthenticated });
   const fileMap = useFileMap({ isAuthenticated });
 
-  const { data: config } = useGetStartupConfig();
+  const { data: config, isSuccess: isConfigReady, error: configError } = useGetStartupConfig();
   const { data: termsData } = useUserTermsQuery({
     enabled: isAuthenticated && config?.interface?.termsOfService?.modalAcceptance === true,
   });
+  const highlightThrottleMs = normalizeCodeHighlightThrottleMs(
+    config?.interface?.codeHighlightThrottleMs,
+  );
 
   useSearchEnabled(isAuthenticated);
 
@@ -137,78 +159,98 @@ export default function Root() {
   }
 
   return (
-    <SetConvoProvider>
-      <FileMapContext.Provider value={fileMap}>
-        <AssistantsMapContext.Provider value={assistantsMap}>
-          <AgentsMapContext.Provider value={agentsMap}>
-            <PromptGroupsProvider>
-              <Banner onHeightChange={setBannerHeight} />
-              <div className="flex" style={{ height: `calc(100dvh - ${bannerHeight}px)` }}>
-                <div
-                  className="relative z-0 flex h-full w-full overflow-hidden"
-                  /** The drawer and the pane both read this, so their travel
-                   *  cannot disagree about how far the drawer opens. */
-                  style={
-                    {
-                      [MOBILE_DRAWER_WIDTH_VAR]: drawerStrip
-                        ? MOBILE_DRAWER_STRIP_WIDTH
-                        : MOBILE_DRAWER_FULL_WIDTH,
-                    } as React.CSSProperties
-                  }
-                >
-                  <UnifiedSidebar />
+    <CodeHighlightThrottleContext.Provider value={highlightThrottleMs}>
+      <SetConvoProvider>
+        <FileMapContext.Provider value={fileMap}>
+          <AssistantsMapContext.Provider value={assistantsMap}>
+            <AgentsMapContext.Provider value={agentsMap}>
+              <PromptGroupsProvider>
+                <Banner onHeightChange={setBannerHeight} />
+                <div className="flex" style={{ height: `calc(100dvh - ${bannerHeight}px)` }}>
                   <div
-                    ref={paneRef}
-                    /** Focus target of last resort when the drawer closes on a
-                     *  route that renders no opener. Not in the tab order. */
-                    tabIndex={-1}
-                    className="relative flex h-full max-w-full flex-1 flex-col overflow-hidden focus:outline-none"
-                    style={{
-                      /** A percentage of the pane's own width, so it tracks the
-                       *  drawer without a literal and survives rotation. */
-                      transform: isSmallScreen && sidebarExpanded ? MOBILE_PANE_SHIFT : 'none',
-                      transition: prefersReducedMotion ? undefined : SIDEBAR_TRANSITION,
-                    }}
-                    /** Recoil's flip is deferred past the opening frames and
-                     *  the closing transition outlives it at the other end, so
-                     *  `isSliding` covers the travel `sidebarExpanded` brackets
-                     *  too late and drops too early. */
-                    inert={isSmallScreen && (sidebarExpanded || isSliding) ? '' : undefined}
+                    className="relative z-0 flex h-full w-full overflow-hidden"
+                    /** The drawer and the pane both read this, so their travel
+                     *  cannot disagree about how far the drawer opens. */
+                    style={
+                      {
+                        [MOBILE_DRAWER_WIDTH_VAR]: drawerStrip
+                          ? MOBILE_DRAWER_STRIP_WIDTH
+                          : MOBILE_DRAWER_FULL_WIDTH,
+                      } as React.CSSProperties
+                    }
                   >
-                    <Outlet />
-                  </div>
-                  {/* Without the strip the scrim exists only for the travel:
+                    {/* The drawer stops being painted once it is closed and
+                        settled, so it needs the same travel window the scrim and
+                        the pane's `inert` read. */}
+                    <UnifiedSidebar isSliding={isSliding} />
+                    <div
+                      ref={paneRef}
+                      /** Focus target of last resort when the drawer closes on a
+                       *  route that renders no opener. Not in the tab order. */
+                      tabIndex={-1}
+                      className="relative flex h-full max-w-full flex-1 flex-col overflow-hidden focus:outline-hidden"
+                      style={{
+                        /** A percentage of the pane's own width, so it tracks the
+                         *  drawer without a literal and survives rotation. */
+                        transform: isSmallScreen && sidebarExpanded ? MOBILE_PANE_SHIFT : 'none',
+                        transition: prefersReducedMotion ? undefined : SIDEBAR_TRANSITION,
+                      }}
+                      /** Recoil's flip is deferred past the opening frames and
+                       *  the closing transition outlives it at the other end, so
+                       *  `isSliding` covers the travel `sidebarExpanded` brackets
+                       *  too late and drops too early. */
+                      inert={isSmallScreen && (sidebarExpanded || isSliding) ? '' : undefined}
+                    >
+                      <MCPAppsPolicyProvider
+                        startupConfig={config}
+                        ready={isConfigReady && configError == null}
+                        userId={user?.id}
+                      >
+                        <Outlet />
+                      </MCPAppsPolicyProvider>
+                    </div>
+                    {/* Without the strip the scrim exists only for the travel:
                       through a close that began while the strip was still on
                       (disabling it unmounts the scrim at once, but the drawer
                       needs the whole transition to widen), and through an open
                       the deferred flip has not committed yet. Once expanded
                       lands, a full-width drawer covers it, so keeping it
                       mounted would only expose a duplicate dismiss control. */}
-                  {isSmallScreen && (drawerStrip || (isSliding && !sidebarExpanded)) && (
-                    <MobileDrawerScrim
-                      expanded={sidebarExpanded}
-                      isSliding={isSliding}
-                      prefersReducedMotion={prefersReducedMotion}
-                      onClick={onScrimClick}
-                    />
-                  )}
+                    {isSmallScreen && (drawerStrip || (isSliding && !sidebarExpanded)) && (
+                      <MobileDrawerScrim
+                        expanded={sidebarExpanded}
+                        isSliding={isSliding}
+                        prefersReducedMotion={prefersReducedMotion}
+                        onClick={onScrimClick}
+                      />
+                    )}
+                  </div>
                 </div>
-              </div>
-            </PromptGroupsProvider>
-            <KeyboardShortcutsProvider />
-          </AgentsMapContext.Provider>
-          {config?.interface?.termsOfService?.modalAcceptance === true && (
-            <TermsAndConditionsModal
-              open={showTerms}
-              onOpenChange={setShowTerms}
-              onAccept={handleAcceptTerms}
-              onDecline={handleDeclineTerms}
-              title={config.interface.termsOfService.modalTitle}
-              modalContent={config.interface.termsOfService.modalContent}
-            />
-          )}
-        </AssistantsMapContext.Provider>
-      </FileMapContext.Provider>
-    </SetConvoProvider>
+              </PromptGroupsProvider>
+              <KeyboardShortcutsProvider />
+              <ReplyNotifications />
+            </AgentsMapContext.Provider>
+            {config?.interface?.termsOfService?.modalAcceptance === true && (
+              <TermsAndConditionsModal
+                open={showTerms}
+                onOpenChange={setShowTerms}
+                onAccept={handleAcceptTerms}
+                onDecline={handleDeclineTerms}
+                title={config.interface.termsOfService.modalTitle}
+                modalContent={config.interface.termsOfService.modalContent}
+              />
+            )}
+          </AssistantsMapContext.Provider>
+        </FileMapContext.Provider>
+      </SetConvoProvider>
+    </CodeHighlightThrottleContext.Provider>
+  );
+}
+
+export default function Root() {
+  return (
+    <ChatSettingsProvider>
+      <RootLayout />
+    </ChatSettingsProvider>
   );
 }

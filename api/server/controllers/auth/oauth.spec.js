@@ -169,6 +169,7 @@ describe('createOAuthHandler', () => {
       existingRefreshToken: 'openid-refresh-token',
       openidSubject: undefined,
       openidIssuer: undefined,
+      discardSessionTokens: true,
       req,
       res,
     });

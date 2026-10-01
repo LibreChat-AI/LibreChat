@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 import { EventEmitter } from 'events';
 import { logger } from '@librechat/data-schemas';
+import { MCP_UI_EXTENSION_ID } from 'librechat-data-provider';
 import { fetch as undiciFetch, Agent, ProxyAgent } from 'undici';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -21,20 +22,34 @@ import type {
   Dispatcher,
 } from 'undici';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { ClientCapabilities } from '@modelcontextprotocol/sdk/types.js';
+import type { TMCPAppOperationLimits } from 'librechat-data-provider';
+import type { MCPClientCapabilityProfile } from './capabilities';
 import type { MCPOAuthTokens } from './oauth/types';
 import type * as t from './types';
 import {
   extractSSEErrorMessage,
   isOAuthAuthenticationError,
+  isMCPTransportAuthenticationError,
+  MCPTransportAuthenticationError,
   isStandaloneSseConflict,
 } from './errors';
+import {
+  createMCPAppSSEEventGuard,
+  getMCPAppOperationLimits,
+  guardMCPAppSSEEvents,
+} from './apps/budget';
+import { MCP_APPS_CAPABILITY_PROFILE, STANDARD_MCP_CAPABILITY_PROFILE } from './capabilities';
 import { createSSRFSafeUndiciConnect, isSSRFTarget, resolveHostnameSSRF } from '~/auth';
+import { projectMCPAppRuntimeTarget, type MCPAppRuntimeTarget } from './apps/binding';
 import { reserveMCPToolsChangedRevision } from './toolsChanged';
 import { extractUrlElicitation } from './elicitation';
 import { runOutsideTracing } from '~/utils/tracing';
 import { mediaTypeEssence } from '~/utils/headers';
 import { isAddressAllowed } from '~/auth/domain';
+import { withMCPRequestSignal } from './signal';
 import { withTimeout } from '~/utils/promise';
+import { RESOURCE_MIME_TYPE } from './apps';
 import { isOAuthServer } from './utils';
 import { mcpConfig } from './mcpConfig';
 
@@ -288,10 +303,19 @@ function buildBlockedMCPResponseSSE(requestIds: JSONRPCRequestId[], message: str
   return textEncoder.encode(events);
 }
 
-function getMCPStreamableHTTPResponseLimits(): {
+function getMCPStreamableHTTPResponseLimits(
+  appProfile = false,
+  operationLimits?: TMCPAppOperationLimits,
+): {
   maxResponseBytes: number;
   maxLineBytes: number;
 } {
+  if (appProfile) {
+    // Validated App-profile policy owns both bounds. Generic transport env defaults are for
+    // standard sessions and must not silently reject an operator-approved larger App event.
+    const maxBytes = getMCPAppOperationLimits(operationLimits).maxBytes;
+    return { maxResponseBytes: maxBytes, maxLineBytes: maxBytes };
+  }
   return {
     maxResponseBytes: getNonNegativeIntegerEnv(
       'MCP_STREAMABLE_HTTP_MAX_RESPONSE_BYTES',
@@ -311,16 +335,39 @@ async function guardMCPStreamableHTTPResponse(
     method: string;
     url: string;
     requestIds?: JSONRPCRequestId[];
+    appProfile?: boolean;
+    operationLimits?: TMCPAppOperationLimits;
+    onAppSSEOverflow?: () => void;
   },
 ): Promise<UndiciResponse> {
-  if (context.method === 'GET' || !response.body) {
+  const contentType = response.headers.get('content-type') ?? '';
+  const isEventStream = mediaTypeEssence(contentType) === 'text/event-stream';
+  if (context.method === 'GET') {
+    if (!context.appProfile) return response;
+    if (isEventStream && response.ok) {
+      return guardMCPAppSSEEvents(
+        response as unknown as Response,
+        getMCPAppOperationLimits(context.operationLimits).maxBytes,
+        context.onAppSSEOverflow,
+      ) as unknown as UndiciResponse;
+    }
+    // SDK GET error paths may call response.text(); bound those as ordinary HTTP bodies,
+    // including non-2xx responses mislabelled as an event stream.
+  }
+  if (!response.body) {
     return response;
   }
 
-  const contentType = response.headers.get('content-type') ?? '';
-  const isEventStream = mediaTypeEssence(contentType) === 'text/event-stream';
-  const { maxResponseBytes, maxLineBytes } = getMCPStreamableHTTPResponseLimits();
+  const { maxResponseBytes, maxLineBytes } = getMCPStreamableHTTPResponseLimits(
+    context.appProfile,
+    context.operationLimits,
+  );
   const canEmitFallbackSSEError = isEventStream && maxLineBytes > 0;
+  // SSE streams can emit many bounded events; cumulative bytes must not end a healthy App session.
+  const fitsAppEvent =
+    isEventStream && response.ok && context.appProfile
+      ? createMCPAppSSEEventGuard(maxResponseBytes)
+      : undefined;
   if (!isEventStream && maxResponseBytes === 0) {
     return response;
   }
@@ -428,7 +475,10 @@ async function guardMCPStreamableHTTPResponse(
         chunkCount += 1;
         totalBytes += bytes.byteLength;
 
-        if (maxResponseBytes > 0 && totalBytes > maxResponseBytes) {
+        if (
+          maxResponseBytes > 0 &&
+          (fitsAppEvent ? !fitsAppEvent(bytes) : totalBytes > maxResponseBytes)
+        ) {
           blockResponse(controller, 'MCP response exceeded byte limit', {
             chunkBytes: bytes.byteLength,
           });
@@ -993,6 +1043,10 @@ interface MCPConnectionParams {
   useSSRFProtection?: boolean;
   allowedAddresses?: string[] | null;
   ephemeralConnection?: boolean;
+  /** The owner will replace this connection after a tools/list authentication rejection. */
+  directBearerRecoveryEnabled?: boolean;
+  capabilityProfile?: MCPClientCapabilityProfile;
+  operationLimits?: TMCPAppOperationLimits;
 }
 
 /** Result of an MCP `tools/list` request: one page of tools plus an optional pagination cursor. */
@@ -1001,6 +1055,8 @@ type MCPListToolsResult = Awaited<ReturnType<Client['listTools']>>;
 export interface MCPToolsSnapshot {
   tools: MCPListToolsResult['tools'];
   complete: boolean;
+  /** Authentication rejection observed by this exact catalog read. */
+  authenticationError?: unknown;
   /** Ordering ticket reserved before this snapshot's `tools/list`; app scope only. */
   publicationRevision?: string;
   /** Set when reserving that ticket failed, which is retryable — unlike a scope that simply
@@ -1016,6 +1072,8 @@ export class MCPConnection extends EventEmitter {
   private connectPromise: Promise<void> | null = null;
   private readonly MAX_RECONNECT_ATTEMPTS = 3;
   public readonly serverName: string;
+  public readonly capabilityProfile: MCPClientCapabilityProfile;
+  private readonly operationLimits?: TMCPAppOperationLimits;
   private shouldStopReconnecting = false;
   private isReconnecting = false;
   private isInitializing = false;
@@ -1027,6 +1085,8 @@ export class MCPConnection extends EventEmitter {
   private lastPingTime: number;
   private lastConnectionCheckAt: number = 0;
   private lastConnectionCheckError?: unknown;
+  private lastConnectionCheckCredentialSetId?: string | null;
+  private transportCredentialSetId: string | null = null;
   private oauthTokens?: MCPOAuthTokens | null;
   private requestHeaders?: Record<string, string> | null;
   private oauthRequired = false;
@@ -1034,14 +1094,16 @@ export class MCPConnection extends EventEmitter {
   private readonly useSSRFProtection: boolean;
   private readonly allowedAddresses?: string[] | null;
   private readonly ephemeralConnection: boolean;
+  private readonly directBearerRecoveryEnabled: boolean;
   private readonly proxyConfig?: MCPProxyConfig;
   private toolListChangeGeneration = 0;
   private handledToolListChangeGeneration = 0;
   private toolListRefreshFailures = 0;
-  private toolListRefreshPromise: Promise<void> | null = null;
+  private toolListRefreshPromise: Promise<MCPToolsSnapshot | undefined> | null = null;
   private toolListRefreshRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private toolListRefreshEpoch = 0;
   private toolListRefreshSuspended = false;
+  private suspendedToolListSnapshot?: MCPToolsSnapshot;
   private publishedToolListSnapshot: {
     epoch: number;
     generation: number;
@@ -1061,6 +1123,13 @@ export class MCPConnection extends EventEmitter {
    * Used to detect if connection is stale compared to updated config.
    */
   public readonly createdAt: number;
+
+  /**
+   * Bumped on every tools/list_changed notification. Consumers that cache tool metadata can fold
+   * this into their freshness check to detect tool changes that happen on a live connection, which
+   * createdAt alone (stable until reconnect) cannot.
+   */
+  public toolListVersion = 0;
 
   private static circuitBreakers: Map<string, CircuitBreakerState> = new Map();
 
@@ -1155,6 +1224,11 @@ export class MCPConnection extends EventEmitter {
     this.requestHeaders = normalizedHeaders;
   }
 
+  /** Stable routing identity captured by this connection, without live authorization headers. */
+  getMCPAppRuntimeTarget(): MCPAppRuntimeTarget {
+    return projectMCPAppRuntimeTarget(this.options);
+  }
+
   getRequestHeaders(): Record<string, string> | null | undefined {
     return this.requestHeaders;
   }
@@ -1187,10 +1261,13 @@ export class MCPConnection extends EventEmitter {
     super();
     this.options = params.serverConfig;
     this.serverName = params.serverName;
+    this.capabilityProfile = params.capabilityProfile ?? STANDARD_MCP_CAPABILITY_PROFILE;
+    this.operationLimits = params.operationLimits;
     this.userId = params.userId;
     this.useSSRFProtection = params.useSSRFProtection === true;
     this.allowedAddresses = params.allowedAddresses ?? null;
     this.ephemeralConnection = params.ephemeralConnection === true;
+    this.directBearerRecoveryEnabled = params.directBearerRecoveryEnabled === true;
     this.proxyConfig = getMCPProxyConfig(params.serverConfig);
     this.iconPath = params.serverConfig.iconPath;
     this.timeout = params.serverConfig.timeout;
@@ -1200,22 +1277,22 @@ export class MCPConnection extends EventEmitter {
     if (params.oauthTokens) {
       this.oauthTokens = params.oauthTokens;
     }
+    /** `elicitation.url` declares support for the `url` elicitation wire mode (spec
+     *  2025-11-25): the target gateway (AWS Bedrock AgentCore) returns the -32042
+     *  `UrlElicitationRequired` error on `tools/call` ONLY to clients that declare it.
+     *  Gated on the per-server `elicitation` flag: `elicitation: false` opts out. */
+    const capabilities: ClientCapabilities = {
+      ...(this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE
+        ? { extensions: { [MCP_UI_EXTENSION_ID]: { mimeTypes: [RESOURCE_MIME_TYPE] } } }
+        : {}),
+      ...(params.serverConfig.elicitation === false ? {} : { elicitation: { url: {} } }),
+    };
     this.client = new Client(
       {
         name: '@librechat/api-client',
         version: '1.2.3',
       },
-      {
-        /** Declares support for the `url` elicitation wire mode (spec 2025-11-25).
-         *  The target gateway (AWS Bedrock AgentCore) returns the -32042
-         *  `UrlElicitationRequired` error on `tools/call` ONLY to clients that
-         *  declare `elicitation.url`, so this must stay declared even though
-         *  proactive server-initiated `elicitation/create` handling is
-         *  intentionally deferred to a follow-up. Gated on the per-server
-         *  `elicitation` flag: when a server opts out (`elicitation: false`),
-         *  the capability is not advertised. */
-        capabilities: params.serverConfig.elicitation === false ? {} : { elicitation: { url: {} } },
-      },
+      { capabilities },
     );
 
     this.setupEventListeners();
@@ -1249,6 +1326,9 @@ export class MCPConnection extends EventEmitter {
     /** Capture only the fields needed by the fetch closure; see factory note above. */
     const agents = this.agents;
     const logPrefix = this.getLogPrefix();
+    const rejectDirectBearerAuthentication = this.directBearerRecoveryEnabled;
+    const thisAppProfile = this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE;
+    const appOperationLimits = this.operationLimits;
     const effectiveTimeout = timeout || DEFAULT_TIMEOUT;
     const requestDispatchers = new Map<string, ManagedDispatcher>();
     const ssrfConnects = new Map<string, ReturnType<typeof createSSRFSafeUndiciConnect>>();
@@ -1364,12 +1444,21 @@ export class MCPConnection extends EventEmitter {
           currentAllowedAddresses,
         );
         const response = await undiciFetch(currentUrlString, currentInit);
+        if (
+          rejectDirectBearerAuthentication &&
+          (response.status === 401 || response.status === 403)
+        ) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new MCPTransportAuthenticationError(response.status);
+        }
         const isMethodPreservingRedirect = response.status === 307 || response.status === 308;
         const responseContext = {
           logPrefix,
           method: (currentInit?.method ?? 'GET').toUpperCase(),
           url: currentUrlString,
           requestIds: getJSONRPCRequestIds(currentInit?.body),
+          appProfile: thisAppProfile,
+          operationLimits: appOperationLimits,
         };
 
         if (!isMethodPreservingRedirect || redirects >= MAX_REDIRECTS) {
@@ -1490,11 +1579,19 @@ export class MCPConnection extends EventEmitter {
             // https://github.com/modelcontextprotocol/typescript-sdk/issues/216
             env: { ...getDefaultEnvironment(), ...(options.env ?? {}) },
             ...(options.cwd !== undefined && { cwd: options.cwd }),
+            ...(this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE && {
+              maxBufferSize: getMCPAppOperationLimits(this.operationLimits).maxBytes,
+            }),
           });
 
         case 'websocket': {
           if (!isWebSocketOptions(options)) {
             throw new Error('Invalid options for websocket transport.');
+          }
+          if (this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE) {
+            // This SDK WebSocket transport JSON.parse's messages before exposing them and offers
+            // no maxPayload option. Fail closed for Apps rather than claim a post-parse cap is safe.
+            throw new Error('MCP Apps require a transport with a pre-parse response size limit');
           }
           this.url = options.url;
           /**
@@ -1596,12 +1693,46 @@ export class MCPConnection extends EventEmitter {
                   resolvedInit?.headers,
                   headers,
                 );
-                return undiciFetch(urlString, {
+                const liveHeaders = this.directBearerRecoveryEnabled
+                  ? this.getRequestHeaders()
+                  : undefined;
+                if (liveHeaders) {
+                  for (const key of Object.keys(fetchHeaders)) {
+                    const normalized = key.toLowerCase();
+                    if (
+                      sseConfiguredSecretHeaderKeys.has(normalized) &&
+                      liveHeaders[normalized] != null
+                    ) {
+                      delete fetchHeaders[key];
+                      fetchHeaders[normalized] = liveHeaders[normalized];
+                    }
+                  }
+                }
+                const response = await undiciFetch(urlString, {
                   ...resolvedInit,
                   redirect: 'manual',
                   dispatcher: getSSEDispatcher(urlString),
                   headers: fetchHeaders,
                 });
+                return this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE
+                  ? guardMCPStreamableHTTPResponse(response, {
+                      logPrefix: this.getLogPrefix(),
+                      method: 'GET',
+                      url: urlString,
+                      appProfile: true,
+                      operationLimits: this.operationLimits,
+                      onAppSSEOverflow: () => {
+                        // Let the SDK observe its stream error and reject an in-flight start before
+                        // closing EventSource. Closing synchronously leaves start() pending forever.
+                        // A short bounded grace also prevents the SDK's automatic retry loop.
+                        const stop = setTimeout(() => {
+                          abortController.abort();
+                          void transport.close().catch(() => undefined);
+                        }, 30);
+                        stop.unref?.();
+                      },
+                    })
+                  : response;
               },
             },
             fetch: this.createFetchFunction(
@@ -1610,6 +1741,7 @@ export class MCPConnection extends EventEmitter {
               undefined,
               sseConfiguredSecretHeaderKeys,
               options.url,
+              this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE,
             ) as unknown as FetchLike,
           });
 
@@ -1678,8 +1810,10 @@ export class MCPConnection extends EventEmitter {
     this.isInitializing = true;
     this.on('connectionChange', (state: t.ConnectionState) => {
       this.connectionState = state;
+      this.suspendedToolListSnapshot = undefined;
       if (state === 'connected') {
         this.lastConnectionCheckError = undefined;
+        this.lastConnectionCheckCredentialSetId = undefined;
         const isReconnect = this.hasConnected;
         this.hasConnected = true;
         this.toolListRefreshSuspended = false;
@@ -1818,16 +1952,25 @@ export class MCPConnection extends EventEmitter {
   private subscribeToToolListChanges(): void {
     this.client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
       logger.debug(`${this.getLogPrefix()} Server reported a changed tool list`);
+      // Stamps the MCP Apps per-tool metadata caches (resourceUri, visibility) as stale; createdAt
+      // alone cannot see a list change on a still-live connection.
+      this.toolListVersion += 1;
       await this.refreshToolList();
     });
   }
 
   /** Queues a live tool-list refresh through the same coalescing path used by notifications. */
-  public async refreshToolList(): Promise<void> {
+  public async refreshToolList(signal?: AbortSignal): Promise<MCPToolsSnapshot | undefined> {
+    signal?.throwIfAborted();
     this.toolListChangeGeneration++;
     this.clearToolListRefreshRetry();
-    this.startToolListRefresh();
-    await this.toolListRefreshPromise;
+    this.startToolListRefresh(signal);
+    const refresh = this.toolListRefreshPromise;
+    if (signal && refresh) {
+      await this.settlesBefore(refresh, undefined, signal);
+      signal.throwIfAborted();
+    }
+    return (await refresh) ?? this.suspendedToolListSnapshot;
   }
 
   private clearToolListRefreshRetry(): void {
@@ -1858,7 +2001,7 @@ export class MCPConnection extends EventEmitter {
     this.toolListRefreshRetryTimer.unref?.();
   }
 
-  private startToolListRefresh(): void {
+  private startToolListRefresh(signal?: AbortSignal): void {
     if (
       this.isDisposed ||
       this.toolListRefreshSuspended ||
@@ -1868,7 +2011,7 @@ export class MCPConnection extends EventEmitter {
       return;
     }
 
-    this.toolListRefreshPromise = this.refreshChangedTools().finally(() => {
+    this.toolListRefreshPromise = this.refreshChangedTools(signal).finally(() => {
       this.toolListRefreshPromise = null;
       if (
         !this.toolListRefreshRetryTimer &&
@@ -1879,14 +2022,22 @@ export class MCPConnection extends EventEmitter {
     });
   }
 
-  private async refreshChangedTools(): Promise<void> {
+  private async refreshChangedTools(signal?: AbortSignal): Promise<MCPToolsSnapshot | undefined> {
     const refreshEpoch = this.toolListRefreshEpoch;
+    let latestSnapshot: MCPToolsSnapshot | undefined;
     while (this.handledToolListChangeGeneration < this.toolListChangeGeneration) {
       const targetGeneration = this.toolListChangeGeneration;
       const snapshot: MCPToolsSnapshot =
         this.client.getServerCapabilities()?.tools == null
           ? { tools: [], complete: true, ...(await this.reserveToolsPublicationRevision()) }
-          : await this.fetchToolsSnapshot();
+          : await this.fetchToolsSnapshot(undefined, signal);
+      if (signal?.aborted) {
+        if (this.toolListRefreshEpoch === refreshEpoch) {
+          this.toolListRefreshSuspended = true;
+        }
+        return;
+      }
+      latestSnapshot = snapshot;
       if (
         this.toolListRefreshEpoch !== refreshEpoch ||
         this.toolListRefreshSuspended ||
@@ -1896,6 +2047,12 @@ export class MCPConnection extends EventEmitter {
       }
       /** Publishing unordered would drop this catalog silently; retry until it can be ordered. */
       if (!snapshot.complete || snapshot.orderingUnavailable) {
+        if (snapshot.authenticationError && this.directBearerRecoveryEnabled) {
+          /** Keep the stopped queue's outcome available to an owner arriving after settlement. */
+          this.suspendedToolListSnapshot = snapshot;
+          this.toolListRefreshSuspended = true;
+          return snapshot;
+        }
         this.toolListRefreshFailures++;
         this.scheduleToolListRefreshRetry();
         return;
@@ -1911,6 +2068,7 @@ export class MCPConnection extends EventEmitter {
       };
       this.dispatchToolsChanged(snapshot.tools, snapshot.publicationRevision);
     }
+    return latestSnapshot;
   }
 
   private dispatchToolsChanged(
@@ -1946,6 +2104,7 @@ export class MCPConnection extends EventEmitter {
     this.emit('connectionChange', 'connecting');
 
     this.connectPromise = (async () => {
+      let rejectedCredentialSetId = this.oauthTokens?.credential_set_id ?? null;
       try {
         if (this.transport) {
           try {
@@ -1959,6 +2118,7 @@ export class MCPConnection extends EventEmitter {
         }
 
         this.transport = await runOutsideTracing(() => this.constructTransport(this.options));
+        rejectedCredentialSetId = this.getOAuthCredentialSetId();
         /** `dispose()` can land while the transport is still being constructed — it finds nothing
          *  to close and returns, so without this check the attempt would go on to connect and
          *  leave a live connection on a disposed object. Ownership of teardown is ours here. */
@@ -1992,6 +2152,9 @@ export class MCPConnection extends EventEmitter {
           );
         }
       } catch (error) {
+        if (this.isDisposed) {
+          throw error;
+        }
         // Check if it's a rate limit error - stop immediately to avoid making it worse
         if (this.isRateLimitError(error)) {
           /**
@@ -2012,7 +2175,11 @@ export class MCPConnection extends EventEmitter {
         }
 
         // Check if it's an OAuth authentication error
-        if (isOAuthAuthenticationError(error)) {
+        if (
+          this.directBearerRecoveryEnabled
+            ? isMCPTransportAuthenticationError(error)
+            : isOAuthAuthenticationError(error)
+        ) {
           logger.warn(`${this.getLogPrefix()} OAuth authentication required`);
           this.oauthRequired = true;
           const serverUrl = this.url;
@@ -2065,6 +2232,7 @@ export class MCPConnection extends EventEmitter {
 
           // Emit the event
           this.emit('oauthRequired', {
+            rejectedCredentialSetId,
             serverName: this.serverName,
             error,
             serverUrl,
@@ -2187,6 +2355,8 @@ export class MCPConnection extends EventEmitter {
 
   private setupTransportErrorHandlers(transport: Transport): void {
     this.reportedStandaloneSseConflict = false;
+    const transportCredentialSetId = this.oauthTokens?.credential_set_id ?? null;
+    this.transportCredentialSetId = transportCredentialSetId;
 
     transport.onerror = (error) => {
       const rawMessage =
@@ -2292,9 +2462,14 @@ export class MCPConnection extends EventEmitter {
       }
 
       // Check if it's an OAuth authentication error
-      if (isOAuthAuthenticationError(error)) {
+      if (
+        this.directBearerRecoveryEnabled
+          ? isMCPTransportAuthenticationError(error)
+          : isOAuthAuthenticationError(error)
+      ) {
         logger.warn(`${this.getLogPrefix()} OAuth authentication error detected`);
         this.lastConnectionCheckError = error;
+        this.lastConnectionCheckCredentialSetId = transportCredentialSetId;
         this.connectionState = 'error';
         this.emit('oauthError', error);
         return;
@@ -2378,6 +2553,7 @@ export class MCPConnection extends EventEmitter {
 
   public async disconnect(resetCycleTracking = true, forceAgentClose = false): Promise<void> {
     this.toolListRefreshEpoch++;
+    this.suspendedToolListSnapshot = undefined;
     this.toolListRefreshSuspended = true;
     this.clearToolListRefreshRetry();
     try {
@@ -2467,9 +2643,10 @@ export class MCPConnection extends EventEmitter {
     const seenCursors = new Set<string>();
     let cursor: string | undefined;
     let totalBytes = 0;
-    const snapshot = (complete: boolean): MCPToolsSnapshot => ({
+    const snapshot = (complete: boolean, authenticationError?: unknown): MCPToolsSnapshot => ({
       tools: allTools,
       complete,
+      ...(authenticationError != null && { authenticationError }),
       ...ordering,
     });
 
@@ -2491,10 +2668,12 @@ export class MCPConnection extends EventEmitter {
         return snapshot(false);
       }
 
-      const result = await this.listToolsPage(cursor, remainingMs, signal);
-      if (result == null) {
+      let result: MCPListToolsResult;
+      try {
+        result = await this.listToolsPage(cursor, remainingMs, signal);
+      } catch (error) {
         /** Request failed mid-pagination: return the pages already fetched instead of discarding them. */
-        return snapshot(false);
+        return snapshot(false, isMCPTransportAuthenticationError(error) ? error : undefined);
       }
 
       for (const tool of result.tools) {
@@ -2560,6 +2739,7 @@ export class MCPConnection extends EventEmitter {
           serverName: this.serverName,
           serverConfig: this.options,
           userId: this.userId,
+          capabilityProfile: this.capabilityProfile,
         }),
       };
     } catch (error) {
@@ -2635,6 +2815,15 @@ export class MCPConnection extends EventEmitter {
       };
     }
 
+    if (
+      startEpoch === this.toolListRefreshEpoch &&
+      !signal?.aborted &&
+      (deadlineMs == null || Date.now() < deadlineMs) &&
+      this.suspendedToolListSnapshot
+    ) {
+      return this.suspendedToolListSnapshot;
+    }
+
     return { tools: [], complete: false };
   }
 
@@ -2675,21 +2864,23 @@ export class MCPConnection extends EventEmitter {
     );
   }
 
-  /** Fetches a single `tools/list` page, returning null (and logging) on failure so pagination can stop gracefully. */
+  /** Fetches one `tools/list` page. The public snapshot interface classifies any rejection. */
   private async listToolsPage(
     cursor: string | undefined,
     timeoutMs: number,
     signal?: AbortSignal,
-  ): Promise<MCPListToolsResult | null> {
+  ): Promise<MCPListToolsResult> {
     try {
-      return await this.client.listTools(cursor != null ? { cursor } : undefined, {
-        timeout: timeoutMs,
-        maxTotalTimeout: timeoutMs,
-        signal,
-      });
+      return await withMCPRequestSignal(signal, (requestSignal) =>
+        this.client.listTools(cursor != null ? { cursor } : undefined, {
+          timeout: timeoutMs,
+          maxTotalTimeout: timeoutMs,
+          signal: requestSignal,
+        }),
+      );
     } catch (error) {
       this.emitError(error, 'Failed to fetch tools');
-      return null;
+      throw error;
     }
   }
 
@@ -2719,9 +2910,11 @@ export class MCPConnection extends EventEmitter {
     if (now - this.lastConnectionCheckAt < mcpConfig.CONNECTION_CHECK_TTL) {
       return true;
     }
+    let probeCredentialSetId = this.getOAuthCredentialSetId();
     const previousCheckAt = this.lastConnectionCheckAt;
     this.lastConnectionCheckAt = now;
     this.lastConnectionCheckError = undefined;
+    this.lastConnectionCheckCredentialSetId = undefined;
     /** An aborted probe answered nothing: restore the TTL stamp so the next caller probes for
      *  real, instead of a dead shared connection reading as healthy for the whole TTL window. */
     const probeAborted = (): boolean => signal?.aborted === true;
@@ -2733,7 +2926,9 @@ export class MCPConnection extends EventEmitter {
 
     try {
       // Try ping first as it's the lightest check
-      await this.client.ping({ signal });
+      await withMCPRequestSignal(signal, (requestSignal) =>
+        this.client.ping({ signal: requestSignal }),
+      );
       return this.connectionState === 'connected';
     } catch (error) {
       if (probeAborted()) {
@@ -2750,6 +2945,7 @@ export class MCPConnection extends EventEmitter {
 
       if (!pingUnsupported) {
         this.lastConnectionCheckError = error;
+        this.lastConnectionCheckCredentialSetId = probeCredentialSetId;
         logger.error(`${this.getLogPrefix()} Ping failed`);
         return false;
       }
@@ -2760,18 +2956,25 @@ export class MCPConnection extends EventEmitter {
       );
 
       try {
+        probeCredentialSetId = this.getOAuthCredentialSetId();
         // Get server capabilities to verify connection is truly active
         const capabilities = this.client.getServerCapabilities();
 
         // If we have capabilities, try calling a supported method to verify connection
         if (capabilities?.tools) {
-          await this.client.listTools(undefined, { signal });
+          await withMCPRequestSignal(signal, (requestSignal) =>
+            this.client.listTools(undefined, { signal: requestSignal }),
+          );
           return this.connectionState === 'connected';
         } else if (capabilities?.resources) {
-          await this.client.listResources(undefined, { signal });
+          await withMCPRequestSignal(signal, (requestSignal) =>
+            this.client.listResources(undefined, { signal: requestSignal }),
+          );
           return this.connectionState === 'connected';
         } else if (capabilities?.prompts) {
-          await this.client.listPrompts(undefined, { signal });
+          await withMCPRequestSignal(signal, (requestSignal) =>
+            this.client.listPrompts(undefined, { signal: requestSignal }),
+          );
           return this.connectionState === 'connected';
         } else {
           // No capabilities to test, but we're in connected state and initialization succeeded
@@ -2786,10 +2989,18 @@ export class MCPConnection extends EventEmitter {
         }
         // If capability check fails, the connection is likely broken
         this.lastConnectionCheckError = capabilityError;
+        this.lastConnectionCheckCredentialSetId = probeCredentialSetId;
         logger.error(`${this.getLogPrefix()} Connection verification failed`);
         return false;
       }
     }
+  }
+
+  /** Identifies the installed transport credential; pending replacement tokens are not sent yet. */
+  public getOAuthCredentialSetId(): string | null {
+    return this.transport
+      ? this.transportCredentialSetId
+      : (this.oauthTokens?.credential_set_id ?? null);
   }
 
   public setOAuthTokens(tokens: MCPOAuthTokens): void {
@@ -2803,6 +3014,10 @@ export class MCPConnection extends EventEmitter {
 
   public isOAuthAuthenticationError(error: unknown): boolean {
     return isOAuthAuthenticationError(error);
+  }
+
+  public getLastConnectionCheckCredentialSetId(): string | null | undefined {
+    return this.lastConnectionCheckCredentialSetId;
   }
 
   public getLastConnectionCheckError(): unknown {

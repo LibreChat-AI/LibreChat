@@ -1,4 +1,4 @@
-import { SkillsScope, AgentCapabilities, ArtifactModes } from 'librechat-data-provider';
+import { AgentCapabilities, ArtifactModes } from 'librechat-data-provider';
 import type { AgentItem } from './types';
 
 export type TogglePatch =
@@ -49,27 +49,4 @@ export function computeToggleAction(item: AgentItem, state: { selected: boolean 
   return state.selected
     ? { type: 'action-remove', actionId: item.id }
     : { type: 'action-add', actionId: item.id };
-}
-
-/**
- * Selection edits enable the capability and move its catalog between an
- * explicit allowlist and an authoring-only empty scope. They never produce
- * the full-catalog state; only the "use all skills" control can do that.
- */
-export function skillsSelectionTransition(
-  next: string[],
-  enabled: boolean | undefined,
-  authoringEnabled: boolean | undefined,
-  scope: SkillsScope | undefined,
-): { enabled?: boolean; authoringEnabled?: boolean; scope?: SkillsScope } {
-  const nextEnabled = next.length > 0;
-  const nextAuthoringEnabled = !nextEnabled;
-  const nextScope = next.length > 0 ? SkillsScope.selected : SkillsScope.none;
-  return {
-    ...(enabled === nextEnabled ? {} : { enabled: nextEnabled }),
-    ...(authoringEnabled === nextAuthoringEnabled
-      ? {}
-      : { authoringEnabled: nextAuthoringEnabled }),
-    ...(scope === nextScope ? {} : { scope: nextScope }),
-  };
 }

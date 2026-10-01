@@ -126,6 +126,9 @@ const messageSchema: Schema<IMessage> = new Schema(
       type: [String],
       default: undefined,
     },
+    langfuseRunId: {
+      type: String,
+    },
     _meiliIndex: {
       type: Boolean,
       required: false,
@@ -267,6 +270,19 @@ const messageSchema: Schema<IMessage> = new Schema(
      * count), so they are not duplicated into the stored `text`.
      */
     quotes: { type: [String], default: undefined },
+    /** Request-scoped reasoning selection used for this user turn. */
+    reasoningOverride: {
+      type: {
+        key: {
+          type: String,
+          enum: ['reasoning_effort', 'effort', 'thinkingLevel', 'thinkingBudget'],
+          required: true,
+        },
+        value: { type: mongoose.Schema.Types.Mixed, required: true },
+      },
+      _id: false,
+      default: undefined,
+    },
     /*
     attachments: {
       type: [
@@ -308,6 +324,15 @@ messageSchema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
 messageSchema.index({ createdAt: 1 });
 messageSchema.index({ messageId: 1, user: 1, tenantId: 1 }, { unique: true });
 messageSchema.index({ tenantId: 1, isTemporary: 1, createdAt: -1, _id: -1 });
+/** Insights attributes assistant activity from the persisted top-level agent model. */
+messageSchema.index({
+  tenantId: 1,
+  isTemporary: 1,
+  isCreatedByUser: 1,
+  model: 1,
+  createdAt: -1,
+  _id: -1,
+});
 messageSchema.index({
   tenantId: 1,
   isTemporary: 1,

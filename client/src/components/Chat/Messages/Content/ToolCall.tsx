@@ -1,7 +1,5 @@
-import { useMemo, useState, useEffect, useCallback } from 'react';
-import { useRecoilValue } from 'recoil';
+import React, { useMemo, useState, useEffect, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
-import { TriangleAlert } from 'lucide-react';
 import {
   Constants,
   dataService,
@@ -10,16 +8,21 @@ import {
   splitToolCallName,
 } from 'librechat-data-provider';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
+import { toolPanelSpacingClassName, useToolExpansion, SoleToolContext } from './disclosure';
 import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
+import { cn, getToolDisplayLabel, logger, openInNewTab } from '~/utils';
+import { isToolCallPreparing, useToolPreparation } from './preparation';
 import { ToolIcon, getToolIconType, isError } from './ToolOutput';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
+import { MCPAppViews } from '~/components/MCPUIResource';
 import { useToolCallIntent } from './Parts/intent';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
-import { logger } from '~/utils';
-import store from '~/store';
+import { TOOL_ROW_CLASSES } from './rows';
+import { ToolAuthWarning } from './auth';
+import { firstErrorLine } from './live';
 
 export default function ToolCall({
   initialProgress = 0.1,
@@ -35,6 +38,10 @@ export default function ToolCall({
   onExpand,
   runStepStatus,
   runStepDurationMs,
+  toolPreparationStartedAt,
+  toolDispatchedAt,
+  toolPreparationDurationMs,
+  toolExecutionDurationMs,
 }: {
   initialProgress: number;
   isLast?: boolean;
@@ -49,19 +56,14 @@ export default function ToolCall({
   onExpand?: () => void;
   runStepStatus?: PartMetadata['runStepStatus'];
   runStepDurationMs?: PartMetadata['runStepDurationMs'];
+  toolPreparationStartedAt?: PartMetadata['toolPreparationStartedAt'];
+  toolDispatchedAt?: PartMetadata['toolDispatchedAt'];
+  toolPreparationDurationMs?: PartMetadata['toolPreparationDurationMs'];
+  toolExecutionDurationMs?: PartMetadata['toolExecutionDurationMs'];
 }) {
   const localize = useLocalize();
-  const autoExpand = useRecoilValue(store.autoExpandTools);
-  const hasOutput = (output?.length ?? 0) > 0;
-  const [showInfo, setShowInfo] = useState(() => autoExpand && hasOutput);
-  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
-  const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
-
-  useEffect(() => {
-    if (autoExpand && hasOutput) {
-      setShowInfo(true);
-    }
-  }, [autoExpand, hasOutput]);
+  const [oauthError, setOAuthError] = useState<string | null>(null);
+  const [oauthBinding, setOAuthBinding] = useState<'pending' | 'bound' | 'failed'>('pending');
 
   const parsedAuthUrl = useMemo(() => {
     if (!auth) {
@@ -115,6 +117,15 @@ export default function ToolCall({
   }, [name, parsedAuthUrl, mcpServerNames]);
 
   const toolIconType = useMemo(() => getToolIconType(name), [name]);
+  const displayFunctionName = useMemo(
+    () =>
+      /** `function_name` has already had the MCP delimiter and server stripped
+       *  above, so re-parsing it would classify an MCP function that happens to
+       *  share a built-in's name (`read_file`, `set_memory`) as that native
+       *  tool and show, and announce, an unrelated label. */
+      isMCPToolCall ? function_name : getToolDisplayLabel(function_name, localize, mcpServerNames),
+    [function_name, isMCPToolCall, localize, mcpServerNames],
+  );
   const mcpIconMap = useMCPIconMap();
   const mcpIconUrl = isMCPToolCall ? mcpIconMap.get(mcpServerName) : undefined;
 
@@ -127,21 +138,23 @@ export default function ToolCall({
     return match?.[1] || '';
   }, [parsedAuthUrl, isMCPToolCall]);
 
-  const handleOAuthClick = useCallback(async () => {
-    if (!auth) {
-      return;
+  /**
+   * Sets the CSRF cookie the OAuth callback checks when the provider redirects back, or returns
+   * null when this prompt has nothing to bind.
+   */
+  const bindOAuth = useCallback((): Promise<void> | null => {
+    const bindsMCP = isMCPToolCall && mcpServerName.length > 0;
+    if (!bindsMCP && !actionId) {
+      return null;
     }
-    try {
-      if (isMCPToolCall && mcpServerName) {
+    return (async () => {
+      if (bindsMCP) {
         await dataService.bindMCPOAuth(mcpServerName);
-      } else if (actionId) {
+      } else {
         await dataService.bindActionOAuth(actionId);
       }
-    } catch (e) {
-      logger.error('Failed to bind OAuth CSRF cookie', e);
-    }
-    window.open(auth, '_blank', 'noopener,noreferrer');
-  }, [auth, isMCPToolCall, mcpServerName, actionId]);
+    })();
+  }, [isMCPToolCall, mcpServerName, actionId]);
 
   const hasError = (typeof output === 'string' && isError(output)) || runStepStatus === 'failed';
   /**
@@ -177,6 +190,12 @@ export default function ToolCall({
     () => (args?.length ?? 0) > 0 || (output?.length ?? 0) > 0,
     [args, output],
   );
+  /** The preference opens a card once it has output; a sole call opens on
+   *  its arguments too, so a call that returned nothing still shows them. */
+  const soleTool = useContext(SoleToolContext) === true;
+  const [showInfo, setShowInfo] = useToolExpansion(soleTool ? hasInfo : (output?.length ?? 0) > 0);
+  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
+  const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
 
   const authDomain = useMemo(() => {
     return parsedAuthUrl?.hostname ?? '';
@@ -201,19 +220,89 @@ export default function ToolCall({
     isSubmitting,
     hasError,
   });
+  const showOAuth = Boolean(auth) && phase === 'running';
+
+  /**
+   * Binds when the sign-in prompt appears instead of on tap, so the tap opens the provider
+   * synchronously: an iOS home-screen app drops a tab opened after an awaited request. The button
+   * stays disabled until the bind lands, so the provider cannot redirect back before its cookie.
+   */
+  useEffect(() => {
+    if (!showOAuth) {
+      return;
+    }
+    const binding = bindOAuth();
+    if (binding == null) {
+      setOAuthBinding('bound');
+      return;
+    }
+    let active = true;
+    setOAuthBinding('pending');
+    binding.then(
+      () => {
+        if (active) {
+          setOAuthBinding('bound');
+        }
+      },
+      (error: unknown) => {
+        logger.error('Failed to bind OAuth CSRF cookie', error);
+        if (active) {
+          setOAuthBinding('failed');
+        }
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [showOAuth, auth, bindOAuth]);
+
+  const handleOAuthClick = useCallback(() => {
+    if (!auth || oauthBinding === 'pending') {
+      return;
+    }
+    if (oauthBinding === 'bound') {
+      setOAuthError(null);
+      openInNewTab(auth);
+      /**
+       * Live prompts share one CSRF cookie per callback path, so the last prompt to bind owns it.
+       * The tapped prompt claims it again after opening; the provider cannot redirect back before
+       * the user signs in, and the session cookie from the earlier bind covers a faster callback.
+       */
+      bindOAuth()?.catch((error: unknown) => {
+        logger.error('Failed to bind OAuth CSRF cookie', error);
+      });
+      return;
+    }
+    setOAuthError(localize('com_ui_oauth_error_generic'));
+    setOAuthBinding('pending');
+    (bindOAuth() ?? Promise.resolve()).then(
+      () => {
+        setOAuthBinding('bound');
+        setOAuthError(null);
+      },
+      (error: unknown) => {
+        logger.error('Failed to bind OAuth CSRF cookie', error);
+        setOAuthBinding('failed');
+      },
+    );
+  }, [auth, oauthBinding, bindOAuth, localize]);
 
   const handleToggleInfo = useCallback(() => {
     mountBody();
-    setShowInfo((prev) => {
-      const next = !prev;
-      if (next) {
-        onExpand?.();
-      }
-      return next;
-    });
-  }, [mountBody, onExpand]);
+    if (!showInfo) {
+      onExpand?.();
+    }
+    setShowInfo(!showInfo);
+  }, [mountBody, onExpand, setShowInfo, showInfo]);
 
+  /** A failed row spends its subtitle on the error's first line: what went
+   *  wrong is the fact the reader needs from that slot, ahead of which server
+   *  the call went through. */
   const subtitle = useMemo(() => {
+    const errorLine = phase === 'failed' ? firstErrorLine(output) : '';
+    if (errorLine.length > 0) {
+      return errorLine;
+    }
     if (isMCPToolCall && mcpServerName) {
       return localize('com_ui_via_server', { 0: mcpServerName });
     }
@@ -221,12 +310,40 @@ export default function ToolCall({
       return localize('com_ui_via_server', { 0: domain });
     }
     return undefined;
-  }, [isMCPToolCall, mcpServerName, domain, localize]);
+  }, [phase, output, isMCPToolCall, mcpServerName, domain, localize]);
 
   /** Model-authored live label, streamed as the first args key (injected by
    *  the `tool_intents` capability); persists as the settled label —
    *  completion is a UI state, not a tense change. */
   const intent = useToolCallIntent(_args);
+  const preparationText = useToolPreparation();
+  const preparing = useMemo(
+    () =>
+      isToolCallPreparing({
+        args: _args,
+        output,
+        progress: initialProgress,
+        toolPreparationStartedAt,
+        toolDispatchedAt,
+        runStepStatus,
+      }),
+    [_args, output, initialProgress, toolPreparationStartedAt, toolDispatchedAt, runStepStatus],
+  );
+  const subject = intent ?? displayFunctionName;
+  let inProgressText =
+    intent ??
+    (displayFunctionName
+      ? localize('com_assistants_running_var', { 0: displayFunctionName })
+      : localize('com_assistants_running_action'));
+  if (toolDispatchedAt != null) {
+    inProgressText = localize('com_ui_tool_calling', { 0: subject });
+  } else if (preparing) {
+    inProgressText =
+      preparationText ??
+      (displayFunctionName
+        ? localize('com_ui_tool_preparing', { 0: displayFunctionName })
+        : localize('com_assistants_preparing_action'));
+  }
 
   const getFinishedText = () => {
     if (phase === 'cancelled') {
@@ -238,20 +355,24 @@ export default function ToolCall({
      * a screen-reader user the opposite of what the card shows.
      */
     if (phase === 'failed') {
-      return function_name
-        ? `${localize('com_ui_failed')}: ${function_name}`
+      /** The subject is the work the call named for itself, as on the live
+       *  header and the collapsed card's peek, so the same failure reads the
+       *  same wherever it is summarized. */
+      const subject = intent ?? displayFunctionName;
+      return subject
+        ? localize('com_ui_failed_subject', { 0: subject })
         : localize('com_ui_failed');
     }
     if (intent != null) {
       return intent;
     }
     if (isMCPToolCall === true) {
-      return localize('com_assistants_completed_function', { 0: function_name });
+      return localize('com_assistants_completed_function', { 0: displayFunctionName });
     }
     if (domain != null && domain && domain.length !== Constants.ENCODED_DOMAIN_LENGTH) {
       return localize('com_assistants_completed_action', { 0: domain });
     }
-    return localize('com_assistants_completed_function', { 0: function_name });
+    return localize('com_assistants_completed_function', { 0: displayFunctionName });
   };
 
   if (!isLast && (!function_name || function_name.length === 0) && !output) {
@@ -267,27 +388,24 @@ export default function ToolCall({
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {(() => {
           if (phase === 'running') {
-            return function_name
-              ? localize('com_assistants_running_var', { 0: function_name })
+            if (toolDispatchedAt != null) {
+              return localize('com_ui_tool_calling', { 0: displayFunctionName });
+            }
+            if (preparing) {
+              return inProgressText;
+            }
+            return displayFunctionName
+              ? localize('com_assistants_running_var', { 0: displayFunctionName })
               : localize('com_assistants_running_action');
           }
           return getFinishedText();
         })()}
       </span>
-      <div
-        className="relative my-1.5 flex h-5 shrink-0 items-center gap-2.5"
-        data-testid="tool-call"
-        data-tool-call-id={toolCallId}
-      >
+      <div className={TOOL_ROW_CLASSES} data-testid="tool-call" data-tool-call-id={toolCallId}>
         <ProgressText
           phase={phase}
           onClick={handleToggleInfo}
-          inProgressText={
-            intent ??
-            (function_name
-              ? localize('com_assistants_running_var', { 0: function_name })
-              : localize('com_assistants_running_action'))
-          }
+          inProgressText={inProgressText}
           authText={
             phase === 'running' && authDomain.length > 0
               ? localize('com_ui_requires_auth')
@@ -296,6 +414,9 @@ export default function ToolCall({
           finishedText={getFinishedText()}
           subtitle={subtitle}
           durationMs={runStepDurationMs}
+          toolPreparationDurationMs={toolPreparationDurationMs}
+          toolExecutionDurationMs={toolExecutionDurationMs}
+          phaseStartAt={toolDispatchedAt ?? toolPreparationStartedAt}
           icon={
             <ToolIcon type={toolIconType} iconUrl={mcpIconUrl} isAnimating={phase === 'running'} />
           }
@@ -310,32 +431,44 @@ export default function ToolCall({
       >
         <div className="overflow-hidden" ref={expandRef}>
           {hasInfo && shouldRenderBody && (
-            <div className="my-2 overflow-hidden rounded-lg border border-border-light bg-surface-secondary">
-              <ToolCallInfo input={args ?? ''} output={output} attachments={attachments} />
+            <div
+              className={cn(
+                toolPanelSpacingClassName,
+                'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
+              )}
+            >
+              <ToolCallInfo input={args ?? ''} output={output} />
             </div>
           )}
         </div>
       </div>
-      {auth != null && auth && phase === 'running' && (
+      {showOAuth && (
         <div className="flex w-full flex-col gap-2.5">
-          <div className="mb-1 mt-2">
+          <div className="mt-2 mb-1">
             <Button
               className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium"
               variant="default"
               rel="noopener noreferrer"
+              disabled={oauthBinding === 'pending'}
+              aria-busy={oauthBinding === 'pending'}
               onClick={handleOAuthClick}
             >
               {localize('com_ui_sign_in_to_domain', { 0: authDomain })}
             </Button>
           </div>
-          <p className="flex items-center text-xs text-text-warning">
-            <TriangleAlert className="mr-1.5 inline-block h-4 w-4" aria-hidden="true" />
-            {localize('com_assistants_allow_sites_you_trust')}
-          </p>
+          {oauthError && (
+            <p role="alert" className="text-text-destructive text-sm">
+              {oauthError}
+            </p>
+          )}
+          <ToolAuthWarning />
         </div>
       )}
       {!hideAttachments && attachments && attachments.length > 0 && (
-        <AttachmentGroup attachments={attachments} />
+        <>
+          <AttachmentGroup attachments={attachments} />
+          <MCPAppViews attachments={attachments} />
+        </>
       )}
     </>
   );

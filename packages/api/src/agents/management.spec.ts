@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { MAX_SUBAGENTS, setMaxSubagents } from 'librechat-data-provider';
 import {
   agentManagementCreateSchema,
+  agentManagementDeleteResponseSchema,
   agentManagementListResponseSchema,
   agentManagementListSchema,
   agentManagementResponseSchema,
@@ -38,6 +39,20 @@ const persistedAgent = {
 };
 
 describe('Agent Management contract', () => {
+  it('preserves repository instruction mode through API updates and response projection', () => {
+    for (const mode of ['prefer', 'defer', 'off'] as const) {
+      expect(agentManagementUpdateSchema.parse({ repositoryInstructions: mode })).toEqual({
+        repositoryInstructions: mode,
+      });
+      expect(
+        projectAgentManagementResponse({ ...persistedAgent, repositoryInstructions: mode })
+          .repositoryInstructions,
+      ).toBe(mode);
+    }
+    expect(
+      agentManagementUpdateSchema.safeParse({ repositoryInstructions: 'allow-all' }).success,
+    ).toBe(false);
+  });
   describe('inputs', () => {
     it('keeps create and update fields aligned with the browser Agent validators', () => {
       expect(
@@ -46,6 +61,7 @@ describe('Agent Management contract', () => {
           model: 'gpt-5',
           name: 'Researcher',
           stateful_code_environment: 'agent-user',
+          git_identity: { name: 'LibreChat Agent', email: 'agent@example.com' },
           subagents: { enabled: true, allowSelf: true, agent_ids: [] },
         }),
       ).toMatchObject({ provider: 'openAI', model: 'gpt-5', tools: [] });
@@ -55,11 +71,13 @@ describe('Agent Management contract', () => {
           instructions: 'Updated',
           model_parameters: { temperature: 0.1 },
           code_environment_id: null,
+          git_identity: { name: 'LibreChat Agent', email: 'agent@example.com' },
         }),
       ).toEqual({
         instructions: 'Updated',
         model_parameters: { temperature: 0.1 },
         code_environment_id: null,
+        git_identity: { name: 'LibreChat Agent', email: 'agent@example.com' },
       });
     });
 
@@ -167,6 +185,19 @@ describe('Agent Management contract', () => {
   });
 
   describe('responses', () => {
+    it('validates the minimal deletion tombstone', () => {
+      expect(
+        agentManagementDeleteResponseSchema.parse({ id: 'agent_public_id', deleted: true }),
+      ).toEqual({ id: 'agent_public_id', deleted: true });
+      expect(
+        agentManagementDeleteResponseSchema.safeParse({
+          id: 'agent_public_id',
+          deleted: true,
+          tenantId: 'tenant-secret',
+        }).success,
+      ).toBe(false);
+    });
+
     it('allowlists supported configuration and stable metadata', () => {
       const response = projectAgentManagementResponse(persistedAgent);
 

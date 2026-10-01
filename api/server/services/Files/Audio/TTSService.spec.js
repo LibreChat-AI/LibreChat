@@ -8,6 +8,9 @@ jest.mock('@librechat/api', () => ({
 }));
 jest.mock('librechat-data-provider', () => ({
   extractEnvVariable: jest.fn((value) => value),
+  /* Real selection logic: these tests are about which provider a schema resolves to. */
+  listConfiguredSpeechProviders:
+    jest.requireActual('librechat-data-provider').listConfiguredSpeechProviders,
   TTSProviders: {
     OPENAI: 'openai',
     AZURE_OPENAI: 'azureOpenAI',

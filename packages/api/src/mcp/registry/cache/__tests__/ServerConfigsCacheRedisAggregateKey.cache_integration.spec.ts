@@ -256,7 +256,11 @@ describe('ServerConfigsCacheRedisAggregateKey Integration Tests', () => {
 
       await replica.add('atomic-server', mockConfig1);
       await replica.update('atomic-server', mockConfig2);
-      await replica.upsert('atomic-server', mockConfig3);
+      await replica.upsert('atomic-server', { ...mockConfig3, inspectionFailed: true });
+      const stub = await replica.get('atomic-server');
+      await expect(
+        replica.replaceStub('atomic-server', mockConfig1, stub?.updatedAt),
+      ).resolves.toBeDefined();
       await replica.remove('atomic-server');
 
       expect(cacheSetSpy.mock.calls).toHaveLength(0);
@@ -311,6 +315,79 @@ describe('ServerConfigsCacheRedisAggregateKey Integration Tests', () => {
 
       expect(await cache.get('untouched-empty-arrays')).toMatchObject({ args: [] });
       expect((await cache.get('patched-entry'))?.resolvedInstructions).toBe('patched');
+    });
+  });
+
+  describe('getCurrent operation', () => {
+    it('reads a write from another replica that its local snapshot predates', async () => {
+      const replicaA = new ServerConfigsCacheRedisAggregateKey('agg-test', false);
+      const replicaB = new ServerConfigsCacheRedisAggregateKey('agg-test', false);
+      await replicaA.add('server1', mockConfig1);
+      await replicaA.getAll();
+      await replicaB.update('server1', mockConfig2);
+
+      expect(await replicaA.get('server1')).toMatchObject(mockConfig1);
+      expect(await replicaA.getCurrent('server1')).toMatchObject(mockConfig2);
+      expect(await replicaA.get('server1')).toMatchObject(mockConfig2);
+    });
+  });
+
+  describe('replaceStub operation', () => {
+    const stub = { ...mockConfig1, inspectionFailed: true } as ParsedServerConfig;
+
+    it('replaces the failed stub it was inspected from exactly once', async () => {
+      const { config: stored } = await cache.add('server1', stub);
+
+      const replaced = await cache.replaceStub('server1', mockConfig2, stored.updatedAt);
+
+      expect(replaced).toMatchObject(mockConfig2);
+      expect(await cache.get('server1')).toEqual(replaced);
+      await expect(
+        cache.replaceStub('server1', mockConfig3, stored.updatedAt),
+      ).resolves.toBeUndefined();
+      expect(await cache.get('server1')).toEqual(replaced);
+    });
+
+    it('leaves entries that are not the inspected stub', async () => {
+      const { config: olderStub } = await cache.add('newer-stub', stub);
+      const { config: recovered } = await cache.add('recovered', mockConfig2);
+
+      await expect(
+        cache.replaceStub('newer-stub', mockConfig3, olderStub.updatedAt! - 1),
+      ).resolves.toBeUndefined();
+      await expect(
+        cache.replaceStub('recovered', mockConfig3, recovered.updatedAt),
+      ).resolves.toBeUndefined();
+      await expect(
+        cache.replaceStub('missing', mockConfig3, olderStub.updatedAt),
+      ).resolves.toBeUndefined();
+
+      expect(await cache.get('newer-stub')).toEqual(olderStub);
+      expect(await cache.get('recovered')).toEqual(recovered);
+      expect(await cache.get('missing')).toBeUndefined();
+    });
+
+    it('lands exactly one of two replicas replacing the same stub', async () => {
+      const replicaA = new ServerConfigsCacheRedisAggregateKey('agg-test', false);
+      const replicaB = new ServerConfigsCacheRedisAggregateKey('agg-test', false);
+      const { config: stored } = await cache.add('server1', stub);
+
+      const results = await Promise.all([
+        replicaA.replaceStub('server1', mockConfig2, stored.updatedAt),
+        replicaB.replaceStub('server1', mockConfig3, stored.updatedAt),
+      ]);
+
+      const landed = results.filter((result) => result != null);
+      expect(landed).toHaveLength(1);
+      expect(await cache.get('server1')).toEqual(landed[0]);
+    });
+
+    it('preserves empty arrays in the replacement', async () => {
+      const { config: stored } = await cache.add('empty-arrays', stub);
+
+      await cache.replaceStub('empty-arrays', { ...mockConfig2, args: [] }, stored.updatedAt);
+
+      expect(await cache.get('empty-arrays')).toMatchObject({ args: [] });
     });
   });
 

@@ -1,14 +1,35 @@
 import type { TEndpointsConfig } from './types';
 import {
   allowedAddressesSchema,
+  agentsEndpointSchema,
+  DEFAULT_RETAINED_ANSWER_TOKENS,
+  DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
   bedrockModels,
   configSchema,
+  chatProjectsConfigSchema,
+  DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
+  codeEnvironmentUserConfigSchema,
+  interfaceSchema,
+  CODE_ENVIRONMENT_ADMISSION_MAX_MS,
   excludedKeys,
+  DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+  DEFAULT_MCP_APP_PERSISTED_BYTES,
+  DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+  DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+  MAX_MCP_APP_ACTIVE_VIEWS,
+  MAX_MCP_APP_ACTION_PREVIEW_CHARS,
+  DEFAULT_MCP_APP_OPERATION_LIMITS,
+  MAX_MCP_APP_PERSISTED_BYTES,
+  resolveMCPAppRateLimits,
+  resolveMCPAppsPolicy,
+  endpointSchema,
   resolveEndpointType,
   webSearchSchema,
 } from './config';
 import { EModelEndpoint, isDocumentSupportedProvider } from './schemas';
 import { getEndpointFileConfig, mergeFileConfig } from './file-config';
+import { DEFAULT_MCP_APP_CSP_LIMITS } from './mcp/csp';
+import { modelSpecSubagentsSchema } from './models';
 
 const endpointsConfig: TEndpointsConfig = {
   [EModelEndpoint.openAI]: { userProvide: false, order: 0 },
@@ -20,6 +41,351 @@ const endpointsConfig: TEndpointsConfig = {
   Gemini: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
 };
 
+describe('authenticated 2FA management rate limits', () => {
+  it('accepts an account budget and defaults an empty configuration to seven requests', () => {
+    for (const [input, expected] of [
+      [{}, 7],
+      [{ requestsPerFiveMinutes: 3 }, 3],
+    ] as const) {
+      const result = configSchema.parse({
+        version: '1.0',
+        rateLimits: { twoFactorManagement: input },
+      });
+      expect(result.rateLimits?.twoFactorManagement?.requestsPerFiveMinutes).toBe(expected);
+    }
+  });
+
+  it.each([0, -1, 1, 2, 1.5, Infinity, '7'])('rejects an invalid budget: %s', (value) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        rateLimits: { twoFactorManagement: { requestsPerFiveMinutes: value } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('tenant-scoped custom endpoints', () => {
+  const endpoint = {
+    name: 'Private Gateway',
+    apiKey: 'test-key',
+    baseURL: 'https://gateway.example',
+    models: { default: ['test-model'] },
+  };
+
+  it('keeps unscoped endpoints backward compatible', () => {
+    expect(endpointSchema.parse(endpoint)).not.toHaveProperty('tenantId');
+  });
+
+  it.each(['tenant-a', 'tenant_123.example', '-tenant', 'a'.repeat(128)])(
+    'preserves the exact valid tenant ID %s',
+    (tenantId) => {
+      expect(endpointSchema.parse({ ...endpoint, tenantId }).tenantId).toBe(tenantId);
+      expect(
+        configSchema.parse({ version: '1.2.1', endpoints: { custom: [{ ...endpoint, tenantId }] } })
+          .endpoints?.custom?.[0].tenantId,
+      ).toBe(tenantId);
+    },
+  );
+
+  it.each([
+    '',
+    ' ',
+    ' tenant-a',
+    'tenant-a ',
+    'tenant a',
+    'tenant/a',
+    'tenant:a',
+    'tenant\\a',
+    'tenant😀',
+    '__SYSTEM__',
+    'a'.repeat(129),
+  ])('rejects the unreachable tenant ID %j', (tenantId) => {
+    expect(endpointSchema.safeParse({ ...endpoint, tenantId }).success).toBe(false);
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        endpoints: { custom: [{ ...endpoint, tenantId }] },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('agent model response timeouts', () => {
+  it('ships finite defaults and accepts explicit overrides including disabled timeouts', () => {
+    expect(agentsEndpointSchema.parse({})).toMatchObject({
+      modelResponseBodyTimeoutMs: 900_000,
+      modelResponseHeadersTimeoutMs: 300_000,
+    });
+    expect(
+      agentsEndpointSchema.parse({
+        modelResponseBodyTimeoutMs: 1_800_000,
+        modelResponseHeadersTimeoutMs: 0,
+      }),
+    ).toMatchObject({
+      modelResponseBodyTimeoutMs: 1_800_000,
+      modelResponseHeadersTimeoutMs: 0,
+    });
+  });
+
+  it('rejects negative, fractional, and over-one-day values', () => {
+    for (const value of [-1, 1.5, 86_400_001]) {
+      expect(agentsEndpointSchema.safeParse({ modelResponseBodyTimeoutMs: value }).success).toBe(
+        false,
+      );
+      expect(agentsEndpointSchema.safeParse({ modelResponseHeadersTimeoutMs: value }).success).toBe(
+        false,
+      );
+    }
+  });
+});
+
+describe('repository instruction configuration', () => {
+  it('defaults optional reads to two seconds and bounds operator overrides', () => {
+    expect(agentsEndpointSchema.parse({}).repositoryInstructions).toBeUndefined();
+    expect(
+      agentsEndpointSchema.parse({ repositoryInstructions: {} }).repositoryInstructions,
+    ).toEqual({ timeoutMs: 2000 });
+    expect(
+      agentsEndpointSchema.parse({ repositoryInstructions: { timeoutMs: 5000 } })
+        .repositoryInstructions,
+    ).toEqual({ timeoutMs: 5000 });
+    for (const timeoutMs of [0, 99, 30_001, 1.5]) {
+      expect(
+        agentsEndpointSchema.safeParse({ repositoryInstructions: { timeoutMs } }).success,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('steer escalation confirmation timeout', () => {
+  it('defaults to the existing ten-second confirmation window', () => {
+    expect(interfaceSchema.parse({}).steerArmConfirmationTimeoutMs).toBe(
+      DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
+    );
+    expect(configSchema.parse({ version: '1.0' }).interface?.steerArmConfirmationTimeoutMs).toBe(
+      DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
+    );
+  });
+
+  it('accepts a configured confirmation window', () => {
+    expect(
+      configSchema.parse({
+        version: '1.0',
+        interface: { steerArmConfirmationTimeoutMs: 30_000 },
+      }).interface?.steerArmConfirmationTimeoutMs,
+    ).toBe(30_000);
+  });
+
+  it.each([0, -1, 1.5, 2_147_483_648, '30s'])('rejects invalid confirmation window %p', (value) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        interface: { steerArmConfirmationTimeoutMs: value },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('ask user retained answers', () => {
+  it('leaves the block unconfigured by default and accepts an operator budget', () => {
+    expect(agentsEndpointSchema.parse({}).askUserQuestion).toBeUndefined();
+    expect(
+      agentsEndpointSchema.parse({
+        askUserQuestion: { retainedAnswers: { enabled: false, maxTokens: 2048 } },
+      }).askUserQuestion,
+    ).toEqual({ retainedAnswers: { enabled: false, maxTokens: 2048 } });
+    expect(DEFAULT_RETAINED_ANSWER_TOKENS).toBe(4096);
+  });
+
+  it('rejects a budget that is not a positive integer', () => {
+    for (const maxTokens of [0, -1, 1.5, '2048']) {
+      expect(
+        agentsEndpointSchema.safeParse({ askUserQuestion: { retainedAnswers: { maxTokens } } })
+          .success,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('passkey enrollment config', () => {
+  it('ships a per-account cap a deployment can raise or lower', () => {
+    expect(configSchema.parse({ version: '1.0' }).passkeys).toEqual({});
+    expect(
+      configSchema.parse({ version: '1.0', passkeys: { perUserMax: 5 } }).passkeys.perUserMax,
+    ).toBe(5);
+    /** A cap below one would brick enrollment; a fraction of a credential is nonsense. */
+    expect(configSchema.safeParse({ version: '1.0', passkeys: { perUserMax: 0 } }).success).toBe(
+      false,
+    );
+    expect(configSchema.safeParse({ version: '1.0', passkeys: { perUserMax: 1.5 } }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('retained tool-count ceiling', () => {
+  it('ships the exact-count budget a deployment can raise or lower', () => {
+    /** The save path tokenizes a stopped turn's retained tool results to add an
+     *  exact figure to the context gauge; this bounds that work. */
+    expect(agentsEndpointSchema.parse({}).maxRetainedToolCountChars).toBe(
+      DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
+    );
+    expect(
+      agentsEndpointSchema.parse({ maxRetainedToolCountChars: 1_048_576 })
+        .maxRetainedToolCountChars,
+    ).toBe(1_048_576);
+    /** Zero withholds the figure entirely; a fraction of a character is nonsense. */
+    expect(
+      agentsEndpointSchema.parse({ maxRetainedToolCountChars: 0 }).maxRetainedToolCountChars,
+    ).toBe(0);
+    expect(agentsEndpointSchema.safeParse({ maxRetainedToolCountChars: -1 }).success).toBe(false);
+    expect(agentsEndpointSchema.safeParse({ maxRetainedToolCountChars: 1.5 }).success).toBe(false);
+  });
+});
+
+describe('run-scoped subagent file sharing config', () => {
+  it('preserves the opt-in default for existing configurations', () => {
+    expect(agentsEndpointSchema.parse({}).fileSharing).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ fileSharing: {} }).fileSharing).toEqual({
+      enabled: false,
+      allowSiblingSharing: false,
+      maxFiles: 100,
+      maxPrivateBytes: 268_435_456,
+      ttlMs: 3_600_000,
+    });
+    expect(modelSpecSubagentsSchema.parse({ enabled: true })).not.toHaveProperty('shareFiles');
+  });
+
+  it('retains explicit deployment and model-spec opt-ins through config parsing', () => {
+    const result = configSchema.parse({
+      version: '1.2.1',
+      endpoints: {
+        agents: {
+          fileSharing: {
+            enabled: true,
+            allowSiblingSharing: true,
+            maxFiles: 50,
+            maxPrivateBytes: 16_777_216,
+            ttlMs: 120_000,
+          },
+        },
+      },
+      modelSpecs: {
+        list: [
+          {
+            name: 'file-team',
+            label: 'File team',
+            preset: { endpoint: EModelEndpoint.agents },
+            subagents: { enabled: true, shareFiles: true },
+          },
+        ],
+      },
+    });
+    expect(result.endpoints?.agents?.fileSharing).toEqual({
+      enabled: true,
+      allowSiblingSharing: true,
+      maxFiles: 50,
+      maxPrivateBytes: 16_777_216,
+      ttlMs: 120_000,
+    });
+    expect(result.modelSpecs?.list[0].subagents?.shareFiles).toBe(true);
+    expect(modelSpecSubagentsSchema.parse({ shareFiles: false }).shareFiles).toBe(false);
+  });
+
+  it.each([
+    { maxFiles: 0 },
+    { maxFiles: 1_001 },
+    { maxFiles: 1.5 },
+    { maxPrivateBytes: 0 },
+    { maxPrivateBytes: 10_737_418_241 },
+    { maxPrivateBytes: 1.5 },
+    { ttlMs: 0 },
+    { ttlMs: 86_400_001 },
+    { ttlMs: 1.5 },
+  ])('rejects invalid manifest limits: %j', (fileSharing) => {
+    expect(agentsEndpointSchema.safeParse({ fileSharing }).success).toBe(false);
+  });
+});
+
+describe('Chat Projects config', () => {
+  it('defaults project limits and accepts operator overrides', () => {
+    const defaults = configSchema.parse({ version: '1.2.1' });
+    expect(defaults.projects).toEqual({
+      maxFiles: 50,
+      maxInstructionsLength: 16000,
+      maxDescriptionLength: 1000,
+    });
+
+    const configured = configSchema.parse({
+      version: '1.2.1',
+      projects: {
+        maxFiles: 75,
+        maxInstructionsLength: 24000,
+        maxDescriptionLength: 2000,
+      },
+    });
+    expect(configured.projects).toEqual({
+      maxFiles: 75,
+      maxInstructionsLength: 24000,
+      maxDescriptionLength: 2000,
+    });
+  });
+});
+
+describe('scheduled MCP preflight config', () => {
+  it('bounds the separate readiness admission pool', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, admissionConcurrency: 100 } },
+      }).success,
+    ).toBe(true);
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, admissionConcurrency: 101 } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('caps per-admission connection concurrency', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, mcpPreflightConcurrency: 10 } },
+      }).success,
+    ).toBe(true);
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, mcpPreflightConcurrency: 11 } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('bounds the aggregate readiness timeout', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, mcpPreflightTimeoutMs: 600000 } },
+      }).success,
+    ).toBe(true);
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, mcpPreflightTimeoutMs: 600001 } },
+      }).success,
+    ).toBe(false);
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, mcpPreflightTimeoutMs: 999 } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe('excludedKeys', () => {
   it.each([
     '_id',
@@ -27,7 +393,10 @@ describe('excludedKeys', () => {
     'conversationId',
     'agentEventBinding',
     'agentEventActor',
+    'agentEventActorCleanup',
+    'agentEventActorSuspension',
     'agentEventActorReconciliations',
+    'lastResponseMessageId',
     '__v',
   ])('excludes system field "%s"', (field) => {
     expect(excludedKeys.has(field)).toBe(true);
@@ -120,6 +489,121 @@ describe('Agent Management authentication config', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data.endpoints?.agents?.managementApi?.auth?.clients[0].subject).toBe(subject);
+  });
+
+  it('accepts Cognito access-token validation', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://cognito-idp.us-west-2.amazonaws.com/us-west-2_example',
+                tokenUse: 'access',
+                requiredScopes: ['agents-api/manage'],
+              },
+              clients: [binding],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts audience-bound access-token validation without required scopes', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://issuer.example.com',
+                audience: 'https://agents.example.com',
+                tokenUse: 'access',
+              },
+              clients: [binding],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects audience-less access-token validation without required scopes', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://issuer.example.com',
+                tokenUse: 'access',
+              },
+              clients: [binding],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it.each(['agents-api/manage another-scope', 'agents-api/manage\tanother-scope'])(
+    'rejects a required scope containing whitespace: %j',
+    (requiredScope) => {
+      const result = configSchema.safeParse({
+        version: '1.0',
+        endpoints: {
+          agents: {
+            managementApi: {
+              auth: {
+                oidc: {
+                  enabled: true,
+                  issuer: 'https://issuer.example.com',
+                  tokenUse: 'access',
+                  requiredScopes: [requiredScope],
+                },
+                clients: [binding],
+              },
+            },
+          },
+        },
+      });
+
+      expect(result.success).toBe(false);
+    },
+  );
+
+  it('rejects enabled management auth without an audience or access-token validation', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://issuer.example.com',
+              },
+              clients: [binding],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
   });
 
   it('normalizes binding User ObjectIds', () => {
@@ -216,6 +700,158 @@ describe('Agent Management authentication config', () => {
 });
 
 describe('attached code environment user config schema', () => {
+  it.each([0, 1200, 300000])(
+    'preserves an admission budget of %i milliseconds',
+    (maxQueueWaitMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { maxQueueWaitMs } })).toEqual({
+        limits: { maxQueueWaitMs },
+      });
+    },
+  );
+
+  it.each([-1, 0.5, 300001, NaN, Infinity])(
+    'rejects an invalid admission budget of %s',
+    (maxQueueWaitMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { maxQueueWaitMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it.each([60_000, 125_000, 610_000])(
+    'accepts a bounded %i ms workspace HTTP limit',
+    (maxRequestTimeoutMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { maxRequestTimeoutMs } })).toEqual({
+        limits: { maxRequestTimeoutMs },
+      });
+    },
+  );
+
+  it.each([0, -1, 0.5, 610_001, NaN, Infinity])(
+    'rejects an invalid workspace HTTP limit of %s',
+    (maxRequestTimeoutMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { maxRequestTimeoutMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it('accepts an explicit tolerant-matching opt-in and nothing else under edits', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({ edits: { tolerantMatching: true } })).toEqual({
+      edits: { tolerantMatching: true },
+    });
+    expect(codeEnvironmentUserConfigSchema.parse({})).toEqual({});
+    expect(
+      codeEnvironmentUserConfigSchema.safeParse({ edits: { tolerantMatching: 'yes' } }).success,
+    ).toBe(false);
+    expect(codeEnvironmentUserConfigSchema.safeParse({ edits: { fuzzy: true } }).success).toBe(
+      false,
+    );
+  });
+
+  it('keeps an omitted admission budget backward compatible', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({ limits: {} })).toEqual({ limits: {} });
+  });
+
+  it.each([1_000, 15_000, CODE_ENVIRONMENT_ADMISSION_MAX_MS])(
+    'accepts a bounded %i ms command admission allowance',
+    (minCommandAdmissionMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { minCommandAdmissionMs } })).toEqual({
+        limits: { minCommandAdmissionMs },
+      });
+    },
+  );
+
+  it.each([0, -1, 0.5, 999, CODE_ENVIRONMENT_ADMISSION_MAX_MS + 1, NaN, Infinity])(
+    'rejects an invalid command admission allowance of %s',
+    (minCommandAdmissionMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { minCommandAdmissionMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it.each([20_001, 90_000])(
+    'preserves omission of the command admission allowance with a fitting %i ms budget',
+    (maxRequestTimeoutMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { maxRequestTimeoutMs } })).toEqual({
+        limits: { maxRequestTimeoutMs },
+      });
+    },
+  );
+
+  it.each([5_000, 10_002, 15_000, 20_000])(
+    'rejects an undersized %i ms request budget with the default command reserve',
+    (maxRequestTimeoutMs) => {
+      const parsed = codeEnvironmentUserConfigSchema.safeParse({ limits: { maxRequestTimeoutMs } });
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        expect(parsed.error.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ path: ['limits', 'maxRequestTimeoutMs'] }),
+          ]),
+        );
+      }
+    },
+  );
+
+  it.each([
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 79_999 },
+    { maxRequestTimeoutMs: 11_001, minCommandAdmissionMs: 1_000 },
+    { maxRequestTimeoutMs: 610_000, minCommandAdmissionMs: 300_000 },
+  ])('accepts an admission reserve with execution time left: %j', (limits) => {
+    expect(codeEnvironmentUserConfigSchema.parse({ limits })).toEqual({ limits });
+  });
+
+  it.each([
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 80_000 },
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 100_000 },
+    { maxRequestTimeoutMs: 11_000, minCommandAdmissionMs: 1_000 },
+  ])('rejects a command reserve that cannot fit inside its request budget: %j', (limits) => {
+    const parsed = codeEnvironmentUserConfigSchema.safeParse({ limits });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: ['limits', 'minCommandAdmissionMs'] }),
+        ]),
+      );
+    }
+  });
+
+  it('allows a command reserve without a request budget (the legacy per-attempt path)', () => {
+    expect(
+      codeEnvironmentUserConfigSchema.parse({ limits: { minCommandAdmissionMs: 300_000 } }),
+    ).toEqual({ limits: { minCommandAdmissionMs: 300_000 } });
+  });
+
+  it.each([
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 100_000 },
+    { maxRequestTimeoutMs: 15_000 },
+  ])('rejects an impossible command reserve in the top-level deployment config: %j', (limits) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: {
+          agents: {
+            statefulCodeSessions: {
+              allowedEnvironments: ['user'],
+              environments: [
+                {
+                  id: 'personal-vm',
+                  name: 'Personal VM',
+                  type: 'attached',
+                  baseURL: 'https://code.example.com/v1',
+                  configSchema: { limits },
+                },
+              ],
+            },
+          },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it('accepts typed permission controls exposed by the administrator', () => {
     const result = configSchema.safeParse({
       version: '1.0',
@@ -235,6 +871,11 @@ describe('attached code environment user config schema', () => {
                     fileWrite: { allowed: ['allow', 'ask', 'deny'], default: 'ask' },
                     commandExecution: { allowed: ['ask', 'deny'], default: 'ask' },
                   },
+                  limits: {
+                    maxCommandTimeoutMs: 120000,
+                    maxRequestTimeoutMs: 125_000,
+                    minCommandAdmissionMs: 15_000,
+                  },
                 },
               },
             ],
@@ -247,6 +888,74 @@ describe('attached code environment user config schema', () => {
       throw new Error(result.error.toString());
     }
     expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            environments: [
+              {
+                configSchema: {
+                  limits: { maxRequestTimeoutMs: 125_000, minCommandAdmissionMs: 15_000 },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+  });
+
+  it.each([
+    [{ linkedWorktrees: true }, true],
+    [{ linkedWorktrees: 'yes' }, false],
+    [{ linkedWorktrees: true, subdirectories: true }, false],
+  ])('validates the linked worktree lane toggle %p', (workspaces, valid) => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            allowedEnvironments: ['user'],
+            environments: [
+              {
+                id: 'personal-vm',
+                name: 'Personal VM',
+                type: 'attached',
+                baseURL: 'https://code.example.com/v1',
+                default: true,
+                configSchema: { workspaces },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(valid);
+  });
+
+  it('rejects an attached command timeout above the protocol hard cap', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            allowedEnvironments: ['user'],
+            environments: [
+              {
+                id: 'personal-vm',
+                name: 'Personal VM',
+                type: 'attached',
+                baseURL: 'https://code.example.com/v1',
+                configSchema: { limits: { maxCommandTimeoutMs: 300001 } },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
   });
 
   it('rejects a permission default the administrator did not expose', () => {
@@ -279,7 +988,54 @@ describe('attached code environment user config schema', () => {
   });
 });
 
+describe('agent background completion batch config', () => {
+  it('defaults and bounds automatic completion coalescing', () => {
+    const defaults = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: {} } },
+    });
+    expect(defaults.endpoints?.agents?.backgroundTasks?.completionResultBatchSize).toBe(8);
+
+    for (const completionResultBatchSize of [0, 17, 1.5]) {
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          endpoints: { agents: { backgroundTasks: { completionResultBatchSize } } },
+        }).success,
+      ).toBe(false);
+    }
+  });
+});
+
 describe('agent event runtime config', () => {
+  it('defaults and bounds durable-worker idle polling intervals', () => {
+    const parsed = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { eventDriven: { idlePolling: {} } } },
+    });
+    expect(parsed.endpoints?.agents?.eventDriven?.idlePolling).toEqual({
+      deliveryMaxIntervalMs: 15_000,
+      queuedTurnMaxIntervalMs: 120_000,
+      maintenanceMaxIntervalMs: 120_000,
+      completionWaitMaxIntervalMs: 60_000,
+    });
+    for (const [key, value] of [
+      ['deliveryMaxIntervalMs', 0],
+      ['queuedTurnMaxIntervalMs', 29_999],
+      ['maintenanceMaxIntervalMs', 300_001],
+      ['maintenanceMaxIntervalMs', 30_000.5],
+      ['completionWaitMaxIntervalMs', 4_999],
+      ['completionWaitMaxIntervalMs', 300_001],
+    ] as const) {
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          endpoints: { agents: { eventDriven: { idlePolling: { [key]: value } } } },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it('accepts the routing choice and ignores removed rollout fields', () => {
     const result = configSchema.safeParse({
       version: '1.0',
@@ -345,7 +1101,13 @@ describe('agent background task config', () => {
     if (!result.success) {
       return;
     }
-    expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({ completionWakeups: true });
+    expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({
+      completionResultBatchSize: 8,
+      completionWakeups: true,
+      completionResultMaxChars: 24 * 1024,
+      ordinaryToolCancellation: false,
+      shutdownInterruptGraceMs: 5_000,
+    });
   });
 
   it('accepts an administrator poll-only policy', () => {
@@ -358,7 +1120,74 @@ describe('agent background task config', () => {
     if (!result.success) {
       return;
     }
-    expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({ completionWakeups: false });
+    expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({
+      completionResultBatchSize: 8,
+      completionWakeups: false,
+      completionResultMaxChars: 24 * 1024,
+      ordinaryToolCancellation: false,
+      shutdownInterruptGraceMs: 5_000,
+    });
+  });
+
+  it('accepts administrator-enabled ordinary tool cancellation', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: { ordinaryToolCancellation: true } } },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({
+      completionResultBatchSize: 8,
+      completionWakeups: true,
+      completionResultMaxChars: 24 * 1024,
+      ordinaryToolCancellation: true,
+      shutdownInterruptGraceMs: 5_000,
+    });
+  });
+
+  it('accepts a bounded shutdown interrupt grace', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: { shutdownInterruptGraceMs: 0 } } },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs).toBe(0);
+    }
+  });
+
+  it.each([-1, 60_001, 1.5])('rejects an unsafe shutdown interrupt grace: %s', (graceMs) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { backgroundTasks: { shutdownInterruptGraceMs: graceMs } } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a bounded durable completion result limit', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: { completionResultMaxChars: 4096 } } },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.endpoints?.agents?.backgroundTasks?.completionResultMaxChars).toBe(4096);
+    }
+  });
+
+  it.each([0, 64 * 1024 + 1])('rejects an unsafe completion result limit: %s', (limit) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { backgroundTasks: { completionResultMaxChars: limit } } },
+      }).success,
+    ).toBe(false);
   });
 });
 
@@ -815,6 +1644,78 @@ describe('allowedAddressesSchema', () => {
       expect(result.success).toBe(true);
     });
 
+    it('defaults and validates MCP catalog recovery controls', () => {
+      const defaults = configSchema.parse({ version: '1.0', mcpSettings: {} });
+      expect(defaults.mcpSettings?.catalogRecovery).toEqual({
+        discoveryBackoffMs: [300_000, 600_000, 1_200_000, 1_800_000],
+        discoveryTimeoutMs: 3_000,
+        discoverySettleGraceMs: 10_000,
+        reauthRetryMs: 1_800_000,
+        maxStateEntries: 10_000,
+        maxDetachedDiscoveries: 3,
+        generationReadTimeoutMs: 500,
+        authorizationFenceRetryMs: [0, 50, 200],
+        authorizationFenceTimeoutMs: 1_000,
+        authorizationFenceRetryIntervalMs: 30_000,
+        authorizationFenceRetryBatchSize: 100,
+      });
+
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { discoveryBackoffMs: [] } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { discoveryTimeoutMs: 0 } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { discoverySettleGraceMs: -1 } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { maxDetachedDiscoveries: 0 } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.parse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { discoverySettleGraceMs: 0 } },
+        }).mcpSettings?.catalogRecovery.discoverySettleGraceMs,
+      ).toBe(0);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { authorizationFenceRetryMs: [-1] } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { authorizationFenceTimeoutMs: 0 } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { authorizationFenceRetryIntervalMs: 0 } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { authorizationFenceRetryBatchSize: 0 } },
+        }).success,
+      ).toBe(false);
+    });
+
     it('accepts the field on actions', () => {
       const result = configSchema.safeParse({
         version: '1.0',
@@ -1150,5 +2051,293 @@ describe('bedrockModels defaults', () => {
   it('keeps Opus 5 available as a global profile', () => {
     expect(bedrockModels).toContain('global.anthropic.claude-opus-5');
     expect(bedrockModels).not.toContain('anthropic.claude-opus-5');
+  });
+});
+
+describe('MCP Apps configuration', () => {
+  it.each([
+    [
+      undefined,
+      {
+        enabled: false,
+        legacyHtmlEnabled: true,
+        maxPersistedAppBytes: DEFAULT_MCP_APP_PERSISTED_BYTES,
+        maxAdmissionRequestsPerMinute: DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+        maxActiveViews: DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+        maxActionPreviewChars: DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+      },
+    ],
+    [
+      true,
+      {
+        enabled: true,
+        legacyHtmlEnabled: true,
+        maxPersistedAppBytes: DEFAULT_MCP_APP_PERSISTED_BYTES,
+        maxAdmissionRequestsPerMinute: DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+        maxActiveViews: DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+        maxActionPreviewChars: DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+      },
+    ],
+    [
+      false,
+      {
+        enabled: false,
+        legacyHtmlEnabled: false,
+        maxPersistedAppBytes: DEFAULT_MCP_APP_PERSISTED_BYTES,
+        maxAdmissionRequestsPerMinute: DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+        maxActiveViews: DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+        maxActionPreviewChars: DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+      },
+    ],
+  ])('resolves raw apps value %s to the effective policy', (value, expected) => {
+    expect(resolveMCPAppsPolicy(value)).toEqual(expected);
+  });
+
+  it('defaults and validates deployment-owned sandbox limits', () => {
+    expect(configSchema.parse({ version: '1.2.1' }).mcpAppSandbox).toEqual({
+      ...DEFAULT_MCP_APP_CSP_LIMITS,
+      maxPersistedAppBytes: DEFAULT_MCP_APP_PERSISTED_BYTES,
+      maxPersistedMessageBytes: 12 * 1024 * 1024,
+      maxAdmissionRequestsPerMinute: DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+      maxActiveViews: DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+      maxActionPreviewChars: DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+      operationLimits: DEFAULT_MCP_APP_OPERATION_LIMITS,
+    });
+    expect(
+      configSchema.parse({
+        version: '1.2.1',
+        mcpAppSandbox: {
+          maxSourcesPerDirective: 64,
+          maxSerializedLength: 8192,
+          maxPersistedAppBytes: 2048,
+          maxPersistedMessageBytes: 1024 * 1024,
+          maxAdmissionRequestsPerMinute: 480,
+          maxActiveViews: 7,
+          maxActionPreviewChars: 32768,
+          operationLimits: { maxBytes: 6 * 1024 * 1024, timeoutMs: 45_000, maxActive: 8 },
+          url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+        },
+      }).mcpAppSandbox,
+    ).toEqual({
+      maxSourcesPerDirective: 64,
+      maxSerializedLength: 8192,
+      maxPersistedAppBytes: 2048,
+      maxPersistedMessageBytes: 1024 * 1024,
+      maxAdmissionRequestsPerMinute: 480,
+      maxActiveViews: 7,
+      maxActionPreviewChars: 32768,
+      operationLimits: { maxBytes: 6 * 1024 * 1024, timeoutMs: 45_000, maxActive: 8 },
+      url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+    });
+    for (const mcpAppSandbox of [
+      { maxSourcesPerDirective: 0 },
+      { maxSourcesPerDirective: 1.5 },
+      { maxSerializedLength: -1 },
+      { maxSerializedLength: 1.5 },
+      { maxSerializedLength: Number.MAX_SAFE_INTEGER + 1 },
+      { maxPersistedMessageBytes: 0 },
+      { maxPersistedMessageBytes: 1.5 },
+      { maxPersistedMessageBytes: 12 * 1024 * 1024 + 1 },
+      { maxPersistedAppBytes: 0 },
+      { maxPersistedAppBytes: 1.5 },
+      { maxPersistedAppBytes: MAX_MCP_APP_PERSISTED_BYTES + 1 },
+      { maxAdmissionRequestsPerMinute: 0 },
+      { maxAdmissionRequestsPerMinute: 1.5 },
+      { maxAdmissionRequestsPerMinute: Number.MAX_SAFE_INTEGER + 1 },
+      { maxActiveViews: 0 },
+      { maxActiveViews: 1.5 },
+      { maxActiveViews: MAX_MCP_APP_ACTIVE_VIEWS + 1 },
+      { maxActionPreviewChars: 0 },
+      { maxActionPreviewChars: 1.5 },
+      { maxActionPreviewChars: MAX_MCP_APP_ACTION_PREVIEW_CHARS + 1 },
+      { operationLimits: { maxBytes: 0 } },
+      { operationLimits: { maxBytes: 16 * 1024 * 1024 + 1 } },
+      { operationLimits: { timeoutMs: 10 * 60_000 + 1 } },
+      { operationLimits: { maxActive: 0 } },
+      { operationLimits: { maxActive: 257 } },
+      { url: '/api/mcp/sandbox' },
+      { url: 'ftp://mcp-sandbox.example.com/api/mcp/sandbox' },
+    ]) {
+      expect(configSchema.safeParse({ version: '1.2.1', mcpAppSandbox }).success).toBe(false);
+    }
+  });
+
+  it('carries the validated App operation limits to server-side policy consumers', () => {
+    const sandbox = configSchema.parse({
+      version: '1.2.1',
+      mcpAppSandbox: { operationLimits: { maxBytes: 2 * 1024 * 1024 } },
+    }).mcpAppSandbox;
+    expect(
+      resolveMCPAppsPolicy(
+        true,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        sandbox.operationLimits,
+      ).operationLimits,
+    ).toEqual({ ...DEFAULT_MCP_APP_OPERATION_LIMITS, maxBytes: 2 * 1024 * 1024 });
+  });
+
+  it('publishes optional runtime sandbox fields in the effective policy', () => {
+    expect(
+      resolveMCPAppsPolicy(
+        true,
+        undefined,
+        2048,
+        480,
+        'https://mcp-sandbox.example.com/api/mcp/sandbox',
+        7,
+        32768,
+      ),
+    ).toEqual({
+      enabled: true,
+      legacyHtmlEnabled: true,
+      maxPersistedAppBytes: 2048,
+      maxAdmissionRequestsPerMinute: 480,
+      maxActiveViews: 7,
+      maxActionPreviewChars: 32768,
+      sandboxUrl: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+    });
+  });
+
+  it('defaults App request limits without requiring the parent rateLimits section', () => {
+    expect(resolveMCPAppRateLimits()).toEqual({
+      resourcesPerMinute: 120,
+      toolCallsPerMinute: 60,
+    });
+  });
+
+  it('resolves configured App request limits', () => {
+    expect(
+      resolveMCPAppRateLimits({
+        mcpApps: { resourcesPerMinute: 2, toolCallsPerMinute: 3 },
+      }),
+    ).toEqual({ resourcesPerMinute: 2, toolCallsPerMinute: 3 });
+  });
+
+  it.each([0, -1, 1.5])('rejects invalid App resource request limits: %s', (value) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.3.5',
+        rateLimits: { mcpApps: { resourcesPerMinute: value } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([0, -1, 1.5])('rejects invalid App tool-call limits: %s', (value) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.3.5',
+        rateLimits: { mcpApps: { toolCallsPerMinute: value } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('MCP UI refresh configuration', () => {
+  it('preserves configured intervals, including zero to disable polling', () => {
+    const result = configSchema.parse({
+      version: '1.3.5',
+      interface: { mcpServers: { toolsRefreshInterval: 0, statusRefreshInterval: 60_000 } },
+    });
+    expect(result.interface?.mcpServers).toMatchObject({
+      toolsRefreshInterval: 0,
+      statusRefreshInterval: 60_000,
+    });
+  });
+
+  it.each([-1, 1.5, 2_147_483_648])('rejects invalid timer intervals: %s', (interval) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.3.5',
+        interface: { mcpServers: { statusRefreshInterval: interval } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('interface theme config', () => {
+  const parseTheme = (theme: unknown) =>
+    configSchema.safeParse({ version: '1.3.0', interface: { theme } });
+
+  const inlineTheme = {
+    version: 1,
+    name: 'acme',
+    modes: {
+      light: {
+        colors: { 'rgb-surface-primary': '255 255 255', 'rgb-text-primary': '22 21 23' },
+        appearance: { controlRadius: '0.25rem' },
+      },
+      dark: { colors: { 'rgb-surface-primary': '31 31 28' } },
+    },
+    brands: { 'provider-openai': '#19C37D' },
+  };
+
+  it('is absent when not configured', () => {
+    const result = configSchema.safeParse({ version: '1.3.0', interface: {} });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.interface.theme).toBeUndefined();
+  });
+
+  it('accepts a bundled theme name', () => {
+    const result = parseTheme('clickhouse');
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.interface.theme).toBe('clickhouse');
+  });
+
+  it('rejects an empty theme name', () => {
+    expect(parseTheme('  ').success).toBe(false);
+  });
+
+  it('accepts a valid inline definition', () => {
+    const result = parseTheme(inlineTheme);
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.interface.theme).toEqual(inlineTheme);
+  });
+
+  it('rejects a malformed RGB triplet', () => {
+    expect(
+      parseTheme({
+        ...inlineTheme,
+        modes: { light: { colors: { 'rgb-surface-primary': '#ffffff' } } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an unsupported version', () => {
+    expect(parseTheme({ ...inlineTheme, version: 2 }).success).toBe(false);
+  });
+
+  it('rejects unknown keys and color names that are not plain tokens', () => {
+    expect(parseTheme({ ...inlineTheme, css: 'body {}' }).success).toBe(false);
+    expect(parseTheme({ ...inlineTheme, modes: { sepia: { colors: {} } } }).success).toBe(false);
+    expect(
+      parseTheme({
+        ...inlineTheme,
+        modes: { light: { colors: { 'Surface Primary': '255 255 255' } } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts an unknown color token name so the loader can ignore it', () => {
+    expect(
+      parseTheme({
+        ...inlineTheme,
+        modes: { light: { colors: { 'surface-primary': '255 255 255' } } },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('accepts the ceilings and rejects values above them', () => {
+    const atCeiling = { maxFiles: 500, maxInstructionsLength: 200000, maxDescriptionLength: 10000 };
+    expect(chatProjectsConfigSchema.parse(atCeiling)).toEqual(atCeiling);
+    expect(chatProjectsConfigSchema.safeParse({ maxFiles: 501 }).success).toBe(false);
+    expect(chatProjectsConfigSchema.safeParse({ maxInstructionsLength: 200001 }).success).toBe(
+      false,
+    );
+    expect(chatProjectsConfigSchema.safeParse({ maxDescriptionLength: 10001 }).success).toBe(false);
   });
 });

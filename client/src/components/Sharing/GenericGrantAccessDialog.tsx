@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, CopyCheck } from 'lucide';
-import { AccessRoleIds, ResourceType } from 'librechat-data-provider';
 import { Share2Icon, Users, UserCheck, AlertCircle } from 'lucide-react';
+import { AccessRoleIds, ResourceType, SystemRoles } from 'librechat-data-provider';
 import {
   Alert,
   Label,
@@ -25,9 +25,10 @@ import {
   useResourcePermissionState,
   useCopyToClipboard,
   useCanSharePublic,
+  useAuthContext,
   useLocalize,
 } from '~/hooks';
-import { computeShareChanges, dedupeNewShares } from './shareChanges';
+import { computeShareChanges, dedupeNewShares, principalKey } from './shareChanges';
 import UnifiedPeopleSearch from './PeoplePicker/UnifiedPeopleSearch';
 import PeoplePickerAdminSettings from './PeoplePickerAdminSettings';
 import PublicSharingToggle from './PublicSharingToggle';
@@ -54,16 +55,20 @@ export default function GenericGrantAccessDialog({
   children?: React.ReactNode;
 }) {
   const localize = useLocalize();
+  const { user } = useAuthContext();
   const { showToast } = useToastContext();
   const [isCopying, setIsCopying] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const peopleSectionId = React.useId();
   const ownerErrorId = React.useId();
   const canSharePublic = useCanSharePublic(resourceType);
+  const canEditAgentInsights =
+    resourceType === ResourceType.AGENT && user?.role === SystemRoles.ADMIN;
   const { hasPeoplePickerAccess, peoplePickerTypeFilter } = usePeoplePickerPermissions();
+  const canManagePrincipals = hasPeoplePickerAccess || canEditAgentInsights;
 
-  /** User can use the share dialog if they have people picker access OR can share publicly */
-  const canUseShareDialog = hasPeoplePickerAccess || canSharePublic;
+  /** User can use the dialog if they can manage principals or share publicly. */
+  const canUseShareDialog = canManagePrincipals || canSharePublic;
 
   const {
     config,
@@ -125,6 +130,7 @@ export default function GenericGrantAccessDialog({
     const sharesWithDefaults = sharesToAdd.map((share) => ({
       ...share,
       accessRoleId: defaultPermissionId || config?.defaultViewerRoleId,
+      ...(canEditAgentInsights ? { viewInsights: false } : {}),
       isExisting: false, // Mark as newly added
     }));
 
@@ -133,16 +139,27 @@ export default function GenericGrantAccessDialog({
   };
 
   // Handler for removing individual shares
-  const handleRemoveShare = (idOnTheSource: string) => {
-    setAllShares(allShares.filter((s) => s.idOnTheSource !== idOnTheSource));
+  const handleRemoveShare = (shareKey: string) => {
+    setAllShares(allShares.filter((share) => principalKey(share) !== shareKey));
     setHasChanges(true);
   };
 
   // Handler for changing individual share permissions
-  const handleRoleChange = (idOnTheSource: string, newRole: string) => {
+  const handleRoleChange = (shareKey: string, newRole: string) => {
     setAllShares(
-      allShares.map((s) =>
-        s.idOnTheSource === idOnTheSource ? { ...s, accessRoleId: newRole as AccessRoleIds } : s,
+      allShares.map((share) =>
+        principalKey(share) === shareKey
+          ? { ...share, accessRoleId: newRole as AccessRoleIds }
+          : share,
+      ),
+    );
+    setHasChanges(true);
+  };
+
+  const handleInsightsChange = (shareKey: string, viewInsights: boolean) => {
+    setAllShares(
+      allShares.map((share) =>
+        principalKey(share) === shareKey ? { ...share, viewInsights } : share,
       ),
     );
     setHasChanges(true);
@@ -320,7 +337,7 @@ export default function GenericGrantAccessDialog({
           className="min-h-0 flex-1 overflow-y-auto px-5 py-3 sm:px-6 sm:py-4"
           aria-busy={isLoadingPermissions}
         >
-          {hasPeoplePickerAccess && (
+          {canManagePrincipals && (
             <section aria-labelledby={peopleSectionId} className="w-full min-w-0">
               <div className="flex items-center justify-between gap-3 px-1 pb-3">
                 <h3
@@ -377,6 +394,8 @@ export default function GenericGrantAccessDialog({
                         onRemoveHandler={handleRemoveShare}
                         resourceType={resourceType}
                         onRoleChange={(id, newRole) => handleRoleChange(id, newRole)}
+                        showInsightsAccess={canEditAgentInsights}
+                        onInsightsAccessChange={handleInsightsChange}
                       />
                     )}
                   </>
@@ -397,7 +416,7 @@ export default function GenericGrantAccessDialog({
             </section>
           )}
 
-          {canSharePublic && !hasPeoplePickerAccess && (
+          {canSharePublic && !canManagePrincipals && (
             <section className="w-full">
               <PublicSharingToggle
                 isPublic={isPublic}

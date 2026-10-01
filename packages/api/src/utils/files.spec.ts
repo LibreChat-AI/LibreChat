@@ -4,6 +4,7 @@ import {
   flattenArtifactPath,
   resolveUploadErrorMessage,
 } from './files';
+import { UnsupportedProviderAudioError } from '~/files/upload/errors';
 
 jest.mock('node:crypto', () => {
   const actualModule = jest.requireActual('node:crypto');
@@ -503,6 +504,14 @@ describe('flattenArtifactPath', () => {
 });
 
 describe('resolveUploadErrorMessage', () => {
+  it.each([false, true])(
+    'preserves the localized audio preflight error (redaction=%s)',
+    (redact) => {
+      expect(
+        resolveUploadErrorMessage(new UnsupportedProviderAudioError(), undefined, redact),
+      ).toBe('com_error_files_provider_audio_format');
+    },
+  );
   test('returns default message for null error', () => {
     expect(resolveUploadErrorMessage(null)).toBe('Error processing file');
   });

@@ -6,68 +6,15 @@ const {
   countTokens,
   isAbortError,
   GenerationJobManager,
-  recordCollectedUsage,
-  getTransactionsConfig,
   sanitizeMessageForTransmit,
   buildAbortedResponseMetadata,
+  announceReply,
 } = require('@librechat/api');
 const { truncateText, smartTruncateText } = require('~/app/clients/prompts');
 const clearPendingReq = require('~/cache/clearPendingReq');
 const { sendError } = require('~/server/middleware/error');
 const { abortRun } = require('./abortRun');
 const db = require('~/models');
-
-/**
- * Spend tokens for all models from collected usage.
- * This handles both sequential and parallel agent execution.
- *
- * IMPORTANT: After spending, this function clears the collectedUsage array
- * to prevent double-spending. The array is shared with AgentClient.collectedUsage,
- * so clearing it here prevents the finally block from also spending tokens.
- *
- * @param {Object} params
- * @param {string} params.userId - User ID
- * @param {string} params.conversationId - Conversation ID
- * @param {Array<Object>} params.collectedUsage - Usage metadata from all models
- * @param {string} [params.fallbackModel] - Fallback model name if not in usage
- * @param {string} [params.messageId] - The response message ID for transaction correlation
- * @param {AppConfig['transactions']} [params.transactions] - Resolved transactions config
- */
-async function spendCollectedUsage({
-  userId,
-  conversationId,
-  collectedUsage,
-  fallbackModel,
-  messageId,
-  transactions,
-}) {
-  if (!collectedUsage || collectedUsage.length === 0) {
-    return;
-  }
-
-  await recordCollectedUsage(
-    {
-      spendTokens: db.spendTokens,
-      spendStructuredTokens: db.spendStructuredTokens,
-      pricing: { getMultiplier: db.getMultiplier, getCacheMultiplier: db.getCacheMultiplier },
-      bulkWriteOps: { insertMany: db.bulkInsertTransactions, updateBalance: db.updateBalance },
-    },
-    {
-      user: userId,
-      conversationId,
-      collectedUsage,
-      context: 'abort',
-      messageId,
-      model: fallbackModel,
-      transactions,
-    },
-  );
-
-  // Clear the array to prevent double-spending from the AgentClient finally block.
-  // The collectedUsage array is shared by reference with AgentClient.collectedUsage,
-  // so clearing it here ensures recordCollectedUsage() sees an empty array and returns early.
-  collectedUsage.length = 0;
-}
 
 /**
  * Abort an active message generation.
@@ -94,10 +41,9 @@ async function abortMessage(req, res) {
     return;
   }
 
-  const { jobData, content, text, collectedUsage } = abortResult;
+  const { jobData, content, text } = abortResult;
 
   const completionTokens = await countTokens(text);
-  const promptTokens = jobData?.promptTokens ?? 0;
 
   const responseMessage = {
     messageId: jobData?.responseMessageId,
@@ -129,35 +75,42 @@ async function abortMessage(req, res) {
     responseMessage.metadata = abortMetadata;
   }
 
-  const transactions = getTransactionsConfig(req.config);
+  /** The run that produced this response records its own usage on exit
+   *  (`AgentClient` labels a stopped turn `'abort'`), so billing here would
+   *  charge it a second time. This route only stops and persists. */
 
-  // Spend tokens for ALL models from collectedUsage (handles parallel agents/addedConvo)
-  if (collectedUsage && collectedUsage.length > 0) {
-    await spendCollectedUsage({
-      userId,
-      conversationId: jobData?.conversationId,
-      collectedUsage,
-      fallbackModel: jobData?.model,
-      messageId: jobData?.responseMessageId,
-      transactions,
-    });
-  } else {
-    // Fallback: no collected usage, use text-based token counting for primary model only
-    await db.spendTokens(
-      { ...responseMessage, context: 'incomplete', user: userId, transactions },
-      { promptTokens, completionTokens },
-    );
-  }
-
-  await db.saveMessage(
+  const savedMessage = await db.saveMessage(
     {
       userId: req?.user?.id,
-      isTemporary: req?.body?.isTemporary,
+      isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+      expiredAt: req?.resolvedConversation?.expiredAt,
       interfaceConfig: req?.config?.interfaceConfig,
     },
     { ...responseMessage, user: userId },
     { context: 'api/server/middleware/abortMiddleware.js' },
   );
+
+  /* Mirrors the agents abort route: when Stop wins the terminal claim, the request controller
+     can return before its own save, making this direct write the only one that could reach
+     the unseen-reply indicator. The assistants path stamps inside `syncMessages`; this one
+     saves the message directly, so the stamp rides along here. Best-effort: the row is
+     already durable, and a missed stamp must not suppress the final event.
+     The temporary flag comes from the job: the client's abort request carries only the abort
+     key and endpoint, so the request body alone would stamp a stopped temporary chat.
+     An interrupt before the first real token still persists the unfinished assistant row, but
+     that row renders nothing: stamping it would raise a dot for a reply with nothing to read,
+     and opening the conversation could never clear it. */
+  await announceReply(db, {
+    userId,
+    conversationId: jobData?.conversationId,
+    reply: {
+      messageId: savedMessage?.messageId,
+      content,
+      text,
+      isTemporary: (jobData?.isTemporary ?? req?.body?.isTemporary) === true,
+    },
+    context: 'abortMessage',
+  });
 
   // Get conversation for title
   const conversation = await db.getConvo(userId, conversationId);
@@ -173,6 +126,7 @@ async function abortMessage(req, res) {
           conversationId: jobData.userMessage.conversationId,
           text: jobData.userMessage.text,
           quotes: jobData.userMessage.quotes,
+          reasoningOverride: jobData.userMessage.reasoningOverride,
           isCreatedByUser: true,
         })
       : null,
@@ -301,5 +255,4 @@ const handleAbortError = async (res, req, error, data) => {
 module.exports = {
   handleAbort,
   handleAbortError,
-  spendCollectedUsage,
 };

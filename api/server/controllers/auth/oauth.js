@@ -83,11 +83,18 @@ function createOAuthHandler(redirectUri = domains.client) {
           existingRefreshToken: req.user.tokenset.refresh_token,
           openidSubject: req.user.openidId,
           openidIssuer: req.user.openidIssuer,
+          discardSessionTokens: true,
           req,
           res,
         });
       } else {
         await setAuthTokens(req.user._id, res, null, req);
+        if (
+          req.user.provider === 'openid' &&
+          isEnabled(process.env.OPENID_USE_END_SESSION_ENDPOINT)
+        ) {
+          req.session.openidLogoutIdToken = req.user.tokenset?.id_token;
+        }
       }
       res.redirect(redirectUri);
     } catch (err) {

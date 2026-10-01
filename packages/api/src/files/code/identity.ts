@@ -68,6 +68,20 @@ export function appendCodeEnvFileIdentity(form: FormData, identity: CodeEnvIdent
  *
  * Returns a string with leading `?`; concatenate onto a path.
  */
+/**
+ * The same `kind`/`id`/`version?` identity as an axios `params` object, for callers that
+ * build their query that way rather than concatenating a string. Both forms exist so the
+ * identity codeapi's `sessionAuth` needs is stated once.
+ */
+export function buildCodeEnvIdentityParams(identity: CodeEnvIdentity): Record<string, string> {
+  validateIdentity(identity, 'buildCodeEnvIdentityParams');
+  return {
+    kind: identity.kind,
+    id: identity.id,
+    ...(identity.version != null ? { version: String(identity.version) } : {}),
+  };
+}
+
 export function buildCodeEnvDownloadQuery(identity: CodeEnvIdentity): string {
   validateIdentity(identity, 'buildCodeEnvDownloadQuery');
   const params = new URLSearchParams({ kind: identity.kind, id: identity.id });

@@ -5,6 +5,7 @@ import { Alert, Button, TextareaAutosize } from '@librechat/client';
 import { useUpdateMessageMutation } from 'librechat-data-provider/react-query';
 import type { TEditProps } from '~/common';
 import { useMessagesOperations, useMessagesConversation } from '~/Providers';
+import { findRerunParent } from './rerunParent';
 import { useGetAddedConvo } from '~/hooks/Chat';
 import { useLocalize } from '~/hooks';
 import Container from './Container';
@@ -32,6 +33,11 @@ const EditMessage = ({
   /** Only a user turn's draft becomes the submission; an assistant turn's is discarded
    *  by the rerun (see `resubmitMessage`), so it must not be labelled as an update. */
   const isUserTurn = message.isCreatedByUser === true;
+  /** A rerun replays the parent as the turn's user message, so a model turn with no
+   *  user turn behind it — chained onto another model turn, or left at the root by an
+   *  import — has none. The action is withheld rather than offered and silently
+   *  refused, the footer says why, and Save still applies. */
+  const canRerun = isUserTurn || findRerunParent(getMessages(), parentMessageId) != null;
   const updateMessageMutation = useUpdateMessageMutation(conversationId ?? '');
   const localize = useLocalize();
 
@@ -80,6 +86,7 @@ const EditMessage = ({
         /** Carry the edited user message's quoted excerpts forward so the new
          *  turn sends the same referenced context the pills still show. */
         overrideQuotes: message.quotes,
+        overrideReasoning: message.reasoningOverride ?? null,
         addedConvo: getAddedConvo() || undefined,
       },
     );
@@ -100,8 +107,9 @@ const EditMessage = ({
    *  required so Save cannot blank a response, and a response that is already empty (a
    *  cancellation before the first token) is exactly what needs rerunning. */
   const rerunResponse = () => {
-    const parentMessage = getMessages()?.find((msg) => msg.messageId === parentMessageId);
-
+    /** The same resolution the withheld button is gated on, so a rendered Rerun and
+     *  the submission it runs cannot disagree about the turn being replayed. */
+    const parentMessage = findRerunParent(getMessages(), parentMessageId);
     if (!parentMessage) {
       return;
     }
@@ -117,6 +125,7 @@ const EditMessage = ({
          *  the regenerated response is primed and given the same context as the first. */
         overrideManualSkills: parentMessage.manualSkills,
         overrideQuotes: parentMessage.quotes,
+        overrideReasoning: parentMessage.reasoningOverride ?? null,
         addedConvo: getAddedConvo() || undefined,
       },
     );
@@ -201,6 +210,21 @@ const EditMessage = ({
     },
   });
 
+  /** The footer carries one status line, so it reports the most actionable state:
+   *  an unsaved draft first, because Cancel discards it, then why the footer offers
+   *  no rerun — the question a Save-only editor otherwise leaves unanswered. */
+  const getStatusMessage = () => {
+    if (isDirty) {
+      return localize(
+        isUserTurn || !canRerun ? 'com_ui_unsaved_changes' : 'com_ui_rerun_discards_changes',
+      );
+    }
+    if (!canRerun) {
+      return localize('com_ui_rerun_needs_user_turn');
+    }
+    return '';
+  };
+
   return (
     <Container message={message}>
       <section
@@ -209,6 +233,7 @@ const EditMessage = ({
       >
         {saveError && <Alert variant="error">{localize('com_ui_save_message_error')}</Alert>}
         <TextareaAutosize
+          focusOutline="hidden"
           {...registerProps}
           ref={(e) => {
             ref(e);
@@ -218,14 +243,17 @@ const EditMessage = ({
           data-testid="message-text-editor"
           className={cn(
             'message-editor-text max-h-[65vh] min-h-24 w-full resize-y whitespace-pre-wrap',
-            'break-words rounded-lg border border-border-medium bg-surface-tertiary-alt',
-            'px-3 py-2 text-text-primary',
-            'focus-visible:outline-none',
+            'border-border-medium bg-surface-tertiary-alt rounded-lg border break-words',
+            'text-text-primary px-3 py-2',
             isRTL ? 'text-right' : 'text-left',
             'disabled:opacity-50 md:max-h-[75vh]',
           )}
           aria-label={localize('com_ui_message_input')}
-          aria-keyshortcuts="Control+Enter Meta+Enter Control+S Meta+S Escape"
+          aria-keyshortcuts={
+            canRerun
+              ? 'Control+Enter Meta+Enter Control+S Meta+S Escape'
+              : 'Control+S Meta+S Escape'
+          }
           disabled={isSubmitting || updateMessageMutation.isLoading}
           dir={isRTL ? 'rtl' : 'ltr'}
         />
@@ -234,12 +262,10 @@ const EditMessage = ({
             English labels need, and a translated label needs more still. */}
         <footer className="flex flex-wrap items-center justify-between gap-2">
           <span
-            className="line-clamp-2 min-w-0 flex-1 text-xs text-text-secondary"
+            className="text-text-secondary line-clamp-2 min-w-0 flex-1 text-xs"
             aria-live="polite"
           >
-            {isDirty
-              ? localize(isUserTurn ? 'com_ui_unsaved_changes' : 'com_ui_rerun_discards_changes')
-              : ''}
+            {getStatusMessage()}
           </span>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
@@ -268,19 +294,21 @@ const EditMessage = ({
                 persisted message, already submittable by construction, `isValid` is
                 false for a tick after mount while the form's first validation pass
                 settles, and an answer's draft is never sent at all. */}
-            <Button
-              ref={submitButtonRef}
-              size="sm"
-              variant="submit"
-              disabled={
-                isSubmitting ||
-                updateMessageMutation.isLoading ||
-                (isUserTurn && isDirty && !isValid)
-              }
-              onClick={isUserTurn ? handleSubmit(resubmitMessage) : rerunResponse}
-            >
-              {isDirty && isUserTurn ? localize('com_ui_update_rerun') : localize('com_ui_rerun')}
-            </Button>
+            {canRerun && (
+              <Button
+                ref={submitButtonRef}
+                size="sm"
+                variant="submit"
+                disabled={
+                  isSubmitting ||
+                  updateMessageMutation.isLoading ||
+                  (isUserTurn && isDirty && !isValid)
+                }
+                onClick={isUserTurn ? handleSubmit(resubmitMessage) : rerunResponse}
+              >
+                {isDirty && isUserTurn ? localize('com_ui_update_rerun') : localize('com_ui_rerun')}
+              </Button>
+            )}
           </div>
         </footer>
       </section>

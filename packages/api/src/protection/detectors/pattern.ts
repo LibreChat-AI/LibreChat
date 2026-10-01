@@ -1,4 +1,4 @@
-import { RE2Set } from 're2js';
+import { RE2JS, RE2Set } from 're2js';
 import { logger } from '@librechat/data-schemas';
 import {
   MAX_PII_CUSTOM_REGEX_CHARACTERS,
@@ -9,23 +9,25 @@ import {
   MAX_PII_PATTERNS_PER_SOURCE,
   getPiiRegexProgramSize,
 } from 'librechat-data-provider';
-import type { MessageFilterPiiConfig, FilterPiiCustomPatternConfig } from 'librechat-data-provider';
+import type {
+  FilterPiiCategory,
+  MessageFilterPiiConfig,
+  FilterPiiCustomPatternConfig,
+} from 'librechat-data-provider';
 import type { ProtectionFinding, TextContentFragment } from '../types';
-
-interface TestablePattern {
-  test(input: string): boolean;
-}
 
 interface CompiledPattern {
   readonly id: string;
   readonly label: string;
-  readonly pattern: TestablePattern;
+  readonly pattern: RegExp;
+  readonly category: FilterPiiCategory;
 }
 
 interface PreparedCustomPattern {
   readonly id: string;
   readonly label: string;
   readonly regex: string;
+  readonly category: FilterPiiCategory;
 }
 
 interface SnapshotPatternContentInspectorConfig {
@@ -67,10 +69,18 @@ export interface PatternContentInspectorPreflightCost {
   readonly regexes: readonly string[];
 }
 
+export interface PatternTextMatch {
+  readonly start: number;
+  readonly end: number;
+  readonly category: FilterPiiCategory;
+}
+
 export interface PatternContentInspector {
   readonly active: boolean;
   inspectFragment(fragment: TextContentFragment): ProtectionFinding | null;
   inspect(fragments: Iterable<TextContentFragment>): ProtectionFinding | null;
+  /** Internal match locations, never safe to return as public finding metadata. */
+  locate(text: string, maxMatches: number): readonly PatternTextMatch[];
 }
 
 export interface PatternContentInspectorConfig {
@@ -86,9 +96,24 @@ export interface PatternContentInspectorOptions {
 }
 
 const STARTER_PATTERNS: readonly CompiledPattern[] = [
-  { id: 'sk_prefix', label: 'sk- prefix token', pattern: /\b(sk-)[a-zA-Z0-9_-]+/ },
-  { id: 'bearer_header', label: 'Bearer token', pattern: /\b(Bearer )[^\s"']+/i },
-  { id: 'api_key_header', label: 'api-key header', pattern: /\b(api-key:?\s+)[^\s"']+/i },
+  {
+    id: 'sk_prefix',
+    label: 'sk- prefix token',
+    pattern: /\b(sk-)[a-zA-Z0-9_-]+/,
+    category: 'credential',
+  },
+  {
+    id: 'bearer_header',
+    label: 'Bearer token',
+    pattern: /\b(Bearer )[^\s"']+/i,
+    category: 'credential',
+  },
+  {
+    id: 'api_key_header',
+    label: 'api-key header',
+    pattern: /\b(api-key:?\s+)[^\s"']+/i,
+    category: 'credential',
+  },
 ];
 
 const STARTER_BY_ID = new Map(STARTER_PATTERNS.map((pattern) => [pattern.id, pattern]));
@@ -201,7 +226,25 @@ function readCustomPattern(candidate: unknown, index: number): FilterPiiCustomPa
   if (typeof regex !== 'string' || regex.length === 0 || regex.length > MAX_PII_PATTERN_LENGTH) {
     throw configurationError(`customPatterns[${index}].regex is invalid`);
   }
-  return { id, label, regex };
+  let category: unknown;
+  try {
+    category = (candidate as FilterPiiCustomPatternConfig).category;
+  } catch {
+    throw configurationError(`customPatterns[${index}] could not be read safely`);
+  }
+  if (
+    category != null &&
+    (typeof category !== 'string' ||
+      !['email', 'phone', 'name', 'credential', 'custom'].includes(category))
+  ) {
+    throw configurationError(`customPatterns[${index}].category is invalid`);
+  }
+  return {
+    id,
+    label,
+    regex,
+    ...(category == null ? {} : { category: category as FilterPiiCategory }),
+  };
 }
 
 function snapshotConfig(
@@ -240,7 +283,7 @@ function snapshotConfig(
         throw configurationError('customPatterns could not be read safely');
       }
       const pattern = readCustomPattern(patternCandidate, index);
-      custom.push(pattern);
+      custom.push({ ...pattern, category: pattern.category ?? 'custom' });
       regexes.push(pattern.regex);
       regexCharacters += pattern.regex.length;
       if (regexCharacters > MAX_PII_CUSTOM_REGEX_CHARACTERS) {
@@ -357,10 +400,17 @@ function createSequentialInspector(patterns: readonly CompiledPattern[]): Patter
 function createInspector(
   active: boolean,
   inspectFragment: (fragment: TextContentFragment) => ProtectionFinding | null,
+  locate?: (text: string, maxMatches: number) => readonly PatternTextMatch[],
 ): PatternContentInspector {
   return {
     active,
     inspectFragment,
+    locate(text, maxMatches) {
+      if (locate == null) {
+        throw configurationError('redaction requires a linear-time pattern inspector');
+      }
+      return locate(text, maxMatches);
+    },
     inspect(fragments) {
       for (const fragment of fragments) {
         const finding = inspectFragment(fragment);
@@ -416,7 +466,44 @@ function createLinearInspector(
     return pattern == null ? null : findingFor(pattern, fragment);
   };
 
-  return createInspector(prepared.cost.active, inspectFragment);
+  const compiled = new Map<string, RE2JS>();
+  const locate = (text: string, maxMatches: number): readonly PatternTextMatch[] => {
+    if (!Number.isSafeInteger(maxMatches) || maxMatches < 0) {
+      throw configurationError('redaction match limit must be a non-negative safe integer');
+    }
+    const matches: PatternTextMatch[] = [];
+    const selected = customSet == null ? [] : customSet.match(text);
+    const candidates: Array<readonly [string, FilterPiiCategory]> = prepared.starter.map(
+      (pattern) => [
+        `${pattern.pattern.ignoreCase ? '(?i)' : ''}${pattern.pattern.source}`,
+        pattern.category,
+      ],
+    );
+    for (const index of selected) {
+      const pattern = prepared.custom[index];
+      if (pattern != null) {
+        candidates.push([pattern.regex, pattern.category]);
+      }
+    }
+    for (const [expression, category] of candidates) {
+      let regex = compiled.get(expression);
+      if (regex == null) {
+        regex = RE2JS.compile(expression);
+        compiled.set(expression, regex);
+      }
+      const matcher = regex.matcher(text);
+      while (matcher.find()) {
+        const start = matcher.start();
+        const end = matcher.end();
+        if (end <= start || matches.length >= maxMatches) {
+          throw configurationError('redaction match limit or empty match encountered');
+        }
+        matches.push({ start, end, category });
+      }
+    }
+    return matches;
+  };
+  return createInspector(prepared.cost.active, inspectFragment, locate);
 }
 
 function cacheLinearInspector(
@@ -480,6 +567,7 @@ export function createPatternContentInspector(
     id: pattern.id,
     label: pattern.label,
     pattern: new RegExp(pattern.regex),
+    category: pattern.category,
   }));
   const inspector = createSequentialInspector([...prepared.starter, ...custom]);
   if (options.cacheResult !== false) {

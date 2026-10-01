@@ -2,11 +2,18 @@ import path from 'path';
 import crypto from 'node:crypto';
 import { createReadStream } from 'fs';
 import { readFile, stat } from 'fs/promises';
+import { UnsupportedProviderAudioError } from '~/files/upload/errors';
 
 const USER_FACING_UPLOAD_ERRORS = [
   ['Invalid file format', 'Invalid file format'],
   ['exceeds token limit', 'File content exceeds token limit'],
   ['Unable to extract text from', 'Unable to extract text from file'],
+  ['No text found in document', 'No text found in document'],
+  ['MB document parser limit', 'File exceeds the document parser size limit'],
+  ['MB per-entry decompressed cap', 'Document entry exceeds the decompressed size limit'],
+  ['total decompressed size exceeds the', 'Document exceeds the total decompressed size limit'],
+  ['MB decompressed limit', 'Document exceeds the decompressed size limit'],
+  ['MB storage limit', 'Extracted text exceeds the storage size limit'],
 ] as const;
 
 const ASCII_FILENAME_SAFE_PATTERN = /^[a-zA-Z0-9._-]$/;
@@ -92,6 +99,9 @@ export function resolveUploadErrorMessage(
   defaultMessage = 'Error processing file',
   redactDetails = false,
 ): string {
+  if (error instanceof UnsupportedProviderAudioError) {
+    return error.message;
+  }
   const errorMessage = error?.message;
   if (!errorMessage) {
     return defaultMessage;

@@ -1,6 +1,6 @@
 const rateLimit = require('express-rate-limit');
 const { ViolationTypes } = require('librechat-data-provider');
-const { limiterCache, removePorts } = require('@librechat/api');
+const { limiterCache, removePorts, getRateLimitReset } = require('@librechat/api');
 const denyRequest = require('~/server/middleware/denyRequest');
 const { logViolation } = require('~/cache');
 
@@ -36,6 +36,7 @@ const createHandler = (ip = true) => {
       max: ip ? ipMax : userMax,
       limiter: ip ? 'ip' : 'user',
       windowInMinutes: ip ? ipWindowInMinutes : userWindowInMinutes,
+      ...getRateLimitReset(req.rateLimit, ip ? ipWindowMs : userWindowMs),
     };
 
     await logViolation(req, res, type, errorMessage, score);
@@ -88,10 +89,10 @@ const agentEventUserLimiter = (req, res, next) => {
       windowMs: windowInMinutes * 60 * 1000,
       max,
       handler: (limitedReq, limitedRes) => {
-        const resetAt = limitedReq.rateLimit?.resetTime?.getTime?.();
-        const retryAfterSeconds = Number.isFinite(resetAt)
-          ? Math.max(1, Math.ceil((resetAt - Date.now()) / 1000))
-          : Math.max(1, Math.ceil(windowInMinutes * 60));
+        const { retryAfterSeconds } = getRateLimitReset(
+          limitedReq.rateLimit,
+          windowInMinutes * 60 * 1000,
+        );
         limitedRes.set('Retry-After', String(retryAfterSeconds));
         return limitedRes
           .status(429)

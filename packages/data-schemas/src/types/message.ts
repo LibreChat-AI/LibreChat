@@ -1,6 +1,7 @@
 import type {
   TFeedbackRating,
   TFeedbackTag,
+  TReasoningOverride,
   UserSubmittedMessageFieldPath,
 } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
@@ -77,6 +78,8 @@ export interface IMessage extends Document {
   };
   langfuseSampled?: boolean;
   langfuseDestinationIds?: string[];
+  /** The run whose trace this response reports, when that run's id is not the message's own (a failed turn's error row). */
+  langfuseRunId?: string;
   _meiliIndex?: boolean;
   files?: unknown[];
   plugin?: {
@@ -114,6 +117,8 @@ export interface IMessage extends Document {
       kind: 'manual' | 'wakeup';
       claimId: string;
       claimedAt: Date;
+      /** Response generation that owns a manual delivery claim. */
+      generationId?: string;
     };
     controlReceipts?: ISubagentTaskControlReceipt[];
   };
@@ -131,6 +136,8 @@ export interface IMessage extends Document {
   alwaysAppliedSkills?: string[];
   /** Verbatim excerpts the user quoted to reference on this turn. UI-only metadata for `MessageQuotes`. */
   quotes?: string[];
+  /** Request-scoped reasoning selection that produced this user turn. */
+  reasoningOverride?: TReasoningOverride;
   expiredAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;

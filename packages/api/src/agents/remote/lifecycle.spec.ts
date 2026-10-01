@@ -274,6 +274,43 @@ describe('Agent execution enrollment', () => {
     ).resolves.toEqual(expect.arrayContaining(['chatcmpl-a', 'chatcmpl-b']));
   });
 
+  it('enumerates exact and legacy owner jobs for destructive account cleanup', async () => {
+    const store = manager.getJobStore();
+    const legacy = await store.createJob('legacy-owner-run', 'user-1', 'conversation-legacy');
+    const exact = await store.createJob(
+      'tenant-owner-run',
+      'user-1',
+      'conversation-tenant',
+      'tenant-a',
+    );
+    await store.createJob('foreign-tenant-run', 'user-1', 'conversation-foreign', 'tenant-b');
+    const cleanupBlocking = await manager.getCleanupBlockingJobIdsForUser('user-1', 'tenant-a');
+    expect(cleanupBlocking).toEqual(
+      expect.arrayContaining(['legacy-owner-run', 'tenant-owner-run']),
+    );
+    expect(cleanupBlocking).not.toContain('foreign-tenant-run');
+    await store.transitionStatus('legacy-owner-run', {
+      from: 'running',
+      to: 'requires_action',
+      expectCreatedAt: legacy.createdAt,
+    });
+    await store.transitionStatus('tenant-owner-run', {
+      from: 'running',
+      to: 'requires_action',
+      expectCreatedAt: exact.createdAt,
+    });
+
+    await expect(manager.getCleanupBlockingJobIdsForUser('user-1', 'tenant-a')).resolves.toEqual(
+      [],
+    );
+    await expect(manager.getAccountCleanupJobIdsForUser('user-1', 'tenant-a')).resolves.toEqual(
+      expect.arrayContaining(['legacy-owner-run', 'tenant-owner-run']),
+    );
+    await expect(
+      manager.getAccountCleanupJobIdsForUser('user-1', 'tenant-a'),
+    ).resolves.not.toContain('foreign-tenant-run');
+  });
+
   it('waits for every trailing write before reporting the first failure', async () => {
     const failure = new Error('artifact failed');
     const remaining = deferred<void>();

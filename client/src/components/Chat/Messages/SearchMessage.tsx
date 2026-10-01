@@ -2,16 +2,17 @@ import { memo, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon } from '~/common';
+import MessageRow, { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
 import AuthorHeader from '~/components/Chat/Messages/Content/Parts/AuthorHeader';
 import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import { getHeaderModelName } from '~/components/Chat/Messages/ui/HeaderLabel';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
-import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
+import SearchContent, { rendersMarkdownLite } from './Content/SearchContent';
 import Icon from '~/components/Chat/Messages/MessageIcon';
 import { useAuthContext, useLocalize } from '~/hooks';
-import SearchContent from './Content/SearchContent';
 import SearchButtons from './SearchButtons';
 import SubRow from './SubRow';
+import { cn } from '~/utils';
 import store from '~/store';
 
 function searchFilesEqual(prev?: TMessage['files'], next?: TMessage['files']) {
@@ -58,6 +59,8 @@ export function areSearchMessagePropsEqual(
     a.iconURL === b.iconURL &&
     /** `SearchContent` renders an incomplete-response notice on `unfinished`. */
     a.unfinished === b.unfinished &&
+    /** `SearchContent` renders a failed row through the error dispatcher, not as markdown. */
+    a.error === b.error &&
     /** `SearchButtons` renders `title` and navigates by `conversationId`, so a
      *  rename/refetch that leaves the text and id intact must still re-render. */
     a.title === b.title &&
@@ -110,8 +113,13 @@ function SearchMessage({ message }: Pick<TMessageProps, 'message'>) {
   }
 
   return (
-    <div className="w-full bg-transparent text-text-primary">
-      <div className="m-auto px-4 py-3 sm:px-0">
+    <div className="text-text-primary w-full bg-transparent">
+      {/* A hairline where one result ends and the next begins. Results run together
+          otherwise, and a long answer followed by a short question reads as one
+          message. Drawn on the column the message occupies, not the window. */}
+      <div
+        className={cn('border-border-light mx-auto border-b px-4 py-4', getMessageRowWidthClass())}
+      >
         <MessageRow
           id={message.messageId}
           icon={<Icon iconData={iconData} />}
@@ -124,7 +132,10 @@ function SearchMessage({ message }: Pick<TMessageProps, 'message'>) {
           className="final-completion"
           footer={
             <SubRow classes={message.isCreatedByUser ? 'justify-end text-xs' : 'text-xs'}>
-              <MinimalHoverButtons message={message} />
+              <MinimalHoverButtons
+                message={message}
+                variant={rendersMarkdownLite(message) ? 'lite' : undefined}
+              />
               <SearchButtons message={message} />
             </SubRow>
           }

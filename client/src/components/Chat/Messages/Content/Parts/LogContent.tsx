@@ -181,7 +181,7 @@ const LogContent: React.FC<LogContentProps> = ({ output = '', renderImages, atta
         </div>
       )}
       {panelAttachments.length > 0 && (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        <div className="mt-2 flex w-full max-w-full flex-col">
           {panelAttachments.map(({ attachment, artifact }, index) => (
             <ToolArtifactCard
               key={renderAttachmentKey('artifact', attachment, index)}

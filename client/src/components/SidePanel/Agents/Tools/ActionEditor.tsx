@@ -132,7 +132,7 @@ export default function ActionEditor({
             });
           },
           selectClasses:
-            'bg-surface-destructive text-white transition-colors duration-200 hover:bg-surface-destructive-hover',
+            'bg-surface-destructive text-text-on-status transition-colors duration-200 hover:bg-surface-destructive-hover',
           selectText: localize('com_ui_delete'),
         }}
       />

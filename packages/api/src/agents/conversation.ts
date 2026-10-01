@@ -1,3 +1,46 @@
+import type { TConversation, CodeWorkspaceSelection } from 'librechat-data-provider';
+
+/** Never turn another conversation's stored workspace into an explicit run selection. */
+export function resolveRunCodeWorkspaces({
+  conversationId,
+  requestedSelections,
+  conversation,
+}: {
+  conversationId: string;
+  requestedSelections?: CodeWorkspaceSelection[] | null;
+  conversation?: Pick<TConversation, 'conversationId' | 'codeWorkspaces'> | null;
+}): CodeWorkspaceSelection[] | undefined {
+  return (
+    requestedSelections ??
+    (conversation?.conversationId === conversationId ? conversation.codeWorkspaces : undefined)
+  );
+}
+
+/** Reuse resolved state only for the conversation the run will actually execute. */
+export async function resolveRunConversation<TConversation>({
+  request,
+  conversationId,
+  loadConversation,
+}: {
+  request: {
+    body?: { conversationId?: string };
+    resolvedConversation?: TConversation | null;
+  };
+  conversationId?: string;
+  loadConversation: (conversationId: string) => Promise<TConversation | null | undefined>;
+}): Promise<TConversation | null | undefined> {
+  if (
+    conversationId === request.body?.conversationId &&
+    Object.prototype.hasOwnProperty.call(request, 'resolvedConversation')
+  ) {
+    return request.resolvedConversation;
+  }
+  if (typeof conversationId !== 'string' || conversationId === '') {
+    return null;
+  }
+  return loadConversation(conversationId);
+}
+
 export interface ConversationAnchorSource {
   createdAt?: Date | string | number | null;
 }

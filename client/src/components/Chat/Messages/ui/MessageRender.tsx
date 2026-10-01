@@ -3,16 +3,17 @@ import { useRecoilValue } from 'recoil';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common';
 import {
-  areMessageFieldsEqual,
   cn,
-  getHeaderPrefixForScreenReader,
+  isSameTailRelation,
   getMessageAriaLabel,
+  areMessageFieldsEqual,
+  getHeaderPrefixForScreenReader,
 } from '~/utils';
 import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
 import { parseWakeupText } from '~/components/Chat/Messages/Content/Parts/wakeup';
 import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
+import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
-import { getHeaderModelName } from '~/components/Chat/Messages/ui/HeaderLabel';
 import { useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
@@ -33,6 +34,9 @@ type MessageRenderProps = {
   isSubmitting?: boolean;
   /** Stable context object from wrapper — avoids ChatContext subscription inside memo */
   chatContext: TMessageChatContext;
+  /** The thread's tail; the comparator re-renders only when this row's relation to it changes */
+  latestMessageId?: string;
+  latestMessageDepth?: number;
 } & Pick<
   TMessageProps,
   'currentEditId' | 'setCurrentEditId' | 'siblingIdx' | 'setSiblingIdx' | 'siblingCount'
@@ -66,7 +70,7 @@ function areMessageRenderPropsEqual(prev: MessageRenderProps, next: MessageRende
     return false;
   }
 
-  return areMessageFieldsEqual(prev.message, next.message);
+  return areMessageFieldsEqual(prev.message, next.message) && isSameTailRelation(prev, next);
 }
 
 const MessageRender = memo(function MessageRender({
@@ -78,6 +82,8 @@ const MessageRender = memo(function MessageRender({
   setCurrentEditId,
   isSubmitting = false,
   chatContext,
+  latestMessageId,
+  latestMessageDepth,
 }: MessageRenderProps) {
   const localize = useLocalize();
   const {
@@ -91,11 +97,10 @@ const MessageRender = memo(function MessageRender({
     messageLabel,
     handleFeedback,
     handleContinue,
-    latestMessageId,
     copyToClipboard,
     getCanCopy,
     regenerateMessage,
-    latestMessageDepth,
+    hasConfiguredSender,
   } = useMessageActions({
     message: msg,
     currentEditId,
@@ -105,6 +110,7 @@ const MessageRender = memo(function MessageRender({
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
 
   const handleRegenerateMessage = useCallback(() => regenerateMessage(), [regenerateMessage]);
+  const getLatestMessageId = useCallback(() => chatContext.latestMessageId, [chatContext]);
   const hasNoChildren = !(msg?.children?.length ?? 0);
   const isLast = useMemo(
     () => hasNoChildren && (msg?.depth === latestMessageDepth || msg?.depth === -1),
@@ -157,7 +163,8 @@ const MessageRender = memo(function MessageRender({
       id={msg.messageId}
       icon={<MessageIcon iconData={iconData} assistant={assistant} agent={agent} />}
       label={messageLabel ?? ''}
-      hoverLabel={getHeaderModelName(
+      hoverLabel={getHeaderHoverLabel(
+        hasConfiguredSender,
         agent?.model,
         assistant?.model,
         msg.model,
@@ -170,9 +177,20 @@ const MessageRender = memo(function MessageRender({
       hasParallelContent={hasParallelContent}
       fullWidth={maximizeChatSpace}
       isEditing={edit}
-      plain={wakeupDisplay != null && !edit}
+      systemLabel={wakeupDisplay != null && !edit ? localize('com_ui_system_event') : undefined}
       footer={
         <SubRow classes={cn(messageFooterClasses, msg.isCreatedByUser && 'justify-end')}>
+          {/* The reading holds the column start: it takes over the slot the streaming
+              dot vacates, so the retry navigation beside it — whose width the footer
+              reserves whether or not hover has revealed it — must never push the
+              timer inboard of that column. */}
+          {shouldShowElapsed({
+            isSubmitting,
+            isLatestMessage,
+            isCreatedByUser: msg.isCreatedByUser,
+            siblingIdx,
+            siblingCount,
+          }) && <Elapsed index={index} />}
           {/* A user turn is right-aligned, so its retry navigation belongs at the
               outer edge under the bubble rather than inboard of the actions.
 
@@ -188,25 +206,18 @@ const MessageRender = memo(function MessageRender({
               isSubmitting && isLatestMessage && revealOnRowHoverClasses,
             )}
           />
-          {shouldShowElapsed({
-            isSubmitting,
-            isLatestMessage,
-            isCreatedByUser: msg.isCreatedByUser,
-            siblingIdx,
-            siblingCount,
-          }) && <Elapsed index={index} />}
           <HoverButtons
             index={index}
             isEditing={edit}
             message={msg}
             enterEdit={enterEdit}
-            isSubmitting={chatContext.isSubmitting}
             conversation={conversation ?? null}
             regenerate={handleRegenerateMessage}
             copyToClipboard={copyToClipboard}
             getCanCopy={getCanCopy}
             handleContinue={handleContinue}
             latestMessageId={latestMessageId}
+            getLatestMessageId={getLatestMessageId}
             handleFeedback={handleFeedback}
             isLast={isLast}
           />

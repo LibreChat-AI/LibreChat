@@ -11,13 +11,15 @@ const {
   agentCreateSchema,
   agentUpdateSchema,
   agentSubagentsSchema,
-  refreshListAvatars,
+  resolveAvatarRefresh,
+  applyCachedAvatarUrl,
   collectEdgeAgentIds,
   replaceEdgeSourceId,
   mergeDeploymentSkillIds,
+  getAgentListAccess,
+  getAgentListAvatarRefreshKey,
   mergeAgentOcrConversion,
   sanitizeModelParameters,
-  MAX_AVATAR_REFRESH_AGENTS,
   collectToolResourceFileIds,
   convertOcrToContextInPlace,
   normalizeToolResourceFiles,
@@ -37,6 +39,15 @@ const {
   isContentTraversalProtected,
   isContentTraversalLimitError,
   resolveCanonicalFileReferences,
+  reportLocatorTraversalFailure,
+  isActiveAgentWorkspaceConfiguration,
+  reconcileAgentWorkspaceDefault,
+  resolveAgentWorkspaceRestoreConfiguration,
+  shouldValidateAgentWorkspaceDefaultBinding,
+  validateAgentWorkspaceDefaultBinding,
+  marketplaceMineFilter,
+  resolveMarketplaceListQuery,
+  mapMarketplaceListError,
 } = require('@librechat/api');
 const {
   Time,
@@ -44,7 +55,6 @@ const {
   SkillsScope,
   CacheKeys,
   Constants,
-  FileSources,
   ResourceType,
   AccessRoleIds,
   PrincipalType,
@@ -54,6 +64,7 @@ const {
   actionDelimiter,
   AgentCapabilities,
   EModelEndpoint,
+  FileSources,
   resolveAllowedStatefulCodeEnvironments,
   removeCodeExecutionCaller,
   hasActivePiiFields,
@@ -78,6 +89,7 @@ const {
   resolveConfigServers,
   userCanUseMCPServers,
 } = require('~/server/services/MCP');
+const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { attachOwnerContacts } = require('~/server/services/Agents/ownerContact');
 const { getMCPServersRegistry } = require('~/config');
 const { getLogStores } = require('~/cache');
@@ -176,6 +188,7 @@ const blockFilteredAgentContent = async (req, res, agentData) => {
   if (filePolicyActive) {
     try {
       const fileInspection = await resolveCanonicalFileReferences({
+        onTraversalFailure: reportLocatorTraversalFailure,
         filters,
         input: agentData,
         user: req.user,
@@ -478,13 +491,27 @@ const validateStatefulCodeEnvironment = (
   environment,
   environmentId,
   environmentIdSelected = false,
+  workspaceId,
+  currentWorkspaceId,
+  currentEnvironmentId,
 ) => {
+  const configuredEnvironments =
+    req.config?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments ?? [];
+  const workspaceValidation = validateAgentWorkspaceDefaultBinding({
+    workspaceId,
+    environmentId,
+    currentWorkspaceId,
+    currentEnvironmentId,
+    environments: configuredEnvironments,
+  });
+  if (!workspaceValidation.valid) {
+    res.status(400).json({ error: workspaceValidation.error });
+    return false;
+  }
   if (enabled !== true && !environmentIdSelected) {
     return true;
   }
   if (environmentId != null) {
-    const configuredEnvironments =
-      req.config?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments ?? [];
     const configuredEnvironment = configuredEnvironments.find(
       (configured) => configured.id === environmentId,
     );
@@ -778,6 +805,7 @@ const createAgentHandler = async (req, res) => {
         agentData.stateful_code_environment,
         agentData.code_environment_id,
         agentData.code_environment_id != null,
+        agentData.code_workspace_id,
       )
     ) {
       return;
@@ -1060,12 +1088,16 @@ const updateAgentHandler = async (req, res) => {
     const {
       avatar: avatarField,
       code_environment_id: codeEnvironmentIdField,
+      git_identity: gitIdentityField,
       _id,
       ...rest
     } = validatedData;
-    const updateData = removeNullishValues(rest);
+    let updateData = removeNullishValues(rest);
     if (codeEnvironmentIdField !== undefined) {
       updateData.code_environment_id = codeEnvironmentIdField;
+    }
+    if (gitIdentityField !== undefined) {
+      updateData.git_identity = gitIdentityField;
     }
     let existingAgent;
 
@@ -1073,14 +1105,16 @@ const updateAgentHandler = async (req, res) => {
       updateData.stateful_code_sessions !== undefined ||
       updateData.stateful_code_environment !== undefined ||
       updateData.code_environment_id !== undefined;
+    const includesWorkspaceConfiguration = updateData.code_workspace_id !== undefined;
     const includesToolsConfiguration = Array.isArray(updateData.tools);
     const includesToolOptionsConfiguration = updateData.tool_options !== undefined;
     if (
       includesStatefulConfiguration ||
+      includesWorkspaceConfiguration ||
       includesToolsConfiguration ||
       includesToolOptionsConfiguration
     ) {
-      existingAgent = await db.getAgent({ id });
+      existingAgent = await db.getAgent({ id }, {});
       if (!existingAgent) {
         return res.status(404).json({ error: 'Agent not found' });
       }
@@ -1088,6 +1122,11 @@ const updateAgentHandler = async (req, res) => {
       const codeEnvironmentSelectionChanged =
         updateData.code_environment_id !== undefined &&
         updateData.code_environment_id !== existingAgent.code_environment_id;
+      updateData = reconcileAgentWorkspaceDefault({
+        update: updateData,
+        request: validatedData,
+        currentEnvironmentId: existingAgent.code_environment_id,
+      });
       const statefulConfigurationChanged =
         (updateData.stateful_code_sessions !== undefined &&
           (updateData.stateful_code_sessions === true) !==
@@ -1100,7 +1139,20 @@ const updateAgentHandler = async (req, res) => {
         includesToolsConfiguration &&
         updateData.tools.includes(Tools.execute_code) &&
         existingAgent.tools?.includes(Tools.execute_code) !== true;
-      if (statefulConfigurationChanged || activatesCodeExecution) {
+      const effectiveCodeWorkspaceId =
+        updateData.code_workspace_id ?? existingAgent.code_workspace_id;
+      const selectsWorkspaceDefault =
+        includesWorkspaceConfiguration &&
+        shouldValidateAgentWorkspaceDefaultBinding({
+          workspaceId: effectiveCodeWorkspaceId,
+          environmentId:
+            updateData.code_environment_id === null
+              ? undefined
+              : (updateData.code_environment_id ?? existingAgent.code_environment_id),
+          currentWorkspaceId: existingAgent.code_workspace_id,
+          currentEnvironmentId: existingAgent.code_environment_id,
+        });
+      if (statefulConfigurationChanged || selectsWorkspaceDefault || activatesCodeExecution) {
         const effectiveStatefulSessions =
           updateData.stateful_code_sessions ?? existingAgent.stateful_code_sessions;
         const effectiveStatefulEnvironment =
@@ -1117,6 +1169,9 @@ const updateAgentHandler = async (req, res) => {
             effectiveStatefulEnvironment,
             effectiveCodeEnvironmentId,
             codeEnvironmentSelectionChanged,
+            effectiveCodeWorkspaceId,
+            existingAgent.code_workspace_id,
+            existingAgent.code_environment_id,
           )
         ) {
           return;
@@ -1188,7 +1243,7 @@ const updateAgentHandler = async (req, res) => {
     // Convert OCR to context in incoming updateData
     convertOcrToContextInPlace(updateData);
 
-    existingAgent ??= await db.getAgent({ id });
+    existingAgent ??= await db.getAgent({ id }, {});
 
     if (!existingAgent) {
       return res.status(404).json({ error: 'Agent not found' });
@@ -1310,6 +1365,10 @@ const updateAgentHandler = async (req, res) => {
       delete updateData.code_environment_id;
       updateData.$unset = { code_environment_id: 1 };
     }
+    if (updateData.git_identity === null) {
+      delete updateData.git_identity;
+      updateData.$unset = { ...updateData.$unset, git_identity: 1 };
+    }
 
     let updatedAgent =
       Object.keys(updateData).length > 0
@@ -1412,12 +1471,15 @@ const duplicateAgentHandler = async (req, res) => {
       author: userId,
     });
     if (
+      isActiveAgentWorkspaceConfiguration(newAgentData) &&
       !validateStatefulCodeEnvironment(
         req,
         res,
         newAgentData.stateful_code_sessions,
         newAgentData.stateful_code_environment,
         newAgentData.code_environment_id,
+        false,
+        newAgentData.code_workspace_id,
       )
     ) {
       return;
@@ -1465,7 +1527,7 @@ const duplicateAgentHandler = async (req, res) => {
       return res.status(subagentReferenceError.status).json(subagentReferenceError.body);
     }
 
-    const originalActions = (await db.getActions({ agent_id: id }, true)) ?? [];
+    const originalActions = (await db.getActions({ agentId: id }, true)) ?? [];
     const sanitizedActions = originalActions.map((action) => {
       const metadata = { ...(action.metadata || {}) };
       for (const field of sensitiveFields) {
@@ -1550,7 +1612,7 @@ const duplicateAgentHandler = async (req, res) => {
       const fullActionId = `${domain}${actionDelimiter}${newActionId}`;
 
       const newAction = await db.updateAction(
-        { action_id: newActionId, agent_id: newAgentId },
+        { actionId: newActionId, agentId: newAgentId },
         {
           metadata: action.metadata,
           agent_id: newAgentId,
@@ -1575,7 +1637,7 @@ const duplicateAgentHandler = async (req, res) => {
     try {
       newAgent = await db.createAgent(newAgentData);
     } catch (error) {
-      await db.deleteActions({ agent_id: newAgentId, user: userId }).catch((cleanupError) => {
+      await db.deleteActions({ agentId: newAgentId, user: userId }).catch((cleanupError) => {
         logger.error(
           '[/agents/:id/duplicate] Failed to clean up cloned Actions after Agent creation failed:',
           cleanupError,
@@ -1650,17 +1712,24 @@ const deleteAgentHandler = async (req, res) => {
 };
 
 /**
- * Lists agents using ACL-aware permissions (ownership + explicit shares).
+ * Lists agents using ACL permissions or the manage:agents capability.
  * @route GET /Agents
  * @param {object} req - Express Request
  * @param {object} req.query - Request query
  * @param {string} [req.query.user] - The user ID of the agent's author.
+ * @param {string} [req.query.sort] - One of 'newest' | 'oldest' | 'popular' | 'author'.
+ *   Invalid, repeated and missing values leave the order unset, so the endpoint keeps
+ *   serving its most-recently-edited order; the marketplace asks for 'newest' explicitly.
+ * @param {string} [req.query.mine] - '1' to restrict results to agents authored by the
+ *   caller; any other value is ignored.
  * @returns {Promise<AgentListResponse>} 200 - success response - application/json
  */
 const getListAgentsHandler = async (req, res) => {
   try {
     const userId = req.user.id;
     const { category, search, limit = 100, cursor, promoted } = req.query;
+    const listQuery = resolveMarketplaceListQuery(req.query);
+    const sortMode = listQuery.sort;
     let requiredPermission = req.query.requiredPermission;
     if (typeof requiredPermission === 'string') {
       requiredPermission = parseInt(requiredPermission, 10);
@@ -1671,12 +1740,6 @@ const getListAgentsHandler = async (req, res) => {
       requiredPermission = PermissionBits.VIEW;
     }
     const canReturnSkillConfig = hasEditBit(requiredPermission);
-    /**
-     * Derived from the same bit as `canReturnSkillConfig` but answering a different question:
-     * skill-config exposure versus edit-permission reporting. An EDIT-scoped request matches
-     * only editable agents, so it needs no second lookup to know which ones those are.
-     */
-    const needsEditableLookup = !hasEditBit(requiredPermission);
     // Base filter
     const filter = {};
 
@@ -1692,6 +1755,10 @@ const getListAgentsHandler = async (req, res) => {
       filter.is_promoted = { $ne: true };
     }
 
+    // "Only my agents": the contribution comes from `marketplaceMineFilter`, which owns
+    // what the filter says; this merges it on top of the ACL-resolved `accessibleIds`.
+    Object.assign(filter, marketplaceMineFilter(listQuery, userId));
+
     // Handle search filter (escape regex and cap length)
     if (search && search.trim() !== '') {
       const safeSearch = escapeRegex(search.trim().slice(0, MAX_SEARCH_LEN));
@@ -1700,7 +1767,7 @@ const getListAgentsHandler = async (req, res) => {
     }
 
     const cache = getLogStores(CacheKeys.S3_EXPIRY_INTERVAL);
-    const refreshKey = `${userId}:agents_avatar_refresh`;
+    const refreshKey = getAgentListAvatarRefreshKey(req.user);
 
     /**
      * These reads share no inputs, so they resolve together rather than chaining round
@@ -1710,8 +1777,8 @@ const getListAgentsHandler = async (req, res) => {
      *
      * `editableIds` lets a VIEW-scoped response mark which agents the caller may also edit,
      * so consumers wanting just the editable subset can filter one shared VIEW fetch rather
-     * than issuing a second full paginated walk under an EDIT-scoped cache key. Requests
-     * that already ask for EDIT get it for free: everything they match is editable.
+     * than issuing a second full paginated walk under an EDIT-scoped cache key. Managers and
+     * EDIT-scoped requests need no separate edit lookup: everything they match is editable.
      *
      * `idOnTheSource` is forwarded so `getUserPrincipals` resolves identity without reading
      * the user document; the auth strategies already normalize it to a value or null. Each
@@ -1719,19 +1786,12 @@ const getListAgentsHandler = async (req, res) => {
      */
     const { idOnTheSource } = req.user;
     const [
-      accessibleIds,
+      { accessibleIds, editableIds },
       publiclyAccessibleIds,
       cachedRefreshEntry,
       accessibleSkillIds,
-      editableIds,
     ] = await Promise.all([
-      findAccessibleResources({
-        userId,
-        role: req.user.role,
-        idOnTheSource,
-        resourceType: ResourceType.AGENT,
-        requiredPermissions: requiredPermission,
-      }),
+      getAgentListAccess(req.user, requiredPermission, { hasCapability, findAccessibleResources }),
       findPubliclyAccessibleResources({
         resourceType: ResourceType.AGENT,
         requiredPermissions: PermissionBits.VIEW,
@@ -1746,82 +1806,34 @@ const getListAgentsHandler = async (req, res) => {
             resourceType: ResourceType.SKILL,
             requiredPermissions: PermissionBits.VIEW,
           }),
-      needsEditableLookup
-        ? findAccessibleResources({
-            userId,
-            role: req.user.role,
-            idOnTheSource,
-            resourceType: ResourceType.AGENT,
-            requiredPermissions: PermissionBits.EDIT,
-          })
-        : null,
     ]);
 
-    const isValidCachedRefresh =
-      cachedRefreshEntry != null &&
-      typeof cachedRefreshEntry === 'object' &&
-      cachedRefreshEntry.urlCache != null;
-
-    /**
-     * Refresh all S3 avatars for this user's accessible agent set (not only the current page)
-     * This addresses page-size limits preventing refresh of agents beyond the first page.
-     *
-     * Scoped to agents that actually carry an S3 avatar so the `MAX_AVATAR_REFRESH_AGENTS`
-     * budget is spent on agents that can do work. Unfiltered, that budget is the most
-     * recently updated accessible agents regardless of avatar, and because a refresh writes
-     * through `updateAgent` and advances `updatedAt`, the window is self-reinforcing: an
-     * S3-avatar agent ranked past the budget never enters it and its presigned URL is never
-     * regenerated. The predicate is not indexed (`avatar` is `Mixed`), so this trades docs
-     * examined for that coverage.
-     *
-     * Must settle BEFORE the list query below, and is deliberately not parallelized with
-     * it. `updateAgent` writes through `findOneAndUpdate` on a `timestamps: true` schema,
-     * so refreshing an avatar advances `updatedAt`, the very field
-     * `getListAgentsByAccess` sorts and cursors on. A refresh landing after the first
-     * page's snapshot would move that agent ahead of the returned cursor, dropping it
-     * from every later page and silently truncating the caller's flattened list.
-     * Serializing costs nothing on the common path: a cache hit returns below without
-     * issuing any query, so only the once-per-30-minutes miss pays for the ordering.
-     */
-    const resolveAvatarRefresh = async () => {
-      if (isValidCachedRefresh) {
-        logger.debug('[/Agents] S3 avatar refresh already checked, skipping');
-        return cachedRefreshEntry;
-      }
-      try {
-        const fullList = await db.getListAgentsByAccess({
-          accessibleIds,
-          otherParams: { 'avatar.source': FileSources.s3 },
-          limit: MAX_AVATAR_REFRESH_AGENTS,
-          after: null,
-        });
-        const { urlCache } = await refreshListAvatars({
-          agents: fullList?.data ?? [],
-          userId,
-          refreshS3Url,
-          updateAgent: db.updateAgent,
-        });
-        const refreshEntry = { urlCache };
-        await cache.set(refreshKey, refreshEntry, Time.THIRTY_MINUTES);
-        return refreshEntry;
-      } catch (err) {
-        logger.error('[/Agents] Error refreshing avatars for full list: %o', err);
-        return null;
-      }
-    };
-
-    const cachedRefresh = await resolveAvatarRefresh();
-
-    // Use the new ACL-aware function
+    // Use the ACL-aware function before refreshing so the requested ordering and page
+    // determine which avatars receive bounded S3 work.
     const data = await db.getListAgentsByAccess({
       accessibleIds,
+      tenantId: req.user.tenantId ?? null,
       otherParams: filter,
       limit,
       after: cursor,
       includeSkillConfig: true,
+      includeExecutionConfig: true,
+      sort: sortMode,
+    });
+    const agents = data?.data ?? [];
+
+    const cachedRefresh = await resolveAvatarRefresh({
+      agents,
+      userId,
+      cachedRefreshEntry,
+      cache,
+      refreshKey,
+      cacheTtl: Time.THIRTY_MINUTES,
+      coverageLimit: req.config?.endpoints?.[EModelEndpoint.agents]?.avatarRefresh?.coverageLimit,
+      refreshS3Url,
+      updateAgent: db.updateAgentAvatar,
     });
 
-    const agents = data?.data ?? [];
     if (!agents.length) {
       return res.json(data);
     }
@@ -1832,10 +1844,9 @@ const getListAgentsHandler = async (req, res) => {
 
     const publicSet = new Set(publiclyAccessibleIds.map((oid) => oid.toString()));
     /** Null for EDIT-scoped requests, where every matched agent is editable by definition. */
-    const editableSet = editableIds ? new Set(editableIds.map((oid) => oid.toString())) : null;
+    const editableSet = editableIds ? new Set(editableIds) : null;
     const agentsWithContacts = await attachOwnerContacts(agents);
 
-    const urlCache = cachedRefresh?.urlCache;
     data.data = agentsWithContacts.map((agent) => {
       if (accessibleSkillSet) {
         sanitizeViewerSkillScope(agent, accessibleSkillSet);
@@ -1845,14 +1856,7 @@ const getListAgentsHandler = async (req, res) => {
           agent.isPublic = true;
         }
         agent.isEditable = editableSet == null || editableSet.has(agent?._id?.toString());
-        if (
-          urlCache &&
-          agent?.id &&
-          agent?.avatar?.source === FileSources.s3 &&
-          urlCache[agent.id]
-        ) {
-          agent.avatar = { ...agent.avatar, filepath: urlCache[agent.id] };
-        }
+        return applyCachedAvatarUrl(agent, cachedRefresh);
       } catch (err) {
         logger.warn('[/Agents] Error mapping agent %s for list response: %o', agent?.id, err);
       }
@@ -1861,8 +1865,12 @@ const getListAgentsHandler = async (req, res) => {
 
     return res.json(data);
   } catch (error) {
+    const mappedError = mapMarketplaceListError(error);
+    if (mappedError) {
+      return res.status(mappedError.status).json(mappedError.body);
+    }
     logger.error('[/Agents] Error listing Agents: %o', error);
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 };
 
@@ -1959,7 +1967,7 @@ const uploadAgentAvatarHandler = async (req, res) => {
 
     try {
       const avatarCache = getLogStores(CacheKeys.S3_EXPIRY_INTERVAL);
-      await avatarCache.delete(`${req.user.id}:agents_avatar_refresh`);
+      await avatarCache.delete(getAgentListAvatarRefreshKey(req.user));
     } catch (cacheErr) {
       logger.error('[/:agent_id/avatar] Error invalidating avatar refresh cache', cacheErr);
     }
@@ -2009,21 +2017,29 @@ const revertAgentVersionHandler = async (req, res) => {
       return res.status(400).json({ error: 'version_index is required' });
     }
 
-    const existingAgent = await db.getAgent({ id });
+    const existingAgent = await db.getAgent({ id }, {});
 
     if (!existingAgent) {
       return res.status(404).json({ error: 'Agent not found' });
     }
 
     const revertVersion = existingAgent.versions?.[version_index];
+    const restoredWorkspaceConfiguration = revertVersion
+      ? resolveAgentWorkspaceRestoreConfiguration({
+          version: revertVersion,
+          current: existingAgent,
+        })
+      : undefined;
     if (
-      revertVersion &&
+      isActiveAgentWorkspaceConfiguration(restoredWorkspaceConfiguration) &&
       !validateStatefulCodeEnvironment(
         req,
         res,
-        revertVersion.stateful_code_sessions,
-        revertVersion.stateful_code_environment,
-        revertVersion.code_environment_id,
+        restoredWorkspaceConfiguration.stateful_code_sessions,
+        restoredWorkspaceConfiguration.stateful_code_environment,
+        restoredWorkspaceConfiguration.code_environment_id,
+        false,
+        restoredWorkspaceConfiguration.code_workspace_id,
       )
     ) {
       return;
@@ -2065,7 +2081,7 @@ const revertAgentVersionHandler = async (req, res) => {
       .filter(Boolean);
     const actions =
       actionIds.length > 0
-        ? ((await db.getActions({ agent_id: id, action_id: { $in: actionIds } }, true)) ?? [])
+        ? ((await db.getActions({ agentId: id, actionId: actionIds }, true)) ?? [])
         : [];
 
     if (

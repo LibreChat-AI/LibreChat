@@ -2,6 +2,7 @@ import { Constants } from '@librechat/agents';
 import type { CodeEnvFile, CodeSessionContext, ToolSessionMap } from '@librechat/agents';
 import {
   buildAgentInitialToolSessions,
+  mergeCodeFilesIntoContext,
   buildInitialToolSessions,
   collectCodeExecutionProfileRoutes,
   seedCodeFilesIntoSessions,
@@ -21,6 +22,62 @@ const file = (id: string, storage_session_id: string, name: string): CodeEnvFile
    * primed code-execution attachments at the test boundary (most are
    * chat uploads). Tests that need shared kinds set it explicitly. */
   kind: 'user',
+});
+
+describe('mergeCodeFilesIntoContext', () => {
+  it('adds a freshly provisioned file to an existing session context', () => {
+    const prior: CodeSessionContext = {
+      session_id: 'exec-1',
+      files: [file('a', 'store-1', 'a.csv')],
+      lastUpdated: 1,
+    };
+
+    const merged = mergeCodeFilesIntoContext(prior, [file('b', 'store-1', 'b.csv')]);
+
+    expect(merged?.session_id).toBe('exec-1');
+    expect(merged?.files.map((f) => f.id)).toEqual(['a', 'b']);
+  });
+
+  it('builds a context when the batch had none', () => {
+    const merged = mergeCodeFilesIntoContext(undefined, [file('b', 'store-2', 'b.csv')]);
+
+    expect(merged?.session_id).toBe('store-2');
+    expect(merged?.files.map((f) => f.id)).toEqual(['b']);
+  });
+
+  it('does not duplicate a file the context already carries', () => {
+    const prior: CodeSessionContext = {
+      session_id: 'exec-1',
+      files: [file('a', 'store-1', 'a.csv')],
+      lastUpdated: 1,
+    };
+
+    const merged = mergeCodeFilesIntoContext(prior, [file('a', 'store-1', 'a.csv')]);
+
+    expect(merged?.files.map((f) => f.id)).toEqual(['a']);
+  });
+
+  it('drops a provisioned file whose destination the context already claimed', () => {
+    /**
+     * The destination constraint has to hold on this path too. Lazy provisioning
+     * folds its uploads into a context the graph seeded at run start, so a name
+     * the seed already claimed reaches codeapi as a duplicate destination and
+     * takes the whole `/exec` call down, exactly as in the seeding path.
+     */
+    const prior: CodeSessionContext = {
+      session_id: 'exec-1',
+      files: [file('id-A', 'sess-A', 'data.csv')],
+      lastUpdated: 1,
+    };
+
+    const merged = mergeCodeFilesIntoContext(prior, [file('id-B', 'sess-B', 'data.csv')]);
+
+    expect(merged?.files.map((f) => f.id)).toEqual(['id-A']);
+  });
+
+  it('reports nothing to record when there are no files', () => {
+    expect(mergeCodeFilesIntoContext({ session_id: 'exec-1' }, [])).toBeUndefined();
+  });
 });
 
 describe('seedCodeFilesIntoSessions', () => {

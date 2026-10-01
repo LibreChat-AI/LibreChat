@@ -13,7 +13,7 @@ services:
       - "5433:5432"
 
   rag_api:
-    image: registry.librechat.ai/danny-avila/librechat-rag-api-dev:latest
+    image: registry.librechat.ai/librechat-ai/librechat-rag-api-dev:latest
     environment:
       - DB_HOST=vectordb
       - DB_PORT=5432

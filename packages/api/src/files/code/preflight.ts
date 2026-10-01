@@ -63,7 +63,13 @@ export interface PreflightCodeOutputBatchInput {
   readonly artifact?: CodeOutputArtifact | null;
   readonly limits: CodeOutputPreflightLimits;
   readonly prepare: (input: PrepareCodeOutputInput) => Promise<PreparedCodeOutput>;
-  readonly onInspectionUnavailable?: (index: number) => void;
+  /** Reports an artifact whose bytes could not be fetched for inspection.
+   *  The batch degrades that entry to the download fallback and the turn
+   *  still succeeds, so this callback is the only trace the failure leaves;
+   *  it carries the cause so the reason is not lost with it. `index` is the
+   *  position within the batch, not within the artifact's own file list —
+   *  inherited files and files past the configured count never enter it. */
+  readonly onInspectionUnavailable?: (index: number, cause: unknown) => void;
 }
 
 function throwIfContentBlocked(
@@ -183,7 +189,7 @@ export async function preflightCodeOutputBatch(
         maxBytes: transportBytes,
         inspectContent: inspectionActive,
       });
-    } catch (_error) {
+    } catch (error) {
       inspectedBytes += transportBytes;
       if (inspectionActive) {
         const blockedField = getBlockedUninspectableFileField(input.filters, selectedFields);
@@ -191,7 +197,7 @@ export async function preflightCodeOutputBatch(
           throw new UninspectableFileError(blockedField);
         }
       }
-      input.onInspectionUnavailable?.(index);
+      input.onInspectionUnavailable?.(index, error);
       entries[index] = { ...entry, downloadFallback: true };
       continue;
     }

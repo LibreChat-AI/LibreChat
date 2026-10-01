@@ -386,7 +386,7 @@ export const HighlightedText = memo(function HighlightedText({
 
   return (
     <span
-      className={`rounded px-0 py-0.5 transition-colors ${isHighlighted ? 'bg-amber-300/20' : ''}`}
+      className={`rounded px-0 py-0.5 transition-colors ${isHighlighted ? 'bg-surface-active' : ''}`}
     >
       {children}
     </span>

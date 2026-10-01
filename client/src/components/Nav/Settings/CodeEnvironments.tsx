@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import { createCodeWorkerSetupCommand, isCodeWorkerShell } from 'librechat-data-provider';
 import {
   Button,
+  Chip,
   Input,
   Label,
   OGDialog,
@@ -17,26 +19,82 @@ import {
 import type {
   CodeEnvironmentPermissionDecision,
   TCodeEnvironmentSummary,
+  CodeWorkerShell,
 } from 'librechat-data-provider';
 import type { CodeEnvironmentPairingResponse } from '~/data-provider/CodeEnvironments';
 import {
   useCodeEnvironmentsQuery,
+  useCodeEnvironmentStatusQuery,
   useDeleteCodeEnvironmentMutation,
   usePairCodeEnvironmentMutation,
   useUpdateCodeEnvironmentSettingsMutation,
 } from '~/data-provider';
 import { useLocalize } from '~/hooks';
 
+const statusPresentation = {
+  offline: { label: 'com_ui_code_environment_status_offline', tone: 'error' },
+  starting: { label: 'com_ui_code_environment_status_starting', tone: 'warning' },
+  ready: { label: 'com_ui_code_environment_status_ready', tone: 'success' },
+} as const;
+
+function EnvironmentStatus({ environmentId }: { environmentId: string }) {
+  const localize = useLocalize();
+  const query = useCodeEnvironmentStatusQuery(environmentId);
+  if (query.isLoading) {
+    return <Chip tone="neutral">{localize('com_ui_code_environment_status_checking')}</Chip>;
+  }
+  if (query.isError || query.data == null) {
+    return <Chip tone="warning">{localize('com_ui_code_environment_status_unavailable')}</Chip>;
+  }
+  const presentation = statusPresentation[query.data.status];
+  return (
+    <div className="flex min-w-0 flex-col items-end gap-1">
+      <Chip tone={presentation.tone}>{localize(presentation.label)}</Chip>
+      {query.data.sandboxProfile != null && (
+        <span className="max-w-48 truncate text-xs text-text-tertiary">
+          {[query.data.sandboxProfile, ...(query.data.runtimes ?? [])].join(' · ')}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function WorkerCommand({ pairing }: { pairing: CodeEnvironmentPairingResponse['pairing'] }) {
   const { showToast } = useToastContext();
   const localize = useLocalize();
-  const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
-  const command = `librechat-code pair ${shellQuote(pairing.endpoint)} ${shellQuote(pairing.code)} --worker-id ${shellQuote(pairing.workerId)}`;
+  const [shell, setShell] = useState<CodeWorkerShell>('posix');
+  const command = createCodeWorkerSetupCommand(pairing, shell, {
+    allowWorkspaceWrites: true,
+    allowWorkspaceCommands: true,
+  });
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-border-medium bg-surface-secondary p-3">
-      <p className="text-sm font-medium text-text-primary">
-        {localize('com_ui_code_environment_pairing_ready')}
-      </p>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-medium text-text-primary">
+          {localize('com_ui_code_environment_pairing_ready')}
+        </p>
+        <Select
+          value={shell}
+          onValueChange={(value) => {
+            if (isCodeWorkerShell(value)) {
+              setShell(value);
+            }
+          }}
+        >
+          <SelectTrigger
+            className="w-auto min-w-36"
+            aria-label={localize('com_ui_code_environment_shell')}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="posix">{localize('com_ui_code_environment_shell_posix')}</SelectItem>
+            <SelectItem value="powershell">
+              {localize('com_ui_code_environment_shell_powershell')}
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
       <p className="text-xs text-text-secondary">
         {localize('com_ui_code_environment_pairing_description')}
       </p>
@@ -261,42 +319,45 @@ export default function CodeEnvironments() {
                 <p className="truncate text-sm font-medium text-text-primary">{environment.name}</p>
                 <p className="truncate text-xs text-text-secondary">{environment.id}</p>
               </div>
-              {environment.canDelete && (
-                <OGDialog>
-                  <OGDialogTrigger asChild>
-                    <Button type="button" variant="outline" size="sm">
-                      {localize('com_ui_delete')}
-                    </Button>
-                  </OGDialogTrigger>
-                  <OGDialogTemplate
-                    showCloseButton={false}
-                    title={localize('com_ui_code_environment_remove_title')}
-                    main={
-                      <p className="text-sm text-text-secondary">
-                        {localize('com_ui_code_environment_remove_description')}
-                      </p>
-                    }
-                    selection={{
-                      selectHandler: () =>
-                        deleteMutation.mutate(environment.id, {
-                          onSuccess: () =>
-                            showToast({
-                              message: localize('com_ui_code_environment_removed'),
-                              status: 'success',
-                            }),
-                          onError: () =>
-                            showToast({
-                              message: localize('com_ui_code_environment_remove_error'),
-                              status: 'error',
-                            }),
-                        }),
-                      selectClasses:
-                        'bg-surface-destructive text-text-on-status transition-all duration-200 hover:bg-surface-destructive-hover',
-                      selectText: localize('com_ui_delete'),
-                    }}
-                  />
-                </OGDialog>
-              )}
+              <div className="flex shrink-0 items-center gap-2">
+                <EnvironmentStatus environmentId={environment.id} />
+                {environment.canDelete && (
+                  <OGDialog>
+                    <OGDialogTrigger asChild>
+                      <Button type="button" variant="outline" size="sm">
+                        {localize('com_ui_delete')}
+                      </Button>
+                    </OGDialogTrigger>
+                    <OGDialogTemplate
+                      showCloseButton={false}
+                      title={localize('com_ui_code_environment_remove_title')}
+                      main={
+                        <p className="text-sm text-text-secondary">
+                          {localize('com_ui_code_environment_remove_description')}
+                        </p>
+                      }
+                      selection={{
+                        selectHandler: () =>
+                          deleteMutation.mutate(environment.id, {
+                            onSuccess: () =>
+                              showToast({
+                                message: localize('com_ui_code_environment_removed'),
+                                status: 'success',
+                              }),
+                            onError: () =>
+                              showToast({
+                                message: localize('com_ui_code_environment_remove_error'),
+                                status: 'error',
+                              }),
+                          }),
+                        selectClasses:
+                          'bg-surface-destructive text-text-on-status transition-all duration-200 hover:bg-surface-destructive-hover',
+                        selectText: localize('com_ui_delete'),
+                      }}
+                    />
+                  </OGDialog>
+                )}
+              </div>
             </div>
             <EnvironmentPermissions environment={environment} />
           </div>

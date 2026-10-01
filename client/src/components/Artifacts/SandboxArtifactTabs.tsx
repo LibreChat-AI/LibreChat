@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react/unstyled';
 import type { editor } from 'monaco-editor';
@@ -42,14 +42,23 @@ export default function SandboxArtifactTabs({
     lastIdRef.current = artifact.id;
   }, [artifact.id, setCurrentCode]);
 
-  const { files, fileKey, template, sharedProps } = useArtifactProps({ artifact });
+  const { files, fileKey, template, sharedProps, deriveFiles } = useArtifactProps({ artifact });
+  const editedCode = hasCurrentArtifactCode ? currentCode : undefined;
+
+  /* An artifact whose preview entry is derived from its source needs the whole
+   * set rebuilt from the editor text; `ArtifactPreview` can only swap the file
+   * the editor owns. Empty text counts as no edit there, so it does here too. */
+  const previewFiles = useMemo(
+    () => (deriveFiles != null && editedCode ? deriveFiles(editedCode) : files),
+    [deriveFiles, editedCode, files],
+  );
 
   return (
     <div className="flex h-full w-full flex-col">
       <Tabs.Content
         value="code"
         id="artifacts-code"
-        className="h-full w-full flex-grow overflow-auto"
+        className="h-full w-full grow overflow-auto"
         tabIndex={-1}
       >
         <ArtifactCodeEditor
@@ -59,18 +68,14 @@ export default function SandboxArtifactTabs({
         />
       </Tabs.Content>
 
-      <Tabs.Content
-        value="preview"
-        className="h-full w-full flex-grow overflow-hidden"
-        tabIndex={-1}
-      >
+      <Tabs.Content value="preview" className="h-full w-full grow overflow-hidden" tabIndex={-1}>
         <ArtifactPreview
-          files={files}
+          files={previewFiles}
           fileKey={fileKey}
           template={template}
           previewRef={previewRef}
           sharedProps={sharedProps}
-          currentCode={hasCurrentArtifactCode ? currentCode : undefined}
+          currentCode={editedCode}
           startupConfig={resolvedStartupConfig}
         />
       </Tabs.Content>

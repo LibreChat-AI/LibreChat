@@ -56,6 +56,36 @@ describe('typed message mutation policy', () => {
     ).toThrow(expect.objectContaining({ code: 'content_filter_uninspectable' }));
   });
 
+  it('reports locator traversal failures through branch dependencies', async () => {
+    const onTraversalFailure = jest.fn();
+    const message = {
+      isUserSubmitted: true,
+      files: [{ file_id: 'owned' }],
+      content: Array.from({ length: 4200 }, () => ({ type: 'text', text: 'safe' })),
+    };
+    await expect(
+      assertStoredMessageBranchAllowed(
+        {
+          filters: { files: { pii: { fields: ['name'], starterPatterns: ['sk_prefix'] } } },
+          user: { id: 'user-1' },
+          message,
+        },
+        {
+          getFiles: jest.fn().mockResolvedValue([{ file_id: 'owned', filename: 'safe.txt' }]),
+          onTraversalFailure,
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'content_filter_uninspectable' });
+    expect(onTraversalFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: 'omit_resolved_file_locators',
+        reason: 'array_length',
+        messageCount: 1,
+        resolvedFileCount: 1,
+      }),
+    );
+  });
+
   it('hydrates canonical files before admitting a branch message', async () => {
     const getFiles = jest.fn().mockResolvedValue([
       {

@@ -615,6 +615,41 @@ describe('axios 401 interceptor — Authorization header guard', () => {
     expect(hrefWrites[0]).toBe('/login?redirect_to=%2Fc%2Frace');
   });
 
+  it('settles concurrent idle-tab requests and preserves the deep link when the session is gone', async () => {
+    setTokenHeader('expired-token');
+    const hrefWrites = setTrackedWindowLocation({
+      href: 'http://localhost/c/resume?view=chat',
+      pathname: '/c/resume',
+      search: '?view=chat',
+      hash: '',
+    });
+    const events: string[] = [];
+    const listener = (event: Event) => events.push((event as CustomEvent).detail.state);
+    window.addEventListener('authRecovery', listener);
+    mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) => {
+      if (config.url?.includes('/api/auth/refresh') === true) {
+        return Promise.reject({
+          response: { status: 401, data: { code: 'OPENID_SESSION_MISSING' } },
+          config,
+        });
+      }
+      return create401Error(config);
+    });
+    try {
+      const results = await Promise.allSettled([
+        axios.get('/api/messages'),
+        axios.get('/api/convos'),
+        axios.get('/api/files'),
+      ]);
+      expect(results.every((result) => result.status === 'rejected')).toBe(true);
+      expect(getCallsForUrl('/api/auth/refresh')).toHaveLength(1);
+      expect(hrefWrites).toEqual(['/login?redirect_to=%2Fc%2Fresume%3Fview%3Dchat']);
+      expect(events).toEqual(['started', 'finished']);
+    } finally {
+      window.removeEventListener('authRecovery', listener);
+    }
+  });
+
   it('keeps redirect deduping when the storage timestamp is corrupted', async () => {
     expect.assertions(2);
     setTokenHeader('expired-token');

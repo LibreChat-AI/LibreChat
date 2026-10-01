@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import type { TStartupConfig } from 'librechat-data-provider';
+import { DEFAULT_APP_TITLE, REDIRECT_PARAM, hasStoredRedirect, setDocumentTitle } from '~/utils';
 import { TranslationKeys, useLocalize } from '~/hooks';
 import { useGetStartupConfig } from '~/data-provider';
 import AuthLayout from '~/components/Auth/AuthLayout';
-import { REDIRECT_PARAM, SESSION_KEY } from '~/utils';
 
 const headerMap: Record<string, TranslationKeys> = {
   '/login': 'com_auth_welcome_back',
@@ -32,8 +32,7 @@ export default function StartupLayout({ isAuthenticated }: { isAuthenticated?: b
   useEffect(() => {
     if (isAuthenticated) {
       const hasPendingRedirect =
-        new URLSearchParams(window.location.search).has(REDIRECT_PARAM) ||
-        sessionStorage.getItem(SESSION_KEY) != null;
+        new URLSearchParams(window.location.search).has(REDIRECT_PARAM) || hasStoredRedirect();
       if (!hasPendingRedirect) {
         navigate('/c/new', { replace: true });
       }
@@ -44,7 +43,7 @@ export default function StartupLayout({ isAuthenticated }: { isAuthenticated?: b
   }, [isAuthenticated, navigate, data]);
 
   useEffect(() => {
-    document.title = startupConfig?.appTitle || 'LibreChat';
+    setDocumentTitle(startupConfig?.appTitle || DEFAULT_APP_TITLE, true);
   }, [startupConfig?.appTitle]);
 
   useEffect(() => {

@@ -82,12 +82,12 @@ function CardHeader({
 }) {
   return (
     <div className="flex items-start gap-3">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-tertiary text-text-secondary">
+      <div className="bg-surface-tertiary text-text-secondary flex h-8 w-8 shrink-0 items-center justify-center rounded-full">
         {icon}
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-text-primary">{title}</p>
-        {identity && <p className="truncate text-xs text-text-secondary">{identity}</p>}
+        <p className="text-text-primary text-sm font-medium">{title}</p>
+        {identity && <p className="text-text-secondary truncate text-xs">{identity}</p>}
       </div>
     </div>
   );
@@ -237,7 +237,7 @@ export default function ElicitationForm({
   const markUrlOpened = () => setUrlOpened(true);
 
   const errorLine = sendFailed ? (
-    <p role="alert" className="text-xs text-text-destructive">
+    <p role="alert" className="text-text-destructive text-xs">
       {localize('com_ui_elicitation_error')}
     </p>
   ) : null;
@@ -254,7 +254,7 @@ export default function ElicitationForm({
     // Once resolved, recede to a muted one-line trace at the sibling tool call's
     // "Completed …" altitude rather than lingering as a full card.
     card = (
-      <div className="my-1.5 flex h-5 items-center gap-2 text-text-secondary">
+      <div className="text-text-secondary my-1.5 flex h-5 items-center gap-2">
         {succeeded ? (
           <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         ) : (
@@ -265,29 +265,29 @@ export default function ElicitationForm({
     );
   } else {
     card = (
-      <div className="my-2 rounded-xl border border-border-light bg-surface-secondary p-4">
+      <div className="border-border-light bg-surface-secondary my-2 rounded-xl border p-4">
         <div className="flex flex-col gap-3">
           <CardHeader
             icon={<ShieldCheck className="h-4 w-4" aria-hidden="true" />}
             title={localize('com_ui_elicitation_title')}
             identity={identity}
           />
-          <p className="text-sm text-text-secondary">{message}</p>
+          <p className="text-text-secondary text-sm">{message}</p>
           {/* MUST be visible and readable before the user clicks anything — see
               `getSafeUrl`/`getHostname`/`hasPunycodeLabel`. Rendered above the
               button row regardless of `urlOpened` so it stays available to
               re-examine before Continue, too. */}
           {safeUrl && (
-            <div className="flex flex-col gap-1 rounded-lg border border-border-light bg-surface-tertiary p-2.5">
-              <p className="text-xs text-text-secondary">
+            <div className="border-border-light bg-surface-tertiary flex flex-col gap-1 rounded-lg border p-2.5">
+              <p className="text-text-secondary text-xs">
                 {localize('com_ui_elicitation_url_domain_label')}{' '}
-                <span className="font-semibold text-text-primary">{hostname}</span>
+                <span className="text-text-primary font-semibold">{hostname}</span>
               </p>
-              <p title={safeUrl} className="break-all text-xs text-text-secondary">
+              <p title={safeUrl} className="text-text-secondary text-xs break-all">
                 {safeUrl}
               </p>
               {suspiciousHostname && (
-                <p role="alert" className="flex items-center gap-1.5 text-xs text-text-warning">
+                <p role="alert" className="text-text-warning flex items-center gap-1.5 text-xs">
                   <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   {localize('com_ui_elicitation_suspicious_url')}
                 </p>
@@ -303,7 +303,7 @@ export default function ElicitationForm({
                     variant="submit"
                     size="sm"
                     aria-disabled={submitting || undefined}
-                    className={cn(submitting && 'pointer-events-none opacity-50')}
+                    className={cn(submitting && 'pointer-events-none')}
                   >
                     <a
                       href={safeUrl}
@@ -319,7 +319,7 @@ export default function ElicitationForm({
                   </Button>
                 ) : (
                   url && (
-                    <p role="alert" className="text-xs text-text-destructive">
+                    <p role="alert" className="text-text-destructive text-xs">
                       {localize('com_ui_elicitation_invalid_url')}
                     </p>
                   )
@@ -355,7 +355,7 @@ export default function ElicitationForm({
                     variant="outline"
                     size="sm"
                     aria-disabled={submitting || undefined}
-                    className={cn(submitting && 'pointer-events-none opacity-50')}
+                    className={cn(submitting && 'pointer-events-none')}
                   >
                     <a
                       href={safeUrl}

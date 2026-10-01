@@ -301,9 +301,11 @@ describe('createImageAuthorizationMiddleware', () => {
     expect(next).toHaveBeenCalledTimes(1);
     expect(deps.getAssistant).toHaveBeenCalledWith(
       {
-        'avatar.filepath': {
-          $in: [assistantPath, `${assistantPath}?manual=false`, `${assistantPath}?manual=true`],
-        },
+        avatarFilepath: [
+          assistantPath,
+          `${assistantPath}?manual=false`,
+          `${assistantPath}?manual=true`,
+        ],
       },
       { _id: 1, assistant_id: 1, endpoint: 1 },
     );

@@ -1,3 +1,5 @@
+import { maxWorkers } from '../../config/jest.workers.cjs';
+
 export default {
   collectCoverageFrom: ['src/**/*.{js,jsx,ts,tsx}', '!<rootDir>/node_modules/'],
   coveragePathIgnorePatterns: ['/node_modules/', '/dist/'],
@@ -16,7 +18,7 @@ export default {
   //     lines: 57,
   //   },
   // },
-  maxWorkers: '50%',
+  maxWorkers,
   restoreMocks: true,
   testTimeout: 15000,
   // React component testing requires jsdom environment

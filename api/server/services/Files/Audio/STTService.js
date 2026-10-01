@@ -16,7 +16,11 @@ const {
   contentFilterUninspectableResponse,
   getBlockedUninspectableFileField,
 } = require('@librechat/api');
-const { extractEnvVariable, STTProviders } = require('librechat-data-provider');
+const {
+  STTProviders,
+  extractEnvVariable,
+  listConfiguredSpeechProviders,
+} = require('librechat-data-provider');
 const { getAppConfig } = require('~/server/services/Config');
 
 /**
@@ -163,9 +167,7 @@ class STTService {
       );
     }
 
-    const providers = Object.entries(sttSchema).filter(
-      ([key, value]) => key !== 'allowedAddresses' && Object.keys(value).length > 0,
-    );
+    const providers = listConfiguredSpeechProviders(sttSchema);
 
     if (providers.length !== 1) {
       throw new Error(

@@ -709,6 +709,201 @@ describe('getOpenAILLMConfig', () => {
     });
   });
 
+  describe('GPT-6 Astra Responses API routing', () => {
+    const astraConfig = (overrides: Record<string, unknown> = {}) =>
+      getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        endpoint: EModelEndpoint.openAI,
+        modelOptions: { model: 'gpt-6-astra' },
+        ...overrides,
+      });
+
+    it('routes every Astra turn to the Responses API, not only reasoning ones', () => {
+      expect(astraConfig().llmConfig).toHaveProperty('useResponsesApi', true);
+    });
+
+    /**
+     * The reason routing is decided here rather than at invocation time: the
+     * max-tokens field is shaped from `useResponsesApi`, so switching APIs later
+     * would send `max_completion_tokens` to an endpoint expecting
+     * `max_output_tokens`.
+     */
+    it('shapes max tokens for the API it actually uses', () => {
+      const result = astraConfig({
+        modelOptions: { model: 'gpt-6-astra', max_tokens: 4096 },
+      });
+      const kwargs = (result.llmConfig.modelKwargs ?? {}) as Record<string, unknown>;
+      expect(kwargs).not.toHaveProperty('max_completion_tokens');
+      expect(kwargs.max_output_tokens ?? result.llmConfig.maxTokens).toBeDefined();
+    });
+
+    it('keeps routing when a drop rule only clears reasoning_effort', () => {
+      /**
+       * Unlike the GPT-5.6 default, Astra's routing is not reasoning-driven, so
+       * a rule clearing an unsupported stored effort must not disable it.
+       */
+      expect(astraConfig({ dropParams: ['reasoning_effort'] }).llmConfig).toHaveProperty(
+        'useResponsesApi',
+        true,
+      );
+    });
+
+    it('respects an explicit opt-out', () => {
+      expect(astraConfig({ dropParams: ['useResponsesApi'] }).llmConfig).not.toHaveProperty(
+        'useResponsesApi',
+        true,
+      );
+    });
+
+    it('leaves a custom gateway on its configured path', () => {
+      expect(astraConfig({ baseURL: 'https://gateway.internal/v1' }).llmConfig).not.toHaveProperty(
+        'useResponsesApi',
+        true,
+      );
+    });
+
+    it('does not change routing for other models', () => {
+      const result = getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        endpoint: EModelEndpoint.openAI,
+        modelOptions: { model: 'gpt-5.5' },
+      });
+      expect(result.llmConfig).not.toHaveProperty('useResponsesApi', true);
+    });
+  });
+
+  describe('First-party endpoint declaration', () => {
+    /**
+     * The agents SDK gates its model-specific request constraints on this flag
+     * and defaults them off, rather than inferring the endpoint from a base
+     * URL. Only this layer can tell a faithful first-party route from a
+     * gateway, so the decision is made here and declared downstream.
+     */
+    const configFor = (overrides: Record<string, unknown> = {}) =>
+      getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        endpoint: EModelEndpoint.openAI,
+        modelOptions: { model: 'gpt-6-astra' },
+        ...overrides,
+      });
+
+    it('declares the first-party endpoint for canonical OpenAI', () => {
+      expect(configFor().llmConfig).toHaveProperty('firstPartyEndpoint', true);
+    });
+
+    it('declares it for an explicit api.openai.com base URL', () => {
+      expect(configFor({ baseURL: 'https://api.openai.com/v1' }).llmConfig).toHaveProperty(
+        'firstPartyEndpoint',
+        true,
+      );
+    });
+
+    it('does not declare it for Azure serverless without Azure OpenAI configuration', () => {
+      expect(configFor({ endpoint: EModelEndpoint.azureOpenAI }).llmConfig).not.toHaveProperty(
+        'firstPartyEndpoint',
+      );
+    });
+
+    it('does not declare it for a custom gateway base URL', () => {
+      expect(configFor({ baseURL: 'https://gateway.internal/v1' }).llmConfig).not.toHaveProperty(
+        'firstPartyEndpoint',
+      );
+    });
+
+    it('does not declare it for a non-OpenAI endpoint', () => {
+      expect(configFor({ endpoint: EModelEndpoint.custom }).llmConfig).not.toHaveProperty(
+        'firstPartyEndpoint',
+      );
+    });
+  });
+
+  describe('Azure Astra routing', () => {
+    const azure = {
+      azureOpenAIApiInstanceName: 'test-instance',
+      azureOpenAIApiDeploymentName: 'production-deployment',
+      azureOpenAIApiVersion: '2025-04-01-preview',
+      azureOpenAIApiKey: 'test-api-key',
+    };
+    const azureConfig = (overrides: Partial<Parameters<typeof getOpenAILLMConfig>[0]> = {}) =>
+      getOpenAILLMConfig({
+        azure,
+        apiKey: 'test-api-key',
+        streaming: true,
+        endpoint: EModelEndpoint.azureOpenAI,
+        modelOptions: { model: 'gpt-6-astra', max_tokens: 2048 },
+        ...overrides,
+      });
+
+    it.each([
+      undefined,
+      'https://${INSTANCE_NAME}.openai.azure.com/openai/deployments/${DEPLOYMENT_NAME}',
+      'https://test-instance.openai.azure.com/openai/v1',
+      'https://test-instance.services.ai.azure.com/openai/v1',
+      'https://test-instance.cognitiveservices.azure.com/openai/v1',
+      'https://test-instance.openai.azure.us/openai/v1',
+      'https://test-instance.openai.azure.cn/openai/v1',
+    ])('routes Azure Astra to Responses at %s and retains its model identity', (baseURL) => {
+      expect(azureConfig({ baseURL }).llmConfig).toMatchObject({
+        model: 'gpt-6-astra',
+        useResponsesApi: true,
+        firstPartyEndpoint: true,
+        modelKwargs: { model: 'production-deployment', max_output_tokens: 2048 },
+      });
+    });
+
+    it.each([
+      { modelOptions: { model: 'gpt-6-astra-2026-09-03', max_tokens: 2048 } },
+      { modelOptions: { model: 'gpt-4.1', max_tokens: 2048 }, addParams: { model: 'gpt-6-astra' } },
+      { dropParams: ['reasoning_effort'] },
+      { reasoningFormat: ReasoningParameterFormat.disabled },
+    ])('routes using the effective model independently of reasoning: %j', (overrides) => {
+      expect(azureConfig(overrides).llmConfig.useResponsesApi).toBe(true);
+    });
+
+    it.each([
+      { modelOptions: { model: 'gpt-6-astra', max_tokens: 2048, useResponsesApi: false } },
+      { addParams: { useResponsesApi: false } },
+      { dropParams: ['useResponsesApi'] },
+    ])('keeps Astra constraints on an explicit Chat Completions opt-out: %j', (overrides) => {
+      const { llmConfig } = azureConfig(overrides);
+      expect(llmConfig.useResponsesApi).not.toBe(true);
+      expect(llmConfig).toMatchObject({
+        model: 'gpt-6-astra',
+        firstPartyEndpoint: true,
+        azureOpenAIApiDeploymentName: 'production-deployment',
+        modelKwargs: { model: 'production-deployment', max_completion_tokens: 2048 },
+      });
+    });
+
+    it.each([
+      { modelOptions: { model: 'gpt-5.4-mini' } },
+      { addParams: { model: 'gpt-5.4-mini' } },
+    ])('leaves other Azure models on the deployment name: %j', (overrides) => {
+      const { llmConfig } = azureConfig(overrides);
+      expect(llmConfig.useResponsesApi).not.toBe(true);
+      expect(llmConfig).toMatchObject({
+        model: 'production-deployment',
+        firstPartyEndpoint: true,
+      });
+      expect(llmConfig.modelKwargs?.model).toBeUndefined();
+    });
+
+    it.each([
+      'https://gateway.internal/openai/v1',
+      'https://test-instance.openai.azure.com.example.org/openai/v1',
+      'https://openai.azure.com/openai/v1',
+      'not-a-url',
+    ])('leaves gateway routing and request constraints unchanged: %s', (baseURL) => {
+      const { llmConfig } = azureConfig({ baseURL });
+      expect(llmConfig.useResponsesApi).not.toBe(true);
+      expect(llmConfig.firstPartyEndpoint).toBeUndefined();
+      expect(llmConfig.model).toBe('production-deployment');
+    });
+  });
+
   describe('GPT-5.6 Responses API Requirement', () => {
     it.each(['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6'])(
       'should default to Responses API for %s when reasoning_effort is set',

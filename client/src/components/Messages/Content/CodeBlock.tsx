@@ -101,7 +101,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({
   return (
     <div
       ref={containerRef}
-      className="relative w-full overflow-hidden rounded-xl border border-border-light text-xs"
+      className="border-border-light relative w-full overflow-hidden rounded-xl border text-xs"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onFocus={handleFocus}
@@ -117,9 +117,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({
           allowExecution={allowExecution}
         />
       </div>
-      <div
-        className={cn(classProp, 'overflow-y-auto bg-surface-chat p-4 dark:bg-surface-primary-alt')}
-      >
+      <div className={cn(classProp, 'bg-surface-code-body overflow-y-auto p-4')}>
         <code
           ref={codeRef}
           className={cn(
@@ -140,11 +138,11 @@ const CodeBlock: React.FC<CodeBlockProps> = ({
       />
       {allowExecution === true && toolCalls && toolCalls.length > 0 && (
         <>
-          <div className="border-t border-border-light bg-surface-primary-alt p-4 text-xs dark:bg-transparent [.user-turn_&]:bg-surface-code">
-            <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-text-secondary">
+          <div className="border-border-light bg-surface-code border-t p-4 text-xs">
+            <div className="text-text-secondary mb-1 text-[10px] font-medium tracking-wide uppercase">
               {localize('com_ui_output')}
             </div>
-            <div className="flex flex-col-reverse text-text-primary">
+            <div className="text-text-primary flex flex-col-reverse">
               <pre className="shrink-0">
                 <LogContent
                   output={(currentToolCall?.result as string | undefined) ?? ''}

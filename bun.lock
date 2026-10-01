@@ -39,7 +39,7 @@
     },
     "api": {
       "name": "@librechat/backend",
-      "version": "0.8.8-rc2",
+      "version": "0.8.8",
       "dependencies": {
         "@anthropic-ai/vertex-sdk": "^0.16.0",
         "@aws-sdk/client-bedrock-runtime": "^3.1013.0",
@@ -151,7 +151,7 @@
     },
     "client": {
       "name": "@librechat/frontend",
-      "version": "0.8.8-rc2",
+      "version": "0.8.8",
       "dependencies": {
         "@ariakit/react": "^0.4.29",
         "@ariakit/react-components": "^0.1.2",
@@ -245,7 +245,7 @@
         "remark-supersub": "^1.0.0",
         "sse.js": "^2.8.0",
         "swr": "^2.3.8",
-        "tailwind-merge": "^1.9.1",
+        "tailwind-merge": "^2.6.1",
         "tailwindcss-animate": "^1.0.5",
         "tailwindcss-radix": "^2.8.0",
         "ts-md5": "^1.3.1",
@@ -276,7 +276,6 @@
         "babel-plugin-transform-import-meta": "^2.3.2",
         "babel-plugin-transform-vite-meta-env": "^1.0.3",
         "eslint-plugin-jest": "^29.1.0",
-        "fs-extra": "^11.3.2",
         "identity-obj-proxy": "^3.0.0",
         "jest": "^30.2.0",
         "jest-canvas-mock": "^2.5.2",
@@ -295,7 +294,7 @@
     },
     "packages/api": {
       "name": "@librechat/api",
-      "version": "1.7.47",
+      "version": "1.7.52",
       "dependencies": {
         "@langchain/langgraph-checkpoint": "^1.1.2",
         "@langchain/langgraph-checkpoint-mongodb": "^1.4.0",
@@ -408,7 +407,7 @@
     },
     "packages/client": {
       "name": "@librechat/client",
-      "version": "0.4.77",
+      "version": "0.4.82",
       "devDependencies": {
         "@babel/core": "^7.28.5",
         "@babel/preset-env": "^7.29.5",
@@ -486,12 +485,12 @@
         "react-i18next": "^15.4.0 || ^15.6.0",
         "react-resizable-panels": "^4.7.4",
         "react-textarea-autosize": "^8.4.0",
-        "tailwind-merge": "^1.9.1",
+        "tailwind-merge": "^2.6.1",
       },
     },
     "packages/data-provider": {
       "name": "librechat-data-provider",
-      "version": "0.8.522",
+      "version": "0.8.527",
       "dependencies": {
         "axios": "^1.16.0",
         "dayjs": "^1.11.13",
@@ -526,7 +525,7 @@
     },
     "packages/data-schemas": {
       "name": "@librechat/data-schemas",
-      "version": "0.0.69",
+      "version": "0.0.74",
       "dependencies": {
         "mdast-util-directive": "^3.0.0",
         "mdast-util-from-markdown": "^2.0.1",
@@ -3296,8 +3295,6 @@
 
     "fresh": ["fresh@2.0.0", "", {}, "sha512-Rx/WycZ60HOaqLKAi6cHRKKI7zxWbJ31MhntmtwMoaTeF7XFH9hhBp8vITaMidfljRQ6eYWCKkaTK+ykVJHP2A=="],
 
-    "fs-extra": ["fs-extra@11.3.2", "", { "dependencies": { "graceful-fs": "^4.2.0", "jsonfile": "^6.0.1", "universalify": "^2.0.0" } }, "sha512-Xr9F6z6up6Ws+NjzMCZc6WXg2YFRlrLP9NQDO3VQrWrfiojdhS56TzueT88ze0uBdCTwEIhQ3ptnmKeWGFAe0A=="],
-
     "fsevents": ["fsevents@2.3.3", "", { "os": "darwin" }, "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw=="],
 
     "function-bind": ["function-bind@1.1.2", "", {}, "sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA=="],
@@ -4768,7 +4765,7 @@
 
     "tabbable": ["tabbable@6.2.0", "", {}, "sha512-Cat63mxsVJlzYvN51JmVXIgNoUokrIaT2zLclCXjRd8boZ0004U4KCs/sToJ75C6sdlByWxpYnb5Boif1VSFew=="],
 
-    "tailwind-merge": ["tailwind-merge@1.14.0", "", {}, "sha512-3mFKyCo/MBcgyOTlrY8T7odzZFx+w+qKSMAmdFzRvqBfLlSigU6TZnlFHK0lkMwj9Bj8OYU+9yW9lmGuS0QEnQ=="],
+    "tailwind-merge": ["tailwind-merge@2.6.1", "", {}, "sha512-Oo6tHdpZsGpkKG88HJ8RR1rg/RdnEkQEfMoEk2x1XRI3F1AxeU+ijRXpiVUF4UbLfcxxRGw6TbUINKYdWVsQTQ=="],
 
     "tailwindcss": ["tailwindcss@3.4.1", "", { "dependencies": { "@alloc/quick-lru": "^5.2.0", "arg": "^5.0.2", "chokidar": "^3.5.3", "didyoumean": "^1.2.2", "dlv": "^1.1.3", "fast-glob": "^3.3.0", "glob-parent": "^6.0.2", "is-glob": "^4.0.3", "jiti": "^1.19.1", "lilconfig": "^2.1.0", "micromatch": "^4.0.5", "normalize-path": "^3.0.0", "object-hash": "^3.0.0", "picocolors": "^1.0.0", "postcss": "^8.4.23", "postcss-import": "^15.1.0", "postcss-js": "^4.0.1", "postcss-load-config": "^4.0.1", "postcss-nested": "^6.0.1", "postcss-selector-parser": "^6.0.11", "resolve": "^1.22.2", "sucrase": "^3.32.0" }, "bin": { "tailwind": "lib/cli.js", "tailwindcss": "lib/cli.js" } }, "sha512-qAYmXRfk3ENzuPBakNK0SRrUDipP8NQnEY6772uDhflcQz5EhRdD7JNZxyrFHVQNCwULPBn6FNPp9brpO7ctcA=="],
 

@@ -32,6 +32,9 @@ export async function loadDefaultInterface({
     modelSelect:
       interfaceConfig?.modelSelect ??
       (hasModelSpecs ? includesAddedEndpoints : defaults.modelSelect),
+    codeHighlightThrottleMs:
+      interfaceConfig?.codeHighlightThrottleMs ?? defaults.codeHighlightThrottleMs,
+    agentSelectorLimit: interfaceConfig?.agentSelectorLimit ?? defaults.agentSelectorLimit,
     parameters: interfaceConfig?.parameters ?? (hasModelSpecs ? false : defaults.parameters),
     presets: interfaceConfig?.presets ?? (hasModelSpecs ? false : defaults.presets),
     privacyPolicy: interfaceConfig?.privacyPolicy ?? defaults.privacyPolicy,
@@ -44,6 +47,15 @@ export async function loadDefaultInterface({
     contextCost: interfaceConfig?.contextCost ?? defaults.contextCost,
     feedback: interfaceConfig?.feedback ?? defaults.feedback,
     currency: interfaceConfig?.currency ?? defaults.currency,
+    theme: interfaceConfig?.theme,
+    steerArmConfirmationTimeoutMs:
+      interfaceConfig?.steerArmConfirmationTimeoutMs ?? defaults.steerArmConfirmationTimeoutMs,
+    queuedTurnReconciliationTimeoutMs:
+      interfaceConfig?.queuedTurnReconciliationTimeoutMs ??
+      defaults.queuedTurnReconciliationTimeoutMs,
+    queuedSendLockTimeoutMs:
+      interfaceConfig?.queuedSendLockTimeoutMs ?? defaults.queuedSendLockTimeoutMs,
+    composerRecentFiles: interfaceConfig?.composerRecentFiles ?? defaults.composerRecentFiles,
 
     // Permissions and related settings - only include if explicitly configured
     bookmarks: interfaceConfig?.bookmarks,
@@ -53,12 +65,14 @@ export async function loadDefaultInterface({
     agents: interfaceConfig?.agents,
     temporaryChat: interfaceConfig?.temporaryChat,
     temporaryChatRetention: interfaceConfig?.temporaryChatRetention,
+    generalChatRetention: interfaceConfig?.generalChatRetention,
     retentionMode: interfaceConfig?.retentionMode,
     retainAgentFiles: interfaceConfig?.retainAgentFiles,
     runCode: interfaceConfig?.runCode,
     webSearch: interfaceConfig?.webSearch,
     fileSearch: interfaceConfig?.fileSearch,
     fileCitations: interfaceConfig?.fileCitations,
+    traceViewer: interfaceConfig?.traceViewer,
     defaultPinnedTools: interfaceConfig?.defaultPinnedTools,
     peoplePicker: interfaceConfig?.peoplePicker,
     marketplace: interfaceConfig?.marketplace,
@@ -66,6 +80,13 @@ export async function loadDefaultInterface({
     skills: interfaceConfig?.skills,
     sharedLinks: interfaceConfig?.sharedLinks,
     schedules: interfaceConfig?.schedules,
+
+    /* Merged per field rather than taken whole, so an operator who sets one capability keeps
+       the defaults for the rest instead of silently turning the others off. */
+    replyNotifications: {
+      ...defaults.replyNotifications,
+      ...interfaceConfig?.replyNotifications,
+    },
   });
 
   return loadedInterface;

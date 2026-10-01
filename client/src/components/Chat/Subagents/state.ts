@@ -43,6 +43,7 @@ export interface SubagentProgress {
   subagentType: string;
   /** Child agent id (for avatar / name lookup in the ticker header). */
   subagentAgentId?: string;
+  subagentKind?: SubagentUpdateEvent['subagentKind'];
   /**
    * Fully aggregated child content parts. Bounded by structure (text
    * runs + reasoning runs + tool calls), not by delta volume.
@@ -259,6 +260,7 @@ const eventKey = (event: SubagentUpdateEvent): string | undefined => {
 /** One child invocation selected for the shared read-only activity panel. */
 export type ActiveSubagentPanel = {
   host: 'conversation' | 'share';
+  subagentIdentity?: PartMetadata['subagentIdentity'];
   shareId?: string;
   parentConversationId: string;
   parentMessageId: string;
@@ -540,6 +542,7 @@ const foldAcceptedSubagentEvents = (
         subagentRunId: first.subagentRunId,
         subagentType: first.subagentType,
         subagentAgentId: first.subagentAgentId,
+        subagentKind: first.subagentKind,
         contentParts: [],
         aggregatorState: initSubagentAggregatorState(),
         tickerState: initSubagentTickerState(),
@@ -572,7 +575,9 @@ const foldAcceptedSubagentEvents = (
   let contentParts = previous?.contentParts ?? [];
   let aggregatorState = previous?.aggregatorState ?? initSubagentAggregatorState();
   let tickerState = previous?.tickerState ?? initSubagentTickerState();
+  let subagentKind = previous?.subagentKind;
   for (const event of events) {
+    subagentKind = event.subagentKind ?? subagentKind;
     const foldEvent =
       event.phase === 'reasoning_delta' &&
       event.data == null &&
@@ -609,6 +614,7 @@ const foldAcceptedSubagentEvents = (
     subagentRunId: last.subagentRunId,
     subagentType: last.subagentType,
     subagentAgentId: last.subagentAgentId ?? previous?.subagentAgentId,
+    subagentKind,
     contentParts,
     aggregatorState,
     tickerState,

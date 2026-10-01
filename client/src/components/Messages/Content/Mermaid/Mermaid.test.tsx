@@ -160,12 +160,14 @@ describe('Mermaid Artifact expansion', () => {
     const artifactButton = await screen.findByRole('button', { expanded: true });
     expect(screen.queryByTestId('mermaid-dialog')).not.toBeInTheDocument();
     expect(screen.getByText('com_ui_mermaid_diagram')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_close_artifact')).toBeInTheDocument();
+    expect(artifactButton).toHaveAccessibleName(/com_ui_click_to_close/);
     expect(artifactButton).toHaveAttribute('aria-controls', 'artifact-viewer');
-    expect(artifactButton).toHaveClass('w-fit', 'max-w-full', 'bg-surface-hover');
+    /* The mermaid trigger is an `ArtifactRow` like every other artifact in
+     * the stream: the diagram glyph sits in the row's glyph slot, tinted
+     * with the `status-info` accent that marks a rendered preview. */
+    expect(artifactButton).toHaveClass('text-text-primary');
     expect(container.querySelector('.lucide-workflow')).not.toBeNull();
     expect(container.querySelector('.lucide-workflow')?.parentElement).toHaveClass(
-      'bg-status-info-subtle',
       'text-status-info',
     );
     await waitFor(() => expect(artifactButton).toHaveFocus());
@@ -183,12 +185,93 @@ describe('Mermaid Artifact expansion', () => {
     fireEvent.click(artifactButton);
     expect(state.currentArtifactId).toBeNull();
     expect(state.visible).toBe(false);
-    expect(artifactButton).toHaveClass('bg-surface-tertiary');
-    expect(screen.getByText('com_ui_open_artifact')).toBeInTheDocument();
+    expect(artifactButton).not.toHaveClass('text-text-primary');
+    expect(artifactButton).toHaveAccessibleName(/com_ui_artifact_click/);
 
     fireEvent.click(screen.getByRole('button', { expanded: false }));
     expect(state.currentArtifactId).toBe(artifact?.id);
     expect(state.visible).toBe(true);
+  });
+
+  it('hands a file-backed diagram its download and reports the row mode', async () => {
+    /* A code-execution `.mmd` arrives wrapped in a header that shows the
+     * filename and its own download button. Once the diagram becomes its
+     * trigger row, the row takes both over, and the wrapper needs to know
+     * so it stops repeating them beside it. */
+    const onDownload = jest.fn();
+    const rowModes: boolean[] = [];
+    render(
+      <RecoilRoot>
+        <MemoryRouter initialEntries={['/c/conversation-1']}>
+          <MessageContext.Provider
+            value={{ messageId: 'message-1', conversationId: 'conversation-1', isExpanded: true }}
+          >
+            <Mermaid
+              id="flow-file"
+              artifact={
+                {
+                  id: 'tool-artifact-flow',
+                  type: 'application/vnd.mermaid',
+                  title: 'flow.mmd',
+                  content: 'graph TD\nA-->B',
+                  lastUpdateTime: 1,
+                } as Artifact
+              }
+              onDownload={onDownload}
+              onRowModeChange={(isRow) => rowModes.push(isRow)}
+            >
+              {'graph TD\nA-->B'}
+            </Mermaid>
+          </MessageContext.Provider>
+        </MemoryRouter>
+      </RecoilRoot>,
+    );
+
+    expect(rowModes).toEqual([false]);
+    fireEvent.click(screen.getByRole('button', { name: mockOpenAsArtifactLabel }));
+
+    const downloadButton = await screen.findByRole('button', { name: 'com_ui_download flow.mmd' });
+    fireEvent.click(downloadButton);
+    expect(onDownload).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(rowModes[rowModes.length - 1]).toBe(true));
+  });
+
+  it('shows the caller-supplied display name on the row, not the raw title', async () => {
+    /* A sandbox-generated `_.flow-abcdef.mmd` reads as `.flow.mmd` through
+     * `displayFilename`; the row and its download button must not regress
+     * to the internal filename once the diagram collapses. */
+    render(
+      <RecoilRoot>
+        <MemoryRouter initialEntries={['/c/conversation-1']}>
+          <MessageContext.Provider
+            value={{ messageId: 'message-1', conversationId: 'conversation-1', isExpanded: true }}
+          >
+            <Mermaid
+              id="flow-hidden"
+              artifact={
+                {
+                  id: 'tool-artifact-hidden',
+                  type: 'application/vnd.mermaid',
+                  title: '_.flow-abcdef.mmd',
+                  content: 'graph TD\nA-->B',
+                  lastUpdateTime: 1,
+                } as Artifact
+              }
+              rowTitle=".flow.mmd"
+              onDownload={jest.fn()}
+            >
+              {'graph TD\nA-->B'}
+            </Mermaid>
+          </MessageContext.Provider>
+        </MemoryRouter>
+      </RecoilRoot>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: mockOpenAsArtifactLabel }));
+
+    expect(await screen.findByText('.flow.mmd')).toBeInTheDocument();
+    expect(screen.queryByText('_.flow-abcdef.mmd')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_download .flow.mmd' })).toBeInTheDocument();
   });
 
   it('separates diagrams that sit in different content parts of one message', async () => {

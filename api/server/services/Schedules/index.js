@@ -22,22 +22,14 @@ function getService() {
   const isUserDeleting = async (userId) => !(await methods.isAgentTriggerPrincipalActive(userId));
 
   service = createSchedulesService({
+    preflightMCP: require('./mcp'),
     methods,
     getAppConfig,
     findUserById: (userId) =>
       mongoose.models.User.findById(userId).select('_id tenantId role').lean(),
-    findBalance: (userId) => mongoose.models.Balance.findOne({ user: userId }).lean(),
+    findBalance: (userId) => methods.findBalanceByUser(userId, { includeReservedCredits: true }),
     upsertBalance: (userId, { set, setOnInsert }) =>
-      mongoose.models.Balance.findOneAndUpdate(
-        { user: userId },
-        {
-          ...(set && Object.keys(set).length > 0 ? { $set: set } : {}),
-          ...(setOnInsert && Object.keys(setOnInsert).length > 0
-            ? { $setOnInsert: setOnInsert }
-            : {}),
-        },
-        { upsert: true, new: true },
-      ).lean(),
+      methods.upsertBalanceFields(userId, set ?? {}, setOnInsert ?? {}),
     // Compare-and-set: only initialize an existing record while its credit is still null.
     // No upsert — a CAS miss must re-read the winner, not insert a fresh balance. `null`
     // in the filter also matches a legacy record whose `tokenCredits` field is absent.
@@ -45,7 +37,7 @@ function getService() {
       mongoose.models.Balance.findOneAndUpdate(
         { user: userId, tokenCredits: null },
         { $set: { tokenCredits, ...(sync && Object.keys(sync).length > 0 ? sync : {}) } },
-        { new: true },
+        { new: true, sort: { _id: 1 } },
       ).lean(),
     enqueueAgentTrigger,
     // Reconciliation reads the durable delivery to tell a still-live admission (a
@@ -92,6 +84,11 @@ module.exports = {
   getLimits: invoke('getLimits'),
   fireScheduleNow: invoke('fireScheduleNow'),
   recordScheduleOutcome: invoke('recordScheduleOutcome'),
+  recordMCPToolAuthFailure: (input) =>
+    require('@librechat/api').recordScheduledMCPToolAuthFailure(
+      input,
+      () => getService().recordMCPToolAuthFailure,
+    ),
   beginScheduledStop: invoke('beginScheduledStop'),
   acknowledgeScheduledStopPersistence: invoke('acknowledgeScheduledStopPersistence'),
   claimScheduleResume: invoke('claimScheduleResume'),

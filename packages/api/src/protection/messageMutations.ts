@@ -3,6 +3,7 @@ import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provi
 import type { CanonicalFileInspectionUser, GetCanonicalFilesForInspection } from './files';
 import type { ModelBoundContentInput } from '../middleware/modelBoundContent';
 import type { StoredMessageContentInput } from './adapters/submissions';
+import type { LocatorTraversalReporter } from './diagnostics';
 import type { ChatSubmissionBody } from './adapters/chat';
 import type { TextContentFragment } from './types';
 import { hasActiveFilePolicy, resolveCanonicalFileReferences } from './files';
@@ -58,12 +59,17 @@ export interface StoredMessageBranchPolicyInput {
  */
 export async function assertStoredMessageBranchAllowed(
   input: StoredMessageBranchPolicyInput,
-  dependencies: { readonly getFiles: GetCanonicalFilesForInspection },
+  dependencies: {
+    readonly getFiles: GetCanonicalFilesForInspection;
+    readonly onTraversalFailure?: LocatorTraversalReporter;
+  },
 ): Promise<void> {
   let storedMessage: StoredMessageContentInput = input.message;
   let resolvedFiles: NonNullable<ModelBoundContentInput['resolvedFiles']> = [];
   if (hasActiveFilePolicy(input.filters)) {
     const inspection = await resolveCanonicalFileReferences({
+      messageCount: 1,
+      onTraversalFailure: dependencies.onTraversalFailure,
       filters: input.filters,
       input: input.message,
       user: input.user,
@@ -73,6 +79,7 @@ export async function assertStoredMessageBranchAllowed(
     resolvedFiles = inspection.hydratedFiles;
   }
   assertModelBoundContent({
+    onTraversalFailure: dependencies.onTraversalFailure,
     filters: input.filters,
     legacyPii: input.legacyPii,
     storedMessages: [storedMessage],

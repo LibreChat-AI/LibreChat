@@ -1,14 +1,9 @@
 /**
- * Tests for abortMiddleware - spendCollectedUsage function
+ * Tests for abortMiddleware.
  *
- * This tests the token spending logic for abort scenarios,
- * particularly for parallel agents (addedConvo) where multiple
- * models need their tokens spent.
- *
- * spendCollectedUsage delegates to recordCollectedUsage from @librechat/api,
- * passing pricing + bulkWriteOps deps, with context: 'abort'.
- * After spending, it clears the collectedUsage array to prevent double-spending
- * from the AgentClient finally block (which shares the same array reference).
+ * The run that produced a stopped response records its own usage on exit
+ * (AgentClient labels it 'abort'), so this route must not bill: it only stops
+ * the job and persists the partial response.
  */
 
 const mockSpendTokens = jest.fn().mockResolvedValue();
@@ -31,9 +26,12 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
-  /** Real implementation: these tests exist to verify abort classification
-   *  itself, so mocking it would assert the mock rather than the behavior. */
+  /** Real implementations: these tests exist to verify abort classification and the
+   *  readable-reply gate themselves, so mocking them would assert the mock rather than the
+   *  behavior. */
   isAbortError: jest.requireActual('@librechat/api').isAbortError,
+  hasPersistableAbortContent: jest.requireActual('@librechat/api').hasPersistableAbortContent,
+  announceReply: jest.requireActual('@librechat/api').announceReply,
   countTokens: jest.fn().mockResolvedValue(100),
   isEnabled: jest.fn().mockReturnValue(false),
   sendEvent: jest.fn(),
@@ -69,6 +67,7 @@ const mockUpdateBalance = jest.fn().mockResolvedValue({});
 const mockBulkInsertTransactions = jest.fn().mockResolvedValue(undefined);
 jest.mock('~/models', () => ({
   saveMessage: jest.fn().mockResolvedValue(),
+  stampConvoLastResponse: jest.fn().mockResolvedValue(),
   getConvo: jest.fn().mockResolvedValue({ title: 'Test Chat' }),
   updateBalance: mockUpdateBalance,
   bulkInsertTransactions: mockBulkInsertTransactions,
@@ -86,7 +85,7 @@ const { logger } = require('@librechat/data-schemas');
 const { sendError } = require('~/server/middleware/error');
 const { GenerationJobManager } = require('@librechat/api');
 const db = require('~/models');
-const { handleAbort, handleAbortError, spendCollectedUsage } = require('./abortMiddleware');
+const { handleAbort, handleAbortError } = require('./abortMiddleware');
 
 const buildAbortRequest = () => ({
   body: {
@@ -95,169 +94,6 @@ const buildAbortRequest = () => ({
   user: {
     id: 'user-123',
   },
-});
-
-describe('abortMiddleware - spendCollectedUsage', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
-  describe('spendCollectedUsage delegation', () => {
-    it('should return early if collectedUsage is empty', async () => {
-      await spendCollectedUsage({
-        userId: 'user-123',
-        conversationId: 'convo-123',
-        collectedUsage: [],
-        fallbackModel: 'gpt-4',
-      });
-
-      expect(mockRecordCollectedUsage).not.toHaveBeenCalled();
-    });
-
-    it('should return early if collectedUsage is null', async () => {
-      await spendCollectedUsage({
-        userId: 'user-123',
-        conversationId: 'convo-123',
-        collectedUsage: null,
-        fallbackModel: 'gpt-4',
-      });
-
-      expect(mockRecordCollectedUsage).not.toHaveBeenCalled();
-    });
-
-    it('should call recordCollectedUsage with abort context and full deps', async () => {
-      const collectedUsage = [{ input_tokens: 100, output_tokens: 50, model: 'gpt-4' }];
-
-      await spendCollectedUsage({
-        userId: 'user-123',
-        conversationId: 'convo-123',
-        collectedUsage,
-        fallbackModel: 'gpt-4',
-        messageId: 'msg-123',
-      });
-
-      expect(mockRecordCollectedUsage).toHaveBeenCalledTimes(1);
-      expect(mockRecordCollectedUsage).toHaveBeenCalledWith(
-        {
-          spendTokens: expect.any(Function),
-          spendStructuredTokens: expect.any(Function),
-          pricing: {
-            getMultiplier: mockGetMultiplier,
-            getCacheMultiplier: mockGetCacheMultiplier,
-          },
-          bulkWriteOps: {
-            insertMany: mockBulkInsertTransactions,
-            updateBalance: mockUpdateBalance,
-          },
-        },
-        {
-          user: 'user-123',
-          conversationId: 'convo-123',
-          collectedUsage,
-          context: 'abort',
-          messageId: 'msg-123',
-          model: 'gpt-4',
-        },
-      );
-    });
-
-    it('should pass context abort for multiple models (parallel agents)', async () => {
-      const collectedUsage = [
-        { input_tokens: 100, output_tokens: 50, model: 'gpt-4' },
-        { input_tokens: 80, output_tokens: 40, model: 'claude-3' },
-        { input_tokens: 120, output_tokens: 60, model: 'gemini-pro' },
-      ];
-
-      await spendCollectedUsage({
-        userId: 'user-123',
-        conversationId: 'convo-123',
-        collectedUsage,
-        fallbackModel: 'gpt-4',
-      });
-
-      expect(mockRecordCollectedUsage).toHaveBeenCalledTimes(1);
-      expect(mockRecordCollectedUsage).toHaveBeenCalledWith(
-        expect.any(Object),
-        expect.objectContaining({
-          context: 'abort',
-          collectedUsage,
-        }),
-      );
-    });
-
-    it('should handle real-world parallel agent abort scenario', async () => {
-      const collectedUsage = [
-        { input_tokens: 31596, output_tokens: 151, model: 'gemini-3-flash-preview' },
-        { input_tokens: 28000, output_tokens: 120, model: 'gpt-5.2' },
-      ];
-
-      await spendCollectedUsage({
-        userId: 'user-123',
-        conversationId: 'convo-123',
-        collectedUsage,
-        fallbackModel: 'gemini-3-flash-preview',
-      });
-
-      expect(mockRecordCollectedUsage).toHaveBeenCalledTimes(1);
-      expect(mockRecordCollectedUsage).toHaveBeenCalledWith(
-        expect.any(Object),
-        expect.objectContaining({
-          user: 'user-123',
-          conversationId: 'convo-123',
-          context: 'abort',
-          model: 'gemini-3-flash-preview',
-        }),
-      );
-    });
-
-    /**
-     * Race condition prevention: after abort middleware spends tokens,
-     * the collectedUsage array is cleared so AgentClient.recordCollectedUsage()
-     * (which shares the same array reference) sees an empty array and returns early.
-     */
-    it('should clear collectedUsage array after spending to prevent double-spending', async () => {
-      const collectedUsage = [
-        { input_tokens: 100, output_tokens: 50, model: 'gpt-4' },
-        { input_tokens: 80, output_tokens: 40, model: 'claude-3' },
-      ];
-
-      expect(collectedUsage.length).toBe(2);
-
-      await spendCollectedUsage({
-        userId: 'user-123',
-        conversationId: 'convo-123',
-        collectedUsage,
-        fallbackModel: 'gpt-4',
-      });
-
-      expect(mockRecordCollectedUsage).toHaveBeenCalledTimes(1);
-      expect(collectedUsage.length).toBe(0);
-    });
-
-    it('should await recordCollectedUsage before clearing array', async () => {
-      let resolved = false;
-      mockRecordCollectedUsage.mockImplementation(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        resolved = true;
-        return { input_tokens: 100, output_tokens: 50 };
-      });
-
-      const collectedUsage = [
-        { input_tokens: 100, output_tokens: 50, model: 'gpt-4' },
-        { input_tokens: 80, output_tokens: 40, model: 'claude-3' },
-      ];
-
-      await spendCollectedUsage({
-        userId: 'user-123',
-        conversationId: 'convo-123',
-        collectedUsage,
-        fallbackModel: 'gpt-4',
-      });
-
-      expect(resolved).toBe(true);
-      expect(collectedUsage.length).toBe(0);
-    });
-  });
 });
 
 describe('abortMiddleware - handleAbortError', () => {
@@ -328,7 +164,7 @@ describe('abortMiddleware - handleAbortError', () => {
  * caller-supplied data, so an omitted value is indistinguishable from enabled and
  * the write proceeds even when `transactions.enabled` is false.
  */
-describe('abortMiddleware - transactions config', () => {
+describe('abortMiddleware - handleAbort billing', () => {
   const buildJobData = () => ({
     model: 'gpt-4',
     responseMessageId: 'msg-123',
@@ -363,25 +199,69 @@ describe('abortMiddleware - transactions config', () => {
     db.getConvo.mockResolvedValue({ title: 'Test Chat' });
   });
 
-  it('forwards transactions through spendCollectedUsage to recordCollectedUsage', async () => {
-    const collectedUsage = [{ input_tokens: 100, output_tokens: 50, model: 'gpt-4' }];
+  it.each([null, undefined])(
+    'keeps read state unchanged when the abort save returns %s',
+    async (saved) => {
+      const conversation = {
+        title: 'Test Chat',
+        lastResponseAt: '2026-09-01T10:00:00.000Z',
+        lastSeenAt: '2026-09-01T10:01:00.000Z',
+      };
+      db.saveMessage.mockResolvedValueOnce(saved);
+      db.getConvo.mockResolvedValueOnce(conversation);
+      GenerationJobManager.abortJob.mockResolvedValue({
+        success: true,
+        jobData: buildJobData(),
+        content: [],
+        text: 'partial',
+        collectedUsage: [],
+      });
+      const res = buildRes();
 
-    await spendCollectedUsage({
-      userId: 'user-123',
-      conversationId: 'convo-123',
-      collectedUsage,
-      fallbackModel: 'gpt-4',
-      transactions: { enabled: false },
+      await handleAbort()(buildReq(), res);
+
+      expect(db.stampConvoLastResponse).not.toHaveBeenCalled();
+      expect(JSON.parse(res.send.mock.calls[0][0]).conversation).toEqual(conversation);
+    },
+  );
+
+  it('announces a persisted stopped reply', async () => {
+    db.saveMessage.mockResolvedValueOnce({ messageId: 'msg-123' });
+    GenerationJobManager.abortJob.mockResolvedValue({
+      success: true,
+      jobData: buildJobData(),
+      content: [],
+      text: 'partial',
+      collectedUsage: [],
     });
+    const res = buildRes();
 
-    expect(mockRecordCollectedUsage).toHaveBeenCalledTimes(1);
-    expect(mockRecordCollectedUsage).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.objectContaining({ context: 'abort', transactions: { enabled: false } }),
-    );
+    await handleAbort()(buildReq(), res);
+
+    expect(db.stampConvoLastResponse).toHaveBeenCalledWith('user-123', 'convo-123', 'msg-123');
+    expect(JSON.parse(res.send.mock.calls[0][0]).final).toBe(true);
   });
 
-  it('resolves the config from req and forwards it on the collected-usage path', async () => {
+  it('does not announce a stopped turn that produced nothing to read', async () => {
+    /* An interrupt before the model's first real token still persists the unfinished
+       assistant row; a dot raised for it names a reply the user can never open. */
+    db.saveMessage.mockResolvedValueOnce({ messageId: 'msg-empty' });
+    GenerationJobManager.abortJob.mockResolvedValue({
+      success: true,
+      jobData: buildJobData(),
+      content: [{ type: 'text', text: '   ' }],
+      text: '   ',
+      collectedUsage: [],
+    });
+    const res = buildRes();
+
+    await handleAbort()(buildReq(), res);
+
+    expect(db.stampConvoLastResponse).not.toHaveBeenCalled();
+    expect(JSON.parse(res.send.mock.calls[0][0]).final).toBe(true);
+  });
+
+  it('leaves billing to the run even when the stopped job collected usage', async () => {
     const collectedUsage = [{ input_tokens: 100, output_tokens: 50, model: 'gpt-4' }];
     GenerationJobManager.abortJob.mockResolvedValue({
       success: true,
@@ -391,16 +271,14 @@ describe('abortMiddleware - transactions config', () => {
       collectedUsage,
     });
 
-    const req = buildReq();
-    await handleAbort()(req, buildRes());
+    await handleAbort()(buildReq(), buildRes());
 
     expect(logger.error).not.toHaveBeenCalled();
-    expect(mockGetTransactionsConfig).toHaveBeenCalledWith(req.config);
-    expect(mockRecordCollectedUsage).toHaveBeenCalledTimes(1);
-    expect(mockRecordCollectedUsage).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.objectContaining({ context: 'abort', transactions: { enabled: false } }),
-    );
+    expect(mockRecordCollectedUsage).not.toHaveBeenCalled();
+    expect(mockSpendTokens).not.toHaveBeenCalled();
+    expect(mockSpendStructuredTokens).not.toHaveBeenCalled();
+    expect(collectedUsage).toHaveLength(1);
+    expect(db.saveMessage).toHaveBeenCalledTimes(1);
   });
 
   it('carries the context meta the run published onto the job into the stopped response', async () => {
@@ -444,7 +322,7 @@ describe('abortMiddleware - transactions config', () => {
     expect(savedMessage.contextMeta).toBeNull();
   });
 
-  it('resolves the config from req and forwards it on the token-count fallback path', async () => {
+  it('does not bill a stopped response by token count either', async () => {
     GenerationJobManager.abortJob.mockResolvedValue({
       success: true,
       jobData: buildJobData(),
@@ -453,16 +331,11 @@ describe('abortMiddleware - transactions config', () => {
       collectedUsage: [],
     });
 
-    const req = buildReq();
-    await handleAbort()(req, buildRes());
+    await handleAbort()(buildReq(), buildRes());
 
     expect(logger.error).not.toHaveBeenCalled();
-    expect(mockGetTransactionsConfig).toHaveBeenCalledWith(req.config);
     expect(mockRecordCollectedUsage).not.toHaveBeenCalled();
-    expect(mockSpendTokens).toHaveBeenCalledTimes(1);
-    expect(mockSpendTokens).toHaveBeenCalledWith(
-      expect.objectContaining({ context: 'incomplete', transactions: { enabled: false } }),
-      expect.any(Object),
-    );
+    expect(mockSpendTokens).not.toHaveBeenCalled();
+    expect(db.saveMessage).toHaveBeenCalledTimes(1);
   });
 });

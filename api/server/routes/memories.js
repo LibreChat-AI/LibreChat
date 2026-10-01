@@ -1,4 +1,5 @@
 const express = require('express');
+const { isValidMemoryKey } = require('@librechat/data-schemas');
 const {
   Tokenizer,
   generateCheckAccess,
@@ -188,6 +189,12 @@ router.post('/', createMemoryMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'Value is required and must be a non-empty string.' });
   }
 
+  if (!isValidMemoryKey(key.trim())) {
+    return res.status(400).json({
+      error: 'Key must only contain lowercase letters and underscores.',
+    });
+  }
+
   const appConfig = req.config;
   const memoryConfig = appConfig?.memory;
   const charLimit = memoryConfig?.charLimit || 10000;
@@ -315,7 +322,18 @@ router.patch('/:key', updateMemoryMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'Value is required and must be a non-empty string.' });
   }
 
-  const newKey = bodyKey || urlKey;
+  if (bodyKey !== undefined && typeof bodyKey !== 'string') {
+    return res.status(400).json({ error: 'Key must be a string.' });
+  }
+
+  const newKey = bodyKey === undefined ? urlKey : bodyKey.trim();
+
+  if (newKey !== urlKey && !isValidMemoryKey(newKey)) {
+    return res.status(400).json({
+      error: 'Key must only contain lowercase letters and underscores.',
+    });
+  }
+
   const appConfig = req.config;
   const memoryConfig = appConfig?.memory;
   const charLimit = memoryConfig?.charLimit || 10000;

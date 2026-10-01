@@ -1,11 +1,18 @@
 import { renderHook, act } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
 import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
-import type { TMessage, TConversation, TSubmission } from 'librechat-data-provider';
+import type { Agents, TMessage, TConversation, TSubmission } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
-import type { PendingSteer, QueuedMessage } from '~/store/families';
+import type { QueuedMessage } from '~/hooks/Chat/queue';
+import type { PendingSteer } from '~/store/families';
+import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
+import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
+import { revealedQueuedTurnFamily } from '~/store/steer';
 import useResumeOnLoad from '../useResumeOnLoad';
 import store from '~/store';
 
@@ -13,6 +20,13 @@ const mockUseStreamStatus = jest.fn();
 const mockUseActiveJobs = jest.fn();
 const mockUseAgentQueuedTurns = jest.fn();
 const mockExtendActiveJobsGrace = jest.fn();
+let mockStartupConfig: { interface?: { retentionMode?: string } } | undefined;
+let mockStartupConfigSettled = true;
+let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
+
+jest.mock('~/Providers', () => ({
+  useFileMapContext: () => mockFileMap,
+}));
 
 jest.mock('~/data-provider', () => ({
   useStreamStatus: (conversationId: string | undefined, enabled: boolean) =>
@@ -29,6 +43,7 @@ jest.mock('~/data-provider', () => ({
   ACTIVE_JOBS_SUCCESSOR_GRACE_MS: jest.requireActual('~/data-provider/SSE/queries')
     .ACTIVE_JOBS_SUCCESSOR_GRACE_MS,
   extendActiveJobsGrace: () => mockExtendActiveJobsGrace(),
+  useGetStartupConfig: () => ({ data: mockStartupConfig, isFetched: mockStartupConfigSettled }),
   streamStatusQueryKey: (conversationId: string) => ['streamStatus', conversationId],
 }));
 
@@ -110,6 +125,7 @@ function renderUseResumeOnLoad({
   onSubmissionStart?: (submissionStart: number | null) => void;
 }) {
   const getMessages = jest.fn(getMessagesOverride ?? (() => messages));
+  const jotaiStore = createStore();
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -153,12 +169,12 @@ function renderUseResumeOnLoad({
     return null;
   };
   const QueuedMessagesProbe = () => {
-    const queued = useRecoilValue(store.queuedMessagesByConvoId(conversationId));
+    const queued = useAtomValue(queuedMessagesByConvoId(conversationId));
     onQueuedMessages?.(queued);
     return null;
   };
   const SiblingIndexProbe = () => {
-    const siblingIndex = useRecoilValue(store.messagesSiblingIdxFamily(siblingIndexParentId));
+    const siblingIndex = useAtomValue(siblingIdxFamily(siblingKey(siblingIndexParentId)));
     if (siblingIndexParentId) {
       onSiblingIndex?.(siblingIndex);
     }
@@ -167,19 +183,22 @@ function renderUseResumeOnLoad({
 
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={queryClient}>
-      <RecoilRoot initializeState={initializeState}>
-        <SubmissionProbe />
-        <SubmissionStartProbe />
-        <SiblingIndexProbe />
-        <PendingSteersProbe />
-        <QueuedMessagesProbe />
-        {children}
-      </RecoilRoot>
+      <JotaiProvider store={jotaiStore}>
+        <RecoilRoot initializeState={initializeState}>
+          <SubmissionProbe />
+          <SubmissionStartProbe />
+          <SiblingIndexProbe />
+          <PendingSteersProbe />
+          <QueuedMessagesProbe />
+          {children}
+        </RecoilRoot>
+      </JotaiProvider>
     </QueryClientProvider>
   );
 
   return {
     queryClient,
+    jotaiStore,
     getMessages,
     setSubmission: (nextSubmission: TSubmission | null) => setSubmissionState?.(nextSubmission),
     setIsSubmitting: (value: boolean) => setIsSubmittingState?.(value),
@@ -191,6 +210,8 @@ function renderUseResumeOnLoad({
     ),
   };
 }
+
+beforeEach(() => resetQueueFamilies());
 
 describe('useResumeOnLoad', () => {
   beforeEach(() => {
@@ -206,6 +227,7 @@ describe('useResumeOnLoad', () => {
     mockUseAgentQueuedTurns.mockReset();
     mockUseAgentQueuedTurns.mockReturnValue({ data: [], dataUpdatedAt: 1 });
     mockExtendActiveJobsGrace.mockReset();
+    mockFileMap = {};
   });
 
   afterEach(() => {
@@ -336,6 +358,138 @@ describe('useResumeOnLoad', () => {
         | null;
       expect(attached?.resumeStreamId).toBe(CONVERSATION_ID);
       expect(attached?.resumeGenerationCreatedAt).toBe(4242);
+    });
+
+    it('restores the composer approval surface from the authoritative status snapshot', async () => {
+      const pendingAction: Agents.PendingAction = {
+        actionId: 'action-1',
+        streamId: CONVERSATION_ID,
+        conversationId: CONVERSATION_ID,
+        createdAt: 4242,
+        payload: {
+          type: 'tool_approval',
+          action_requests: [
+            {
+              name: 'bash_tool',
+              tool_call_id: 'call-1',
+              arguments: { command: 'npm test' },
+            },
+          ],
+          review_configs: [
+            {
+              action_name: 'bash_tool',
+              tool_call_id: 'call-1',
+              allowed_decisions: ['approve', 'reject'],
+            },
+          ],
+        },
+      };
+      mockUseStreamStatus.mockReturnValue({
+        ...ACTIVE_STATUS,
+        data: {
+          ...ACTIVE_STATUS.data,
+          status: 'requires_action',
+          pendingAction,
+          resumeState: {
+            ...ACTIVE_STATUS.data.resumeState,
+            pendingAction,
+          },
+        },
+      });
+
+      const { jotaiStore } = renderUseResumeOnLoad({
+        messages: [buildUserMessage(CONVERSATION_ID)],
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(jotaiStore.get(pendingApprovalActionFamily(CONVERSATION_ID))).toEqual(pendingAction);
+    });
+
+    /** A reloaded forced-temporary run has no conversation row to read yet, so only the
+     *  status snapshot knows the run is hidden; a hard-coded `false` would send it into
+     *  history caches and request a title the server never creates. */
+    it.each([true, false])(
+      'rebuilds the submission with the server-recorded temporary state %s',
+      async (isTemporary) => {
+        const observedSubmissions: Array<TSubmission | null> = [];
+        mockUseStreamStatus.mockReturnValue({
+          ...ACTIVE_STATUS,
+          data: { ...ACTIVE_STATUS.data, isTemporary },
+        });
+
+        renderUseResumeOnLoad({
+          messages: [buildUserMessage(CONVERSATION_ID)],
+          onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(observedSubmissions.at(-1)?.isTemporary).toBe(isTemporary);
+      },
+    );
+
+    /** A run admitted before the administrator forced ephemeral retention recorded
+     *  `isTemporary: false`, but the resume converts it; the rebuilt submission must
+     *  already treat it as hidden so it never bumps the chat in the history caches. */
+    it('treats a pre-policy run as temporary once retention is forced', async () => {
+      mockStartupConfig = { interface: { retentionMode: 'ephemeral' } };
+      const observedSubmissions: Array<TSubmission | null> = [];
+      mockUseStreamStatus.mockReturnValue({
+        ...ACTIVE_STATUS,
+        data: { ...ACTIVE_STATUS.data, isTemporary: false },
+      });
+
+      try {
+        renderUseResumeOnLoad({
+          messages: [buildUserMessage(CONVERSATION_ID)],
+          onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(observedSubmissions.at(-1)?.isTemporary).toBe(true);
+      } finally {
+        mockStartupConfig = undefined;
+      }
+    });
+
+    /** A status snapshot that lands before the startup config would otherwise be
+     *  rebuilt without knowing the retention mode, and the conversation would then
+     *  be marked processed so the arriving config could never correct it. */
+    it('waits for the startup config before rebuilding the submission', async () => {
+      mockStartupConfigSettled = false;
+      const observedSubmissions: Array<TSubmission | null> = [];
+      mockUseStreamStatus.mockReturnValue({
+        ...ACTIVE_STATUS,
+        data: { ...ACTIVE_STATUS.data, isTemporary: false },
+      });
+
+      try {
+        const { rerender } = renderUseResumeOnLoad({
+          messages: [buildUserMessage(CONVERSATION_ID)],
+          onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(observedSubmissions.filter(Boolean)).toHaveLength(0);
+
+        mockStartupConfig = { interface: { retentionMode: 'ephemeral' } };
+        mockStartupConfigSettled = true;
+        rerender();
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(observedSubmissions.at(-1)?.isTemporary).toBe(true);
+      } finally {
+        mockStartupConfig = undefined;
+        mockStartupConfigSettled = true;
+      }
     });
 
     /** The elapsed indicator's baseline must be the generation's real start:
@@ -916,13 +1070,48 @@ describe('useResumeOnLoad', () => {
       expect(attached?.resumeStreamId).toBe(CONVERSATION_ID);
     });
 
+    it('retires a remounted reveal after fresh inactive status and restored successor history', async () => {
+      mockUseStreamStatus.mockReturnValue({ ...INACTIVE_STATUS, isSuccess: false });
+      mockUseAgentQueuedTurns.mockReturnValue({ data: [] });
+      const messages = [
+        buildUserMessage(CONVERSATION_ID),
+        { messageId: 'successor', parentMessageId: 'response' } as TMessage,
+      ];
+      const { rerender, jotaiStore, queryClient } = renderUseResumeOnLoad({ messages });
+      const family = revealedQueuedTurnFamily(CONVERSATION_ID);
+      act(() => {
+        queryClient.setQueryData([QueryKeys.messages, CONVERSATION_ID], messages);
+        jotaiStore.set(family, {
+          clientRequestId: 'queued',
+          parentMessageId: 'response',
+          generationCreatedAt: 41,
+          text: 'queued',
+          revealedAt: new Date(Date.now() - 60_000).toISOString(),
+        });
+      });
+      mockUseStreamStatus.mockReturnValue({ ...INACTIVE_STATUS, dataUpdatedAt: Date.now() + 1 });
+      rerender();
+      expect(jotaiStore.get(family)).toBeNull();
+    });
+
     it('lets the owed state lapse once the receipt has gone quiet for the window', async () => {
       jest.useFakeTimers();
       mockUseStreamStatus.mockReturnValue(INACTIVE_STATUS);
       mockUseAgentQueuedTurns.mockReturnValue({ data: [{ status: 'queued' }], dataUpdatedAt: 2 });
-      const { rerender } = renderUseResumeOnLoad({ messages: [buildUserMessage(CONVERSATION_ID)] });
+      const { rerender, jotaiStore } = renderUseResumeOnLoad({
+        messages: [buildUserMessage(CONVERSATION_ID)],
+      });
       await act(async () => {
         await Promise.resolve();
+      });
+
+      const revealFamily = revealedQueuedTurnFamily(CONVERSATION_ID);
+      jotaiStore.set(revealFamily, {
+        clientRequestId: 'queued',
+        parentMessageId: 'response',
+        generationCreatedAt: 41,
+        text: 'queued',
+        revealedAt: new Date().toISOString(),
       });
 
       /** A long wait behind an unadmitted turn must not burn the window: the
@@ -932,6 +1121,7 @@ describe('useResumeOnLoad', () => {
       });
       expect(mockUseActiveJobs).toHaveBeenLastCalledWith(true, true);
 
+      expect(jotaiStore.get(revealFamily)).not.toBeNull();
       mockUseAgentQueuedTurns.mockReturnValue({ data: [], dataUpdatedAt: 3 });
       rerender();
       await act(async () => {
@@ -944,6 +1134,7 @@ describe('useResumeOnLoad', () => {
       });
       rerender();
       expect(mockUseActiveJobs).toHaveBeenLastCalledWith(true, false);
+      expect(jotaiStore.get(revealFamily)).toBeNull();
       jest.useRealTimers();
     });
 
@@ -1202,6 +1393,47 @@ describe('useResumeOnLoad', () => {
       expect(historyRefetches()).toBe(2);
       nowSpy.mockRestore();
     });
+
+    it.each(['queued', 'claimed', 'admitted'])(
+      'retains off-screen admission ownership while a cached receipt is %s',
+      async (status) => {
+        jest.useFakeTimers();
+        mockUseStreamStatus.mockReturnValue(INACTIVE_STATUS);
+        mockUseAgentQueuedTurns.mockReturnValue({
+          data: [{ queuedTurnId: 'q1', status }],
+          dataUpdatedAt: 2,
+        });
+        const { rerender, queryClient, jotaiStore } = renderUseResumeOnLoad({
+          messages: [buildUserMessage(CONVERSATION_ID)],
+        });
+        const family = revealedQueuedTurnFamily(CONVERSATION_ID);
+        act(() => {
+          jotaiStore.set(family, {
+            clientRequestId: 'request',
+            parentMessageId: 'response',
+            generationCreatedAt: 41,
+            text: 'queued',
+            revealedAt: new Date().toISOString(),
+          });
+          queryClient.setQueryData(agentQueuedTurnsQueryKey(CONVERSATION_ID), [
+            { queuedTurnId: 'q1', status },
+          ]);
+        });
+        mockUseAgentQueuedTurns.mockReturnValue({ data: [], dataUpdatedAt: 3 });
+        rerender({ conversationId: STALE_CONVERSATION_ID });
+        await act(async () => {
+          jest.advanceTimersByTime(30_001);
+        });
+        expect(jotaiStore.get(family)).not.toBeNull();
+        mockUseAgentQueuedTurns.mockReturnValue({
+          data: [{ queuedTurnId: 'q1', status }],
+          dataUpdatedAt: 4,
+        });
+        rerender({ conversationId: CONVERSATION_ID });
+        expect(jotaiStore.get(family)).not.toBeNull();
+        jest.useRealTimers();
+      },
+    );
 
     it('expires the owed state on an absolute window even while its conversation is off-screen', async () => {
       jest.useFakeTimers();
@@ -1967,6 +2199,220 @@ describe('useResumeOnLoad', () => {
 
     renderUseResumeOnLoad({
       messages: [rootUser, branchOneResponse, branchOneFollowUp, branchOneTail, branchTwoResponse],
+      siblingIndexParentId: rootUser.messageId,
+      onSiblingIndex: (siblingIndex) => observedSiblingIndexes.push(siblingIndex),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(observedSiblingIndexes[observedSiblingIndexes.length - 1]).toBe(1);
+  });
+
+  /**
+   * A manual compaction submits no user turn: the server projects the LEAF it
+   * summarizes up to into the job's user-message slot, identity only
+   * (`projectCompactionAnchor`). Resuming one must adopt that leaf, not
+   * synthesize an empty root-parented USER row over it — the row it names is
+   * usually the assistant answer, and rewriting it detaches every turn above it.
+   */
+  it('resumes a compaction against the anchor it summarizes up to', async () => {
+    const rootUser = buildUserMessage(CONVERSATION_ID, 'root-user');
+    const anchor = {
+      messageId: 'branch-one-answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'Branch one answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const newerSibling = {
+      messageId: 'branch-two-answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'Branch two answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const observedSiblingIndexes: number[] = [];
+    const observedSubmissions: Array<TSubmission | null> = [];
+
+    mockUseStreamStatus.mockReturnValue({
+      isSuccess: true,
+      isFetching: false,
+      data: {
+        active: true,
+        status: 'running',
+        streamId: CONVERSATION_ID,
+        resumeState: {
+          runSteps: [],
+          aggregatedContent: [],
+          replayEvents: [],
+          responseMessageId: `${anchor.messageId}_`,
+          conversationId: CONVERSATION_ID,
+          isRegenerate: true,
+          userMessage: {
+            messageId: anchor.messageId,
+            conversationId: CONVERSATION_ID,
+            text: '',
+          },
+        },
+      },
+    });
+
+    renderUseResumeOnLoad({
+      messages: [rootUser, anchor, newerSibling],
+      siblingIndexParentId: rootUser.messageId,
+      onSiblingIndex: (siblingIndex) => observedSiblingIndexes.push(siblingIndex),
+      onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const submission = observedSubmissions[observedSubmissions.length - 1];
+    /** The slot keeps the anchor's own identity. */
+    expect(submission?.userMessage).toEqual(
+      expect.objectContaining({
+        messageId: anchor.messageId,
+        parentMessageId: rootUser.messageId,
+        text: anchor.text,
+        isCreatedByUser: false,
+      }),
+    );
+    /** ...is marked as the anchored run it is, so no handler writes it as a row, */
+    expect(submission?.compact).toBe(true);
+    /** ...stays in the history the run replays, */
+    expect((submission?.messages ?? []).map((message) => message.messageId)).toEqual([
+      rootUser.messageId,
+      anchor.messageId,
+      newerSibling.messageId,
+    ]);
+    /** ...and the summary hangs off it. */
+    expect(submission?.initialResponse?.parentMessageId).toBe(anchor.messageId);
+    /** The compaction runs on the branch it was started from, not the newest. */
+    expect(observedSiblingIndexes[observedSiblingIndexes.length - 1]).toBe(1);
+  });
+
+  /**
+   * Compact runs on whatever leaf the branch ends with and `canCompact` does not
+   * restrict that leaf's author, so the anchor is a USER message whenever the
+   * branch ends in one (the `compaction-on-user-turn` scenarios cover the
+   * rendered form). Recognizing the anchor by "not user-created" saw only the
+   * assistant-leaf kind: this one was rebuilt as an ordinary turn, and the sync
+   * path then merged the identity-only projection over the stored row, blanking
+   * the prompt the user is still looking at.
+   */
+  it('resumes a compaction anchored on a user leaf', async () => {
+    const rootUser = buildUserMessage(CONVERSATION_ID, 'root-user');
+    const answer = {
+      messageId: 'answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'The long answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const userLeaf = buildUserMessage(CONVERSATION_ID, 'user-leaf');
+    userLeaf.parentMessageId = answer.messageId;
+    userLeaf.text = 'Compact this before I continue';
+    const observedSubmissions: Array<TSubmission | null> = [];
+
+    mockUseStreamStatus.mockReturnValue({
+      isSuccess: true,
+      isFetching: false,
+      data: {
+        active: true,
+        status: 'running',
+        streamId: CONVERSATION_ID,
+        resumeState: {
+          runSteps: [],
+          aggregatedContent: [],
+          replayEvents: [],
+          responseMessageId: `${userLeaf.messageId}_`,
+          conversationId: CONVERSATION_ID,
+          isRegenerate: true,
+          /** `projectCompactionAnchor`: identity only, whoever wrote the leaf. */
+          userMessage: {
+            messageId: userLeaf.messageId,
+            conversationId: CONVERSATION_ID,
+            text: '',
+          },
+        },
+      },
+    });
+
+    renderUseResumeOnLoad({
+      messages: [rootUser, answer, userLeaf],
+      onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const submission = observedSubmissions[observedSubmissions.length - 1];
+    /** Marked, so no handler writes the anchor as a row... */
+    expect(submission?.compact).toBe(true);
+    /** ...and the leaf keeps the prompt the user actually sent. */
+    expect(submission?.userMessage).toEqual(
+      expect.objectContaining({
+        messageId: userLeaf.messageId,
+        parentMessageId: answer.messageId,
+        text: 'Compact this before I continue',
+        isCreatedByUser: true,
+      }),
+    );
+    expect(submission?.initialResponse?.parentMessageId).toBe(userLeaf.messageId);
+    expect((submission?.messages ?? []).map((message) => message.messageId)).toEqual([
+      rootUser.messageId,
+      answer.messageId,
+      userLeaf.messageId,
+    ]);
+  });
+
+  it('restores a compacting branch from the anchor when no response id is published yet', async () => {
+    const rootUser = buildUserMessage(CONVERSATION_ID, 'root-user');
+    const anchor = {
+      messageId: 'branch-one-answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'Branch one answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const newerSibling = {
+      messageId: 'branch-two-answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'Branch two answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const observedSiblingIndexes: number[] = [];
+
+    mockUseStreamStatus.mockReturnValue({
+      isSuccess: true,
+      isFetching: false,
+      data: {
+        active: true,
+        status: 'running',
+        streamId: CONVERSATION_ID,
+        resumeState: {
+          runSteps: [],
+          aggregatedContent: [],
+          replayEvents: [],
+          conversationId: CONVERSATION_ID,
+          isRegenerate: true,
+          /** The anchor carries no parent, so it has to name the branch itself. */
+          userMessage: {
+            messageId: anchor.messageId,
+            conversationId: CONVERSATION_ID,
+            text: '',
+          },
+        },
+      },
+    });
+
+    renderUseResumeOnLoad({
+      messages: [rootUser, anchor, newerSibling],
       siblingIndexParentId: rootUser.messageId,
       onSiblingIndex: (siblingIndex) => observedSiblingIndexes.push(siblingIndex),
     });

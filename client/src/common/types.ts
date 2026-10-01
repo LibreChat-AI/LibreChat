@@ -110,6 +110,7 @@ export type NavLink = {
   Component?: React.ComponentType;
   onClick?: (e?: React.MouseEvent) => void;
   variant?: 'default' | 'ghost';
+  disabled?: boolean;
   id: string;
 };
 
@@ -333,6 +334,13 @@ export type TOptions = {
   isRegenerate?: boolean;
   isContinued?: boolean;
   isEdited?: boolean;
+  /**
+   * Manual context compaction: a summarize-only turn hung off the branch's
+   * leaf (`messageId`). Shaped like a regenerate on the client — no new user
+   * bubble, the response placeholder parents onto the leaf — and sent with
+   * `compact: true` so the server runs the graph summarize-only.
+   */
+  compact?: boolean;
   overrideMessages?: t.TMessage[];
   /**
    * Authoritative attachment list for this submission: a rerun replays the edited
@@ -362,6 +370,8 @@ export type TOptions = {
    * context even though the references still show on the user bubble.
    */
   overrideQuotes?: string[];
+  /** Request-scoped reasoning selection for this exact submission. */
+  overrideReasoning?: t.TReasoningOverride | null;
   /** Added conversation for multi-convo feature - sent to server as part of submission payload */
   addedConvo?: t.TConversation;
   /** Reuse a durable submission identity (terminal steer recovery). */
@@ -391,8 +401,11 @@ export type TMessageChatContext = {
   index: number;
   regenerate: (message: t.TMessage, options?: { addedConvo?: t.TConversation | null }) => void;
   conversation: t.TConversation | null;
-  latestMessageId: string | undefined;
-  latestMessageDepth: number | undefined;
+  /** Getter backed by a ref, for reads at call time. Rendering reads the row's
+   *  `latestMessageId` prop, which its comparator gates on the row's relation. */
+  readonly latestMessageId: string | undefined;
+  /** Getter backed by a ref, for reads at call time (see `latestMessageId`). */
+  readonly latestMessageDepth: number | undefined;
   handleContinue: (e: React.MouseEvent<HTMLButtonElement>) => void;
   /** Resolved once per chat from `interface.feedback`; false until the config loads */
   feedbackEnabled: boolean;
@@ -483,7 +496,7 @@ export type ToolDialogProps = {
 };
 
 export type TResError = {
-  response: { data: { message: string } };
+  response: { data: { message: string; code?: string } };
   message: string;
 };
 
@@ -588,6 +601,7 @@ export interface ExtendedFile {
   source?: FileSources;
   attached?: boolean;
   embedded?: boolean;
+  llmDeliveryPath?: t.TFile['llmDeliveryPath'];
   tool_resource?: string;
   metadata?: t.TFile['metadata'];
 }
@@ -668,8 +682,13 @@ export type TThread = { id: string; createdAt: string };
 declare global {
   interface Window {
     google_tag_manager?: unknown;
+    /** Answers the server emits with the document, ahead of the app's own
+     *  scripts, for questions the first render must not guess at. */
     __LIBRECHAT_CONFIG__?: {
       enableQueryDevtools?: boolean;
+      /** Whether this deployment configured footer content of its own, so the
+       *  composer reserves the footer bar's band on its first frame. */
+      hasConfiguredFooter?: boolean;
     };
   }
 }

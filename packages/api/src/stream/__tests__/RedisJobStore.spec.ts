@@ -40,9 +40,6 @@ function jobHashFromCreationCall(call: unknown[]): Record<string, string> {
       String(fields[index * 2 + 1]),
     ]),
   );
-  if (hash.generationProtocolVersion === '2') {
-    hash.checkpointNamespace = hash.createdAt;
-  }
   return hash;
 }
 
@@ -203,7 +200,7 @@ describe('RedisJobStore', () => {
 
     // ARGV[5] is the terminal job TTL. The persistence owner/recovery path
     // gets five minutes even when ordinary completed records are immediate.
-    expect(evalTransition.mock.calls[0][16]).toBe('300');
+    expect(evalTransition.mock.calls.find((call) => call[1] === 10)?.[16]).toBe('300');
   });
 
   test('retains the generation epoch beyond the paused job TTL', async () => {
@@ -220,7 +217,7 @@ describe('RedisJobStore', () => {
       expectCreatedAt: 123456,
     });
 
-    const transitionCall = evalTransition.mock.calls[0];
+    const transitionCall = evalTransition.mock.calls.find((call) => call[1] === 10)!;
     expect(transitionCall[0]).toContain(
       'redis.call("SET", KEYS[8], currentCreatedAt, "EX", ttl + generationEpochGraceTtl)',
     );
@@ -339,6 +336,7 @@ describe('RedisJobStore', () => {
       model: 'test-model',
       agent_id: 'agent-1',
       isTemporary: false,
+      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
       agentEventDeliveryKey: 'completion-delivery-1',
       agentEventInvocationKey: 'original-delivery-1',
       agentEventInvocationGenerationCreatedAt: 987654,
@@ -397,7 +395,8 @@ describe('RedisJobStore', () => {
     expect(job.preemptCapable).toBe(true);
     expect(job.steerQuotesExecutionId).toBe('exec-1');
     expect(job.generationProtocolVersion).toBe(2);
-    expect(job.checkpointNamespace).toBe(String(job.createdAt));
+    expect(job.checkpointNamespace).toEqual(expect.any(String));
+    expect(job.checkpointNamespace).not.toBe(String(job.createdAt));
     expect(job.resolvedAskUserQuestions).toEqual([
       {
         request: { question: 'Deploy where?' },
@@ -435,6 +434,7 @@ describe('RedisJobStore', () => {
       model: 'test-model',
       agent_id: 'agent-1',
       isTemporary: false,
+      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
       scheduleId: 'schedule-1',
       scheduledFor: '2026-08-17T12:00:00.000Z',
       scheduleConfigRevision: 4,
@@ -485,6 +485,7 @@ describe('RedisJobStore', () => {
       }),
       agent_id: 'agent-1',
       isTemporary: '0',
+      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
       scheduleId: 'schedule-1',
       scheduledFor: '2026-08-17T12:00:00.000Z',
       scheduleConfigRevision: '4',
@@ -611,7 +612,7 @@ describe('RedisJobStore', () => {
     expect(script).toContain(
       'if previousCreatedAt and previousCreatedAt >= createdAt then createdAt = previousCreatedAt + 1 end',
     );
-    expect(script).toContain('"checkpointNamespace", tostring(createdAt)');
+    expect(script).not.toContain('"checkpointNamespace", tostring(createdAt)');
     expect(script).toContain('redis.call("DEL", KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5])');
     expect(script).toContain(
       'redis.call("SET", KEYS[7], tostring(createdAt), "EX", ttl + generationEpochGraceTtl)',
@@ -750,21 +751,20 @@ describe('RedisJobStore', () => {
     ]);
   });
 
-  test('parallelizes Redis Cluster membership bookkeeping with ordered user TTL', async () => {
+  test('parallelizes Redis Cluster membership bookkeeping with atomic owner registration', async () => {
     const evalResult = createDeferred<number>();
     const runningMembership = createDeferred<number>();
     const requiresActionRemoval = createDeferred<number>();
     const terminalHostActionRemoval = createDeferred<number>();
     const detachedTerminalHostActionRemoval = createDeferred<number>();
-    const userMembership = createDeferred<number>();
-    const userExpiry = createDeferred<number>();
+    const ownerRegistration = createDeferred<number>();
     const started: string[] = [];
 
-    const expire = jest.fn(() => {
-      started.push('user_expiry');
-      return userExpiry.promise;
-    });
-    const evalJobCreation = jest.fn(() => {
+    const evalJobCreation = jest.fn((_script: string, keyCount: number) => {
+      if (keyCount === 1) {
+        started.push('owner');
+        return ownerRegistration.promise;
+      }
       started.push('job');
       return evalResult.promise;
     });
@@ -776,8 +776,7 @@ describe('RedisJobStore', () => {
           started.push('running');
           return runningMembership.promise;
         }
-        started.push('user');
-        return userMembership.promise;
+        throw new Error(`Unexpected SADD key: ${key}`);
       }),
       srem: jest.fn((key: string) => {
         if (key === 'stream:requires_action') {
@@ -792,7 +791,6 @@ describe('RedisJobStore', () => {
         return terminalHostActionRemoval.promise;
       }),
       hgetall: jest.fn(() => jobHashFromCreationCall(evalJobCreation.mock.calls[0])),
-      expire,
     } as unknown as Cluster;
     const store = new RedisJobStore(redis, { userJobsSetTtl: 60 });
 
@@ -812,27 +810,11 @@ describe('RedisJobStore', () => {
       'requires_action',
       'terminal_host_action',
       'detached_terminal_host_action',
-      'user',
+      'owner',
     ]);
     expect(settled).toBe(false);
-    expect(expire).not.toHaveBeenCalled();
 
-    userMembership.resolve(1);
-    await waitFor(() => expire.mock.calls.length === 1);
-
-    expect(started).toEqual([
-      'job',
-      'running',
-      'requires_action',
-      'terminal_host_action',
-      'detached_terminal_host_action',
-      'user',
-      'user_expiry',
-    ]);
-    expect(expire).toHaveBeenCalledWith('stream:user:{user-1}:jobs', 60);
-    expect(settled).toBe(false);
-
-    userExpiry.resolve(1);
+    ownerRegistration.resolve(1);
     await Promise.resolve();
     expect(settled).toBe(false);
 
@@ -897,8 +879,13 @@ describe('RedisJobStore', () => {
     });
     const redis = {
       isCluster: true,
-      eval: jest.fn(async () => {
-        durableHash = { ...durableHash, status: 'requires_action' };
+      eval: jest.fn(async (_script: string, keyCount: number, ...args: string[]) => {
+        if (keyCount === 10) {
+          durableHash = { ...durableHash, status: 'requires_action' };
+        } else {
+          const [ownerKey, streamId] = args;
+          await sadd(ownerKey, streamId);
+        }
         return 1;
       }),
       hgetall,
@@ -1080,7 +1067,7 @@ describe('RedisJobStore', () => {
     expect(sadd.mock.invocationCallOrder[0]).toBeLessThan(
       evalTransition.mock.invocationCallOrder[0],
     );
-    const transitionCall = evalTransition.mock.calls[0];
+    const transitionCall = evalTransition.mock.calls.find((call) => call[1] === 10)!;
     expect(transitionCall[16]).toBe('86400');
     expect(transitionCall[18]).toBe('86400');
     expect(transitionCall[19]).toBe('86400');
@@ -1140,7 +1127,7 @@ describe('RedisJobStore', () => {
       'stream:terminal_host_action',
       '["stream-detached-host-action",100]',
     ]);
-    const transitionCall = evalTransition.mock.calls[0];
+    const transitionCall = evalTransition.mock.calls.find((call) => call[1] === 10)!;
     expect(transitionCall).toContain('status');
     expect(transitionCall).toContain('detached_terminal_pending_v1');
     expect(transitionCall).toContain('detachedAgentEventTerminalStatus');
@@ -1157,6 +1144,7 @@ describe('RedisJobStore', () => {
     const srem = jest.fn().mockResolvedValue(1);
     const redis = {
       isCluster: true,
+      eval: jest.fn().mockResolvedValue(1),
       smembers: jest.fn().mockResolvedValue([member]),
       srem,
       sadd: jest.fn().mockResolvedValue(1),
@@ -1205,6 +1193,7 @@ describe('RedisJobStore', () => {
       isCluster: true,
       eval: evalClear,
       srem,
+      hgetall: jest.fn().mockResolvedValue({}),
     } as unknown as Cluster;
     const store = new RedisJobStore(redis, {
       completedTtl: 300,

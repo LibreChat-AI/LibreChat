@@ -5,6 +5,19 @@ type QueryValue = Request['query'][string];
 export const DEFAULT_PAGE_LIMIT = 25;
 export const MAX_PAGE_LIMIT = 100;
 
+export type SortDirection = 'asc' | 'desc';
+
+/** The sort fields `getConvosByCursor` accepts; anything else makes it throw. Keep this
+ *  in sync with the whitelist in `packages/data-schemas/src/methods/conversation.ts`. */
+export type ConversationSortField = 'title' | 'createdAt' | 'updatedAt' | 'archivedAt';
+
+export const CONVERSATION_SORT_FIELDS: Readonly<Record<ConversationSortField, true>> = {
+  title: true,
+  createdAt: true,
+  updatedAt: true,
+  archivedAt: true,
+};
+
 /** Express parses a repeated `?limit=a&limit=b` into an array, which `parseInt` reads as its first element's digits. */
 export const queryString = (value: QueryValue): string | undefined => {
   if (typeof value === 'string') {
@@ -14,6 +27,22 @@ export const queryString = (value: QueryValue): string | undefined => {
     return queryString(value[0]);
   }
   return undefined;
+};
+
+export const normalizeSortField = <T extends string>(
+  value: QueryValue,
+  { fields, fallback }: { fields: Readonly<Record<T, true>>; fallback: T },
+): T => {
+  const sortField = queryString(value);
+  return sortField != null && fields[sortField as T] === true ? (sortField as T) : fallback;
+};
+
+export const normalizeSortDirection = (
+  value: QueryValue,
+  { fallback = 'desc' }: { fallback?: SortDirection } = {},
+): SortDirection => {
+  const sortDirection = queryString(value);
+  return sortDirection === 'asc' || sortDirection === 'desc' ? sortDirection : fallback;
 };
 
 /**

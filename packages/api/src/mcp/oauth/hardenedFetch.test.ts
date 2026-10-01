@@ -1,15 +1,17 @@
-import { createSSRFSafeUndiciConnect, isOAuthUrlAllowed } from '~/auth';
 import { createHardenedOAuthFetch, resetHardenedOAuthFetchDispatchers } from './hardenedFetch';
+import { createSSRFSafeUndiciConnect, isOAuthUrlAllowed, isSSRFTarget } from '~/auth';
 
 jest.mock('~/auth', () => ({
   createSSRFSafeUndiciConnect: jest.fn(() => ({ lookup: jest.fn() })),
   isOAuthUrlAllowed: jest.fn(() => false),
+  isSSRFTarget: jest.fn(() => false),
 }));
 
 const mockCreateSSRFSafeUndiciConnect = createSSRFSafeUndiciConnect as jest.MockedFunction<
   typeof createSSRFSafeUndiciConnect
 >;
 const mockIsOAuthUrlAllowed = isOAuthUrlAllowed as jest.MockedFunction<typeof isOAuthUrlAllowed>;
+const mockIsSSRFTarget = isSSRFTarget as jest.MockedFunction<typeof isSSRFTarget>;
 
 describe('createHardenedOAuthFetch', () => {
   const originalFetch = global.fetch;
@@ -20,6 +22,7 @@ describe('createHardenedOAuthFetch', () => {
     global.fetch = mockFetch;
     mockFetch.mockResolvedValue({ ok: true } as Response);
     mockIsOAuthUrlAllowed.mockReturnValue(false);
+    mockIsSSRFTarget.mockReturnValue(false);
   });
 
   afterEach(() => {
@@ -41,6 +44,7 @@ describe('createHardenedOAuthFetch', () => {
       expect.objectContaining({
         method: 'POST',
         dispatcher: expect.any(Object),
+        redirect: 'error',
       }),
     );
   });
@@ -66,6 +70,53 @@ describe('createHardenedOAuthFetch', () => {
 
     expect(mockCreateSSRFSafeUndiciConnect).not.toHaveBeenCalled();
     expect(mockFetch.mock.calls[0][1]).not.toHaveProperty('dispatcher');
+    expect(mockFetch.mock.calls[0][1]).toEqual(expect.objectContaining({ redirect: 'error' }));
+  });
+
+  it('rejects an IPv6 literal before the Undici lookup can be bypassed', async () => {
+    mockIsSSRFTarget.mockReturnValueOnce(true);
+
+    await expect(createHardenedOAuthFetch()('http://[::1]:9443/token')).rejects.toThrow();
+
+    expect(mockIsSSRFTarget).toHaveBeenCalledWith('::1', undefined, '9443');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('checks private IPs before reusing a dispatcher cached for the same port', async () => {
+    await createHardenedOAuthFetch()('https://auth.example.com:9443/token');
+    mockIsSSRFTarget.mockReturnValueOnce(true);
+
+    await expect(createHardenedOAuthFetch()('http://127.0.0.1:9443/token')).rejects.toThrow(
+      'OAuth endpoint targets a blocked address',
+    );
+
+    expect(mockIsSSRFTarget).toHaveBeenCalledWith('127.0.0.1', undefined, '9443');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('normalizes alternate IPv4 spellings before checking the literal', async () => {
+    mockIsSSRFTarget.mockReturnValueOnce(true);
+
+    await expect(createHardenedOAuthFetch()('http://0x7f000001:9443/token')).rejects.toThrow(
+      'OAuth endpoint targets a blocked address',
+    );
+
+    expect(mockIsSSRFTarget).toHaveBeenCalledWith('127.0.0.1', undefined, '9443');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('does not apply address exemptions to an IP when domain policy is active but unmatched', async () => {
+    mockIsSSRFTarget.mockReturnValueOnce(true);
+
+    await expect(
+      createHardenedOAuthFetch({
+        allowedDomains: ['trusted.example.com'],
+        allowedAddresses: ['127.0.0.1:9443'],
+      })('http://127.0.0.1:9443/token'),
+    ).rejects.toThrow();
+
+    expect(mockIsSSRFTarget).toHaveBeenCalledWith('127.0.0.1', null, '9443');
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('normalizes allowedAddresses before caching dispatchers', async () => {

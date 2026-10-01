@@ -47,9 +47,49 @@ describe('createPayload server URL', () => {
     expect(payload.endpoint).toBe('Company/API');
   });
 
+  it('forwards the conversation-selected code workspace to agents', () => {
+    const submission = makeSubmission('agents');
+    submission.codeEnvironmentMode = 'attached';
+    submission.codeWorkspaces = [{ environmentId: 'personal-vm', workspaceId: 'project-a' }];
+
+    expect(createPayload(submission).payload.codeEnvironmentMode).toBe('attached');
+    expect(createPayload(submission).payload.codeWorkspaces).toEqual([
+      { environmentId: 'personal-vm', workspaceId: 'project-a' },
+    ]);
+  });
+
   it('does not touch the assistants URL, which carries no endpoint segment', () => {
     const { server } = createPayload(makeSubmission(EModelEndpoint.assistants));
 
     expect(server).toBe(EndpointURLs[EModelEndpoint.assistants]);
+  });
+});
+
+describe('createPayload compaction', () => {
+  const compactionSubmission = (compact: boolean): TSubmission =>
+    ({
+      conversation: { conversationId: 'convo-1', endpoint: 'openAI' },
+      userMessage: { messageId: 'leaf', text: '' },
+      endpointOption: { endpoint: 'openAI' },
+      isRegenerate: true,
+      ...(compact ? { compact: true } : {}),
+    }) as unknown as TSubmission;
+
+  it('sends a compaction as such, never as a regenerated user turn', () => {
+    /** The regenerate shape is a client-side rendering choice (no new user
+     *  bubble); the server keying off `isRegenerate` would rewrite the leaf
+     *  as a user message. */
+    const { payload } = createPayload(compactionSubmission(true));
+
+    expect(payload.compact).toBe(true);
+    expect(payload.isRegenerate).toBeUndefined();
+    expect(payload.text).toBe('');
+  });
+
+  it('leaves an ordinary regenerate untouched', () => {
+    const { payload } = createPayload(compactionSubmission(false));
+
+    expect(payload.isRegenerate).toBe(true);
+    expect('compact' in payload).toBe(false);
   });
 });

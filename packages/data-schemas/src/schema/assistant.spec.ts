@@ -18,8 +18,8 @@ describe('assistantSchema', () => {
     } as unknown as typeof import('mongoose');
     const methods = createAssistantMethods(mongoose);
 
-    await methods.getAssistant({ assistant_id: 'assistant-id' });
-    await methods.getAssistant({ assistant_id: 'assistant-id' });
+    await methods.getAssistant({ assistantId: 'assistant-id' });
+    await methods.getAssistant({ assistantId: 'assistant-id' });
 
     expect(createIndexes).toHaveBeenCalledTimes(1);
   });

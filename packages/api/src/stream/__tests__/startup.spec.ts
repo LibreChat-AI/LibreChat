@@ -113,6 +113,7 @@ describe('GenerationJobManager startup telemetry', () => {
         model: 'test-model',
         agent_id: 'agent-1',
         isTemporary: false,
+        retentionExpiresAt: '2030-01-01T00:00:00.000Z',
         promptTokens: 0,
         discoveredTools: [],
         pendingAction: {
@@ -131,7 +132,7 @@ describe('GenerationJobManager startup telemetry', () => {
     expect(job.metadata).toMatchObject({
       userId: 'user-1',
       conversationId: 'conversation-1',
-      checkpointNamespace: String(job.createdAt),
+      checkpointNamespace: expect.stringMatching(/^lcg:v2:[0-9a-f]{64}:[0-9a-f-]{36}$/),
       userMessage: {
         messageId: 'message-1',
         parentMessageId: 'parent-1',
@@ -149,6 +150,7 @@ describe('GenerationJobManager startup telemetry', () => {
       model: 'test-model',
       agent_id: 'agent-1',
       isTemporary: false,
+      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
       promptTokens: 0,
       discoveredTools: [],
       providerExecutionId: expect.any(String),
@@ -675,6 +677,12 @@ describe('GenerationJobManager startup telemetry', () => {
     const predecessor = await manager.createJob(streamId, 'user-1', streamId);
     const onDone = jest.fn();
     const subscription = await manager.subscribe(streamId, () => undefined, onDone);
+    const predecessorRuntime = (
+      manager as unknown as {
+        runtimeState: Map<string, { subscriberLeaseTimer?: ReturnType<typeof setInterval> }>;
+      }
+    ).runtimeState.get(streamId)!;
+    expect(predecessorRuntime.subscriberLeaseTimer).toBeDefined();
 
     const replacement = await manager.createJob(streamId, 'user-1', streamId);
 
@@ -687,6 +695,7 @@ describe('GenerationJobManager startup telemetry', () => {
       conversation: { conversationId: streamId },
     });
     expect(predecessor.abortController.signal.aborted).toBe(true);
+    expect(predecessorRuntime.subscriberLeaseTimer).toBeUndefined();
     expect(replacement.abortController.signal.aborted).toBe(false);
     expect(eventTransport.getSubscriberCount(streamId)).toBe(0);
     subscription?.unsubscribe();
@@ -1404,7 +1413,7 @@ describe('GenerationJobManager startup telemetry', () => {
       expect(getJob).toHaveBeenCalledTimes(1);
       expect(onError).not.toHaveBeenCalled();
       expect(onAllSubscribersLeft).not.toHaveBeenCalled();
-      expect(jest.getTimerCount()).toBe(timerCountBeforeFence);
+      expect(jest.getTimerCount()).toBe(timerCountBeforeFence - 1);
 
       releaseLookup?.();
       await jest.advanceTimersByTimeAsync(0);

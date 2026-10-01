@@ -52,6 +52,9 @@ jest.mock('@librechat/api', () => ({
 }));
 jest.mock('librechat-data-provider', () => ({
   extractEnvVariable: jest.fn(),
+  /* Real selection logic: these tests are about which provider a schema resolves to. */
+  listConfiguredSpeechProviders:
+    jest.requireActual('librechat-data-provider').listConfiguredSpeechProviders,
   STTProviders: {},
 }));
 jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));

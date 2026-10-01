@@ -1,13 +1,14 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import debounce from 'lodash/debounce';
+import { SetterOrUpdater } from 'recoil';
 import { Constants } from 'librechat-data-provider';
-import { SetterOrUpdater, useRecoilValue } from 'recoil';
 import type { TFile } from 'librechat-data-provider';
 import type { PendingTextAttachmentDraft } from '~/utils';
 import type { ExtendedFile } from '~/common';
 import {
   applyPendingPastesToDraft,
   clearDraft,
+  clearAllDrafts,
   getDraft,
   getFilesDraft,
   getNewConversationDraftId,
@@ -24,9 +25,9 @@ import {
 } from '~/utils';
 import { isPastedTextFileMarked, markPastedTextFile } from '~/utils/files';
 import { hasInFlightUpload } from '~/hooks/Files/useFileHandling';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useChatFormContext } from '~/Providers';
 import { useGetFiles } from '~/data-provider';
-import store from '~/store';
 
 export const useAutoSave = ({
   index = 0,
@@ -53,7 +54,7 @@ export const useAutoSave = ({
 }) => {
   // setting for auto-save
   const { setValue } = useChatFormContext();
-  const saveDrafts = useRecoilValue<boolean>(store.saveDrafts);
+  const { saveDrafts } = useChatSettings();
   const pendingDraftId = getPendingDraftId(index);
   const conversationDraftId =
     _conversationId === Constants.NEW_CONVO ? getNewConversationDraftId(index) : _conversationId;
@@ -193,7 +194,7 @@ export const useAutoSave = ({
         return;
       }
       // Save the draft of the current conversation before switching
-      if (textAreaRef.current.value === '' || textAreaRef.current.value.length === 1) {
+      if (textAreaRef.current.value === '') {
         clearDraft(id);
       } else {
         setDraft({ id, value: textAreaRef.current.value });
@@ -208,6 +209,13 @@ export const useAutoSave = ({
    * which after a send put the just-sent attachment straight back as a chip. */
   const activeStorageId =
     currentConversationId === pendingDraftId ? pendingDraftId : conversationId;
+  /** Only autosave knows whether a foreign tab kept this composer on the
+   * pending key. Submission consumes that actual key under its ownership guard. */
+  const consumeDraft = useCallback(() => {
+    if (activeStorageId) {
+      clearAllDrafts(activeStorageId);
+    }
+  }, [activeStorageId]);
   useEffect(() => {
     // This useEffect is responsible for setting up and cleaning up the auto-save functionality
     // for the text area input. It saves the text to localStorage with a debounce to prevent
@@ -256,8 +264,15 @@ export const useAutoSave = ({
       if (textArea) {
         textArea.removeEventListener('input', eventListener);
       }
-      handleInputFast.cancel();
-      handleInputSlow.cancel();
+      /** Land the write instead of dropping it. This runs whenever the draft key changes and when
+       * the composer goes away, and a keystroke inside the debounce window has nothing else to
+       * persist it: cancelling here is what tore the end off a message being typed as a run
+       * finished, since the key moves from PENDING to the conversation at that moment and the
+       * record left behind was one flush old. Flushing is safe for the case the cancel was
+       * protecting — `saveLatest` reads the composer at flush time, so a steer that consumed the
+       * text and emptied the composer flushes the emptiness, not the message it just sent. */
+      handleInputFast.flush();
+      handleInputSlow.flush();
     };
   }, [activeStorageId, saveDrafts, textAreaRef]);
 
@@ -336,10 +351,15 @@ export const useAutoSave = ({
           nextConversationId = pendingDraftId;
         } else if (pendingOwned) {
           pendingDestinationRef.current = null;
-          // Move the pending text draft to the new conversationId, falling back to the current
-          // text area value when there was no pending draft to carry over
-          if (!migrateTextDraft(pendingDraftId, conversationId) && textAreaRef?.current?.value) {
-            setDraft({ id: conversationId, value: textAreaRef.current.value });
+          /** Move the pending text draft to the new conversationId, then let the composer correct
+           * it. Both describe the same composer and the record is a debounced copy of it, so when
+           * they disagree the record is simply older, and restoring it would roll the user's last
+           * keystrokes back mid-sentence. An empty composer defers to the record instead: a steer
+           * consumes the text and clears the composer programmatically, and run end must not undo that. */
+          migrateTextDraft(pendingDraftId, conversationId);
+          const liveText = textAreaRef?.current?.value ?? '';
+          if (liveText !== '' && getDraft(conversationId) !== liveText) {
+            setDraft({ id: conversationId, value: liveText });
           }
           filesDraftId = migrateFilesDraft(pendingDraftId, conversationId);
         } else {
@@ -456,4 +476,6 @@ export const useAutoSave = ({
       pendingPastes: existingDraft.pendingPastes,
     });
   }, [conversationId, saveDrafts, currentConversationId, fileIds, files]);
+
+  return consumeDraft;
 };

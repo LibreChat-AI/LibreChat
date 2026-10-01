@@ -160,6 +160,45 @@ export function seedCodeFilesIntoSessions(
 
   const sessions: ToolSessionMap = existing ?? new Map();
   const prior = sessions.get(sessionKey) as CodeSessionContext | undefined;
+  const merged = mergeCodeFilesIntoContext(prior, files, sessionKey);
+  if (!merged) {
+    return existing;
+  }
+
+  sessions.set(sessionKey, {
+    session_id: merged.session_id,
+    files: merged.files as FileRefs,
+    lastUpdated: Date.now(),
+  } satisfies CodeSessionContext);
+
+  return sessions;
+}
+
+/**
+ * Adds primed or freshly provisioned file refs to one code-session context, keeping
+ * the ordering and identity rules the graph seed uses so both entry points agree on
+ * what the sandbox receives.
+ *
+ * Composes `(storage_session_id, id)` as the identity. `name` alone isn't sufficient:
+ * two distinct uploads can share a filename across different storage sessions and
+ * file_ids. First seen wins, so pre-existing refs keep their position.
+ *
+ * The representative top-level `session_id` is preserved when one already exists,
+ * otherwise it stands in from the first incoming file's `storage_session_id`, since
+ * no execution session exists until the first call returns one. ToolNode reads the
+ * per-file `storage_session_id` for actual injection, so the representative is
+ * informational. Mirrors the convention in `primeInvokedSkills`.
+ *
+ * Returns undefined when there is nothing usable to record.
+ */
+export function mergeCodeFilesIntoContext(
+  prior: { session_id?: string; files?: CodeEnvFile[] | FileRefs } | undefined,
+  files: CodeEnvFile[] | undefined,
+  sessionKey?: string,
+): { session_id: string; files: CodeEnvFile[] } | undefined {
+  if (!files || files.length === 0) {
+    return undefined;
+  }
 
   /**
    * Identity is `(storage_session_id, id)`, not `name` — two distinct primed
@@ -171,44 +210,31 @@ export function seedCodeFilesIntoSessions(
    */
   const seenKeys = new Set<string>();
   const destinations = createCodeDestinationSet();
-  const mergedFiles: FileRefs = [];
+  const mergedFiles: CodeEnvFile[] = [];
   const pushIfFresh = (f: { id?: string; storage_session_id?: string; name?: string }): void => {
     const key = `${f.storage_session_id ?? ''}\0${f.id ?? ''}`;
     if (seenKeys.has(key)) return;
     if (f.name != null && !reserveCodeDestination(destinations, f.name)) {
       logger.debug(
-        `[seedCodeFilesIntoSessions] dropped id=${f.id} name=${f.name} ` +
-          `reason=destination-taken sessionKey=${sessionKey}`,
+        `[mergeCodeFilesIntoContext] dropped id=${f.id} name=${f.name} ` +
+          `reason=destination-taken${sessionKey != null ? ` sessionKey=${sessionKey}` : ''}`,
       );
       return;
     }
     seenKeys.add(key);
-    mergedFiles.push(f as FileRefs[number]);
+    mergedFiles.push(f as CodeEnvFile);
   };
   if (prior?.files) {
     for (const f of prior.files) pushIfFresh(f);
   }
   for (const f of files) pushIfFresh(f);
 
-  /* Representative top-level `session_id` for the seed CodeSessionContext.
-   * No execution session exists yet at seed time, so the first incoming
-   * file's `storage_session_id` stands in until the first `/exec` call
-   * returns a real execution session id. ToolNode reads per-file
-   * `storage_session_id` for actual injection — the representative is
-   * informational rather than load-bearing. Mirrors the same convention
-   * used in `primeInvokedSkills`. */
   const representativeSessionId = prior?.session_id ?? files[0].storage_session_id;
   if (!representativeSessionId) {
-    return existing;
+    return undefined;
   }
 
-  sessions.set(sessionKey, {
-    session_id: representativeSessionId,
-    files: mergedFiles,
-    lastUpdated: Date.now(),
-  } satisfies CodeSessionContext);
-
-  return sessions;
+  return { session_id: representativeSessionId, files: mergedFiles };
 }
 
 /** Builds an isolated child-graph seed from the run's exact trusted partition

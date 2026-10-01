@@ -17,7 +17,7 @@ const connect = require('./connect');
 
   let users = await User.find({});
   for (const user of users) {
-    let balance = await Balance.findOne({ user: user._id });
+    let balance = await Balance.findOne({ user: user._id }).sort({ _id: 1 });
     if (balance !== null) {
       console.green(`User ${user.name} (${user.email}) has a balance of ${balance.tokenCredits}`);
     } else {

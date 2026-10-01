@@ -10,6 +10,7 @@ import type {
   AgentTriggerExpectedAction,
 } from '../agents/triggers/types';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
+import type { EarlyBufferOverflowState } from './earlyBufferRecovery';
 import type { ResolvedAskUserQuestion } from '../agents/hitl/resume';
 import type { MCPRuntimeRequestBody } from '../mcp/types';
 import type { ServerSentEvent } from './events';
@@ -23,6 +24,7 @@ export interface GenerationJobMetadata {
   checkpointNamespace?: string;
   /** Immutable generation protocol. Missing on legacy records means v1. */
   generationProtocolVersion?: 1 | 2;
+  earlyBufferOverflow?: EarlyBufferOverflowState;
   /** User message data for rebuilding submission on reconnect */
   userMessage?: Agents.UserMessageMeta;
   /** Response message ID for tracking */
@@ -50,6 +52,8 @@ export interface GenerationJobMetadata {
   agent_id?: string;
   /** Whether the originating turn was a temporary chat; a HITL resume keeps it so. */
   isTemporary?: boolean;
+  /** Original server-authenticated retention deadline, serialized across replicas. */
+  retentionExpiresAt?: string;
   /** Exact durable delivery whose accepted continuation created this generation. */
   agentEventDeliveryKey?: string;
   /** Original actor invocation when the current mailbox delivery is an internal completion. */
@@ -114,6 +118,7 @@ export interface GenerationJobMetadata {
   idempotencyClientRequestId?: string;
   /** Normal FINAL publication is waiting on required durable abort work. */
   terminalPersistencePending?: boolean;
+  terminalHostActionPending?: boolean;
   terminalPersistenceStartedAt?: number;
   /** Set when the job is paused for human review (status === 'requires_action') */
   pendingAction?: Agents.PendingAction;

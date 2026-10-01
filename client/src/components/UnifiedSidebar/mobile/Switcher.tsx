@@ -39,7 +39,7 @@ function Switcher({
         label: localize(link.title),
         ariaChecked: link.id === activeId,
         className: link.id === activeId ? 'bg-surface-active-alt' : undefined,
-        icon: <link.icon className="size-5 text-text-primary" aria-hidden="true" />,
+        icon: <link.icon className="text-text-primary size-5" aria-hidden="true" />,
         onClick: () => {
           if (link.onClick) {
             link.onClick();
@@ -90,15 +90,15 @@ function Switcher({
            */
           className={cn(
             buttonVariants({ variant: 'ghost' }),
-            'h-10 min-w-0 flex-1 justify-start px-2 text-text-primary',
+            'text-text-primary h-10 min-w-0 flex-1 justify-start px-2',
           )}
         >
-          <activeLink.icon className="size-5 flex-shrink-0" aria-hidden="true" />
+          <activeLink.icon className="size-5 shrink-0" aria-hidden="true" />
           {/* Grows so the chevron settles on the trailing edge rather than trailing the label. */}
           <span className="flex-1 truncate text-left text-sm font-medium">
             {localize(activeLink.title)}
           </span>
-          <ChevronDown className="size-4 flex-shrink-0 text-text-secondary" aria-hidden="true" />
+          <ChevronDown className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
         </Ariakit.MenuButton>
       }
     />

@@ -1,4 +1,5 @@
 import React, { useState, useRef, useLayoutEffect, useCallback, memo } from 'react';
+import { disabledInkClasses } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 /** Matches the `inset-y-1` the single-row indicator uses. */
@@ -50,6 +51,41 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
     onChange?.(newValue);
   };
 
+  /** A radiogroup is a single tab stop: the roving `tabIndex` puts focus on the
+   *  checked segment and the arrows move the selection, per WAI-ARIA. Without
+   *  this every segment was its own tab stop and keyboard users could focus a
+   *  segment but never reach the others' selection behavior. */
+  const handleKeyDown = (event: React.KeyboardEvent, index: number) => {
+    if (disabled || options.length < 2) {
+      return;
+    }
+    const moves: Record<string, number> = {
+      ArrowRight: index + 1,
+      ArrowDown: index + 1,
+      ArrowLeft: index - 1,
+      ArrowUp: index - 1,
+      Home: 0,
+      End: options.length - 1,
+    };
+    const target = moves[event.key];
+    if (target == null) {
+      return;
+    }
+    event.preventDefault();
+    // Wraps, so holding ArrowRight from the last segment returns to the first.
+    const next = (target + options.length) % options.length;
+    const nextValue = options[next].value;
+    // Focus follows the key unconditionally; the selection only changes when it
+    // actually moves. Home on the first segment and End on the last land where
+    // they started, and firing `onChange` there would dirty a form for a
+    // selection that never changed.
+    buttonRefs.current[next]?.focus();
+    if (nextValue === currentValue) {
+      return;
+    }
+    handleChange(nextValue);
+  };
+
   const updateBackgroundStyle = useCallback(() => {
     const selectedIndex = options.findIndex((opt) => opt.value === currentValue);
     const selectedButton = buttonRefs.current[selectedIndex];
@@ -67,14 +103,21 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
       return;
     }
     // Wrapped, the indicator also has to move vertically, so it carries its own
-    // height rather than stretching between the container's insets. INDICATOR_INSET
-    // reproduces the `inset-y-1` of the single-row default exactly, so switching a
-    // group to `wrap` does not change how it looks on a row that still fits.
+    // height rather than stretching between the container's insets, and it has to
+    // reproduce what `inset-y-1` produces for a row that still fits.
+    //
+    // That geometry depends on the container's own vertical padding, because the
+    // insets resolve against its padding box: a group styled `px-1` gets a pill
+    // inset inside its segment, while one styled `p-1` gets a pill that covers the
+    // segment exactly. The first row's `offsetTop` is that padding, so measuring it
+    // keeps both cases identical when a group turns `wrap` on; assuming zero shrank
+    // a padded group's pill by 8px and left it floating inside the segment.
+    const rowInset = buttonRefs.current[0]?.offsetTop ?? 0;
     setBackgroundStyle({
       width: `${selectedButton.offsetWidth}px`,
-      height: `${selectedButton.offsetHeight - INDICATOR_INSET * 2}px`,
+      height: `${selectedButton.offsetHeight + rowInset * 2 - INDICATOR_INSET * 2}px`,
       transform: `translate(${selectedButton.offsetLeft}px, ${
-        selectedButton.offsetTop + INDICATOR_INSET
+        selectedButton.offsetTop - rowInset + INDICATOR_INSET
       }px)`,
     });
   }, [currentValue, options, wrap]);
@@ -103,11 +146,11 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
   if (options.length === 0) {
     return (
       <div
-        className="relative inline-flex items-center rounded-lg bg-surface-tertiary p-1 opacity-50"
+        className="bg-surface-tertiary relative inline-flex items-center rounded-lg p-1 opacity-50"
         role="radiogroup"
         aria-labelledby={ariaLabelledBy}
       >
-        <span className="px-4 py-2 text-xs text-text-secondary">
+        <span className="text-text-secondary px-4 py-2 text-xs">
           {localize('com_ui_no_options')}
         </span>
       </div>
@@ -121,13 +164,13 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
       ref={containerRef}
       className={`relative ${fullWidth ? 'flex' : 'inline-flex'} ${
         wrap ? 'flex-wrap' : ''
-      } items-center rounded-lg bg-surface-tertiary px-1 ${className}`}
+      } bg-surface-tertiary items-center rounded-lg px-1 ${className}`}
       role="radiogroup"
       aria-labelledby={ariaLabelledBy}
     >
       {selectedIndex >= 0 && isMounted && (
         <div
-          className={`pointer-events-none absolute left-0 rounded-md border border-border-light bg-surface-primary shadow-sm transition-all duration-300 ease-out ${
+          className={`border-border-light bg-surface-primary pointer-events-none absolute left-0 rounded-md border shadow-xs transition-all duration-300 ease-out ${
             wrap ? 'top-0' : 'inset-y-1'
           }`}
           style={backgroundStyle}
@@ -142,14 +185,16 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
           type="button"
           role="radio"
           aria-checked={currentValue === option.value}
+          tabIndex={selectedIndex === index || (selectedIndex < 0 && index === 0) ? 0 : -1}
           onClick={() => handleChange(option.value)}
+          onKeyDown={(event) => handleKeyDown(event, index)}
           disabled={disabled}
-          className={`relative z-10 flex h-[34px] items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary ${
+          className={`focus-visible:ring-focus-control relative z-10 flex h-[34px] items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-hidden ${
             currentValue === option.value ? 'text-text-primary' : 'text-text-secondary'
-          } ${disabled ? 'cursor-not-allowed opacity-50' : ''} ${fullWidth ? 'flex-1' : ''} ${buttonClassName}`}
+          } ${disabled ? 'cursor-not-allowed opacity-50' : ''} ${disabledInkClasses} ${fullWidth ? 'flex-1' : ''} ${buttonClassName}`}
         >
           {option.icon && (
-            <span className="flex-shrink-0" aria-hidden="true">
+            <span className="shrink-0" aria-hidden="true">
               {option.icon}
             </span>
           )}

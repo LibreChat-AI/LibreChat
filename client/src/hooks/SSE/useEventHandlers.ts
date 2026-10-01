@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { v4 } from 'uuid';
+import { useStore } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSetRecoilState, useRecoilCallback } from 'recoil';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   QueryKeys,
   Constants,
-  EndpointURLs,
   ContentTypes,
   tPresetSchema,
   tMessageSchema,
@@ -14,10 +14,13 @@ import {
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
 import type {
+  TPreset,
   TMessage,
   TConversation,
-  EventSubmission,
   TStartupConfig,
+  EventSubmission,
+  ChatCreatedFrame,
+  TMessageContentParts,
 } from 'librechat-data-provider';
 import type { InfiniteData } from '@tanstack/react-query';
 import type { SetterOrUpdater } from 'recoil';
@@ -35,18 +38,32 @@ import {
   getAllContentText,
   upsertConvoInAllQueries,
   updateConvoInAllQueries,
+  applyServerReplyStamp,
+  markLocallyCommittedReply,
   removeConvoFromAllQueries,
   findConversationInInfinite,
   preserveStreamedContentIdentity,
+  isEmptyContentPart,
+  getPartKeyIndex,
 } from '~/utils';
 import {
   startupConfigKey,
   queueTitleGeneration,
   markTitleGenerationProcessed,
+  useReconcileConversationCodeEnvironmentMutation,
 } from '~/data-provider';
+import {
+  getReasoningStateKey,
+  pendingReasoningOverrideFamily,
+} from '~/components/Chat/Input/Composer/state';
+import {
+  getFailedCodeDecisionRequest,
+  withSubmittedCodeDecision,
+} from '~/hooks/Agents/codeDecision';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import { shouldResetSubagentAtomsOnConversationChange } from './cleanup';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
+import { useChatTransport } from '~/Providers/ChatTransportContext';
 import useContentHandler from '~/hooks/SSE/useContentHandler';
 import useStepHandler from '~/hooks/SSE/useStepHandler';
 import { useApplyAgentTemplate } from '~/hooks/Agents';
@@ -82,22 +99,48 @@ const SKILL_QUERY_KEYS = [
   QueryKeys.skillNodeContent,
 ] as const;
 
+/** A regenerated response is parented to the saved turn, never its unsaved replay copy. */
+const responseParentMessageId = (
+  initialResponse: TMessage,
+  userMessage: TMessage,
+  isRegenerate?: boolean,
+) =>
+  isRegenerate && initialResponse.parentMessageId
+    ? initialResponse.parentMessageId
+    : userMessage.messageId;
+
 export const buildCreatedInitialResponse = ({
   initialResponse,
   userMessage,
   isRegenerate = false,
 }: Pick<EventSubmission, 'initialResponse' | 'userMessage' | 'isRegenerate'>): TMessage => ({
   ...initialResponse,
-  parentMessageId:
-    isRegenerate && initialResponse.parentMessageId
-      ? initialResponse.parentMessageId
-      : userMessage.messageId,
+  parentMessageId: responseParentMessageId(initialResponse, userMessage, isRegenerate),
   messageId:
     isRegenerate && initialResponse.messageId
       ? initialResponse.messageId
       : `${userMessage.messageId}_`,
   conversationId: userMessage.conversationId ?? initialResponse.conversationId,
 });
+
+/** Apply the resolved request choice only after acknowledgement. A saved decision may have
+ *  moved since this event was emitted, so replay must never replace it. */
+function acknowledgedCodeEnvironment(
+  current: TConversation | null,
+  submission: EventSubmission,
+): Pick<TConversation, 'codeEnvironmentMode' | 'codeWorkspaces'> {
+  const { codeEnvironmentMode, codeWorkspaces } = submission;
+  if (codeEnvironmentMode == null && !codeWorkspaces?.length) return {};
+  const saved =
+    current?.conversationId != null &&
+    current.conversationId !== Constants.NEW_CONVO &&
+    current.conversationId !== Constants.PENDING_CONVO;
+  if (saved && (current.codeEnvironmentMode != null || current.codeWorkspaces?.length)) return {};
+  return {
+    codeEnvironmentMode,
+    codeWorkspaces: codeEnvironmentMode === 'without_attached' ? undefined : codeWorkspaces,
+  };
+}
 
 export const isInitialNewConversationSubmission = ({
   userMessage,
@@ -228,6 +271,50 @@ export type EventHandlerParams = {
   setShowStopButton: SetterOrUpdater<boolean>;
 };
 
+const CONNECTION_ERROR_TEXT = 'Error connecting to server, try refreshing the page.';
+
+/**
+ * The parts the in-flight response has streamed so far: the transcript's tail (a user row there
+ * means no response was placed), without the holes an interrupted stream leaves. Whether anything
+ * streamed is judged without the slots that never received content (a comparison run's
+ * `type: ''` placeholders, a text or think part opened before its first delta), but once something
+ * did, those slots stay: a placeholder is what keeps a comparison lane's layout and attribution
+ * when only the other lane produced output. The parts carry the render identity they streamed
+ * under, as the final path stamps it, so the settled row does not remount.
+ */
+const getStreamedContent = (message?: TMessage): TMessageContentParts[] => {
+  if (message == null || message.isCreatedByUser === true) {
+    return [];
+  }
+  const streamed = message.content ?? [];
+  const parts = streamed.filter((part): part is TMessageContentParts => part != null);
+  if (!parts.some((part) => !isEmptyContentPart(part))) {
+    return [];
+  }
+  return preserveStreamedContentIdentity(streamed, parts) ?? parts;
+};
+
+/** Keys the appended failure past every key the kept parts render under, physical or stamped. */
+const appendErrorPart = (
+  content: TMessageContentParts[],
+  errorText: string,
+): TMessageContentParts[] => {
+  const keyIndex = content.reduce(
+    (next, part, idx) => Math.max(next, getPartKeyIndex(part, idx) + 1),
+    0,
+  );
+  const errorPart: TMessageContentParts = { type: ContentTypes.ERROR, error: errorText };
+  return [
+    ...content,
+    keyIndex === content.length ? errorPart : { ...errorPart, streamedIndex: keyIndex },
+  ];
+};
+
+/**
+ * A failure that lands after the run has streamed keeps what streamed and takes the failure as
+ * one more part, the way the server records a failure inside a run; one that lands before
+ * anything streamed is the whole row.
+ */
 const createErrorMessage = ({
   errorMetadata,
   getMessages,
@@ -241,62 +328,209 @@ const createErrorMessage = ({
 }): TMessage => {
   const currentMessages = getMessages();
   const latestMessage = currentMessages?.[currentMessages.length - 1];
-  let errorMessage: TMessage;
   const text = submission.initialResponse.text.length > 45 ? submission.initialResponse.text : '';
   const errorText =
     (errorMetadata?.text || text || (error as Error | undefined)?.message) ??
     'Error cancelling request';
-  const latestContent = latestMessage?.content ?? [];
-  let isValidContentPart = false;
-  if (latestContent.length > 0) {
-    const latestContentPart = latestContent[latestContent.length - 1];
-    if (latestContentPart != null) {
-      const latestPartValue = latestContentPart[latestContentPart.type ?? ''];
-      isValidContentPart =
-        latestContentPart.type !== ContentTypes.TEXT ||
-        (latestContentPart.type === ContentTypes.TEXT && typeof latestPartValue === 'string')
-          ? true
-          : latestPartValue?.value !== '';
-    }
-  }
-  if (
-    latestMessage?.conversationId &&
-    latestMessage?.messageId &&
-    latestContent &&
-    isValidContentPart
-  ) {
-    const content = [...latestContent];
-    content.push({
-      type: ContentTypes.ERROR,
-      error: errorText,
-    });
-    errorMessage = {
+  const streamedContent = getStreamedContent(latestMessage);
+  if (latestMessage?.conversationId && latestMessage.messageId && streamedContent.length > 0) {
+    /** The row keeps the envelope it streamed under (author, model, icon, creation time) and
+     *  takes from the failure only what describes the failure: a server payload names `System`
+     *  as its sender and the schema dates a fresh envelope now, neither of which applies to a
+     *  response that is merely gaining a part. */
+    const errorMessage: TMessage = {
       ...latestMessage,
-      ...errorMetadata,
+      ...(errorMetadata?.metadata != null
+        ? { metadata: { ...latestMessage.metadata, ...errorMetadata.metadata } }
+        : {}),
       error: undefined,
       text: '',
-      content,
+      content: appendErrorPart(streamedContent, errorText),
     };
-    if (
-      submission.userMessage.messageId &&
-      submission.userMessage.messageId !== errorMessage.parentMessageId
-    ) {
-      errorMessage.parentMessageId = submission.userMessage.messageId;
+    const parentMessageId = responseParentMessageId(
+      submission.initialResponse,
+      submission.userMessage,
+      submission.isRegenerate,
+    );
+    if (parentMessageId && parentMessageId !== errorMessage.parentMessageId) {
+      errorMessage.parentMessageId = parentMessageId;
     }
     return errorMessage;
-  } else if (errorMetadata) {
+  }
+  if (errorMetadata) {
     return errorMetadata as TMessage;
-  } else {
-    errorMessage = {
-      ...submission,
-      ...submission.initialResponse,
-      text: errorText,
-      unfinished: !!text.length,
+  }
+  return tMessageSchema.parse({
+    ...submission,
+    ...submission.initialResponse,
+    text: errorText,
+    unfinished: !!text.length,
+    error: true,
+  }) as TMessage;
+};
+
+export interface ErrorTurn {
+  conversationId: string;
+  errorResponse: TMessage;
+  /** The conversation must be rebuilt: it never learned its id, the transport failed, or the
+   *  server named a conversation the new-chat route has not navigated to. */
+  recover: boolean;
+}
+
+/** Builds the row a failed turn leaves in the transcript and names the conversation it belongs to. */
+type SettledErrorReadState = {
+  lastResponseAt: string;
+  lastResponseMessageId?: string;
+  updatedAt?: string;
+};
+
+/**
+ * A persisted terminal error still carries the server's winning reply stamp in its nested
+ * conversation snapshot. Pairing the error messages cache object with that stamp before the list
+ * update lets `useConversationSeen` acknowledge the reply the user just watched fail, instead of
+ * leaving a dot on a conversation they are looking at.
+ */
+const resolveSettledErrorReadState = ({
+  data,
+  submission,
+  conversationId,
+}: {
+  data?: TResData;
+  submission: EventSubmission;
+  conversationId: string;
+}): SettledErrorReadState | undefined => {
+  if (submission.isTemporary === true || !data || !conversationId) {
+    return undefined;
+  }
+  const settledConversation = data.conversation;
+  const lastResponseAt = settledConversation?.lastResponseAt;
+  if (typeof lastResponseAt !== 'string' || lastResponseAt.length === 0) {
+    return undefined;
+  }
+  return {
+    lastResponseAt,
+    lastResponseMessageId:
+      typeof settledConversation.lastResponseMessageId === 'string'
+        ? settledConversation.lastResponseMessageId
+        : undefined,
+    updatedAt:
+      typeof settledConversation.updatedAt === 'string' ? settledConversation.updatedAt : undefined,
+  };
+};
+
+export const resolveErrorTurn = ({
+  data,
+  submission,
+  getMessages,
+  isNewConversationRoute,
+}: {
+  data?: TResData;
+  submission: EventSubmission;
+  getMessages: () => TMessage[] | undefined;
+  isNewConversationRoute: boolean;
+}): ErrorTurn => {
+  const { userMessage, initialResponse } = submission;
+  const parentMessageId = responseParentMessageId(
+    initialResponse,
+    userMessage,
+    submission.isRegenerate,
+  );
+  const conversationId =
+    userMessage.conversationId ?? submission.conversation?.conversationId ?? '';
+
+  const parseErrorResponse = (payload: TResData | Partial<TMessage>): TMessage => {
+    const metadata = payload['responseMessage'] ?? payload;
+    const errorMessage: Partial<TMessage> = {
+      ...initialResponse,
+      ...metadata,
       error: true,
+      parentMessageId,
+    };
+
+    if (errorMessage.messageId === undefined || errorMessage.messageId === '') {
+      errorMessage.messageId = v4();
+    }
+
+    return tMessageSchema.parse(errorMessage) as TMessage;
+  };
+  const build = (errorMetadata: TMessage): TMessage =>
+    createErrorMessage({ errorMetadata, getMessages, submission });
+
+  if (!data) {
+    const convoId = conversationId || `_${v4()}`;
+    return {
+      conversationId: convoId,
+      recover: true,
+      errorResponse: build(
+        parseErrorResponse({ text: CONNECTION_ERROR_TEXT, ...submission, conversationId: convoId }),
+      ),
     };
   }
-  return tMessageSchema.parse(errorMessage) as TMessage;
+
+  const receivedConvoId = data.conversationId ?? '';
+  if (!conversationId && !receivedConvoId) {
+    return {
+      conversationId: `_${v4()}`,
+      recover: true,
+      errorResponse: build(parseErrorResponse(data)),
+    };
+  }
+  if (!receivedConvoId) {
+    return { conversationId, recover: false, errorResponse: build(parseErrorResponse(data)) };
+  }
+  return {
+    conversationId: receivedConvoId,
+    recover: isNewConversationRoute,
+    errorResponse: build(
+      tMessageSchema.parse({
+        ...data,
+        error: true,
+        parentMessageId,
+      }) as TMessage,
+    ),
+  };
 };
+
+/**
+ * A code approval mode picked locally is newer than any server copy of the
+ * conversation: the final and abort events return the mode the run STARTED
+ * with, and error recovery rebuilds from the pre-run capture. The local mode
+ * therefore survives every merge and the next send carries it. Identity is
+ * checked because the conversation atom is index-global: after navigating
+ * elsewhere mid-run, that conversation's mode must not land in this one.
+ */
+export const keepLocalCodeApprovalMode = <T extends Partial<TConversation>>(
+  merged: T,
+  local: Partial<TConversation> | null | undefined,
+  conversationId: string | null | undefined,
+): T => {
+  const localMode = local?.codeApprovalMode;
+  if (localMode == null || local?.conversationId !== conversationId) {
+    return merged;
+  }
+  return merged.codeApprovalMode === localMode
+    ? merged
+    : { ...merged, codeApprovalMode: localMode };
+};
+
+/** Preset for a conversation rebuilt after a failed or aborted run. The detail
+ *  cache holds a mode picked while that run streamed; the capture only the
+ *  pre-run one. */
+export const buildRecoveryPreset = (
+  submissionConvo: Partial<TConversation>,
+  cachedConvo: TConversation | null | undefined,
+  conversationId: string,
+  submittedDecision?: Pick<EventSubmission, 'codeEnvironmentMode' | 'codeWorkspaces'>,
+): TPreset =>
+  tPresetSchema.parse(
+    keepLocalCodeApprovalMode(
+      submittedDecision == null
+        ? submissionConvo
+        : withSubmittedCodeDecision(submissionConvo as TConversation, submittedDecision)!,
+      cachedConvo,
+      conversationId,
+    ),
+  );
 
 export const getConvoTitle = ({
   parentId,
@@ -341,36 +575,83 @@ export default function useEventHandlers({
   setShowStopButton,
 }: EventHandlerParams) {
   const queryClient = useQueryClient();
+  const reasoningStore = useStore();
   const { announcePolite } = useLiveAnnouncer();
   const applyAgentTemplate = useApplyAgentTemplate();
   const setAbortScroll = useSetRecoilState(store.abortScroll);
   /** Cleared on every terminal path below: the elapsed anchor must not outlive
    *  its generation, or a later externally-started run attached at this index
    *  would inherit a stale baseline. Navigation teardown deliberately does not
-   *  clear it — a reattach to a still-live run keeps its original start. */
+   *  clear it: a reattach to a still-live run keeps its original start. */
   const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(runIndex));
+  const { mutate: reconcileCodeDecision } =
+    useReconcileConversationCodeEnvironmentMutation(setConversation);
+  const reconcileFailedCodeDecision = useCallback(
+    (submission: EventSubmission, conversationId?: string) => {
+      if (isAddedRequest) return;
+      const request = getFailedCodeDecisionRequest(submission, conversationId);
+      if (request != null) reconcileCodeDecision(request);
+    },
+    [isAddedRequest, reconcileCodeDecision],
+  );
+
+  const recoverConversation = useCallback(
+    (conversationId: string, submission: EventSubmission) => {
+      if (!newConversation) {
+        return;
+      }
+      const cachedConvo = queryClient.getQueryData<TConversation>([
+        QueryKeys.conversation,
+        conversationId,
+      ]);
+      const preset = buildRecoveryPreset(
+        submission.conversation,
+        cachedConvo,
+        conversationId,
+        submission,
+      );
+      newConversation({
+        // Endpoint preset parsing omits code decisions. Carry them on the conversation template
+        // too, so rebuilding after a first-turn stream failure cannot discard the implicit pick.
+        template: {
+          conversationId,
+          codeEnvironmentMode: preset.codeEnvironmentMode,
+          codeWorkspaces: preset.codeWorkspaces,
+        },
+        preset,
+      });
+    },
+    [newConversation, queryClient],
+  );
   const navigate = useNavigate();
   const location = useLocation();
 
-  /** Re-queue the turn's quoted excerpts when an early abort restores the draft,
-   *  so retrying the restored message still sends the references — the pending
-   *  queue was already drained on submit. */
-  const restorePendingQuotes = useRecoilCallback(
+  /** Re-stage request context when an early abort restores the draft, so a
+   *  retry keeps the references and one-shot reasoning selection already
+   *  drained from the composer on submit. */
+  const restorePendingContext = useRecoilCallback(
     ({ set }) =>
-      (convoId: string, quotes?: string[]) => {
+      (convoId: string, quotes?: string[], reasoningOverride?: TMessage['reasoningOverride']) => {
         if (Array.isArray(quotes) && quotes.length > 0) {
           set(store.pendingQuotesByConvoId(convoId), quotes);
         }
+        if (reasoningOverride != null) {
+          const reasoningAtom = pendingReasoningOverrideFamily(
+            getReasoningStateKey(convoId, runIndex),
+          );
+          reasoningStore.set(reasoningAtom, (current) => current ?? reasoningOverride);
+        }
       },
-    [],
+    [reasoningStore, runIndex],
   );
 
   const lastAnnouncementTimeRef = useRef(Date.now());
   const { conversationId: paramId } = useParams();
   const { token } = useAuthContext();
+  const transport = useChatTransport();
 
   const { contentHandler, resetContentHandler } = useContentHandler({ setMessages, getMessages });
-  /** `refetchType: 'all'` so cached-but-unmounted skill queries refresh too —
+  /** `refetchType: 'all'` so cached-but-unmounted skill queries refresh too:
    *  they opt out of `refetchOnMount`, so a plain invalidation would leave
    *  the Skills panel stale until a manual refresh. */
   const onSkillAuthoringComplete = useCallback(() => {
@@ -378,6 +659,12 @@ export default function useEventHandlers({
       queryClient.invalidateQueries({ queryKey: [key], refetchType: 'all' });
     }
   }, [queryClient]);
+  const onSubagentIndexChange = useCallback(
+    (conversationId: string) => {
+      void queryClient.invalidateQueries([QueryKeys.parentSubagents, conversationId]);
+    },
+    [queryClient],
+  );
   const {
     stepHandler,
     clearStepMaps,
@@ -394,6 +681,7 @@ export default function useEventHandlers({
     setIsSubmitting,
     lastAnnouncementTimeRef,
     onSkillAuthoringComplete,
+    onSubagentIndexChange,
   });
   const attachmentHandler = useAttachmentHandler(queryClient);
 
@@ -401,7 +689,7 @@ export default function useEventHandlers({
    *  Historical subagent dialogs rehydrate from the persisted
    *  `subagent_content` on each `tool_call` (written by the backend
    *  at message-save time), so clearing live atoms on switch
-   *  doesn't lose any viewable history — it just keeps `atomFamily`
+   *  doesn't lose any viewable history; it just keeps `atomFamily`
    *  bounded across multi-conversation sessions.
    *
    *  Rule: reset on real conversation switches, but preserve atoms for
@@ -510,10 +798,13 @@ export default function useEventHandlers({
       }
 
       if (setConversation && !isAddedRequest) {
-        setConversation((prevState) => {
-          const update = { ...prevState, ...convoUpdate };
-          return update;
-        });
+        setConversation((prevState) =>
+          keepLocalCodeApprovalMode(
+            { ...prevState, ...convoUpdate },
+            prevState,
+            convoUpdate.conversationId,
+          ),
+        );
       }
 
       setIsSubmitting(false);
@@ -529,7 +820,7 @@ export default function useEventHandlers({
        *  Filtering it out and re-appending at the tail would order any of its
        *  already-present children (abandoned responses from preempted
        *  attempts) before their parent, and the message tree hoists such rows
-       *  into phantom root branches — a folded thread. */
+       *  into phantom root branches, a folded thread. */
       const userIndex = _messages.findIndex((msg) => msg.messageId === userMessage.messageId);
       const messages =
         userIndex >= 0
@@ -560,6 +851,7 @@ export default function useEventHandlers({
           });
           update = tConvoUpdateSchema.parse({
             ...prevState,
+            ...acknowledgedCodeEnvironment(prevState, submission),
             conversationId,
             thread_id,
             title,
@@ -584,6 +876,7 @@ export default function useEventHandlers({
         setConversation((prevState) => {
           update = tConvoUpdateSchema.parse({
             ...prevState,
+            ...acknowledgedCodeEnvironment(prevState, submission),
             conversationId,
             thread_id,
             messages: [requestMessage.messageId, responseMessage.messageId],
@@ -600,13 +893,11 @@ export default function useEventHandlers({
   const focusRegeneratedResponse = useFocusRegeneratedResponse();
 
   const createdHandler = useCallback(
-    (data: TResData, submission: EventSubmission) => {
-      queryClient.invalidateQueries([QueryKeys.mcpConnectionStatus]);
-      queryClient.invalidateQueries([QueryKeys.mcpTools]);
+    (data: ChatCreatedFrame, submission: EventSubmission) => {
       const { messages, userMessage, isRegenerate = false, isTemporary = false } = submission;
       /**
        * The spread carries `manualSkills` through from
-       * `submission.initialResponse` — `useChatFunctions` seeds the field
+       * `submission.initialResponse`: `useChatFunctions` seeds the field
        * there at construction so the assistant placeholder already has it
        * by the time this handler fires. Subsequent `useStepHandler`
        * spreads and `updateContent` spreads preserve it, and
@@ -645,6 +936,7 @@ export default function useEventHandlers({
           });
           update = tConvoUpdateSchema.parse({
             ...prevState,
+            ...acknowledgedCodeEnvironment(prevState, submission),
             conversationId,
             title,
           }) as TConversation;
@@ -667,6 +959,7 @@ export default function useEventHandlers({
         setConversation((prevState) => {
           update = tConvoUpdateSchema.parse({
             ...prevState,
+            ...acknowledgedCodeEnvironment(prevState, submission),
             conversationId,
           }) as TConversation;
           return update;
@@ -757,6 +1050,7 @@ export default function useEventHandlers({
           const isExistingConvo =
             currentConvoId && currentConvoId !== Constants.NEW_CONVO && !isInitialNewConvo;
           if (isExistingConvo) {
+            reconcileFailedCodeDecision(submission, currentConvoId);
             const abortMessages = getExistingConversationAbortMessages({
               messages,
               isRegenerate,
@@ -769,7 +1063,11 @@ export default function useEventHandlers({
               abortMessages,
             );
             setDraft({ id: currentConvoId, value: requestMessage?.text });
-            restorePendingQuotes(currentConvoId, requestMessage?.quotes);
+            restorePendingContext(
+              currentConvoId,
+              requestMessage?.quotes,
+              requestMessage?.reasoningOverride,
+            );
             return;
           }
 
@@ -784,7 +1082,11 @@ export default function useEventHandlers({
             id: getConversationDraftId(runIndex, Constants.NEW_CONVO),
             value: requestMessage?.text,
           });
-          restorePendingQuotes(String(Constants.NEW_CONVO), requestMessage?.quotes);
+          restorePendingContext(
+            String(Constants.NEW_CONVO),
+            requestMessage?.quotes,
+            requestMessage?.reasoningOverride,
+          );
           if (location.pathname !== `/c/${Constants.NEW_CONVO}`) {
             navigate(`/c/${Constants.NEW_CONVO}`, { replace: true });
           }
@@ -820,7 +1122,7 @@ export default function useEventHandlers({
 
         const isNewConvo = conversation.conversationId !== submissionConvo.conversationId;
 
-        // Skip temporary conversations — the server never generates titles for them.
+        // Skip temporary conversations; the server never generates titles for them.
         if (isNewConvo && conversation.conversationId && !_isTemporary) {
           queueTitleGeneration(conversation.conversationId);
         }
@@ -852,7 +1154,11 @@ export default function useEventHandlers({
             id: getConversationDraftId(runIndex, currentConvoId),
             value: requestMessage?.text,
           });
-          restorePendingQuotes(currentConvoId, requestMessage?.quotes);
+          restorePendingContext(
+            currentConvoId,
+            requestMessage?.quotes,
+            requestMessage?.reasoningOverride,
+          );
           if (isNewChat) {
             requestChatFocus();
             navigate(`/c/${Constants.NEW_CONVO}`, { replace: true });
@@ -920,15 +1226,31 @@ export default function useEventHandlers({
         /** A title applied locally (e.g. an immediate-mode title fetched while the
          *  response was still streaming) must survive the final event, whose
          *  `conversation` was built before the title was saved and so carries no
-         *  title yet — otherwise the chat reverts to "New Chat" until reload. This
+         *  title yet, otherwise the chat reverts to "New Chat" until reload. This
          *  holds for a stopped turn too: the server persists a title that finished
          *  generating before the Stop, so the local one stays in sync. */
         if (setConversation && isAddedRequest !== true) {
+          /* Pair the durable server stamp with the exact final messages cache object before
+           * point/list cache events can ask useConversationSeen to acknowledge it. */
+          const serverLastResponseAt = serverConversation.lastResponseAt;
+          if (conversation.conversationId && !_isTemporary && serverLastResponseAt) {
+            markLocallyCommittedReply(
+              queryClient,
+              conversation.conversationId,
+              serverLastResponseAt,
+            );
+            applyServerReplyStamp(queryClient, conversation.conversationId, {
+              lastResponseAt: serverLastResponseAt,
+              lastResponseMessageId: serverConversation.lastResponseMessageId,
+              updatedAt: serverConversation.updatedAt,
+            });
+          }
           setConversation((prevState) => {
-            const update = {
-              ...prevState,
-              ...(conversation as TConversation),
-            };
+            const update = keepLocalCodeApprovalMode(
+              { ...prevState, ...(conversation as TConversation) },
+              prevState,
+              conversation.conversationId,
+            );
             if (prevState?.model != null && prevState.model !== submissionConvo.model) {
               update.model = prevState.model;
             }
@@ -940,10 +1262,13 @@ export default function useEventHandlers({
               queryClient.setQueryData<TConversation>(
                 [QueryKeys.conversation, conversation.conversationId],
                 (cachedConvo) => {
-                  const merged = {
-                    ...cachedConvo,
-                    ...serverConversation,
-                  } as TConversation;
+                  const merged = keepLocalCodeApprovalMode(
+                    { ...cachedConvo, ...serverConversation } as TConversation,
+                    prevState?.conversationId === conversation.conversationId
+                      ? prevState
+                      : cachedConvo,
+                    conversation.conversationId,
+                  );
                   const cachedTitle = cachedConvo?.title;
                   if (!hasRealTitle(serverConversation.title) && hasRealTitle(cachedTitle)) {
                     merged.title = cachedTitle;
@@ -996,110 +1321,46 @@ export default function useEventHandlers({
       applyAgentTemplate,
       attachmentHandler,
       setSubmissionStart,
-      restorePendingQuotes,
+      restorePendingContext,
+      reconcileFailedCodeDecision,
     ],
   );
 
   const errorHandler = useCallback(
     ({ data, submission }: { data?: TResData; submission: EventSubmission }) => {
-      const { userMessage, initialResponse } = submission;
-      setCompleted((prev) => new Set(prev.add(initialResponse.messageId)));
+      setCompleted((prev) => new Set(prev.add(submission.initialResponse.messageId)));
       setSubmissionStart(null);
 
-      const conversationId =
-        userMessage.conversationId ?? submission.conversation?.conversationId ?? '';
-
-      const setErrorMessages = (convoId: string, errorMessage: TMessage) => {
-        const finalMessages = mergeErrorMessages({ ...submission, errorMessage });
-        setMessages(finalMessages);
-        queryClient.setQueryData<TMessage[]>([QueryKeys.messages, convoId], finalMessages);
-      };
-
-      const parseErrorResponse = (data: TResData | Partial<TMessage>): TMessage => {
-        const metadata = data['responseMessage'] ?? data;
-        const errorMessage: Partial<TMessage> = {
-          ...initialResponse,
-          ...metadata,
-          error: true,
-          parentMessageId: userMessage.messageId,
-        };
-
-        if (errorMessage.messageId === undefined || errorMessage.messageId === '') {
-          errorMessage.messageId = v4();
-        }
-
-        return tMessageSchema.parse(errorMessage) as TMessage;
-      };
-
-      if (!data) {
-        const convoId = conversationId || `_${v4()}`;
-        const errorMetadata = parseErrorResponse({
-          text: 'Error connecting to server, try refreshing the page.',
-          ...submission,
-          conversationId: convoId,
-        });
-        const errorResponse = createErrorMessage({
-          errorMetadata,
-          getMessages,
-          submission,
-        });
-        setErrorMessages(convoId, errorResponse);
-        if (newConversation) {
-          newConversation({
-            template: { conversationId: convoId },
-            preset: tPresetSchema.parse(submission.conversation),
-          });
-        }
-        setIsSubmitting(false);
-        return;
+      const { conversationId, errorResponse, recover } = resolveErrorTurn({
+        data,
+        submission,
+        getMessages,
+        isNewConversationRoute: paramId === Constants.NEW_CONVO,
+      });
+      const finalMessages = mergeErrorMessages({ ...submission, errorMessage: errorResponse });
+      setMessages(finalMessages);
+      queryClient.setQueryData<TMessage[]>([QueryKeys.messages, conversationId], finalMessages);
+      const settled = resolveSettledErrorReadState({ data, submission, conversationId });
+      if (settled) {
+        markLocallyCommittedReply(queryClient, conversationId, settled.lastResponseAt);
+        applyServerReplyStamp(queryClient, conversationId, settled);
       }
-
-      const receivedConvoId = data.conversationId ?? '';
-      if (!conversationId && !receivedConvoId) {
-        const convoId = `_${v4()}`;
-        const errorResponse = parseErrorResponse(data);
-        setErrorMessages(convoId, errorResponse);
-        if (newConversation) {
-          newConversation({
-            template: { conversationId: convoId },
-            preset: tPresetSchema.parse(submission.conversation),
-          });
-        }
-        setIsSubmitting(false);
-        return;
-      } else if (!receivedConvoId) {
-        const errorResponse = parseErrorResponse(data);
-        setErrorMessages(conversationId, errorResponse);
-        setIsSubmitting(false);
-        return;
+      if (recover) {
+        recoverConversation(conversationId, submission);
       }
-
-      const errorResponse = tMessageSchema.parse({
-        ...data,
-        error: true,
-        parentMessageId: userMessage.messageId,
-      }) as TMessage;
-
-      setErrorMessages(receivedConvoId, errorResponse);
-      if (receivedConvoId && paramId === Constants.NEW_CONVO && newConversation) {
-        newConversation({
-          template: { conversationId: receivedConvoId },
-          preset: tPresetSchema.parse(submission.conversation),
-        });
-      }
-
+      reconcileFailedCodeDecision(submission, conversationId);
       setIsSubmitting(false);
-      return;
     },
     [
       setCompleted,
       setMessages,
       paramId,
-      newConversation,
       setIsSubmitting,
       setSubmissionStart,
       getMessages,
       queryClient,
+      recoverConversation,
+      reconcileFailedCodeDecision,
     ],
   );
 
@@ -1151,28 +1412,16 @@ export default function useEventHandlers({
       } else if (!isAssistantsEndpoint(endpoint)) {
         const convoId = conversationId || `_${v4()}`;
         logger.log('conversation', 'Aborted conversation with minimal messages, ID: ' + convoId);
-        if (newConversation) {
-          newConversation({
-            template: { conversationId: convoId },
-            preset: tPresetSchema.parse(submission.conversation),
-          });
-        }
+        recoverConversation(convoId, submission);
         setIsSubmitting(false);
         return;
       }
 
       try {
-        const response = await fetch(`${EndpointURLs[endpoint ?? '']}/abort`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            abortKey: runAbortKey,
-            endpoint,
-          }),
-        });
+        const response = await transport.abortRun(
+          { endpoint: endpoint ?? '', abortKey: runAbortKey },
+          { token },
+        );
 
         // Check if the response is JSON
         const contentType = response.headers.get('content-type');
@@ -1203,26 +1452,30 @@ export default function useEventHandlers({
           submission,
           error,
         });
-        setMessages([...submission.messages, submission.userMessage, errorResponse]);
-        if (newConversation) {
-          newConversation({
-            template: { conversationId: conversationId || errorResponse.conversationId || v4() },
-            preset: tPresetSchema.parse(submission.conversation),
-          });
-        }
+        /** A compaction has no user row: its `userMessage` slot names the leaf
+         *  the turn hangs off, which `messages` already holds. Writing it here
+         *  would duplicate that id as an empty, self-parented user message,
+         *  a phantom root the thread then folds into. */
+        setMessages(
+          submission.compact === true
+            ? [...submission.messages, errorResponse]
+            : [...submission.messages, submission.userMessage, errorResponse],
+        );
+        recoverConversation(conversationId || errorResponse.conversationId || v4(), submission);
         setIsSubmitting(false);
       }
     },
     [
       token,
+      transport,
       getMessages,
       setMessages,
       finalHandler,
       cancelHandler,
-      newConversation,
       setIsSubmitting,
       setShowStopButton,
       setSubmissionStart,
+      recoverConversation,
     ],
   );
 

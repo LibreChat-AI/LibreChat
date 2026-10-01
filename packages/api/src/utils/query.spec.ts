@@ -1,4 +1,12 @@
-import { DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, normalizeLimit, queryString } from './query';
+import {
+  CONVERSATION_SORT_FIELDS,
+  DEFAULT_PAGE_LIMIT,
+  MAX_PAGE_LIMIT,
+  normalizeLimit,
+  normalizeSortDirection,
+  normalizeSortField,
+  queryString,
+} from './query';
 
 describe('queryString', () => {
   it('returns a string value unchanged', () => {
@@ -52,5 +60,42 @@ describe('normalizeLimit', () => {
 
   it('truncates a fractional limit', () => {
     expect(normalizeLimit('7.9')).toBe(7);
+  });
+});
+
+describe('conversation sort normalizers', () => {
+  it('falls back for an unknown sort field', () => {
+    expect(
+      normalizeSortField('not-a-sort', {
+        fields: CONVERSATION_SORT_FIELDS,
+        fallback: 'updatedAt',
+      }),
+    ).toBe('updatedAt');
+  });
+
+  it('uses the first value for a repeated sort field parameter', () => {
+    expect(
+      normalizeSortField(['createdAt', 'title'], {
+        fields: CONVERSATION_SORT_FIELDS,
+        fallback: 'updatedAt',
+      }),
+    ).toBe('createdAt');
+  });
+
+  it.each(Object.keys(CONVERSATION_SORT_FIELDS))('accepts the %s sort field', (field) => {
+    expect(
+      normalizeSortField(field, {
+        fields: CONVERSATION_SORT_FIELDS,
+        fallback: 'updatedAt',
+      }),
+    ).toBe(field);
+  });
+
+  it('passes through ascending sort direction', () => {
+    expect(normalizeSortDirection('asc')).toBe('asc');
+  });
+
+  it('falls back for an invalid sort direction', () => {
+    expect(normalizeSortDirection('sideways')).toBe('desc');
   });
 });

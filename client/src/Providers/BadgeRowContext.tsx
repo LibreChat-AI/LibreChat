@@ -37,6 +37,7 @@ interface BadgeRowProviderProps {
   isSubmitting?: boolean;
   conversationId?: string | null;
   specName?: string | null;
+  observeToolAuthorization?: boolean;
 }
 
 export default function BadgeRowProvider({
@@ -44,6 +45,7 @@ export default function BadgeRowProvider({
   isSubmitting,
   conversationId,
   specName,
+  observeToolAuthorization = false,
 }: BadgeRowProviderProps) {
   const lastContextKeyRef = useRef<string>('');
   const hasInitializedRef = useRef(false);
@@ -275,21 +277,41 @@ export default function BadgeRowProvider({
     storageContextKey,
     specName,
     ownsChatSelection: true,
+    observeToolAuthorization,
   });
 
-  const value: BadgeRowContextType = {
-    skills,
-    memory,
-    webSearch,
-    artifacts,
-    fileSearch,
-    agentsConfig,
-    conversationId,
-    storageContextKey,
-    codeInterpreter,
-    searchApiKeyForm,
-    mcpServerManager,
-  };
+  /* Memoized because this is an inline child of `ChatForm`, which re-renders on
+     every keystroke: a fresh value here invalidated every consumer's memo, and
+     the palette rebuilt its whole tool, skill and server catalog per character
+     typed. */
+  const value = useMemo<BadgeRowContextType>(
+    () => ({
+      skills,
+      memory,
+      webSearch,
+      artifacts,
+      fileSearch,
+      agentsConfig,
+      conversationId,
+      storageContextKey,
+      codeInterpreter,
+      searchApiKeyForm,
+      mcpServerManager,
+    }),
+    [
+      skills,
+      memory,
+      webSearch,
+      artifacts,
+      fileSearch,
+      agentsConfig,
+      conversationId,
+      storageContextKey,
+      codeInterpreter,
+      searchApiKeyForm,
+      mcpServerManager,
+    ],
+  );
 
   return <BadgeRowContext.Provider value={value}>{children}</BadgeRowContext.Provider>;
 }

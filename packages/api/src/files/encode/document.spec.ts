@@ -14,6 +14,7 @@ jest.mock('~/files/validation', () => ({
 jest.mock('./utils', () => ({
   getFileStream: jest.fn(),
   getConfiguredFileSizeLimit: jest.fn(),
+  isAttachmentObjectNotFoundError: jest.fn(() => false),
 }));
 
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
@@ -906,6 +907,53 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
       expect(result.documents).toHaveLength(0);
       expect(result.files).toHaveLength(0);
       expect(mockedGetFileStream).not.toHaveBeenCalled();
+    });
+
+    it('should send textual documents as text parts to Claude through an OpenAI-compatible gateway', async () => {
+      const req = createMockRequest(30) as ServerRequest;
+      const file = createMockDocFile(1, 'text/plain', 'notes.txt');
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: Buffer.from('hello from test').toString('base64'),
+        metadata: file,
+      });
+
+      const result = await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.OPENAI, model: 'claude-auto-latest' },
+        mockStrategyFunctions,
+      );
+
+      expect(result.documents).toEqual([
+        { type: 'text', text: 'File: "notes.txt"\n\nhello from test' },
+      ]);
+      expect(result.files).toHaveLength(1);
+    });
+
+    it('should keep textual documents as file parts for non-Claude OpenAI models', async () => {
+      const req = createMockRequest(30) as ServerRequest;
+      const file = createMockDocFile(1, 'text/html', 'page.html');
+      const mockContent = Buffer.from('<p>hi</p>').toString('base64');
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: mockContent,
+        metadata: file,
+      });
+
+      const result = await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.OPENAI, model: 'gemini-auto-latest' },
+        mockStrategyFunctions,
+      );
+
+      expect(result.documents).toEqual([
+        {
+          type: 'file',
+          file: { filename: 'page.html', file_data: `data:text/html;base64,${mockContent}` },
+        },
+      ]);
     });
 
     it('should retain XLSX support for non-Claude OpenAI models', async () => {

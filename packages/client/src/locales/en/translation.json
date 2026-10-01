@@ -28,5 +28,7 @@
   "com_ui_disabled": "Disabled",
   "com_ui_toggle_theme": "Toggle theme",
   "com_ui_dark_theme_enabled": "Dark theme enabled",
-  "com_ui_light_theme_enabled": "Light theme enabled"
+  "com_ui_light_theme_enabled": "Light theme enabled",
+  "com_ui_high_contrast_dark_theme_enabled": "High contrast dark theme enabled",
+  "com_ui_high_contrast_light_theme_enabled": "High contrast light theme enabled"
 }

@@ -1,7 +1,7 @@
 import path from 'path';
 import axios from 'axios';
-import { ErrorTypes } from 'librechat-data-provider';
 import { logger } from '@librechat/data-schemas';
+import { ErrorTypes } from 'librechat-data-provider';
 import { readFileAsString } from './files';
 
 export interface GoogleServiceKey {
@@ -124,14 +124,15 @@ export async function loadServiceKey(keyPath: string): Promise<GoogleServiceKey 
  * @param expiresAt - The expiration date of the user key in a format that can be parsed by the Date constructor
  * @param endpoint - The endpoint associated with the user key to be checked
  * @throws Error if the user key has expired. The error message is a stringified JSON object
- * containing the type of error (`ErrorTypes.EXPIRED_USER_KEY`), the expiration date in the local string format, and the endpoint.
+ * containing the type of error (`ErrorTypes.EXPIRED_USER_KEY`), the expiration date as an ISO 8601
+ * timestamp the client formats in the reader's locale, and the endpoint.
  */
 export function checkUserKeyExpiry(expiresAt: string, endpoint: string): void {
   const expiresAtDate = new Date(expiresAt);
   if (expiresAtDate < new Date()) {
     const errorMessage = JSON.stringify({
       type: ErrorTypes.EXPIRED_USER_KEY,
-      expiredAt: expiresAtDate.toLocaleString(),
+      expiredAt: expiresAtDate.toISOString(),
       endpoint,
     });
     throw new Error(errorMessage);

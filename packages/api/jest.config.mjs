@@ -1,8 +1,11 @@
+import { maxWorkers } from '../../config/jest.workers.cjs';
+
 const esModules = [
   '@langchain/langgraph',
   '@langchain/langgraph-checkpoint',
   '@langchain/langgraph-sdk',
   '@mistralai/mistralai',
+  '@modelcontextprotocol/ext-apps',
   'domelementtype',
   'domhandler',
   'dom-serializer',
@@ -52,7 +55,7 @@ export default {
   //   },
   // },
   setupFiles: ['<rootDir>/jest.setup.cjs', '<rootDir>/../../config/jest.setup.logging.cjs'],
-  maxWorkers: '50%',
+  maxWorkers,
   restoreMocks: true,
   testTimeout: 15000,
 };

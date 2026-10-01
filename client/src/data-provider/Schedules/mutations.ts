@@ -8,6 +8,7 @@ import type {
   TScheduleRunNowResponse,
 } from 'librechat-data-provider';
 import type { UseMutationOptions } from '@tanstack/react-query';
+import { trackScheduledRun } from './admission';
 
 export const useCreateScheduleMutation = (
   options?: UseMutationOptions<TSchedule, Error, TCreateSchedule>,
@@ -73,6 +74,10 @@ export const useRunScheduleNowMutation = (
     (id: string) => dataService.runScheduleNow(id),
     {
       ...options,
+      onSuccess: (data, ...rest) => {
+        void trackScheduledRun(queryClient, data.conversationId);
+        options?.onSuccess?.(data, ...rest);
+      },
       // Invalidate on SETTLED, not just success: several run-now 409 paths are still
       // server-side mutations (a balance skip updates lastRun/counters and can
       // auto-disable; agent/permission/invalid-schedule skips disable the schedule

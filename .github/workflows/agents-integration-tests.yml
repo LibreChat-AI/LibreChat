@@ -1,9 +1,12 @@
-name: Agents Integration Tests
+name: Integration Tests
 
-# Runs the packages/api `src/agents/**` integration specs (e.g. the durable HITL
-# checkpointer and cross-replica subagent delivery against real MongoDB and Redis). These
-# are `*.integration.spec.ts`, which `test:ci` deliberately excludes — without this
-# job they run nowhere and their regressions guard nothing.
+# Runs every packages/api `*.integration.spec.ts` / `*.integration.test.ts` suite (e.g. the
+# durable HITL checkpointer and cross-replica subagent delivery against real MongoDB and
+# Redis, the admin config secret registry against a real Config collection, MCP flows
+# against in-process servers). `test:ci` deliberately excludes them, and the Redis-backed
+# `*.cache_integration` / `*.stream_integration` suites run in cache-integration-tests.yml —
+# without this job they run nowhere and their regressions guard nothing. Selection is by
+# suffix, not folder, so a suite added anywhere under src is picked up.
 on:
   pull_request:
     branches:
@@ -11,9 +14,9 @@ on:
       - dev
       - dev-staging
       - release/*
-    # The suite builds and consumes data-provider and data-schemas and imports
+    # The suites build and consume data-provider and data-schemas and import
     # across packages/api (the build-cache keys below hash all three src trees),
-    # so it must re-run on any of them — not just src/agents.
+    # so they must re-run on any of them.
     paths:
       - 'packages/api/src/**'
       - 'packages/api/package.json'
@@ -106,9 +109,9 @@ jobs:
         if: steps.cache-api.outputs.cache-hit != 'true'
         run: npm run build:api
 
-      - name: Run agents integration tests
+      - name: Run integration tests
         working-directory: packages/api
         env:
           NODE_ENV: test
           REDIS_URI: redis://127.0.0.1:6379
-        run: npm run test:agents-integration
+        run: npm run test:integration

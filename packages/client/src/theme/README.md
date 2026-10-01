@@ -26,8 +26,56 @@ const compactTheme: ThemeDefinition = {
 <ThemeProvider themeDefinition={compactTheme}>{children}</ThemeProvider>;
 ```
 
-The initial appearance registry intentionally covers only shared control shape, surface shape,
-control height, compact/normal spacing, UI typography, surface elevation, and fast/normal motion.
+The appearance registry covers shared control shape, surface shape, control height, compact/normal
+spacing, UI and code typography, surface elevation, fast/normal motion, and the radius and shadow
+scales.
+
+In the LibreChat app the plain Tailwind utilities read theme-owned properties, so a theme reshapes
+existing call sites without a migration: `rounded-sm` through `rounded-3xl` read `radiusSm`
+through `radius3xl` (`--theme-radius-*`), `font-sans` reads `fontFamily` (`--theme-font-family`),
+`font-mono` reads `monoFontFamily` (`--theme-mono-font-family`), and `shadow-2xs` through
+`shadow-2xl` (and bare `shadow`, which matches `sm`) read `shadow2xs` through `shadow2xl`
+(`--theme-shadow-*`). A shadow step must be a concrete `box-shadow` list (no `var()`, `env()` or
+`attr()`) or `none`. `elevationSurface` stays the separate role behind `shadow-theme-surface` and
+keeps its original validation, so a released theme holding `var()` there still loads. `elevationDrag`
+(`--theme-elevation-drag`) is the lift a dragged badge takes while it is held. On every
+shadow role, `none` is written as a transparent layer so Tailwind can still compose it with ring
+utilities.
+The defaults reproduce the scale those utilities had before, so a theme that names none of them
+changes nothing. The mapping lives in `tokens.css`, which the app stylesheet imports and
+`@librechat/client/theme.css` publishes, so a consumer's utilities are the app's.
+
+The stock families name Inter (`font-sans`, `font-theme-ui`) and Roboto Mono (`font-mono`), and
+the ClickHouse theme names Inconsolata. `theme.css` ships all three: `fonts.css` declares their
+`@font-face` rules against the package's own files by export (`@librechat/client/fonts/*`), and
+the host's bundler (Vite, webpack's css-loader, esbuild) resolves and emits them, exactly as the
+app's build does. A pipeline that serves the compiled CSS without a bundler has to serve those
+paths itself. A face downloads only once text renders in it. The SIL Open Font License of
+each family ships beside its files (`fonts/*-OFL.txt`); keep it with the files when redistributing
+them.
+
+> **Breaking change:** the preset used to pin `rounded-sm`, `rounded-md` and `rounded-lg` to
+> `--radius` (0.125rem, 0.375rem and 0.5rem by default). They now read `--theme-radius-sm`,
+> `--theme-radius-md` and `--theme-radius-lg` like the app's, so `rounded-sm` renders at
+> `calc(0.5rem - 4px)` and `--radius` no longer retunes them. Set the `radiusSm` through
+> `radius3xl` appearance roles, or the properties behind them, to reshape the scale.
+
+Three primitives keep corners of their own outside that scale: the menu panel (`.popover-ui`) reads
+`menuRadius` (0.7rem), the tooltip reads `tooltipRadius` (0.275rem) and the tab trigger reads
+`tabRadius` (0.185rem, through `rounded-theme-tab`). The defaults are the corners they always drew.
+
+Most appearance defaults hold in both modes. `darkAppearanceDefaults` lists the ones that differ in
+dark mode, and `defaultAppearanceFor(mode)` returns the full set for a mode: the menu panel's
+`menuShadow` and the tooltip's `tooltipShadow` are heavier on a dark page, as they always were. A
+theme that names a role in one mode replaces that mode's default only, and a theme that names
+`shadowLg` but not `menuShadow` keeps shading its light menus with `shadowLg`.
+
+The bundled ClickHouse theme (`themes/clickhouse.ts`) is the reference for a theme that changes
+shape as well as color: it tightens the radius scale to Click UI's `border.radii` steps, sets the
+mono family to Inconsolata over a real fallback stack, and raises every surface with Click UI's
+`shadow.1`, at 0.15 alpha in light mode and 0.6 in dark. Select it for a deployment with
+`interface.theme: clickhouse` in `librechat.yaml`.
+
 `themeRGB`, `REACT_APP_THEME_*`, and the existing localStorage keys remain supported through legacy
 adapters. Theme application removes only variables owned by the theme module when a theme is reset.
 
@@ -60,13 +108,14 @@ The theme system provides:
 
 The theme system operates in three layers:
 
-1. **CSS Variables Layer**: Default colors defined in your app's CSS
+1. **CSS Variables Layer**: Default colors, shape, type and elevation shipped by the package
 2. **ThemeProvider Layer**: React context that manages theme state and applies CSS variables
 3. **Tailwind Layer**: Maps CSS variables to Tailwind utility classes
 
 ### Default Behavior (No Custom Theme)
 
-- CSS variables cascade from your app's `style.css` definitions
+- CSS variables cascade from the stock values `@librechat/client/theme.css` ships
+  (`defaults.css`), which the LibreChat app reads through the same import
 - Light mode uses variables under `html` selector
 - Dark mode uses variables under `.dark` selector
 - No JavaScript intervention in color values
@@ -102,30 +151,34 @@ function App() {
 
 ### 3. Set Up Your Base CSS
 
-Ensure your app has CSS variables defined as fallbacks. Every theme variable must
-hold a **bare `R G B` channel triplet**, not a complete CSS color, because the
-Tailwind color map wraps them as `rgb(var(--x) / <alpha-value>)` so that opacity
-modifiers such as `bg-surface-primary/50` work:
+Import the published token stylesheet. It declares every token and the stock value of every
+property the tokens read, for light (`html`) and dark (`.dark`), so the components render the
+LibreChat palette with nothing else defined. Restate only what you change, after the import.
+Every theme color must hold a **bare `R G B` channel triplet**, not a complete CSS color,
+because each token wraps them as `rgb(var(--x))` so that opacity modifiers such as
+`bg-surface-primary/50` work. The stock roles are written against primitive scales under
+`:root` (`--white`, `--gray-*`, `--green-*`, `--red-*`, `--amber-*`, `--blue-*`), so
+redefining a step retints every role that reads it:
 
 ```css
 /* style.css */
-:root {
-  --white: 255 255 255;
-  --gray-800: 33 33 33;
-  --gray-100: 236 236 236;
-  /* ... other color definitions */
-}
+@import 'tailwindcss';
+/* Declares --color-text-primary, --color-surface-primary and the rest of the tokens as
+ * `@theme inline`, so every utility resolves its custom property at runtime, along with the
+ * stock value of each property. */
+@import '@librechat/client/theme.css';
+/* v4 reads no config by default: this is what loads the preset, the content globs and
+ * class-based dark mode from step 4. This app's own entry does the same
+ * (`client/src/style.css`), and so does the library's (`src/theme/theme.css`). */
+@config './tailwind.config.js';
 
+/* Optional: only what differs from the stock palette. */
 html {
-  --text-primary: var(--gray-800);
-  --surface-primary: var(--white);
-  /* ... other theme variables */
+  --surface-primary: 250 250 249;
 }
 
 .dark {
-  --text-primary: var(--gray-100);
-  --surface-primary: var(--gray-900);
-  /* ... other dark theme variables */
+  --surface-primary: 12 10 9;
 }
 ```
 
@@ -135,6 +188,11 @@ itself: `color: rgb(var(--text-primary));`.
 > **Breaking change:** earlier versions accepted complete colors
 > (`--text-primary: #212121`). Hex, `rgb(...)`, and named colors now produce
 > invalid declarations and must be converted to channel triplets.
+
+> **Breaking change:** the color map used to be built in JavaScript by
+> `createTailwindColors()` and spread into `theme.extend.colors`. Both are gone. The tokens
+> are declared in CSS, which is what lets a linter and an editor resolve them; a config that
+> still defines a `colors` block for these names shadows them and can be deleted.
 
 ### 4. Configure Tailwind
 
@@ -147,34 +205,66 @@ module.exports = {
   presets: [libreChatTailwindPreset],
   content: [
     './src/**/*.{js,jsx,ts,tsx}',
-    // Include component library files
-    './node_modules/@librechat/client/dist/**/*.js',
+    // Include component library files: tsdown emits .mjs/.cjs, never .js
+    './node_modules/@librechat/client/dist/**/*.{js,mjs,cjs}',
   ],
   darkMode: ['class'],
-  theme: {
-    extend: {
-      colors: {
-        // Wrap each channel triplet so opacity modifiers keep working
-        'text-primary': 'rgb(var(--text-primary) / <alpha-value>)',
-        'surface-primary': 'rgb(var(--surface-primary) / <alpha-value>)',
-        'brand-purple': 'rgb(var(--brand-purple) / <alpha-value>)',
-        // ... other colors
-      },
-    },
-  },
 };
 ```
 
+The semantic colors come from the stylesheet imported in step 3, so the config carries only content,
+dark mode and the preset, and it only applies through the `@config` line in that stylesheet:
+v4 loads no config file on its own, so without the directive the preset, the `content` globs
+and class-based dark mode are all silently absent.
+
 The published preset supplies the semantic appearance utilities used by theme-aware component
-variants, including `h-theme-control`, `rounded-theme-control`, `gap-theme-compact`, and
+variants, including `h-theme-control`, `rounded-theme-control`, `px-theme-control-x`, `gap-theme-control-gap`, and
 `duration-theme-fast`. Keep the preset enabled even when defining additional project utilities.
+
+The published stylesheet and preset preserve the host's standard Tailwind color palettes.
+LibreChat's legacy gray and green compatibility scales apply only to its repository builds.
+
+The package requires Tailwind v4 and declares `tailwindcss: ^4.3.3` as a peer dependency: the
+published components emit v4-only utilities such as `outline-hidden`, `shadow-xs` and
+`origin-(--radix-…)`, which Tailwind 3 silently generates nothing for.
+
+Tailwind 4 is also a different build integration. `tailwindcss` no longer exports a PostCSS
+plugin, so a host on the classic PostCSS setup installs `@tailwindcss/postcss` and names that
+instead — the SPA's `postcss.config.cjs` is the shape:
+
+```js
+module.exports = { plugins: { '@tailwindcss/postcss': {} } };
+```
+
+A Vite host can use `@tailwindcss/vite` in place of both. Without one of the two, the directives
+below are never compiled and the import fails with Tailwind's direct-plugin error.
+
+Tailwind 4 does not look for a JavaScript config on its own, so writing the file above is not
+enough: the stylesheet has to load it, next to the import that pulls Tailwind in. Without the
+directive the preset, the package content glob and the `high-contrast:` variant are absent,
+and the published components render with most of their classes ungenerated. A consumer uses the same import order as the SPA's `client/src/style.css`, with the package stylesheet among the imports: every `@import` has to precede `@config`, or Vite's CSS pipeline drops the ones after it.
+
+```css
+@import 'tailwindcss';
+@import '@librechat/client/theme.css';
+@import '@librechat/client/style.css';
+@config '../tailwind.config.js';
+```
+
+The package stylesheet carries the component CSS and the one preflight rule the primitives
+depend on — Tailwind 3 gave every `button` a pointer cursor and Tailwind 4 does not — so import
+it once, after Tailwind.
+
+`tailwindcss-animate` is a peer dependency too, and the preset registers it: the components' own
+`animate-in`, `fade-in-0`, `zoom-in-95` and `slide-in-from-*` classes are its utilities, so a
+consumer that loads the preset gets them without configuring anything.
 
 ### 5. Use Theme Colors in Components
 
 ```tsx
 function MyComponent() {
   return (
-    <div className="border border-border-light bg-surface-primary text-text-primary">
+    <div className="border-border-light bg-surface-primary text-text-primary border">
       <h1 className="text-text-secondary">Hello World</h1>
       <button className="bg-surface-submit text-text-on-status hover:bg-surface-submit-hover">
         Submit
@@ -195,6 +285,7 @@ function MyComponent() {
 - `text-text-warning` - Warning text color
 - `text-text-destructive` - Destructive/error text color
 - `text-text-on-status` - Text color for strong status surfaces
+- `text-link-prose` - Links in rendered Markdown (`link` in light, primary text in dark by default)
 
 ### Surface Colors
 
@@ -205,7 +296,13 @@ function MyComponent() {
 - `bg-surface-destructive` - Destructive action background
 - `bg-surface-dialog` - Dialog/modal background
 - `bg-surface-overlay` - Dialog/modal scrim, adapted per theme
+- `bg-surface-media-overlay` - Scrim, chip or progress drawn over the user's own media (lightbox, image preview, upload); `text-text-on-media` is its ink. Black and white in every bundled theme, since they frame the image rather than the page
 - `bg-surface-chat` - Chat interface background
+- `bg-surface-code` - Code block chrome: toolbar, output and result switcher
+- `bg-surface-code-body` - Code block pane behind the highlighted code
+- `fill-illustration-subtle`, `fill-illustration`, `fill-illustration-strong` - The three tones of in-app artwork, such as the file drop zone's illustration
+- `fill-file-document`, `fill-file-sheet`, `fill-file-code`, `fill-file-artifact`, `fill-file-audio`, `fill-file-video`, `fill-file-generic` - File-type tile fills; `stroke-file-ink` and `fill-file-ink` draw the glyph on them
+- `bg-surface-qr` - Backdrop behind a QR code, kept light in every mode so it scans
 
 ### Border Colors
 
@@ -226,12 +323,80 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `text-status-error` / `bg-status-error-subtle` / `border-status-error-border`
 - `text-status-neutral` / `bg-status-neutral-subtle` / `border-status-neutral-border`
 - `bg-status-success-strong` / `bg-status-info-strong` / `bg-status-warning-strong` / `bg-status-error-strong`
+- `text-status-verified` — fill of the verified mark `VerifiedIcon` paints,
+  carrying a `stroke-text-on-status` check. See `rgb-status-verified` in
+  `types/index.ts` for why it is its own role and what a pre-token theme gets.
 
 ### Other Colors
 
 - `bg-brand-purple` - Brand purple color
+- `bg-avatar-fill` / `text-avatar-text` - The default user avatar drawn when a
+  user has no image, and its glyph. A theme that sets `rgb-text-primary` but not
+  `rgb-avatar-text` inks the glyph in its primary text, as it did before the role.
+- `bg-avatar-placeholder` - Behind an agent or assistant avatar while its image
+  loads or where it is transparent. A theme that sets only its surfaces keeps it
+  on `surface-secondary` in light and `surface-tertiary` in dark, where it sat
+  before the role existed.
 - `bg-presentation` - Presentation background
-- `ring-ring-primary` - Focus ring color
+- `ring-ring-primary` - Decorative ring color (selection and hover rings)
+- `focus-outline` - The app-wide keyboard focus outline. Defaults to black in
+  light and white in dark; a theme that names only `rgb-ring-primary` draws its
+  outline in that ring.
+- `bg-surface-pressed` / `bg-surface-inverted-pressed` - The fill a neutral or
+  inverted control takes while held (`hover:active:`). Defaults to the hover fill,
+  which a pointer press has always shown; a theme that names only its hover fills
+  presses in them.
+- `bg-button-primary` / `bg-button-primary-hover` - The `Button`'s primary fill
+  and its hover, apart from the inverted surface the checkbox and switch keep.
+  They follow `surface-inverted` and its hover when a theme names only those.
+- `bg-surface-disabled` / `text-text-disabled` / `border-border-disabled` - The
+  disabled fill, ink and edge, painted through the `theme-disabled:` variant only
+  when the theme's `disabledStyle` appearance role is `fill`. The default `dim`
+  keeps the half-opacity treatment every primitive carries.
+- `font-display` - Headings (`displayFontFamily`). Follows the theme's
+  `fontFamily` when it names no display family.
+- Keyboard focus outline - The global `:focus-visible` outline is drawn in
+  `focus-outline`, `focusRingWidth` wide and `focusRingOffset` off the edge (2px
+  each by default). The contrast modes keep their own 3px outline.
+- `border-border-field-focus` - A form field's edge while it holds focus, under
+  `fieldFocusStyle: border`. Follows `focus-control` when a theme names only that.
+- Form fields and labels - `h-theme-field` (`fieldHeight`) sizes `Input`, `Dropdown`
+  and `ControlCombobox`. `fieldFocusStyle` picks the focus treatment: `ring` (the
+  default) draws the keyboard-only focus ring, and `border` swaps the field's edge
+  to `border-field-focus` on any focus, adding a 1px ring in that color on keyboard
+  focus so the indicator keeps the 2px focus floor, through the
+  `theme-field-border:` variant.
+- Nested theme roots - `fieldFocusStyle` and `disabledStyle` are read from the
+  `--theme-field-focus-style` and `--theme-disabled-style` properties
+  `applyTheme` writes on every root it themes, through CSS style queries, so a
+  control follows the nearest themed root. A browser without style queries
+  (Firefox before 151) keeps the default `ring` and `dim` treatment.
+  `Label` reads `labelSize` (follows `textSm`), `labelLeading` and
+  `labelFontWeight` (`inherit` by default, so a label keeps the weight around it).
+- `text-badge-label` - The shared `Badge`'s resting label ink; a hovered or selected
+  badge moves to `text-primary`. Follows `text-primary` when a theme names only that.
+- `text-dialog-title` - An OGDialog title's ink. Follows `text-primary` when a
+  theme names only that.
+- OGDialog chrome - `border-(length:--theme-dialog-stroke)` (`dialogStroke`, painted in
+  `border-light`, none by default), `px-theme-dialog-x` (`dialogPaddingX`),
+  `space-y-theme-dialog-header` (`dialogHeaderGap`), and for the title
+  `text-(length:--theme-dialog-title-size)` and
+  `leading-(--theme-dialog-title-leading)` (`dialogTitleSize`, `dialogTitleLeading`),
+  `font-theme-dialog-title-weight` (`dialogTitleFontWeight`) and
+  `font-theme-dialog-title` (`dialogTitleFontFamily`). The title size and family
+  follow `textLg` and `displayFontFamily` when a theme omits them, and a caller's
+  own padding, size or weight class replaces the role.
+- `text-xs` to `text-2xl` - Sizes and line heights read `textXs`..`text2xl` and
+  `leadingXs`..`leading2xl`, in the app and in a consumer alike; the defaults are
+  Tailwind's own values.
+- `bg-scrim` / `bg-scrim-alert` / `bg-scrim-modal` - The OGDialog, AlertDialog
+  and Dialog scrims: `surface-overlay` at the `scrimOpacity`,
+  `alertScrimOpacity` and `modalScrimOpacity` appearance roles (80%, 90% and
+  65% by default). A bundled scrim dims the page and never lifts it.
+- `ring-focus-control` - The keyboard focus ring of the shared primitives
+  (`Checkbox`, `Switch`, `Field`, `IconButton` and their siblings). Defaults to
+  the primary text ink; a theme that names only `rgb-text-primary` rings its
+  controls in that ink.
 
 ## Creating Custom Themes
 
@@ -340,7 +505,30 @@ function ThemeToggle() {
 
 - `'light'` - Force light mode
 - `'dark'` - Force dark mode
-- `'system'` - Follow system preference
+- `'system'` - Follow system preference, for both colour scheme and contrast
+- `'high-contrast-light'` - Accessibility mode: black on white, WCAG AAA
+- `'high-contrast-dark'` - Accessibility mode: white on black, WCAG AAA
+
+High contrast applies the built-in `highContrastTheme` definition
+(`themes/highContrast.ts`), which outranks a deployment's custom theme, and adds
+a `high-contrast` class to `<html>` for the CSS-only variables the token layer
+cannot reach.
+
+Three predicates, and they answer different questions:
+
+- `isDark(theme)` - which colour scheme to render. `high-contrast-dark` is dark.
+- `isHighContrast(theme)` - did the user _pick_ a contrast mode. This is what the
+  theme toggle preserves when it flips the scheme, so `system` is never included.
+- `resolvesToHighContrast(theme)` - will the contrast palette actually apply.
+  True for the two explicit modes, and for `system` when the OS asks for more
+  contrast through any of `prefers-contrast: more`, `prefers-contrast: custom`
+  or `forced-colors: active`.
+
+Because `system` resolves contrast from the OS, a user who has switched on
+"Increase contrast" (macOS) or "Contrast themes" (Windows) gets the accessible
+palette without first finding this setting. Windows is why the list has three
+queries: a Contrast Theme surfaces as `forced-colors: active` with
+`prefers-contrast: custom`, never `more`.
 
 ## Migration Guide
 
@@ -398,8 +586,8 @@ packages/client/src/theme/
 │   └── index.ts            # Theme exports
 ├── utils/
 │   ├── applyTheme.ts       # Apply CSS variables
-│   ├── tailwindConfig.ts   # Tailwind helpers
-│   └── createTailwindColors.js
+│   └── tailwindConfig.ts   # Tailwind helpers
+├── tokens.css              # Tailwind color tokens (published as @librechat/client/theme.css)
 ├── README.md               # This documentation
 └── index.ts               # Main exports
 ```

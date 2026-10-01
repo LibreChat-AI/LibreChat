@@ -3,6 +3,7 @@ import type {
   ScheduleDisabledReason,
   TScheduleCadence,
 } from 'librechat-data-provider';
+import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
 
 export interface ISchedule {
@@ -57,6 +58,7 @@ export interface ISchedule {
     conversationId?: string;
     status: ScheduleRunStatus;
     error?: string;
+    mcp?: ScheduleMCPOutcome[];
     firedAt: Date;
     /** The OCCURRENCE this projection came from; orders the card against delayed
      *  outcomes (a resumed pause, a reconciler replay) arriving after a newer run. */
@@ -77,6 +79,7 @@ export interface IScheduleDocument extends Omit<ISchedule, 'id' | '_id'>, Docume
 }
 
 export interface IScheduleRun {
+  mcp?: ScheduleMCPOutcome[];
   _id?: Types.ObjectId;
   scheduleId: string;
   user: Types.ObjectId;
@@ -84,6 +87,7 @@ export interface IScheduleRun {
   scheduledFor: Date;
   firedAt?: Date;
   conversationId?: string;
+  checkpointNamespace?: string;
   status: ScheduleRunStatus;
   error?: string;
   /** Deterministic durable-trigger delivery key for this occurrence, stamped at
@@ -107,6 +111,9 @@ export interface IScheduleRun {
   settledAt?: Date;
   /** Global concurrency slot held while `started`. */
   capacitySlot?: number;
+  /** A started row used only to durably settle admission failure bookkeeping. It
+   * never dispatched generation work and therefore does not consume capacity. */
+  admissionOnly?: boolean;
   /** When an abort was requested; capacity is held until settlement is confirmed. */
   abortRequestedAt?: Date;
   /** Who requested the abort: the interactive Stop route ('stop', which persists a

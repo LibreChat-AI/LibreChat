@@ -7,6 +7,7 @@ export { createAdminSkillsSyncAccess, createAdminSkillsSyncHandlers } from './sk
 export { createAdminUsersHandlers } from './users';
 export { createAdminAuditLogHandlers } from './auditLog';
 export { createAdminCodeEnvironmentHandlers } from './code';
+export { buildAuditContext } from './context';
 export { resolveConfigSecret, redactConfigSecretMaps } from './secrets';
 export type { AdminConfigDeps } from './config';
 export type { AdminLangfuseDeps } from './langfuse';

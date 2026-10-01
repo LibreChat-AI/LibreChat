@@ -70,24 +70,26 @@ describe('FileContainer subtitle action', () => {
     expect(screen.queryByText('Plain')).not.toBeInTheDocument();
   });
 
-  it('offers the action with no pointer or focus needed to reveal it', () => {
+  it('leaves the control holding the label and nothing else', () => {
     render(
       <FileContainer file={baseFile()} onClick={jest.fn()} subtitleAction={subtitleAction()} />,
     );
 
-    /** The affordance used to live behind a `group-hover` swap, which left the chip reading as
-     * an inert "Plain Text" until pointed at — so nobody found it, and touch had no pointer to
-     * find it with. Nothing about the label may be conditional on hover or focus again.
+    /** The swap this replaced kept BOTH labels mounted and hid one in CSS, so the control read
+     * "PlainMove back into message". Anchoring the text is what catches that, and anchoring is
+     * required: a substring match accepts the gated arrangement.
      *
-     * Asserted on class tokens deliberately, brittle as that is. jsdom loads no stylesheet, so
-     * a hover gate has no effect on the DOM here and a presence check cannot see one: the swap
-     * this replaced kept BOTH labels mounted, which is why the spec it replaced asserted they
-     * were both in the document at once. Only the tokens distinguish the two markups. */
+     * It is also the only half of the invariant jsdom can decide. No stylesheet is loaded, so
+     * whether a mounted node is VISUALLY hidden is unobservable here — by `invisible`,
+     * `opacity-[0]`, `text-transparent`, `!hidden`, an ancestor's `opacity-0
+     * group-hover:opacity-100`, or a spelling nobody has written yet. Three attempts to infer
+     * it from class tokens each missed gates and each rejected innocuous styling
+     * (`hover:inline-flex` is layout, not concealment). A guard that reads as sound while
+     * missing gates is worse than no guard, so the claim is narrowed to what holds. A real
+     * visibility assertion needs a browser — `toBeVisible()` under `e2e/`, which has no
+     * composer-paste spec to hang it on yet. */
     const control = screen.getByRole('button', { name: 'Move back into message' });
-    expect(control.className).not.toContain('group-hover');
-    expect(control.className).not.toContain('group-focus-within');
-    expect(control.className).not.toContain('hover:none');
-    expect(control).toHaveTextContent('Move back into message');
+    expect(control).toHaveTextContent(/^Move back into message$/);
   });
 
   it('names the subtitle control from its own visible label', () => {

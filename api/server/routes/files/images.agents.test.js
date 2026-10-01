@@ -22,6 +22,18 @@ jest.mock('~/server/services/Files/process', () => ({
   filterFile: jest.fn(),
 }));
 
+jest.mock('~/server/services/Files/routing', () => {
+  const actual = jest.requireActual('~/server/services/Files/routing');
+  return {
+    ...actual,
+    /* Real by default so the dispatch is exercised end to end; individual tests override
+     * it for a single call to stand in for a routing configuration. */
+    resolveEffectiveToolResource: jest.fn((...args) =>
+      actual.resolveEffectiveToolResource(...args),
+    ),
+  };
+});
+
 jest.mock('fs', () => {
   const actualFs = jest.requireActual('fs');
   return {
@@ -35,6 +47,8 @@ jest.mock('fs', () => {
 
 const fs = require('fs');
 const { processAgentFileUpload, processImageFile } = require('~/server/services/Files/process');
+const { resolveEffectiveToolResource } = require('~/server/services/Files/routing');
+const { filterFile } = require('~/server/services/Files/process');
 const { UninspectableFileError } = require('@librechat/api');
 
 const router = require('~/server/routes/files/images');
@@ -134,6 +148,13 @@ describe('POST /images - Agent Upload Permission Check (Integration)', () => {
   };
 
   it('inspects the canonical sanitized image filename used by upload processing', async () => {
+    await createAgent({
+      id: agentCustomId,
+      name: 'Test Agent',
+      provider: 'openai',
+      model: 'gpt-4',
+      author: authorId,
+    });
     const app = createAppWithUser(
       authorId,
       SystemRoles.USER,
@@ -193,6 +214,41 @@ describe('POST /images - Agent Upload Permission Check (Integration)', () => {
     expect(fs.promises.unlink).toHaveBeenCalledWith('/tmp/t.png');
   });
 
+  it('denies an unauthorized caller before validating against the agent', async () => {
+    /* Image validation applies the target agent's provider policy, so reaching it first
+     * answers an unauthorized caller with that agent's configuration instead of a 403. */
+    await createAgent({
+      id: agentCustomId,
+      name: 'Test Agent',
+      provider: 'openai',
+      model: 'gpt-4',
+      author: authorId,
+    });
+
+    const app = createAppWithUser(otherUserId, SystemRoles.USER, {
+      filters: {
+        files: {
+          pii: {
+            fields: ['content'],
+            starterPatterns: [],
+            customPatterns: [],
+            uninspectable: 'block',
+          },
+        },
+      },
+    });
+    const response = await request(app).post('/images').send({
+      endpoint: 'agents',
+      agent_id: agentCustomId,
+      tool_resource: 'context',
+      file_id: uuidv4(),
+    });
+
+    expect(response.status).toBe(403);
+    expect(response.body.error).toBe('Forbidden');
+    expect(processAgentFileUpload).not.toHaveBeenCalled();
+  });
+
   it('should allow upload for agent owner', async () => {
     await createAgent({
       id: agentCustomId,
@@ -214,9 +270,36 @@ describe('POST /images - Agent Upload Permission Check (Integration)', () => {
     expect(processAgentFileUpload).toHaveBeenCalled();
   });
 
+  it('rejects a none-routed image for a standard chat', async () => {
+    const app = createAppWithUser(authorId, SystemRoles.USER, {
+      fileConfig: {
+        endpoints: {
+          openAI: { defaultLLMDeliveryPath: { overrides: { 'image/*': 'none' } } },
+        },
+      },
+    });
+
+    const response = await request(app).post('/images').send({
+      endpoint: 'openAI',
+      message_file: 'true',
+      file_id: uuidv4(),
+    });
+
+    expect(response.status).toBe(500);
+    expect(processImageFile).not.toHaveBeenCalled();
+    expect(processAgentFileUpload).not.toHaveBeenCalled();
+  });
+
   it.each(['content', 'extracted_text'])(
-    'blocks opaque image %s before permission or processing side effects',
+    'blocks opaque image %s before processing side effects',
     async (field) => {
+      await createAgent({
+        id: agentCustomId,
+        name: 'Test Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: authorId,
+      });
       const app = createAppWithUser(authorId, SystemRoles.USER, {
         filters: {
           files: {
@@ -284,6 +367,45 @@ describe('POST /images - Agent Upload Permission Check (Integration)', () => {
     expect(processAgentFileUpload).toHaveBeenCalledTimes(1);
   });
 
+  it('defers extracted-text fail-close for a unified upload the config routes to text', async () => {
+    /* Same policy and file as the explicit-context case above, but with no tool_resource.
+     * Routing promotes it to a context resource, so the preflight has to see the same
+     * downstream extraction rather than fail-closing on an uninspectable derived field. */
+    await createAgent({
+      id: agentCustomId,
+      name: 'Test Agent',
+      provider: 'openai',
+      model: 'gpt-4',
+      author: authorId,
+    });
+    resolveEffectiveToolResource.mockResolvedValueOnce('context');
+
+    const app = createAppWithUser(authorId, SystemRoles.USER, {
+      filters: {
+        files: {
+          pii: {
+            fields: ['extracted_text'],
+            starterPatterns: [],
+            customPatterns: [],
+            uninspectable: 'block',
+          },
+        },
+      },
+      fileConfig: {
+        ocr: { supportedMimeTypes: ['image/png'] },
+      },
+      ocr: {},
+    });
+    const response = await request(app).post('/images').send({
+      endpoint: 'agents',
+      agent_id: agentCustomId,
+      file_id: uuidv4(),
+    });
+
+    expect(response.status).toBe(200);
+    expect(processAgentFileUpload).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves a deferred extracted-text policy error from image processing', async () => {
     await createAgent({
       id: agentCustomId,
@@ -329,6 +451,13 @@ describe('POST /images - Agent Upload Permission Check (Integration)', () => {
   });
 
   it('blocks extracted-text fail-close when configured OCR does not support the image MIME type', async () => {
+    await createAgent({
+      id: agentCustomId,
+      name: 'Test Agent',
+      provider: 'openai',
+      model: 'gpt-4',
+      author: authorId,
+    });
     const app = createAppWithUser(authorId, SystemRoles.USER, {
       filters: {
         files: {
@@ -361,6 +490,13 @@ describe('POST /images - Agent Upload Permission Check (Integration)', () => {
   });
 
   it('preserves raw-content fail-close even when configured OCR supports the image', async () => {
+    await createAgent({
+      id: agentCustomId,
+      name: 'Test Agent',
+      provider: 'openai',
+      model: 'gpt-4',
+      author: authorId,
+    });
     const app = createAppWithUser(authorId, SystemRoles.USER, {
       filters: {
         files: {
@@ -485,6 +621,67 @@ describe('POST /images - Agent Upload Permission Check (Integration)', () => {
     });
 
     expect(response.status).toBe(200);
+  });
+
+  it('validates an agent upload against the provider that will process it', async () => {
+    /* The request carries endpoint `agents`, but the agent's own provider governs
+     * routing, so it has to govern acceptance too or the two disagree. */
+    await createAgent({
+      id: agentCustomId,
+      name: 'Test Agent',
+      provider: 'openai',
+      model: 'gpt-4',
+      author: authorId,
+    });
+    const app = createAppWithUser(authorId);
+
+    await request(app).post('/images').send({
+      endpoint: 'agents',
+      agent_id: agentCustomId,
+      tool_resource: 'context',
+      file_id: uuidv4(),
+    });
+
+    expect(filterFile).toHaveBeenCalledWith(
+      expect.objectContaining({ endpoint: 'openai', image: true }),
+    );
+  });
+
+  it('sends a permanent agent image through the agent upload path', async () => {
+    /* The image pipeline always stores a message attachment and never files anything
+     * against the agent, so a permanent upload sent there would report success while
+     * leaving an orphan. */
+    await createAgent({
+      id: agentCustomId,
+      name: 'Test Agent',
+      provider: 'openai',
+      model: 'gpt-4',
+      author: authorId,
+    });
+    const app = createAppWithUser(authorId);
+
+    await request(app).post('/images').send({
+      endpoint: 'agents',
+      agent_id: agentCustomId,
+      file_id: uuidv4(),
+    });
+
+    expect(processAgentFileUpload).toHaveBeenCalled();
+    expect(processImageFile).not.toHaveBeenCalled();
+  });
+
+  it('sends an image the config routes to text through the agent upload path', async () => {
+    resolveEffectiveToolResource.mockResolvedValueOnce('context');
+    const app = createAppWithUser(otherUserId);
+
+    const response = await request(app).post('/images').send({
+      endpoint: 'agents',
+      file_id: uuidv4(),
+    });
+
+    expect(response.status).toBe(200);
+    expect(processAgentFileUpload).toHaveBeenCalled();
+    expect(processImageFile).not.toHaveBeenCalled();
   });
 
   it('uses a normalized image error when file protection is active', async () => {

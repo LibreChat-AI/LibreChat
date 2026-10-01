@@ -1,7 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Run, IState } from '@librechat/agents';
-import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
 
 /**
  * Context handed to a test run hook so it can shape fake-model behavior from
@@ -17,7 +16,8 @@ export interface TestRunHookContext {
    */
   conversationId?: string;
   agents: ReadonlyArray<{ tools?: ReadonlyArray<{ name: string }> }>;
-  modelCallbacks?: readonly ModelBoundChatModelCallback[];
+  /** Opaque model-client handlers forwarded to the fake model by the e2e harness. */
+  modelCallbacks?: readonly object[];
 }
 
 export type TestRunHook = (run: Run<IState>, context: TestRunHookContext) => void;

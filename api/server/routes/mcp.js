@@ -6,6 +6,7 @@ const {
   Permissions,
   PermissionBits,
   PermissionTypes,
+  resolveMCPAppsPolicy,
 } = require('librechat-data-provider');
 const {
   getBasePath,
@@ -13,6 +14,7 @@ const {
   createAuthIdentityContext,
   MCPOAuthHandler,
   MCPTokenStorage,
+  getMCPServerGeneration,
   setOAuthSession,
   PENDING_STALE_MS,
   getUserMCPAuthMap,
@@ -27,6 +29,12 @@ const {
   getServerCustomUserVars,
   hasCustomUserVars,
   requiresEphemeralUserConnection,
+  MCPAuthenticationRejectedError,
+  MCPAuthenticationRefreshError,
+  OpenIDReauthRequiredError,
+  readMCPRecoveryGenerationAround,
+  prepareMCPAuthorizationMutation,
+  persistMCPAuthorizationTransaction,
 } = require('@librechat/api');
 const {
   createMCPServerController,
@@ -36,6 +44,18 @@ const {
   getMCPServerById,
   getMCPTools,
 } = require('~/server/controllers/mcp');
+const {
+  readMCPResource,
+  listMCPResources,
+  listMCPResourceTemplates,
+  appToolCall,
+  validateMCPApp,
+  serveMCPSandbox,
+  requireMCPAppsEnabled,
+} = require('~/server/controllers/mcpApps');
+const mcpAppAdmissionLimiter = require('~/server/middleware/limiters/mcpAppAdmissionLimiter');
+const mcpAppToolCallLimiter = require('~/server/middleware/limiters/mcpAppToolCallLimiter');
+const mcpAppResourceLimiter = require('~/server/middleware/limiters/mcpAppResourceLimiter');
 const {
   getOAuthReconnectionManager,
   getMCPServersRegistry,
@@ -49,11 +69,24 @@ const {
   getMCPSetupData,
   resolveElicitationFlow,
 } = require('~/server/services/MCP');
-const { requireJwtAuth, canAccessMCPServerResource } = require('~/server/middleware');
+const {
+  requireJwtAuth,
+  configMiddleware,
+  canAccessMCPServerResource,
+} = require('~/server/middleware');
 const { getUserPluginAuthValue } = require('~/server/services/PluginService');
-const { invalidateCachedTools } = require('~/server/services/Config');
+const { maybeUninstallOAuthMCP } = require('~/server/services/MCP/oauthCleanup');
+const {
+  invalidateCachedTools,
+  getAppConfig,
+  getMCPToolsCacheGeneration,
+} = require('~/server/services/Config');
 const { updateMCPServerTools } = require('~/server/services/Config/mcp');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
+const {
+  clearMCPAuthorizationFenceRetry,
+  persistMCPAuthorizationFenceRetry,
+} = require('~/server/services/MCPAuthorizationFenceRetry');
 const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSessionRefresh');
 const { getLogStores } = require('~/cache');
 const db = require('~/models');
@@ -94,15 +127,6 @@ const canAccessElicitationFlow = (flowId, userId) => {
   return parsed.userId === userId;
 };
 
-const clearGetTokensFlow = async ({ flowManager, flowId, tokens }) => {
-  const state = await flowManager.getFlowState(flowId, 'mcp_get_tokens');
-  if (state?.type === 'mcp_get_tokens' && state.status === 'PENDING') {
-    await flowManager.completeFlow(flowId, 'mcp_get_tokens', tokens);
-    return;
-  }
-  await flowManager.deleteFlow(flowId, 'mcp_get_tokens');
-};
-
 const checkMCPUsePermissions = generateCheckAccess({
   permissionType: PermissionTypes.MCP_SERVERS,
   permissions: [Permissions.USE],
@@ -119,7 +143,7 @@ const checkMCPCreate = generateCheckAccess({
  * Get all MCP tools available to the user
  * Returns only MCP tools, completely decoupled from regular LibreChat tools
  */
-router.get('/tools', requireJwtAuth, checkMCPUsePermissions, async (req, res) => {
+router.get('/tools', requireJwtAuth, configMiddleware, checkMCPUsePermissions, async (req, res) => {
   return getMCPTools(req, res);
 });
 
@@ -234,7 +258,13 @@ router.get('/:serverName/oauth/initiate', requireJwtAuth, setOAuthSession, async
     if (typeof oldState === 'string') {
       await MCPOAuthHandler.deleteStateMapping(oldState, flowManager);
     }
-    const metadataWithUrl = { ...flowMetadata, authorizationUrl, tenantId: getTenantId() };
+    const effectiveConfig = (await resolveAllMcpConfigs(userId))?.[serverName];
+    const metadataWithUrl = {
+      ...flowMetadata,
+      authorizationUrl,
+      tenantId: getTenantId(),
+      ...(effectiveConfig && { serverGeneration: getMCPServerGeneration(effectiveConfig) }),
+    };
     await flowManager.initFlow(oauthFlowId, 'mcp_oauth', metadataWithUrl);
     await MCPOAuthHandler.storeStateMapping(flowMetadata.state, oauthFlowId, flowManager);
     setOAuthCsrfCookie(res, oauthFlowId, OAUTH_CSRF_COOKIE_PATH);
@@ -283,9 +313,16 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
                 /** A stale mapping can resolve a superseded attempt's state to the
                  *  current flow (deterministic flow ids); only fail the flow this
                  *  error callback actually belongs to */
-                const flowMeta = await MCPOAuthHandler.getFlowState(flowId, flowManager);
-                if (flowMeta?.state === state) {
-                  await flowManager.failFlow(flowId, 'mcp_oauth', String(oauthError));
+                const currentFlow = await flowManager.getFlowState(flowId, 'mcp_oauth');
+                const flowMeta = currentFlow?.metadata;
+                if (currentFlow && flowMeta?.state === state) {
+                  await flowManager.failFlowIfCurrent(
+                    flowId,
+                    'mcp_oauth',
+                    currentFlow.createdAt,
+                    state,
+                    String(oauthError),
+                  );
                   logger.debug('[MCP OAuth] Marked flow as FAILED with OAuth error', {
                     flowId,
                     error: oauthError,
@@ -391,7 +428,11 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
 
     /** Check if this flow has already been completed (idempotency protection) */
     const currentFlowState = await flowManager.getFlowState(flowId, 'mcp_oauth');
-    if (currentFlowState?.status === 'COMPLETED') {
+    if (!currentFlowState) {
+      logger.warn('[MCP OAuth] Flow disappeared before token exchange', { flowId, serverName });
+      return res.redirect(`${basePath}/oauth/error?error=invalid_state`);
+    }
+    if (currentFlowState.status === 'COMPLETED') {
       logger.warn('[MCP OAuth] Flow already completed, preventing duplicate token exchange', {
         flowId,
         serverName,
@@ -428,35 +469,143 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
     await runWithTenant(async () => {
       const oauthHeaders =
         flowState.oauthHeaders ?? (await getOAuthHeaders(serverName, flowState.userId));
+      let recoveryPolicy;
+      const resolveActiveServer = async () => {
+        const [configs, appConfig] = await Promise.all([
+          resolveAllMcpConfigs(flowState.userId),
+          getAppConfig({ userId: flowState.userId, tenantId: getTenantId() }),
+        ]);
+        recoveryPolicy = appConfig?.mcpSettings?.catalogRecovery;
+        const activeConfig =
+          configs?.[serverName] ??
+          appConfig?.mcpConfig?.[serverName] ??
+          (await getMCPServersRegistry().getServerConfig(serverName, flowState.userId));
+        if (!activeConfig) {
+          return false;
+        }
+        if (flowState.serverGeneration) {
+          return getMCPServerGeneration(activeConfig) === flowState.serverGeneration;
+        }
+        return activeConfig.url === flowState.serverUrl;
+      };
+      if (!(await resolveActiveServer())) {
+        throw new Error(`MCP server ${serverName} was deleted during OAuth authorization`);
+      }
+      const rollbackStoredTokens = async (storedTokens) => {
+        const storedMetadata = MCPOAuthHandler.buildStoredClientMetadata(
+          flowState.metadata,
+          flowState.resourceMetadata,
+          flowState.serverUrl,
+          flowState.clientSource,
+        );
+        const revocationMetadata = {
+          serverUrl: flowState.serverUrl,
+          clientId: flowState.clientInfo?.client_id ?? '',
+          clientSecret: flowState.clientInfo?.client_secret ?? '',
+          revocationEndpoint: storedMetadata?.revocation_endpoint,
+          revocationEndpointAuthMethodsSupported:
+            storedMetadata?.revocation_endpoint_auth_methods_supported,
+        };
+        for (const [tokenType, token] of [
+          ['access', storedTokens.access_token],
+          ['refresh', storedTokens.refresh_token],
+        ]) {
+          if (!token) {
+            continue;
+          }
+          try {
+            await MCPOAuthHandler.revokeOAuthToken(
+              serverName,
+              token,
+              tokenType,
+              revocationMetadata,
+              oauthHeaders,
+              flowState.allowedDomains,
+              flowState.allowedAddresses,
+            );
+          } catch (error) {
+            logger.warn(
+              `[MCP OAuth] Failed to revoke ${tokenType} token after callback cancellation:`,
+              error,
+            );
+          }
+        }
+        await MCPTokenStorage.deleteUserTokens({
+          userId: flowState.userId,
+          serverName,
+          deleteToken: async (filter) => {
+            await db.deleteTokens({
+              ...filter,
+              metadataCredentialSetId: storedTokens.credential_set_id,
+            });
+          },
+        });
+      };
       const tokens = await MCPOAuthHandler.completeOAuthFlow(
         flowId,
         code,
         flowManager,
         oauthHeaders,
-        async (exchangedTokens) => {
+        async (exchangedTokens, completePersistedFlow) => {
           if (!flowState?.userId) {
             return exchangedTokens;
           }
 
           let storedTokens;
           try {
-            storedTokens =
-              (await MCPTokenStorage.storeTokens({
-                userId: flowState.userId,
-                serverName,
+            const tokenFlowId = MCPOAuthHandler.generateTokenFlowId(
+              flowState.userId,
+              serverName,
+              flowState.tenantId,
+            );
+            storedTokens = await persistMCPAuthorizationTransaction(
+              {
+                scope: { userId: flowState.userId, serverName },
+                flowIds: [tokenFlowId, flowId],
                 tokens: exchangedTokens,
-                createToken: db.createToken,
-                updateToken: db.updateToken,
-                deleteTokens: db.deleteTokens,
-                findToken: db.findToken,
-                clientInfo: flowState.clientInfo,
-                metadata: MCPOAuthHandler.buildStoredClientMetadata(
-                  flowState.metadata,
-                  flowState.resourceMetadata,
-                  flowState.serverUrl,
-                  flowState.clientSource,
-                ),
-              })) ?? exchangedTokens;
+                completeAuthorization: completePersistedFlow,
+                persistTokens: async (candidateTokens, onStoreCommitted) =>
+                  (await MCPTokenStorage.storeTokens({
+                    flowManager,
+                    persistenceWaitTimeoutMs: flowState.oauthPersistenceWaitTimeout,
+                    userId: flowState.userId,
+                    serverName,
+                    tokens: candidateTokens,
+                    createToken: db.createToken,
+                    updateToken: db.updateToken,
+                    deleteTokens: db.deleteTokens,
+                    findToken: db.findToken,
+                    clientInfo: flowState.clientInfo,
+                    metadata: MCPOAuthHandler.buildStoredClientMetadata(
+                      flowState.metadata,
+                      flowState.resourceMetadata,
+                      flowState.serverUrl,
+                      flowState.clientSource,
+                    ),
+                    onStoreCommitted,
+                  })) ?? candidateTokens,
+              },
+              {
+                ensureServerActive: resolveActiveServer,
+                inactiveServerError: () =>
+                  new Error(`MCP server ${serverName} was deleted during OAuth authorization`),
+                invalidateRecoveryGeneration: invalidateCachedTools,
+                clearLocalRecovery: (userId, changedServerName) =>
+                  getMCPManager()?.clearCatalogRecoveryState?.(userId, changedServerName),
+                persistPublicationRetry: persistMCPAuthorizationFenceRetry,
+                clearPublicationRetry: clearMCPAuthorizationFenceRetry,
+                retryDelaysMs: recoveryPolicy?.authorizationFenceRetryMs,
+                attemptTimeoutMs: recoveryPolicy?.authorizationFenceTimeoutMs,
+                flowManager,
+                onTokenFlowError: (phase, error) =>
+                  logger.warn(
+                    phase === 'prepare'
+                      ? '[MCP OAuth] Failed to clear cached token flow state'
+                      : '[MCP OAuth] Failed to wake a pending token flow',
+                    error,
+                  ),
+              },
+            );
             logger.debug('[MCP OAuth] Stored OAuth tokens before completing callback flow', {
               serverName,
               userId: flowState.userId,
@@ -466,36 +615,10 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
             throw error;
           }
 
-          /**
-           * Clear any cached `mcp_get_tokens` flow result before the OAuth flow wakes its
-           * waiters, so they cannot observe stale credentials after completion.
-           */
-          if (typeof flowManager?.deleteFlow === 'function') {
-            try {
-              const tokenFlowId = MCPOAuthHandler.generateTokenFlowId(
-                flowState.userId,
-                serverName,
-                flowState.tenantId,
-              );
-              await clearGetTokensFlow({
-                flowManager,
-                flowId: tokenFlowId,
-                tokens: storedTokens,
-              });
-              if (tokenFlowId !== flowId) {
-                await clearGetTokensFlow({
-                  flowManager,
-                  flowId,
-                  tokens: storedTokens,
-                });
-              }
-            } catch (error) {
-              logger.warn('[MCP OAuth] Failed to clear cached token flow state', error);
-            }
-          }
-
           return storedTokens;
         },
+        rollbackStoredTokens,
+        { createdAt: currentFlowState.createdAt, state },
       );
       logger.info('[MCP OAuth] OAuth flow completed, tokens received in callback route');
 
@@ -568,6 +691,16 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
                   createToken: db.createToken,
                   deleteTokens: db.deleteTokens,
                 },
+                onOAuthCredentialsChanging: (scope) =>
+                  prepareMCPAuthorizationMutation(scope, {
+                    invalidateRecoveryGeneration: invalidateCachedTools,
+                    persistPublicationRetry: persistMCPAuthorizationFenceRetry,
+                    clearPublicationRetry: clearMCPAuthorizationFenceRetry,
+                    clearLocalRecovery: (userId, changedServerName) =>
+                      getMCPManager()?.clearCatalogRecoveryState?.(userId, changedServerName),
+                    retryDelaysMs: recoveryPolicy?.authorizationFenceRetryMs,
+                    attemptTimeoutMs: recoveryPolicy?.authorizationFenceTimeoutMs,
+                  }),
               },
               async (userConnection) => {
                 logger.info(
@@ -759,7 +892,12 @@ router.post('/oauth/cancel/:serverName', requireJwtAuth, async (req, res) => {
       });
     }
 
-    await flowManager.failFlow(flowId, 'mcp_oauth', 'User cancelled OAuth flow');
+    await MCPOAuthHandler.failFlowAndDeleteStateMapping(
+      flowId,
+      flowState,
+      flowManager,
+      'User cancelled OAuth flow',
+    );
 
     logger.info(`[MCP OAuth Cancel] Successfully cancelled OAuth flow for ${serverName}`);
 
@@ -817,9 +955,10 @@ function getMCPReinitializeOAuthTimeout(oauthExpiresAt) {
 router.post(
   '/:serverName/reinitialize',
   requireJwtAuth,
+  configMiddleware,
   checkMCPUsePermissions,
   setOAuthSession,
-  async (req, res) => {
+  async (req, res, next) => {
     try {
       const { serverName } = req.params;
       const user = createSafeUser(req.user);
@@ -880,6 +1019,17 @@ router.post(
           tokenPreference: 'access_token',
         }),
         oboIdentityContext,
+        recoveryPolicy: req.config?.mcpSettings?.catalogRecovery,
+        mcpApps: resolveMCPAppsPolicy(
+          req.config?.mcpSettings?.apps,
+          undefined,
+          req.config?.mcpAppSandbox?.maxPersistedAppBytes,
+          req.config?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+          req.config?.mcpAppSandbox?.url,
+          req.config?.mcpAppSandbox?.maxActiveViews,
+          req.config?.mcpAppSandbox?.maxActionPreviewChars,
+          req.config?.mcpAppSandbox?.operationLimits,
+        ),
       });
 
       if (!result) {
@@ -916,6 +1066,13 @@ router.post(
         connectionDeferred,
       });
     } catch (error) {
+      if (
+        error instanceof MCPAuthenticationRejectedError ||
+        error instanceof MCPAuthenticationRefreshError ||
+        error instanceof OpenIDReauthRequiredError
+      ) {
+        return next(error);
+      }
       logger.error('[MCP Reinitialize] Unexpected error', error);
       res.status(500).json({ error: 'Internal server error' });
     }
@@ -926,7 +1083,7 @@ router.post(
  * Get connection status for all MCP servers
  * This endpoint returns all app level and user-scoped connection statuses from MCPManager without disconnecting idle connections
  */
-router.get('/connection/status', requireJwtAuth, async (req, res) => {
+router.get('/connection/status', requireJwtAuth, configMiddleware, async (req, res) => {
   try {
     const user = req.user;
 
@@ -936,23 +1093,32 @@ router.get('/connection/status', requireJwtAuth, async (req, res) => {
 
     const { mcpConfig, appConnections, userConnections, oauthServers } = await getMCPSetupData(
       user.id,
-      { role: user.role, tenantId: getTenantId() },
+      { role: user.role, tenantId: getTenantId(), appConfig: req.config },
     );
     const runtimeContext = createMCPStatusRuntimeContext(user, mcpConfig, Object.keys(mcpConfig));
     const connectionStatus = Object.fromEntries(
       await Promise.all(
         Object.entries(mcpConfig).map(async ([serverName, config]) => {
           try {
-            const status = await getServerConnectionStatus(
-              user.id,
-              serverName,
-              config,
-              appConnections,
-              userConnections,
-              oauthServers,
-              runtimeContext,
-            );
-            return [serverName, status];
+            const { value: status, generation: authorizationGeneration } =
+              await readMCPRecoveryGenerationAround(
+                { userId: user.id, serverName },
+                getMCPToolsCacheGeneration,
+                () =>
+                  getServerConnectionStatus(
+                    user.id,
+                    serverName,
+                    config,
+                    appConnections,
+                    userConnections,
+                    oauthServers,
+                    runtimeContext,
+                  ),
+                {
+                  timeoutMs: req.config?.mcpSettings?.catalogRecovery?.generationReadTimeoutMs,
+                },
+              );
+            return [serverName, { ...status, authorizationGeneration }];
           } catch (error) {
             const message = `Failed to get status for server "${serverName}"`;
             logger.error(`[MCP Connection Status] ${message},`, error);
@@ -988,7 +1154,7 @@ router.get('/connection/status', requireJwtAuth, async (req, res) => {
  * Get connection status for a single MCP server
  * This endpoint returns the connection status for a specific server for a given user
  */
-router.get('/connection/status/:serverName', requireJwtAuth, async (req, res) => {
+router.get('/connection/status/:serverName', requireJwtAuth, configMiddleware, async (req, res) => {
   try {
     const user = req.user;
     const { serverName } = req.params;
@@ -999,7 +1165,7 @@ router.get('/connection/status/:serverName', requireJwtAuth, async (req, res) =>
 
     const { mcpConfig, appConnections, userConnections, oauthServers } = await getMCPSetupData(
       user.id,
-      { role: user.role, tenantId: getTenantId() },
+      { role: user.role, tenantId: getTenantId(), appConfig: req.config },
     );
 
     if (!mcpConfig[serverName]) {
@@ -1010,15 +1176,24 @@ router.get('/connection/status/:serverName', requireJwtAuth, async (req, res) =>
 
     const runtimeContext = createMCPStatusRuntimeContext(user, mcpConfig, [serverName]);
 
-    const serverStatus = await getServerConnectionStatus(
-      user.id,
-      serverName,
-      mcpConfig[serverName],
-      appConnections,
-      userConnections,
-      oauthServers,
-      runtimeContext,
-    );
+    const { value: serverStatus, generation: authorizationGeneration } =
+      await readMCPRecoveryGenerationAround(
+        { userId: user.id, serverName },
+        getMCPToolsCacheGeneration,
+        () =>
+          getServerConnectionStatus(
+            user.id,
+            serverName,
+            mcpConfig[serverName],
+            appConnections,
+            userConnections,
+            oauthServers,
+            runtimeContext,
+          ),
+        {
+          timeoutMs: req.config?.mcpSettings?.catalogRecovery?.generationReadTimeoutMs,
+        },
+      );
 
     res.json({
       success: true,
@@ -1028,6 +1203,7 @@ router.get('/connection/status/:serverName', requireJwtAuth, async (req, res) =>
       requestScoped: serverStatus.requestScoped,
       configurationState: serverStatus.configurationState,
       authorizationState: serverStatus.authorizationState,
+      authorizationGeneration,
     });
   } catch (error) {
     logger.error(
@@ -1176,7 +1352,7 @@ router.delete(
     requiredPermission: PermissionBits.DELETE,
     resourceIdParam: 'serverName',
   }),
-  deleteMCPServerController,
+  (req, res) => deleteMCPServerController(req, res, maybeUninstallOAuthMCP),
 );
 
 /**
@@ -1262,5 +1438,83 @@ router.post('/elicitation/:flowId', requireJwtAuth, async (req, res) => {
     return res.status(500).json({ error: 'Failed to complete elicitation flow' });
   }
 });
+
+// --- MCP Apps Support ---
+
+/**
+ * Validate that a persisted MCP App still targets its originating server configuration
+ * @route POST /api/mcp/app/validate
+ */
+router.post(
+  '/app/validate',
+  requireJwtAuth,
+  mcpAppAdmissionLimiter,
+  checkMCPUsePermissions,
+  requireMCPAppsEnabled,
+  mcpAppResourceLimiter,
+  validateMCPApp,
+);
+
+/**
+ * Read a UI resource from an MCP server
+ * @route POST /api/mcp/resources/read
+ */
+router.post(
+  '/resources/read',
+  requireJwtAuth,
+  mcpAppAdmissionLimiter,
+  checkMCPUsePermissions,
+  requireMCPAppsEnabled,
+  mcpAppResourceLimiter,
+  readMCPResource,
+);
+
+/**
+ * List resources available on an MCP server
+ * @route POST /api/mcp/resources/list
+ */
+router.post(
+  '/resources/list',
+  requireJwtAuth,
+  mcpAppAdmissionLimiter,
+  checkMCPUsePermissions,
+  requireMCPAppsEnabled,
+  mcpAppResourceLimiter,
+  listMCPResources,
+);
+
+/**
+ * List resource templates available on an MCP server
+ * @route POST /api/mcp/resources/templates/list
+ */
+router.post(
+  '/resources/templates/list',
+  requireJwtAuth,
+  mcpAppAdmissionLimiter,
+  checkMCPUsePermissions,
+  requireMCPAppsEnabled,
+  mcpAppResourceLimiter,
+  listMCPResourceTemplates,
+);
+
+/**
+ * Proxy tool calls from MCP App iframe to MCP server
+ * @route POST /api/mcp/app-tool-call
+ */
+router.post(
+  '/app-tool-call',
+  requireJwtAuth,
+  mcpAppAdmissionLimiter,
+  checkMCPUsePermissions,
+  requireMCPAppsEnabled,
+  mcpAppToolCallLimiter,
+  appToolCall,
+);
+
+/**
+ * Serve the sandbox proxy HTML for MCP Apps
+ * @route GET /api/mcp/sandbox
+ */
+router.get('/sandbox', serveMCPSandbox);
 
 module.exports = router;

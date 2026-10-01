@@ -3,7 +3,9 @@ import {
   applyPendingPasteToDraft,
   applyPendingPastesToDraft,
   clearAllDrafts,
+  clearDraft,
   clearComposerDrafts,
+  clearFilesDraft,
   decodeBase64,
   encodeBase64,
   resolvePendingPasteInsertStart,
@@ -796,6 +798,73 @@ describe('browser tab ownership of unsaved-chat drafts', () => {
   });
 });
 
+describe('clearFilesDraft', () => {
+  const newChatKey = getNewConversationDraftId();
+
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  it('discards the attachments and keeps the text', () => {
+    setDraft({ id: newChatKey, value: 'half-written message' });
+    setFilesDraft(newChatKey, { fileIds: ['file-1'], pendingPastes: {} });
+
+    clearFilesDraft(newChatKey);
+
+    expect(getFilesDraft(newChatKey).fileIds).toEqual([]);
+    expect(getDraft(newChatKey)).toBe('half-written message');
+  });
+
+  it('keeps this tab claim on the text it left behind', () => {
+    /** `setFilesDraft` drops the whole record once nothing is attached, and that record is the
+     * only ownership stamp the shared text draft has: without it another tab's New Chat would be
+     * free to clear text this tab is still holding. */
+    setDraft({ id: newChatKey, value: 'half-written message' });
+    setFilesDraft(newChatKey, { fileIds: ['file-1'], pendingPastes: {} });
+
+    clearFilesDraft(newChatKey);
+
+    expect(getFilesDraft(newChatKey).tabId).toBe(getBrowserTabId());
+  });
+
+  /** The reset empties the file map, and `useAutoSave`'s attachment effect then writes the draft
+   * with nothing in it. That write used to delete the record this helper had just re-stamped, so
+   * the preserved text sat unowned until the next keystroke and another live tab finishing a
+   * new-chat run could clear it as though nobody were holding it. */
+  it('keeps the claim through the empty-map write the reset triggers', () => {
+    setDraft({ id: newChatKey, value: 'half-written message' });
+    setFilesDraft(newChatKey, { fileIds: ['file-1'], pendingPastes: {} });
+
+    clearFilesDraft(newChatKey);
+    /** What the attachment effect writes once the composer's file map is empty. */
+    setFilesDraft(newChatKey, { fileIds: [], pastedTextIds: [], pendingPastes: {} });
+
+    expect(getFilesDraft(newChatKey).tabId).toBe(getBrowserTabId());
+    expect(getDraft(newChatKey)).toBe('half-written message');
+  });
+
+  it('leaves no claim behind when there was no text to hold', () => {
+    setFilesDraft(newChatKey, { fileIds: ['file-1'], pendingPastes: {} });
+
+    clearFilesDraft(newChatKey);
+
+    expect(localStorage.getItem(`${LocalStorageKeys.FILES_DRAFT}${newChatKey}`)).toBeNull();
+  });
+
+  it('refuses a record another live tab owns', () => {
+    markTabLive('other-tab');
+    localStorage.setItem(
+      `${LocalStorageKeys.FILES_DRAFT}${newChatKey}`,
+      JSON.stringify({ fileIds: ['other-tab-file'], tabId: 'other-tab' }),
+    );
+
+    clearFilesDraft(newChatKey);
+
+    expect(getFilesDraft(newChatKey).fileIds).toEqual(['other-tab-file']);
+  });
+});
+
 describe('migrateFilesDraft', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -877,33 +946,35 @@ describe('migrateTextDraft', () => {
   });
 });
 
-describe('setDraft persistExact', () => {
+describe('setDraft', () => {
   beforeEach(() => {
     localStorage.clear();
   });
 
-  it('drops a one-character value by default', () => {
-    setDraft({ id: 'convo-1', value: 'x' });
-    expect(getDraft('convo-1')).toBe('');
-  });
+  it.each(['x', '字', ' ', '\n', '🙂', 'line one\nline two'])(
+    'preserves the exact draft %j',
+    (value) => {
+      setDraft({ id: 'convo-1', value });
+      expect(getDraft('convo-1')).toBe(value);
+    },
+  );
 
-  it('keeps a one-character snapshot when persistExact is set', () => {
-    setDraft({ id: 'convo-1', value: 'x', persistExact: true });
-    expect(getDraft('convo-1')).toBe('x');
+  it('clears a draft only when its value is empty', () => {
+    setDraft({ id: 'convo-1', value: 'x' });
+    setDraft({ id: 'convo-1', value: '' });
+    expect(getDraft('convo-1')).toBe('');
   });
 
   it('does not throw when localStorage.setItem fails', () => {
     const setItem = jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('quota exceeded');
     });
-    expect(() =>
-      setDraft({ id: 'convo-1', value: 'draft text', persistExact: true }),
-    ).not.toThrow();
+    expect(() => setDraft({ id: 'convo-1', value: 'draft text' })).not.toThrow();
     setItem.mockRestore();
   });
 
   it('returns empty drafts when localStorage.getItem throws', () => {
-    setDraft({ id: 'convo-1', value: 'draft text', persistExact: true });
+    setDraft({ id: 'convo-1', value: 'draft text' });
     setFilesDraft('convo-1', {
       fileIds: ['file-1'],
       pendingPastes: { 'file-1': { text: 'paste', selectionStart: 0 } },
@@ -1018,5 +1089,34 @@ describe('resolvePendingPasteInsertStart', () => {
         anchorAfter: '',
       }),
     ).toBe(0);
+  });
+});
+
+describe('clearDraft navigation ordering', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('cannot delete text written after returning to a cleared conversation', () => {
+    setDraft({ id: 'chat-a', value: 'old draft' });
+    clearDraft('chat-a');
+    expect(getDraft('chat-a')).toBe('');
+    setDraft({ id: 'chat-a', value: 'replacement draft' });
+    jest.advanceTimersByTime(3000);
+    expect(getDraft('chat-a')).toBe('replacement draft');
+  });
+
+  it('clears two different conversations without cancelling either deletion', () => {
+    setDraft({ id: 'chat-a', value: 'alpha' });
+    setDraft({ id: 'chat-b', value: 'beta' });
+    clearDraft('chat-a');
+    clearDraft('chat-b');
+    jest.advanceTimersByTime(3000);
+    expect(getDraft('chat-a')).toBe('');
+    expect(getDraft('chat-b')).toBe('');
   });
 });

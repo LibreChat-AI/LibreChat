@@ -343,4 +343,102 @@ describe('MCPServersRegistry Redis Integration Tests', () => {
       }
     });
   });
+
+  describe('reinspection across replicas', () => {
+    it('lands one recovery when two replicas reinspect the same stub', async () => {
+      const replica = new MCPServersRegistry({} as typeof import('mongoose'), [
+        'replica.example.com',
+      ]);
+      await registry.addServerStub('recovering_server', testRawConfig, 'CACHE');
+      const replicaMemo = await replica.getAllServerConfigs();
+
+      const inspect = jest.mocked(MCPServerInspector.inspect).getMockImplementation()!;
+      let releaseReplica!: () => void;
+      const replicaHeld = new Promise<void>((resolve) => {
+        releaseReplica = resolve;
+      });
+      let markReplicaInspecting!: () => void;
+      const replicaInspecting = new Promise<void>((resolve) => {
+        markReplicaInspecting = resolve;
+      });
+      jest
+        .spyOn(MCPServerInspector, 'inspect')
+        .mockImplementation(async (serverName, rawConfig, connection, domains, addresses) => {
+          if (domains?.includes('replica.example.com')) {
+            markReplicaInspecting();
+            await replicaHeld;
+          }
+          return inspect(serverName, rawConfig, connection, domains, addresses);
+        });
+
+      const replicaReinspection = replica.reinspectServer('recovering_server', 'CACHE');
+      await replicaInspecting;
+      const { config: recovered } = await registry.reinspectServer('recovering_server', 'CACHE');
+      releaseReplica();
+      const { config: replicaConfig } = await replicaReinspection;
+
+      expect(recovered.inspectionFailed).toBeUndefined();
+      expect(replicaConfig).toEqual(recovered);
+      expect(await registry['cacheConfigsRepo'].get('recovering_server')).toEqual(recovered);
+      expect(replicaMemo.recovering_server.inspectionFailed).toBe(true);
+      expect((await replica.getAllServerConfigs()).recovering_server).toEqual(recovered);
+    });
+
+    it('settles a failed inspection against a recovery another replica stored', async () => {
+      const replica = new MCPServersRegistry({} as typeof import('mongoose'), [
+        'replica.example.com',
+      ]);
+      await registry.addServerStub('flaky_server', testRawConfig, 'CACHE');
+
+      const inspect = jest.mocked(MCPServerInspector.inspect).getMockImplementation()!;
+      let failReplica!: () => void;
+      const replicaHeld = new Promise<void>((resolve) => {
+        failReplica = resolve;
+      });
+      let markReplicaInspecting!: () => void;
+      const replicaInspecting = new Promise<void>((resolve) => {
+        markReplicaInspecting = resolve;
+      });
+      jest
+        .spyOn(MCPServerInspector, 'inspect')
+        .mockImplementation(async (serverName, rawConfig, connection, domains, addresses) => {
+          if (domains?.includes('replica.example.com')) {
+            markReplicaInspecting();
+            await replicaHeld;
+            throw new Error('connect ECONNREFUSED');
+          }
+          return inspect(serverName, rawConfig, connection, domains, addresses);
+        });
+
+      const replicaReinspection = replica.reinspectServer('flaky_server', 'CACHE');
+      await replicaInspecting;
+      const { config: recovered } = await registry.reinspectServer('flaky_server', 'CACHE');
+      await expect(replica['cacheConfigsRepo'].get('flaky_server')).resolves.toMatchObject({
+        inspectionFailed: true,
+      });
+      failReplica();
+
+      await expect(replicaReinspection).resolves.toEqual({
+        serverName: 'flaky_server',
+        config: recovered,
+      });
+    });
+
+    it('returns a recovery another replica stored without inspecting while its snapshot holds the stub', async () => {
+      const replica = new MCPServersRegistry({} as typeof import('mongoose'));
+      await registry.addServerStub('recovered_server', testRawConfig, 'CACHE');
+      await expect(replica['cacheConfigsRepo'].get('recovered_server')).resolves.toMatchObject({
+        inspectionFailed: true,
+      });
+      const { config: recovered } = await registry.reinspectServer('recovered_server', 'CACHE');
+      const inspectSpy = jest.spyOn(MCPServerInspector, 'inspect');
+      inspectSpy.mockClear();
+
+      await expect(replica.reinspectServer('recovered_server', 'CACHE')).resolves.toEqual({
+        serverName: 'recovered_server',
+        config: recovered,
+      });
+      expect(inspectSpy.mock.calls).toHaveLength(0);
+    });
+  });
 });

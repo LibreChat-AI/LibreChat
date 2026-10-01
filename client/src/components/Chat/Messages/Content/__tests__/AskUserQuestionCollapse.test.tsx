@@ -95,23 +95,24 @@ describe('collapsing a live ask_user_question', () => {
       fireEvent.click(screen.getByTestId('collapse-from-popover'));
 
       expect(screen.getByTestId('popover-visible').textContent).toBe('false');
-      /** The pause is still live — the card has it now... */
-      expect(screen.getByTestId('active').textContent).toBe('true');
+      /** The pause is still live, but the card owns it outside answer mode. */
+      expect(screen.getByTestId('active').textContent).toBe('false');
       expect(screen.getByText('North star or full funnel?')).toBeInTheDocument();
-      /** ...and the composer is a composer again. */
+      /** The composer is a normal composer again. */
       expect(screen.getByTestId('composer-locked').textContent).toBe('false');
       expect(screen.getByTestId('composer-answers').textContent).toBe('false');
     });
 
-    it('gives the collapsed card the popover’s dismiss', () => {
+    it('moves the collapsed card back to the popover', () => {
       renderPause();
       fireEvent.click(screen.getByTestId('collapse-from-popover'));
 
-      expect(screen.getByLabelText('Expand')).toBeInTheDocument();
-      fireEvent.click(screen.getByLabelText('Close'));
+      fireEvent.click(screen.getByLabelText('Expand'));
 
-      /** Dismiss exits answer mode entirely, exactly as the popover’s × did. */
-      expect(screen.getByTestId('active').textContent).toBe('false');
+      expect(screen.getByTestId('active').textContent).toBe('true');
+      expect(screen.getByTestId('popover-visible').textContent).toBe('true');
+      expect(screen.getByTestId('composer-locked').textContent).toBe('true');
+      expect(screen.queryByLabelText('Expand')).not.toBeInTheDocument();
     });
   });
 
@@ -120,22 +121,22 @@ describe('collapsing a live ask_user_question', () => {
       mockLiveAsk = { actionId: 'act-1', question: mockSingle, messageId: 'message-1' };
     });
 
-    it('keeps the composer as the answer box, and still offers a dismiss', () => {
+    it('releases the composer until the card moves back to the popover', () => {
       renderPause();
       expect(screen.getByTestId('composer-answers').textContent).toBe('true');
       expect(screen.getByTestId('composer-locked').textContent).toBe('false');
 
       fireEvent.click(screen.getByTestId('collapse-from-popover'));
 
-      /** A single question is answered IN the composer, so it stays the answer
-       *  box past collapse — the card is only the display handing over. */
-      expect(screen.getByTestId('composer-answers').textContent).toBe('true');
+      /** The card now owns the answer, so the normal composer is available. */
+      expect(screen.getByTestId('composer-answers').textContent).toBe('false');
       expect(screen.getByText('Which environment?')).toBeInTheDocument();
 
-      fireEvent.click(screen.getByLabelText('Close'));
+      fireEvent.click(screen.getByLabelText('Answer from the message box'));
 
-      expect(screen.getByTestId('active').textContent).toBe('false');
-      expect(screen.getByTestId('composer-answers').textContent).toBe('false');
+      expect(screen.getByTestId('active').textContent).toBe('true');
+      expect(screen.getByTestId('composer-answers').textContent).toBe('true');
+      expect(screen.getByTestId('popover-visible').textContent).toBe('true');
     });
   });
 });

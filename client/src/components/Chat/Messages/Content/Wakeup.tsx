@@ -1,10 +1,14 @@
 import { memo, useCallback, useMemo, useState } from 'react';
+import { Users } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
 import { Button } from '@librechat/client';
-import { ChevronDown, Users } from 'lucide-react';
 import type { ActiveSubagentPanel } from '~/components/Chat/Subagents/state';
 import type { WakeupDisplay, WakeupTask } from './Parts/wakeup';
 import type { TranslationKeys } from '~/hooks';
+import SystemEventHeader, {
+  SystemEventIcon,
+  systemEventHeaderClasses,
+} from '~/components/Chat/Messages/ui/SystemEvent';
 import { subagentStatusIcon, subagentStatusLabelKey } from '~/components/Chat/Subagents/status';
 import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
 import { durableSubagentSelection } from '~/components/Chat/Subagents/eventSelection';
@@ -12,6 +16,7 @@ import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { useShareContext } from '~/Providers/ShareContext';
+import BackgroundTaskCard from './BackgroundTaskCard';
 import { cn, getToolDisplayLabel } from '~/utils';
 import { useMessageContext } from '~/Providers';
 import { StackedToolIcons } from './ToolOutput';
@@ -29,15 +34,12 @@ const threadStatus = (status: WakeupTask['status']) =>
 
 function WakeupTaskCard({
   task,
-  kind,
   conversationId,
 }: {
   task: WakeupTask;
-  kind: WakeupDisplay['kind'];
   conversationId?: string | null;
 }) {
   const localize = useLocalize();
-  const mcpServerNames = useMCPServerNames();
   const { isSharedConvo } = useShareContext();
   const { messageId } = useMessageContext();
   const { byThreadId } = useParentSubagents();
@@ -74,10 +76,7 @@ function WakeupTaskCard({
   }, [child, conversationId, isSharedConvo, messageId, task]);
   const status = threadStatus(task.status);
   const StatusIcon = subagentStatusIcon(status);
-  const title =
-    kind === 'subagent'
-      ? (task.subagentType ?? '')
-      : getToolDisplayLabel(task.toolName ?? '', localize, mcpServerNames);
+  const title = task.subagentType ?? '';
   const hasResult = task.result.trim() !== '';
 
   const openActivity = useCallback(() => {
@@ -86,8 +85,8 @@ function WakeupTaskCard({
   }, [openPanel, selection]);
 
   return (
-    <div className="my-1.5 rounded-lg border border-border-light bg-surface-secondary/40 p-3">
-      <div className="flex min-h-6 items-center gap-1.5 text-xs text-text-secondary">
+    <div className="border-border-light bg-surface-secondary/40 my-1.5 rounded-lg border p-3">
+      <div className="text-text-secondary flex min-h-6 items-center gap-1.5 text-xs">
         <StatusIcon
           size={13}
           aria-hidden
@@ -113,7 +112,7 @@ function WakeupTaskCard({
         )}
       </div>
       {hasResult && (
-        <div className="markdown prose prose-sm message-content light dark:prose-invert mt-2 max-h-96 w-full max-w-none overflow-y-auto break-words pr-1 text-text-primary">
+        <div className="markdown prose prose-sm message-content light dark:prose-invert text-text-primary mt-2 max-h-96 w-full max-w-none overflow-y-auto pr-1 break-words">
           <MarkdownLite content={task.result} codeExecution={false} />
         </div>
       )}
@@ -146,7 +145,7 @@ const Wakeup = memo(function Wakeup({
     setIsExpanded((previous) => !previous);
   }, [mountBody]);
 
-  const anyFailed = display.tasks.some((task) => task.status === 'error');
+  const anyFailed = display.tasks.some((task) => task.status !== 'completed');
   const headerLabel = useMemo(() => {
     if (display.kind === 'subagent') {
       const status = display.tasks[0]?.status ?? 'completed';
@@ -155,11 +154,13 @@ const Wakeup = memo(function Wakeup({
     if (display.tasks.length > 1) {
       return localize('com_ui_wakeup_tasks_finished', { 0: String(display.tasks.length) });
     }
-    return localize(
-      display.tasks[0]?.status === 'error'
-        ? 'com_ui_wakeup_task_errored'
-        : 'com_ui_wakeup_task_finished',
-    );
+    if (display.tasks[0]?.status === 'cancelled') {
+      return localize('com_ui_wakeup_task_cancelled');
+    }
+    if (display.tasks[0]?.status === 'error') {
+      return localize('com_ui_wakeup_task_errored');
+    }
+    return localize('com_ui_wakeup_task_finished');
   }, [display.kind, display.tasks, localize]);
 
   const nameSummary = useMemo(() => {
@@ -187,46 +188,30 @@ const Wakeup = memo(function Wakeup({
   );
 
   return (
-    <div className="mb-2 mt-1 w-full">
+    <div className={cn('max-w-full', isExpanded && 'w-[36rem]')}>
       <Button
         variant="ghost"
         type="button"
-        className="inline-flex h-auto w-full items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-text-secondary hover:bg-transparent hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy focus-visible:ring-offset-0"
+        className={systemEventHeaderClasses}
         onClick={handleToggle}
         aria-expanded={isExpanded}
         aria-label={headerLabel}
       >
-        {display.kind === 'subagent' ? (
-          <div
-            className="flex h-5 w-5 shrink-0 items-center justify-center text-text-secondary"
-            aria-hidden="true"
-          >
-            <Users size={14} />
-          </div>
-        ) : (
-          <StackedToolIcons toolNames={toolIconNames} mcpIconMap={mcpIconMap} maxIcons={4} />
-        )}
-        <span
-          className={cn(
-            'tool-status-text min-w-0 truncate font-medium',
-            anyFailed && 'text-text-warning',
-          )}
-          role="status"
-          title={headerLabel}
-        >
-          {headerLabel}
-        </span>
-        {nameSummary !== '' && (
-          <span className="min-w-0 max-w-[40%] truncate text-xs font-normal text-text-secondary">
-            · {nameSummary}
-          </span>
-        )}
-        <ChevronDown
-          className={cn(
-            'size-4 shrink-0 text-text-secondary transition-transform duration-200 ease-out',
-            isExpanded && 'rotate-180',
-          )}
-          aria-hidden="true"
+        <SystemEventHeader
+          live
+          icon={
+            display.kind === 'subagent' ? (
+              <SystemEventIcon>
+                <Users size={14} />
+              </SystemEventIcon>
+            ) : (
+              <StackedToolIcons toolNames={toolIconNames} mcpIconMap={mcpIconMap} maxIcons={4} />
+            )
+          }
+          label={headerLabel}
+          detail={nameSummary}
+          expanded={isExpanded}
+          warning={anyFailed}
         />
       </Button>
       <div
@@ -237,18 +222,30 @@ const Wakeup = memo(function Wakeup({
       >
         {shouldRenderBody && (
           <div className="overflow-hidden" ref={expandRef}>
-            <div className="py-0.5 pl-4">
-              <div className="mt-1 text-xs text-text-secondary">
-                {localize('com_ui_wakeup_explainer')}
-              </div>
-              {display.tasks.map((task) => (
-                <WakeupTaskCard
-                  key={task.taskId}
-                  task={task}
-                  kind={display.kind}
-                  conversationId={conversationId}
-                />
-              ))}
+            <div className="pb-1">
+              {display.kind === 'subagent' && (
+                <div className="text-text-secondary mt-1 text-xs">
+                  {localize('com_ui_wakeup_explainer')}
+                </div>
+              )}
+              {display.tasks.map((task) =>
+                display.kind === 'background_tool' ? (
+                  <div key={task.taskId} className="my-2">
+                    <BackgroundTaskCard
+                      task={{
+                        taskId: task.taskId,
+                        toolName: task.toolName ?? '',
+                        status: task.status,
+                        result: task.result,
+                      }}
+                      mcpIconMap={mcpIconMap}
+                      mcpServerNames={mcpServerNames}
+                    />
+                  </div>
+                ) : (
+                  <WakeupTaskCard key={task.taskId} task={task} conversationId={conversationId} />
+                ),
+              )}
             </div>
           </div>
         )}

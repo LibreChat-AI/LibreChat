@@ -107,7 +107,6 @@ const BookmarkEditDialog = ({
             type="submit"
             disabled={mutation.isLoading}
             onClick={handleSubmitForm}
-            className="text-white"
           >
             {mutation.isLoading ? <Spinner /> : localize('com_ui_save')}
           </Button>

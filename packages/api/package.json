@@ -1,6 +1,6 @@
 {
   "name": "@librechat/api",
-  "version": "1.7.47",
+  "version": "1.7.52",
   "type": "commonjs",
   "description": "MCP services for LibreChat",
   "main": "dist/index.cjs",
@@ -27,23 +27,28 @@
   },
   "scripts": {
     "clean": "rimraf dist",
-    "build": "npm run clean && tsdown",
-    "build:dev": "npm run clean && tsdown",
-    "build:watch": "tsdown --watch",
-    "build:watch:prod": "tsdown --watch",
+    "build": "npm run clean && tsdown && npm run openapi:copy",
+    "build:dev": "npm run clean && tsdown && npm run openapi:copy",
+    "build:watch": "npm run openapi:copy && tsdown --watch",
+    "build:watch:prod": "npm run openapi:copy && tsdown --watch",
+    "openapi:copy": "node -e \"const fs=require('fs');fs.mkdirSync('dist',{recursive:true});fs.copyFileSync('openapi/agents.openapi.json','dist/agents.openapi.json')\"",
     "test": "jest --coverage --watch --testPathIgnorePatterns=\"\\.*integration\\.|\\.*helper\\.|__tests__/helpers/|\\.*manual\\.spec\\.\"",
     "test:ci": "jest --coverage --ci --testPathIgnorePatterns=\"\\.*integration\\.|\\.*helper\\.|__tests__/helpers/|\\.*manual\\.spec\\.\"",
-    "test:cache-integration:core": "jest --testPathPatterns=\"src/cache/.*\\.cache_integration\\.spec\\.ts$\" --coverage=false",
-    "test:cache-integration:cluster": "jest --testPathPatterns=\"src/cluster/.*\\.cache_integration\\.spec\\.ts$\" --coverage=false --runInBand",
-    "test:cache-integration:mcp": "jest --testPathPatterns=\"src/mcp/.*\\.cache_integration\\.spec\\.ts$\" --coverage=false",
-    "test:cache-integration:stream": "jest --testPathPatterns=\"src/stream/.*\\.stream_integration\\.spec\\.ts$\" --coverage=false --runInBand --forceExit",
+    "test:cache-integration:core": "jest --testPathPatterns=\"src/(cache|middleware)/.*\\.cache_integration\\.(spec|test)\\.ts$\" --coverage=false",
+    "test:cache-integration:cluster": "jest --testPathPatterns=\"src/cluster/.*\\.cache_integration\\.(spec|test)\\.ts$\" --coverage=false --runInBand",
+    "test:cache-integration:mcp": "jest --testPathPatterns=\"src/mcp/.*\\.cache_integration\\.(spec|test)\\.ts$\" --coverage=false",
+    "test:cache-integration:stream": "jest --testPathPatterns=\"\\.stream_integration\\.(spec|test)\\.ts$\" --coverage=false --runInBand --forceExit",
     "test:cache-integration": "npm run test:cache-integration:core && npm run test:cache-integration:cluster && npm run test:cache-integration:mcp && npm run test:cache-integration:stream",
+    "test:integration": "jest --testPathPatterns=\"\\.integration\\.(spec|test)\\.ts$\" --coverage=false --runInBand --forceExit",
     "test:s3-integration": "jest --testPathPatterns=\"src/storage/s3/.*\\.integration\\.spec\\.ts$\" --coverage=false --runInBand",
     "test:agents-integration": "jest --testPathPatterns=\"src/agents/.*\\.integration\\.spec\\.ts$\" --coverage=false --runInBand --forceExit",
     "verify": "npm run test:ci",
     "b:clean": "bun run rimraf dist",
-    "b:build": "bun run b:clean && bun run tsdown",
-    "b:build:dev": "bun run b:clean && bun run tsdown",
+    "b:build": "bun run b:clean && bun run tsdown && bun run openapi:copy",
+    "b:build:dev": "bun run b:clean && bun run tsdown && bun run openapi:copy",
+    "openapi:generate": "cross-env TS_NODE_PROJECT=tsconfig.openapi.json ts-node -r tsconfig-paths/register src/openapi/generate.ts --write",
+    "openapi:test": "node openapi/router.smoke.cjs",
+    "openapi:check": "cross-env TS_NODE_PROJECT=tsconfig.openapi.json ts-node -r tsconfig-paths/register src/openapi/generate.ts --check",
     "start:everything-sse": "node -r dotenv/config --loader ./tsconfig-paths-bootstrap.mjs --experimental-specifier-resolution=node ./src/examples/everything/sse.ts",
     "start:everything": "node -r dotenv/config --loader ./tsconfig-paths-bootstrap.mjs --experimental-specifier-resolution=node ./src/demo/everything.ts",
     "start:filesystem": "node -r dotenv/config --loader ./tsconfig-paths-bootstrap.mjs --experimental-specifier-resolution=node ./src/demo/filesystem.ts",
@@ -51,12 +56,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danny-avila/LibreChat.git"
+    "url": "git+https://github.com/LibreChat-AI/LibreChat.git"
   },
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/danny-avila/LibreChat/issues"
+    "url": "https://github.com/LibreChat-AI/LibreChat/issues"
   },
   "homepage": "https://librechat.ai",
   "devDependencies": {
@@ -68,6 +73,7 @@
     "@types/express": "^5.0.0",
     "@types/express-session": "^1.18.2",
     "@types/jest": "^29.5.2",
+    "@types/jsdom": "^21.1.7",
     "@types/jsonwebtoken": "^9.0.0",
     "@types/multer": "^1.4.13",
     "@types/node": "^24.12.4",
@@ -95,7 +101,8 @@
     "typescript": "^5.9.3",
     "winston": "^3.17.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
-    "yauzl": "^3.2.1"
+    "yauzl": "^3.2.1",
+    "zod-openapi": "^4.2.4"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
@@ -113,7 +120,7 @@
     "@azure/storage-blob": "^12.30.0",
     "@google/genai": "^2.8.0",
     "@keyv/redis": "5.1.6",
-    "@librechat/agents": "^3.7.19",
+    "@librechat/agents": "^4.0.1",
     "@librechat/data-schemas": "*",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@opentelemetry/api": "^1.9.0",
@@ -133,6 +140,7 @@
     "axios": "^1.20.0",
     "connect-redis": "^8.1.0",
     "dedent": "^1.5.3",
+    "dompurify": "^3.4.16",
     "eventsource": "^3.0.2",
     "express": "^5.1.0",
     "express-session": "^1.18.2",
@@ -142,7 +150,8 @@
     "google-auth-library": "^9.15.1",
     "https-proxy-agent": "^7.0.6",
     "ioredis": "^5.3.2",
-    "js-yaml": "^4.2.0",
+    "js-yaml": "^4.3.2",
+    "jsdom": "^26.1.0",
     "jsonwebtoken": "^9.0.0",
     "jszip": "^3.10.1",
     "jwks-rsa": "^3.2.0",
@@ -162,7 +171,7 @@
     "rate-limit-redis": "^4.2.0",
     "re2js": "^2.8.6",
     "sanitize-html": "^2.17.7",
-    "sharp": "^0.35.3",
+    "sharp": "^0.35.4",
     "undici": "^7.29.0",
     "yauzl": "^3.2.1",
     "zod": "^3.22.4"
@@ -170,6 +179,7 @@
   "dependencies": {
     "@langchain/langgraph-checkpoint": "^1.1.2",
     "@langchain/langgraph-checkpoint-mongodb": "^1.4.0",
+    "@simplewebauthn/server": "^13.3.2",
     "cluster-key-slot": "^1.1.2",
     "croner": "^10.0.1",
     "express-rate-limit": "^8.5.1",

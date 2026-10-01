@@ -32,6 +32,7 @@ export default function Presentation({ children }: { children: React.ReactNode }
   const conversationId = useRecoilValue(store.conversationIdByIndex(0));
   const conversationEndpoint = useRecoilValue(store.effectiveEndpointByIndex(0));
   const conversationAgentId = useRecoilValue(store.conversationAgentIdByIndex(0));
+  const isSubmitting = useRecoilValue(store.isSubmittingFamily(0));
   const selectedSubagent = useAtomValue(activeSubagentPanel);
   const setSelectedSubagent = useSetAtom(activeSubagentPanel);
   const resetSelectedSubagent = useCallback(() => setSelectedSubagent(null), [setSelectedSubagent]);
@@ -140,11 +141,12 @@ export default function Presentation({ children }: { children: React.ReactNode }
   const panelElement = artifactsElement ?? subagentElement;
 
   return (
-    <DragDropWrapper className="relative flex w-full grow overflow-hidden bg-presentation">
+    <DragDropWrapper className="bg-surface-primary-alt relative flex w-full grow overflow-hidden">
       <AppChatSurface>
         <ParentSubagentsProvider
           conversationId={conversationId ?? ''}
           enabled={conversationEndpoint === EModelEndpoint.agents && conversationAgentId != null}
+          isSubmitting={isSubmitting}
         >
           <SidePanelGroup panel={panelElement}>
             <main className="flex h-full flex-col overflow-y-auto" role="main">

@@ -9,7 +9,9 @@ jest.mock('react-router-dom', () => ({
 }));
 
 jest.mock('recoil', () => ({
+  atomFamily: () => () => ({}),
   useRecoilValue: () => false,
+  useRecoilCallback: () => () => undefined,
 }));
 
 jest.mock('react-hook-form', () => ({
@@ -30,6 +32,8 @@ jest.mock('~/hooks', () => ({
   useResumeOnLoad: jest.fn(),
   useAdaptiveSSE: jest.fn(),
   useQueueDrain: jest.fn(),
+  useQueuedTurnReveal: jest.fn(),
+  useScrollbarGutterSeed: jest.fn(),
   useLocalize: () => (key: string) => key,
   useChatHelpers: () => ({
     conversation: mockConversation,
@@ -45,11 +49,13 @@ jest.mock('~/Providers', () => {
     ChatContext: Context,
     AddedChatContext: Context,
     ChatFormProvider: Passthrough,
+    ComposerRestoreProvider: Passthrough,
     useFileMapContext: () => new Map(),
   };
 });
 
 jest.mock('~/data-provider', () => ({
+  useProjectQuery: () => ({ data: undefined }),
   useGetMessagesByConvoId: () => ({
     data: [{ messageId: 'message-1' }],
     isLoading: false,
@@ -64,7 +70,14 @@ jest.mock('../Presentation', () => ({ children }: { children: React.ReactNode })
 ));
 jest.mock('../Input/ChatForm', () => () => <div data-testid="chat-form" />);
 jest.mock('../Landing', () => () => <div data-testid="landing" />);
-jest.mock('../Footer', () => () => <div data-testid="footer" />);
+jest.mock('../Trace', () => ({
+  TraceSurface: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+jest.mock('../Footer', () => ({
+  __esModule: true,
+  default: () => <div data-testid="footer" />,
+  useConfiguredFooter: () => false,
+}));
 jest.mock('../Header', () => ({ readOnly }: { readOnly?: boolean }) => (
   <div data-read-only={String(readOnly)} data-testid="header" />
 ));
@@ -91,22 +104,6 @@ describe('ChatView child-thread execution identity', () => {
     mockConversation = {
       conversationId: 'child-thread',
       title: 'Graph child',
-      subagentThread: {
-        parentConversationId: 'parent-thread',
-      },
-    };
-
-    render(<ChatView />);
-
-    expect(screen.queryByTestId('chat-form')).not.toBeInTheDocument();
-    expect(screen.getByRole('note')).toHaveTextContent('com_ui_subagent_thread_read_only');
-    expect(screen.getByTestId('header')).toHaveAttribute('data-read-only', 'true');
-  });
-
-  it('keeps a saved-agent child view-only after it settles', () => {
-    mockConversation = {
-      conversationId: 'child-thread',
-      title: 'Saved agent child',
       subagentThread: {
         parentConversationId: 'parent-thread',
       },

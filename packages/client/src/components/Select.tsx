@@ -1,7 +1,8 @@
 import * as React from 'react';
 import * as SelectPrimitive from '@radix-ui/react-select';
 import { CaretSortIcon, CheckIcon, ChevronDownIcon, ChevronUpIcon } from '@radix-ui/react-icons';
-import { cn } from '~/utils';
+import { cn, disabledFillClasses, disabledInkClasses } from '~/utils';
+import { useNestedPopoverStyle } from './OriginalDialog';
 
 // @ts-ignore - Radix UI type conflicts with React types
 const Select: React.FC<SelectPrimitive.SelectProps> = SelectPrimitive.Root;
@@ -26,8 +27,9 @@ const SelectTrigger: React.ForwardRefExoticComponent<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      'flex h-9 w-full items-center justify-between whitespace-nowrap rounded-md border border-border-medium bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-surface-primary placeholder:text-text-secondary focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1',
-      'rounded-lg hover:bg-surface-hover',
+      'border-border-control ring-offset-surface-primary placeholder:text-text-secondary focus-visible:ring-focus-control flex h-9 w-full items-center justify-between rounded-md border bg-transparent px-3 py-2 text-sm whitespace-nowrap shadow-xs focus-visible:ring-2 focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1',
+      disabledFillClasses,
+      'hover:bg-surface-hover rounded-lg',
       className,
     )}
     {...props}
@@ -80,35 +82,39 @@ const SelectContent: React.ForwardRefExoticComponent<
 > = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content>
->(({ className = '', children, position = 'popper', ...props }, ref) => (
-  <SelectPrimitive.Portal>
-    <SelectPrimitive.Content
-      ref={ref}
-      className={cn(
-        'relative z-40 max-h-96 min-w-[8rem] overflow-hidden rounded-md border border-border-light bg-surface-secondary text-text-primary shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
-        position === 'popper'
-          ? 'data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1'
-          : '',
-        className,
-      )}
-      position={position}
-      {...props}
-    >
-      <SelectScrollUpButton />
-      <SelectPrimitive.Viewport
+>(({ className = '', children, position = 'popper', style, ...props }, ref) => {
+  const nestedStyle = useNestedPopoverStyle();
+  return (
+    <SelectPrimitive.Portal>
+      <SelectPrimitive.Content
+        ref={ref}
+        style={{ ...nestedStyle, ...style }}
         className={cn(
-          'p-1',
+          'border-border-light bg-surface-secondary text-text-primary data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 relative z-40 max-h-96 min-w-[8rem] overflow-hidden rounded-md border shadow-md',
           position === 'popper'
-            ? 'h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]'
+            ? 'data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1'
             : '',
+          className,
         )}
+        position={position}
+        {...props}
       >
-        {children}
-      </SelectPrimitive.Viewport>
-      <SelectScrollDownButton />
-    </SelectPrimitive.Content>
-  </SelectPrimitive.Portal>
-));
+        <SelectScrollUpButton />
+        <SelectPrimitive.Viewport
+          className={cn(
+            'p-1',
+            position === 'popper'
+              ? 'h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]'
+              : '',
+          )}
+        >
+          {children}
+        </SelectPrimitive.Viewport>
+        <SelectScrollDownButton />
+      </SelectPrimitive.Content>
+    </SelectPrimitive.Portal>
+  );
+});
 SelectContent.displayName = SelectPrimitive.Content.displayName;
 
 const SelectLabel: React.ForwardRefExoticComponent<
@@ -136,8 +142,9 @@ const SelectItem: React.ForwardRefExoticComponent<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      'relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 pl-2 pr-8 text-sm outline-none focus:bg-surface-hover focus:text-text-primary data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
-      'rounded-lg hover:bg-surface-hover',
+      'focus:bg-surface-hover focus:text-text-primary relative flex w-full cursor-pointer items-center rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+      disabledInkClasses,
+      'hover:bg-surface-hover rounded-lg',
       className,
     )}
     {...props}
@@ -161,7 +168,7 @@ const SelectSeparator: React.ForwardRefExoticComponent<
 >(({ className = '', ...props }, ref) => (
   <SelectPrimitive.Separator
     ref={ref}
-    className={cn('-mx-1 my-1 h-px bg-surface-tertiary', className)}
+    className={cn('bg-surface-tertiary -mx-1 my-1 h-px', className)}
     {...props}
   />
 ));

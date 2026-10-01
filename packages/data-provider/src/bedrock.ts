@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import * as s from './schemas';
 
+export const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01';
+export const THINKING_DISPLAY_UPDATES_BETA = 'thinking-display-updates-2026-08-18';
+
 const DEFAULT_THINKING_BUDGET = 2000;
 const BEDROCK_CLAUDE_SONNET_4_6_MAX_OUTPUT = 64000;
 export const BEDROCK_OUTPUT_128K_BETA = 'output-128k-2025-02-19';
@@ -11,14 +14,21 @@ export const BEDROCK_FINE_GRAINED_TOOL_STREAMING_BETA = 'fine-grained-tool-strea
 const GENERATED_BEDROCK_BETAS = new Set<string>([
   BEDROCK_OUTPUT_128K_BETA,
   BEDROCK_FINE_GRAINED_TOOL_STREAMING_BETA,
+  THINKING_BINDING_BETA,
+  THINKING_DISPLAY_UPDATES_BETA,
 ]);
 
 const bedrockReasoningConfigValues = new Set<string>(Object.values(s.BedrockReasoningConfig));
 
 type ThinkingConfig =
   | { type: 'enabled'; budget_tokens: number }
-  | { type: 'adaptive'; display?: s.ThinkingDisplayWireValue }
-  | { type: 'disabled' };
+  | {
+      type: 'adaptive';
+      display?: s.ThinkingDisplayWireValue;
+      block_binding?: typeof THINKING_BLOCK_BINDING;
+    }
+  | { type: 'disabled' }
+  | { type: 'between_tools' };
 
 /**
  * Resolves the final `thinking.display` value for an adaptive-thinking request.
@@ -58,6 +68,9 @@ export function resolveThinkingDisplay(
   if (explicit === s.ThinkingDisplay.omitted) {
     return s.ThinkingDisplay.omitted;
   }
+  if (explicit === s.ThinkingDisplay.updates) {
+    return s.ThinkingDisplay.updates;
+  }
   if (omitsThinkingByDefault(model)) {
     return s.ThinkingDisplay.summarized;
   }
@@ -74,8 +87,17 @@ type AnthropicInput = BedrockConverseInput & {
     AnthropicReasoning;
 };
 
+type ClaudeVersion = { major: number; minor: number };
+
+function isAtLeast(version: ClaudeVersion | null, major: number, minor: number): boolean {
+  if (version == null) {
+    return false;
+  }
+  return version.major > major || (version.major === major && version.minor >= minor);
+}
+
 /** Extracts opus major/minor version from both naming formats */
-function parseOpusVersion(model: string): { major: number; minor: number } | null {
+function parseOpusVersion(model: string): ClaudeVersion | null {
   const nameFirst = model.match(/claude-opus[-.]?(\d+)(?:[-.](\d{1,2})(?!\d))?/);
   if (nameFirst) {
     return {
@@ -93,9 +115,55 @@ function parseOpusVersion(model: string): { major: number; minor: number } | nul
   return null;
 }
 
+/**
+ * Opus 5.5 and later, and the Mythos-class line (Fable/Mythos), run thinking
+ * always on and bound to the conversation prefix: both `disabled` and
+ * `between_tools` are rejected (400), so the toggle is hidden and effort is
+ * the only lever. Unlike Opus 5, which needs an explicit `disabled`.
+ */
+export function hasAlwaysOnThinking(model: string): boolean {
+  return isAtLeast(parseOpusVersion(model), 5, 5) || s.isMythosClassModel(model);
+}
+
+/**
+ * Sonnet 5.5 and later share the conversation-bound thinking contract but keep
+ * a lowest setting, `between_tools`, in place of `disabled`.
+ */
+export function hasBetweenToolsThinkingFloor(model: string): boolean {
+  return isAtLeast(parseSonnetVersion(model), 5, 5);
+}
+
+/** LibreChat permits edits and compaction of earlier turns; drop only invalidated blocks. */
+export const THINKING_BLOCK_BINDING = {
+  prefix_mismatch_behavior: 'drop_block',
+} as const;
+
+/** Models whose thinking blocks are bound to the conversation prefix (Opus 5.5+, Sonnet 5.5+, Fable/Mythos). */
+export function bindsThinkingBlocks(model: string): boolean {
+  return hasAlwaysOnThinking(model) || hasBetweenToolsThinkingFloor(model);
+}
+
+export const BETWEEN_TOOLS_THINKING = { type: 'between_tools' } as const;
+
+/**
+ * Resolves the wire config for a user's "thinking off" choice. Sonnet 5.5+
+ * rejects `disabled` and offers `between_tools` as its floor; Sonnet 5 and
+ * Opus 5 need an explicit `disabled`; the rest turn thinking off by omission
+ * (`undefined`). Always-on models never reach here because their toggle is hidden.
+ */
+export function resolveThinkingOffConfig(model: string): ThinkingConfig | undefined {
+  if (hasBetweenToolsThinkingFloor(model)) {
+    return { ...BETWEEN_TOOLS_THINKING };
+  }
+  if (requiresExplicitThinkingDisabled(model)) {
+    return { type: 'disabled' };
+  }
+  return undefined;
+}
+
 /** Extracts sonnet major/minor version from both naming formats.
  *  Uses bounded minor capture to avoid matching date suffixes (e.g., -20250514). */
-function parseSonnetVersion(model: string): { major: number; minor: number } | null {
+function parseSonnetVersion(model: string): ClaudeVersion | null {
   const nameFirst = model.match(/claude-sonnet[-.]?(\d+)(?:[-.](\d{1,2})(?!\d))?/);
   if (nameFirst) {
     return {
@@ -121,18 +189,11 @@ function parseSonnetVersion(model: string): { major: number; minor: number } | n
 
 /** Checks if a model supports adaptive thinking (Opus 4.6+, Sonnet 4.6+, Fable/Mythos) */
 export function supportsAdaptiveThinking(model: string): boolean {
-  const opus = parseOpusVersion(model);
-  if (opus && (opus.major > 4 || (opus.major === 4 && opus.minor >= 6))) {
-    return true;
-  }
-  const sonnet = parseSonnetVersion(model);
-  if (sonnet != null && (sonnet.major > 4 || (sonnet.major === 4 && sonnet.minor >= 6))) {
-    return true;
-  }
-  if (s.isMythosClassModel(model)) {
-    return true;
-  }
-  return false;
+  return (
+    isAtLeast(parseOpusVersion(model), 4, 6) ||
+    isAtLeast(parseSonnetVersion(model), 4, 6) ||
+    s.isMythosClassModel(model)
+  );
 }
 
 /**
@@ -146,33 +207,19 @@ export function supportsAdaptiveThinking(model: string): boolean {
  * See https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7#thinking-content-omitted-by-default
  */
 export function omitsThinkingByDefault(model: string): boolean {
-  const opus = parseOpusVersion(model);
-  if (opus && (opus.major > 4 || (opus.major === 4 && opus.minor >= 7))) {
-    return true;
-  }
-  const sonnet = parseSonnetVersion(model);
-  if (sonnet != null && sonnet.major >= 5) {
-    return true;
-  }
-  if (s.isMythosClassModel(model)) {
-    return true;
-  }
-  return false;
+  return (
+    isAtLeast(parseOpusVersion(model), 4, 7) ||
+    isAtLeast(parseSonnetVersion(model), 5, 0) ||
+    s.isMythosClassModel(model)
+  );
 }
 
 export function omitsSamplingParameters(model: string): boolean {
-  const opus = parseOpusVersion(model);
-  if (opus && (opus.major > 4 || (opus.major === 4 && opus.minor >= 7))) {
-    return true;
-  }
-  const sonnet = parseSonnetVersion(model);
-  if (sonnet != null && sonnet.major >= 5) {
-    return true;
-  }
-  if (s.isMythosClassModel(model)) {
-    return true;
-  }
-  return false;
+  return (
+    isAtLeast(parseOpusVersion(model), 4, 7) ||
+    isAtLeast(parseSonnetVersion(model), 5, 0) ||
+    s.isMythosClassModel(model)
+  );
 }
 
 /**
@@ -182,18 +229,17 @@ export function omitsSamplingParameters(model: string): boolean {
  * Sonnet 5 and Opus 5 treat an omitted `thinking` field as adaptive thinking ON
  * by default, so honoring a user who turns thinking off means sending the
  * disabled config explicitly. Opus 4.7/4.8 run without thinking when the field
- * is omitted, and Fable/Mythos reject an explicit disabled config (400,
- * thinking always on), so both are excluded.
+ * is omitted, and Fable/Mythos, Opus 5.5+ and Sonnet 5.5+ reject an explicit
+ * disabled config (400), so those are excluded — Sonnet 5.5+ falls back to
+ * `between_tools` via `resolveThinkingOffConfig`.
  *
  * See https://platform.claude.com/docs/en/about-claude/models/migration-guide#migrating-to-claude-sonnet-5
  */
 export function requiresExplicitThinkingDisabled(model: string): boolean {
-  const sonnet = parseSonnetVersion(model);
-  if (sonnet != null && sonnet.major >= 5) {
-    return true;
+  if (hasAlwaysOnThinking(model) || hasBetweenToolsThinkingFloor(model)) {
+    return false;
   }
-  const opus = parseOpusVersion(model);
-  return opus != null && opus.major >= 5;
+  return isAtLeast(parseSonnetVersion(model), 5, 0) || isAtLeast(parseOpusVersion(model), 5, 0);
 }
 
 /** Effort levels Opus 5 rejects while thinking is explicitly disabled. */
@@ -207,13 +253,19 @@ const EFFORTS_REJECTED_WHEN_THINKING_DISABLED = new Set<string>([
  *
  * Opus 5 rejects `xhigh`/`max` in that combination with a 400: "output_config
  * .effort 'xhigh' is not supported when thinking is disabled on this model. Use
- * effort 'high' or below, or enable thinking." Opus 4.7/4.8, Sonnet 5, and
- * Sonnet 4.6 accept every effort level they otherwise support with thinking
- * off, so the cap is Opus 5+ only.
+ * effort 'high' or below, or enable thinking." Sonnet 5.5+ returns the same
+ * error for `between_tools`. Opus 4.7/4.8, Sonnet 5, and Sonnet 4.6 accept
+ * every effort level they otherwise support with thinking off. Always-on
+ * models cannot turn thinking off, so the cap never applies to them.
  */
 export function capsEffortWhenThinkingDisabled(model: string): boolean {
-  const opus = parseOpusVersion(model);
-  return opus != null && opus.major >= 5;
+  if (hasAlwaysOnThinking(model)) {
+    return false;
+  }
+  if (hasBetweenToolsThinkingFloor(model)) {
+    return true;
+  }
+  return isAtLeast(parseOpusVersion(model), 5, 0);
 }
 
 /**
@@ -259,20 +311,42 @@ export function isThinkingDisabled(thinking: unknown): boolean {
   return thinking.type === 'disabled';
 }
 
+/** Whether a resolved thinking config asks for mid-thinking display updates (beta-gated). */
+export function requestsThinkingDisplayUpdates(thinking: unknown): boolean {
+  if (typeof thinking !== 'object' || thinking === null || !('display' in thinking)) {
+    return false;
+  }
+  return thinking.display === s.ThinkingDisplay.updates;
+}
+
+/**
+ * Whether a resolved thinking config is the model's floor — `disabled`, or
+ * `between_tools` on Sonnet 5.5 — i.e. the wire form of the user's "thinking
+ * off" choice. Both share the effort cap and the no-display/no-binding rules.
+ */
+export function isThinkingOffConfig(thinking: unknown): boolean {
+  if (typeof thinking !== 'object' || thinking === null || !('type' in thinking)) {
+    return false;
+  }
+  return thinking.type === 'disabled' || thinking.type === 'between_tools';
+}
+
 /** Checks if a model has a 1M context window (Sonnet 4.6+, Opus 4.6+, Opus 5+, Fable/Mythos) */
 export function supportsContext1m(model: string): boolean {
-  const sonnet = parseSonnetVersion(model);
-  if (sonnet != null && (sonnet.major > 4 || (sonnet.major === 4 && sonnet.minor >= 6))) {
-    return true;
-  }
-  const opus = parseOpusVersion(model);
-  if (opus && (opus.major > 4 || (opus.major === 4 && opus.minor >= 6))) {
-    return true;
-  }
-  if (s.isMythosClassModel(model)) {
-    return true;
-  }
-  return false;
+  return (
+    isAtLeast(parseSonnetVersion(model), 4, 6) ||
+    isAtLeast(parseOpusVersion(model), 4, 6) ||
+    s.isMythosClassModel(model)
+  );
+}
+
+/** Opus 5.5+, Sonnet 5.5+ and Fable/Mythos emit up to 128k output tokens. */
+export function supportsOutput128k(model: string): boolean {
+  return (
+    isAtLeast(parseOpusVersion(model), 5, 5) ||
+    isAtLeast(parseSonnetVersion(model), 5, 5) ||
+    s.isMythosClassModel(model)
+  );
 }
 
 /**
@@ -321,6 +395,9 @@ function isBedrockClaudeModel(model: string): boolean {
  * @returns Array of beta header strings, or empty array if not applicable
  */
 function getBedrockAnthropicBetaHeaders(model: string): string[] {
+  if (bindsThinkingBlocks(model)) {
+    return [THINKING_BINDING_BETA];
+  }
   const betaHeaders: string[] = [];
 
   /** Mythos-class (Fable/Mythos) is intentionally not matched: these betas are built-in/no-op for the
@@ -415,11 +492,7 @@ export const bedrockInputSchema = s.tConversationSchema
     if ((obj as AnthropicInput).additionalModelRequestFields?.thinking != null) {
       const _obj = obj as AnthropicInput;
       const thinking = _obj.additionalModelRequestFields.thinking;
-      const isDisabled =
-        typeof thinking === 'object' &&
-        thinking !== null &&
-        (thinking as { type?: string }).type === 'disabled';
-      obj.thinking = isDisabled ? false : !!thinking;
+      obj.thinking = isThinkingOffConfig(thinking) ? false : !!thinking;
       obj.thinkingBudget =
         typeof thinking === 'object' && 'budget_tokens' in thinking
           ? thinking.budget_tokens
@@ -428,7 +501,8 @@ export const bedrockInputSchema = s.tConversationSchema
         const persistedDisplay = extractPersistedDisplay({ thinking });
         if (
           persistedDisplay === s.ThinkingDisplay.summarized ||
-          persistedDisplay === s.ThinkingDisplay.omitted
+          persistedDisplay === s.ThinkingDisplay.omitted ||
+          persistedDisplay === s.ThinkingDisplay.updates
         ) {
           obj.thinkingDisplay = persistedDisplay as s.ThinkingDisplay;
         }
@@ -522,12 +596,7 @@ export const bedrockInputParser = s.tConversationSchema
     const persistedThinking = (
       typedData.additionalModelRequestFields as { thinking?: unknown } | undefined
     )?.thinking;
-    if (
-      additionalFields.thinking === undefined &&
-      typeof persistedThinking === 'object' &&
-      persistedThinking !== null &&
-      (persistedThinking as { type?: string }).type === 'disabled'
-    ) {
+    if (additionalFields.thinking === undefined && isThinkingOffConfig(persistedThinking)) {
       additionalFields.thinking = false;
     }
 
@@ -547,7 +616,8 @@ export const bedrockInputParser = s.tConversationSchema
         const persistedAmrf = typedData.additionalModelRequestFields as
           | Record<string, unknown>
           | undefined;
-        const thinkingDisabled = additionalFields.thinking === false;
+        const thinkingDisabled =
+          additionalFields.thinking === false && !hasAlwaysOnThinking(typedData.model as string);
         const effort = additionalFields.effort;
         if (typeof effort === 'string' && effort !== '') {
           additionalFields.output_config = { effort };
@@ -571,11 +641,12 @@ export const bedrockInputParser = s.tConversationSchema
           );
         }
 
-        if (additionalFields.thinking === false) {
+        if (thinkingDisabled) {
           delete additionalFields.thinkingBudget;
           delete additionalFields.thinkingDisplay;
-          if (requiresExplicitThinkingDisabled(typedData.model as string)) {
-            additionalFields.thinking = { type: 'disabled' };
+          const thinkingOffConfig = resolveThinkingOffConfig(typedData.model as string);
+          if (thinkingOffConfig) {
+            additionalFields.thinking = thinkingOffConfig;
           } else {
             delete additionalFields.thinking;
             /** Disable-by-omission models (Opus 4.7+): drop the persisted
@@ -600,6 +671,9 @@ export const bedrockInputParser = s.tConversationSchema
             | undefined;
           const persistedDisplay = extractPersistedDisplay(typedData.additionalModelRequestFields);
           const thinkingConfig: ThinkingConfig = { type: 'adaptive' };
+          if (bindsThinkingBlocks(typedData.model as string)) {
+            thinkingConfig.block_binding = { ...THINKING_BLOCK_BINDING };
+          }
           const display = resolveThinkingDisplay(
             typedData.model as string,
             topLevelDisplay ?? persistedDisplay,
@@ -642,6 +716,9 @@ export const bedrockInputParser = s.tConversationSchema
 
       if (isBedrockClaudeModel(typedData.model as string)) {
         const betaHeaders = getBedrockAnthropicBetaHeaders(typedData.model as string);
+        if (requestsThinkingDisplayUpdates(additionalFields.thinking)) {
+          betaHeaders.push(THINKING_DISPLAY_UPDATES_BETA);
+        }
         if (betaHeaders.length > 0) {
           const existingBetaHeaders = (
             typedData.additionalModelRequestFields as Record<string, unknown> | undefined

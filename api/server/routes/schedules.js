@@ -34,6 +34,7 @@ const checkSchedulesCreate = generateCheckAccess({
 });
 
 const handlers = createSchedulesHandlers({
+  preflightMCP: require('~/server/services/Schedules/mcp'),
   methods,
   getLimits,
   // Full fire-equivalent access check (not mere existence): the body-based agent

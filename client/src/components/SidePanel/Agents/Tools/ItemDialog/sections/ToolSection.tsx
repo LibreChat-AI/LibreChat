@@ -81,7 +81,7 @@ export default function ToolSection({ item }: Props) {
       {showConfigured && (
         <div className="flex items-center justify-between rounded-xl border border-border-light bg-surface-secondary px-3 py-2.5">
           <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
-            <CheckCircle2 className="size-4 text-emerald-500" aria-hidden="true" />
+            <CheckCircle2 className="size-4 text-status-success" aria-hidden="true" />
             {localize('com_ui_tools_info_configured')}
           </span>
           <Button

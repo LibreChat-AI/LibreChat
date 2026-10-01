@@ -3,7 +3,7 @@ import { RecoilRoot } from 'recoil';
 import { useAtomValue, useStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import type { SubagentUpdateEvent } from 'librechat-data-provider';
+import type { SubagentUpdateEvent, SubagentIdentity, PartMetadata } from 'librechat-data-provider';
 import type {
   SubagentAggregatorState,
   SubagentContentPart,
@@ -23,7 +23,10 @@ import {
 } from '~/components/Chat/Subagents/state';
 import SubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
 import { MessageContext } from '~/Providers/MessageContext';
+import { FailedRevealContext } from '../../reveal';
 import { ChatSurfaceHarness } from 'test/harness';
+
+const mockMCPServerNames: string[] = [];
 
 jest.mock('~/hooks', () => ({
   useLocalize:
@@ -59,16 +62,28 @@ jest.mock('lucide-react', () => ({
   Users: () => <span>users</span>,
 }));
 
-jest.mock('~/Providers', () => ({ useAgentsMapContext: () => ({}) }));
-jest.mock('~/components/Share/MessageIcon', () => ({ __esModule: true, default: () => null }));
-jest.mock('~/hooks/MCP', () => ({ useMCPServerNames: () => [] }));
+jest.mock('~/Providers', () => ({
+  useAgentsMapContext: () => ({
+    'agent-1': { id: 'agent-1', name: 'Analyst One', avatar: { filepath: '/analyst.png' } },
+  }),
+}));
+jest.mock('~/components/Share/MessageIcon', () => ({
+  __esModule: true,
+  default: ({ agent }: { agent: { name: string; avatar: { filepath: string } } }) => (
+    <img alt={agent.name} src={agent.avatar.filepath} />
+  ),
+}));
+jest.mock('~/hooks/MCP', () => ({ useMCPServerNames: () => mockMCPServerNames }));
 jest.mock('~/utils', () => ({
   ...jest.requireActual('~/utils/toolLabels'),
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
   logger: { log: jest.fn() },
 }));
 
-afterEach(() => jest.useRealTimers());
+afterEach(() => {
+  jest.useRealTimers();
+  mockMCPServerNames.length = 0;
+});
 
 function foldEvents(events: SubagentUpdateEvent[]): {
   contentParts: SubagentContentPart[];
@@ -106,6 +121,8 @@ function renderWithState(args: {
   progress?: SubagentProgress | null;
   output?: string;
   toolArgs?: Record<string, unknown>;
+  subagentIdentity?: SubagentIdentity;
+  runStepStatus?: PartMetadata['runStepStatus'];
 }) {
   const setter = { current: null as null | ((next: SubagentProgress | null) => void) };
   let selection: ActiveSubagentPanel | null = null;
@@ -122,7 +139,7 @@ function renderWithState(args: {
     selection = useAtomValue(activeSubagentPanel);
     return null;
   };
-  const rendered = render(
+  const tree = (tick: number) => (
     <MemoryRouter>
       <ChatSurfaceHarness>
         <RecoilRoot>
@@ -135,23 +152,29 @@ function renderWithState(args: {
               isExpanded: false,
             }}
           >
-            <SubagentCall
-              toolCallId={args.toolCallId}
-              initialProgress={args.initialProgress}
-              isSubmitting={args.isSubmitting ?? false}
-              args={args.toolArgs ?? { subagent_type: 'self', description: 'compute' }}
-              output={args.output}
-            />
+            <FailedRevealContext.Provider value={{ tick, claimFocus: () => true }}>
+              <SubagentCall
+                toolCallId={args.toolCallId}
+                initialProgress={args.initialProgress}
+                isSubmitting={args.isSubmitting ?? false}
+                args={args.toolArgs ?? { subagent_type: 'self', description: 'compute' }}
+                output={args.output}
+                runStepStatus={args.runStepStatus}
+                subagentIdentity={args.subagentIdentity}
+              />
+            </FailedRevealContext.Provider>
           </MessageContext.Provider>
         </RecoilRoot>
       </ChatSurfaceHarness>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+  const rendered = render(tree(0));
   act(() => setter.current?.(args.progress ?? null));
   return {
     ...rendered,
     getSelection: () => selection,
     setProgress: (next: SubagentProgress | null) => act(() => setter.current?.(next)),
+    reveal: () => rendered.rerender(tree(1)),
   };
 }
 
@@ -169,6 +192,58 @@ const event = (
 });
 
 describe('SubagentCall', () => {
+  it('keeps the configured name and avatar after live progress is cleared', () => {
+    const { setProgress } = renderWithState({
+      toolCallId: 'identity',
+      initialProgress: 1,
+      toolArgs: { subagent_type: 'agent-1' },
+      subagentIdentity: { subagentKind: 'agent', subagentAgentId: 'agent-1' },
+      progress: progressFromEvents({
+        subagentRunId: 'child-run',
+        subagentType: 'agent-1',
+        subagentAgentId: 'agent-1',
+        status: 'stop',
+        events: [],
+      }),
+    });
+    expect(screen.getByText('Analyst One')).toBeInTheDocument();
+    expect(screen.getByRole('img', { hidden: true })).toHaveAttribute('src', '/analyst.png');
+    setProgress(null);
+    expect(screen.getByText('Analyst One')).toBeInTheDocument();
+    expect(screen.getByRole('img', { hidden: true })).toHaveAttribute('src', '/analyst.png');
+  });
+
+  it.each([undefined, { subagentKind: 'graph' as const, subagentAgentId: 'graph:agent-1' }])(
+    'does not infer a saved agent from an ambiguous graph or legacy type',
+    (subagentIdentity) => {
+      const { getSelection } = renderWithState({
+        toolCallId: 'graph-identity',
+        initialProgress: 1,
+        toolArgs: { subagent_type: 'agent-1' },
+        output: 'Graph result',
+        subagentIdentity,
+      });
+      expect(screen.queryByText('Analyst One')).not.toBeInTheDocument();
+      expect(screen.getByText('users')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Ran agent' }));
+      expect(getSelection()?.subagentIdentity).toEqual(subagentIdentity);
+    },
+  );
+
+  it.each(['agent-1', 'missing-agent', 'self'])(
+    'renders saved identity %s without streaming state',
+    (agentId) => {
+      renderWithState({
+        toolCallId: 'saved-identity',
+        initialProgress: 1,
+        toolArgs: { subagent_type: agentId },
+        subagentIdentity: { subagentKind: 'agent', subagentAgentId: agentId },
+      });
+      expect(screen.queryByText('Analyst One') != null).toBe(agentId === 'agent-1');
+      expect(screen.queryByText('users') != null).toBe(agentId !== 'agent-1');
+    },
+  );
+
   it.each([
     ['Running agent', 0.3, true, 'run_step'],
     ['Ran agent', 1, false, undefined],
@@ -190,6 +265,37 @@ describe('SubagentCall', () => {
             }),
     });
     expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it.each([
+    { output: 'Error: tool call failed: child crashed', runStepStatus: 'completed' as const },
+    { output: 'Partial output', runStepStatus: 'failed' as const },
+  ])('opens a failed subagent panel from its parent reveal (%p)', (failure) => {
+    const rendered = renderWithState({
+      toolCallId: 'failed-child',
+      initialProgress: 1,
+      ...failure,
+    });
+    expect(screen.getByRole('button', { name: 'Agent errored' })).toBeInTheDocument();
+    expect(rendered.getSelection()).toBeNull();
+
+    rendered.reveal();
+
+    expect(rendered.getSelection()).toEqual(
+      expect.objectContaining({ toolCallId: 'failed-child' }),
+    );
+  });
+
+  it('does not reveal a cancelled subagent with error-shaped output', () => {
+    const rendered = renderWithState({
+      toolCallId: 'cancelled-child',
+      initialProgress: 1,
+      output: 'Error: tool call failed: abort',
+      runStepStatus: 'cancelled',
+    });
+    expect(screen.getByRole('button', { name: 'Cancelled agent' })).toBeInTheDocument();
+    rendered.reveal();
+    expect(rendered.getSelection()).toBeNull();
   });
 
   it('keeps the compact semantic ticker while selecting the shared panel', async () => {
@@ -229,6 +335,42 @@ describe('SubagentCall', () => {
       }),
     );
     expect(rendered.getSelection()?.durable).toBeUndefined();
+  });
+
+  it('preserves a configured MCP server boundary in the live ticker', () => {
+    mockMCPServerNames.push('Google_mcp_Workspace');
+    renderWithState({
+      toolCallId: 'call_mcp_ticker',
+      initialProgress: 0.3,
+      isSubmitting: true,
+      progress: progressFromEvents({
+        subagentRunId: 'run_a',
+        subagentType: 'self',
+        status: 'run_step',
+        events: [
+          {
+            runId: 'p',
+            subagentRunId: 'run_a',
+            subagentType: 'self',
+            phase: 'run_step',
+            data: {
+              stepDetails: {
+                type: 'tool_calls',
+                tool_calls: [
+                  {
+                    id: 'c1',
+                    name: 'search_documents_mcp_Google_mcp_Workspace',
+                  },
+                ],
+              },
+            },
+            timestamp: '',
+          } as SubagentUpdateEvent,
+        ],
+      }),
+    });
+
+    expect(screen.getByText('Google_mcp_Workspace')).toBeInTheDocument();
   });
 
   it('refreshes a long ticker preview only after the throttle window', () => {

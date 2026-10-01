@@ -4,6 +4,14 @@ const mockRegistry = {
 };
 const mockUpstreamTokenProvider = jest.fn().mockResolvedValue(null);
 const mockCreateOpenIDSessionTokenProvider = jest.fn(() => mockUpstreamTokenProvider);
+const defaultMCPAppsPolicy = {
+  enabled: false,
+  legacyHtmlEnabled: true,
+  maxAdmissionRequestsPerMinute: 240,
+  maxActiveViews: 3,
+  maxActionPreviewChars: 16384,
+  maxPersistedAppBytes: 1048576,
+};
 
 jest.mock('~/config', () => ({
   getMCPServersRegistry: jest.fn(() => mockRegistry),
@@ -91,7 +99,7 @@ const {
 } = require('~/server/services/Config');
 const { sendEvent, GenerationJobManager } = require('@librechat/api');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
-const { getUserMCPAuthMap } = require('@librechat/api');
+const { getUserMCPAuthMap, STANDARD_MCP_CAPABILITY_PROFILE } = require('@librechat/api');
 const {
   createMCPTool,
   healMcpToolNames,
@@ -136,7 +144,12 @@ describe('getAssistantToolDefinitions', () => {
       },
       accessibleServerNames: ['app-server'],
     });
-    expect(getMCPServerTools).toHaveBeenCalledWith('u1', 'app-server', serverConfig);
+    expect(getMCPServerTools).toHaveBeenCalledWith(
+      'u1',
+      'app-server',
+      serverConfig,
+      STANDARD_MCP_CAPABILITY_PROFILE,
+    );
   });
 
   it('recovers and re-caches a referenced server when its slice is missing', async () => {
@@ -162,6 +175,8 @@ describe('getAssistantToolDefinitions', () => {
       serverTools: { [toolKey]: mcpDefinition },
       serverConfig,
       publicationGeneration: 'connection-generation',
+      publicationRevision: undefined,
+      capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
     });
   });
 
@@ -188,6 +203,8 @@ describe('getAssistantToolDefinitions', () => {
       serverConfig,
       userMCPAuthMap,
       upstreamTokenProvider: mockUpstreamTokenProvider,
+      recoveryPolicy: undefined,
+      mcpApps: defaultMCPAppsPolicy,
       oboIdentityContext: {
         appUserId: 'u1',
         openidSubject: undefined,
@@ -967,5 +984,33 @@ describe('createMCPTool', () => {
     expect(toolInstance).toBeDefined();
     expect(toolInstance.name).toBe(canonicalToolKey);
     expect(reinitMCPServer).not.toHaveBeenCalled();
+  });
+
+  it('forwards the configured recovery policy when a missing tool reconnects', async () => {
+    const recoveryPolicy = {
+      authorizationFenceRetryMs: [0, 25, 100],
+      authorizationFenceTimeoutMs: 750,
+    };
+    getAppConfig.mockResolvedValue({ mcpSettings: { catalogRecovery: recoveryPolicy } });
+    require('@librechat/api').isMCPDomainAllowed.mockResolvedValue(true);
+    require('~/config').getFlowStateManager.mockReturnValue({});
+    require('~/cache').getLogStores.mockReturnValue({});
+    reinitMCPServer.mockResolvedValue({
+      availableTools: { [canonicalToolKey]: { type: 'function', function: toolFunction } },
+    });
+
+    const toolInstance = await createMCPTool({
+      user: { id: 'user-1' },
+      toolKey: canonicalToolKey,
+      serverName: rawServerName,
+      availableTools: {},
+      config: { type: 'streamable-http', url: 'https://mcp.example.com' },
+      provider: 'openAI',
+    });
+
+    expect(toolInstance).toBeDefined();
+    expect(reinitMCPServer).toHaveBeenCalledWith(
+      expect.objectContaining({ serverName: rawServerName, recoveryPolicy }),
+    );
   });
 });

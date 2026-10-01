@@ -411,7 +411,11 @@ describe('SubagentActivity', () => {
     expect(screen.getByText('com_ui_subagent_control_message_truncated')).toBeInTheDocument();
     expect(screen.getByText('com_ui_subagent_control_reason_task_completed')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_control_withdraw' }));
+    const accepted = screen.getByText('com_ui_subagent_control_status_accepted');
+    const withdraw = screen.getByRole('button', { name: 'com_ui_subagent_control_withdraw' });
+    expect(accepted.parentElement).toContainElement(withdraw);
+    expect(screen.queryByText('com_ui_queued_turn_starting')).toBeNull();
+    fireEvent.click(withdraw);
     expect(onCancelControl).toHaveBeenCalledWith('control-1');
   });
 

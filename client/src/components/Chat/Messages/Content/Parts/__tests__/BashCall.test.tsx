@@ -1,22 +1,32 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import copy from 'copy-to-clipboard';
 import { render, screen, fireEvent } from '@testing-library/react';
+import type { ToolDisclosures } from '../../disclosure';
+import { SoleToolContext, ToolDisclosureContext, ToolDisclosureKeyContext } from '../../disclosure';
 import BashCall from '../BashCall';
 import store from '~/store';
 
 jest.mock('~/hooks', () => ({
   useLocalize:
     () =>
-    (key: string): string => {
+    (key: string, values?: Record<string, string>): string => {
       const translations: Record<string, string> = {
+        com_ui_command_exit_code: `exit code ${values?.[0]}`,
+        com_ui_command_terminated: `terminated by ${values?.[0]}`,
+        com_ui_command_timed_out: 'timed out',
         com_ui_writing_command: 'Writing command',
         com_ui_running_command: 'Running command',
-        com_ui_command_finished: 'Finished running',
+        com_ui_command_finished: 'Ran command',
         com_ui_cancelled: 'Cancelled',
         com_ui_copy_code: 'Copy code',
         com_ui_background_running: 'Running in background',
         com_ui_background_finished: 'Finished in background',
         com_ui_tool_failed: 'tool failed',
+        com_ui_copy: 'Copy output',
+        com_ui_no_output: 'No output',
+        com_ui_show_more: 'Show more',
+        com_ui_show_less: 'Show less',
       };
       return translations[key] ?? key;
     },
@@ -39,21 +49,30 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
     phase,
     inProgressText,
     finishedText,
+    verdict,
+    onClick,
   }: {
     phase: 'running' | 'completed' | 'cancelled' | 'failed';
     inProgressText: string;
     finishedText: string;
+    verdict?: string;
+    onClick?: () => void;
   }) => (
-    <div data-testid="progress-text">
+    <div data-testid="progress-text" onClick={onClick}>
       {phase === 'running' ? inProgressText : finishedText}
       {phase === 'failed' ? ' — tool failed' : ''}
+      {phase === 'failed' && verdict ? ` · ${verdict}` : ''}
     </div>
   ),
 }));
 
 jest.mock('~/components/Messages/Content/CopyButton', () => ({
   __esModule: true,
-  default: ({ label }: { label?: string }) => <button type="button">{label}</button>,
+  default: ({ label, onClick }: { label?: string; onClick?: () => void }) => (
+    <button type="button" onClick={onClick}>
+      {label}
+    </button>
+  ),
 }));
 
 jest.mock('~/components/Messages/Content/LangIcon', () => ({
@@ -159,7 +178,7 @@ describe('BashCall intent label', () => {
       </RecoilRoot>,
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Waiting for the task to settle');
-    expect(screen.queryByText('Finished running')).not.toBeInTheDocument();
+    expect(screen.queryByText('Ran command')).not.toBeInTheDocument();
   });
 
   it('falls back to the generic labels when no intent is present', () => {
@@ -261,6 +280,36 @@ describe('BashCall backgrounded calls', () => {
     expect(screen.getByTestId('progress-text')).toHaveTextContent('tool failed');
   });
 
+  it('surfaces a live cancelled marker as cancellation rather than failure', () => {
+    renderBackgrounded([
+      {
+        type: 'background_task_status',
+        file_id: 'bg-tc-1',
+        toolCallId: 'tc-1',
+        status: 'cancelled',
+      },
+    ]);
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Cancelled');
+    expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
+  });
+
+  it('restores a persisted background cancellation as cancellation', () => {
+    render(
+      <RecoilRoot>
+        <BashCall
+          initialProgress={1}
+          isSubmitting={false}
+          args={{ command: 'sleep 600' }}
+          output="Error: [bash_tool] tool call failed: Background task cancellation requested"
+          backgrounded={true}
+          backgroundCancelled={true}
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Cancelled');
+    expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
+  });
+
   it('renders real stdout normally after the background result patches the output', () => {
     render(
       <RecoilRoot>
@@ -272,8 +321,80 @@ describe('BashCall backgrounded calls', () => {
         />
       </RecoilRoot>,
     );
-    expect(screen.getByTestId('progress-text')).toHaveTextContent('Finished running');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran command');
     expect(screen.getByText('hi')).toBeInTheDocument();
+  });
+});
+
+describe('BashCall sole tool disclosure', () => {
+  const renderCall = (soleTool: boolean) =>
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={soleTool}>
+          <BashCall
+            initialProgress={1}
+            isSubmitting={false}
+            args={{ command: 'echo hi' }}
+            output="hi"
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+  const panel = (container: HTMLElement) =>
+    container.querySelector('[style*="grid-template-rows"]') as HTMLElement;
+
+  it('opens the card when it is the only call, with autoExpandTools off', () => {
+    const { container } = renderCall(true);
+    expect(panel(container).style.gridTemplateRows).toBe('1fr');
+  });
+
+  it('keeps the card collapsed when it is one of several calls', () => {
+    const { container } = renderCall(false);
+    expect(panel(container).style.gridTemplateRows).toBe('0fr');
+  });
+
+  it('closes the card again when its group gains a second call', () => {
+    const { container, rerender } = renderCall(true);
+    expect(panel(container).style.gridTemplateRows).toBe('1fr');
+    rerender(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={false}>
+          <BashCall
+            initialProgress={1}
+            isSubmitting={false}
+            args={{ command: 'echo hi' }}
+            output="hi"
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(panel(container).style.gridTemplateRows).toBe('0fr');
+  });
+
+  it('keeps a closed sole card closed when it remounts under a new group', () => {
+    const disclosures: ToolDisclosures = new Map();
+    const tree = () => (
+      <RecoilRoot>
+        <ToolDisclosureContext.Provider value={disclosures}>
+          <ToolDisclosureKeyContext.Provider value="call-1">
+            <SoleToolContext.Provider value>
+              <BashCall
+                initialProgress={1}
+                isSubmitting={false}
+                args={{ command: 'echo hi' }}
+                output="hi"
+              />
+            </SoleToolContext.Provider>
+          </ToolDisclosureKeyContext.Provider>
+        </ToolDisclosureContext.Provider>
+      </RecoilRoot>
+    );
+    const first = render(tree());
+    fireEvent.click(first.getByTestId('progress-text'));
+    expect(panel(first.container).style.gridTemplateRows).toBe('0fr');
+    first.unmount();
+    const second = render(tree());
+    expect(panel(second.container).style.gridTemplateRows).toBe('0fr');
   });
 });
 
@@ -382,5 +503,144 @@ describe('BashCall streaming follow-scroll', () => {
     rerender(finishedCall('echo done && echo a longer settled command'));
 
     expect(state.writes).toHaveLength(0);
+  });
+});
+
+describe('BashCall output pane', () => {
+  const finished = (output: string, command = 'npm test') =>
+    render(
+      <RecoilRoot>
+        <BashCall initialProgress={1} isSubmitting={false} args={{ command }} output={output} />
+      </RecoilRoot>,
+    );
+
+  const numbered = (count: number) =>
+    Array.from({ length: count }, (_, i) => `line ${i + 1}`).join('\n');
+
+  it('collapses long output to its tail and expands to the full text', () => {
+    finished(numbered(40));
+    const pre = screen.getByText(/line 40/);
+    const shown = () => (pre.textContent ?? '').split('\n');
+    expect(shown()).toEqual(numbered(40).split('\n').slice(-15));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(shown()).toHaveLength(40);
+    expect(shown()[0]).toBe('line 1');
+    expect(screen.getByRole('button', { name: 'Show less' })).toBeInTheDocument();
+  });
+
+  it('keeps leading whitespace and blank lines verbatim', () => {
+    const output = '\n  indented\n\n    deeper';
+    finished(output);
+    expect(screen.getByText(/indented/).textContent).toBe(output);
+  });
+
+  it('copies the raw output', () => {
+    const output = 'ok 1\nok 2\n';
+    finished(output);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy output' }));
+    expect(copy).toHaveBeenCalledWith(output, { format: 'text/plain' });
+  });
+
+  it('renders JSON stdout verbatim instead of reformatting it', () => {
+    finished('{"a":1}');
+    expect(screen.getByText('{"a":1}')).toBeInTheDocument();
+  });
+
+  it.each([
+    "stdout: Empty. Ensure you're writing output explicitly.\n",
+    "  stdout: Empty. Ensure you're writing output explicitly.  ",
+  ])('shows a "No output" state for the sandbox empty-stdout notice: %j', (output) => {
+    finished(output, 'true');
+    expect(screen.getByText('No output')).toBeInTheDocument();
+    expect(screen.queryByText(/Ensure you're writing output/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the notice when it is not the entire output', () => {
+    finished("stdout: Empty. Ensure you're writing output explicitly.\nstderr: boom");
+    expect(screen.queryByText('No output')).not.toBeInTheDocument();
+    expect(screen.getByText(/stderr: boom/)).toBeInTheDocument();
+  });
+
+  it('keeps error colouring for failing output', () => {
+    finished('Traceback (most recent call last):\n  File "x.py"\nValueError: bad');
+    expect(screen.getByText(/ValueError: bad/)).toHaveClass('text-status-error');
+  });
+
+  it('uses the primary text colour for ordinary output', () => {
+    finished('all good');
+    const pre = screen.getByText('all good');
+    expect(pre).toHaveClass('text-text-primary');
+    expect(pre).not.toHaveClass('text-status-error');
+  });
+
+  it('lets the command wrap at the prompt size despite the global hljs rule', () => {
+    const { container } = finished('done', 'echo a-very-long-command');
+    const code = container.querySelector('code.hljs') as HTMLElement;
+    expect(code).toHaveClass('!text-xs', '!whitespace-pre-wrap', '!break-words');
+  });
+});
+
+describe('BashCall exit status', () => {
+  const renderSettled = (output: string, attached = true) =>
+    render(
+      <RecoilRoot>
+        <BashCall
+          initialProgress={1}
+          isSubmitting={false}
+          runStepStatus="completed"
+          args={{ command: 'make test' }}
+          output={output}
+          executor={attached ? 'attached_workspace' : undefined}
+        />
+      </RecoilRoot>,
+    );
+
+  it('does not read a trailer the sandbox command printed itself', () => {
+    const { container } = renderSettled('stdout:\n[exit code: 1]', false);
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran command');
+    expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
+    expect(container.querySelectorAll('pre')[1]).toHaveTextContent('[exit code: 1]');
+  });
+
+  it('fails the same output when the server marked it attached-workspace', () => {
+    renderSettled('stdout:\n[exit code: 1]');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent(/tool failed · exit code 1$/);
+  });
+
+  it('fails a non-zero exit even when the output matches no error pattern', () => {
+    renderSettled('stdout:\n1 test failed\n\n[exit code: 2]');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent(/tool failed · exit code 2$/);
+  });
+
+  it('keeps a zero exit successful even when stderr reads like an error', () => {
+    const { container } = renderSettled(
+      'stdout:\nok\n\nstderr:\nError: deprecated flag\n\n[exit code: 0]',
+    );
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran command');
+    expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
+    const stderr = screen.getByText(/deprecated flag/);
+    expect(stderr).toHaveClass('text-text-secondary');
+    expect(container.querySelectorAll('pre')[1]).toHaveClass('text-text-primary');
+    expect(container.querySelectorAll('pre')[1]).toHaveTextContent('stdout: ok');
+  });
+
+  it('marks stderr as an error on a failed run', () => {
+    renderSettled('stderr:\nboom\n\n[exit code: 1]');
+    expect(screen.getByText(/boom/)).toHaveClass('text-status-error');
+  });
+
+  it.each([
+    ['stdout:\nsleeping\n\n[terminated by SIGKILL][timed out]', 'timed out'],
+    ['Command completed with no output.\n[terminated by SIGTERM]', 'terminated by SIGTERM'],
+  ])('names the reason for a stopped command: %s', (output, reason) => {
+    renderSettled(output);
+    expect(screen.getByTestId('progress-text')).toHaveTextContent(`tool failed · ${reason}`);
+  });
+
+  it('keeps the text heuristic for sandbox output without an exit trailer', () => {
+    const { container } = renderSettled('stdout:\nTraceback (most recent call last)\n', false);
+    expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
+    expect(container.querySelectorAll('pre')[1]).toHaveClass('text-status-error');
   });
 });

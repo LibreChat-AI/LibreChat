@@ -38,7 +38,7 @@ const MinimalIcon: React.FC<IconProps> = (props) => {
     >
       {icon}
       {error === true && (
-        <span className="absolute right-0 top-[20px] -mr-2 flex h-4 w-4 items-center justify-center rounded-full border border-white bg-status-error text-[10px] text-text-secondary">
+        <span className="absolute right-0 top-[20px] -mr-2 flex h-4 w-4 items-center justify-center rounded-full border border-surface-primary bg-status-error-strong text-[10px] text-text-on-status">
           !
         </span>
       )}

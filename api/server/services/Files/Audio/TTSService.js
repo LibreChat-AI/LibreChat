@@ -7,7 +7,11 @@ const {
   resolveConfigSecret,
   applySSRFSafeAgentIfDirect,
 } = require('@librechat/api');
-const { extractEnvVariable, TTSProviders } = require('librechat-data-provider');
+const {
+  TTSProviders,
+  extractEnvVariable,
+  listConfiguredSpeechProviders,
+} = require('librechat-data-provider');
 const { getRandomVoiceId, createChunkProcessor, splitTextIntoChunks } = require('./streamAudio');
 const { getAppConfig } = require('~/server/services/Config');
 
@@ -52,9 +56,7 @@ class TTSService {
         'No TTS schema is set. Did you configure TTS in the custom config (librechat.yaml)?',
       );
     }
-    const providers = Object.entries(ttsSchema).filter(
-      ([key, value]) => key !== 'allowedAddresses' && Object.keys(value).length > 0,
-    );
+    const providers = listConfiguredSpeechProviders(ttsSchema);
 
     if (providers.length !== 1) {
       throw new Error(

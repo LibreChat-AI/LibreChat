@@ -125,7 +125,8 @@ function DeleteButton({
         }
         selection={{
           selectHandler: () => deleteAgent.mutate({ agent_id }),
-          selectClasses: 'bg-surface-destructive hover:bg-surface-destructive-hover text-white',
+          selectClasses:
+            'bg-surface-destructive hover:bg-surface-destructive-hover text-text-on-status',
           selectText: localize('com_ui_delete'),
         }}
       />

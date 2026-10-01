@@ -3,10 +3,17 @@
  */
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { getDefaultStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import { render, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TAuthConfig } from '~/common';
+import {
+  chatFilterStatusAtom,
+  chatFilterTagsAtom,
+  chatSortAtom,
+  resetChatFilterSessionAtom,
+} from '~/components/Conversations/chatFilters';
 import { AuthContextProvider, useAuthContext } from '../AuthContext';
 import { SESSION_KEY } from '~/utils';
 
@@ -74,6 +81,7 @@ function TestConsumer() {
       data-testid="consumer"
       data-authenticated={ctx.isAuthenticated}
       data-auth-ready={ctx.isAuthReady}
+      data-error={ctx.error ?? ''}
       data-roles={JSON.stringify(ctx.roles ?? {})}
     />
   );
@@ -205,6 +213,41 @@ describe('AuthContextProvider — login onError redirect handling', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/login', { replace: true });
   });
 
+  it('surfaces the cross-origin rejection code instead of the HTTP status message', () => {
+    jest.useFakeTimers();
+    const { getByTestId } = renderProvider();
+
+    act(() => {
+      mockCapturedLoginOptions.onError({
+        message: 'Request failed with status code 403',
+        response: { data: { message: 'Cross-site request rejected', code: 'auth_cross_origin' } },
+      });
+      jest.advanceTimersByTime(400);
+    });
+
+    expect(getByTestId('consumer')).toHaveAttribute('data-error', 'auth_cross_origin');
+    jest.useRealTimers();
+  });
+
+  it('keeps the HTTP status message for other rejections that carry a code', () => {
+    jest.useFakeTimers();
+    const { getByTestId } = renderProvider();
+
+    act(() => {
+      mockCapturedLoginOptions.onError({
+        message: 'Request failed with status code 429',
+        response: { data: { message: 'Too many login attempts', code: 'something_else' } },
+      });
+      jest.advanceTimersByTime(400);
+    });
+
+    expect(getByTestId('consumer')).toHaveAttribute(
+      'data-error',
+      'Request failed with status code 429',
+    );
+    jest.useRealTimers();
+  });
+
   it('preserves redirect_to with query params and hash', () => {
     const target = '/c/abc123?model=gpt-4#section';
     window.history.replaceState({}, '', `/login?redirect_to=${encodeURIComponent(target)}`);
@@ -247,6 +290,23 @@ describe('AuthContextProvider — logout onSuccess/onError handling', () => {
 
     expect(replaceSpy).toHaveBeenCalledWith('https://idp.example.com/logout?id_token_hint=abc');
     expect(mockSetTokenHeader).toHaveBeenCalledWith(undefined);
+  });
+  it('resets account-scoped chat filters at the logout session boundary', () => {
+    const jotaiStore = getDefaultStore();
+    jotaiStore.set(chatFilterStatusAtom, 'archived');
+    jotaiStore.set(chatFilterTagsAtom, ['legacy-bookmark']);
+    jotaiStore.set(chatSortAtom, { field: 'title', direction: 'asc' });
+
+    renderProvider();
+
+    act(() => {
+      mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' });
+    });
+
+    expect(jotaiStore.get(chatFilterStatusAtom)).toBe('active');
+    expect(jotaiStore.get(chatFilterTagsAtom)).toEqual([]);
+    expect(jotaiStore.get(chatSortAtom)).toEqual({ field: 'title', direction: 'asc' });
+    jotaiStore.set(resetChatFilterSessionAtom);
   });
 
   it('does not call window.location.replace when redirect is absent', async () => {

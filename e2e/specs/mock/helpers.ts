@@ -74,20 +74,44 @@ export async function selectModelSpec(page: Page, label: string) {
   await expect(trigger).toContainText(label);
 }
 
-/** Enable the ephemeral Skills capability from the composer tool menu. */
-export async function enableSkills(page: Page) {
-  await page.getByRole('button', { name: 'Tools Options' }).click();
-  await page.getByTestId('tools-menu-skills').click();
+/** Toggle a built-in tool row on from the composer palette and wait for its chip. */
+async function enableBuiltinTool(page: Page, label: string) {
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  const row = page
+    .getByRole('dialog', { name: 'Attach and tools' })
+    .getByRole('button', { name: label, exact: true });
+  await expect(row).toBeVisible();
+  await row.click();
+  await expect(row).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('button', { name: 'Skills' })).toBeVisible();
+  await expect(
+    page.getByTestId('composer-active-builtin').filter({ hasText: label }),
+  ).toBeVisible();
+  /* Wait for the palette to finish closing. Reopening it during the leave
+     animation resumes the same popover rather than mounting a fresh one, so the
+     list keeps the scroll offset this click left it at, and the Attach rows at
+     the top sit outside the virtualized window a caller then queries. */
+  await expect(page.getByRole('dialog', { name: 'Attach and tools' })).toHaveCount(0);
 }
 
-/** Enable the ephemeral Memory capability from the composer tool menu. */
+/** Enable the ephemeral Skills capability from the composer palette. */
+export async function enableSkills(page: Page) {
+  await enableBuiltinTool(page, 'Skills');
+}
+
+/** Enable the ephemeral Memory capability from the composer palette. */
 export async function enableMemory(page: Page) {
-  await page.getByRole('button', { name: 'Tools Options' }).click();
-  await page.getByTestId('tools-menu-memory').click();
-  await page.keyboard.press('Escape');
-  await expect(page.getByRole('checkbox', { name: 'Memory' })).toBeVisible();
+  await enableBuiltinTool(page, 'Memory');
+}
+
+/** Enable the ephemeral Code Interpreter (execute_code) capability from the palette. */
+export async function enableCodeInterpreter(page: Page) {
+  await enableBuiltinTool(page, 'Run Code');
+}
+
+/** Enable the ephemeral File Search capability from the composer palette. */
+export async function enableFileSearch(page: Page) {
+  await enableBuiltinTool(page, 'File Search');
 }
 
 /** The conversation messages container. */
@@ -368,4 +392,140 @@ export async function requestJson<T>(
 
 export async function fetchJson<T>(page: Page, path: string, token: string): Promise<T> {
   return requestJson<T>(page, { path, token });
+}
+
+/** Base URLs of the fake code-exec + RAG servers started by playwright.config.mock.ts. */
+/** Defaults must match `playwright.config.mock.ts`, which keeps these clear of
+ *  the MCP (8765/8766) and label (8889) fixtures. */
+export const CODE_API_BASE = `http://127.0.0.1:${process.env.E2E_CODE_API_PORT || '8790'}`;
+export const RAG_API_BASE = `http://127.0.0.1:${process.env.E2E_RAG_API_PORT || '8791'}`;
+
+export type CodeProvisionRecord = {
+  filename: string;
+  kind: string;
+  id: string;
+  storage_session_id: string;
+  fileId: string;
+};
+
+export type RagEmbedRecord = { file_id: string; filename: string; entity_id: string };
+export type RagQueryRecord = { file_id: string; query: string };
+
+/** Every `/query` the fake RAG service received from file_search. */
+export async function getRagQueries(page: Page): Promise<RagQueryRecord[]> {
+  const response = await page.request.get(`${RAG_API_BASE}/__debug/embedded`);
+  expect(response.ok(), 'fake RAG server /__debug/embedded should respond').toBeTruthy();
+  const body = (await response.json()) as { queries: RagQueryRecord[] };
+  return body.queries;
+}
+
+/** Files the fake code server received via /upload (proof they reached the code env). */
+export async function getCodeProvisionedUploads(page: Page): Promise<CodeProvisionRecord[]> {
+  const response = await page.request.get(`${CODE_API_BASE}/__debug/uploads`);
+  expect(response.ok(), 'fake code server /__debug/uploads should respond').toBeTruthy();
+  const body = (await response.json()) as { uploads: CodeProvisionRecord[] };
+  return body.uploads;
+}
+
+/** Files the fake RAG server embedded via /embed (proof they reached the vector DB). */
+export async function getRagEmbedded(page: Page): Promise<RagEmbedRecord[]> {
+  const response = await page.request.get(`${RAG_API_BASE}/__debug/embedded`);
+  expect(response.ok(), 'fake RAG server /__debug/embedded should respond').toBeTruthy();
+  const body = (await response.json()) as { embedded: RagEmbedRecord[] };
+  return body.embedded;
+}
+
+/** Clear both fake servers' recorded provisioning (call at test start for isolation). */
+export async function resetProvisioning(page: Page): Promise<void> {
+  await Promise.all([
+    page.request.post(`${CODE_API_BASE}/__debug/reset`),
+    page.request.post(`${RAG_API_BASE}/__debug/reset`),
+  ]);
+}
+
+/** Shape of a file record as returned by POST /api/files and GET /api/files. */
+export type UploadedFile = {
+  file_id?: string;
+  filename?: string;
+  type?: string;
+  llmDeliveryPath?: string;
+  embedded?: boolean;
+  metadata?: { codeEnvRef?: { storage_session_id?: string; file_id?: string } };
+};
+
+export type AttachFile = { name: string; mimeType: string; content: string };
+
+/** Unique, filesystem-safe name so tests never collide on accumulated fake-server state. */
+export const uniqueName = (prefix: string) =>
+  `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+
+const isFilesUpload = (url: string, method: string) =>
+  method === 'POST' && /\/api\/files(?:\?|$)/.test(new URL(url).pathname);
+
+/** Wait for the next POST /api/files upload response. */
+export function waitForUpload(page: Page) {
+  return page.waitForResponse((r) => isFilesUpload(r.url(), r.request().method()), {
+    timeout: 30000,
+  });
+}
+
+/** Attach a file through the palette's implicit local/provider source row. */
+export async function uploadViaUnifiedButton(page: Page, file: AttachFile) {
+  const uploadResponse = waitForUpload(page);
+  await page.getByRole('button', { name: 'Attach and tools', exact: true }).click();
+  const palette = page.getByRole('dialog', { name: 'Attach and tools', exact: true });
+  const sourceRow = palette.getByRole('button', {
+    name: /^(From Local Computer|Upload to Provider)$/,
+  });
+  await expect(sourceRow).toBeVisible();
+  const [fileChooser] = await Promise.all([page.waitForEvent('filechooser'), sourceRow.click()]);
+  await fileChooser.setFiles({
+    name: file.name,
+    mimeType: file.mimeType,
+    buffer: Buffer.from(file.content, 'utf8'),
+  });
+  return uploadResponse;
+}
+
+const legacyDestinationRows: Record<string, { key: string; label: string }> = {
+  'Upload to Code Environment': {
+    key: 'local:execute_code',
+    label: 'Upload to Code Environment',
+  },
+  'Upload for File Search': {
+    key: 'local:file_search',
+    label: 'Upload for File Search',
+  },
+};
+
+/** Attach through a named legacy destination row in the composer palette. */
+export async function uploadViaLegacyOption(page: Page, optionName: string, file: AttachFile) {
+  const destination = legacyDestinationRows[optionName];
+  if (destination == null) {
+    throw new Error(`Unsupported legacy upload destination: ${optionName}`);
+  }
+
+  const uploadResponse = waitForUpload(page);
+  await page.getByRole('button', { name: 'Attach and tools', exact: true }).click();
+  const palette = page.getByRole('dialog', { name: 'Attach and tools', exact: true });
+  const moreOptions = palette.getByRole('button', { name: 'More upload options', exact: true });
+  await expect(moreOptions).toBeVisible();
+  await moreOptions.click();
+  const destinationRow = palette
+    .locator(`[data-row-key="${destination.key}"]`)
+    .getByRole('button', {
+      name: destination.label,
+      exact: true,
+    });
+  await expect(destinationRow).toBeVisible();
+  const [fileChooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    destinationRow.click(),
+  ]);
+  await fileChooser.setFiles({
+    name: file.name,
+    mimeType: file.mimeType,
+    buffer: Buffer.from(file.content, 'utf8'),
+  });
+  return uploadResponse;
 }

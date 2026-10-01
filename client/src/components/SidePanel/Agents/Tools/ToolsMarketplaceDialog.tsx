@@ -8,6 +8,7 @@ import {
   OGDialogTitle,
   OGDialogContent,
   OGDialogDescription,
+  useMediaQuery,
   useToastContext,
 } from '@librechat/client';
 import type { AgentItem, AgentItemKind, ItemFilter } from './items/types';
@@ -21,11 +22,11 @@ import {
   mcpServerIds,
 } from './items/selectors';
 import { useAgentFileEntries, useAgentItems, useUninstallToolCredentials } from './hooks';
+import MarketplaceSidebar, { MarketplaceFilterBar } from './MarketplaceSidebar';
 import { requiresFileManagerRemoval } from './items/capabilities';
 import AddMcpServerDialog from './ItemDialog/AddMcpServerDialog';
 import { computeToggleAction } from './items/mutations';
 import { useLocalize, useToolFavorites } from '~/hooks';
-import MarketplaceSidebar from './MarketplaceSidebar';
 import MarketplaceCatalog from './MarketplaceCatalog';
 import ItemDialog from './ItemDialog/ItemDialog';
 import { applyFilter } from './items/filtering';
@@ -61,6 +62,9 @@ export default function ToolsMarketplaceDialog({
   const [search, setSearch] = useState('');
   const [detailItem, setDetailItem] = useState<AgentItem | null>(null);
   const [addMcpOpen, setAddMcpOpen] = useState(false);
+
+  /** The rail is md+; below it the same navigation renders as a chip row. */
+  const isDesktop = useMediaQuery('(min-width: 768px)');
 
   const handleCreateNew = useCallback(
     (createKind: 'mcp' | 'action') => {
@@ -148,9 +152,10 @@ export default function ToolsMarketplaceDialog({
         }
         case 'mcp-add': {
           if (item.kind !== 'mcp') break;
-          const toolIds = item.server.requestScoped
-            ? [mcpAllToken(item.id)]
-            : (item.server.tools ?? []).map((t) => t.tool_id);
+          const toolIds =
+            item.server.requestScoped || !item.server.tools?.length
+              ? [mcpAllToken(item.id)]
+              : (item.server.tools ?? []).map((t) => t.tool_id);
           const current = (getValues('tools') ?? []) as string[];
           setValue(
             'tools',
@@ -190,14 +195,14 @@ export default function ToolsMarketplaceDialog({
         return;
       }
       const wasSelected = selectedIds.has(itemKey(item));
-      /** An unselected, toolless MCP server normally needs its setup dialog.
-       *  An authorized request-scoped server is already ready and attaches via
-       *  its runtime wildcard; a selected toolless server must remain removable. */
+      /** Ready servers can resolve their tools with user credentials at runtime,
+       * even when the instance catalog is empty. Unready servers still need setup;
+       * a selected toolless server must remain removable. */
       if (
         item.kind === 'mcp' &&
         item.toolCount === 0 &&
         !wasSelected &&
-        !(item.server.requestScoped === true && item.server.isReadyForAgent === true)
+        !(item.server.isReadyForAgent ?? item.server.isConnected)
       ) {
         setDetailItem(item);
         return;
@@ -217,23 +222,36 @@ export default function ToolsMarketplaceDialog({
 
   return (
     <OGDialog open={open} onOpenChange={onOpenChange}>
-      <OGDialogContent className="w-11/12 max-w-[1200px] overflow-hidden rounded-2xl border-border-medium p-0 shadow-xl md:max-h-[92vh]">
+      {/* The body carries the height from md, the way it did before this change, so
+          the shell wraps it and the two cannot disagree: an explicit height on the
+          shell would leave its difference from the body's 840px ceiling as dead
+          space below the catalog on a tall screen. Below md the shell is the
+          full-bleed sheet and the body is capped to the same 100dvh, because its
+          `h-full` resolves against a grid area sized to the whole catalog. */}
+      <OGDialogContent className="h-[100dvh] max-h-[100dvh] w-full max-w-full overflow-hidden rounded-none border-border-medium p-0 shadow-xl md:h-auto md:max-h-[92vh] md:w-11/12 md:max-w-[1200px] md:rounded-2xl">
         <OGDialogTitle className="sr-only">{localize('com_ui_tools_marketplace')}</OGDialogTitle>
         <OGDialogDescription className="sr-only">
           {localize('com_ui_tools_marketplace_description')}
         </OGDialogDescription>
-        <div className="flex h-[88vh] max-h-[840px]">
-          <MarketplaceSidebar
-            activeView={view}
-            activeKind={kind}
-            onSelectView={setView}
-            onSelectKind={setKind}
-            counts={counts}
-            totalCount={catalog.length}
-            onCreateNew={handleCreateNew}
-          />
-          <div className="flex min-w-0 flex-1 flex-col">
-            <div className="flex items-center gap-2 px-6 py-4 pr-12">
+        {/* min-w-0: as a grid item of the dialog content, an `auto` minimum would
+            size this column to the chip row's min-content and overflow the viewport. */}
+        <div className="flex h-full max-h-[100dvh] min-w-0 flex-col md:h-[88vh] md:max-h-[840px] md:flex-row">
+          {isDesktop && (
+            <MarketplaceSidebar
+              activeView={view}
+              activeKind={kind}
+              onSelectView={setView}
+              onSelectKind={setKind}
+              counts={counts}
+              totalCount={catalog.length}
+              onCreateNew={handleCreateNew}
+            />
+          )}
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {/* md:pl-6, not md:px-6: a responsive variant is emitted after the base
+                utilities, so md:px-6 would reset the pr-12 that keeps the search
+                field clear of the dialog's close button. */}
+            <div className="flex items-center gap-2 px-4 py-3 pr-12 md:py-4 md:pl-6">
               <div className="relative flex-1">
                 <Search
                   className="pointer-events-none absolute left-3 top-1/2 z-[1] size-4 -translate-y-1/2 text-text-tertiary"
@@ -249,7 +267,18 @@ export default function ToolsMarketplaceDialog({
                 />
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto p-4">
+            {!isDesktop && (
+              <MarketplaceFilterBar
+                activeView={view}
+                activeKind={kind}
+                onSelectView={setView}
+                onSelectKind={setKind}
+                counts={counts}
+                totalCount={catalog.length}
+                onCreateNew={handleCreateNew}
+              />
+            )}
+            <div className="min-h-0 flex-1 overflow-y-auto p-3 md:p-4">
               <MarketplaceCatalog
                 items={filtered}
                 selectedIds={selectedIds}

@@ -1,3 +1,4 @@
+import { omitResolvedCanonicalFileLocators } from '../protection/files';
 /// <reference types="jest" />
 import express from 'express';
 import request from 'supertest';
@@ -6,11 +7,15 @@ import { recordAgentEventActorReceiptMetric } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import {
   createMetrics,
+  reportLocatorTraversalFailure,
   instrumentMongooseQueryMetrics,
   normalizePath,
   recordAgentStartupMilestone,
   recordAgentStartupResult,
   recordGenerationJob,
+  recordGenerationStreamAttachment,
+  recordGenerationStreamEarlyBufferOverflow,
+  recordGenerationStreamRecovery,
   recordGenerationStreamResumePendingEvents,
   recordGenerationStreamSubscription,
   recordOpenIDUserLookup,
@@ -132,6 +137,36 @@ describe('createMetrics', () => {
     expect(response.text).toMatch(
       /http_request_body_bytes_sum\{method="POST",path="\/api\/files\/#id"\} 42/,
     );
+  });
+
+  it('records locator traversal reasons and count distributions without content labels', async () => {
+    process.env.METRICS_SECRET = 'test-secret';
+    createMetrics();
+    const app = express();
+    app.use('/metrics', createMetrics().metricsRouter);
+    expect(() =>
+      omitResolvedCanonicalFileLocators(
+        { file_id: 'PRIVATE-FILE', payload: new Array(4096) },
+        new Map([['PRIVATE-FILE', { file_id: 'PRIVATE-FILE' }]]),
+        { messageCount: 58, onTraversalFailure: reportLocatorTraversalFailure },
+      ),
+    ).toThrow();
+    const response = await request(app).get('/metrics').set('Authorization', 'Bearer test-secret');
+    expect(response.status).toBe(200);
+    expect(response.text).toContain(
+      'content_filter_locator_traversal_failures_total{operation="omit_resolved_file_locators",reason="array_length"} 1',
+    );
+    for (const [dimension, count] of [
+      ['visitedNodes', 2],
+      ['depth', 1],
+      ['messageCount', 58],
+      ['resolvedFileCount', 1],
+    ]) {
+      expect(response.text).toContain(
+        `content_filter_locator_traversal_size_sum{operation="omit_resolved_file_locators",reason="array_length",dimension="${dimension}"} ${count}`,
+      );
+    }
+    expect(response.text).not.toContain('PRIVATE-FILE');
   });
 
   it('exposes bounded event actor receipt settlement, replay, conflict, and migration metrics', async () => {
@@ -527,6 +562,10 @@ describe('createMetrics', () => {
     recordGenerationStreamSubscription('redis', 'resume', 'not_found');
     recordGenerationStreamSubscription('redis', 'resume_state', 'missing');
     recordGenerationStreamResumePendingEvents('memory', 3);
+    recordGenerationStreamEarlyBufferOverflow('redis');
+    recordGenerationStreamRecovery('redis', 'redis', 'success', 0.25, 5001, 12);
+    recordGenerationStreamAttachment('redis', 'attached', 4.5);
+    recordGenerationStreamAttachment('redis', 'bootstrap_slow');
 
     const response = await request(app)
       .get('/metrics')
@@ -543,6 +582,24 @@ describe('createMetrics', () => {
     );
     expect(response.text).toMatch(
       /generation_stream_resume_pending_events_total\{store="memory"\} 3/,
+    );
+    expect(response.text).toMatch(
+      /generation_stream_early_buffer_overflows_total\{store="redis"\} 1/,
+    );
+    expect(response.text).toMatch(
+      /generation_stream_recoveries_total\{store="redis",method="redis",outcome="success"\} 1/,
+    );
+    expect(response.text).toMatch(
+      /generation_stream_recovery_duration_seconds_sum\{store="redis",method="redis",outcome="success"\} 0.25/,
+    );
+    expect(response.text).toMatch(
+      /generation_stream_attachment_outcomes_total\{store="redis",outcome="attached"\} 1/,
+    );
+    expect(response.text).toMatch(
+      /generation_stream_attachment_outcomes_total\{store="redis",outcome="bootstrap_slow"\} 1/,
+    );
+    expect(response.text).toMatch(
+      /generation_stream_first_attachment_delay_seconds_sum\{store="redis"\} 4.5/,
     );
   });
 

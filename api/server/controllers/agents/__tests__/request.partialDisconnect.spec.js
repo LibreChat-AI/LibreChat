@@ -47,7 +47,13 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  getAgentErrorMetadata: (...args) =>
+    jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
+  applyForcedTemporaryRequest: jest.fn(),
+  resolveResumableRetention: jest.requireActual('@librechat/api').resolveResumableRetention,
   sendEvent: jest.fn(),
+  persistedReasoningOverrideFields:
+    jest.requireActual('@librechat/api').persistedReasoningOverrideFields,
   isScheduleFireRequest: jest.fn(() => false),
   exemptFromConcurrencyLimiter: jest.fn(() => false),
   toPendingSteer: jest.fn((item) => item),
@@ -63,7 +69,20 @@ jest.mock('@librechat/api', () => ({
   })),
   buildMessageFiles: jest.fn(() => []),
   resolveTitleTiming: jest.fn(() => 'immediate'),
+  createConvoPersistenceSignal: jest.requireActual('@librechat/api').createConvoPersistenceSignal,
+  recoverTurnMessageReference: jest.requireActual('@librechat/api').recoverTurnMessageReference,
   resolveConversationAnchor: jest.requireActual('@librechat/api').resolveConversationAnchor,
+  resolveRunCodeWorkspaces: jest.requireActual('@librechat/api').resolveRunCodeWorkspaces,
+  shouldPersistCodeWorkspaceInitializationError:
+    jest.requireActual('@librechat/api').shouldPersistCodeWorkspaceInitializationError,
+  resolvePersistableCodeEnvironmentDecision: (...args) =>
+    jest.requireActual('@librechat/api').resolvePersistableCodeEnvironmentDecision(...args),
+  getSafeErrorMetadata: jest.requireActual('@librechat/api').getSafeErrorMetadata,
+  getSafeErrorText: jest.requireActual('@librechat/api').getSafeErrorText,
+  startAgentProjectContextResolution:
+    jest.requireActual('@librechat/api').startAgentProjectContextResolution,
+  assertChatProjectInstructions: jest.requireActual('@librechat/api').assertChatProjectInstructions,
+  getChatProjectTurnFailure: jest.requireActual('@librechat/api').getChatProjectTurnFailure,
   GenerationJobManager: mockGenerationJobManager,
   getReferencedQuotes: jest.fn(() => null),
   cleanupMCPRequestContext: jest.fn(),
@@ -153,6 +172,12 @@ describe('ResumableAgentController tenant context', () => {
     user,
     jobRecord = { createdAt: 1000, contextMeta: partialContextMeta },
   ) => {
+    mockGetConvo.mockResolvedValue({
+      conversationId: 'conversation-123',
+      user: user.id,
+      tenantId: user.tenantId,
+      createdAt: '2026-07-31T00:00:00.000Z',
+    });
     let allSubscribersLeftHandler;
     mockGenerationJobManager.getJobStore.mockReturnValue({
       getJob: jest.fn().mockResolvedValue(jobRecord),

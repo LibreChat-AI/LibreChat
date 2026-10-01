@@ -10,7 +10,12 @@ import type {
   StoredMessageContentInput,
 } from '../protection/adapters/submissions';
 import type { ExternalChatMessage } from '../protection/adapters/messages';
-import { hasActiveFilePolicy, resolveCanonicalFileReferences } from '../protection/files';
+import type { LocatorTraversalReporter } from '../protection/diagnostics';
+import {
+  hasActiveFilePolicy,
+  resolveCanonicalFileReferences,
+  resolveCanonicalFileReferenceUnits,
+} from '../protection/files';
 import { ContentTraversalLimitError } from '../protection/adapters/nested';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
 
@@ -65,6 +70,7 @@ interface AssistantUserMessage extends ExternalChatMessage {
 }
 
 interface PreflightAssistantRunContentInput {
+  readonly onTraversalFailure?: LocatorTraversalReporter;
   readonly config?: AssistantProtectionConfig;
   readonly openai: AssistantOpenAIClient;
   readonly user?: CanonicalFileInspectionUser;
@@ -74,6 +80,7 @@ interface PreflightAssistantRunContentInput {
 }
 
 interface PreflightAssistantUserMessageContentInput {
+  readonly onTraversalFailure?: LocatorTraversalReporter;
   readonly config?: AssistantProtectionConfig;
   readonly user?: CanonicalFileInspectionUser;
   readonly message: AssistantUserMessage;
@@ -131,23 +138,6 @@ function normalizeUserMessage(
     content: message.content,
     file_ids: message.file_ids,
     attachments: message.attachments,
-  };
-}
-
-function toLegacySubmittedMessage(message: AssistantThreadMessage): ExternalChatMessage {
-  return {
-    role: 'user',
-    name: message.name,
-    content: message.content?.map((part) => {
-      if (part == null) {
-        return part;
-      }
-      const text = part.text;
-      return {
-        ...part,
-        text: typeof text === 'string' ? text : text?.value,
-      };
-    }),
   };
 }
 
@@ -310,6 +300,7 @@ export async function preflightAssistantRunContent({
   assistantId,
   threadId,
   getFiles,
+  onTraversalFailure,
 }: PreflightAssistantRunContentInput): Promise<AssistantContentInput | undefined> {
   const filters = config?.filters;
   const legacyPii = config?.messageFilter?.pii;
@@ -338,22 +329,29 @@ export async function preflightAssistantRunContent({
   };
   let resolvedFiles: CanonicalFileInspectionFile[] = [];
   if (hasActiveFilePolicy(filters)) {
-    const fileInspection = await resolveCanonicalFileReferences({
+    const units = [
+      { assistant: content.assistant, storedMessages: [] as typeof storedMessages },
+      ...storedMessages.map((message) => ({ assistant: undefined, storedMessages: [message] })),
+    ];
+    const fileInspection = await resolveCanonicalFileReferenceUnits({
+      messageCount: storedMessages.length,
+      onTraversalFailure,
       filters,
-      input: content,
+      input: units,
       user,
       getFiles,
     });
-    content = fileInspection.sanitizedInput;
+    content = {
+      assistant: fileInspection.sanitizedInput[0]?.assistant,
+      storedMessages: fileInspection.sanitizedInput.flatMap((unit) => unit.storedMessages),
+    };
     resolvedFiles = fileInspection.hydratedFiles;
   }
 
   assertModelBoundContent({
+    onTraversalFailure,
     filters,
     legacyPii,
-    submittedMessages: hasActivePiiPatterns(legacyPii)
-      ? content.storedMessages.map(toLegacySubmittedMessage)
-      : undefined,
     assistants: content.assistant == null ? undefined : [content.assistant],
     storedMessages: content.storedMessages,
     resolvedFiles,
@@ -372,6 +370,7 @@ export async function preflightAssistantUserMessageContent({
   message,
   fileIds,
   getFiles,
+  onTraversalFailure,
 }: PreflightAssistantUserMessageContentInput): Promise<void> {
   const filters = config?.filters;
   if (!hasActiveFilePolicy(filters)) {
@@ -386,6 +385,8 @@ export async function preflightAssistantUserMessageContent({
           file_ids: [...new Set([...(message.file_ids ?? []), ...fileIds])],
         };
   const fileInspection = await resolveCanonicalFileReferences({
+    messageCount: 1,
+    onTraversalFailure,
     filters,
     input: inspectionMessage,
     user,
@@ -393,6 +394,7 @@ export async function preflightAssistantUserMessageContent({
   });
 
   assertModelBoundContent({
+    onTraversalFailure,
     filters,
     legacyPii: config?.messageFilter?.pii,
     submittedMessages: [fileInspection.sanitizedInput],

@@ -4,13 +4,15 @@ import {
   parseCompactConvo,
   replaceSpecialVars,
   getEphemeralSender,
+  getResponseSender,
+  isConfiguredSender,
   encodeEphemeralAgentId,
   parseEphemeralAgentId,
 } from '../src/parsers';
 import { specialVariables } from '../src/config';
 import { EModelEndpoint, Providers } from '../src/schemas';
 import { ContentTypes } from '../src/types/runs';
-import type { TMessageContentParts } from '../src/types/assistants';
+import type { TMessageContentParts } from '../src/types/content';
 import type { TUser, TConversation } from '../src/types';
 
 // Mock dayjs module with consistent date/time values regardless of environment
@@ -817,5 +819,123 @@ describe('getEphemeralSender', () => {
    *  pre-consolidation behavior of every call site. */
   test('an empty-string modelLabel short-circuits the chain', () => {
     expect(getEphemeralSender({ modelLabel: '', specLabel: 'Spec Label' })).toBe('');
+  });
+});
+
+describe('isConfiguredSender', () => {
+  const gptSender = getResponseSender({ endpoint: EModelEndpoint.openAI, model: 'gpt-4o' });
+
+  test('is false without a sender to judge', () => {
+    expect(isConfiguredSender({ endpoint: EModelEndpoint.openAI, model: 'gpt-4o' })).toBe(false);
+    expect(isConfiguredSender({ sender: '', endpoint: EModelEndpoint.openAI })).toBe(false);
+  });
+
+  test('is false for the model-derived name the endpoint produces', () => {
+    expect(
+      isConfiguredSender({ sender: gptSender, endpoint: EModelEndpoint.openAI, model: 'gpt-4o' }),
+    ).toBe(false);
+    expect(
+      isConfiguredSender({
+        sender: 'Claude',
+        endpoint: EModelEndpoint.anthropic,
+        model: 'claude-5',
+      }),
+    ).toBe(false);
+    expect(
+      isConfiguredSender({ sender: 'Gemini', endpoint: EModelEndpoint.google, model: 'gemini-3' }),
+    ).toBe(false);
+  });
+
+  test('is true for a label standing in for the model', () => {
+    expect(
+      isConfiguredSender({ sender: 'Acme', endpoint: EModelEndpoint.openAI, model: 'gpt-4o' }),
+    ).toBe(true);
+    expect(
+      isConfiguredSender({ sender: 'Acme', endpoint: EModelEndpoint.anthropic, model: 'claude-5' }),
+    ).toBe(true);
+  });
+
+  /* An endpoint that ignores the label writes the model-derived name as the sender, so
+     equality settles the gating without listing which endpoints honour what. */
+  test('follows the sender an endpoint actually wrote', () => {
+    const chatGptLabel = 'Acme';
+    const openAI = { endpoint: EModelEndpoint.openAI, model: 'gpt-4o', chatGptLabel };
+    const anthropic = { endpoint: EModelEndpoint.anthropic, model: 'claude-5', chatGptLabel };
+
+    expect(isConfiguredSender({ ...openAI, sender: getResponseSender(openAI) })).toBe(true);
+    expect(isConfiguredSender({ ...anthropic, sender: getResponseSender(anthropic) })).toBe(false);
+  });
+
+  /* A custom endpoint's `endpoint` is its own configured name, and `getResponseSender`
+     reaches its heuristics only through `endpointType`. */
+  test('reads an unrecognized endpoint as a custom one', () => {
+    expect(
+      isConfiguredSender({ sender: gptSender, endpoint: 'Together AI', model: 'gpt-4o' }),
+    ).toBe(false);
+    expect(
+      isConfiguredSender({ sender: 'Together', endpoint: 'Together AI', model: 'gpt-4o' }),
+    ).toBe(true);
+  });
+
+  /* An agent or assistant is named by its author and `getResponseSender` has no branch
+     for it, so the header shows that name whether or not the response stored a sender. */
+  test('is true for an agent or assistant, stored sender or not', () => {
+    expect(isConfiguredSender({ sender: 'My Agent', endpoint: EModelEndpoint.agents })).toBe(true);
+    expect(
+      isConfiguredSender({ sender: 'My Assistant', endpoint: EModelEndpoint.assistants }),
+    ).toBe(true);
+    expect(isConfiguredSender({ endpoint: EModelEndpoint.agents, model: 'gpt-4o' })).toBe(true);
+  });
+
+  /* A user turn is headed by the person who wrote it: no model to withhold, and its
+     `User` sender would never match a derived name. */
+  test('is false for a user turn whatever it carries', () => {
+    expect(
+      isConfiguredSender({
+        sender: 'User',
+        endpoint: EModelEndpoint.openAI,
+        model: 'gpt-4o',
+        isCreatedByUser: true,
+      }),
+    ).toBe(false);
+    expect(
+      isConfiguredSender({
+        sender: 'User',
+        endpoint: EModelEndpoint.agents,
+        isCreatedByUser: true,
+      }),
+    ).toBe(false);
+  });
+
+  /* An endpoint that cannot be named says nothing either way, and reading that silence
+     as "configured" would withhold the model from every unlabelled row it reached — one
+     such row disables the hover for a whole shared transcript. */
+  test('is false when there is no endpoint to derive a name from', () => {
+    expect(isConfiguredSender({ sender: 'GPT-4o', model: 'gpt-4o' })).toBe(false);
+    expect(isConfiguredSender({ sender: 'Acme', model: 'gpt-4o' })).toBe(false);
+  });
+
+  /* The invariant the helper exists to hold: true exactly when the sender the app wrote
+     is one of the configured labels rather than a name derived from the model. */
+  test('agrees with the sender chain on every label source', () => {
+    const cases = [
+      { endpoint: EModelEndpoint.openAI, model: 'gpt-4o' },
+      { endpoint: EModelEndpoint.openAI, model: 'gpt-4o', modelLabel: 'Acme' },
+      { endpoint: EModelEndpoint.openAI, model: 'gpt-4o', specLabel: 'Acme' },
+      { endpoint: EModelEndpoint.openAI, model: 'gpt-4o', modelDisplayLabel: 'Acme' },
+      { endpoint: EModelEndpoint.openAI, model: 'gpt-4o', chatGptLabel: 'Acme' },
+      { endpoint: EModelEndpoint.anthropic, model: 'claude-5', chatGptLabel: 'Acme' },
+      { endpoint: EModelEndpoint.anthropic, model: 'claude-5', modelLabel: 'Acme' },
+      { endpoint: 'Together AI', endpointType: EModelEndpoint.custom, model: 'qwen' },
+    ];
+    for (const endpointOption of cases) {
+      const { modelLabel, specLabel, modelDisplayLabel } = endpointOption as Record<string, string>;
+      /** Mirrors `resolveSender`: the label chain first, `getResponseSender` behind it. */
+      const sender =
+        getEphemeralSender({ modelLabel, specLabel, modelDisplayLabel }) ||
+        getResponseSender(endpointOption as never);
+
+      expect(isConfiguredSender({ ...(endpointOption as never), sender })).toBe(sender === 'Acme');
+    }
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "@librechat/backend",
-  "version": "v0.8.8-rc2",
+  "version": "v0.8.8",
   "description": "",
   "scripts": {
     "start": "echo 'please run this from the root directory'",
@@ -18,7 +18,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danny-avila/LibreChat.git"
+    "url": "git+https://github.com/LibreChat-AI/LibreChat.git"
   },
   "keywords": [],
   "author": "",
@@ -30,7 +30,7 @@
     "~/*": "./*"
   },
   "bugs": {
-    "url": "https://github.com/danny-avila/LibreChat/issues"
+    "url": "https://github.com/LibreChat-AI/LibreChat/issues"
   },
   "homepage": "https://librechat.ai",
   "dependencies": {
@@ -46,7 +46,7 @@
     "@azure/storage-blob": "^12.30.0",
     "@google/genai": "^2.8.0",
     "@keyv/redis": "5.1.6",
-    "@librechat/agents": "^3.7.19",
+    "@librechat/agents": "^4.0.1",
     "@librechat/api": "*",
     "@librechat/data-schemas": "*",
     "@microsoft/microsoft-graph-client": "^3.0.7",
@@ -74,6 +74,7 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dedent": "^1.5.3",
+    "dompurify": "^3.4.16",
     "dotenv": "^16.0.3",
     "eventsource": "^3.0.2",
     "express": "^5.2.1",
@@ -88,7 +89,8 @@
     "handlebars": "^4.7.9",
     "https-proxy-agent": "^7.0.6",
     "ioredis": "^5.3.2",
-    "js-yaml": "^4.2.0",
+    "js-yaml": "^4.3.2",
+    "jsdom": "^26.1.0",
     "jsonwebtoken": "^9.0.0",
     "jszip": "^3.10.1",
     "jwks-rsa": "^3.2.0",
@@ -105,10 +107,10 @@
     "module-alias": "^2.2.3",
     "mongodb": "^6.14.2",
     "mongoose": "^8.24.1",
-    "multer": "^2.3.0",
+    "multer": "^2.4.0",
     "nanoid": "^3.3.18",
     "node-fetch": "^2.7.0",
-    "nodemailer": "^9.0.1",
+    "nodemailer": "^10.0.2",
     "ollama": "^0.5.0",
     "openai": "5.8.2",
     "openid-client": "^6.5.0",
@@ -126,9 +128,10 @@
     "rate-limit-redis": "^4.2.0",
     "re2js": "^2.8.6",
     "sanitize-html": "^2.17.7",
-    "sharp": "^0.35.3",
+    "sharp": "^0.35.4",
+    "swagger-ui-dist": "^5.32.15",
     "ua-parser-js": "^1.0.36",
-    "undici": "^7.29.0",
+    "undici": "^7.29.1",
     "winston": "^3.11.0",
     "winston-daily-rotate-file": "^5.0.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
@@ -138,6 +141,8 @@
   "devDependencies": {
     "@babel/preset-env": "^7.29.5",
     "@types/sanitize-html": "^2.16.1",
+    "ajv": "8.18.0",
+    "ajv-formats": "3.0.1",
     "jest": "^30.2.0",
     "mongodb-memory-server": "^11.0.1",
     "nodemon": "^3.1.14",

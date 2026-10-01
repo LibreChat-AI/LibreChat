@@ -9,11 +9,11 @@ const {
   ErrorTypes,
   UsageEvents,
   getRunStepDurationMs,
+  getRunStepCloseMetadata,
 } = require('librechat-data-provider');
 const {
   GraphEvents,
   GraphNodeKeys,
-  ToolEndHandler,
   createContentAggregator,
   summarizeEvent,
 } = require('@librechat/agents');
@@ -21,13 +21,22 @@ const {
   sendEvent,
   computeUsageCostUSD,
   GenerationJobManager,
+  waitForGenerationSettled,
   writeAttachmentEvent,
   createToolExecuteHandler,
+  createOwnedToolEndHandler,
   createBackgroundCodeResultHandler: createCodeHarvestHandler,
   HOST_FILE_AUTHORING_ARTIFACT_KEY,
   isCodeSessionToolName,
+  isCodeArtifactToolOutput,
+  getModelRefusalInfo,
   shouldSignalSandboxStart,
   getToolInputValidationDetails,
+  captureSubagentIdentity,
+  getAttachmentOwnership,
+  collectToolCallIds,
+  createToolTimingAdapter,
+  stampCommandExecutor,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
@@ -36,10 +45,6 @@ const { saveBase64Image } = require('~/server/services/Files/process');
 
 function isHostFileAuthoringArtifact(artifact) {
   return artifact?.[HOST_FILE_AUTHORING_ARTIFACT_KEY] === true;
-}
-
-function isCodeArtifactToolOutput(output) {
-  return isCodeSessionToolName(output.name) || isHostFileAuthoringArtifact(output.artifact);
 }
 
 function addStatefulWorkspaceChange(attachment, artifact, executionProfile) {
@@ -132,14 +137,14 @@ class ModelEndHandler {
     let errorMessage;
     try {
       const agentContext = graph.getAgentContext(metadata);
-      if (data?.output?.additional_kwargs?.stop_reason === 'refusal') {
-        const info = { ...data.output.additional_kwargs };
+      const refusalInfo = getModelRefusalInfo(data?.output);
+      if (refusalInfo) {
         errorMessage = JSON.stringify({
           type: ErrorTypes.REFUSAL,
-          info,
+          info: refusalInfo,
         });
         logger.debug(`[ModelEndHandler] Model refused to respond`, {
-          ...info,
+          ...refusalInfo,
           userId: metadata.user_id,
           messageId: metadata.run_id,
           conversationId: metadata.thread_id,
@@ -148,7 +153,7 @@ class ModelEndHandler {
 
       const usage = data?.output?.usage_metadata;
       if (!usage) {
-        return this.finalize(errorMessage);
+        return;
       }
       let taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
       /** Hidden intermediate sequential-agent calls are billed but never shown.
@@ -229,7 +234,8 @@ class ModelEndHandler {
       }
     } catch (error) {
       logger.error('Error handling model end event:', error);
-      return this.finalize(errorMessage);
+    } finally {
+      this.finalize(errorMessage);
     }
   }
 }
@@ -330,10 +336,11 @@ function subagentPhaseToGraphEvent(event) {
  * @param {{ aggregateContent: Function, contentParts?: Array, stepMap?: Map }} aggregator
  * @param {SubagentUpdateEvent} event
  */
-function feedSubagentAggregator(aggregator, event) {
+function feedSubagentAggregator(aggregator, event, applyChildTiming) {
   const graphEvent = subagentPhaseToGraphEvent(event);
+  if (graphEvent) aggregator.aggregateContent({ event: graphEvent, data: event.data });
+  applyChildTiming(aggregator, event);
   if (!graphEvent) return;
-  aggregator.aggregateContent({ event: graphEvent, data: event.data });
 
   /** The SDK aggregator intentionally projects run-step tool calls onto its
    * public content shape, so host-only routing metadata is not copied. Restore
@@ -376,7 +383,9 @@ function feedSubagentAggregator(aggregator, event) {
  * @param {UsageCostDeps} [options.usageCost] - Pricing context for authoritative per-event cost.
  * @param {{ latest: TContextUsageEvent | null, count: number }} [options.contextUsageSink] - Mutable
  *   holder for the latest visible context snapshot + a count of visible snapshots (model calls),
- *   used to persist the breakdown only when the final call emitted usage.
+ *   used to persist the breakdown only when the final call emitted usage. Also records that
+ *   snapshot's position in the usage stream and in `contentParts`, so the save path can tell
+ *   which usage events and which content parts came after it.
  * @param {Array<TTokenUsageEvent>} [options.usageEmitSink] - Array collecting each emitted
  *   `on_token_usage` payload (incl. cost) so the response's usage rollup can be persisted.
  * @param {(toolName: string, agentId?: string) => string | undefined} [options.resolveMcpServerName]
@@ -402,6 +411,7 @@ function getDefaultHandlers({
   usageEmitSink = null,
   eventChildActivity = null,
   resolveMcpServerName = null,
+  toolTimingReplayEvents = [],
 }) {
   if (!res || !aggregateContent) {
     throw new Error(
@@ -411,6 +421,8 @@ function getDefaultHandlers({
   const eventActivityPhases = {
     [GraphEvents.ON_RUN_STEP]: 'run_step',
     [GraphEvents.ON_RUN_STEP_DELTA]: 'run_step_delta',
+    [StepEvents.ON_TOOL_PREPARATION]: 'tool_preparation',
+    [StepEvents.ON_TOOL_CALLS_DISPATCHED]: 'tool_calls_dispatched',
     [GraphEvents.ON_RUN_STEP_COMPLETED]: 'run_step_completed',
     [GraphEvents.ON_RUN_STEP_CLOSED]: 'run_step_closed',
     [GraphEvents.ON_MESSAGE_DELTA]: 'message_delta',
@@ -500,13 +512,18 @@ function getDefaultHandlers({
     }
     return emitForJob({ event: UsageEvents.ON_TOKEN_USAGE, data: payload });
   };
+  const toolTiming = createToolTimingAdapter({
+    replayEvents: toolTimingReplayEvents,
+    emit: emitForJob,
+  });
   const handlers = {
+    [StepEvents.ON_TOOL_CALLS_DISPATCHED]: toolTiming.dispatch,
     [GraphEvents.CHAT_MODEL_END]: new ModelEndHandler(
       collectedUsage,
       collectedThoughtSignatures,
       emitTokenUsage,
     ),
-    [GraphEvents.TOOL_END]: new ToolEndHandler(toolEndCallback, logger),
+    [GraphEvents.TOOL_END]: createOwnedToolEndHandler(toolEndCallback, logger),
     [GraphEvents.ON_RUN_STEP]: {
       /**
        * Handle ON_RUN_STEP event.
@@ -581,7 +598,9 @@ function getDefaultHandlers({
           const index = stepMap?.get(stepId)?.index;
           const part = typeof index === 'number' ? contentParts[index] : undefined;
           if (part?.type === ContentTypes.TOOL_CALL && part.tool_call) {
+            toolTiming.close(part.tool_call, stepId);
             part.tool_call.runStepStatus = data.status;
+            Object.assign(part.tool_call, getRunStepCloseMetadata(data));
             /**
              * The raw derivable duration, left unset rather than zeroed when
              * the event cannot support a trustworthy one — no `created_at`,
@@ -607,6 +626,7 @@ function getDefaultHandlers({
        */
       handle: async (event, data, metadata) => {
         aggregateContent({ event, data });
+        await toolTiming.delta(data);
         if (data?.delta.type === StepTypes.TOOL_CALLS) {
           await emitForJob({ event, data });
         } else if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
@@ -642,6 +662,7 @@ function getDefaultHandlers({
             agentId: metadata?.agent_id,
           });
         }
+        toolTiming.completed(data);
         aggregateContent({ event, data });
         const stepId = data?.result?.id;
         const runStep = stepMap?.get(stepId);
@@ -654,6 +675,7 @@ function getDefaultHandlers({
             toolCall.inputValidationError = true;
           }
         }
+        stampCommandExecutor(toolExecuteOptions?.attachedCommandStepIds, data?.result, toolCall);
         if (data?.result != null) {
           await emitForJob({ event, data });
         } else if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
@@ -753,7 +775,8 @@ function getDefaultHandlers({
           subagentAggregatorsByToolCallId.set(key, aggregator);
         }
         try {
-          feedSubagentAggregator(aggregator, data);
+          captureSubagentIdentity(aggregator, data);
+          feedSubagentAggregator(aggregator, data, toolTiming.child);
         } catch (err) {
           logger.warn(
             `[ON_SUBAGENT_UPDATE] Failed to aggregate phase "${data?.phase}" for tool_call ${key}: ${err?.message ?? err}`,
@@ -785,6 +808,23 @@ function getDefaultHandlers({
     handlers[GraphEvents.ON_SUMMARIZE_COMPLETE] = {
       handle: async (_event, data) => {
         aggregateContent({ event: GraphEvents.ON_SUMMARIZE_COMPLETE, data });
+        /**
+         * Stamped onto the aggregated part for the same reason as
+         * `runStepStatus` above: an errored round keeps whatever deltas it
+         * already streamed, and the SDK's aggregator ignores a complete event
+         * that carries no `summary`, so nothing records the failure. Without
+         * this the flag exists only on the live client message and a reload
+         * re-renders the truncated text under "Conversation summarized".
+         * Resolved through `stepMap` only, so a missing step degrades to the
+         * old behavior rather than marking an unrelated part.
+         */
+        if (data?.error && contentParts) {
+          const index = stepMap?.get(data?.id)?.index;
+          const part = typeof index === 'number' ? contentParts[index] : undefined;
+          if (part?.type === ContentTypes.SUMMARY) {
+            part.failed = true;
+          }
+        }
         await emitForJob({
           event: GraphEvents.ON_SUMMARIZE_COMPLETE,
           data,
@@ -824,6 +864,13 @@ function getDefaultHandlers({
           contextUsageSink.latest = data;
           contextUsageSink.count = (contextUsageSink.count ?? 0) + 1;
           contextUsageSink.latestUsageIndex = usageEmitSink?.length ?? 0;
+          /** Which tool calls this snapshot already accounts for. A turn that
+           *  stops at the tool-call limit counts the results of the calls missing
+           *  from this set — the ones its own call produced, which no later
+           *  snapshot describes. Ids, not a content index: completion reshapes the
+           *  array (skill cards unshifted, hidden sequential output filtered), so
+           *  an index recorded here would mean something else by save time. */
+          contextUsageSink.latestToolCallIds = collectToolCallIds(contentParts);
         }
         /** Every agent's snapshot publishes the run's context meta, hidden
          *  sequential agents included: their model calls latch tiers too, and a
@@ -965,6 +1012,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
         (async () => {
           const attachment = {
             type: Tools.ui_resources,
+            ...getAttachmentOwnership(metadata),
             messageId: metadata.run_id,
             toolCallId: output.tool_call_id,
             conversationId: metadata.thread_id,
@@ -987,6 +1035,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
         (async () => {
           const attachment = {
             type: Tools.web_search,
+            ...getAttachmentOwnership(metadata),
             messageId: metadata.run_id,
             toolCallId: output.tool_call_id,
             conversationId: metadata.thread_id,
@@ -1009,6 +1058,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
         (async () => {
           const attachment = {
             type: Tools.memory,
+            ...getAttachmentOwnership(metadata),
             messageId: metadata.run_id,
             toolCallId: output.tool_call_id,
             conversationId: metadata.thread_id,
@@ -1247,14 +1297,20 @@ function createPtcProgressEmitter({ res, streamId = null, jobCreatedAt }) {
  *   output?: string;
  *   attachments?: Object[];
  * }) => Promise<boolean>} params.updateToolCallResult
+ * @param {number} [params.jobCreatedAt] - Immutable dispatch generation epoch.
+ * @param {string} [params.streamId] - The stream owning that epoch.
  */
-function createBackgroundCodeResultHandler({ req, updateToolCallResult }) {
+function createBackgroundCodeResultHandler({ req, updateToolCallResult, jobCreatedAt, streamId }) {
   return createCodeHarvestHandler({
     req,
     updateToolCallResult,
     preflightCodeOutputBatch,
     processCodeOutput,
     runPreviewFinalize,
+    generationCreatedAt: jobCreatedAt,
+    generationStreamId: streamId,
+    waitForGenerationSettled: (conversationId, options) =>
+      waitForGenerationSettled(GenerationJobManager, conversationId, options),
   });
 }
 
@@ -1330,6 +1386,7 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
           const attachment = {
             type: Tools.ui_resources,
             toolCallId: output.tool_call_id,
+            ...getAttachmentOwnership(metadata),
             [Tools.ui_resources]: output.artifact[Tools.ui_resources].data,
           };
           // For Responses API, always emit attachment during streaming
@@ -1350,6 +1407,7 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
           const attachment = {
             type: Tools.web_search,
             toolCallId: output.tool_call_id,
+            ...getAttachmentOwnership(metadata),
             [Tools.web_search]: { ...output.artifact[Tools.web_search] },
           };
           // For Responses API, always emit attachment during streaming
@@ -1359,6 +1417,26 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
           return attachment;
         })().catch((error) => {
           logger.error('Error processing artifact content:', error);
+          return null;
+        }),
+      );
+    }
+
+    if (output.artifact[Tools.memory]) {
+      artifactPromises.push(
+        (async () => {
+          const attachment = {
+            type: Tools.memory,
+            toolCallId: output.tool_call_id,
+            ...getAttachmentOwnership(metadata),
+            [Tools.memory]: output.artifact[Tools.memory],
+          };
+          if (res.headersSent && !res.writableEnded) {
+            writeResponsesAttachment(res, tracker, attachment, metadata);
+          }
+          return attachment;
+        })().catch((error) => {
+          logger.error('Error processing memory artifact content:', error);
           return null;
         }),
       );

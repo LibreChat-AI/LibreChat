@@ -18,17 +18,12 @@ jest.mock('~/utils', () => ({
 }));
 
 jest.mock('~/Providers', () => {
-  const react = jest.requireActual<typeof import('react')>('react');
   return {
-    MessageContext: {
-      Provider: ({
-        children,
-        value,
-      }: {
-        children: React.ReactElement<{ idx?: number }>;
-        value: { partIndex: number };
-      }) => react.cloneElement(children, { idx: value.partIndex }),
-    },
+    /** Use the real context: cloning the immediate child assumes Part has no
+     * intervening providers and does not exercise context propagation. */
+    MessageContext: jest.requireActual<typeof import('~/Providers/MessageContext')>(
+      '~/Providers/MessageContext',
+    ).MessageContext,
     SearchContext: {
       Provider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
     },
@@ -129,24 +124,37 @@ jest.mock('../Container', () => ({
   ),
 }));
 
-jest.mock('../Part', () => ({
-  __esModule: true,
-  default: ({
-    part,
-    idx,
-    showCursor,
-  }: {
-    part: TMessageContentParts;
-    idx: number;
-    showCursor?: boolean;
-  }) => (
-    <div
-      data-testid={`real-part-${part.type}`}
-      data-index={idx}
-      data-show-cursor={String(showCursor === true)}
-    />
-  ),
-}));
+jest.mock('../Part', () => {
+  const { useMessageContext } = jest.requireActual<typeof import('~/Providers/MessageContext')>(
+    '~/Providers/MessageContext',
+  );
+  const { SoleToolContext } = jest.requireActual<typeof import('../disclosure')>('../disclosure');
+  const { useContext } = jest.requireActual<typeof import('react')>('react');
+  return {
+    __esModule: true,
+    default: function MockPart({
+      part,
+      showCursor,
+      isLast,
+    }: {
+      part: TMessageContentParts;
+      showCursor?: boolean;
+      isLast?: boolean;
+    }) {
+      const { partIndex } = useMessageContext();
+      const soleTool = useContext(SoleToolContext);
+      return (
+        <div
+          data-testid={`real-part-${part.type}`}
+          data-index={partIndex}
+          data-sole-tool={String(soleTool)}
+          data-show-cursor={String(showCursor === true)}
+          data-is-last={String(isLast === true)}
+        />
+      );
+    },
+  };
+});
 
 jest.mock('../ParallelContent', () => ({
   /** Invokes `renderResumeAttribution` per content index like the real
@@ -174,6 +182,7 @@ const baseProps = {
   isSubmitting: false,
   isLatestMessage: false,
   isCreatedByUser: false,
+  showThinking: false,
   content: [],
 };
 
@@ -183,7 +192,7 @@ beforeEach(() => {
     .mockImplementation((parts) => parts.map((part) => ({ type: 'single', part })));
 });
 
-describe('ContentParts — interim skill cards', () => {
+describe('ContentParts: interim skill cards', () => {
   it('renders stateful workspace changes once at message level', () => {
     const content: TMessageContentParts[] = [
       { type: ContentTypes.TEXT, text: 'done' } as TMessageContentParts,
@@ -303,7 +312,7 @@ describe('ContentParts — interim skill cards', () => {
   });
 });
 
-describe('ContentParts — thinking-dot header alignment', () => {
+describe('ContentParts: thinking-dot header alignment', () => {
   const submittingProps = { ...baseProps, isSubmitting: true, isLatestMessage: true };
   const memoryAttachment = {
     type: Tools.memory,
@@ -358,7 +367,7 @@ describe('ContentParts — thinking-dot header alignment', () => {
   });
 });
 
-describe('ContentParts — post-steer author re-attribution', () => {
+describe('ContentParts: post-steer author re-attribution', () => {
   const steerPart = {
     type: ContentTypes.STEER,
     steer: 'go left',
@@ -510,6 +519,48 @@ describe('ContentParts — activity phase state', () => {
     expect(textParts[1]).toHaveAttribute('data-show-cursor', 'false');
   });
 
+  /** Activity phases split one response into several bodies, and every settled
+   *  body has a trailing part. Only the body holding the message's cursor may
+   *  own a live one — otherwise a phase that finished minutes ago keeps its
+   *  reasoning shimmering while later phases stream. */
+  it("leaves an earlier phase's trailing part settled while a later part streams", () => {
+    const think = {
+      type: ContentTypes.THINK,
+      think: 'weighing the options',
+    } as unknown as TMessageContentParts;
+    const phase = {
+      type: ContentTypes.ACTIVITY_LABEL,
+      [ContentTypes.ACTIVITY_LABEL]: 'Mapped the schema',
+      activity_label_type: 'phase',
+      activity_start_index: 0,
+      activity_end_index: 1,
+      activity_count: 1,
+      pending: false,
+    } as unknown as TMessageContentParts;
+    render(
+      <ContentParts
+        {...baseProps}
+        content={[
+          think,
+          phase,
+          { type: ContentTypes.TEXT, text: 'Good — schema mapped.' } as TMessageContentParts,
+        ]}
+        isLast
+        isSubmitting
+        isLatestMessage
+      />,
+    );
+
+    expect(screen.getByTestId(`real-part-${ContentTypes.THINK}`)).toHaveAttribute(
+      'data-is-last',
+      'false',
+    );
+    expect(screen.getByTestId(`real-part-${ContentTypes.TEXT}`)).toHaveAttribute(
+      'data-is-last',
+      'true',
+    );
+  });
+
   it('renders a completion-appended parent before the final root text', () => {
     const tool = {
       type: ContentTypes.TOOL_CALL,
@@ -536,6 +587,38 @@ describe('ContentParts — activity phase state', () => {
     expect(parent.compareDocumentPosition(finalPart)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(parent).toHaveAttribute('data-animate-entrance', 'false');
     expect(finalPart).toHaveAttribute('data-index', '2');
+  });
+
+  it('opens the only tool call inside a phase, but not one of several', () => {
+    const tool = (id: string) =>
+      ({
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id, name: 'bash_tool', args: {}, output: 'ok' },
+      }) as unknown as TMessageContentParts;
+    const phase = (count: number) =>
+      ({
+        type: ContentTypes.ACTIVITY_LABEL,
+        [ContentTypes.ACTIVITY_LABEL]: 'Ran the setup',
+        activity_label_type: 'phase',
+        activity_start_index: 0,
+        activity_end_index: count,
+        activity_count: count,
+        pending: false,
+      }) as unknown as TMessageContentParts;
+
+    const { unmount } = render(
+      <ContentParts {...baseProps} content={[tool('tool-1'), phase(1)]} />,
+    );
+    expect(screen.getByTestId(`real-part-${ContentTypes.TOOL_CALL}`)).toHaveAttribute(
+      'data-sole-tool',
+      'true',
+    );
+    unmount();
+
+    render(<ContentParts {...baseProps} content={[tool('tool-1'), tool('tool-2'), phase(2)]} />);
+    for (const part of screen.getAllByTestId(`real-part-${ContentTypes.TOOL_CALL}`)) {
+      expect(part).toHaveAttribute('data-sole-tool', 'false');
+    }
   });
 
   it('keeps a streaming cursor when a completed phase marker is the visible tail', () => {
@@ -681,7 +764,7 @@ describe('ContentParts — activity phase state', () => {
   });
 });
 
-describe('ContentParts — settled content identity across compaction', () => {
+describe('ContentParts: settled content identity across compaction', () => {
   /** Mirrors a captured run: the aggregator leaves holes at the source indexes
    *  of steps that produced nothing, and `finalHandler` swaps in the server's
    *  compacted array. Without the streamed-index stamp every index-derived key

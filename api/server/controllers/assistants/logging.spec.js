@@ -9,7 +9,9 @@ const mockGetOpenAIClient = jest.fn();
 const mockUpdateAssistantDoc = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({ logger: mockLogger }));
-jest.mock('@librechat/api', () => ({}));
+jest.mock('@librechat/api', () => ({
+  resolveAssistantToolPermissions: jest.fn(async () => () => true),
+}));
 jest.mock('librechat-data-provider', () => ({
   FileContext: { avatar: 'avatar' },
   ToolCallTypes: {},

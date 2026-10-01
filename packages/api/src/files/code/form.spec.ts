@@ -1,7 +1,6 @@
-import { Readable } from 'stream';
 import FormData from 'form-data';
-
-import { appendCodeEnvFile, getCodeEnvFileOptions } from './form';
+import { Readable } from 'stream';
+import { appendCodeEnvFile, getCodeEnvFileOptions, getCodeEnvUploadFilename } from './form';
 
 function renderMultipartDisposition(append: (form: FormData) => void): Promise<string> {
   const form = new FormData();
@@ -23,6 +22,21 @@ function renderMultipartDisposition(append: (form: FormData) => void): Promise<s
 }
 
 describe('code env FormData filenames', () => {
+  it.each([
+    ['my dir/file.csv', 'file.csv'],
+    ['safe/file.csv', 'safe/file.csv'],
+    ['分析/結果📊.csv', '分析/結果📊.csv'],
+    ['../../file.csv', 'file.csv'],
+  ])('plans the exact multipart destination for %s', async (input, expected) => {
+    const destination = getCodeEnvUploadFilename(input);
+    expect(destination).toBe(expected);
+    expect(getCodeEnvUploadFilename(destination)).toBe(destination);
+    const disposition = await renderMultipartDisposition((form) => {
+      appendCodeEnvFile(form, Readable.from(['bytes']), destination);
+    });
+    expect(disposition).toContain(`filename="${destination}"`);
+  });
+
   it('uses filepath for nested filenames so form-data preserves directories', async () => {
     const disposition = await renderMultipartDisposition((form) => {
       appendCodeEnvFile(form, Readable.from(['x']), 'pptx/pptx.py');

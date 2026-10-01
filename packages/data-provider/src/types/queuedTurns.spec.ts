@@ -5,21 +5,35 @@ import {
   enqueueAgentQueuedTurnSchema,
   listAgentQueuedTurnsSchema,
 } from './queuedTurns';
+import { ReasoningEffort } from '../schemas';
 
 const request = {
   conversationId: 'conversation-1',
   parentMessageId: 'message-1',
   clientRequestId: 'request-1',
   text: 'Continue with this context',
-  files: [{ file_id: 'file-1', filename: 'context.txt' }],
+  files: [{ file_id: 'file-1', filename: 'context.txt', llmDeliveryPath: 'text' }],
   quotes: ['quoted context'],
   manualSkills: ['research'],
+  reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
   expectedPredecessorCreatedAt: 42,
 };
 
 describe('agent queued turn schemas', () => {
   it('accepts the complete enqueue contract', () => {
     expect(enqueueAgentQueuedTurnSchema.parse(request)).toEqual(request);
+  });
+
+  it('accepts allowed modes without requiring them on legacy turns', () => {
+    for (const mode of ['ask', 'acceptEdits', 'fullAccess'] as const) {
+      expect(
+        enqueueAgentQueuedTurnSchema.parse({ ...request, codeApprovalMode: mode }).codeApprovalMode,
+      ).toBe(mode);
+    }
+    expect(enqueueAgentQueuedTurnSchema.parse(request).codeApprovalMode).toBeUndefined();
+    expect(() =>
+      enqueueAgentQueuedTurnSchema.parse({ ...request, codeApprovalMode: 'unrestricted' }),
+    ).toThrow();
   });
 
   it('allows attachment-only queued turns', () => {
@@ -45,6 +59,15 @@ describe('agent queued turn schemas', () => {
       enqueueAgentQueuedTurnSchema.parse({
         ...request,
         expectedPredecessorCreatedAt: -1,
+      }),
+    ).toThrow();
+  });
+
+  it('rejects an invalid reasoning override', () => {
+    expect(() =>
+      enqueueAgentQueuedTurnSchema.parse({
+        ...request,
+        reasoningOverride: { key: 'temperature', value: 0.5 },
       }),
     ).toThrow();
   });

@@ -1,5 +1,7 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { PrincipalModel, PrincipalType } from 'librechat-data-provider';
+import type { Config } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types/http';
 
@@ -8,12 +10,16 @@ process.env.CREDS_KEY =
 process.env.CREDS_IV = process.env.CREDS_IV ?? '0123456789abcdef0123456789abcdef';
 
 type DataSchemas = typeof import('@librechat/data-schemas');
+type ConfigMethods = ReturnType<DataSchemas['createMethods']>;
 type AdminConfigHandlers = ReturnType<typeof import('./config').createAdminConfigHandlers>;
 
 let mongoServer: MongoMemoryServer;
 let handlers: AdminConfigHandlers;
+let basePrincipalId: string;
 let decryptV3: DataSchemas['decryptV3'];
+let patchConfigFields: ConfigMethods['patchConfigFields'];
 let getSecretPreview: typeof import('./secrets').getSecretPreview;
+let encryptConfigSecretFields: typeof import('./secrets').encryptConfigSecretFields;
 
 interface SecretFieldCase {
   /** Dot-path of the secret field */
@@ -30,15 +36,11 @@ interface SecretFieldCase {
 
 const SECRET = 'sk-super-secret-literal';
 
+/**
+ * Secrets written through the generic config API. `langfuse.secretKey` is absent because only the
+ * dedicated Langfuse connection API writes that section; the generic API strips it.
+ */
 const SECRET_FIELD_CASES: SecretFieldCase[] = [
-  {
-    path: 'langfuse.secretKey',
-    previewPath: 'langfuse.secretKeyPreview',
-    section: 'langfuse',
-    object: { publicKey: 'pk-lf-1', secretKey: SECRET },
-    siblingPath: 'langfuse.publicKey',
-    siblingValue: 'pk-lf-2',
-  },
   {
     path: 'ocr.apiKey',
     previewPath: 'ocr.apiKeyPreview',
@@ -213,11 +215,17 @@ function getAtPath(root: unknown, path: string): unknown {
   return cursor;
 }
 
-async function readRawOverrides(principalId: string): Promise<Record<string, unknown>> {
+type RawConfig = Pick<Config, 'configVersion'> & { overrides: Record<string, unknown> };
+
+async function readRawConfig(principalId: string): Promise<RawConfig> {
   const doc = await mongoose.models.Config.findOne({ principalId });
   expect(doc).not.toBeNull();
   expect(doc!.$isNew).toBe(false);
-  return (doc!.toObject() as { overrides: Record<string, unknown> }).overrides;
+  return doc!.toObject() as RawConfig;
+}
+
+async function readRawOverrides(principalId: string): Promise<Record<string, unknown>> {
+  return (await readRawConfig(principalId)).overrides;
 }
 
 let principalCounter = 0;
@@ -229,19 +237,20 @@ function nextPrincipalId(): string {
 beforeAll(async () => {
   jest.resetModules();
   const dataSchemas = await import('@librechat/data-schemas');
-  ({ decryptV3 } = dataSchemas);
+  ({ decryptV3, BASE_CONFIG_PRINCIPAL_ID: basePrincipalId } = dataSchemas);
   jest.spyOn(dataSchemas.logger, 'error').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'warn').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'info').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'debug').mockReturnValue(dataSchemas.logger);
 
   const { createAdminConfigHandlers } = await import('./config');
-  ({ getSecretPreview } = await import('./secrets'));
+  ({ getSecretPreview, encryptConfigSecretFields } = await import('./secrets'));
 
   mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
   dataSchemas.createModels(mongoose);
   const methods = dataSchemas.createMethods(mongoose);
+  ({ patchConfigFields } = methods);
 
   handlers = createAdminConfigHandlers({
     listAllConfigs: methods.listAllConfigs,
@@ -490,6 +499,140 @@ describe('config secret registry — real handlers against a real Config collect
       });
     },
   );
+
+  describe('langfuse.secretKey (dedicated Langfuse connection API)', () => {
+    type RefusedWrite = [
+      string,
+      'patchConfigField' | 'tombstoneConfigField' | 'deleteConfigField',
+      Record<string, unknown>,
+    ];
+
+    const secretPath = 'langfuse.secretKey';
+    const previewPath = 'langfuse.secretKeyPreview';
+
+    function baseReq(overrides: Record<string, unknown> = {}): ServerRequest {
+      return mockReq({
+        params: { principalType: 'role', principalId: basePrincipalId },
+        ...overrides,
+      });
+    }
+
+    /** Persists what the dedicated connection API writes, through the same shared secret helper. */
+    async function seedLangfuseConnection(): Promise<RawConfig> {
+      await mongoose.models.Config.deleteOne({ principalId: basePrincipalId });
+      await patchConfigFields(
+        PrincipalType.ROLE,
+        basePrincipalId,
+        PrincipalModel.ROLE,
+        encryptConfigSecretFields({
+          'langfuse.enabled': true,
+          'langfuse.destination': 'eu',
+          'langfuse.publicKey': 'pk-lf-1',
+          [secretPath]: SECRET,
+        }),
+        10,
+      );
+      return readRawConfig(basePrincipalId);
+    }
+
+    it('keeps the stored secret encrypted at rest and redacts it from generic reads', async () => {
+      const { overrides: stored } = await seedLangfuseConnection();
+      expect(getAtPath(stored, secretPath)).toMatch(/^v3:/);
+      expect(decryptV3(getAtPath(stored, secretPath) as string)).toBe(SECRET);
+      expect(getAtPath(stored, previewPath)).toBe(getSecretPreview(SECRET));
+
+      const getRes = mockRes();
+      await handlers.getConfig(baseReq(), getRes);
+      expect(getRes.statusCode).toBe(200);
+      expect(JSON.stringify(getRes.body)).not.toContain(SECRET);
+      expect(JSON.stringify(getRes.body)).not.toContain('v3:');
+      const overrides = (getRes.body!.config as { overrides: Record<string, unknown> }).overrides;
+      expect(getAtPath(overrides, secretPath)).toBeUndefined();
+      expect(getAtPath(overrides, previewPath)).toBe(getSecretPreview(SECRET));
+      expect(getAtPath(overrides, 'langfuse.publicKey')).toBe('pk-lf-1');
+
+      const listRes = mockRes();
+      await handlers.listConfigs(mockReq(), listRes);
+      expect(listRes.statusCode).toBe(200);
+      expect(JSON.stringify(listRes.body)).not.toContain(SECRET);
+      expect(JSON.stringify(listRes.body)).not.toContain('v3:');
+    });
+
+    it.each<RefusedWrite>([
+      [
+        'a dotted patch that replaces it',
+        'patchConfigField',
+        { body: { entries: [{ fieldPath: secretPath, value: 'sk-lf-replacement' }] } },
+      ],
+      [
+        'a dotted patch that clears it',
+        'patchConfigField',
+        { body: { entries: [{ fieldPath: secretPath, value: '' }] } },
+      ],
+      ['a field tombstone', 'tombstoneConfigField', { body: { fieldPath: secretPath } }],
+      ['a field delete', 'deleteConfigField', { query: { fieldPath: secretPath } }],
+    ])('ignores %s without writing the base config', async (_label, handler, request) => {
+      const before = await seedLangfuseConnection();
+      const res = mockRes();
+      await handlers[handler](baseReq(request), res);
+      expect(res.statusCode).toBe(200);
+
+      const after = await readRawConfig(basePrincipalId);
+      expect(after.configVersion).toBe(before.configVersion);
+      expect(after.overrides).toEqual(before.overrides);
+    });
+
+    it('carries the stored secret through a full base-config replacement', async () => {
+      const before = await seedLangfuseConnection();
+      const res = mockRes();
+      await handlers.upsertConfigOverrides(
+        baseReq({
+          body: {
+            overrides: {
+              interface: { modelSelect: false },
+              langfuse: {
+                enabled: false,
+                publicKey: 'pk-lf-caller',
+                secretKey: 'sk-lf-replacement',
+              },
+            },
+          },
+        }),
+        res,
+      );
+      expect(res.statusCode).toBe(200);
+      expect(JSON.stringify(res.body)).not.toContain(SECRET);
+
+      const after = await readRawConfig(basePrincipalId);
+      expect(after.configVersion).toBe(before.configVersion + 1);
+      expect(getAtPath(after.overrides, 'interface.modelSelect')).toBe(false);
+      expect(after.overrides.langfuse).toEqual(before.overrides.langfuse);
+    });
+
+    it('creates no role config from a Langfuse-only generic write', async () => {
+      const principalId = nextPrincipalId();
+      const patchRes = mockRes();
+      await handlers.patchConfigField(
+        mockReq({
+          params: { principalType: 'role', principalId },
+          body: { entries: [{ fieldPath: secretPath, value: SECRET }] },
+        }),
+        patchRes,
+      );
+      const upsertRes = mockRes();
+      await handlers.upsertConfigOverrides(
+        mockReq({
+          params: { principalType: 'role', principalId },
+          body: { overrides: { langfuse: { publicKey: 'pk-lf-1', secretKey: SECRET } } },
+        }),
+        upsertRes,
+      );
+
+      expect(patchRes.statusCode).toBe(200);
+      expect(upsertRes.statusCode).toBe(200);
+      expect(await mongoose.models.Config.exists({ principalId })).toBeNull();
+    });
+  });
 
   describe.each(PLACEHOLDER_CASES)('$path env placeholder', ({ path, placeholder }) => {
     it('stores and returns `${ENV_VAR}` references without encryption or redaction', async () => {

@@ -20,6 +20,7 @@ export interface IUser extends Document {
   username?: string;
   email: string;
   emailVerified: boolean;
+  emailChangedAt?: Date;
   password?: string;
   avatar?: string;
   provider: string;
@@ -47,6 +48,8 @@ export interface IUser extends Document {
     used: boolean;
     usedAt?: Date | null;
   }>;
+  /** Instant of the last credential change; access tokens issued before it are rejected */
+  credentialsChangedAt?: Date;
   refreshToken?: Array<{
     refreshToken: string;
   }>;
@@ -65,6 +68,9 @@ export interface IUser extends Document {
     statefulCodeEnvironment?: StatefulCodeEnvironment;
   };
   favorites?: TUserFavorite[];
+  /** Display order for the sidebar's Pinned section: favorite and pinned-chat
+   *  entry keys interleaved (`agent:`, `spec:`, `model:`, `convo:` prefixes). */
+  pinnedOrder?: string[];
   /** Per-skill active/inactive overrides. Key = skillId, value = active state. */
   skillStates?: Record<string, boolean>;
   createdAt?: Date;
@@ -90,6 +96,7 @@ export interface BalanceConfig {
   refillIntervalValue?: number;
   refillIntervalUnit?: RefillIntervalUnit;
   refillAmount?: number;
+  reservationTtlMs?: number;
 }
 
 export interface CreateUserRequest extends Partial<IUser> {

@@ -7,6 +7,7 @@ require('module-alias')({ base: path.resolve(__dirname, '..') });
 const cors = require('cors');
 const axios = require('axios');
 const express = require('express');
+const mongoose = require('mongoose');
 const passport = require('passport');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
@@ -42,10 +43,12 @@ const {
   setPluginHookSource,
   loadToolApprovalHooks,
   maybeInjectQueryDevtoolsBootstrap,
+  injectConfiguredFooterBootstrap,
   preAuthTenantMiddleware,
   requestContextMiddleware,
   registerShutdownTask,
   getRemainingShutdownMs,
+  registerBackgroundTaskShutdown,
   configureServerTimeouts,
   setupGracefulShutdown,
   updateInterfacePermissions,
@@ -54,7 +57,10 @@ const {
   configureAgentEventRuntime,
   createAgentEventTerminalHandler,
   createScheduleWriteGate,
+  startCodeEnvironmentLifecycleReconciler,
   waitForKeyvRedisClient,
+  warnOnUnreachableDeliveryPaths,
+  createCodeApiUploadRegistry,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const {
@@ -81,7 +87,6 @@ const createSpaFallback = require('./utils/fallback');
 const { getAppConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const noIndex = require('./middleware/noIndex');
-const routes = require('./routes');
 const agentEventMethods = require('~/models');
 
 /** Route admin file-config MIME patterns through a linear-time engine (ReDoS-safe) on upload. */
@@ -98,6 +103,7 @@ const host = HOST || 'localhost';
 const trusted_proxy = Number(TRUST_PROXY) || 1; /* trust first proxy by default */
 
 const app = express();
+app.locals.codeApiUploadRegistry = createCodeApiUploadRegistry();
 let serverReady = false;
 /** @type {import('@librechat/api').ScheduleEngineState} */
 let scheduleEngineState = 'starting';
@@ -190,6 +196,7 @@ const startServer = async () => {
   await connectDb();
 
   logger.info('Connected to MongoDB');
+  startCodeEnvironmentLifecycleReconciler({ mongoose });
   indexSync().catch((err) => {
     logger.error('[indexSync] Background sync failed:', err);
   });
@@ -224,7 +231,11 @@ const startServer = async () => {
     logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
   });
   const appConfig = await getAppConfig({ baseOnly: true });
+  registerBackgroundTaskShutdown({
+    interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
+  });
   configureAgentEventRuntime(appConfig?.endpoints?.agents?.eventDriven);
+  warnOnUnreachableDeliveryPaths(appConfig);
   initializeFileStorage(appConfig);
   const projectRoot = path.resolve(__dirname, '../..');
   // Plugin hooks execute only when the operator opts in via DEPLOYMENT_PLUGIN_HOOKS;
@@ -261,6 +272,10 @@ const startServer = async () => {
     await updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions });
   });
 
+  /* Route modules build their rate limiters as they load, so they load only after the
+   * startup checks have applied `rateLimits` from librechat.yaml. */
+  const routes = require('./routes');
+
   const indexPath = path.join(appConfig.paths.dist, 'index.html');
   let indexHTML = fs.readFileSync(indexPath, 'utf8');
 
@@ -276,6 +291,15 @@ const startServer = async () => {
       indexHTML = indexHTML.replace(/base href="\/"/, `base href="${baseHref}"`);
     }
   }
+
+  /* The composer lays out against whether a footer bar sits beneath it, and
+     `/api/config` answers that only after it has painted. One shell serves every
+     request, before there is a caller whose overrides could be resolved, so the
+     answer is the deployment's base configuration; `/api/config` resolves the
+     caller's and the client prefers it. */
+  indexHTML = injectConfiguredFooterBootstrap(indexHTML, {
+    customFooter: process.env.CUSTOM_FOOTER,
+  });
 
   const cspPolicy = createCspPolicy();
   const shellCache = shellCacheHeaders(cspPolicy != null);
@@ -366,7 +390,7 @@ const startServer = async () => {
   }
 
   if (isEnabled(ALLOW_SOCIAL_LOGIN)) {
-    await configureSocialLogins(app);
+    await configureSocialLogins(app, appConfig);
   }
 
   /* Per-request capability cache — must be registered before any route that calls hasCapability */
@@ -377,7 +401,7 @@ const startServer = async () => {
   app.use('/oauth', preAuthTenantMiddleware, routes.oauth);
   /* API Endpoints */
   app.use('/api/auth', preAuthTenantMiddleware, routes.auth);
-  app.use('/api/admin/insights', routes.insights);
+  app.use('/api/insights', routes.insights);
   app.use('/api/admin', routes.adminAuth);
   app.use('/api/admin/config', routes.adminConfig);
   app.use('/api/admin/code-environments', routes.adminCodeEnvironments);
@@ -396,6 +420,7 @@ const startServer = async () => {
   app.use('/api/search', routes.search);
   app.use('/api/messages', routes.messages);
   app.use('/api/convos', routes.convos);
+  app.use('/api/traces', routes.traces);
   app.use('/api/presets', routes.presets);
   app.use('/api/projects', routes.projects);
   app.use('/api/prompts', routes.prompts);
@@ -428,6 +453,8 @@ const startServer = async () => {
   app.use('/api/rum', routes.rum);
 
   app.use('/metrics', metricsRouter);
+
+  app.use('/api', routes.openapi);
 
   /** 404 for unmatched API routes */
   app.use('/api', apiNotFound);
@@ -477,7 +504,12 @@ const startServer = async () => {
       if (inspectFlags || isEnabled(process.env.MEM_DIAG)) {
         memoryDiagnostics.start();
       }
-      await initializeAgentTriggerService({ address: server.address() });
+      await initializeAgentTriggerService({
+        address: server.address(),
+        completionResultBatchSize:
+          appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+        idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
+      });
       const scheduleEngineArmed = (await initializeScheduleEngine()) != null;
       scheduleEngineState = scheduleEngineArmed ? 'armed' : 'unavailable';
       if (!scheduleEngineArmed) {

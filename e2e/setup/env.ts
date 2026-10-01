@@ -161,9 +161,13 @@ export function getLocalE2EEnv(): Record<string, string> {
     TOOL_CALL_VIOLATION_SCORE: '0',
     CONVO_ACCESS_VIOLATION_SCORE: '0',
     ILLEGAL_MODEL_REQ_SCORE: '0',
-    LOGIN_MAX: '20',
+    /** The suite authenticates far more often than a person does: a spec that
+     *  exercises a second account logs in once per Playwright project, and the
+     *  admin-config specs log in per test. 20 per minute throttles those runs
+     *  into flakes; no spec asserts login or registration throttling. */
+    LOGIN_MAX: '200',
     LOGIN_WINDOW: '1',
-    REGISTER_MAX: '20',
+    REGISTER_MAX: '200',
     REGISTER_WINDOW: '1',
     LIMIT_CONCURRENT_MESSAGES: 'false',
     CONCURRENT_MESSAGE_MAX: '20',

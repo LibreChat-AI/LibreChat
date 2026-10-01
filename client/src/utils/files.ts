@@ -7,6 +7,7 @@ import {
   SheetPaths,
 } from '@librechat/client';
 import {
+  Tools,
   megabyte,
   Providers,
   QueryKeys,
@@ -15,14 +16,16 @@ import {
   EToolResources,
   EModelEndpoint,
   retrievalMimeTypes,
+  isEphemeralAgentId,
   isBedrockDocumentType,
-  isPermissiveMimeConfig,
+  isExplicitMimeConfig,
   codeInterpreterMimeTypes,
   isDocumentSupportedProvider,
   fileConfig as defaultFileConfig,
 } from 'librechat-data-provider';
 import type {
   TFile,
+  TMessage,
   DeleteFilesResponse,
   EndpointFileConfig,
   FileConfig,
@@ -33,6 +36,45 @@ import type { QueryClient } from '@tanstack/react-query';
 import type { ExtendedFile } from '~/common';
 
 export const partialTypes = ['text/x-'];
+
+/** Text-routed images use the file action so their extracted preview is reachable. */
+export function usesImagePreview(file: Partial<Pick<TFile, 'type' | 'llmDeliveryPath'>>): boolean {
+  return file.type?.startsWith('image/') === true && file.llmDeliveryPath !== 'text';
+}
+
+export type FileDeliveryMetadataMap = Readonly<
+  Record<string, Pick<TFile, 'llmDeliveryPath'> | undefined>
+>;
+
+/** Restores display-only delivery metadata that an older replica may have
+ * omitted from a persisted attachment ref. The persisted ref wins, followed
+ * by the matching process-local ref, then the owner-scoped stored file map. */
+export function hydrateFileDeliveryMetadata(
+  persistedFiles: TMessage['files'],
+  localFiles?: TMessage['files'],
+  storedFiles?: FileDeliveryMetadataMap,
+): TMessage['files'] {
+  if (persistedFiles == null || persistedFiles.length === 0) {
+    return persistedFiles;
+  }
+  const localById = new Map(
+    (localFiles ?? []).flatMap((file) =>
+      file.file_id != null ? [[file.file_id, file] as const] : [],
+    ),
+  );
+  let changed = false;
+  const hydrated = persistedFiles.map((file) => {
+    const local = file.file_id == null ? undefined : localById.get(file.file_id);
+    const stored = file.file_id == null ? undefined : storedFiles?.[file.file_id];
+    const llmDeliveryPath = local?.llmDeliveryPath ?? stored?.llmDeliveryPath;
+    if (file.llmDeliveryPath != null || llmDeliveryPath == null) {
+      return file;
+    }
+    changed = true;
+    return { ...file, llmDeliveryPath };
+  });
+  return changed ? hydrated : persistedFiles;
+}
 
 export function hasIncompleteFiles(files: Map<string, ExtendedFile>): boolean {
   for (const file of files.values()) {
@@ -45,38 +87,38 @@ export function hasIncompleteFiles(files: Map<string, ExtendedFile>): boolean {
 
 const textDocument = {
   paths: TextPaths,
-  fill: '#FF5588',
+  fillClassName: 'fill-file-document',
   title: 'Document',
 };
 
 const spreadsheet = {
   paths: SheetPaths,
-  fill: '#10A37F',
+  fillClassName: 'fill-file-sheet',
   title: 'Spreadsheet',
 };
 
 const codeFile = {
   paths: CodePaths,
-  fill: '#FF6E3C',
+  fillClassName: 'fill-file-code',
   // TODO: make this dynamic to the language
   title: 'Code',
 };
 
 const artifact = {
   paths: CodePaths,
-  fill: '#2D305C',
+  fillClassName: 'fill-file-artifact',
   title: 'Code',
 };
 
 const audioFile = {
   paths: AudioPaths,
-  fill: '#FF6B35',
+  fillClassName: 'fill-file-audio',
   title: 'Audio',
 };
 
 const videoFile = {
   paths: VideoPaths,
-  fill: '#8B5CF6',
+  fillClassName: 'fill-file-video',
   title: 'Video',
 };
 
@@ -84,7 +126,7 @@ export const fileTypes = {
   /* Category matches */
   file: {
     paths: FilePaths,
-    fill: '#0000FF',
+    fillClassName: 'fill-file-generic',
     title: 'File',
   },
   text: textDocument,
@@ -132,7 +174,7 @@ export const getFileType = (
   type = '',
 ): {
   paths: React.FC;
-  fill: string;
+  fillClassName: string;
   title: string;
 } => {
   // Direct match check
@@ -203,9 +245,31 @@ export function formatDate(dateString: string, isSmallScreen = false) {
 }
 
 /**
+ * Matches every `[QueryKeys.files, 'recent', limit]` cache entry regardless of
+ * the requested limit, so any writer that patches the plain `[QueryKeys.files]`
+ * list can keep the composer palette's recent-files list in step with it.
+ */
+export const isRecentFilesQueryKey = (queryKey: readonly unknown[]): boolean =>
+  queryKey[0] === QueryKeys.files && queryKey[1] === 'recent';
+
+/**
+ * The recent-files query is server-sorted and mounted with refetching off, so a
+ * new file only reaches it when something invalidates it explicitly.
+ */
+export const invalidateRecentFiles = (queryClient: QueryClient): void => {
+  queryClient.invalidateQueries({
+    predicate: (query) => isRecentFilesQueryKey(query.queryKey),
+  });
+};
+
+/**
  * Adds a file to the query cache
  */
 export function addFileToCache(queryClient: QueryClient, newfile: TFile) {
+  /* Ahead of the early returns below: the full list may not be cached at all
+     while the palette's recent list is, and that list still has to learn about
+     the new file. */
+  invalidateRecentFiles(queryClient);
   const currentFiles = queryClient.getQueryData<TFile[]>([QueryKeys.files]);
 
   if (!currentFiles) {
@@ -239,6 +303,17 @@ export function formatBytes(bytes: number, decimals = 2) {
   const dm = decimals < 0 ? 0 : decimals;
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm));
+}
+
+/** Formats bytes with unit suffix (differs from ~/utils/formatBytes which returns a raw number). */
+export function formatFileSize(bytes: number): string {
+  if (bytes >= 1048576) {
+    return `${(bytes / 1048576).toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${bytes} B`;
 }
 
 const { checkType } = defaultFileConfig;
@@ -460,6 +535,10 @@ export const validateFiles = ({
       fileList[i] = newFile;
     }
 
+    /* Unified mode routes by MIME type but does not widen what may be uploaded: the
+     * endpoint allowlist is the same ceiling the server enforces in `filterFile`, so
+     * accepting extraction-capable types beyond it only turns a preflight message into
+     * a failed request. */
     let mimeTypesToCheck = supportedMimeTypes;
     if (toolResource === EToolResources.context) {
       mimeTypesToCheck = [
@@ -518,12 +597,12 @@ const isProviderAttachType = (type: string, ctx: UploadOptionContext): boolean =
     isDocumentSupportedProvider(currentProvider) ||
     isAzureWithResponsesApi
   ) {
-    /** Custom endpoints that the admin opened up (permissive config) honor that allowlist,
-     * matching the file picker; an inherited default config is not treated as opened up. */
+    /** Custom endpoints with an admin-configured allowlist honor it for direct attach (this is
+     * how video/audio get opted in for an OpenAI-compatible gateway), matching the file picker
+     * and the server-side encoders; an inherited default config is not treated as opened up. */
     if (
       ctx.endpointType === EModelEndpoint.custom &&
-      ctx.endpointSupportedMimeTypes != null &&
-      isPermissiveMimeConfig(ctx.endpointSupportedMimeTypes)
+      isExplicitMimeConfig(ctx.endpointSupportedMimeTypes)
     ) {
       return checkType(type, ctx.endpointSupportedMimeTypes);
     }
@@ -551,11 +630,52 @@ const isContextType = (type: string, fileConfig: FileConfig | null): boolean =>
   ]);
 
 /**
+ * Which tool destinations an upload may be routed to, before the files
+ * themselves are considered.
+ *
+ * A saved agent's tool list is the authority: it can only receive uploads for
+ * the tools it was built with. Everywhere else the destination is offered
+ * whether or not the tool is currently switched on, because choosing it is what
+ * switches it on.
+ *
+ * Shared by the `+` menu and the drag-and-drop router so a file has the same
+ * destinations however it arrives.
+ */
+export interface UploadToolAllowances {
+  fileSearchAllowedByAgent: boolean;
+  codeAllowedByAgent: boolean;
+}
+
+export const getUploadToolAllowances = (
+  agentId: string | null | undefined,
+  tools: string[] | undefined,
+): UploadToolAllowances => {
+  const isSavedAgent = agentId != null && agentId !== '' && !isEphemeralAgentId(agentId);
+  return {
+    fileSearchAllowedByAgent: !isSavedAgent || (tools?.includes(Tools.file_search) ?? false),
+    codeAllowedByAgent: !isSavedAgent || (tools?.includes(Tools.execute_code) ?? false),
+  };
+};
+
+/**
  * Upload destinations a file set can be routed to, given the active endpoint and agent
  * capabilities. `undefined` is direct provider attachment; the rest are tool resources.
  * Each option requires every file to be valid for it, so the caller can decide between
  * auto-routing (one option), prompting (multiple), or rejecting (none).
  */
+/**
+ * Whether uploads route from the file itself rather than through the destination chooser.
+ * Answering it needs a config the server actually returned: without one the built-in
+ * defaults apply, and their absent `legacyFileUploadUX` reads as unified, which is the
+ * wrong uploader on a legacy deployment. A failed or paused query is as unresolved as a
+ * pending one, so the caller passes whether the fetch succeeded rather than whether it
+ * has stopped.
+ */
+export const isUnifiedUploadMode = (
+  endpointFileConfig: EndpointFileConfig | undefined,
+  isConfigResolved: boolean,
+): boolean => isConfigResolved && endpointFileConfig?.legacyFileUploadUX !== true;
+
 export const getViableUploadOptions = (
   fileList: File[],
   ctx: UploadOptionContext,

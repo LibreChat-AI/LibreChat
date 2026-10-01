@@ -59,6 +59,7 @@ jest.mock('lucide-react', () => ({
   CornerDownRight: () => null,
   Radio: () => null,
   XCircle: () => null,
+  Zap: () => null,
 }));
 
 const turns: ChildConversationTurn[] = [
@@ -113,8 +114,9 @@ describe('SubagentConversation', () => {
       </ChatSurfaceHarness>,
     );
 
-    expect(screen.getAllByText('com_ui_subagent_trigger_parent_dispatch')).toHaveLength(2);
-    expect(screen.getAllByText('com_ui_subagent_trigger_external_event')).toHaveLength(2);
+    expect(screen.getByText('com_ui_subagent_trigger_parent_dispatch')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_subagent_trigger_external_event')).toBeInTheDocument();
+    expect(screen.getAllByRole('heading', { name: /^com_ui_system_event/ })).toHaveLength(2);
     expect(screen.getByText('Investigate the release.')).toBeInTheDocument();
     expect(screen.getByText('Checked the constraints.')).toBeInTheDocument();
     expect(screen.getByText('search')).toBeInTheDocument();

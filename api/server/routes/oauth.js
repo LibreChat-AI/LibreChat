@@ -81,7 +81,6 @@ router.get(
   '/google/callback',
   passport.authenticate('google', {
     failureRedirect: `${domains.client}/oauth/error`,
-    failureMessage: true,
     session: false,
     scope: ['openid', 'profile', 'email'],
   }),
@@ -106,7 +105,6 @@ router.get(
   '/facebook/callback',
   passport.authenticate('facebook', {
     failureRedirect: `${domains.client}/oauth/error`,
-    failureMessage: true,
     session: false,
     scope: ['public_profile'],
     profileFields: ['id', 'email', 'name'],
@@ -149,7 +147,6 @@ router.get(
   '/github/callback',
   passport.authenticate('github', {
     failureRedirect: `${domains.client}/oauth/error`,
-    failureMessage: true,
     session: false,
     scope: ['user:email', 'read:user'],
   }),
@@ -173,7 +170,6 @@ router.get(
   '/discord/callback',
   passport.authenticate('discord', {
     failureRedirect: `${domains.client}/oauth/error`,
-    failureMessage: true,
     session: false,
     scope: ['identify', 'email'],
   }),
@@ -196,7 +192,6 @@ router.post(
   '/apple/callback',
   passport.authenticate('apple', {
     failureRedirect: `${domains.client}/oauth/error`,
-    failureMessage: true,
     session: false,
   }),
   setBalanceConfig,

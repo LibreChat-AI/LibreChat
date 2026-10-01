@@ -1,5 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { Provider as JotaiProvider } from 'jotai';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
 import MultiMessage from '../MultiMessage';
@@ -63,14 +64,16 @@ const msg = (messageId: string): TMessage =>
 const tree = (ids: string[]) => ids.map((id) => msg(id));
 
 const treeElement = (ids: string[]) => (
-  <RecoilRoot>
-    <MultiMessage
-      messageId="parent-1"
-      messagesTree={tree(ids)}
-      currentEditId={null}
-      setCurrentEditId={jest.fn()}
-    />
-  </RecoilRoot>
+  <JotaiProvider>
+    <RecoilRoot>
+      <MultiMessage
+        messageId="parent-1"
+        messagesTree={tree(ids)}
+        currentEditId={null}
+        setCurrentEditId={jest.fn()}
+      />
+    </RecoilRoot>
+  </JotaiProvider>
 );
 
 const displayed = () => screen.getAllByTestId('row')[0].textContent;

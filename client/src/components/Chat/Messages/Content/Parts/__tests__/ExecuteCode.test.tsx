@@ -172,7 +172,6 @@ describe('ExecuteCode programmatic tool trace', () => {
       { callId: 'a', name: 'read_file', status: 'success', args: 'path=a.ts', durationMs: 1200 },
     ]);
 
-    expect(getByText('read_file')).toBeInTheDocument();
     expect(getByText('path=a.ts')).toBeInTheDocument();
   });
 

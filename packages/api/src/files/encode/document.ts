@@ -15,8 +15,12 @@ import type {
   DocumentResult,
   ServerRequest,
 } from '~/types';
+import {
+  getFileStream,
+  getConfiguredFileSizeLimit,
+  isAttachmentObjectNotFoundError,
+} from './utils';
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
-import { getFileStream, getConfiguredFileSizeLimit } from './utils';
 import { runGuardedEncode } from './memoryGuard';
 
 /** Anthropic only accepts PDFs as base64 documents; textual types must use a text source */
@@ -44,6 +48,17 @@ function getAnthropicDocumentSource(
 }
 
 /**
+ * Whether the model behind this provider is Claude, which accepts only PDFs as base64
+ * documents. OpenAI-compatible gateways report an OpenAI-like provider for Claude models.
+ */
+function usesAnthropicDocumentCapabilities(provider: Providers, model?: string): boolean {
+  return (
+    provider === Providers.ANTHROPIC ||
+    (isOpenAILikeProvider(provider) && (model?.toLowerCase().includes('claude') ?? false))
+  );
+}
+
+/**
  * Formats a base64-encoded document into the appropriate provider-specific block.
  * Returns `null` when the provider has no matching handler.
  */
@@ -53,6 +68,7 @@ function formatDocumentBlock(
   content: string,
   filename: string | undefined,
   useResponsesApi: boolean | undefined,
+  model?: string,
 ): DocumentBlock | null {
   if (provider === Providers.ANTHROPIC) {
     const source = getAnthropicDocumentSource(mimeType, content);
@@ -82,6 +98,19 @@ function formatDocumentBlock(
   }
 
   const resolvedFilename = filename ?? 'document';
+
+  /* A gateway translates an OpenAI `file` part into a base64 document with the file's own
+   * media type, which Claude rejects for anything but PDF. Send textual files as text. */
+  if (
+    !useResponsesApi &&
+    isAnthropicTextDocumentType(mimeType) &&
+    usesAnthropicDocumentCapabilities(provider, model)
+  ) {
+    return {
+      type: 'text',
+      text: `File: "${resolvedFilename}"\n\n${Buffer.from(content, 'base64').toString('utf8')}`,
+    };
+  }
 
   if (useResponsesApi) {
     return {
@@ -119,11 +148,7 @@ function filterProviderDocumentFiles(
     return files.filter((file) => isBedrockDocumentType(file.type));
   }
 
-  const usesAnthropicDocumentCapabilities =
-    provider === Providers.ANTHROPIC ||
-    (isOpenAILikeProvider(provider) && model?.toLowerCase().includes('claude'));
-
-  if (!usesAnthropicDocumentCapabilities) {
+  if (!usesAnthropicDocumentCapabilities(provider, model)) {
     return files;
   }
 
@@ -209,6 +234,9 @@ export async function encodeAndFormatDocuments(
 
   for (const settledResult of results) {
     if (settledResult.status === 'rejected') {
+      if (isAttachmentObjectNotFoundError(settledResult.reason)) {
+        throw settledResult.reason;
+      }
       console.error('Document processing failed:', settledResult.reason);
       continue;
     }
@@ -276,6 +304,7 @@ export async function encodeAndFormatDocuments(
         content,
         file.filename,
         useResponsesApi,
+        model,
       );
       if (block) {
         result.documents.push(block);
@@ -295,6 +324,7 @@ export async function encodeAndFormatDocuments(
         content,
         file.filename,
         useResponsesApi,
+        model,
       );
       if (block) {
         result.documents.push(block);

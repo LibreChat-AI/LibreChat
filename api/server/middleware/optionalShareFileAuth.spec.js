@@ -4,8 +4,9 @@ const mockFindSession = jest.fn();
 const mockRunAsSystem = jest.fn((fn) => fn());
 
 jest.mock('jsonwebtoken', () => ({ verify: (...args) => mockVerify(...args) }));
+/** Installed packages need real module IDs when Jest reuses a resolver across suites. */
 jest.mock('@librechat/api', () => ({ isEnabled: (v) => v === 'true' || v === true }), {
-  virtual: true,
+  virtual: false,
 });
 jest.mock(
   '@librechat/data-schemas',
@@ -13,10 +14,10 @@ jest.mock(
     logger: { warn: jest.fn(), error: jest.fn() },
     runAsSystem: (...args) => mockRunAsSystem(...args),
   }),
-  { virtual: true },
+  { virtual: false },
 );
 jest.mock('librechat-data-provider', () => ({ SystemRoles: { USER: 'USER' } }), {
-  virtual: true,
+  virtual: false,
 });
 jest.mock('~/models', () => ({
   getUserById: (...args) => mockGetUserById(...args),

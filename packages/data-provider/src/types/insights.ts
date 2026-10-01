@@ -3,14 +3,21 @@ export type InsightsRange = '24h' | '7d' | '30d' | 'custom';
 export const INSIGHTS_MAX_RANGE_DAYS = 30;
 export const INSIGHTS_SEARCH_MIN_LENGTH = 3;
 export const INSIGHTS_SEARCH_MAX_LENGTH = 200;
+export const INSIGHTS_AGENT_ID_MAX_LENGTH = 256;
 export type TInsightsParams = {
   range?: InsightsRange;
   fromTimestamp?: string;
   toTimestamp?: string;
   timeZone?: string;
   search?: string;
+  agentIds?: string[];
   page?: number;
   pageSize?: number;
+};
+
+export type TInsightsAgent = {
+  id: string;
+  name: string;
 };
 
 export type TInsightsDailyPoint = {
@@ -36,6 +43,8 @@ export type TInsightsChurnedUser = TInsightsUser & {
 
 export type TInsightsConversation = {
   conversationId: string;
+  agentId: string;
+  agentName: string;
   date: string;
   userId: string;
   name: string;
@@ -53,6 +62,7 @@ export type TInsightsSummary = {
 };
 
 export type TInsightsResponse = {
+  agents: TInsightsAgent[];
   summary: TInsightsSummary;
   daily: TInsightsDailyPoint[];
   topUsers: TInsightsUser[];

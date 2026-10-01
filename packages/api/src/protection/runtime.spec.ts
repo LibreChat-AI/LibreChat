@@ -180,6 +180,7 @@ describe('configured content inspection', () => {
       source: 'message',
       field: 'text',
       provenance: 'user',
+      occurrences: 1,
     };
     expect(logger.info).toHaveBeenCalledWith(
       `[content-filter] Audit-only finding ${JSON.stringify(metadata)}`,

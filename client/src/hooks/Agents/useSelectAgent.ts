@@ -39,10 +39,22 @@ export default function useSelectAgent() {
         });
         return;
       }
-      const currentConvo = getDefaultConversation({
-        conversation: { ...(conversation ?? {}), agent_id: agent.id, ...specDisplayFieldReset },
+      const switchesAgent = conversation?.agent_id !== agent.id;
+      const resolvedConvo = getDefaultConversation({
+        conversation: {
+          ...(conversation ?? {}),
+          agent_id: agent.id,
+          codeEnvironmentMode: switchesAgent ? undefined : conversation?.codeEnvironmentMode,
+          codeWorkspaces: switchesAgent ? undefined : conversation?.codeWorkspaces,
+          ...specDisplayFieldReset,
+        },
         preset: template,
       });
+      const currentConvo = {
+        ...resolvedConvo,
+        codeEnvironmentMode: switchesAgent ? undefined : conversation?.codeEnvironmentMode,
+        codeWorkspaces: switchesAgent ? undefined : conversation?.codeWorkspaces,
+      };
       newConversation({
         template: currentConvo,
         preset: template as Partial<TPreset>,
@@ -63,6 +75,8 @@ export default function useSelectAgent() {
         endpoint: EModelEndpoint.agents,
         agent_id: agent.id,
         conversationId: Constants.NEW_CONVO as string,
+        codeEnvironmentMode: undefined,
+        codeWorkspaces: undefined,
         ...specDisplayFieldReset,
       };
 

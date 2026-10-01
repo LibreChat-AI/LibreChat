@@ -1,10 +1,12 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { MCPIcon } from '@librechat/client';
 import { PermissionBits, hasPermissions } from 'librechat-data-provider';
 import type { MCPServerStatusIconProps } from '~/components/MCP/MCPServerStatusIcon';
 import type { MCPServerDefinition } from '~/hooks';
+import McpOAuthDialog from '~/components/MCP/McpOAuthDialog';
 import { useMCPServerManager, useLocalize } from '~/hooks';
 import { getStatusDotColor } from './MCPStatusBadge';
+import CustomIcon from '~/components/ui/CustomIcon';
 import MCPServerDialog from './MCPServerDialog';
 import MCPCardActions from './MCPCardActions';
 import { cn } from '~/utils';
@@ -30,8 +32,9 @@ export default function MCPServerCard({
 }: MCPServerCardProps) {
   const localize = useLocalize();
   const triggerRef = useRef<HTMLDivElement>(null);
-  const { initializeServer, revokeOAuthForServer } = useMCPServerManager();
+  const { initializeServer, revokeOAuthForServer, getOAuthUrl } = useMCPServerManager();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [awaitingOAuth, setAwaitingOAuth] = useState(false);
 
   const statusIconProps = getServerStatusIconProps(server.serverName);
   const {
@@ -48,8 +51,20 @@ export default function MCPServerCard({
   const description = server.config?.description;
   const statusDotColor = getStatusDotColor(serverStatus, isInitializing);
   const canEdit = canCreateEditMCPs && canEditThisServer;
+  /** The shared flow URL is cleared when its initialization ends, so it can never be stale. */
+  const sharedOAuthUrl = getOAuthUrl(server.serverName);
 
-  const handleInitialize = () => {
+  useEffect(() => {
+    if (!isInitializing) {
+      setAwaitingOAuth(false);
+    }
+  }, [isInitializing]);
+
+  /**
+   * `autoOpenOAuth=false` surfaces the authorization URL in the OAuth dialog, whose Continue opens
+   * it inside the tap. A tab opened after the initialize request is blocked on iOS home-screen apps.
+   */
+  const handleInitialize = async () => {
     /** If server has custom user vars and is not already connected, show config dialog first
      *  This ensures users can enter credentials before initialization attempts
      */
@@ -57,7 +72,11 @@ export default function MCPServerCard({
       onConfigClick({ stopPropagation: () => {}, preventDefault: () => {} } as React.MouseEvent);
       return;
     }
-    initializeServer(server.serverName);
+    setAwaitingOAuth(false);
+    const response = await initializeServer(server.serverName, false);
+    if (response?.oauthRequired && response.oauthUrl) {
+      setAwaitingOAuth(true);
+    }
   };
 
   const handleRevoke = () => {
@@ -92,29 +111,29 @@ export default function MCPServerCard({
       <div
         className={cn(
           'group flex items-center gap-3 rounded-lg px-3 py-2.5',
-          'border border-border-light bg-transparent',
+          /** Flat row, not a card: the hover fill is the only affordance a list needs. */
+          'hover:bg-surface-active-alt bg-transparent',
         )}
         aria-label={`${displayName} - ${getStatusText()}`}
       >
         {/* Server Icon with Status Dot */}
-        <div className="relative flex-shrink-0">
+        <div className="relative shrink-0">
           {server.config?.iconPath ? (
-            <img
+            <CustomIcon
               src={server.config.iconPath}
-              className="size-8 rounded-lg object-cover"
+              className="text-text-primary size-8 rounded-lg object-cover"
               alt=""
-              aria-hidden="true"
             />
           ) : (
-            <div className="flex size-8 items-center justify-center rounded-lg bg-surface-tertiary">
-              <MCPIcon className="size-5 text-text-secondary" aria-hidden="true" />
+            <div className="bg-surface-tertiary flex size-8 items-center justify-center rounded-lg">
+              <MCPIcon className="text-text-secondary size-5" aria-hidden="true" />
             </div>
           )}
           {/* Status dot - color indicates connection state */}
           <div
             className={cn(
-              'absolute -bottom-0.5 -right-0.5 size-3 rounded-full',
-              'border-2 border-surface-primary',
+              'absolute -right-0.5 -bottom-0.5 size-3 rounded-full',
+              'border-surface-primary border-2',
               statusDotColor,
               (isInitializing || serverStatus?.connectionState === 'connecting') && 'animate-pulse',
             )}
@@ -124,12 +143,12 @@ export default function MCPServerCard({
 
         {/* Server Info */}
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-text-primary">{displayName}</div>
-          {description && <p className="truncate text-xs text-text-secondary">{description}</p>}
+          <div className="text-text-primary truncate text-sm font-medium">{displayName}</div>
+          {description && <p className="text-text-secondary truncate text-xs">{description}</p>}
         </div>
 
         {/* Actions */}
-        <div className="flex-shrink-0">
+        <div className="shrink-0">
           <MCPCardActions
             serverName={server.serverName}
             serverStatus={serverStatus}
@@ -156,6 +175,17 @@ export default function MCPServerCard({
           server={server}
         />
       )}
+      <McpOAuthDialog
+        open={awaitingOAuth && isInitializing && sharedOAuthUrl != null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAwaitingOAuth(false);
+          }
+        }}
+        serverName={server.serverName}
+        oauthUrl={sharedOAuthUrl ?? ''}
+        iconUrl={server.config?.iconPath}
+      />
     </>
   );
 }

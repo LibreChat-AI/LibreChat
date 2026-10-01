@@ -9,6 +9,7 @@
  */
 
 import { logger } from '@librechat/data-schemas';
+import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { MCPConnection } from '~/mcp/connection';
 import { mcpConfig } from '~/mcp/mcpConfig';
 
@@ -48,11 +49,15 @@ const makeTool = (name: string) => ({
 });
 
 /** Build a bare MCPConnection (no real transport) with an injected, controllable client. */
-function createConnectionWithListTools(listTools: jest.Mock): MCPConnection {
+function createConnectionWithListTools(
+  listTools: jest.Mock,
+  directBearerRecoveryEnabled = false,
+): MCPConnection {
   const conn = new MCPConnection({
     serverName: 'pagination-test',
     serverConfig: { type: 'streamable-http', url: 'http://localhost/mcp' },
     useSSRFProtection: false,
+    directBearerRecoveryEnabled,
   });
   conn.client.listTools = listTools;
   return conn;
@@ -129,6 +134,60 @@ describe('MCPConnection.fetchTools pagination', () => {
       complete: true,
     });
   });
+
+  it.each([
+    { notificationFirst: true, interruption: 'none' },
+    { notificationFirst: false, interruption: 'none' },
+    { notificationFirst: true, interruption: 'abort' },
+    { notificationFirst: true, interruption: 'disconnect' },
+  ])(
+    'orders auth rejection with notificationFirst=$notificationFirst, interruption=$interruption',
+    async ({ notificationFirst, interruption }) => {
+      let releaseStale!: (value: { tools: ReturnType<typeof makeTool>[] }) => void;
+      let rejectRefresh!: (error: Error) => void;
+      const stale = new Promise<{ tools: ReturnType<typeof makeTool>[] }>((resolve) => {
+        releaseStale = resolve;
+      });
+      const refresh = new Promise<never>((_, reject) => {
+        rejectRefresh = reject;
+      });
+      const listTools = jest.fn().mockReturnValueOnce(stale).mockReturnValueOnce(refresh);
+      const conn = createConnectionWithListTools(listTools, true);
+      Reflect.set(conn, 'connectionState', 'connected');
+      jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({ tools: {} });
+      const authenticationError = Object.assign(new Error('Unauthorized'), { status: 401 });
+
+      const controller = new AbortController();
+      const requested = conn.fetchOrderedToolsSnapshot(undefined, controller.signal);
+      await Promise.resolve();
+      const notified = conn.refreshToolList();
+      if (notificationFirst) {
+        rejectRefresh(authenticationError);
+        await notified;
+        if (interruption === 'abort') {
+          controller.abort();
+        } else if (interruption === 'disconnect') {
+          await conn.disconnect();
+        }
+        releaseStale({ tools: [makeTool('stale')] });
+      } else {
+        releaseStale({ tools: [makeTool('stale')] });
+        await Promise.resolve();
+        rejectRefresh(authenticationError);
+        await notified;
+      }
+
+      if (interruption === 'none') {
+        await expect(requested).resolves.toEqual(
+          expect.objectContaining({ complete: false, authenticationError }),
+        );
+      } else {
+        await expect(requested).resolves.toEqual({ tools: [], complete: false });
+      }
+      expect(listTools).toHaveBeenCalledTimes(2);
+      await conn.disconnect();
+    },
+  );
 
   it('follows nextCursor across pages, concatenating every tool and passing the cursor back', async () => {
     const listTools = jest.fn(async (params?: { cursor?: string }) => {
@@ -320,15 +379,18 @@ describe('MCPConnection.fetchTools pagination', () => {
     expect(reserve).not.toHaveBeenCalled();
   });
 
-  it('hands the caller signal to the SDK so an in-flight page is cancellable', async () => {
+  it('detaches a completed SDK page request from its caller signal', async () => {
     const listTools = jest.fn().mockResolvedValue({ tools: [makeTool('a')] });
     const conn = createConnectionWithListTools(listTools);
-    const signal = AbortSignal.timeout(5000);
+    const controller = new AbortController();
 
-    await conn.fetchToolsSnapshot(Date.now() + 5000, signal);
+    await conn.fetchToolsSnapshot(Date.now() + 5000, controller.signal);
 
     const options = listTools.mock.calls[0][1]!;
-    expect(options.signal).toBe(signal);
+    expect(options.signal === controller.signal).toBe(false);
+    expect(options.signal?.aborted).toBe(false);
+    controller.abort();
+    expect(options.signal?.aborted).toBe(false);
   });
 
   it('makes no request and no reservation when the signal is already aborted', async () => {
@@ -350,7 +412,7 @@ describe('MCPConnection.fetchTools pagination', () => {
     const conn = createConnectionWithListTools(jest.fn());
     const mutable = conn as unknown as {
       toolListChangeGeneration: number;
-      toolListRefreshPromise: Promise<void> | null;
+      toolListRefreshPromise: Promise<unknown> | null;
     };
     /** A `list_changed` lands mid-fetch, so the ordered read must wait on a refresh... */
     const listTools = jest.fn(async () => {
@@ -374,7 +436,7 @@ describe('MCPConnection.fetchTools pagination', () => {
     const conn = createConnectionWithListTools(jest.fn());
     const mutable = conn as unknown as {
       toolListChangeGeneration: number;
-      toolListRefreshPromise: Promise<void> | null;
+      toolListRefreshPromise: Promise<unknown> | null;
     };
     const listTools = jest.fn(async () => {
       mutable.toolListChangeGeneration = 1;
@@ -464,6 +526,119 @@ describe('MCPConnection.fetchTools pagination', () => {
     expect(tools).toEqual([]);
     expect(listTools).toHaveBeenCalledTimes(1);
     expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch tools'));
+  });
+
+  it('preserves an authentication rejection without scheduling a health retry', async () => {
+    const authError = Object.assign(new Error('unauthorized'), { status: 401 });
+    const listTools = jest.fn().mockRejectedValue(authError);
+    const conn = createConnectionWithListTools(listTools, true);
+    Reflect.set(conn, 'connectionState', 'connected');
+    jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({ tools: {} });
+
+    const snapshot = await conn.refreshToolList();
+
+    expect(snapshot?.authenticationError).toBe(authError);
+    expect(Reflect.get(conn, 'toolListRefreshFailures')).toBe(0);
+    expect(Reflect.get(conn, 'toolListRefreshRetryTimer')).toBeNull();
+    expect(Reflect.get(conn, 'toolListRefreshSuspended')).toBe(true);
+    await Promise.resolve();
+    expect(listTools).toHaveBeenCalledTimes(1);
+
+    const ownerSnapshot = await conn.refreshToolList();
+    expect(ownerSnapshot?.authenticationError).toBe(authError);
+    expect(listTools).toHaveBeenCalledTimes(1);
+
+    conn.emit('connectionChange', 'disconnected');
+    expect(await conn.refreshToolList()).toBeUndefined();
+    listTools.mockResolvedValue({ tools: [makeTool('recovered')] });
+    conn.emit('connectionChange', 'connected');
+    const recoveredSnapshot = await conn.refreshToolList();
+    expect(recoveredSnapshot?.complete).toBe(true);
+    expect(recoveredSnapshot?.authenticationError).toBeUndefined();
+  });
+
+  it('cancels an owned catalog read without retrying it in the background', async () => {
+    const controller = new AbortController();
+    const listTools = jest.fn(
+      (_params, options) =>
+        new Promise((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), {
+            once: true,
+          });
+        }),
+    );
+    const conn = createConnectionWithListTools(listTools, true);
+    Reflect.set(conn, 'connectionState', 'connected');
+    jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({ tools: {} });
+    const read = conn.refreshToolList(controller.signal);
+    const outcome = read.catch((error: Error) => error);
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort(new Error('request stopped'));
+    await expect(outcome).resolves.toMatchObject({ message: 'request stopped' });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(listTools).toHaveBeenCalledTimes(1);
+    expect(Reflect.get(conn, 'toolListRefreshRetryTimer')).toBeNull();
+  });
+
+  it('does not treat a JSON-RPC catalog error mentioning auth as transport rejection', async () => {
+    const conn = createConnectionWithListTools(
+      jest
+        .fn()
+        .mockRejectedValue(
+          new McpError(ErrorCode.InternalError, 'downstream HTTP 401 invalid_token'),
+        ),
+      true,
+    );
+    expect((await conn.fetchToolsSnapshot()).authenticationError).toBeUndefined();
+  });
+
+  it('keeps ordinary authentication modes eligible for tool-list retry', async () => {
+    const authError = Object.assign(new Error('unauthorized'), { status: 401 });
+    const listTools = jest.fn().mockRejectedValue(authError);
+    const conn = createConnectionWithListTools(listTools);
+    Reflect.set(conn, 'connectionState', 'connected');
+    jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({ tools: {} });
+
+    await conn.refreshToolList();
+
+    expect(Reflect.get(conn, 'toolListRefreshSuspended')).toBe(false);
+    expect(Reflect.get(conn, 'toolListRefreshFailures')).toBe(1);
+    const retryTimer = Reflect.get(conn, 'toolListRefreshRetryTimer') as NodeJS.Timeout;
+    expect(retryTimer).toBeDefined();
+    clearTimeout(retryTimer);
+  });
+
+  it('does not classify an ordinary tools/list failure as authentication rejection', async () => {
+    const conn = createConnectionWithListTools(jest.fn().mockRejectedValue(new Error('boom')));
+
+    const snapshot = await conn.fetchToolsSnapshot();
+
+    expect(snapshot.authenticationError).toBeUndefined();
+  });
+
+  it('scopes authentication rejection to the exact concurrent snapshot that observed it', async () => {
+    const authError = Object.assign(new Error('unauthorized'), { status: 401 });
+    let rejectFirst: ((error: unknown) => void) | undefined;
+    const firstPage = new Promise<never>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    const listTools = jest
+      .fn()
+      .mockReturnValueOnce(firstPage)
+      .mockResolvedValueOnce({ tools: [makeTool('healthy')] });
+    const conn = createConnectionWithListTools(listTools);
+
+    const rejected = conn.fetchToolsSnapshot();
+    await Promise.resolve();
+    const healthy = conn.fetchToolsSnapshot();
+    rejectFirst?.(authError);
+
+    await expect(healthy).resolves.toMatchObject({ complete: true });
+    await expect(rejected).resolves.toMatchObject({
+      complete: false,
+      authenticationError: authError,
+    });
+    expect((await healthy).authenticationError).toBeUndefined();
   });
 });
 

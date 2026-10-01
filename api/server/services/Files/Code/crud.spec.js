@@ -42,6 +42,14 @@ jest.mock('@librechat/api', () => {
       form.append('id', identity.id);
       if (identity.version != null) form.append('version', String(identity.version));
     }),
+    wrapCodeApiUploadError: jest.fn((error, message) => {
+      const wrapped = new Error(`${message} ${error.message}`, { cause: error });
+      if (error?.isAxiosError === true) {
+        wrapped.isAxiosError = true;
+        wrapped.response = error.response;
+      }
+      return wrapped;
+    }),
     buildCodeEnvDownloadQuery: jest.fn((identity) => {
       validateIdentity(identity, 'buildCodeEnvDownloadQuery');
       const params = new URLSearchParams({ kind: identity.kind, id: identity.id });
@@ -212,7 +220,7 @@ describe('Code CRUD', () => {
       expect(mockAxios).toHaveBeenCalledWith(
         expect.objectContaining({
           method: 'delete',
-          url: 'https://code-api.example.com/sessions/session-1/objects/file-1?kind=agent&id=agent-abc',
+          url: 'https://code-api.example.com/files/session-1/file-1?kind=agent&id=agent-abc',
           headers: expect.objectContaining({
             Authorization: 'Bearer codeapi-token',
             'User-Agent': 'LibreChat/1.0',
@@ -239,7 +247,7 @@ describe('Code CRUD', () => {
 
       expect(mockAxios).toHaveBeenCalledWith(
         expect.objectContaining({
-          url: 'https://code-stateful.example.com/sessions/session-1/objects/file-1?kind=agent&id=agent-abc',
+          url: 'https://code-stateful.example.com/files/session-1/file-1?kind=agent&id=agent-abc',
           headers: expect.objectContaining({
             'X-CodeAPI-Expected-Profile': 'stateful',
           }),
@@ -270,14 +278,14 @@ describe('Code CRUD', () => {
       expect(mockAxios).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({
-          url: expect.stringContaining('/sessions/session-1/objects/file-1'),
+          url: expect.stringContaining('/files/session-1/file-1'),
           headers: expect.objectContaining({ 'X-CodeAPI-Expected-Profile': 'default' }),
         }),
       );
       expect(mockAxios).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({
-          url: expect.stringContaining('/sessions/stateful-session/objects/stateful-file'),
+          url: expect.stringContaining('/files/stateful-session/stateful-file'),
           headers: expect.objectContaining({ 'X-CodeAPI-Expected-Profile': 'stateful' }),
         }),
       );
@@ -320,33 +328,27 @@ describe('Code CRUD', () => {
       expect(mockAxios).not.toHaveBeenCalled();
     });
 
-    it.each([404, 405])(
-      'falls back to the legacy code environment delete route after a %s',
-      async (status) => {
-        mockAxios
-          .mockRejectedValueOnce(
-            Object.assign(new Error('missing route'), { response: { status } }),
-          )
-          .mockResolvedValueOnce({ status: 204 });
+    it('never calls the file-server path that only newer codeapi mounts', async () => {
+      mockAxios.mockResolvedValue({ status: 204 });
 
-        await deleteCodeEnvFile(req, file);
+      await deleteCodeEnvFile(req, file);
 
-        expect(mockAxios).toHaveBeenNthCalledWith(
-          1,
-          expect.objectContaining({
-            method: 'delete',
-            url: 'https://code-api.example.com/sessions/session-1/objects/file-1?kind=agent&id=agent-abc',
-          }),
-        );
-        expect(mockAxios).toHaveBeenNthCalledWith(
-          2,
-          expect.objectContaining({
-            method: 'delete',
-            url: 'https://code-api.example.com/files/session-1/file-1?kind=agent&id=agent-abc',
-          }),
-        );
-      },
-    );
+      expect(mockAxios).toHaveBeenCalledTimes(1);
+      expect(mockAxios).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: expect.stringContaining('/sessions/session-1/objects/file-1'),
+        }),
+      );
+    });
+
+    it('surfaces an unsupported delete method instead of retrying elsewhere', async () => {
+      mockAxios.mockRejectedValue(
+        Object.assign(new Error('method not allowed'), { response: { status: 405 } }),
+      );
+
+      await expect(deleteCodeEnvFile(req, file)).rejects.toThrow('method not allowed');
+      expect(mockAxios).toHaveBeenCalledTimes(1);
+    });
 
     it('skips files without a code environment ref', async () => {
       await deleteCodeEnvFile(req, {});
@@ -356,12 +358,12 @@ describe('Code CRUD', () => {
     });
 
     it('treats missing code environment objects as already deleted', async () => {
-      mockAxios
-        .mockRejectedValueOnce(Object.assign(new Error('missing'), { response: { status: 404 } }))
-        .mockRejectedValueOnce(Object.assign(new Error('missing'), { response: { status: 404 } }));
+      mockAxios.mockRejectedValue(
+        Object.assign(new Error('missing'), { response: { status: 404 } }),
+      );
 
       await expect(deleteCodeEnvFile(req, file)).resolves.toBeUndefined();
-      expect(mockAxios).toHaveBeenCalledTimes(2);
+      expect(mockAxios).toHaveBeenCalledTimes(1);
     });
 
     it('throws when code environment deletion fails', async () => {
@@ -427,7 +429,11 @@ describe('Code CRUD', () => {
       });
 
       const result = await uploadCodeEnvFile(baseUploadParams);
-      expect(result).toEqual({ storage_session_id: 'sess-1', file_id: 'fid-1' });
+      expect(result).toEqual({
+        storage_session_id: 'sess-1',
+        file_id: 'fid-1',
+        filename: 'data.csv',
+      });
     });
 
     it('forwards Code API auth headers on upload requests', async () => {
@@ -567,10 +573,25 @@ describe('Code CRUD', () => {
 
       await expect(uploadCodeEnvFile(baseUploadParams)).rejects.toThrow();
     });
+
+    it('preserves rate-limit metadata through the upload logging boundary', async () => {
+      const rateLimit = Object.assign(new Error('Too Many Requests'), {
+        isAxiosError: true,
+        response: { status: 429, headers: { 'retry-after': '7' } },
+      });
+      mockAxios.post.mockRejectedValue(rateLimit);
+
+      await expect(uploadCodeEnvFile(baseUploadParams)).rejects.toMatchObject({
+        isAxiosError: true,
+        response: { status: 429, headers: { 'retry-after': '7' } },
+        cause: rateLimit,
+      });
+    });
   });
 
   describe('batchUploadCodeEnvFiles', () => {
     it('routes batch uploads through the selected bridge worker', async () => {
+      const controller = new AbortController();
       const req = { user: { id: 'user-123' } };
       mockAxios.post.mockResolvedValue({
         data: {
@@ -590,6 +611,7 @@ describe('Code CRUD', () => {
         codeApiBaseUrl: 'https://stateful-code.example.com',
         executionProfile: 'stateful',
         bridgeWorkerId: 'personal-worker-1',
+        signal: controller.signal,
       });
 
       const [url, , callConfig] = mockAxios.post.mock.calls[0];
@@ -597,6 +619,7 @@ describe('Code CRUD', () => {
       expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(req, 'personal-worker-1');
       expect(callConfig.headers['X-CodeAPI-Expected-Profile']).toBe('stateful');
       expect(callConfig.headers['X-LibreChat-Code-Worker-ID']).toBe('personal-worker-1');
+      expect(callConfig.signal).toBe(controller.signal);
     });
   });
 });

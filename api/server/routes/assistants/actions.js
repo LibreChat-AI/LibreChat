@@ -70,9 +70,9 @@ router.post('/:assistant_id', async (req, res) => {
 
     const { openai } = await getOpenAIClient({ req, res });
 
-    initialPromises.push(db.getAssistant({ assistant_id }));
+    initialPromises.push(db.getAssistant({ assistantId: assistant_id }));
     initialPromises.push(openai.beta.assistants.retrieve(assistant_id));
-    !!_action_id && initialPromises.push(db.getActions({ action_id }, true));
+    !!_action_id && initialPromises.push(db.getActions({ actionId: action_id }, true));
 
     /** @type {[AssistantDocument, Assistant, [Action|undefined]]} */
     const [assistant_data, assistant, actions_result] = await Promise.all(initialPromises);
@@ -150,7 +150,7 @@ router.post('/:assistant_id', async (req, res) => {
     if (!assistant_data) {
       assistantUpdateData.user = req.user.id;
     }
-    promises.push(db.updateAssistantDoc({ assistant_id }, assistantUpdateData));
+    promises.push(db.updateAssistantDoc({ assistantId: assistant_id }, assistantUpdateData));
 
     // Only update user field for new actions
     const actionUpdateData = { metadata, assistant_id };
@@ -158,7 +158,9 @@ router.post('/:assistant_id', async (req, res) => {
       // For new actions, use the assistant owner's user ID
       actionUpdateData.user = assistant_user || req.user.id;
     }
-    promises.push(db.updateAction({ action_id, assistant_id }, actionUpdateData));
+    promises.push(
+      db.updateAction({ actionId: action_id, assistantId: assistant_id }, actionUpdateData),
+    );
 
     /** @type {[AssistantDocument, Action]} */
     let [assistantDocument, updatedAction] = await Promise.all(promises);
@@ -200,7 +202,7 @@ router.delete('/:assistant_id/:action_id/:model', async (req, res) => {
     const { openai } = await getOpenAIClient({ req, res });
 
     const initialPromises = [];
-    initialPromises.push(db.getAssistant({ assistant_id }));
+    initialPromises.push(db.getAssistant({ assistantId: assistant_id }));
     initialPromises.push(openai.beta.assistants.retrieve(assistant_id));
 
     /** @type {[AssistantDocument, Assistant]} */
@@ -238,8 +240,8 @@ router.delete('/:assistant_id/:action_id/:model', async (req, res) => {
     if (!assistant_data) {
       assistantUpdateData.user = req.user.id;
     }
-    promises.push(db.updateAssistantDoc({ assistant_id }, assistantUpdateData));
-    promises.push(db.deleteAction({ action_id, assistant_id }));
+    promises.push(db.updateAssistantDoc({ assistantId: assistant_id }, assistantUpdateData));
+    promises.push(db.deleteAction({ actionId: action_id, assistantId: assistant_id }));
 
     const [, deletedAction] = await Promise.all(promises);
     if (!deletedAction) {

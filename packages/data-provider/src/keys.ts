@@ -11,7 +11,11 @@ export enum QueryKeys {
   searchEnabled = 'searchEnabled',
   langfuseConnection = 'langfuseConnection',
   langfuseSessionLink = 'langfuseSessionLink',
+  conversationTraceAvailability = 'conversationTraceAvailability',
+  conversationTraceRecords = 'conversationTraceRecords',
+  conversationTraceRecord = 'conversationTraceRecord',
   user = 'user',
+  passkeys = 'passkeys',
   name = 'name', // user key name
   models = 'models',
   balance = 'balance',
@@ -36,6 +40,7 @@ export enum QueryKeys {
   mcpTools = 'mcpTools',
   mcpConnectionStatus = 'mcpConnectionStatus',
   mcpAuthValues = 'mcpAuthValues',
+  mcpAppResourceHtml = 'mcpAppResourceHtml',
   agentTools = 'agentTools',
   actions = 'actions',
   assistantDocs = 'assistantDocs',
@@ -51,6 +56,8 @@ export enum QueryKeys {
   promptGroup = 'promptGroup',
   projects = 'projects',
   project = 'project',
+  projectFiles = 'projectFiles',
+  projectAvailableFiles = 'projectAvailableFiles',
   projectConversations = 'projectConversations',
   categories = 'categories',
   randomPrompts = 'randomPrompts',
@@ -95,19 +102,32 @@ export enum QueryKeys {
   schedule = 'schedule',
   parentSubagents = 'parentSubagents',
   subagentThread = 'subagentThread',
+  backgroundTasks = 'backgroundTasks',
   codeEnvironments = 'codeEnvironments',
   agentQueuedTurns = 'agentQueuedTurns',
+  /* Combined Pinned-section display order (favorites + pinned chats) */
+  pinnedOrder = 'pinnedOrder',
 }
 
 // Dynamic query keys that require parameters
 export const DynamicQueryKeys = {
   agentFiles: (agentId: string) => ['agentFiles', agentId] as const,
+  projectFiles: (projectId: string) => [QueryKeys.projectFiles, projectId] as const,
+  projectAvailableFiles: (projectId: string) =>
+    [QueryKeys.projectAvailableFiles, projectId] as const,
+  codeEnvironmentStatus: (id: string) => [QueryKeys.codeEnvironments, id, 'status'] as const,
 } as const;
 
 export enum MutationKeys {
   subagentControl = 'subagentControl',
+  cancelBackgroundTasks = 'cancelBackgroundTasks',
   enqueueAgentQueuedTurn = 'enqueueAgentQueuedTurn',
   cancelAgentQueuedTurn = 'cancelAgentQueuedTurn',
+  /** Whole-array favorites write, keyed so every hook instance's write is
+   *  visible to the others through the query client. */
+  updateFavorites = 'updateFavorites',
+  /** Pinned-section display order write, keyed for the same reason. */
+  updatePinnedOrder = 'updatePinnedOrder',
   updateLangfuseConnection = 'updateLangfuseConnection',
   testLangfuseConnection = 'testLangfuseConnection',
   createAgentApiKey = 'createAgentApiKey',
@@ -135,11 +155,17 @@ export enum MutationKeys {
   updateRole = 'updateRole',
   enableTwoFactor = 'enableTwoFactor',
   verifyTwoFactor = 'verifyTwoFactor',
+  registerPasskey = 'registerPasskey',
+  renamePasskey = 'renamePasskey',
+  deletePasskey = 'deletePasskey',
+  passkeyLogin = 'passkeyLogin',
   updateMemoryPreferences = 'updateMemoryPreferences',
   createProject = 'createProject',
   updateProject = 'updateProject',
   deleteProject = 'deleteProject',
   assignConversationToProject = 'assignConversationToProject',
+  addProjectFile = 'addProjectFile',
+  removeProjectFile = 'removeProjectFile',
   /* Skill mutations from the original UI PR — tree/node operations are
    * phase 2 and currently stubbed in the data-service layer. */
   createSkillNode = 'createSkillNode',
@@ -155,4 +181,7 @@ export enum MutationKeys {
   pairCodeEnvironment = 'pairCodeEnvironment',
   updateCodeEnvironmentSettings = 'updateCodeEnvironmentSettings',
   deleteCodeEnvironment = 'deleteCodeEnvironment',
+  moveConversationCodeEnvironment = 'moveConversationCodeEnvironment',
+  convoSeen = 'convoSeen',
+  convoUnread = 'convoUnread',
 }

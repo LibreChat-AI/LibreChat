@@ -1,14 +1,16 @@
 import mongoose, { FilterQuery } from 'mongoose';
 import {
-  AUTH_USER_DOC_BY_ID_PREFIX,
+  AUTH_USER_DOC_CACHE_TTL_MS,
   CacheKeys,
   type RefillIntervalUnit,
   type StatefulCodeEnvironment,
 } from 'librechat-data-provider';
 import type { IUser, BalanceConfig, CreateUserRequest, UserDeleteResult } from '~/types';
 import type { CacheStore } from '~/types';
+import { evictAuthUserDocs } from '~/utils/eviction';
 import { escapeRegExp } from '~/utils/string';
 import { signPayload } from '~/crypto';
+import logger from '~/config/winston';
 
 /** Default JWT session expiry: 15 minutes in milliseconds */
 export const DEFAULT_SESSION_EXPIRY: number = 1000 * 60 * 15;
@@ -19,7 +21,14 @@ const MAX_SUBAGENT_ADMISSION_FENCES = 32;
 
 interface UserMethodDeps {
   getCache?: (key: string) => CacheStore | undefined;
+  /** Resolves after the given milliseconds; tests pass one that need not wait out the cache TTL. */
+  delay?: (ms: number) => Promise<void>;
 }
+
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Timers can fire a millisecond early, so the wait outlasts the cache TTL by this much. */
+const AUTH_USER_DOC_EXPIRY_MARGIN_MS = 100;
 
 function isAuthUserDocCacheEnabled(): boolean {
   return process.env.AUTH_USER_CACHE_MODE === 'on';
@@ -39,6 +48,9 @@ export function createUserMethods(
     fieldsToSelect?: string | string[] | null,
     options?: { limit?: number; offset?: number; sort?: Record<string, 1 | -1> },
   ) => Promise<IUser[]>;
+  findOwnerContactUsers: (
+    ownerIds: string[],
+  ) => Promise<Array<Pick<IUser, '_id' | 'name' | 'username'>>>;
   countUsers: (filter?: FilterQuery<IUser>) => Promise<number>;
   createUser: (
     data: CreateUserRequest,
@@ -46,7 +58,13 @@ export function createUserMethods(
     disableTTL?: boolean,
     returnUser?: boolean,
   ) => Promise<mongoose.Types.ObjectId | Partial<IUser>>;
-  updateUser: (userId: string, updateData: Partial<IUser>) => Promise<IUser | null>;
+  updateUser: (
+    userId: string,
+    updateData: Partial<IUser>,
+    expectedState?: FilterQuery<IUser>,
+    options?: { preserveExpiresAt?: boolean },
+  ) => Promise<IUser | null>;
+  awaitAuthUserDocEviction: (userId: string) => Promise<void>;
   claimSamlIdentity: (
     userId: string,
     samlId: string,
@@ -212,6 +230,19 @@ export function createUserMethods(
     }
     return await query.lean<IUser[]>();
   }
+  async function findOwnerContactUsers(
+    ownerIds: string[],
+  ): Promise<Array<Pick<IUser, '_id' | 'name' | 'username'>>> {
+    if (ownerIds.length === 0) {
+      return [];
+    }
+
+    const User = mongoose.models.User as mongoose.Model<IUser>;
+    const objectIds = ownerIds.map((ownerId) => new mongoose.Types.ObjectId(ownerId));
+    return await User.find({ _id: { $in: objectIds } })
+      .select('_id name username')
+      .lean<Array<Pick<IUser, '_id' | 'name' | 'username'>>>();
+  }
 
   /**
    * Count the number of user documents in the collection based on the provided filter.
@@ -272,10 +303,11 @@ export function createUserMethods(
         };
       }
 
-      await Balance.findOneAndUpdate({ user: user._id }, update, {
-        upsert: true,
-        new: true,
-      }).lean();
+      await Balance.findOneAndUpdate(
+        { _id: user._id },
+        { ...update, $setOnInsert: { user: user._id } },
+        { upsert: true, new: true },
+      ).lean();
     }
 
     if (returnUser) {
@@ -286,19 +318,47 @@ export function createUserMethods(
 
   /**
    * Update a user with new data without overwriting existing properties.
+   * Removes pending-account expiry unless preserveExpiresAt is requested.
    */
-  async function updateUser(userId: string, updateData: Partial<IUser>): Promise<IUser | null> {
+  async function updateUser(
+    userId: string,
+    updateData: Partial<IUser>,
+    expectedState: FilterQuery<IUser> = {},
+    options: { preserveExpiresAt?: boolean } = {},
+  ): Promise<IUser | null> {
     const User = mongoose.models.User;
     const updateOperation = {
       $set: updateData,
-      $unset: { expiresAt: '' }, // Remove the expiresAt field to prevent TTL
+      ...(options.preserveExpiresAt ? {} : { $unset: { expiresAt: '' } }),
     };
-    const updated = await User.findByIdAndUpdate(userId, updateOperation, {
-      new: true,
-      runValidators: true,
-    }).lean<IUser>();
+    const updated = await User.findOneAndUpdate(
+      { ...expectedState, _id: userId },
+      updateOperation,
+      {
+        new: true,
+        runValidators: true,
+      },
+    ).lean<IUser>();
     await invalidateAuthUserDocCache(userId);
     return updated;
+  }
+
+  /**
+   * The barrier a credential change passes before it is confirmed. A cached document without
+   * the new credentialsChangedAt keeps pre-change access tokens verifying until it expires, so
+   * eviction is retried and, when it still cannot remove every document, this resolves only
+   * after the cache TTL. Callers revoke sessions and passkeys first: during the wait those
+   * could otherwise mint access tokens issued after the stamp.
+   */
+  async function awaitAuthUserDocEviction(userId: string): Promise<void> {
+    if (await invalidateAuthUserDocCache(userId)) {
+      return;
+    }
+    logger.warn(
+      '[awaitAuthUserDocEviction] Cached auth documents were not evicted after a credential change; waiting for them to expire',
+      { userId, waitMs: AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS },
+    );
+    await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
   }
 
   /** Atomically updates a SAML user only when the incoming identity can claim the document. */
@@ -326,26 +386,20 @@ export function createUserMethods(
     return updated;
   }
 
-  async function invalidateAuthUserDocCache(userId: string): Promise<void> {
+  /** Resolves false only when a cached document for the user may still be served. */
+  async function invalidateAuthUserDocCache(userId: string): Promise<boolean> {
     if (!isAuthUserDocCacheEnabled()) {
-      return;
+      return true;
     }
     const cache = deps.getCache?.(CacheKeys.AUTH_USER_DOC);
-    if (!cache?.get || !cache?.delete) {
-      return;
+    if (!cache?.get) {
+      return true;
     }
-    try {
-      const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
-      const cachedKeys = await cache.get(indexKey);
-      if (Array.isArray(cachedKeys)) {
-        await Promise.all(
-          cachedKeys.map((key) => (typeof key === 'string' ? cache.delete?.(key) : undefined)),
-        );
-      }
-      await cache.delete(indexKey);
-    } catch {
-      // Cache invalidation must not make a user update fail.
+    const remove = cache.delete?.bind(cache);
+    if (!remove) {
+      return false;
     }
+    return evictAuthUserDocs({ get: (key) => cache.get(key), delete: remove }, { userId });
   }
 
   /**
@@ -827,9 +881,11 @@ export function createUserMethods(
   return {
     findUser,
     findUsers,
+    findOwnerContactUsers,
     countUsers,
     createUser,
     updateUser,
+    awaitAuthUserDocEviction,
     claimSamlIdentity,
     acceptTerms,
     searchUsers,

@@ -2,7 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import type { SearchResultData } from 'librechat-data-provider';
-import { Citation, CompositeCitation } from '~/components/Web/Citation';
+import { Citation, CompositeCitation, HighlightedText } from '~/components/Web/Citation';
 import { CitationContext } from '~/components/Web/Context';
 import { SearchContext } from '~/Providers';
 
@@ -74,6 +74,19 @@ function renderWithProviders(
 }
 
 describe('Citation', () => {
+  it('uses the semantic active surface for a highlighted passage', () => {
+    const highlightedPassage = 'Highlighted passage';
+    render(
+      <CitationContext.Provider
+        value={{ hoveredCitationId: 'cite-highlight', setHoveredCitationId: jest.fn() }}
+      >
+        <HighlightedText citationId="cite-highlight">{highlightedPassage}</HighlightedText>
+      </CitationContext.Provider>,
+    );
+
+    expect(screen.getByText(highlightedPassage)).toHaveClass('bg-surface-active');
+  });
+
   it('renders composite file citations as buttons and opens the preview dialog', () => {
     const searchResults = {
       '0': {

@@ -1,20 +1,28 @@
 const { v4: uuidv4 } = require('uuid');
 const {
+  assertConversationImportWriteSize,
   assertModelBoundContent,
   assertConversationImportContentAllowed,
+  reportLocatorTraversalFailure,
+  executeConversationImportWrites,
+  resolveImportRetentionFields,
+  resolveImportTagCounts,
 } = require('@librechat/api');
 const {
+  getTenantId,
   logger,
   createFallbackRetentionDate,
-  createTempChatExpirationDate,
+  createChatExpirationDate,
 } = require('@librechat/data-schemas');
+const { EModelEndpoint, Constants, openAISettings } = require('librechat-data-provider');
 const {
-  EModelEndpoint,
-  Constants,
-  RetentionMode,
-  openAISettings,
-} = require('librechat-data-provider');
-const { bulkIncrementTagCounts, bulkSaveConvos, bulkSaveMessages, getFiles } = require('~/models');
+  bulkIncrementTagCounts,
+  bulkSaveConvos,
+  bulkSaveMessages,
+  deleteImportedConversations,
+  deleteImportedMessages,
+  getFiles,
+} = require('~/models');
 const { FALLBACK_MODEL_BY_ENDPOINT } = require('./defaults');
 
 /**
@@ -46,6 +54,7 @@ function createImportBatchBuilder(requestUserId, interfaceConfig, filters, legac
 async function assertConversationContentAllowed(filters, snapshot, resolutionContext = {}) {
   return assertConversationImportContentAllowed(filters, snapshot, {
     ...resolutionContext,
+    onTraversalFailure: reportLocatorTraversalFailure,
     assertModelBoundContent,
   });
 }
@@ -69,26 +78,17 @@ class ImportBatchBuilder {
     this.conversations = [];
     this.messages = [];
     this.retentionFields = undefined;
+    /** Set by a fork or duplicate so the copy keeps its source's temporary classification. */
+    this.sourceIsTemporary = undefined;
   }
 
   getRetentionFields() {
-    if (this.retentionFields !== undefined) {
-      return this.retentionFields;
-    }
-
-    if (this.interfaceConfig?.retentionMode !== RetentionMode.ALL) {
-      this.retentionFields = {};
-      return this.retentionFields;
-    }
-
-    try {
-      this.retentionFields = {
-        isTemporary: false,
-        expiredAt: createTempChatExpirationDate(this.interfaceConfig),
-      };
-    } catch (error) {
-      logger.error('[ImportBatchBuilder] Error creating import expiration date:', error);
-      this.retentionFields = { isTemporary: false, expiredAt: createFallbackRetentionDate() };
+    if (this.retentionFields === undefined) {
+      this.retentionFields = resolveImportRetentionFields(
+        this.interfaceConfig,
+        { createChatExpirationDate, createFallbackRetentionDate, logger },
+        { sourceIsTemporary: this.sourceIsTemporary },
+      );
     }
     return this.retentionFields;
   }
@@ -162,9 +162,18 @@ class ImportBatchBuilder {
       endpoint: this.endpoint,
       model: originalConvo.model ?? fallbackModel,
       ...this.getRetentionFields(),
+      ...(originalConvo.tags != null && {
+        tags: resolveImportTagCounts(this.getRetentionFields(), originalConvo.tags),
+      }),
     };
     convo._id && delete convo._id;
     delete convo.subagentThread;
+    /* A fork or duplicate starts its own unread history; carrying the source
+       conversation's catch-up state over would light a dot on a never-read copy. */
+    delete convo.lastResponseAt;
+    delete convo.lastResponseMessageId;
+    delete convo.lastResponseIsManual;
+    delete convo.lastSeenAt;
     this.conversations.push(convo);
 
     return { conversation: convo, messages: this.messages };
@@ -177,6 +186,13 @@ class ImportBatchBuilder {
    * @throws {Error} If there is an error saving the batch.
    */
   async saveBatch() {
+    const tenantId = getTenantId();
+    assertConversationImportWriteSize({
+      conversations: this.conversations,
+      messages: this.messages,
+      ...(tenantId == null ? {} : { tenantId }),
+    });
+
     await assertConversationContentAllowed(
       this.filters,
       {
@@ -190,17 +206,29 @@ class ImportBatchBuilder {
       },
     );
 
+    const conversationIds = this.conversations.map((convo) => convo.conversationId);
+    const cleanupScope = {
+      user: this.requestUserId,
+      conversationIds,
+      ...(tenantId == null ? {} : { tenantId }),
+    };
+    const tags = resolveImportTagCounts(
+      this.getRetentionFields(),
+      this.conversations.flatMap((convo) => convo.tags),
+    );
+
     try {
-      const promises = [];
-      promises.push(bulkSaveConvos(this.conversations));
-      promises.push(bulkSaveMessages(this.messages, true));
-      promises.push(
-        bulkIncrementTagCounts(
-          this.requestUserId,
-          this.conversations.flatMap((convo) => convo.tags),
-        ),
-      );
-      await Promise.all(promises);
+      await executeConversationImportWrites({
+        saveConversations: () => bulkSaveConvos(this.conversations),
+        saveMessages: () => bulkSaveMessages(this.messages, true),
+        updateTagCounts: () => bulkIncrementTagCounts(this.requestUserId, tags),
+        deleteMessages: () => deleteImportedMessages(cleanupScope),
+        deleteConversations: () => deleteImportedConversations(cleanupScope),
+        onTagCountError: (error) =>
+          logger.error(`Error updating imported tag counts: ${error.message}`),
+        onCleanupError: (error, resource) =>
+          logger.error(`Error cleaning imported ${resource}: ${error.message}`),
+      });
       logger.debug(
         `user: ${this.requestUserId} | Added ${this.conversations.length} conversations and ${this.messages.length} messages to the DB.`,
       );

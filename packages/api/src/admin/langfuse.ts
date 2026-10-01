@@ -22,7 +22,7 @@ import { redirectPolicyFor, resolveLangfuseHeaders } from '~/langfuse/utils';
 import { decryptConfigSecret, encryptConfigSecretFields } from './secrets';
 import { scopeHeadersToDestination } from '~/langfuse/destinations';
 import { isLangfuseConnectionAvailable } from '~/langfuse/policy';
-import { resolveLangfuseSessionUrl } from '~/langfuse/session';
+import { resolveLangfuseSession } from '~/langfuse/session';
 import { mergeHeaders } from '~/utils/headers';
 
 const DEFAULT_PRIORITY = 10;
@@ -333,13 +333,15 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
     }
 
     try {
-      const url = await resolveLangfuseSessionUrl({
+      const session = await resolveLangfuseSession({
         config: readStoredLangfuse(await findBaseConfig()),
         conversationId,
         userId,
         getMessages,
       });
-      const response: TLangfuseSessionLinkResponse = { url };
+      const response: TLangfuseSessionLinkResponse = session
+        ? { url: session.url, destinationId: session.destinationId }
+        : { url: null };
       return res.status(200).json(response);
     } catch (error) {
       logger.error('[adminLangfuse] getSessionLink error:', error);

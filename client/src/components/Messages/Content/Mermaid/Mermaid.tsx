@@ -4,8 +4,9 @@ import { useLocation } from 'react-router-dom';
 import { Button, Spinner } from '@librechat/client';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
+import ArtifactRow from '~/components/Chat/Messages/Content/Parts/ArtifactRow';
 import { MERMAID_ARTIFACT_TYPE, type Artifact } from '~/common/artifacts';
-import MermaidArtifactCard from './MermaidArtifactCard';
+import { artifactRowKind } from '~/utils/artifacts';
 import useSvgProcessing from './useSvgProcessing';
 import { useMessageContext } from '~/Providers';
 import useMermaidZoom from './useMermaidZoom';
@@ -22,9 +23,27 @@ interface MermaidProps {
   id?: string;
   theme?: string;
   artifact?: Artifact;
+  /**
+   * Saves the file a code-execution diagram came from. Once the diagram
+   * collapses into its trigger row, the row owns this action the way every
+   * other file-backed artifact row does, so the caller's own header can
+   * step aside instead of repeating the filename beside it.
+   */
+  onDownload?: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  /** Reports whether the diagram is currently rendered as its trigger row. */
+  onRowModeChange?: (isRow: boolean) => void;
+  /**
+   * Name to show on the trigger row, when the caller holds a friendlier one
+   * than the artifact's raw title — a sandbox-generated `_.flow-abcdef.mmd`
+   * reads as `.flow.mmd` through `displayFilename`, and the row (plus its
+   * download button's accessible name) must not regress to the internal
+   * filename the way it would by falling back to `artifact.title`.
+   */
+  rowTitle?: string;
 }
 
-interface MermaidRendererProps extends Omit<MermaidProps, 'artifact'> {
+interface MermaidRendererProps
+  extends Omit<MermaidProps, 'artifact' | 'onDownload' | 'onRowModeChange' | 'rowTitle'> {
   fillContainer?: boolean;
   onExpand?: () => void;
   onExportReady?: (data: ProcessedMermaidSvg | null) => void;
@@ -33,7 +52,16 @@ interface MermaidRendererProps extends Omit<MermaidProps, 'artifact'> {
   showHeader?: boolean;
 }
 
-const Mermaid: React.FC<MermaidProps> = memo(({ children, id, theme, artifact: artifactProp }) => {
+const Mermaid: React.FC<MermaidProps> = memo((props) => {
+  const {
+    children,
+    id,
+    theme,
+    artifact: artifactProp,
+    onDownload,
+    onRowModeChange,
+    rowTitle,
+  } = props;
   const localize = useLocalize();
   const location = useLocation();
   const instanceId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
@@ -136,14 +164,21 @@ const Mermaid: React.FC<MermaidProps> = memo(({ children, id, theme, artifact: a
     shouldFocusArtifactCardRef.current = false;
   }, [isArtifactCard]);
 
-  if (canOpenArtifact && isArtifactCard) {
+  const isRowMode = canOpenArtifact && isArtifactCard;
+  useEffect(() => {
+    onRowModeChange?.(isRowMode);
+  }, [isRowMode, onRowModeChange]);
+
+  if (isRowMode) {
     return (
-      <MermaidArtifactCard
+      <ArtifactRow
         ref={artifactButtonRef}
         artifactId={artifact.id}
-        title={artifact.title ?? defaultTitle}
+        title={rowTitle ?? artifact.title ?? defaultTitle}
+        kind={artifactRowKind(artifact)}
         isSelected={isSelected}
-        onClick={handleArtifactClick}
+        onOpen={handleArtifactClick}
+        onDownload={onDownload}
       />
     );
   }

@@ -3,7 +3,7 @@ import { useRecoilValue } from 'recoil';
 import { BarChart3, MessagesSquare } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useUserKeyQuery } from 'librechat-data-provider/react-query';
-import { getConfigDefaults, getEndpointField, SystemRoles } from 'librechat-data-provider';
+import { getConfigDefaults, getEndpointField } from 'librechat-data-provider';
 import type { TEndpointsConfig } from 'librechat-data-provider';
 import type { NavLink } from '~/common';
 import { useGetEndpointsQuery, useGetStartupConfig, useInsightsAccessQuery } from '~/data-provider';
@@ -29,9 +29,13 @@ export default function useUnifiedSidebarLinks() {
     [startupConfig],
   );
   const insightsFeatureEnabled = startupConfig?.insightsEnabled === true;
-  const { data: insightsAccess } = useInsightsAccessQuery(user?.id, {
-    enabled: user?.role === SystemRoles.ADMIN && insightsFeatureEnabled,
-  });
+  const isInsightsRoute = location.pathname.startsWith('/insights');
+  const { data: insightsAccess, isLoading: isInsightsAccessLoading } = useInsightsAccessQuery(
+    user?.id,
+    {
+      enabled: !!user && insightsFeatureEnabled && !isInsightsRoute,
+    },
+  );
 
   const endpointType = useMemo(
     () => getEndpointField(endpointsConfig, endpoint, 'type'),
@@ -68,7 +72,10 @@ export default function useUnifiedSidebarLinks() {
       Component: ConversationsSection,
     };
 
-    if (!insightsFeatureEnabled || insightsAccess?.access !== true) {
+    if (
+      !insightsFeatureEnabled ||
+      (!isInsightsRoute && !isInsightsAccessLoading && insightsAccess?.access !== true)
+    ) {
       return [conversationLink, ...sideNavLinks];
     }
 
@@ -77,6 +84,7 @@ export default function useUnifiedSidebarLinks() {
       label: '',
       icon: BarChart3,
       id: 'insights',
+      disabled: !isInsightsRoute && isInsightsAccessLoading,
       onClick: () => {
         if (!location.pathname.startsWith('/insights')) {
           navigate('/insights');
@@ -88,7 +96,15 @@ export default function useUnifiedSidebarLinks() {
     nextLinks.splice(mcpIndex >= 0 ? mcpIndex + 1 : nextLinks.length, 0, insightsLink);
 
     return [conversationLink, ...nextLinks];
-  }, [insightsAccess?.access, insightsFeatureEnabled, location.pathname, navigate, sideNavLinks]);
+  }, [
+    insightsAccess?.access,
+    insightsFeatureEnabled,
+    isInsightsAccessLoading,
+    isInsightsRoute,
+    location.pathname,
+    navigate,
+    sideNavLinks,
+  ]);
 
   return links;
 }

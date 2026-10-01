@@ -15,6 +15,9 @@ export const scheduleTargets = ['new'] as const;
 export type ScheduleTarget = (typeof scheduleTargets)[number];
 
 export type ScheduleDisabledReason =
+  | 'mcp_reauth_required'
+  | 'mcp_configuration_missing'
+  | 'mcp_permission_denied'
   | 'too_many_failures'
   | 'agent_deleted'
   | 'invalid_schedule'
@@ -117,6 +120,7 @@ export type TScheduleLastRun = {
   conversationId?: string;
   status: ScheduleRunStatus;
   error?: string;
+  mcp?: ScheduleMCPOutcome[];
   firedAt: string;
 };
 
@@ -135,6 +139,15 @@ export type TSchedule = {
   disabledReason?: ScheduleDisabledReason;
   nextRunAt?: string;
   lastRun?: TScheduleLastRun;
+  /**
+   * The occurrences generating right now. Read from their own run rows, not from
+   * `lastRun`, which is projected only when a run settles, pauses or skips and is
+   * deliberately withheld from a run whose schedule was edited mid-flight. This is
+   * the signal a client has that a chat is on its way, and the id to fetch it by.
+   * A run parked on an approval is not here: its chat was listed long ago, and the
+   * rows can accumulate for as long as approvals wait.
+   */
+  inFlight?: Array<{ conversationId: string }>;
   runCount: number;
   failureCount: number;
   configRevision?: number;
@@ -143,6 +156,7 @@ export type TSchedule = {
 };
 
 export type TScheduleRun = {
+  mcp?: ScheduleMCPOutcome[];
   scheduleId: string;
   scheduledFor: string;
   firedAt?: string;
@@ -178,3 +192,48 @@ export type TScheduleRunNowResponse = {
   conversationId: string;
   status: 'started';
 };
+
+/** Only structured schedule preflight failures may request immediate suspension. */
+export function getScheduleMCPDisabledReason(
+  outcomes?: ScheduleMCPOutcome[],
+): 'mcp_reauth_required' | 'mcp_configuration_missing' | 'mcp_permission_denied' | undefined {
+  const statuses = new Set(outcomes?.map((outcome) => outcome.status));
+  if (statuses.has('mcp_permission_denied')) return 'mcp_permission_denied';
+  if (statuses.has('mcp_configuration_missing')) return 'mcp_configuration_missing';
+  if (statuses.has('mcp_reauth_required')) return 'mcp_reauth_required';
+  return undefined;
+}
+
+export const scheduleMCPOutcomeSchema = z.object({
+  server: z.string(),
+  /** Agent whose selected tool requires this server. Used to open the correct
+   * recovery chat when the requirement belongs to a handoff or subagent. */
+  agentId: z.string().optional(),
+  /** Additional diagnosis; older clients ignore unknown keys and retain the known status. */
+  detail: z.enum(['unattended_auth_required']).optional(),
+  status: z.enum([
+    'ready',
+    'mcp_reauth_required',
+    'mcp_configuration_missing',
+    'mcp_permission_denied',
+    'mcp_unavailable',
+  ]),
+});
+export type ScheduleMCPOutcome = z.infer<typeof scheduleMCPOutcomeSchema>;
+export type ScheduleMCPStatus = ScheduleMCPOutcome['status'];
+
+export function readScheduleMCPOutcomes(error?: string): ScheduleMCPOutcome[] {
+  if (
+    !error ||
+    !/^mcp_(reauth_required|configuration_missing|permission_denied|unavailable): \[/.test(error)
+  )
+    return [];
+  try {
+    const result = scheduleMCPOutcomeSchema
+      .array()
+      .safeParse(JSON.parse(error.slice(error.indexOf(': ') + 2)));
+    return result.success ? result.data : [];
+  } catch {
+    return [];
+  }
+}

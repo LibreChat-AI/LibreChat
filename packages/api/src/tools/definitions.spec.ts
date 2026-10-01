@@ -407,6 +407,37 @@ describe('definitions.ts', () => {
         expect(result.toolRegistry.has('run_tools_with_bash')).toBe(false);
       });
 
+      it('passes the selected attached environment into definitions-only classification', async () => {
+        mockGetOrFetchMCPServerTools.mockResolvedValueOnce(serverTools);
+        const result = await loadToolDefinitions(
+          {
+            userId: 'user-123',
+            agentId: 'agent-123',
+            tools: [mcpToolName],
+            toolOptions: { [mcpToolName]: { allowed_callers: ['code_execution'] } },
+            programmaticToolsEnabled: true,
+            codeExecutionEnabled: true,
+            codeExecutionContext: {
+              baseUrl: 'https://code.example',
+              codeSessionKey: 'session',
+              executionProfile: 'stateful',
+              statefulSessions: true,
+              environmentType: 'attached',
+              environmentId: 'attached',
+              bridgeWorkerId: 'worker',
+            },
+          },
+          {
+            getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+            isBuiltInTool: mockIsBuiltInTool,
+          },
+        );
+        expect(
+          result.toolDefinitions.some((definition) => definition.name === 'run_tools_with_bash'),
+        ).toBe(false);
+        expect(result.toolRegistry.has('run_tools_with_bash')).toBe(false);
+      });
+
       it('adds Bash PTC definitions when code and programmatic capabilities are enabled', async () => {
         mockGetOrFetchMCPServerTools.mockResolvedValueOnce(serverTools);
 

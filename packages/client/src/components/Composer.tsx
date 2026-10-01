@@ -7,7 +7,11 @@ import type {
   RefAttributes,
 } from 'react';
 import type { SendAction } from './SendActions';
-import { composerSurfaceClasses, composerSurfaceShadow } from '~/utils/composer';
+import {
+  composerSubmitClasses,
+  composerSurfaceClasses,
+  composerSurfaceShadow,
+} from '~/utils/composer';
 import { TextareaAutosize } from './TextareaAutosize';
 import { SendActions } from './SendActions';
 import { TooltipAnchor } from './Tooltip';
@@ -82,8 +86,7 @@ export type ComposerStopProps =
 export type ComposerPropsWithStop = ComposerProps & ComposerStopProps;
 
 /** Main chat's send/stop button shape, shared by both states of the slot. */
-const CONTROL_CLASS =
-  'size-theme-control rounded-theme-control-round bg-text-primary p-theme-compact text-text-primary outline-offset-4 transition-all duration-theme-normal disabled:cursor-not-allowed disabled:text-text-secondary disabled:opacity-10';
+const CONTROL_CLASS = composerSubmitClasses();
 
 /**
  * The chat composer at panel scale: one persistent surface with a text field, a
@@ -173,7 +176,7 @@ const Composer: ForwardRefExoticComponent<
   return (
     <div
       className={cn(
-        'flex w-full flex-col gap-1.5 rounded-3xl p-2.5',
+        'rounded-theme-surface-lg flex w-full flex-col gap-1.5 p-2.5',
         composerSurfaceClasses(),
         composerSurfaceShadow.within,
         className,
@@ -195,7 +198,7 @@ const Composer: ForwardRefExoticComponent<
         /** Main chat's own field metrics (`ChatForm`'s `baseClasses`), so the
          *  two composers stand the same height and their surfaces line up
          *  when this panel is open beside the thread. */
-        className="m-0 w-full resize-none bg-transparent px-3 py-[13px] text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:cursor-not-allowed md:py-3.5"
+        className="text-text-primary placeholder:text-text-tertiary m-0 w-full resize-none bg-transparent px-3 py-[13px] focus:outline-hidden disabled:cursor-not-allowed md:py-3.5"
       />
       {/* The row holds its height whether or not it carries secondary actions,
           so the surface cannot resize as a run changes what it offers. */}

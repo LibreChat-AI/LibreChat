@@ -1,17 +1,27 @@
 const express = require('express');
-const { createInsightsAccessHandler, createInsightsHandler, isEnabled } = require('@librechat/api');
-const { SystemCapabilities } = require('@librechat/data-schemas');
-const { requireJwtAuth, checkAdmin } = require('~/server/middleware');
-const { requireCapability } = require('~/server/middleware/roles/capabilities');
+const {
+  createInsightsAccessHandler,
+  createInsightsAgentAccessResolver,
+  createInsightsHandler,
+  isEnabled,
+} = require('@librechat/api');
+const { requireJwtAuth } = require('~/server/middleware');
 const db = require('~/models');
 
 const router = express.Router();
-const requireAdminAccess = requireCapability(SystemCapabilities.ACCESS_ADMIN);
-const requireInsightsAccess = requireCapability(SystemCapabilities.READ_INSIGHTS);
 const isInsightsEnabled = () => isEnabled(process.env.ENABLE_INSIGHTS);
+const getAccessibleAgents = createInsightsAgentAccessResolver({
+  getAgents: db.getAgents,
+  getUserPrincipals: db.getUserPrincipals,
+  hasCapabilityForPrincipals: db.hasCapabilityForPrincipals,
+  findAccessibleResources: db.findAccessibleResources,
+});
 
-router.use(requireJwtAuth, checkAdmin, requireAdminAccess, requireInsightsAccess);
-router.get('/access', createInsightsAccessHandler({ isInsightsEnabled }));
-router.get('/', createInsightsHandler({ isInsightsEnabled, getInsights: db.getInsights }));
+router.use(requireJwtAuth);
+router.get('/access', createInsightsAccessHandler({ isInsightsEnabled, getAccessibleAgents }));
+router.get(
+  '/',
+  createInsightsHandler({ isInsightsEnabled, getAccessibleAgents, getInsights: db.getInsights }),
+);
 
 module.exports = router;

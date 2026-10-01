@@ -48,10 +48,76 @@ function createOpenAI({
 }
 
 describe('Assistants model-bound content preflight', () => {
+  it('reports incomplete user-file hydration through the supplied reporter', async () => {
+    const onTraversalFailure = jest.fn();
+    await preflightAssistantUserMessageContent({
+      config: { filters: { files: { pii: { fields: ['name'], starterPatterns: ['sk_prefix'] } } } },
+      user: { id: 'user-1' },
+      message: {
+        file_ids: ['owned'],
+        metadata: {
+          trace: Array.from({ length: 4200 }, () => ({ text: 'safe' })),
+        },
+      },
+      getFiles: jest.fn().mockResolvedValue([{ file_id: 'owned', filename: 'safe.txt' }]),
+      onTraversalFailure,
+    });
+    expect(onTraversalFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: 'omit_resolved_file_locators',
+        reason: 'array_length',
+        messageCount: 1,
+        resolvedFileCount: 1,
+      }),
+    );
+  });
+
   let getFiles: jest.Mock;
 
   beforeEach(() => {
     getFiles = jest.fn().mockResolvedValue([]);
+  });
+
+  it('inspects long remote thread history with one owner-file lookup', async () => {
+    const { openai } = createOpenAI({
+      assistant: {},
+      firstPage: {
+        data: Array.from({ length: 58 }, (_, index) => ({
+          id: `history-${index}`,
+          role: 'user',
+          content: Array.from({ length: 80 }, () => ({
+            type: 'text',
+            text: { value: 'safe history' },
+          })),
+          file_ids: index === 57 ? ['owned-file'] : [],
+        })),
+        has_more: false,
+      },
+    });
+    getFiles.mockResolvedValue([{ file_id: 'owned-file', text: 'safe extraction' }]);
+    await expect(
+      preflightAssistantRunContent({
+        config: {
+          messageFilter: {
+            pii: {
+              starterPatterns: [],
+              customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-LEGACY' }],
+            },
+          },
+          filters: {
+            files: {
+              pii: { fields: ['extracted_text'], starterPatterns: [], uninspectable: 'block' },
+            },
+          },
+        },
+        openai,
+        user: { id: 'owner' },
+        assistantId: 'assistant',
+        threadId: 'thread',
+        getFiles,
+      }),
+    ).resolves.toEqual({});
+    expect(getFiles).toHaveBeenCalledTimes(1);
   });
 
   it('does not perform remote reads when no applicable policy is configured', async () => {
