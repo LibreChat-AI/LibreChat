@@ -184,7 +184,7 @@ export default function AskUserQuestions({
       </div>
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-3">
         {steps.map(({ item, index, choices, otherLabel, selectedIndices, text }) => (
-          <Collapse key={item.id} open={index === activeIndex}>
+          <Collapse key={item.id} open={index === activeIndex} fade={false}>
             <fieldset
               ref={(el) => {
                 stepRefs.current[index] = el;
