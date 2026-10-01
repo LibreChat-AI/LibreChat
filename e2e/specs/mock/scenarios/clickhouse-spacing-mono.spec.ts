@@ -32,6 +32,7 @@ async function openChat(page: Page, mode: Mode, definition?: { name: string }) {
   await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible({
     timeout: 30000,
   });
+  await expect(page.locator('html')).toHaveClass(mode === 'dark' ? /\bdark\b/ : /\blight\b/);
   if (definition) {
     await expect(page.locator('html')).toHaveAttribute('data-theme', definition.name);
   }

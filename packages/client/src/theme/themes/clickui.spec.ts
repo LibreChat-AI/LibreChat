@@ -617,19 +617,19 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
 
 /**
  * Click UI's spacing scale, each step with the LibreChat surface that draws it: a spacing role
- * the theme sets, or the fixed Tailwind step of the same size (0.25rem per unit), which every
- * theme shares.
+ * the theme sets, or the Tailwind spacing step of the same size, which every theme shares and
+ * `tailwind.spec.js` checks against the compiled stylesheet.
  */
-const clickSpaces: Record<string, keyof IThemeAppearance | number> = {
-  'spaces.0': 0,
-  'spaces.1': 1,
+const clickSpaces: Record<string, keyof IThemeAppearance | `p-${number}`> = {
+  'spaces.0': 'p-0',
+  'spaces.1': 'p-1',
   'spaces.2': 'spaceCompact',
   'spaces.3': 'spaceNormal',
-  'spaces.4': 4,
-  'spaces.5': 6,
-  'spaces.6': 8,
-  'spaces.7': 10,
-  'spaces.8': 16,
+  'spaces.4': 'p-4',
+  'spaces.5': 'p-6',
+  'spaces.6': 'p-8',
+  'spaces.7': 'p-10',
+  'spaces.8': 'p-16',
 };
 
 /** A length in rem, for a value written in rem or as a bare `0`. */
@@ -1641,14 +1641,17 @@ describe('ClickHouse theme drift against Click UI', () => {
     expect({ unsourced, drift }).toEqual({ unsourced: [], drift: [] });
   });
 
-  it.each(modes)('draws every %s Click UI space with a role or an equal Tailwind step', (mode) => {
+  it.each(modes)('draws the %s Click UI spaces a role carries from that role', (mode) => {
     const appearance = resolveTheme(clickHouseTheme, mode).appearance;
     const drift = Object.entries(clickSpaces).flatMap(([token, counterpart]) => {
-      const theme =
-        typeof counterpart === 'number' ? counterpart / 4 : remOf(appearance[counterpart]);
+      if (counterpart.startsWith('p-')) {
+        return [];
+      }
+      const role = counterpart as keyof IThemeAppearance;
       const source = remOf(clickToken(mode, token));
-      const name = typeof counterpart === 'number' ? `spacing step ${counterpart}` : counterpart;
-      return theme === source ? [] : [`${token} ${source}rem: ${name} draws ${theme}rem`];
+      return remOf(appearance[role]) === source
+        ? []
+        : [`${token} ${source}rem: ${role} draws ${appearance[role]}`];
     });
 
     expect(drift).toEqual([]);
