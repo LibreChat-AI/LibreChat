@@ -22,11 +22,11 @@ const FilePreview = ({
       <FileIcon file={file} fileType={fileType} />
       <SourceIcon source={file?.source} isCodeFile={!!file?.['metadata']?.fileIdentifier} />
       {typeof file?.['progress'] === 'number' && file?.['progress'] < 1 && (
-        <Spinner
-          bgOpacity={0.2}
-          color="white"
-          className="absolute inset-0 m-2.5 flex items-center justify-center"
-        />
+        /* The spinner strokes in currentColor, so it takes the glyph's ink: white on the stock
+         * tiles, black on the light high-contrast dark tiles. */
+        <span className="text-file-ink absolute inset-0 m-2.5 flex items-center justify-center">
+          <Spinner bgOpacity={0.2} />
+        </span>
       )}
     </div>
   );
