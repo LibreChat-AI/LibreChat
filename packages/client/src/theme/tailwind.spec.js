@@ -160,6 +160,7 @@ describe('LibreChat Tailwind preset', () => {
       ['rounded-theme-tab', '--theme-tab-radius', defaultAppearance.tabRadius],
       ['min-w-theme-tab', '--theme-tab-min-width', defaultAppearance.tabMinWidth],
       ['min-w-theme-target', '--theme-min-target-size', defaultAppearance.minTargetSize],
+      ['min-h-theme-target', '--theme-min-target-size', defaultAppearance.minTargetSize],
       ['h-theme-button-xs', '--theme-button-height-xs', defaultAppearance.buttonHeightXs],
       ['h-theme-button-lg', '--theme-button-height-lg', defaultAppearance.buttonHeightLg],
       ['h-theme-field-lg', '--theme-field-height-lg', defaultAppearance.fieldHeightLg],

@@ -36,6 +36,7 @@ const twMerge = extendTailwindMerge({
         },
       ],
       'min-w': [{ 'min-w': ['theme-tab', 'theme-target'] }],
+      'min-h': [{ 'min-h': ['theme-target'] }],
       size: [
         {
           size: [

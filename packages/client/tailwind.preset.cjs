@@ -35,6 +35,10 @@ module.exports = {
         /** A compact header: half the cell space on both sides of a text-sm line. */
         'theme-table-head-compact': 'calc(var(--theme-table-cell-space-y, 1rem) + 1.25rem)',
       },
+      minHeight: {
+        /** The smallest pointer target a control's hit area keeps (24px by default). */
+        'theme-target': 'var(--theme-min-target-size, 1.5rem)',
+      },
       minWidth: {
         /** The smallest pointer target a control's hit area keeps (24px by default). */
         'theme-target': 'var(--theme-min-target-size, 1.5rem)',

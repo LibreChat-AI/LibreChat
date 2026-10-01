@@ -132,7 +132,7 @@ test.describe('primitive size roles', () => {
     /** The menu row's icon slot, holding a glyph a caller sized itself, as the export menu does. */
     const glyph = await page.evaluate(() => {
       const slot = document.createElement('span');
-      slot.className = 'size-theme-icon mr-2 [&>svg]:size-theme-icon';
+      slot.className = 'size-theme-icon mr-2 [&>svg]:size-full';
       slot.innerHTML = '<svg class="size-4" viewBox="0 0 24 24"></svg>';
       document.body.append(slot);
       const width = getComputedStyle(slot.querySelector('svg') as SVGElement).width;
@@ -140,6 +140,19 @@ test.describe('primitive size roles', () => {
       return width;
     });
     expect(glyph).toBe('24px');
+
+    /** A caller that sizes the slot itself, as the mobile panel switcher does, keeps its glyph. */
+    const explicit = await page.evaluate(() => {
+      const slot = document.createElement('span');
+      slot.className = 'mr-2 size-5 [&>svg]:size-full';
+      slot.innerHTML = '<svg class="size-5" viewBox="0 0 24 24"></svg>';
+      document.body.append(slot);
+      const width = getComputedStyle(slot.querySelector('svg') as SVGElement).width;
+      slot.remove();
+      return width;
+    });
+    expect(explicit).toBe('20px');
+    expect(await probeStyle(page, 'min-h-theme-target', 'min-height')).toBe('32px');
     expect(await probeStyle(page, 'h-theme-target', 'height')).toBe('32px');
   });
 });
