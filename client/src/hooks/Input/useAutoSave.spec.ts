@@ -3,8 +3,10 @@ jest.mock('recoil', () => ({
   useRecoilValue: jest.fn(),
 }));
 
-jest.mock('~/store', () => ({
-  saveDrafts: { key: 'saveDrafts', default: true },
+jest.mock('~/store', () => ({}));
+
+jest.mock('~/Providers/ChatSettingsContext', () => ({
+  useChatSettings: () => ({ saveDrafts: true }),
 }));
 
 jest.mock('~/Providers', () => ({
@@ -45,7 +47,6 @@ import {
   setFilesDraft,
 } from '~/utils';
 import { markPastedTextFile } from '~/utils/files';
-import store from '~/store';
 import { useAutoSave } from '~/hooks';
 
 const mockSetValue = jest.fn();
@@ -66,10 +67,7 @@ const markTabGone = (tabId: string): void => localStorage.removeItem(`librechat-
 
 beforeEach(() => {
   localStorage.clear();
-  (useRecoilValue as jest.Mock).mockImplementation((atom) => {
-    if (atom === store.saveDrafts) return true;
-    return undefined;
-  });
+  (useRecoilValue as jest.Mock).mockReturnValue(undefined);
   (useChatFormContext as jest.Mock).mockReturnValue({ setValue: mockSetValue });
   (useGetFiles as jest.Mock).mockReturnValue({ data: [] });
   (hasInFlightUpload as jest.Mock).mockReturnValue(false);

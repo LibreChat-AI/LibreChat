@@ -186,6 +186,12 @@ export type ChatSettings = {
   steerInterruptsByDefault: boolean;
   /** Closes the artifacts panel, called when the active conversation changes. */
   resetVisibleArtifacts: () => void;
+  /** Whether composer text and attachments are kept as drafts across navigation. */
+  saveDrafts: boolean;
+  /** Whether new turns are sent as a temporary chat that the server does not retain. */
+  isTemporary: boolean;
+  /** Turns temporary chat on or off for the next conversation. */
+  setIsTemporary: Dispatch<SetStateAction<boolean>>;
 };
 
 /** The assistants abort route and the run it stops. */

@@ -87,38 +87,38 @@ export function hasIncompleteFiles(files: Map<string, ExtendedFile>): boolean {
 
 const textDocument = {
   paths: TextPaths,
-  fill: '#FF5588',
+  fillClassName: 'fill-file-document',
   title: 'Document',
 };
 
 const spreadsheet = {
   paths: SheetPaths,
-  fill: '#10A37F',
+  fillClassName: 'fill-file-sheet',
   title: 'Spreadsheet',
 };
 
 const codeFile = {
   paths: CodePaths,
-  fill: '#FF6E3C',
+  fillClassName: 'fill-file-code',
   // TODO: make this dynamic to the language
   title: 'Code',
 };
 
 const artifact = {
   paths: CodePaths,
-  fill: '#2D305C',
+  fillClassName: 'fill-file-artifact',
   title: 'Code',
 };
 
 const audioFile = {
   paths: AudioPaths,
-  fill: '#FF6B35',
+  fillClassName: 'fill-file-audio',
   title: 'Audio',
 };
 
 const videoFile = {
   paths: VideoPaths,
-  fill: '#8B5CF6',
+  fillClassName: 'fill-file-video',
   title: 'Video',
 };
 
@@ -126,7 +126,7 @@ export const fileTypes = {
   /* Category matches */
   file: {
     paths: FilePaths,
-    fill: '#0000FF',
+    fillClassName: 'fill-file-generic',
     title: 'File',
   },
   text: textDocument,
@@ -174,7 +174,7 @@ export const getFileType = (
   type = '',
 ): {
   paths: React.FC;
-  fill: string;
+  fillClassName: string;
   title: string;
 } => {
   // Direct match check

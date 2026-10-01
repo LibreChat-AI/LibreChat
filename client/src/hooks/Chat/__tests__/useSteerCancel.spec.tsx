@@ -1,4 +1,5 @@
 import React from 'react';
+import { useAtomValue } from 'jotai';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { act, renderHook } from '@testing-library/react';
 import { ReasoningEffort } from 'librechat-data-provider';
@@ -8,6 +9,7 @@ import {
   ComposerRestoreProvider,
   useComposerRestoreHost,
 } from '~/Providers/ComposerRestoreContext';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import useSteerCancel, { useSteerMoveToQueue } from '../useSteerCancel';
 import store from '~/store';
 
@@ -49,11 +51,13 @@ function setup(steer: PendingSteer) {
     () => ({
       moveToQueue: useSteerMoveToQueue(CONVO_ID),
       chips: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
-      queue: useRecoilValue(store.queuedMessagesByConvoId(CONVO_ID)),
+      queue: useAtomValue(queuedMessagesByConvoId(CONVO_ID)),
     }),
     { wrapper },
   );
 }
+
+beforeEach(() => resetQueueFamilies());
 
 describe('useSteerMoveToQueue', () => {
   beforeEach(() => {
@@ -124,7 +128,7 @@ describe('useSteerMoveToQueue', () => {
     const { result } = renderHook(
       () => ({
         moveToQueue: useSteerMoveToQueue(CONVO_ID),
-        queue: useRecoilValue(store.queuedMessagesByConvoId(CONVO_ID)),
+        queue: useAtomValue(queuedMessagesByConvoId(CONVO_ID)),
       }),
       { wrapper },
     );
@@ -209,7 +213,7 @@ function setupCancel(
     () => ({
       cancel: useSteerCancel(CONVO_ID),
       chips: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
-      queue: useRecoilValue(store.queuedMessagesByConvoId(CONVO_ID)),
+      queue: useAtomValue(queuedMessagesByConvoId(CONVO_ID)),
     }),
     { wrapper },
   );

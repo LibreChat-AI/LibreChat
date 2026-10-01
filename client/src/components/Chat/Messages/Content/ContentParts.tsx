@@ -24,6 +24,7 @@ import {
   reasoningDisclosure,
   ToolDisclosureContext,
   ToolDisclosureKeyContext,
+  SoleToolContext,
 } from './disclosure';
 import {
   groupActivityPhases,
@@ -1149,19 +1150,25 @@ const ContentPartsBody = memo(function ContentPartsBody({
                 absoluteIndexAt(segment.labelIndex) === lastContentIdx
           }
         >
-          {renderSegment(
-            segment.content,
-            absoluteIndexAt(segment.startIndex),
-            segmentIndices,
-            `phase-content-${cardKey}`,
-            /** Opening a live row should show the calls running, so its
-             *  groups keep their own live expansion rather than the
-             *  settled-phase default of staying shut. */
-            !live,
-            ownsCursor,
-            true,
-            true,
-          )}
+          <SoleToolContext.Provider
+            value={
+              segment.content.filter((part) => part?.type === ContentTypes.TOOL_CALL).length === 1
+            }
+          >
+            {renderSegment(
+              segment.content,
+              absoluteIndexAt(segment.startIndex),
+              segmentIndices,
+              `phase-content-${cardKey}`,
+              /** Opening a live row should show the calls running, so its
+               *  groups keep their own live expansion rather than the
+               *  settled-phase default of staying shut. */
+              !live,
+              ownsCursor,
+              true,
+              true,
+            )}
+          </SoleToolContext.Provider>
         </ActivityPhaseGroup>
       );
     });
@@ -1379,7 +1386,10 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
         <ReasoningDisclosureContext.Provider value={reasoningDisclosures}>
           <ToolDisclosureContext.Provider value={toolDisclosures}>
             <MCPAppSuppressionContext.Provider value={suppressedAppAttachments}>
-              <ContentPartsBody {...props} />
+              {/* A nested message (a subagent's) is not the sole call of the group around it. */}
+              <SoleToolContext.Provider value={undefined}>
+                <ContentPartsBody {...props} />
+              </SoleToolContext.Provider>
             </MCPAppSuppressionContext.Provider>
             <MCPAppViews
               key={`message-apps-${appRenderScope}`}

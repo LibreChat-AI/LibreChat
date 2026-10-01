@@ -101,10 +101,11 @@ const mockActiveRunAtom = { key: 'activeRun' };
 const mockAbortScrollAtom = { key: 'abortScroll' };
 const mockSubmissionAtom = { key: 'submission' };
 const mockShowStopButtonAtom = { key: 'showStopButton' };
-const mockRunEndAtom = { key: 'runEnd' };
-const mockDrainAfterAbortAtom = { key: 'drainAfterAbort' };
 const mockPendingSteersAtom = { key: 'pendingSteers' };
-const mockQueuedMessagesAtom = { key: 'queuedMessages' };
+/** The follow-up queue a restored submission lands back in. */
+const queuedIn = (conversationId: string) =>
+  getDefaultStore().get(queuedMessagesByConvoId(conversationId));
+
 const mockSetActiveRun = jest.fn();
 const mockSetAbortScroll = jest.fn();
 const mockSetSubmission = jest.fn();
@@ -117,10 +118,8 @@ const mockSeedSteerChips = jest.fn();
 const mockSettleAppliedSteerParts = jest.fn();
 const mockConvertLocalSteersToQueued = jest.fn();
 const mockUpdateGenerationEpoch = jest.fn();
-const mockRestoreQueuedSubmission = jest.fn();
 let mockRecoilCallbackIndex = 0;
 const mockRecoilCallbacks = [
-  mockRestoreQueuedSubmission,
   mockResolveSteerChip,
   mockUpdateSteerChips,
   mockSeedSteerChips,
@@ -143,12 +142,6 @@ const mockUseSetRecoilStateMock = jest.fn((atom: unknown) => {
   }
   if (atom === mockShowStopButtonAtom) {
     return mockSetShowStopButton;
-  }
-  if (atom === mockRunEndAtom) {
-    return mockSetRunEnd;
-  }
-  if (atom === mockDrainAfterAbortAtom) {
-    return mockSetDrainAfterAbort;
   }
   return jest.fn();
 });
@@ -188,6 +181,25 @@ jest.mock('recoil', () => ({
   useRecoilCallback: mockUseRecoilCallback,
 }));
 
+/** The run-end and interrupt-drain signals are Jotai atoms; their pane setters are swapped for
+ *  spies, the same way the Recoil setters above are. */
+jest.mock('jotai', () => {
+  const actual = jest.requireActual('jotai');
+  return {
+    ...actual,
+    useSetAtom: (atom: unknown) => {
+      const queue = jest.requireActual('~/hooks/Chat/queue');
+      if (atom === queue.runEndByIndex(0)) {
+        return mockSetRunEnd;
+      }
+      if (atom === queue.drainAfterAbortByIndex(0)) {
+        return mockSetDrainAfterAbort;
+      }
+      return actual.useSetAtom(atom);
+    },
+  };
+});
+
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {
@@ -195,10 +207,7 @@ jest.mock('~/store', () => ({
     abortScrollFamily: jest.fn(() => mockAbortScrollAtom),
     submissionByIndex: jest.fn(() => mockSubmissionAtom),
     showStopButtonByIndex: jest.fn(() => mockShowStopButtonAtom),
-    runEndByIndex: jest.fn(() => mockRunEndAtom),
-    drainAfterAbortByIndex: jest.fn(() => mockDrainAfterAbortAtom),
     pendingSteersByConvoId: jest.fn(() => mockPendingSteersAtom),
-    queuedMessagesByConvoId: jest.fn(() => mockQueuedMessagesAtom),
   },
 }));
 
@@ -311,6 +320,7 @@ import useResumableSSE, {
   ABORT_SWEEP_STATUSES,
 } from '~/hooks/SSE/useResumableSSE';
 import useSSE from '~/hooks/SSE/useSSE';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 
 const CONV_ID = 'conv-abc-123';
 
@@ -429,7 +439,7 @@ describe('useResumableSSE', () => {
     mockSettleAppliedSteerParts.mockClear();
     mockConvertLocalSteersToQueued.mockClear();
     mockUpdateGenerationEpoch.mockClear();
-    mockRestoreQueuedSubmission.mockClear();
+    resetQueueFamilies();
     mockRecoilCallbackIndex = 0;
     mockConvertSteersToQueued.mockClear();
     mockFetchStreamStatus.mockReset();
@@ -3316,7 +3326,7 @@ describe('useResumableSSE', () => {
       expect(getDefaultStore().get(recoveryDispositionsFamily(CONV_ID))).toEqual({
         source: 'blocked',
       });
-      expect(mockRestoreQueuedSubmission).toHaveBeenCalledWith(submission);
+      expect(queuedIn(CONV_ID)).toEqual([item]);
       expect(mockConvertSteersToQueued).not.toHaveBeenCalled();
       expect(request.post).toHaveBeenCalledTimes(1);
       unmount();
@@ -3356,7 +3366,7 @@ describe('useResumableSSE', () => {
 
     await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
 
-    expect(mockRestoreQueuedSubmission).toHaveBeenCalledWith(submission);
+    expect(queuedIn(CONV_ID)).toEqual([queuedMessageOrigin.item]);
     expect(mockSSEInstances).toHaveLength(0);
     unmount();
   });
@@ -3397,8 +3407,9 @@ describe('useResumableSSE', () => {
     await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
 
     expect(request.post).toHaveBeenCalledTimes(1);
-    expect(mockRestoreQueuedSubmission).toHaveBeenNthCalledWith(1, submission);
-    expect(mockRestoreQueuedSubmission).toHaveBeenLastCalledWith(submission, 2000);
+    expect(queuedIn(CONV_ID)).toEqual([
+      { ...queuedMessageOrigin.item, expectedPredecessorCreatedAt: 2000 },
+    ]);
     expect(mockSSEInstances).toHaveLength(0);
     expect(mockSetQueryData).toHaveBeenCalledWith(
       ['streamStatus', CONV_ID],
@@ -3464,8 +3475,9 @@ describe('useResumableSSE', () => {
     await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
 
     expect(request.post).toHaveBeenCalledTimes(1);
-    expect(mockRestoreQueuedSubmission).toHaveBeenNthCalledWith(1, submission);
-    expect(mockRestoreQueuedSubmission).toHaveBeenLastCalledWith(submission, 2000);
+    expect(queuedIn(CONV_ID)).toEqual([
+      { ...queuedMessageOrigin.item, expectedPredecessorCreatedAt: 2000 },
+    ]);
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: [QueryKeys.messages, CONV_ID],
       refetchType: 'all',
@@ -3517,7 +3529,7 @@ describe('useResumableSSE', () => {
       generationProtocolVersion: 2,
       allowPreviouslyConvertedIds: ['source-steer'],
     });
-    expect(mockRestoreQueuedSubmission).not.toHaveBeenCalled();
+    expect(queuedIn(CONV_ID)).toEqual([]);
     unmount();
   });
 

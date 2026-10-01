@@ -145,6 +145,14 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
+  'rgb-file-document': '204 0 153', // #cc0099 (palette.fuchsia.600)
+  'rgb-file-sheet': '0 138 11', // #008a0b (palette.success.700)
+  'rgb-file-code': '214 79 0', // #d64f00 (palette.warning.600)
+  'rgb-file-artifact': '48 46 50', // #302e32 (palette.slate.800)
+  'rgb-file-audio': '138 105 0', // #8a6900 (palette.sunrise.700)
+  'rgb-file-video': '136 0 204', // #8800cc (palette.violet.600)
+  'rgb-file-generic': '16 78 198', // #104ec6 (palette.info.600)
+  'rgb-file-ink': '255 255 255', // #ffffff (palette.neutral.0)
 
   // Code syntax
   'rgb-syntax-text': '40 40 40', // #282828 (codeblock.lightMode.color.text.default)
@@ -296,6 +304,14 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
+  'rgb-file-document': '204 0 153', // #cc0099 (palette.fuchsia.600)
+  'rgb-file-sheet': '0 138 11', // #008a0b (palette.success.700)
+  'rgb-file-code': '214 79 0', // #d64f00 (palette.warning.600)
+  'rgb-file-artifact': '48 46 50', // #302e32 (palette.slate.800)
+  'rgb-file-audio': '138 105 0', // #8a6900 (palette.sunrise.700)
+  'rgb-file-video': '136 0 204', // #8800cc (palette.violet.600)
+  'rgb-file-generic': '16 78 198', // #104ec6 (palette.info.600)
+  'rgb-file-ink': '255 255 255', // #ffffff (palette.neutral.0)
 
   // Code syntax
   'rgb-syntax-text': '255 255 255', // #ffffff (codeblock.darkMode.color.text.default)

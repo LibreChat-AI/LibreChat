@@ -1,20 +1,20 @@
 import React from 'react';
+import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
-import { getDefaultStore } from 'jotai';
-import { RecoilRoot, useSetRecoilState } from 'recoil';
+import { getDefaultStore, useSetAtom } from 'jotai';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { ReasoningEffort } from 'librechat-data-provider';
 import { act, render, screen, within, fireEvent } from '@testing-library/react';
 import type { SteeringControls } from '~/hooks/Chat/useSteering';
-import type { QueuedMessage } from '~/store/families';
+import type { QueuedMessage } from '~/hooks/Chat/queue';
 import {
   QueuedTurnPortalProvider,
   useQueuedTurnPortal,
 } from '~/components/Chat/Steering/QueuedTurnPortal';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import { hasQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import Queue from '../Queue';
-import store from '~/store';
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, options?: Record<string, string | number>) => {
     if (!options) {
@@ -140,7 +140,9 @@ function renderQueue(
   } = {},
 ) {
   return render(
-    <RecoilRoot initializeState={({ set }) => set(store.queuedMessagesByConvoId(CONVO_ID), items)}>
+    <RecoilRoot
+      initializeState={() => getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), items)}
+    >
       {/* Mirrors `App`, which mounts the provider around the whole tree. */}
       <DndProvider backend={HTML5Backend}>
         <QueuedTurnPortalProvider>
@@ -160,6 +162,8 @@ function renderQueue(
     </RecoilRoot>,
   );
 }
+
+beforeEach(() => resetQueueFamilies());
 
 describe('Queue', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -617,34 +621,30 @@ describe('Queue', () => {
   /* Split view mounts two composers at once. A module-global id duplicated the
      hint element and pointed every handle at whichever copy won. */
   it('scopes the reorder hint to its own rail', () => {
+    /** Split view: both panes share the app's store and differ by conversation. */
+    const store = getDefaultStore();
+    store.set(queuedMessagesByConvoId('left-convo'), [
+      queued({ id: 'q1', text: 'left first' }),
+      queued({ id: 'q2', text: 'left second' }),
+    ]);
+    store.set(queuedMessagesByConvoId('right-convo'), [
+      queued({ id: 'q3', text: 'right first' }),
+      queued({ id: 'q4', text: 'right second' }),
+    ]);
     render(
       <DndProvider backend={HTML5Backend}>
-        <RecoilRoot
-          initializeState={({ set }) =>
-            set(store.queuedMessagesByConvoId(CONVO_ID), [
-              queued({ id: 'q1' }),
-              queued({ id: 'q2' }),
-            ])
-          }
-        >
+        <RecoilRoot>
           <Queue
-            steering={steering}
-            conversationId={CONVO_ID}
+            steering={{ ...steering, queueKey: 'left-convo' }}
+            conversationId="left-convo"
             onRestoreToComposer={jest.fn()}
             canRestoreToComposer={() => true}
           />
         </RecoilRoot>
-        <RecoilRoot
-          initializeState={({ set }) =>
-            set(store.queuedMessagesByConvoId(CONVO_ID), [
-              queued({ id: 'q3' }),
-              queued({ id: 'q4' }),
-            ])
-          }
-        >
+        <RecoilRoot>
           <Queue
-            steering={steering}
-            conversationId={CONVO_ID}
+            steering={{ ...steering, queueKey: 'right-convo' }}
+            conversationId="right-convo"
             onRestoreToComposer={jest.fn()}
             canRestoreToComposer={() => true}
           />
@@ -657,6 +657,11 @@ describe('Queue', () => {
     expect(hints[0].id).not.toBe(hints[1].id);
 
     const rails = screen.getAllByTestId('composer-queue');
+    expect(within(rails[0]).getAllByTestId('queued-message-grip')).toHaveLength(2);
+    expect(within(rails[1]).getAllByTestId('queued-message-grip')).toHaveLength(2);
+    expect(rails[0]).toHaveTextContent('left first');
+    expect(rails[0]).not.toHaveTextContent('right first');
+    expect(rails[1]).toHaveTextContent('right first');
     for (const [railIndex, rail] of rails.entries()) {
       for (const grip of within(rail).getAllByTestId('queued-message-grip')) {
         expect(grip).toHaveAttribute('aria-describedby', hints[railIndex].id);
@@ -669,13 +674,16 @@ describe('Queue', () => {
   it('forgets its last announcement once the queue empties', () => {
     let setQueue: (items: QueuedMessage[]) => void = () => undefined;
     const Driver = () => {
-      setQueue = useSetRecoilState(store.queuedMessagesByConvoId(CONVO_ID));
+      setQueue = useSetAtom(queuedMessagesByConvoId(CONVO_ID));
       return null;
     };
     render(
       <RecoilRoot
-        initializeState={({ set }) =>
-          set(store.queuedMessagesByConvoId(CONVO_ID), [queued({ id: 'q1' }), queued({ id: 'q2' })])
+        initializeState={() =>
+          getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [
+            queued({ id: 'q1' }),
+            queued({ id: 'q2' }),
+          ])
         }
       >
         <Driver />

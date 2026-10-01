@@ -52,6 +52,7 @@ import { useDeleteFilesMutation, useGetEndpointsQuery, useGetStartupConfig } fro
 import { supersedeNavigation } from './Conversations/useNavigateToConvo';
 import useGetConversation from './Conversations/useGetConversation';
 import useAssistantListMap from './Assistants/useAssistantListMap';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { clearUploadRecovery } from './Files/useFileHandling';
 import { useResetChatBadges } from './useChatBadges';
 import { useApplyModelSpecEffects } from './Agents';
@@ -97,7 +98,7 @@ const useNewConvo = (index = 0) => {
   const modelsQuery = useGetModelsQuery();
   const assistantsListMap = useAssistantListMap();
   const { pauseGlobalAudio } = usePauseGlobalAudio(index);
-  const saveDrafts = useRecoilValue<boolean>(store.saveDrafts);
+  const { saveDrafts } = useChatSettings();
   const resetBadges = useResetChatBadges();
 
   const { mutateAsync } = useDeleteFilesMutation({

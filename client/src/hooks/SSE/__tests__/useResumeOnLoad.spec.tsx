@@ -6,8 +6,10 @@ import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
 import type { Agents, TMessage, TConversation, TSubmission } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
-import type { PendingSteer, QueuedMessage } from '~/store/families';
+import type { QueuedMessage } from '~/hooks/Chat/queue';
+import type { PendingSteer } from '~/store/families';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { revealedQueuedTurnFamily } from '~/store/steer';
@@ -167,7 +169,7 @@ function renderUseResumeOnLoad({
     return null;
   };
   const QueuedMessagesProbe = () => {
-    const queued = useRecoilValue(store.queuedMessagesByConvoId(conversationId));
+    const queued = useAtomValue(queuedMessagesByConvoId(conversationId));
     onQueuedMessages?.(queued);
     return null;
   };
@@ -208,6 +210,8 @@ function renderUseResumeOnLoad({
     ),
   };
 }
+
+beforeEach(() => resetQueueFamilies());
 
 describe('useResumeOnLoad', () => {
   beforeEach(() => {

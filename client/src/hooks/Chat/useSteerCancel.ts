@@ -1,10 +1,11 @@
 import { useCallback } from 'react';
-import { useSetAtom } from 'jotai';
+import { useSetAtom, useStore } from 'jotai';
 import { useRecoilCallback, useRecoilValue } from 'recoil';
 import type { PendingSteer } from '~/store/families';
 import { useComposerRestoreHost } from '~/Providers/ComposerRestoreContext';
 import { appendAppliedSteerIds, carriedSteerContext } from '~/utils';
 import { pendingSteerCancelClientIdsFamily } from '~/store/steer';
+import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { useCancelSteerMutation } from '~/data-provider';
 import store from '~/store';
@@ -24,6 +25,7 @@ export function useSteerReclaim(conversationId: string) {
     store.activeGenerationCreatedAtByConvoId(conversationId),
   );
   const setPendingCancelIds = useSetAtom(pendingSteerCancelClientIdsFamily(conversationId));
+  const queueStore = useStore();
   const settleReclaimed = useRecoilCallback(
     ({ set }) =>
       (steer: PendingSteer) => {
@@ -40,7 +42,7 @@ export function useSteerReclaim(conversationId: string) {
           ),
         );
         setPendingCancelIds((prev) => prev.filter((id) => !ids.includes(id)));
-        set(store.queuedMessagesByConvoId(conversationId), (prev) =>
+        queueStore.set(queuedMessagesByConvoId(conversationId), (prev) =>
           prev.filter(
             (item) =>
               !settled.has(item.id) &&
@@ -49,7 +51,7 @@ export function useSteerReclaim(conversationId: string) {
           ),
         );
       },
-    [conversationId, setPendingCancelIds],
+    [conversationId, setPendingCancelIds, queueStore],
   );
 
   return useCallback(

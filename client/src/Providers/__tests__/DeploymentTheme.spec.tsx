@@ -84,9 +84,19 @@ function SharedRoute() {
   return route ? <SharedThemeSource theme={route.theme} /> : null;
 }
 
-function SharedThemeSource({ theme }: { theme: ConfigTheme }) {
-  useDeploymentThemeOverride(true, theme);
+function SharedThemeSource({ theme, ready = true }: { theme: ConfigTheme; ready?: boolean }) {
+  useDeploymentThemeOverride(ready, theme);
   return null;
+}
+
+let showLoadingRoute: (route: { ready: boolean; theme?: ConfigTheme } | null) => void = () =>
+  undefined;
+
+/** Stands in for the share route while its own config is still loading. */
+function LoadingRoute() {
+  const [route, setRoute] = useState<{ ready: boolean; theme?: ConfigTheme } | null>(null);
+  showLoadingRoute = setRoute;
+  return route ? <SharedThemeSource theme={route.theme} ready={route.ready} /> : null;
 }
 
 function renderTheme(queryClient: QueryClient, user?: Pick<TUser, 'id' | 'tenantId'>) {
@@ -96,6 +106,7 @@ function renderTheme(queryClient: QueryClient, user?: Pick<TUser, 'id' | 'tenant
         <DeploymentTheme>
           <LateRoute />
           <SharedRoute />
+          <LoadingRoute />
           <ThemeEditor />
         </DeploymentTheme>
       </QueryClientProvider>
@@ -357,6 +368,22 @@ describe('DeploymentTheme', () => {
 
     act(() => showSharedRoute(null));
     await waitFor(() => expect(root().dataset.theme).toBe('clickhouse'));
+    expect(localStorage.getItem('theme-definition')).toBe(JSON.stringify(storedDefinition));
+  });
+
+  it('drops the viewer theme in the commit a route mounts, before its own theme is ready', async () => {
+    serveTheme('clickhouse');
+    renderTheme(queryClient);
+    await waitFor(() => expect(root().dataset.theme).toBe('clickhouse'));
+
+    act(() => showLoadingRoute({ ready: false }));
+    expect(root().dataset.theme).toBe('stored');
+
+    act(() => showLoadingRoute({ ready: true, theme: inlineTheme }));
+    expect(root().dataset.theme).toBe('acme');
+
+    act(() => showLoadingRoute(null));
+    expect(root().dataset.theme).toBe('clickhouse');
     expect(localStorage.getItem('theme-definition')).toBe(JSON.stringify(storedDefinition));
   });
 
