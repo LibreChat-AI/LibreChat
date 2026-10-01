@@ -1,6 +1,6 @@
 import { useContext, useMemo, useState } from 'react';
 import { Button, TextareaAutosize, TooltipAnchor } from '@librechat/client';
-import { ChevronUp, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
+import { ChevronDown, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
 import type { Agents } from 'librechat-data-provider';
 import { useApprovalContext, useAskSubmitStatus, useResumeSubmit } from './ApprovalContext';
 import { splitOtherOption, ASK_USER_DECLINED_ANSWER } from '~/utils/approval';
@@ -94,7 +94,10 @@ function AskUserQuestionsCard({
                   aria-label={localize('com_ui_ask_move_to_composer')}
                   onClick={onExpand}
                 >
-                  <ChevronUp className="size-4" aria-hidden="true" />
+                  <ChevronDown
+                    className="size-4 rotate-180 [view-transition-name:ask-question-chevron]"
+                    aria-hidden="true"
+                  />
                 </Button>
               }
             />
@@ -254,7 +257,10 @@ function AskUserQuestionSingle({
                 aria-label={localize('com_ui_ask_move_to_composer')}
                 onClick={expand}
               >
-                <ChevronUp className="size-4" aria-hidden="true" />
+                <ChevronDown
+                  className="size-4 rotate-180 [view-transition-name:ask-question-chevron]"
+                  aria-hidden="true"
+                />
               </Button>
             }
           />

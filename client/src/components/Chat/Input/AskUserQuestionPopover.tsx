@@ -80,7 +80,10 @@ function MoveToChatButton({ onClick }: { onClick: () => void }) {
           aria-label={localize('com_ui_ask_move_to_chat')}
           onClick={onClick}
         >
-          <ChevronDown className="size-4" aria-hidden="true" />
+          <ChevronDown
+            className="size-4 [view-transition-name:ask-question-chevron]"
+            aria-hidden="true"
+          />
         </Button>
       }
     />
