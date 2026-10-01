@@ -2,7 +2,6 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { NEW_CHAT_PATH } from '../helpers';
-import { themeValue } from './style.helpers';
 
 /**
  * Colours that used to be literals in components now read roles: the default avatar's hairline
@@ -161,18 +160,31 @@ test.describe('roles for former colour literals', () => {
     page,
   }) => {
     test.setTimeout(60000);
-    await installThemeBridge(page, null);
-    await page.goto(`${NEW_CHAT_PATH}?${THEME_PARAM}=light`);
-    await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible({
-      timeout: 20000,
-    });
-    expect(await themeValue(page, '--theme-elevation-drag')).toBe('0 10px 25px rgb(0 0 0 / 0.1)');
-
-    await installThemeBridge(page, clickHouseTheme);
-    await page.goto(`${NEW_CHAT_PATH}?${THEME_PARAM}=light`);
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
-    expect(await themeValue(page, '--theme-elevation-drag')).toBe(
-      clickHouseTheme.modes.light?.appearance?.elevationDrag,
-    );
+    const cases: Array<[unknown, string | undefined]> = [
+      [null, '0 10px 25px rgb(0 0 0 / 0.1)'],
+      [clickHouseTheme, clickHouseTheme.modes.light?.appearance?.elevationDrag],
+    ];
+    for (const [definition, expected] of cases) {
+      await installThemeBridge(page, definition);
+      await page.goto(`${NEW_CHAT_PATH}?${THEME_PARAM}=light`);
+      await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible({
+        timeout: 20000,
+      });
+      /* The badge animates to `var(--theme-elevation-drag)`; compare what that resolves to
+       * against the value the theme declares, both as the browser computes a box-shadow. */
+      const [lift, declared] = await page.evaluate((value) => {
+        const read = (shadow: string) => {
+          const probe = document.createElement('div');
+          probe.style.boxShadow = shadow;
+          document.body.append(probe);
+          const computed = getComputedStyle(probe).boxShadow;
+          probe.remove();
+          return computed;
+        };
+        return [read('var(--theme-elevation-drag)'), read(value ?? '')];
+      }, expected);
+      expect(declared).not.toBe('none');
+      expect(lift).toBe(declared);
+    }
   });
 });
