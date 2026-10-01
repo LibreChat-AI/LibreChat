@@ -158,7 +158,7 @@
   },
   "client/src/components/Chat/Input/AskUserQuestionPopover.tsx": {
     "shadcn/no-restyle": {
-      "count": 13
+      "count": 7
     }
   },
   "client/src/components/Chat/Input/ChatForm.tsx": {
@@ -402,11 +402,8 @@
     }
   },
   "client/src/components/Chat/Messages/Content/AskUserQuestion.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
-      "count": 14
+      "count": 11
     }
   },
   "client/src/components/Chat/Messages/Content/AskUserQuestionCall.tsx": {
@@ -416,7 +413,7 @@
   },
   "client/src/components/Chat/Messages/Content/AskUserQuestions.tsx": {
     "shadcn/no-restyle": {
-      "count": 10
+      "count": 1
     }
   },
   "client/src/components/Chat/Messages/Content/Container.tsx": {

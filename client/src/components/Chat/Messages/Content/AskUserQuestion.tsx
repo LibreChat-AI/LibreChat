@@ -37,15 +37,64 @@ export default function AskUserQuestion({
       return null;
     }
     return (
-      <AskUserQuestions
+      <AskUserQuestionsCard
         actionId={actionId}
         questions={questions}
-        className="border-border-light bg-surface-secondary my-2 max-h-[70vh] w-full rounded-lg border"
+        live={isLivePause}
         onExpand={answerMode.collapsed && isLivePause ? answerMode.expand : undefined}
       />
     );
   }
   return <AskUserQuestionSingle actionId={actionId} question={question} answerMode={answerMode} />;
+}
+
+/** The batch's chat card. Shares the popover's view-transition-name while it is
+ *  the live pause's surface, so moving the batch between the composer and the
+ *  chat morphs one surface into the other, like a single question does. */
+function AskUserQuestionsCard({
+  actionId,
+  questions,
+  live,
+  onExpand,
+}: {
+  actionId: string;
+  questions: Agents.AskUserQuestionBatchItem[];
+  live: boolean;
+  onExpand?: () => void;
+}) {
+  const localize = useLocalize();
+  return (
+    <div
+      className={cn(
+        'border-border-light bg-surface-secondary my-2 flex max-h-[70vh] w-full flex-col rounded-2xl border',
+        live && '[view-transition-name:ask-question]',
+      )}
+    >
+      <AskUserQuestions
+        actionId={actionId}
+        questions={questions}
+        className="flex-1"
+        headerAction={
+          onExpand != null && (
+            <TooltipAnchor
+              description={localize('com_ui_ask_move_to_composer')}
+              side="top"
+              render={
+                <Button
+                  variant="row-action"
+                  size="icon-xs"
+                  aria-label={localize('com_ui_ask_move_to_composer')}
+                  onClick={onExpand}
+                >
+                  <ChevronUp className="size-4" aria-hidden="true" />
+                </Button>
+              }
+            />
+          )
+        }
+      />
+    </div>
+  );
 }
 
 function AskUserQuestionSingle({
@@ -169,14 +218,14 @@ function AskUserQuestionSingle({
   const card = (
     <div
       className={cn(
-        'border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-2.5 rounded-xl border p-3',
+        'border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-2.5 rounded-2xl border p-3',
         showPlaceholder && 'invisible',
+        isLivePause && !showPlaceholder && '[view-transition-name:ask-question]',
       )}
       aria-hidden={showPlaceholder || undefined}
-      style={isLivePause && !showPlaceholder ? { viewTransitionName: 'ask-question' } : undefined}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
+      <div className="text-text-secondary flex items-start justify-between gap-2">
+        <div className="min-w-0 pt-1">
           <p className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]">
             {question.question}
           </p>
@@ -192,10 +241,9 @@ function AskUserQuestionSingle({
             side="top"
             render={
               <Button
-                variant="ghost"
-                size="icon"
+                variant="row-action"
+                size="icon-xs"
                 aria-label={localize('com_ui_ask_move_to_composer')}
-                className="text-text-secondary size-auto rounded-md p-1"
                 onClick={expand}
               >
                 <ChevronUp className="size-4" aria-hidden="true" />

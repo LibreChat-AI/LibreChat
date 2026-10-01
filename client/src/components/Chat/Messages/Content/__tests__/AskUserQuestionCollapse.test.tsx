@@ -107,12 +107,12 @@ describe('collapsing a live ask_user_question', () => {
       renderPause();
       fireEvent.click(screen.getByTestId('collapse-from-popover'));
 
-      fireEvent.click(screen.getByLabelText('Expand'));
+      fireEvent.click(screen.getByLabelText('Answer from the message box'));
 
       expect(screen.getByTestId('active').textContent).toBe('true');
       expect(screen.getByTestId('popover-visible').textContent).toBe('true');
       expect(screen.getByTestId('composer-locked').textContent).toBe('true');
-      expect(screen.queryByLabelText('Expand')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Answer from the message box')).not.toBeInTheDocument();
     });
   });
 

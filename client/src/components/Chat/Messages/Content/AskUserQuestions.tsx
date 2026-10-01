@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
-import { Button, TextareaAutosize } from '@librechat/client';
-import { Check, ChevronUp, TriangleAlert, X } from 'lucide-react';
+import { Input, Button } from '@librechat/client';
+import { Check, TriangleAlert } from 'lucide-react';
 import type { Agents } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
 import useAskQuestionsForm from '~/hooks/Input/useAskQuestionsForm';
 import { splitOtherOption } from '~/utils/approval';
 import { useLocalize } from '~/hooks';
@@ -17,14 +18,14 @@ export default function AskUserQuestions({
   actionId,
   questions,
   className,
-  onExpand,
-  onDismiss,
+  headerAction,
 }: {
   actionId: string;
   questions: Agents.AskUserQuestionBatchItem[];
   className?: string;
-  onExpand?: () => void;
-  onDismiss?: () => void;
+  /** The surface's own control (move to chat, move back), set in the
+   *  question's header row so it shares the form's inset. */
+  headerAction?: ReactNode;
 }) {
   const localize = useLocalize();
   const promptId = useId();
@@ -91,7 +92,10 @@ export default function AskUserQuestions({
     ? form.state.selected[question.id]
     : [];
   const text = Object.hasOwn(form.state.text, question.id) ? form.state.text[question.id] : '';
-  const legend = question.header ?? (stepped ? null : localize('com_ui_question_number', { 0: 1 }));
+  const stepLabel = stepped
+    ? localize('com_ui_question_step', { 0: activeIndex + 1, 1: total })
+    : null;
+  const eyebrow = question.header != null && question.header !== '' ? question.header : null;
   /** Only worth surfacing when the gap is somewhere the user cannot see: the
    *  last step's own blank textarea already explains a disabled Submit. */
   const remaining = total - Object.keys(form.answers).length;
@@ -104,88 +108,14 @@ export default function AskUserQuestions({
 
   return (
     <div className={cn('flex min-h-0 flex-col', className)}>
-      {(onExpand != null || onDismiss != null) && (
-        <div className="border-border-light flex shrink-0 items-center justify-end border-b px-2 py-1">
-          {onExpand != null && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={localize('com_ui_expand')}
-              className="text-text-secondary"
-              onClick={onExpand}
-            >
-              <ChevronUp className="h-4 w-4" aria-hidden="true" />
-            </Button>
-          )}
-          {/** The collapsed card is the ONLY surface left for a collapsed
-           *   batch, so it has to carry the popover's dismiss too — without it
-           *   the pause can only be answered or skipped. */}
-          {onDismiss != null && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={localize('com_ui_close')}
-              className="text-text-secondary"
-              onClick={onDismiss}
-            >
-              <X className="h-4 w-4" aria-hidden="true" />
-            </Button>
-          )}
-        </div>
-      )}
-      {stepped && (
-        <div className="border-border-light flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
-          <p className="text-text-secondary text-xs font-medium" aria-live="polite">
-            {localize('com_ui_question_step', { 0: activeIndex + 1, 1: total })}
-          </p>
-          <div
-            role="group"
-            aria-label={localize('com_ui_question_navigation')}
-            className="flex flex-wrap items-center justify-end"
-          >
-            {questions.map((item, index) => {
-              const isAnswered = Object.hasOwn(form.answers, item.id);
-              const isActive = index === activeIndex;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  disabled={navLocked}
-                  aria-current={isActive ? 'step' : undefined}
-                  aria-label={localize(
-                    isAnswered
-                      ? 'com_ui_question_step_answered'
-                      : 'com_ui_question_step_unanswered',
-                    { 0: index + 1 },
-                  )}
-                  className="flex h-6 items-center justify-center px-1"
-                  onClick={() => goToStep(index)}
-                >
-                  <span
-                    className={cn(
-                      'h-2 rounded-full',
-                      isActive ? 'w-4' : 'w-2',
-                      isAnswered ? 'bg-surface-submit' : 'bg-border-heavy',
-                    )}
-                  />
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-3">
-        {/* The height floor sits on the step itself, not the scroll container:
-            the container needs `min-h-0` to shrink inside the flex column, and
-            tailwind-merge would drop it for a second `min-h-*`. */}
-        <fieldset
-          ref={stepRef}
-          tabIndex={-1}
-          aria-labelledby={promptId}
-          className={cn('py-3 outline-hidden', stepped && 'min-h-40')}
-        >
-          {legend != null && (
-            <legend className="text-text-secondary mb-1 text-xs font-medium">{legend}</legend>
+      <div className="text-text-secondary flex shrink-0 items-start justify-between gap-2 px-3 pt-3">
+        <div className="min-w-0">
+          {(stepLabel != null || eyebrow != null) && (
+            <p className="mb-1 text-xs font-medium">
+              {stepLabel != null && <span aria-live="polite">{stepLabel}</span>}
+              {stepLabel != null && eyebrow != null && ' · '}
+              {eyebrow}
+            </p>
           )}
           <p
             id={promptId}
@@ -194,12 +124,60 @@ export default function AskUserQuestions({
             {question.question}
           </p>
           {question.description != null && question.description.length > 0 && (
-            <p className="text-text-secondary mt-1 text-sm [overflow-wrap:anywhere]">
-              {question.description}
-            </p>
+            <p className="mt-0.5 text-sm [overflow-wrap:anywhere]">{question.description}</p>
           )}
+        </div>
+        {(stepped || headerAction != null) && (
+          <div className="flex shrink-0 items-center gap-1">
+            {stepped && (
+              <div
+                role="group"
+                aria-label={localize('com_ui_question_navigation')}
+                className="flex items-center"
+              >
+                {questions.map((item, index) => {
+                  const isAnswered = Object.hasOwn(form.answers, item.id);
+                  const isActive = index === activeIndex;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      disabled={navLocked}
+                      aria-current={isActive ? 'step' : undefined}
+                      aria-label={localize(
+                        isAnswered
+                          ? 'com_ui_question_step_answered'
+                          : 'com_ui_question_step_unanswered',
+                        { 0: index + 1 },
+                      )}
+                      className="flex h-7 items-center justify-center px-1"
+                      onClick={() => goToStep(index)}
+                    >
+                      <span
+                        className={cn(
+                          'h-2 rounded-full',
+                          isActive ? 'w-4' : 'w-2',
+                          isAnswered ? 'bg-surface-submit' : 'bg-border-heavy',
+                        )}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {headerAction}
+          </div>
+        )}
+      </div>
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-3">
+        <fieldset
+          ref={stepRef}
+          tabIndex={-1}
+          aria-labelledby={promptId}
+          className={cn('flex flex-col gap-2 pt-3 outline-hidden', stepped && 'min-h-20')}
+        >
           {choices.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-2" role="group">
+            <div className="flex flex-wrap gap-2" role="group">
               {choices.map((option) => {
                 const isSelected = selected.includes(option.value);
                 return (
@@ -207,7 +185,7 @@ export default function AskUserQuestions({
                     key={option.value}
                     type="button"
                     size="sm"
-                    variant={isSelected ? 'submit' : 'choice'}
+                    variant={isSelected ? 'default' : 'choice'}
                     role={question.multiSelect === true ? 'checkbox' : undefined}
                     aria-checked={question.multiSelect === true ? isSelected : undefined}
                     aria-pressed={question.multiSelect === true ? undefined : isSelected}
@@ -224,20 +202,17 @@ export default function AskUserQuestions({
               })}
             </div>
           )}
-          <TextareaAutosize
+          <Input
             value={text}
             disabled={form.locked}
             onChange={(event) => form.setText(question, event.target.value)}
-            minRows={1}
-            maxRows={6}
             placeholder={otherLabel ?? localize('com_ui_your_answer')}
-            className="border-border-xheavy bg-surface-primary text-text-primary mt-2 w-full resize-none rounded-md border p-2 text-sm"
             aria-label={`${question.question} ${localize('com_ui_your_answer')}`}
           />
         </fieldset>
       </div>
       {(form.status === 'error' || form.status === 'expired') && (
-        <div className="text-text-warning flex items-center gap-1.5 px-3 py-1 text-xs">
+        <div className="text-text-warning flex items-center gap-1.5 px-3 pt-2 text-xs">
           <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
           {form.status === 'expired'
             ? localize('com_ui_approval_expired')
@@ -247,7 +222,7 @@ export default function AskUserQuestions({
       {showRemaining && (
         <button
           type="button"
-          className="text-text-secondary hover:text-text-primary shrink-0 px-3 py-1 text-left text-xs hover:underline"
+          className="text-text-secondary hover:text-text-primary shrink-0 px-3 pt-2 text-left text-xs hover:underline"
           onClick={() => goToStep(firstUnanswered)}
         >
           {localize(
@@ -258,7 +233,7 @@ export default function AskUserQuestions({
       )}
       <div
         className={cn(
-          'border-border-light flex shrink-0 items-center gap-2 border-t p-3',
+          'flex shrink-0 items-center gap-2 p-3',
           stepped ? 'justify-between' : 'justify-end',
         )}
       >

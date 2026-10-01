@@ -46,7 +46,6 @@ function AskUserQuestionPopoverContent({
 }
 
 function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAnswerMode> }) {
-  const localize = useLocalize();
   const { liveAsk, collapse } = ask;
   const questions = liveAsk?.questions;
   if (liveAsk == null || questions == null || questions.length === 0) {
@@ -54,34 +53,37 @@ function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAn
   }
 
   return (
-    <div className="absolute bottom-28 z-10 w-full">
-      <div className="popover border-border-light bg-surface-primary-alt flex max-h-[70vh] flex-col rounded-2xl border shadow-lg">
-        <div className="border-border-light flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
-          <p className="text-text-primary text-sm font-medium">
-            {localize(
-              questions.length === 1 ? 'com_ui_asking_questions_one' : 'com_ui_asking_questions',
-              { 0: questions.length },
-            )}
-          </p>
-          <TooltipAnchor
-            description={localize('com_ui_ask_move_to_chat')}
-            side="top"
-            render={
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={localize('com_ui_ask_move_to_chat')}
-                className="text-text-secondary size-auto rounded-md p-1"
-                onClick={collapse}
-              >
-                <ChevronDown className="size-4" aria-hidden="true" />
-              </Button>
-            }
-          />
-        </div>
-        <AskUserQuestions actionId={liveAsk.actionId} questions={questions} />
+    <div className="absolute bottom-full z-10 mb-2 w-full">
+      <div className="popover border-border-light bg-surface-secondary flex max-h-[60vh] flex-col rounded-2xl border shadow-lg [view-transition-name:ask-question]">
+        <AskUserQuestions
+          actionId={liveAsk.actionId}
+          questions={questions}
+          className="flex-1"
+          headerAction={<MoveToChatButton onClick={collapse} />}
+        />
       </div>
     </div>
+  );
+}
+
+/** Moves the question to the chat card and hands the composer back. */
+function MoveToChatButton({ onClick }: { onClick: () => void }) {
+  const localize = useLocalize();
+  return (
+    <TooltipAnchor
+      description={localize('com_ui_ask_move_to_chat')}
+      side="top"
+      render={
+        <Button
+          variant="row-action"
+          size="icon-xs"
+          aria-label={localize('com_ui_ask_move_to_chat')}
+          onClick={onClick}
+        >
+          <ChevronDown className="size-4" aria-hidden="true" />
+        </Button>
+      }
+    />
   );
 }
 
@@ -149,18 +151,18 @@ function AskUserQuestionPopoverPanel({
   const composerHasText = composerText.trim().length > 0;
 
   return (
-    <div className="absolute bottom-28 z-10 w-full space-y-2">
+    <div className="absolute bottom-full z-10 mb-2 w-full">
       {/* Digit shortcuts (1..N) work when focus is inside the popover too, not
           only from the composer — keydown bubbles here from the focused row/
           control. Height is viewport-bounded with the option list as the only
           scroll region: the panel is absolutely positioned, so anything that
           overflows it is unreachable by page scroll. */}
       <div
-        className="popover border-border-light bg-surface-primary-alt flex max-h-[60vh] flex-col rounded-2xl border p-2 shadow-lg [view-transition-name:ask-question]"
+        className="popover border-border-light bg-surface-secondary flex max-h-[60vh] flex-col rounded-2xl border p-2 shadow-lg [view-transition-name:ask-question]"
         onKeyDown={handlePopoverKeyDown}
       >
-        <div className="flex shrink-0 items-start justify-between gap-2 p-2">
-          <div className="max-h-[24vh] min-w-0 overflow-y-auto">
+        <div className="text-text-secondary flex shrink-0 items-start justify-between gap-2 p-1 pl-2">
+          <div className="max-h-[24vh] min-w-0 overflow-y-auto pt-1">
             <p className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]">
               {liveAsk.question.question}
             </p>
@@ -170,23 +172,7 @@ function AskUserQuestionPopoverPanel({
               </p>
             )}
           </div>
-          {/* Single exit: moves the question to the chat card and hands the
-              composer back for normal messages. */}
-          <TooltipAnchor
-            description={localize('com_ui_ask_move_to_chat')}
-            side="top"
-            render={
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={localize('com_ui_ask_move_to_chat')}
-                className="text-text-secondary size-auto rounded-md p-1"
-                onClick={collapse}
-              >
-                <ChevronDown className="size-4" aria-hidden="true" />
-              </Button>
-            }
-          />
+          <MoveToChatButton onClick={collapse} />
         </div>
         <AskOptions
           options={options}
