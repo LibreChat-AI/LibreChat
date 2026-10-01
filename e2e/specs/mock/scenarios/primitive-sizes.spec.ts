@@ -67,8 +67,8 @@ const REFERENCE_SIZE_THEME = {
   version: 1,
   name: 'e2e-size-reference',
   modes: {
-    light: { appearance: { iconSize: '1.5rem', minTargetSize: '2rem' } },
-    dark: { appearance: { iconSize: '1.5rem', minTargetSize: '2rem' } },
+    light: { appearance: { iconSize: '1.25rem', minTargetSize: '2rem' } },
+    dark: { appearance: { iconSize: '1.25rem', minTargetSize: '2rem' } },
   },
 } as const;
 
@@ -140,7 +140,7 @@ test.describe('primitive size roles', () => {
       row.remove();
       return width;
     });
-    expect(glyph).toBe('24px');
+    expect(glyph).toBe('20px');
 
     /** A caller that sizes the slot itself, as the mobile panel switcher does, keeps its glyph. */
     const explicit = await page.evaluate(() => {

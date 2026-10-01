@@ -367,7 +367,9 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   the dialog's close icon, `h-theme-field-lg` (`fieldHeightLg`) the large `title`
   input, and `h-theme-target` (`minTargetSize`, never under 24px) the switch's hit
   area, and `min-w-theme-tab` (`tabMinWidth`, `0` to size a tab by its label) the tab
-  trigger. Every default is the size the primitive drew before.
+  trigger. Every default is the size the primitive drew before. The icon and checkbox roles
+  are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeLg` 1 to
+  2rem, `checkboxSize` 1 to 1.5rem.
 - `bg-field-fill` / `text-field-text` - A form field's fill and typed value. The
   ink follows `text-primary` and the fill follows `surface-primary` when a theme
   names those and not these. Fields stay clear unless the theme's

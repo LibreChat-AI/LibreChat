@@ -526,7 +526,8 @@ export interface IThemeAppearance {
    *  `spaceCompact` when a theme names those and not these. */
   controlPaddingX: string;
   controlGap: string;
-  /** An icon beside a label or in a menu row, and the larger one a dialog's close button draws. */
+  /** An icon beside a label or in a menu row (0.75 to 1.25rem), and the larger one a dialog's
+   *  close button draws (1 to 2rem). */
   iconSize: string;
   iconSizeLg: string;
   /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
@@ -562,7 +563,7 @@ export interface IThemeAppearance {
   labelFontWeight: string;
   switchWidth: string;
   switchHeight: string;
-  /** A checkbox's box and the check inside it. */
+  /** A checkbox's box and the check inside it, 1 to 1.5rem. */
   checkboxSize: string;
   tableCellSpaceY: string;
   tableRowStroke: string;

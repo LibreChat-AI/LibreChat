@@ -229,6 +229,20 @@ const isSwitchLength = (value: unknown): value is string =>
  * never vanishes; its offset may also be zero or negative, drawing the outline on or inside the
  * element's edge.
  */
+/**
+ * A positive px or rem length inside the range its layouts were built for, in px on a 16px root:
+ * the icon and checkbox roles size glyphs that sit in fixed insets and rows, so a theme can retune
+ * them, but not past the room those layouts leave.
+ */
+const lengthWithin =
+  (minPx: number, maxPx: number) =>
+  (value: unknown): value is string => {
+    if (!isSwitchLength(value)) {
+      return false;
+    }
+    const px = parseFloat(value) * (value.endsWith('rem') ? 16 : 1);
+    return px >= minPx && px <= maxPx;
+  };
 /** A pointer target never drops under WCAG 2.5.8's 24px minimum, written in px or rem. */
 const isTargetSize = (value: unknown): value is string =>
   isSwitchLength(value) && parseFloat(value) >= (value.endsWith('rem') ? 1.5 : 24);
@@ -359,9 +373,10 @@ const appearanceValidators = {
    *  spacing that also pads message rows. */
   controlPaddingX: isLength,
   controlGap: isLength,
-  /** An icon's size, and the larger one a dialog's close button draws. */
-  iconSize: isSwitchLength,
-  iconSizeLg: isSwitchLength,
+  /** An icon's size (0.75 to 1.25rem), and the larger one a dialog's close button draws (1 to
+   *  2rem). */
+  iconSize: lengthWithin(12, 20),
+  iconSizeLg: lengthWithin(16, 32),
   /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
   controlFontWeight: isFontWeight,
   buttonHeight: isLength,
@@ -387,8 +402,8 @@ const appearanceValidators = {
   labelFontWeight: (value: unknown) => value === 'inherit' || isFontWeight(value),
   switchWidth: isSwitchLength,
   switchHeight: isSwitchLength,
-  /** A checkbox's box and the check inside it. */
-  checkboxSize: isSwitchLength,
+  /** A checkbox's box and the check inside it, 1 to 1.5rem: never smaller than the box it was. */
+  checkboxSize: lengthWithin(16, 24),
   tableCellSpaceY: isTableLength,
   tableRowStroke: isTableLength,
   spaceCompact: isLength,

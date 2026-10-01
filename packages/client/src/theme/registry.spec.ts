@@ -1130,14 +1130,25 @@ describe('theme registry', () => {
         modes: { light: { appearance } },
       });
 
-    expect(issues({ minTargetSize: '24px', checkboxSize: '1.25rem', iconSize: '18px' })).toEqual(
-      [],
-    );
+    expect(
+      issues({
+        minTargetSize: '24px',
+        checkboxSize: '1.5rem',
+        iconSize: '20px',
+        iconSizeLg: '2rem',
+      }),
+    ).toEqual([]);
     [
       { minTargetSize: '20px' },
       { minTargetSize: '1rem' },
       { minTargetSize: '1.5em' },
       { iconSize: '0' },
+      { iconSize: '1.5rem' },
+      { iconSize: '10px' },
+      { iconSizeLg: '0.75rem' },
+      { iconSizeLg: '40px' },
+      { checkboxSize: '8px' },
+      { checkboxSize: '2rem' },
       { checkboxSize: 'auto' },
       { buttonHeightLg: '-2rem' },
       { iconButtonSizeSm: 'calc(2rem + 2px)' },
