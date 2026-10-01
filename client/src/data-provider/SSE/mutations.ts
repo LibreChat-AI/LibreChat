@@ -1,6 +1,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { apiBaseUrl, EModelEndpoint } from 'librechat-data-provider';
 import type { Agents, TMessage, TEphemeralAgent, TPendingSteer } from 'librechat-data-provider';
+import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { postGenerationRequest } from './protocol';
 
 export interface AbortStreamParams {
@@ -48,12 +49,13 @@ export const abortStream = async (params: AbortStreamParams): Promise<AbortStrea
 };
 
 /**
- * React Query mutation hook for aborting a generation stream.
+ * React Query mutation hook for aborting a generation stream, through the host's transport.
  * Use this when the user explicitly clicks the stop button.
  */
 export function useAbortStreamMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: abortStream,
+    mutationFn: transport.abort,
   });
 }
 

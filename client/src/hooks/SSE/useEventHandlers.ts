@@ -7,7 +7,6 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   QueryKeys,
   Constants,
-  EndpointURLs,
   ContentTypes,
   tPresetSchema,
   tMessageSchema,
@@ -64,6 +63,7 @@ import {
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import { shouldResetSubagentAtomsOnConversationChange } from './cleanup';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
+import { useChatTransport } from '~/Providers/ChatTransportContext';
 import useContentHandler from '~/hooks/SSE/useContentHandler';
 import useStepHandler from '~/hooks/SSE/useStepHandler';
 import { useApplyAgentTemplate } from '~/hooks/Agents';
@@ -648,6 +648,7 @@ export default function useEventHandlers({
   const lastAnnouncementTimeRef = useRef(Date.now());
   const { conversationId: paramId } = useParams();
   const { token } = useAuthContext();
+  const transport = useChatTransport();
 
   const { contentHandler, resetContentHandler } = useContentHandler({ setMessages, getMessages });
   /** `refetchType: 'all'` so cached-but-unmounted skill queries refresh too:
@@ -1417,17 +1418,10 @@ export default function useEventHandlers({
       }
 
       try {
-        const response = await fetch(`${EndpointURLs[endpoint ?? '']}/abort`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            abortKey: runAbortKey,
-            endpoint,
-          }),
-        });
+        const response = await transport.abortRun(
+          { endpoint: endpoint ?? '', abortKey: runAbortKey },
+          { token },
+        );
 
         // Check if the response is JSON
         const contentType = response.headers.get('content-type');
@@ -1473,6 +1467,7 @@ export default function useEventHandlers({
     },
     [
       token,
+      transport,
       getMessages,
       setMessages,
       finalHandler,

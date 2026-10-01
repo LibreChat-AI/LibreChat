@@ -1,23 +1,30 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryKeys } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type {
   ChatEvent,
   TSubmission,
+  TConversation,
   ChatTransportOptions,
   ChatTransportRequest,
 } from 'librechat-data-provider';
 import type { Transport } from '~/hooks/Chat/contract';
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import useResumableSSE from '~/hooks/SSE/useResumableSSE';
+import useChatHelpers from '~/hooks/Chat/useChatHelpers';
 import useSSE from '~/hooks/SSE/useSSE';
 import store from '~/store';
 
-jest.mock('~/hooks/AuthContext', () => ({
-  useAuthContext: () => ({ token: 'test-token', isAuthenticated: true }),
-}));
+jest.mock('~/hooks/AuthContext', () => {
+  const { createContext } = jest.requireActual('react');
+  return {
+    AuthContext: createContext(undefined),
+    useAuthContext: () => ({ token: 'test-token', isAuthenticated: true }),
+  };
+});
 
 type StreamCall = { url: string; options: ChatTransportOptions };
 
@@ -58,15 +65,26 @@ function createFakeTransport(overrides: Partial<Transport> = {}) {
   return { transport, streams, sends, emit };
 }
 
-function createWrapper(transport: Transport) {
+type SeedState = Parameters<
+  NonNullable<React.ComponentProps<typeof RecoilRoot>['initializeState']>
+>[0];
+
+function createWrapper(transport: Transport, seed?: (state: SeedState) => void) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
+  /** The composer's user-key check is not gated by `queriesEnabled`; answer it from cache. */
+  queryClient.setQueryData([QueryKeys.name, 'agents'], { expiresAt: '' });
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
-          <RecoilRoot initializeState={({ set }) => set(store.queriesEnabled, false)}>
+          <RecoilRoot
+            initializeState={(state) => {
+              state.set(store.queriesEnabled, false);
+              seed?.(state);
+            }}
+          >
             <ChatTransportContext.Provider value={transport}>
               {children}
             </ChatTransportContext.Provider>
@@ -181,6 +199,65 @@ describe('chat transport boundary', () => {
       expect(helpers.setIsSubmitting).toHaveBeenLastCalledWith(false);
       const written = helpers.setMessages.mock.calls.flatMap(([messages]) => messages);
       expect(written.some((message: { error?: boolean }) => message.error === true)).toBe(true);
+    });
+  });
+
+  describe('abort', () => {
+    const seedRun = ({ set }: SeedState) => {
+      set(store.conversationByIndex(0), {
+        conversationId: 'convo-1',
+        endpoint: 'agents',
+      } as TConversation);
+      set(store.activeGenerationCreatedAtByConvoId('convo-1'), 1000);
+      set(store.activeGenerationProtocolVersionByConvoId('convo-1'), 2);
+    };
+
+    it('stops a resumable generation through the host transport', async () => {
+      const fake = createFakeTransport();
+      const { result } = renderHook(() => useChatHelpers(0), {
+        wrapper: createWrapper(fake.transport, seedRun),
+      });
+
+      await act(async () => {
+        await result.current.stopGenerating();
+      });
+
+      expect(fake.transport.abort).toHaveBeenCalledTimes(1);
+      expect((fake.transport.abort as jest.Mock).mock.calls[0][0]).toEqual({
+        conversationId: 'convo-1',
+        generationCreatedAt: 1000,
+      });
+    });
+
+    it('settles a rejected stop without throwing to the caller', async () => {
+      const failure = Object.assign(new Error('Not found'), { response: { status: 404 } });
+      const fake = createFakeTransport({ abort: jest.fn(async () => Promise.reject(failure)) });
+      const { result } = renderHook(() => useChatHelpers(0), {
+        wrapper: createWrapper(fake.transport, seedRun),
+      });
+
+      await act(async () => {
+        await expect(result.current.stopGenerating()).resolves.toBeUndefined();
+      });
+      expect(fake.transport.abort).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops an Assistants run through the host transport when its stream is cancelled', async () => {
+      const fake = createFakeTransport();
+      const submission = buildSubmission('assistants');
+      const helpers = buildChatHelpers();
+      renderHook(() => useSSE(submission, helpers), { wrapper: createWrapper(fake.transport) });
+
+      await act(async () => {
+        fake.sends[0].options.onEvent({ type: 'abort' });
+      });
+
+      await waitFor(() => expect(fake.transport.abortRun).toHaveBeenCalledTimes(1));
+      expect(fake.transport.abortRun).toHaveBeenCalledWith(
+        { endpoint: 'assistants', abortKey: 'convo-1:' },
+        { token: 'test-token' },
+      );
+      await waitFor(() => expect(helpers.setIsSubmitting).toHaveBeenLastCalledWith(false));
     });
   });
 });
