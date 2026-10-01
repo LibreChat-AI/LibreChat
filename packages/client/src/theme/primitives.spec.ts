@@ -80,7 +80,8 @@ const rawPalette = new RegExp(
 
 const isComment = (line: string) => /^\s*(\*|\/\/|\/\*)/.test(line);
 
-/** A stylesheet with every `var(--role, fallback)` reduced to `var(--role)`. */
+/** A stylesheet with every theme role's `var(--theme-*, fallback)` reduced to `var(--theme-*)`;
+ *  any other custom property keeps its fallback, which is then scanned like any literal. */
 function withoutVarFallbacks(css: string): string {
   let result = '';
   let index = 0;
@@ -97,8 +98,9 @@ function withoutVarFallbacks(css: string): string {
         break;
       }
     }
-    const name = /^var\(\s*(--[\w-]+)/.exec(css.slice(start, end + 1))?.[1] ?? '';
-    result += `${css.slice(index, start)}var(${name})`;
+    const call = css.slice(start, end + 1);
+    const name = /^var\(\s*(--[\w-]+)/.exec(call)?.[1] ?? '';
+    result += css.slice(index, start) + (name.startsWith('--theme-') ? `var(${name})` : call);
     index = end + 1;
   }
   return result + css.slice(index);
@@ -167,6 +169,9 @@ describe('the ten named primitives', () => {
         '.a { box-shadow: var(--theme-menu-shadow, 0 1px rgb(0 0 0 / 0.1)); color: #fff; }',
       ),
     ).toBe('.a { box-shadow: var(--theme-menu-shadow); color: #fff; }');
+    expect(withoutVarFallbacks('.a { box-shadow: var(--local-shadow, 0 1px #000); }')).toBe(
+      '.a { box-shadow: var(--local-shadow, 0 1px #000); }',
+    );
   });
 
   it.each(Object.keys(remaining))('pins what %s still hard-codes', (name) => {
