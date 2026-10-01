@@ -1,10 +1,13 @@
 import { atom } from 'jotai';
-import { atomFamily } from 'jotai/utils';
+
+/** The latest explicit request to reattach a conversation to its running generation. */
+export type ResumeRequest = { conversationId: string; count: number };
 
 /**
- * Counts explicit requests to reattach a conversation to its running generation (the facade's
- * `resumeStream`). `useResumeOnLoad` answers each increase with the same status re-check it runs
- * when a job is announced, so a request never builds a second resume path. Chat-owned: the facade
- * writes it and the chat's resume path reads it, so it lives with the chat, not the app store.
+ * Explicit requests to reattach a conversation to its running generation (the facade's
+ * `resumeStream`). `useResumeOnLoad` answers each new count for the conversation it shows with
+ * the same status re-check it runs when a job is announced, so a request never builds a second
+ * resume path. One value, not one per conversation: a request only matters to the pane showing
+ * that conversation. Chat-owned, so it lives with the chat rather than in the app store.
  */
-export const resumeRequestFamily = atomFamily((_conversationId: string) => atom<number>(0));
+export const resumeRequestAtom = atom<ResumeRequest>({ conversationId: '', count: 0 });

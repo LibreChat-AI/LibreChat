@@ -23,7 +23,7 @@ import { isMemoryFailureOutput } from '~/components/Chat/Messages/Content/Parts/
 import { getToolMeta } from '~/components/Chat/Messages/Content/outcome';
 import { useChatContext } from '~/Providers/ChatContext';
 import { isEmptyContentPart } from '~/utils/messages';
-import { resumeRequestFamily } from './resume';
+import { resumeRequestAtom } from './resume';
 import { mapAttachments } from '~/utils/map';
 
 /** AI SDK `ChatStatus`. */
@@ -373,7 +373,7 @@ function useTurnActions(ask: ChatContract['ask'], id?: string) {
     if (!id || id === Constants.NEW_CONVO) {
       return;
     }
-    jotaiStore.set(resumeRequestFamily(id), (request) => request + 1);
+    jotaiStore.set(resumeRequestAtom, ({ count }) => ({ conversationId: id, count: count + 1 }));
   }, [id, jotaiStore]);
   return { sendMessage, resumeStream };
 }

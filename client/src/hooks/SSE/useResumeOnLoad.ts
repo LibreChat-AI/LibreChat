@@ -42,8 +42,8 @@ import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
-import { resumeRequestFamily } from '~/hooks/Chat/resume';
 import { revealedQueuedTurnFamily } from '~/store/steer';
+import { resumeRequestAtom } from '~/hooks/Chat/resume';
 import { useFileMapContext } from '~/Providers';
 import store from '~/store';
 
@@ -1239,21 +1239,24 @@ export default function useResumeOnLoad(
    * host transport. A request made while this pane is already attached is
    * answered by that attachment and changes nothing.
    */
-  const resumeRequest = useAtomValue(resumeRequestFamily(conversationId ?? ''));
-  const answeredResumeRequestRef = useRef<{ conversationId?: string; request: number }>({
+  const resumeRequest = useAtomValue(resumeRequestAtom);
+  const answeredResumeRequestRef = useRef<{ conversationId?: string; count: number }>({
     conversationId,
-    request: resumeRequest,
+    count: resumeRequest.count,
   });
   useEffect(() => {
     const answered = answeredResumeRequestRef.current;
     if (answered.conversationId !== conversationId) {
-      answeredResumeRequestRef.current = { conversationId, request: resumeRequest };
+      answeredResumeRequestRef.current = { conversationId, count: resumeRequest.count };
       return;
     }
-    if (resumeRequest === answered.request) {
+    if (resumeRequest.count === answered.count) {
       return;
     }
-    answeredResumeRequestRef.current = { conversationId, request: resumeRequest };
+    answeredResumeRequestRef.current = { conversationId, count: resumeRequest.count };
+    if (resumeRequest.conversationId !== conversationId) {
+      return;
+    }
     if (!resumableEnabled || !conversationId || conversationId === Constants.NEW_CONVO) {
       return;
     }
