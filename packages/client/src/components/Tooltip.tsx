@@ -9,11 +9,14 @@ import {
 import DOMPurify from 'dompurify';
 import * as Ariakit from '@ariakit/react';
 import { AnimatePresence, motion } from 'framer-motion';
+import type { FocusOutline } from './Focus';
 import { useDialogDepth, usePopoverZIndex } from './OriginalDialog';
+import { focusOutlineVariants } from './Focus';
 import { cn } from '~/utils';
 import './Tooltip.css';
 
 interface TooltipAnchorProps extends Ariakit.TooltipAnchorProps {
+  focusOutline?: FocusOutline;
   role?: string;
   className?: string;
   description: string;
@@ -129,6 +132,7 @@ export const TooltipAnchor: ForwardRefExoticComponent<
     description,
     side = 'top',
     className,
+    focusOutline,
     role,
     enableHTML = false,
     portalElement,
@@ -177,7 +181,7 @@ export const TooltipAnchor: ForwardRefExoticComponent<
         role={role}
         tabIndex={resolvedTabIndex}
         onKeyDown={handleKeyDown}
-        className={cn('cursor-pointer', className)}
+        className={cn('cursor-pointer', focusOutlineVariants({ focusOutline }), className)}
       />
       <TooltipPopup
         store={tooltip}

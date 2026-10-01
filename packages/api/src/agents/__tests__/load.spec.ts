@@ -12,6 +12,7 @@ import type {
 import type { AppConfig } from '@librechat/data-schemas';
 import type { LoadAgentParams, LoadAgentDeps } from '../load';
 import { applyResumeContext, pickResumeContext } from '../hitl/policy';
+import { STANDARD_MCP_CAPABILITY_PROFILE } from '~/mcp/capabilities';
 import { extractMCPServers } from '../context';
 import { loadAddedAgent } from '../added';
 import { loadAgent } from '../load';
@@ -167,7 +168,12 @@ describe('loadAgent', () => {
     );
 
     expect(mockGetMCPServerTools).toHaveBeenCalledTimes(1);
-    expect(mockGetMCPServerTools).toHaveBeenCalledWith('user123', 'server1', undefined);
+    expect(mockGetMCPServerTools).toHaveBeenCalledWith(
+      'user123',
+      'server1',
+      undefined,
+      STANDARD_MCP_CAPABILITY_PROFILE,
+    );
     expect(result?.tools).toContain(`${Constants.mcp_all}${Constants.mcp_delimiter}body-scoped`);
     expect(result?.tools).toContain('tool1_mcp_server1');
   });
@@ -337,7 +343,12 @@ describe('loadAgent', () => {
       deps,
     );
 
-    expect(mockGetMCPServerTools).toHaveBeenCalledWith('user123', 'overlay', overlayConfig);
+    expect(mockGetMCPServerTools).toHaveBeenCalledWith(
+      'user123',
+      'overlay',
+      overlayConfig,
+      STANDARD_MCP_CAPABILITY_PROFILE,
+    );
     expect(result?.tools).toContain('overlay_tool_mcp_overlay');
   });
 
@@ -872,7 +883,12 @@ describe('loadAgent', () => {
       deps,
     );
 
-    expect(mockGetMCPServerTools).toHaveBeenCalledWith('user123', 'overlay', overlayConfig);
+    expect(mockGetMCPServerTools).toHaveBeenCalledWith(
+      'user123',
+      'overlay',
+      overlayConfig,
+      STANDARD_MCP_CAPABILITY_PROFILE,
+    );
     expect(result?.tools).toContain('overlay_tool_mcp_overlay');
   });
 

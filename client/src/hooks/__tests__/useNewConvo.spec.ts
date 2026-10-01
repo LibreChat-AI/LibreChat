@@ -33,12 +33,13 @@ jest.mock('react-router-dom', () => ({
   useSearchParams: () => [new URLSearchParams()],
 }));
 
+jest.mock('~/Providers/ChatSettingsContext', () => ({
+  useChatSettings: () => ({ saveDrafts: false }),
+}));
+
 jest.mock('recoil', () => ({
   useRecoilState: () => [mockFiles, mockSetFiles],
   useRecoilValue: (key: string) => {
-    if (key === 'saveDrafts') {
-      return false;
-    }
     if (key === 'saveBadgesState') {
       return true;
     }
@@ -107,7 +108,6 @@ jest.mock('~/store', () => ({
   default: {
     defaultPreset: 'defaultPreset',
     saveBadgesState: 'saveBadgesState',
-    saveDrafts: 'saveDrafts',
     filesByIndex: () => 'filesByIndex',
     submissionByIndex: () => 'submissionByIndex',
     useClearConvoState: () => jest.fn(),

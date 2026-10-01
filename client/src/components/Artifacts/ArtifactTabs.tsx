@@ -24,7 +24,7 @@ function LoadingArtifactTabs() {
 
   return (
     <div
-      className="flex h-full w-full items-center justify-center bg-surface-primary text-text-secondary"
+      className="bg-surface-primary text-text-secondary flex h-full w-full items-center justify-center"
       role="status"
     >
       <Spinner className="size-5" aria-hidden="true" />
@@ -64,7 +64,7 @@ function MermaidArtifactTabs({
       <Tabs.Content
         value="code"
         id="artifacts-code"
-        className="h-full w-full flex-grow overflow-auto"
+        className="h-full w-full grow overflow-auto"
         tabIndex={-1}
       >
         <ArtifactCodeEditor artifact={artifact} monacoRef={monacoRef} readOnly={isReadOnly} />

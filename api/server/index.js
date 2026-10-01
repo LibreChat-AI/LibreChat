@@ -299,7 +299,6 @@ const startServer = async () => {
      caller's and the client prefers it. */
   indexHTML = injectConfiguredFooterBootstrap(indexHTML, {
     customFooter: process.env.CUSTOM_FOOTER,
-    interfaceConfig: appConfig?.interfaceConfig,
   });
 
   const cspPolicy = createCspPolicy();

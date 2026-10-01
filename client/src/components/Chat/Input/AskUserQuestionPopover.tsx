@@ -55,9 +55,9 @@ function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAn
 
   return (
     <div className="absolute bottom-28 z-10 w-full">
-      <div className="popover border-token-border-light flex max-h-[70vh] flex-col rounded-2xl border bg-surface-primary-alt shadow-lg">
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border-light px-3 py-2">
-          <p className="text-sm font-medium text-text-primary">
+      <div className="popover border-border-light bg-surface-primary-alt flex max-h-[70vh] flex-col rounded-2xl border shadow-lg">
+        <div className="border-border-light flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
+          <p className="text-text-primary text-sm font-medium">
             {localize(
               questions.length === 1 ? 'com_ui_asking_questions_one' : 'com_ui_asking_questions',
               { 0: questions.length },
@@ -71,7 +71,7 @@ function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAn
                 variant="ghost"
                 size="icon"
                 aria-label={localize('com_ui_ask_move_to_chat')}
-                className="size-auto rounded-md p-1 text-text-secondary"
+                className="text-text-secondary size-auto rounded-md p-1"
                 onClick={collapse}
               >
                 <ChevronDown className="size-4" aria-hidden="true" />
@@ -156,16 +156,16 @@ function AskUserQuestionPopoverPanel({
           scroll region: the panel is absolutely positioned, so anything that
           overflows it is unreachable by page scroll. */}
       <div
-        className="popover border-token-border-light flex max-h-[60vh] flex-col rounded-2xl border bg-surface-primary-alt p-2 shadow-lg [view-transition-name:ask-question]"
+        className="popover border-border-light bg-surface-primary-alt flex max-h-[60vh] flex-col rounded-2xl border p-2 shadow-lg [view-transition-name:ask-question]"
         onKeyDown={handlePopoverKeyDown}
       >
         <div className="flex shrink-0 items-start justify-between gap-2 p-2">
           <div className="max-h-[24vh] min-w-0 overflow-y-auto">
-            <p className="text-sm font-medium text-text-primary [overflow-wrap:anywhere]">
+            <p className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]">
               {liveAsk.question.question}
             </p>
             {liveAsk.question.description != null && liveAsk.question.description.length > 0 && (
-              <p className="mt-1 text-sm text-text-secondary [overflow-wrap:anywhere]">
+              <p className="text-text-secondary mt-1 text-sm [overflow-wrap:anywhere]">
                 {liveAsk.question.description}
               </p>
             )}
@@ -180,7 +180,7 @@ function AskUserQuestionPopoverPanel({
                 variant="ghost"
                 size="icon"
                 aria-label={localize('com_ui_ask_move_to_chat')}
-                className="size-auto rounded-md p-1 text-text-secondary"
+                className="text-text-secondary size-auto rounded-md p-1"
                 onClick={collapse}
               >
                 <ChevronDown className="size-4" aria-hidden="true" />
@@ -203,7 +203,7 @@ function AskUserQuestionPopoverPanel({
          *   enabled), but the chat card that would show the error is hidden
          *   while the popover is up — so surface it here for retry guidance. */}
         {errored && (
-          <div className="flex shrink-0 items-center gap-1.5 px-2 pt-1 text-xs text-text-warning">
+          <div className="text-text-warning flex shrink-0 items-center gap-1.5 px-2 pt-1 text-xs">
             <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
             {localize('com_ui_ask_answer_error')}
           </div>
@@ -215,7 +215,7 @@ function AskUserQuestionPopoverPanel({
               should still come from the recipe. */}
           <Button
             variant="ghost"
-            className="h-auto cursor-text rounded-md p-0 text-xs font-normal text-text-secondary hover:bg-transparent hover:text-text-primary"
+            className="text-text-secondary hover:text-text-primary h-auto cursor-text rounded-md p-0 text-xs font-normal hover:bg-transparent"
             onClick={() => textAreaRef?.current?.focus()}
           >
             {options.length === 0

@@ -46,7 +46,7 @@ export const columns: ColumnDef<Spec>[] = [
   //   accessorKey: 'action',
   //   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   //   cell: ({ row: _row }) => (
-  //     <button className="btn relative btn-neutral h-8 rounded-lg border-token-border-light font-medium">
+  //     <button className="btn relative btn-neutral h-8 rounded-lg border-border-light font-medium">
   //       <div className="flex w-full gap-2 items-center justify-center">Test</div>
   //     </button>
   //   ),

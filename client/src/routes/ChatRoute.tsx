@@ -4,7 +4,12 @@ import { useRecoilCallback, useRecoilValue } from 'recoil';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { Button, Spinner, useToastContext } from '@librechat/client';
 import { useGetModelsQuery } from 'librechat-data-provider/react-query';
-import { Constants, EModelEndpoint, PermissionBits } from 'librechat-data-provider';
+import {
+  Constants,
+  EModelEndpoint,
+  PermissionBits,
+  isForcedTemporaryRetention,
+} from 'librechat-data-provider';
 import type { TPreset, TAgentsMap } from 'librechat-data-provider';
 import {
   defaultSpecAwaitsAgents,
@@ -152,16 +157,17 @@ export default function ChatRoute() {
   );
 
   const isTemporaryChat = isTemporaryConversation(conversation);
+  const forceTemporaryChat = isForcedTemporaryRetention(startupConfig?.interface?.retentionMode);
 
   useEffect(() => {
     if (conversationId === Constants.NEW_CONVO) {
-      setIsTemporary(defaultTemporaryChat);
-    } else if (isTemporaryChat) {
-      setIsTemporary(isTemporaryChat);
+      setIsTemporary(forceTemporaryChat || defaultTemporaryChat);
+    } else if (forceTemporaryChat || isTemporaryChat) {
+      setIsTemporary(true);
     } else {
       setIsTemporary(false);
     }
-  }, [conversationId, isTemporaryChat, setIsTemporary, defaultTemporaryChat]);
+  }, [conversationId, isTemporaryChat, setIsTemporary, defaultTemporaryChat, forceTemporaryChat]);
 
   /** This effect is mainly for the first conversation state change on first load of the page.
    *  Adjusting this may have unintended consequences on the conversation state.

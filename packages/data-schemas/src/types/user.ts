@@ -20,6 +20,7 @@ export interface IUser extends Document {
   username?: string;
   email: string;
   emailVerified: boolean;
+  emailChangedAt?: Date;
   password?: string;
   avatar?: string;
   provider: string;
@@ -47,6 +48,8 @@ export interface IUser extends Document {
     used: boolean;
     usedAt?: Date | null;
   }>;
+  /** Instant of the last credential change; access tokens issued before it are rejected */
+  credentialsChangedAt?: Date;
   refreshToken?: Array<{
     refreshToken: string;
   }>;

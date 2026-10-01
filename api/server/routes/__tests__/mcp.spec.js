@@ -43,6 +43,14 @@ const mockLoadMCPServerCatalogs = jest.fn().mockResolvedValue({
   serverTools: new Map(),
   serversWithoutTools: [],
 });
+const defaultMCPAppsPolicy = {
+  enabled: false,
+  legacyHtmlEnabled: true,
+  maxAdmissionRequestsPerMinute: 240,
+  maxActiveViews: 3,
+  maxActionPreviewChars: 16384,
+  maxPersistedAppBytes: 1048576,
+};
 
 jest.mock('@librechat/api', () => {
   const actual = jest.requireActual('@librechat/api');
@@ -189,6 +197,11 @@ jest.mock('~/server/middleware', () => ({
   canAccessMCPServerResource: () => (req, res, next) => next(),
 }));
 
+jest.mock(
+  '~/server/middleware/limiters/mcpAppAdmissionLimiter',
+  () => (_req, _res, next) => next(),
+);
+
 jest.mock('~/server/services/Tools/mcp', () => ({
   reinitMCPServer: jest.fn(),
   loadMCPServerCatalogs: (...args) => mockLoadMCPServerCatalogs(...args),
@@ -328,6 +341,20 @@ describe('MCP Routes', () => {
     cacheService.getMCPToolsCacheGeneration.mockReset().mockResolvedValue('test-generation');
     cacheService.cacheMCPServerTools.mockReset().mockResolvedValue(undefined);
     cacheService.invalidateCachedTools.mockReset().mockResolvedValue(undefined);
+  });
+
+  it.each([
+    '/app/validate',
+    '/resources/read',
+    '/resources/list',
+    '/resources/templates/list',
+    '/app-tool-call',
+  ])('places the shared App admission limiter immediately after JWT auth on %s', (path) => {
+    const routeLayer = mcpRouter.stack.find((layer) => layer.route?.path === path);
+    const admissionLimiter = require('~/server/middleware/limiters/mcpAppAdmissionLimiter');
+
+    expect(routeLayer).toBeDefined();
+    expect(routeLayer.route.stack[1].handle).toBe(admissionLimiter);
   });
 
   describe('GET /:serverName/oauth/initiate', () => {
@@ -3588,6 +3615,7 @@ describe('MCP Routes', () => {
         oboIdentityContext: expect.any(Object),
         signal: expect.any(AbortSignal),
         recoveryPolicy,
+        mcpApps: defaultMCPAppsPolicy,
       });
     });
 
@@ -3641,6 +3669,8 @@ describe('MCP Routes', () => {
         upstreamTokenProvider: expect.any(Function),
         oboIdentityContext: expect.any(Object),
         signal: expect.any(AbortSignal),
+        recoveryPolicy: undefined,
+        mcpApps: defaultMCPAppsPolicy,
       });
     });
 
@@ -3758,6 +3788,8 @@ describe('MCP Routes', () => {
         upstreamTokenProvider: expect.any(Function),
         oboIdentityContext: expect.any(Object),
         signal: expect.any(AbortSignal),
+        recoveryPolicy: undefined,
+        mcpApps: defaultMCPAppsPolicy,
       });
     });
 

@@ -69,7 +69,7 @@ export default function EventSubagentActivityGroup({
   return (
     <div
       className={cn(
-        'mx-auto min-w-0 flex-1 px-4 transition-[max-width] duration-theme-normal motion-reduce:transition-none sm:px-0',
+        'duration-theme-normal mx-auto min-w-0 flex-1 px-4 transition-[max-width] motion-reduce:transition-none sm:px-0',
         getMessageRowWidthClass({ fullWidth, hasParallelContent }),
       )}
     >
@@ -149,7 +149,7 @@ function EventSubagentRows({
        *  `SubagentThreadPanel`: the child rows are raw buttons that inherit
        *  their label color, and without a themed ancestor they bottom out at
        *  the unthemed black body color — invisible on the dark surface. */
-      className="my-2 overflow-hidden rounded-lg border border-border-light bg-surface-secondary/40 text-text-primary"
+      className="border-border-light bg-surface-secondary/40 text-text-primary my-2 overflow-hidden rounded-lg border"
       data-event-subagent-group={eventChildren[0]?.parentMessageId}
     >
       <Button
@@ -159,7 +159,7 @@ function EventSubagentRows({
         aria-expanded={expanded}
         aria-controls={panelId}
         aria-label={`${localize('com_ui_subagent_activity')}: ${summary}`}
-        className="flex h-auto min-h-10 w-full items-center justify-start gap-2 rounded-lg px-3 py-2 text-left text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring-primary focus-visible:ring-offset-0"
+        className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-ring-primary flex h-auto min-h-10 w-full items-center justify-start gap-2 rounded-lg px-3 py-2 text-left focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-inset"
       >
         <Bot size={15} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{summary}</span>
@@ -172,7 +172,7 @@ function EventSubagentRows({
       <div
         id={panelId}
         hidden={!expanded}
-        className="divide-y divide-border-light border-t border-border-light"
+        className="divide-border-light border-border-light divide-y border-t"
       >
         {eventChildren.map((child) => {
           const agent = child.agentId == null ? undefined : agentsMap?.[child.agentId];
@@ -188,7 +188,7 @@ function EventSubagentRows({
               data-subagent-parent-message={child.parentMessageId}
               data-subagent-part-index="0"
               className={cn(
-                'flex w-full items-center gap-2 px-3 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring-primary',
+                'focus-visible:ring-ring-primary flex w-full items-center gap-2 px-3 py-2 text-left text-sm focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset',
                 canOpen ? 'hover:bg-surface-hover' : 'cursor-default opacity-70',
               )}
             >
@@ -202,7 +202,7 @@ function EventSubagentRows({
               <span className="min-w-0 flex-1">
                 <span className="block truncate">{label}</span>
                 {child.actorId && child.actorId !== label ? (
-                  <span className="block truncate text-xs text-text-secondary">
+                  <span className="text-text-secondary block truncate text-xs">
                     {child.actorId}
                   </span>
                 ) : null}
@@ -210,7 +210,7 @@ function EventSubagentRows({
               {/* Fixed-width slot, dot last: the label absorbs every length
                   change inboard of it, so the color lands on the same pixel
                   column in every row and cannot drift as statuses change. */}
-              <span className="flex w-24 shrink-0 items-center justify-end gap-1.5 text-xs text-text-secondary">
+              <span className="text-text-secondary flex w-24 shrink-0 items-center justify-end gap-1.5 text-xs">
                 <span
                   className={cn(
                     'min-w-0 truncate',
@@ -221,7 +221,7 @@ function EventSubagentRows({
                 </span>
                 <span
                   className={cn(
-                    'h-2 w-2 shrink-0 rounded-full border border-border-heavy/40',
+                    'border-border-heavy/40 h-2 w-2 shrink-0 rounded-full border',
                     subagentStatusDotClass(child.status),
                   )}
                   aria-hidden="true"

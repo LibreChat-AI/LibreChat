@@ -6,6 +6,7 @@ import { Button, disclosureChevronVariants } from '@librechat/client';
 import { isReportableRunStepDuration } from 'librechat-data-provider';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { cn, getRunStepDurationLabels } from '~/utils';
+import { useToolPreparation } from './preparation';
 import CancelledIcon from './CancelledIcon';
 import { useFailedReveal } from './reveal';
 import { ElapsedTimer } from '../Elapsed';
@@ -13,7 +14,7 @@ import { ROW_GLYPH_SLOT } from './rows';
 import { useLocalize } from '~/hooks';
 
 const wrapperClass =
-  'progress-text-wrapper text-token-text-secondary relative -mt-[0.75px] h-5 w-full leading-5';
+  'progress-text-wrapper text-text-secondary relative -mt-[0.75px] h-5 w-full leading-5';
 
 /** `right-0` and `max-w-full` cap the absolutely-positioned line at the message
  *  column; the label span truncates itself, so overflow stays visible for the
@@ -76,10 +77,11 @@ export default function ProgressText({
   hasInput = true,
   popover = false,
   isExpanded = false,
+  verdict,
 }: {
   /**
    * The card's settled state, resolved once by the caller via
-   * `resolveToolCallPhase`. Replaces the former `error` + `errorSuffix`
+   * `resolveToolCallPhase`. Replaces the former `error`+ `errorSuffix`
    * pair, which encoded three terminal states in two booleans — `error`
    * meant cancelled, a present `errorSuffix` meant failed, and every
    * consumer had to reconstruct the distinction. That shape is what let a
@@ -101,10 +103,14 @@ export default function ProgressText({
   hasInput?: boolean;
   popover?: boolean;
   isExpanded?: boolean;
+  /** Why a failed card failed ("exit code 2"), shown after the failure
+   *  suffix. Plain text inside the button, so it is part of its name. */
+  verdict?: string;
 }) {
   const localize = useLocalize();
   /** For locale-aware decimal formatting of the sub-10s duration value. */
   const { i18n } = useTranslation();
+  const preparationText = useToolPreparation();
   const isRunning = phase === 'running';
   /** A server-authored phase stamp is an identity, not a browser clock origin.
    * On reconnect we can only time from local receipt, never infer cross-host skew. */
@@ -145,7 +151,7 @@ export default function ProgressText({
   /** Every branch below reads `phase`, so the label, the icon, the shimmer,
    *  the failure suffix and the duration cannot disagree about what state
    *  the card is in. */
-  const text = isRunning ? (authText ?? inProgressText) : finishedText;
+  const text = isRunning ? (authText ?? preparationText ?? inProgressText) : finishedText;
   const icon = phase === 'cancelled' ? <CancelledIcon /> : (iconProp ?? null);
   const showShimmer = isRunning;
   const errorSuffix = phase === 'failed' ? localize('com_ui_tool_failed') : undefined;
@@ -226,26 +232,29 @@ export default function ProgressText({
           <span
             className={cn(
               showShimmer ? 'shimmer' : '',
-              'min-w-0 max-w-full truncate font-medium',
+              'max-w-full min-w-0 truncate font-medium',
               subtitle && 'shrink-0',
             )}
           >
             {text}
           </span>
           {subtitle && (
-            <span className="min-w-0 shrink truncate font-normal text-text-secondary">
+            <span className="text-text-secondary min-w-0 shrink truncate font-normal">
               {subtitle}
             </span>
           )}
         </span>
         {errorSuffix && (
-          <span className="shrink-0 font-normal text-status-error">· {errorSuffix}</span>
+          <span className="text-status-error shrink-0 font-normal">· {errorSuffix}</span>
+        )}
+        {errorSuffix && verdict && (
+          <span className="text-text-secondary shrink-0 font-normal">· {verdict}</span>
         )}
         {isRunning && phaseStartAt != null && localPhaseStart != null && (
           <ElapsedTimer start={localPhaseStart} />
         )}
         {durationParts.map(({ label, duration }) => (
-          <span key={label} className="shrink-0 font-normal text-text-secondary">
+          <span key={label} className="text-text-secondary shrink-0 font-normal">
             <span aria-hidden="true">
               · {label} {localize(duration.key, duration.values)}
             </span>

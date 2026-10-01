@@ -29,12 +29,12 @@ export function Toast(): JSX.Element {
     >
       <div className="w-full p-1 text-center md:w-auto md:text-justify">
         <div
-          className={`alert-root pointer-events-auto inline-flex flex-row gap-2 rounded-md border px-3 py-2 font-bold text-text-on-status ${
+          className={`alert-root text-text-on-status border-border-light pointer-events-auto inline-flex flex-row gap-2 rounded-md border px-3 py-2 font-bold ${
             severityClassName[toast.severity]
           }`}
         >
           {toast.showIcon && (
-            <div className="mt-1 flex-shrink-0 flex-grow-0">
+            <div className="mt-1 shrink-0 grow-0">
               <svg
                 stroke="currentColor"
                 fill="none"
@@ -54,12 +54,12 @@ export function Toast(): JSX.Element {
             </div>
           )}
           <RadixToast.Description className="flex-1 justify-center gap-2">
-            <div className="whitespace-pre-wrap text-left">{toast.message}</div>
+            <div className="text-left whitespace-pre-wrap">{toast.message}</div>
           </RadixToast.Description>
           {persistent && (
             <RadixToast.Close
               aria-label={localize('com_ui_close')}
-              className="ml-2 inline-flex flex-shrink-0 flex-grow-0 items-center justify-center self-center rounded-sm opacity-80 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current"
+              className="ml-2 inline-flex shrink-0 grow-0 items-center justify-center self-center rounded-sm opacity-80 transition-opacity hover:opacity-100 focus-visible:ring-2 focus-visible:ring-current focus-visible:outline-hidden"
             >
               <X className="h-4 w-4" strokeWidth={3} />
             </RadixToast.Close>

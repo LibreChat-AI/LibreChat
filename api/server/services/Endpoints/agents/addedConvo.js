@@ -205,6 +205,7 @@ const processAddedConvo = async ({
         signal,
       },
       {
+        getProjectFiles: db.getProjectFiles,
         getFiles: db.getFiles,
         getUserKey: db.getUserKey,
         getMessages: db.getMessages,

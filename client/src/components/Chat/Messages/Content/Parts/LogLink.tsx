@@ -1,8 +1,8 @@
 import React from 'react';
-import { useToastContext } from '@librechat/client';
 import { FileSources, sharedFileDownload } from 'librechat-data-provider';
 import { getDownloadFilename, isHttpDownloadTarget, triggerDownload } from '~/utils';
 import { useCodeOutputDownload, useFileDownload } from '~/data-provider';
+import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import useLocalize from '~/hooks/useLocalize';
 import { useShareContext } from '~/Providers';
 
@@ -50,7 +50,8 @@ export const useAttachmentLink = ({
   source,
 }: AttachmentLinkOptions) => {
   const localize = useLocalize();
-  const { showToast } = useToastContext();
+  const { useToast } = useMessagePartsHost();
+  const showToast = useToast();
   const { shareId } = useShareContext();
 
   const useLocalDownload = isLocallyStoredSource(source) && !!file_id && !!user;

@@ -2,9 +2,46 @@ import {
   persistRedirectToSession,
   getPostLoginRedirect,
   isSafeRedirect,
+  withBasePath,
   hasStoredRedirect,
   SESSION_KEY,
 } from '../redirect';
+
+describe('withBasePath', () => {
+  afterEach(() => {
+    document.querySelector('base')?.remove();
+  });
+
+  const setBaseHref = (href: string) => {
+    const base = document.createElement('base');
+    base.setAttribute('href', href);
+    document.head.appendChild(base);
+  };
+
+  it('returns the path unchanged when no base element is present', () => {
+    expect(withBasePath('/c/new')).toBe('/c/new');
+  });
+
+  it('returns the path unchanged for a root base href', () => {
+    setBaseHref('/');
+    expect(withBasePath('/c/new')).toBe('/c/new');
+  });
+
+  it('prefixes a subdirectory base href', () => {
+    setBaseHref('/librechat/');
+    expect(withBasePath('/c/new')).toBe('/librechat/c/new');
+  });
+
+  it('prefixes a subdirectory base href without a trailing slash', () => {
+    setBaseHref('/librechat');
+    expect(withBasePath('/')).toBe('/librechat/');
+  });
+
+  it('uses only the pathname of an absolute base href', () => {
+    setBaseHref('https://example.com/librechat/');
+    expect(withBasePath('/login/2fa?tempToken=abc')).toBe('/librechat/login/2fa?tempToken=abc');
+  });
+});
 
 describe('isSafeRedirect', () => {
   it('accepts a simple relative path', () => {
@@ -69,6 +106,35 @@ describe('isSafeRedirect', () => {
 
   it('accepts the root path', () => {
     expect(isSafeRedirect('/')).toBe(true);
+  });
+
+  /**
+   * The URL parser strips ASCII tab and newline before resolving, so these clear the
+   * prefix checks as written but navigate to `//evil.com`.
+   */
+  it('rejects a tab-smuggled protocol-relative URL', () => {
+    expect(isSafeRedirect(decodeURIComponent('/%09/evil.com'))).toBe(false);
+  });
+
+  it('rejects a newline-smuggled protocol-relative URL', () => {
+    expect(isSafeRedirect(decodeURIComponent('/%0A/evil.com'))).toBe(false);
+  });
+
+  it('rejects a carriage-return-smuggled protocol-relative URL', () => {
+    expect(isSafeRedirect(decodeURIComponent('/%0D/evil.com'))).toBe(false);
+  });
+
+  it('rejects a control character anywhere in the path', () => {
+    expect(isSafeRedirect(decodeURIComponent('/c/new%09x'))).toBe(false);
+  });
+
+  /** The login guard reads the raw path, so a target that only normalizes onto /login stays rejected */
+  it('rejects a path that reaches /login before normalization', () => {
+    expect(isSafeRedirect('/login/../c/new')).toBe(false);
+  });
+
+  it('accepts a same-origin path containing dot segments', () => {
+    expect(isSafeRedirect('/c/../dashboard')).toBe(true);
   });
 });
 

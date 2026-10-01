@@ -14,9 +14,9 @@ import {
   type Table as TTable,
 } from '@tanstack/react-table';
 import type { DataTableProps, ProcessedDataRow } from './DataTable.types';
+import { useDebounced, useTableRowHeight, useOptimizedRowSelection } from './DataTable.hooks';
 import { SelectionCheckbox, MemoizedTableRow, SkeletonRows } from './DataTableComponents';
 import { Table, TableBody, TableHead, TableHeader, TableCell, TableRow } from '../Table';
-import { useDebounced, useOptimizedRowSelection } from './DataTable.hooks';
 import { useMediaQuery, useLocalize } from '~/hooks';
 import { DataTableSearch } from './DataTableSearch';
 import { MorphIcon } from '../MorphIcon';
@@ -64,10 +64,15 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     virtualization: {
       overscan = 10,
       minRows = 50,
-      rowHeight = 40,
+      rowHeight: configuredRowHeight,
       fastOverscanMultiplier = 4,
     } = {},
   } = config || {};
+
+  /** A dense row follows the theme's cell space and row rule, 40px by default; a caller that
+   *  sizes its own rows still wins. */
+  const denseRowHeight = useTableRowHeight('dense');
+  const rowHeight = configuredRowHeight ?? denseRowHeight;
 
   const virtualizationActive = data.length >= minRows;
 
@@ -310,6 +315,12 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     estimateSize,
     overscan: dynamicOverscan,
   });
+
+  /** The virtualizer caches every row's size, so a theme that changes the row height after mount
+   *  has to drop those sizes, or offsets and the total height keep the old one. */
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [rowHeight, rowVirtualizer]);
 
   // Only read the virtualizer when active; the non-virtualized branch renders rows directly,
   // so engaging it for small tables is wasted render-phase work.
@@ -570,7 +581,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
       aria-label={localize('com_ui_data_table')}
     >
       {showToolbar && (
-        <div className="flex w-full shrink-0 items-center gap-2 border-b border-border-light pr-2 md:gap-3">
+        <div className="border-border-light flex w-full shrink-0 items-center gap-2 border-b pr-2 md:gap-3">
           {shouldShowSearch && <DataTableSearch value={searchTerm} onChange={setSearchTerm} />}
           {customActionsRenderer &&
             customActionsRenderer({
@@ -582,7 +593,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
       )}
       <div
         ref={tableContainerRef}
-        className="overflow-anchor-none relative flex min-h-0 flex-1 flex-col overflow-auto will-change-scroll"
+        className="relative flex min-h-0 flex-1 flex-col overflow-auto will-change-scroll"
         style={
           {
             WebkitOverflowScrolling: 'touch',
@@ -602,7 +613,8 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
           className="shrink-0 table-auto border-separate border-spacing-0"
           unwrapped={true}
         >
-          <TableHeader>
+          {/* Each header cell carries its own opaque fill (see below). */}
+          <TableHeader filled={false}>
             {headerGroups.map((headerGroup) => (
               <TableRow key={headerGroup.id} className="border-0 hover:bg-transparent">
                 {headerGroup.headers.map((header) => {
@@ -652,7 +664,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
                       <Button
                         type="button"
                         variant="ghost"
-                        className="group h-auto w-full justify-start gap-1 px-0 py-0 text-xs font-medium uppercase tracking-wide text-text-secondary hover:bg-transparent hover:text-text-primary md:gap-1.5"
+                        className="group text-table-header-text hover:text-text-primary h-auto w-full justify-start gap-1 px-0 py-0 text-xs font-medium tracking-wide uppercase hover:bg-transparent md:gap-1.5"
                         onClick={header.column.getToggleSortingHandler()}
                       >
                         {renderedHeader}
@@ -677,7 +689,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
                     );
                   } else {
                     headerContent = (
-                      <div className="flex items-center text-xs font-medium uppercase tracking-wide text-text-secondary">
+                      <div className="text-table-header-text flex items-center text-xs font-medium tracking-wide uppercase">
                         {renderedHeader}
                       </div>
                     );
@@ -687,11 +699,13 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
                     <TableHead
                       key={header.id}
                       scope="col"
+                      size="compact"
                       className={cn(
                         /* Stuck per cell rather than on <thead>, which does not stay
                            put once the table uses separated borders. The fill has to
-                           be opaque or virtualized rows show through it. */
-                        'sticky top-0 z-10 h-9 border-b border-border-light bg-surface-dialog px-3 py-2 md:px-4',
+                           be opaque or virtualized rows show through it, so it is its
+                           own role, the dialog surface by default. */
+                        'border-border-light bg-table-header-fill sticky top-0 z-10 border-b px-3 md:px-4',
                         isSelectHeader && 'px-0 text-center',
                         canSort && 'cursor-pointer',
                         meta?.className,
@@ -736,14 +750,14 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
             role="status"
             aria-live="polite"
           >
-            <span className="flex size-11 items-center justify-center rounded-full bg-surface-tertiary text-text-tertiary">
+            <span className="bg-surface-tertiary text-text-tertiary flex size-11 items-center justify-center rounded-full">
               {searchTerm ? (
                 <SearchX className="size-5" aria-hidden="true" />
               ) : (
                 <Inbox className="size-5" aria-hidden="true" />
               )}
             </span>
-            <Label className="text-center text-sm text-text-secondary">
+            <Label className="text-text-secondary text-center text-sm">
               {searchTerm ? localize('com_ui_no_search_results') : localize('com_ui_no_data')}
             </Label>
           </div>

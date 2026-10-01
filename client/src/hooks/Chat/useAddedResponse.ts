@@ -9,6 +9,7 @@ import {
 } from 'librechat-data-provider';
 import type { TEndpointsConfig, EModelEndpoint, TConversation } from 'librechat-data-provider';
 import type { AssistantListItem, NewConversationParams } from '~/common';
+import type { AddedChatContract } from './contract';
 import useAssistantListMap from '~/hooks/Assistants/useAssistantListMap';
 import { buildDefaultConvo, getDefaultEndpoint } from '~/utils';
 import { useGetEndpointsQuery } from '~/data-provider';
@@ -22,7 +23,7 @@ const ADDED_INDEX = 1;
  * Provides just the conversation state and a function to generate a new conversation,
  * mirroring the pattern from useNewConvo.
  */
-export default function useAddedResponse() {
+export default function useAddedResponse(): AddedChatContract {
   const modelsQuery = useGetModelsQuery();
   const assistantsListMap = useAssistantListMap();
   const rootConvo = useRecoilValue(store.conversationByKeySelector(0));
@@ -123,7 +124,7 @@ export default function useAddedResponse() {
   );
 
   return useMemo(
-    () => ({
+    (): AddedChatContract => ({
       conversation,
       setConversation,
       generateConversation,

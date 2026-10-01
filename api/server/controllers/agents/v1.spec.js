@@ -3,7 +3,12 @@ const express = require('express');
 const request = require('supertest');
 const { nanoid } = require('nanoid');
 const { v4: uuidv4 } = require('uuid');
-const { createModels, tenantStorage, SystemCapabilities } = require('@librechat/data-schemas');
+const {
+  AgentSortCursorError,
+  createModels,
+  tenantStorage,
+  SystemCapabilities,
+} = require('@librechat/data-schemas');
 const {
   Tools,
   SkillsScope,
@@ -3415,6 +3420,18 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         ],
       });
     });
+    test('maps cursor contract failures to HTTP 409 without restarting the walk', async () => {
+      const listSpy = jest
+        .spyOn(db, 'getListAgentsByAccess')
+        .mockRejectedValue(new AgentSortCursorError('ordering-mismatch'));
+
+      await getListAgentsHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(409);
+      expect(mockRes.json).toHaveBeenCalledWith({ error: 'cursor_ordering_mismatch' });
+      expect(mockRes.status).not.toHaveBeenCalledWith(500);
+      listSpy.mockRestore();
+    });
 
     test('lets a manage:agents role discover unshared agents by search', async () => {
       await db.grantCapability({
@@ -4273,8 +4290,14 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       }
     });
 
-    test('should skip avatar refresh if cache hit', async () => {
-      mockCache.get.mockResolvedValue({ urlCache: {} });
+    test('should skip avatar refresh if cache already covers the page', async () => {
+      /* Coverage is only coverage while it names the filepath it was taken for: a cached
+         URL for a replaced avatar is a link to a file the agent no longer shows. */
+      mockCache.get.mockResolvedValue({
+        urlCache: {},
+        coveredIds: [agentWithS3Avatar.id],
+        coveredFilepaths: { [agentWithS3Avatar.id]: 'old-s3-path.jpg' },
+      });
       findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
       findPubliclyAccessibleResources.mockResolvedValue([]);
 
@@ -4340,28 +4363,24 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.json).toHaveBeenCalled();
     });
 
-    test('should finish avatar writes before snapshotting the paginated list query', async () => {
-      /** `updateAgent` bumps `updatedAt`, which is the field `getListAgentsByAccess`
-       *  sorts and cursors on. If the list query snapshots before a refresh write
-       *  lands, that agent jumps ahead of the returned cursor and vanishes from every
-       *  later page. Assert the ordering rather than the symptom, which only shows up
-       *  on multi-page S3 accounts under a specific interleaving. */
+    test('should load the requested page before refreshing its avatars', async () => {
       const db = require('~/models');
       const order = [];
-      /** Yield a macrotask so a parallelized refresh would lose the race, the way a real
-       *  S3 presign round trip does. */
       refreshS3Url.mockImplementation(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        order.push('avatar-write');
+        order.push('avatar-refresh');
         return 'new-s3-path.jpg';
       });
-      const realList = db.getListAgentsByAccess;
       const listSpy = jest.spyOn(db, 'getListAgentsByAccess').mockImplementation(async (params) => {
+        order.push('list-query');
         if (params.includeSkillConfig) {
-          order.push('list-query');
-          return { object: 'list', data: [], has_more: false, after: null };
+          return {
+            object: 'list',
+            data: [agentWithS3Avatar.toObject()],
+            has_more: false,
+            after: null,
+          };
         }
-        return realList(params);
+        return { object: 'list', data: [], has_more: false, after: null };
       });
       mockCache.get.mockResolvedValue(false);
       findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
@@ -4372,8 +4391,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       try {
         await getListAgentsHandler(mockReq, mockRes);
-        expect(order).toContain('avatar-write');
-        expect(order.indexOf('avatar-write')).toBeLessThan(order.indexOf('list-query'));
+        expect(order).toEqual(['list-query', 'avatar-refresh']);
       } finally {
         listSpy.mockRestore();
         refreshS3Url.mockReset();
@@ -4400,12 +4418,11 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       const responseData = mockRes.json.mock.calls[0][0];
       const agent = responseData.data.find((a) => a.id === agentId);
-      /** The refresh runs alongside the list query, so the refreshed path must reach the
-       *  response through `urlCache` rather than through what the list query read. */
+      /** The page was read before avatar refresh, so the new path must be applied from the cache. */
       expect(agent.avatar.filepath).toBe('new-s3-path.jpg');
     });
 
-    test('should scope the refresh query to S3 avatars without filtering the list query', async () => {
+    test('should keep the page query unfiltered while selecting only S3 rows for refresh', async () => {
       const db = require('~/models');
       const listSpy = jest.spyOn(db, 'getListAgentsByAccess');
       mockCache.get.mockResolvedValue(false);
@@ -4424,17 +4441,10 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       try {
         await getListAgentsHandler(mockReq, mockRes);
 
-        /** The refresh pass must query only S3-avatar agents — `refreshListAvatars`
-         *  skips non-S3 entries anyway, so without this assertion the filter could
-         *  regress to `{}` (reloading the whole accessible set) unnoticed. */
-        expect(listSpy).toHaveBeenCalledWith(
-          expect.objectContaining({ otherParams: { 'avatar.source': FileSources.s3 } }),
-        );
-        /** The user-facing list query keeps the request filter, not the refresh scope. */
+        expect(listSpy).toHaveBeenCalledTimes(1);
         expect(listSpy).toHaveBeenCalledWith(
           expect.objectContaining({ includeSkillConfig: true, otherParams: {} }),
         );
-
         expect(refreshS3Url).not.toHaveBeenCalled();
         const responseData = mockRes.json.mock.calls[0][0];
         const agent = responseData.data.find((a) => a.id === agentWithLocalAvatar.id);
@@ -4633,24 +4643,48 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.json).toHaveBeenCalled();
     });
 
-    test('should use MAX_AVATAR_REFRESH_AGENTS limit for full list query', async () => {
+    test('should refresh rows on a non-default page ordering beyond the old warm-up cap', async () => {
+      const db = require('~/models');
+      const accessibleIds = [
+        agentWithS3Avatar._id,
+        ...Array.from({ length: 1000 }, () => new mongoose.Types.ObjectId()),
+      ];
+      const listSpy = jest.spyOn(db, 'getListAgentsByAccess').mockImplementation(async (params) => {
+        if (!params.includeSkillConfig) {
+          return { object: 'list', data: [], has_more: false, after: null };
+        }
+        return {
+          object: 'list',
+          data: [agentWithS3Avatar.toObject()],
+          has_more: false,
+          after: null,
+        };
+      });
       mockCache.get.mockResolvedValue(false);
-      findAccessibleResources.mockResolvedValue([]);
+      findAccessibleResources.mockResolvedValue(accessibleIds);
       findPubliclyAccessibleResources.mockResolvedValue([]);
+      refreshS3Url.mockResolvedValue('oldest-page-presigned-url.jpg');
 
       const mockReq = {
         user: { id: userA.toString(), role: 'USER' },
-        query: {},
+        query: { sort: 'oldest', limit: '32' },
       };
       const mockRes = {
         status: jest.fn().mockReturnThis(),
         json: jest.fn().mockReturnThis(),
       };
 
-      await getListAgentsHandler(mockReq, mockRes);
+      try {
+        await getListAgentsHandler(mockReq, mockRes);
 
-      // Verify that the handler completed successfully
-      expect(mockRes.json).toHaveBeenCalled();
+        expect(listSpy).toHaveBeenCalledTimes(1);
+        expect(listSpy).toHaveBeenCalledWith(expect.objectContaining({ sort: 'oldest' }));
+        expect(refreshS3Url).toHaveBeenCalledTimes(1);
+        const responseData = mockRes.json.mock.calls[0][0];
+        expect(responseData.data[0].avatar.filepath).toBe('oldest-page-presigned-url.jpg');
+      } finally {
+        listSpy.mockRestore();
+      }
     });
 
     test('should treat legacy boolean cache entry as a miss and run refresh', async () => {
@@ -4685,7 +4719,11 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       const agentId = agentWithS3Avatar.id;
       const cachedUrl = 'cached-presigned-url.jpg';
 
-      mockCache.get.mockResolvedValue({ urlCache: { [agentId]: cachedUrl } });
+      mockCache.get.mockResolvedValue({
+        urlCache: { [agentId]: { filepath: 'old-s3-path.jpg', url: cachedUrl } },
+        coveredIds: { [agentId]: Date.now() + 30 * 60 * 1000 },
+        coveredFilepaths: { [agentId]: 'old-s3-path.jpg' },
+      });
       findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
       findPubliclyAccessibleResources.mockResolvedValue([]);
 
@@ -4708,10 +4746,11 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(agent.avatar.filepath).toBe(cachedUrl);
     });
 
-    test('should preserve DB filepath for agents absent from urlCache on cache hit', async () => {
-      mockCache.get.mockResolvedValue({ urlCache: {} });
+    test('should refresh page rows absent from a prior cache coverage entry', async () => {
+      mockCache.get.mockResolvedValue({ urlCache: {}, coveredIds: [] });
       findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
       findPubliclyAccessibleResources.mockResolvedValue([]);
+      refreshS3Url.mockResolvedValue('new-s3-path.jpg');
 
       const mockReq = {
         user: { id: userA.toString(), role: 'USER' },
@@ -4724,11 +4763,10 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       await getListAgentsHandler(mockReq, mockRes);
 
-      expect(refreshS3Url).not.toHaveBeenCalled();
-
+      expect(refreshS3Url).toHaveBeenCalledTimes(1);
       const responseData = mockRes.json.mock.calls[0][0];
       const agent = responseData.data.find((a) => a.id === agentWithS3Avatar.id);
-      expect(agent.avatar.filepath).toBe('old-s3-path.jpg');
+      expect(agent.avatar.filepath).toBe('new-s3-path.jpg');
     });
   });
 
@@ -4745,7 +4783,6 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         tools: [],
       });
     });
-
     test('createAgentHandler should return 403 when user lacks VIEW on an edge-referenced agent', async () => {
       const permMap = new Map();
       getResourcePermissionsMap.mockResolvedValueOnce(permMap);

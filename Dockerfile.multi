@@ -86,6 +86,8 @@ COPY --from=data-provider-build /app/packages/data-provider/dist /app/packages/d
 COPY --from=client-package-build /app/packages/client/dist /app/packages/client/dist
 COPY --from=client-package-build /app/packages/client/src /app/packages/client/src
 COPY --from=client-package-build /app/packages/client/tailwind.preset.cjs /app/packages/client/tailwind.preset.cjs
+COPY --from=client-package-build /app/packages/client/tailwind.compat.cjs /app/packages/client/tailwind.compat.cjs
+ARG VITE_MCP_SANDBOX_URL=
 ARG NODE_MAX_OLD_SPACE_SIZE
 ENV NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}"
 RUN npm run build
@@ -118,6 +120,7 @@ COPY --from=data-provider-build /app/packages/data-provider/dist ./packages/data
 COPY --from=data-schemas-build /app/packages/data-schemas/dist ./packages/data-schemas/dist
 COPY --from=api-package-build /app/packages/api/dist ./packages/api/dist
 COPY --from=client-build /app/client/dist ./client/dist
+COPY --from=client-build /app/client/public/mcp-sandbox.html ./client/public/mcp-sandbox.html
 # Propagate build metadata into runtime env so /api/config can expose it.
 # Declared here (after the heavy install/copy steps) so that commit/date
 # changing on every CI run does not bust the cache for those layers.

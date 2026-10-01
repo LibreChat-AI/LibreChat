@@ -1,12 +1,12 @@
 import mongoose, { Types } from 'mongoose';
+import { ErrorTypes } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { logger, createMethods, createModels } from '@librechat/data-schemas';
-import { ErrorTypes } from 'librechat-data-provider';
 import type { IUser, UserMethods } from '@librechat/data-schemas';
 import type { CommandStartedEvent } from 'mongodb';
 import type { FilterQuery } from 'mongoose';
-import { recordOpenIDUserLookup } from '~/app/metrics';
 import { findOpenIDUser, getOpenIdEmail, getOpenIdIssuer, normalizeOpenIdIssuer } from './openid';
+import { recordOpenIDUserLookup } from '~/app/metrics';
 
 function newId() {
   return new Types.ObjectId();
@@ -843,7 +843,12 @@ describe('findOpenIDUser Mongo compatibility', () => {
 
   beforeAll(async () => {
     mongoServer = await MongoMemoryServer.create();
-    await mongoose.connect(mongoServer.getUri(), { monitorCommands: true });
+    /** Each test rebuilds the User indexes explicitly after resetting the database. */
+    await mongoose.connect(mongoServer.getUri(), {
+      monitorCommands: true,
+      autoCreate: false,
+      autoIndex: false,
+    });
     createModels(mongoose);
     User = mongoose.models.User as mongoose.Model<IUser>;
     methods = createMethods(mongoose);

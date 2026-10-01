@@ -7,6 +7,7 @@ const {
   normalizeLimit,
   normalizeSortDirection,
   normalizeSortField,
+  resolveConversationListFilters,
   CONVERSATION_SORT_FIELDS,
   openCheckpointDeletion,
   waitForGenerationPersistence,
@@ -21,6 +22,8 @@ const {
   createBackgroundTaskPolicyMiddleware,
   backgroundTaskRegistry,
   createSubagentThreadViewHandler,
+  createMarkConvoSeenHandler,
+  createMarkConvoUnreadHandler,
   resolveImportMaxFileSize,
   restoreTenantContextFromReq,
   deleteAllSharedLinksWithCleanup,
@@ -36,7 +39,6 @@ const {
   isStopConfirmed,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
-const { getAppConfig } = require('~/server/services/Config/app');
 const { CacheKeys, EModelEndpoint } = require('librechat-data-provider');
 const {
   createImportLimiters,
@@ -51,6 +53,7 @@ const { forkConversation, duplicateConversation } = require('~/server/utils/impo
 const { storage, importFileFilter } = require('~/server/routes/files/multer');
 const requireJwtAuth = require('~/server/middleware/requireJwtAuth');
 const { importConversations } = require('~/server/utils/import');
+const { getAppConfig } = require('~/server/services/Config');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 const {
   pendingBackgroundToolCompletions,
@@ -152,6 +155,10 @@ const subagentControlHandler = createSubagentControlHandler({
   getSubagentTaskControlReceipt: db.getSubagentTaskControlReceipt,
   store: subagentThreadTaskStore,
 });
+const markConvoSeenHandler = createMarkConvoSeenHandler({ markConvoSeen: db.markConvoSeen });
+const markConvoUnreadHandler = createMarkConvoUnreadHandler({
+  markConvoUnread: db.markConvoUnread,
+});
 const backgroundTaskPolicy = createBackgroundTaskPolicyMiddleware({ getAppConfig });
 const backgroundTaskIndexHandler = createBackgroundTaskIndexHandler({
   registry: backgroundTaskRegistry,
@@ -191,6 +198,14 @@ router.get('/', async (req, res) => {
   }
 
   try {
+    const { filters, error: filterError } = await resolveConversationListFilters(
+      req.query,
+      getAppConfig,
+    );
+    if (filterError) {
+      return res.status(400).json({ error: filterError });
+    }
+
     const result = await db.getConvosByCursor(req.user.id, {
       cursor,
       limit,
@@ -201,6 +216,7 @@ router.get('/', async (req, res) => {
       sortBy,
       sortDirection,
       projectId,
+      ...filters,
     });
     res.status(200).json(result);
   } catch (error) {
@@ -695,6 +711,10 @@ router.post('/pin', validateConvoAccess, async (req, res) => {
   }
 });
 
+router.post('/seen', validateConvoAccess, markConvoSeenHandler);
+
+router.post('/unread', validateConvoAccess, markConvoUnreadHandler);
+
 /** Maximum allowed length for conversation titles */
 const MAX_CONVO_TITLE_LENGTH = 1024;
 
@@ -831,6 +851,7 @@ router.post('/fork', forkIpLimiter, forkUserLimiter, configMiddleware, async (re
       records: true,
       splitAtTarget,
       option,
+      interfaceConfig: req.config?.interfaceConfig,
       filters: req.config?.filters,
       ...(req.config?.messageFilter?.pii == null
         ? {}
@@ -864,6 +885,7 @@ router.post(
         userId: req.user.id,
         conversationId,
         title,
+        interfaceConfig: req.config?.interfaceConfig,
         filters: req.config?.filters,
         ...(req.config?.messageFilter?.pii == null
           ? {}

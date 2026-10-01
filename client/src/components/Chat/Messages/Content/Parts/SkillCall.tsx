@@ -63,7 +63,7 @@ export default function SkillCall({
           icon={
             <ScrollText
               className={cn(
-                'size-4 shrink-0 text-text-secondary',
+                'text-text-secondary size-4 shrink-0',
                 phase === 'running' && 'animate-pulse',
               )}
               aria-hidden="true"
@@ -79,14 +79,14 @@ export default function SkillCall({
             <div
               className={cn(
                 toolPanelSpacingClassName,
-                'overflow-hidden rounded-lg border border-border-light bg-surface-secondary',
+                'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
               )}
             >
-              <div className="bg-surface-primary-alt p-4 text-xs dark:bg-transparent">
-                <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-text-secondary">
+              <div className="p-4 text-xs">
+                <div className="text-text-secondary mb-1.5 text-[10px] font-medium tracking-wide uppercase">
                   {localize('com_ui_output')}
                 </div>
-                <div className="max-h-[200px] overflow-auto text-text-primary">
+                <div className="text-text-primary max-h-[200px] overflow-auto">
                   <Stdout output={output} />
                 </div>
               </div>

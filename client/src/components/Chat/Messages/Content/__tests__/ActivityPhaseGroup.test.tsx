@@ -32,6 +32,19 @@ jest.mock('~/hooks', () => {
   };
 });
 
+jest.mock('~/components/MCPUIResource', () => ({
+  MCPAppViews: ({ attachments }: { attachments?: TAttachment[] }) => (
+    <>
+      {(attachments ?? [])
+        .filter((item) => item.type === 'ui_resources')
+        .flatMap((item) => item.ui_resources ?? [])
+        .map((resource: { resourceId: string; toolName?: string }, index) => (
+          <iframe key={`${resource.resourceId}:${index}`} title={`MCP App: ${resource.toolName}`} />
+        ))}
+    </>
+  ),
+}));
+
 const LABEL = 'Compared both release paths';
 const NEXT_LABEL = 'Confirmed the rollback path is clean';
 
@@ -451,6 +464,33 @@ describe('ActivityPhaseGroup', () => {
     expect(image).toHaveAttribute('href', 'https://example.com/page');
     /** Outside the fold: collapsing the card must not take the media with it. */
     expect(screen.getByTestId('activity-phase-panel')).not.toContainElement(image);
+  });
+
+  test('keeps correlated App views outside the phase panel across disclosure toggles', () => {
+    const appAttachment = {
+      type: Tools.ui_resources,
+      [Tools.ui_resources]: [
+        { resourceId: 'alpha', toolName: 'alpha' },
+        { resourceId: 'beta', toolName: 'beta' },
+      ],
+    } as unknown as TAttachment;
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent attachments={[appAttachment]}>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+
+    const frames = screen.getAllByTitle(/MCP App:/);
+    expect(frames).toHaveLength(2);
+    expect(screen.getByTestId('activity-phase-panel')).not.toContainElement(frames[0]);
+    const firstFrame = frames[0];
+
+    const toggle = screen.getByRole('button', { name: LABEL });
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+
+    expect(screen.getAllByTitle(/MCP App:/)).toHaveLength(2);
+    expect(screen.getAllByTitle(/MCP App:/)[0]).toBe(firstFrame);
   });
 });
 

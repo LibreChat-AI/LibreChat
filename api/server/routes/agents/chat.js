@@ -5,8 +5,7 @@ const {
   reportLocatorTraversalFailure,
   generateCheckAccess,
   skipAgentCheck,
-  applyResumeContext,
-  applyResumeModelParameters,
+  applyResumeRequest,
   GenerationJobManager,
   getSafeErrorMetadata,
 } = require('@librechat/api');
@@ -53,16 +52,7 @@ const restoreResumeContext = async (req, res, next) => {
     const streamId = req.body?.conversationId;
     if (streamId) {
       const job = await GenerationJobManager.getJob(streamId);
-      const resumeContext = job?.metadata?.pendingAction?.resumeContext;
-      applyResumeContext(req.body, resumeContext);
-      // Replay the paused turn's resolved model parameters. Ephemeral agents derive these
-      // (temperature, max tokens, custom endpoint params) from the request body, which the
-      // resume payload omits — without this the continuation runs with defaults. They're
-      // scattered top-level fields (folded into model_parameters by buildOptions' rest
-      // spread), not part of the RESUME_CONTEXT_KEYS allowlist, so merge them back here.
-      // Generation params are authoritative, but routing, graph identity, and resume-action
-      // fields remain owned by the restored context/request envelope.
-      applyResumeModelParameters(req.body, resumeContext?.model_parameters);
+      applyResumeRequest(req, job?.metadata?.pendingAction?.resumeContext);
     }
   } catch (err) {
     logger.warn('[agents/chat] Failed to restore resume context', getSafeErrorMetadata(err));

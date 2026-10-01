@@ -7,6 +7,7 @@ import {
   getEphemeralSender,
   encodeEphemeralAgentId,
   applyAgentToolSwitches,
+  resolveMCPAppsPolicy,
 } from 'librechat-data-provider';
 import type {
   AgentModelParameters,
@@ -16,6 +17,7 @@ import type {
   Agent,
 } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
+import type { MCPClientCapabilityProfile } from '~/mcp/capabilities';
 import type { ParsedServerConfig } from '~/mcp/types';
 import {
   requiresEphemeralUserConnection,
@@ -23,6 +25,7 @@ import {
   validateMCPServerConfig,
 } from '~/mcp/utils';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
+import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
 import { synthesizeIntentToolOptions } from '~/agents/intent';
@@ -40,6 +43,7 @@ export interface LoadAgentDeps {
     userId: string,
     serverName: string,
     serverConfig?: ParsedServerConfig,
+    capabilityProfile?: MCPClientCapabilityProfile,
   ) => Promise<Record<string, unknown> | null>;
   /** The MCP servers this user can reach, with the registry's tier precedence
    *  already applied — the resolution behind the client's catalog. Omitted, the
@@ -82,6 +86,9 @@ export async function loadEphemeralAgent(
   }
   const ephemeralAgent: TEphemeralAgent | undefined = req.body?.ephemeralAgent;
   const userId = req.user?.id ?? '';
+  const capabilityProfile = resolveMCPClientCapabilityProfile(
+    resolveMCPAppsPolicy(req.config?.mcpSettings?.apps),
+  );
   /** The picker's own selection is narrowed to what the picker may offer; a
    *  spec's servers are the operator's choice and are added after, so pinning a
    *  chat-hidden server to a spec keeps working. */
@@ -139,7 +146,7 @@ export async function loadEphemeralAgent(
       const serverTools =
         overlayConfig && requiresEphemeralUserConnection(overlayConfig)
           ? null
-          : await deps.getMCPServerTools(userId, mcpServer, overlayConfig);
+          : await deps.getMCPServerTools(userId, mcpServer, overlayConfig, capabilityProfile);
       if (!serverTools) {
         tools.push(`${mcp_all}${mcp_delimiter}${mcpServer}`);
         addedServers.add(mcpServer);

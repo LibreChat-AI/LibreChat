@@ -1355,6 +1355,23 @@ describe('importLibreChatConvo', () => {
         expect(message.expiredAt.getTime()).toBeLessThan(now + hours * 3600000 + 1000);
       },
     );
+
+    it('marks imported conversations and messages temporary under ephemeral retention', () => {
+      const requestUserId = 'user-123';
+      const builder = new ImportBatchBuilder(requestUserId, {
+        retentionMode: RetentionMode.EPHEMERAL,
+        temporaryChatRetention: 24,
+      });
+      builder.startConversation(EModelEndpoint.openAI);
+      const message = builder.addUserMessage('Ephemeral import');
+      const result = builder.finishConversation('Imported ephemeral chat');
+
+      expect(message.isTemporary).toBe(true);
+      expect(message.expiredAt).toBeInstanceOf(Date);
+      expect(result.conversation.isTemporary).toBe(true);
+      expect(result.conversation.expiredAt).toBeInstanceOf(Date);
+      expect(result.conversation.expiredAt).toBe(message.expiredAt);
+    });
   });
 });
 

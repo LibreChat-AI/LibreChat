@@ -1,4 +1,5 @@
 import * as reactRouter from 'react-router-dom';
+import { I18nextProvider } from 'react-i18next';
 import userEvent from '@testing-library/user-event';
 import * as mockDataProvider from 'librechat-data-provider/react-query';
 import type { TStartupConfig } from 'librechat-data-provider';
@@ -9,6 +10,7 @@ import * as authMutations from '~/data-provider/Auth/mutations';
 import * as authQueries from '~/data-provider/Auth/queries';
 import Registration from '~/components/Auth/Registration';
 import AuthLayout from '~/components/Auth/AuthLayout';
+import i18n from '~/locales/i18n';
 
 jest.mock('librechat-data-provider/react-query');
 
@@ -87,17 +89,23 @@ const setup = ({
     .spyOn(miscDataProvider, 'useGetBannerQuery')
     //@ts-ignore - we don't need all parameters of the QueryObserverSuccessResult
     .mockReturnValue(useGetBannerQueryReturnValue);
+  /* `test/setupTests.js` stubs `initReactI18next`, so nothing binds the app's
+     i18next instance to react-i18next the way `locales/i18n` does at runtime.
+     `Trans` reads it from this provider instead, and renders the sentence it
+     renders in the app. */
   const renderResult = render(
-    <AuthLayout
-      startupConfig={useGetStartupConfigReturnValue.data as TStartupConfig}
-      isFetching={useGetStartupConfigReturnValue.isFetching}
-      error={null}
-      startupConfigError={null}
-      header={'Create your account'}
-      pathname="register"
-    >
-      <Registration />
-    </AuthLayout>,
+    <I18nextProvider i18n={i18n}>
+      <AuthLayout
+        startupConfig={useGetStartupConfigReturnValue.data as TStartupConfig}
+        isFetching={useGetStartupConfigReturnValue.isFetching}
+        error={null}
+        startupConfigError={null}
+        header={'Create your account'}
+        pathname="register"
+      >
+        <Registration />
+      </AuthLayout>
+    </I18nextProvider>,
   );
 
   return {
@@ -229,4 +237,98 @@ test('shows error message when registration fails', async () => {
       /There was an error attempting to register your account. Please try again. Registration failed/i,
     );
   });
+});
+
+const withInterface = (interfaceConfig: Partial<NonNullable<TStartupConfig['interface']>>) => ({
+  ...mockStartupConfig,
+  data: { ...mockStartupConfig.data, interface: interfaceConfig },
+});
+
+test('states the consent, with a link to each policy the deployment configured', () => {
+  const { getByRole, getByText } = setup({
+    useGetStartupConfigReturnValue: withInterface({
+      privacyPolicy: { externalUrl: 'https://example.com/privacy' },
+      termsOfService: { externalUrl: 'https://example.com/terms' },
+    }),
+  });
+
+  expect(getByText(/By continuing, you agree to the/i)).toBeInTheDocument();
+
+  const terms = getByRole('link', { name: 'Terms of Service' });
+  expect(terms).toHaveAttribute('href', 'https://example.com/terms');
+  expect(terms).not.toHaveAttribute('target');
+
+  const privacy = getByRole('link', { name: 'Privacy Policy' });
+  expect(privacy).toHaveAttribute('href', 'https://example.com/privacy');
+  expect(privacy).not.toHaveAttribute('target');
+});
+
+test('claims agreement only to the policy the deployment published', () => {
+  const { getByRole, getByText, queryByRole } = setup({
+    useGetStartupConfigReturnValue: withInterface({
+      privacyPolicy: { externalUrl: 'https://example.com/privacy' },
+    }),
+  });
+
+  expect(getByText(/By continuing, you acknowledge the/i)).toBeInTheDocument();
+  expect(getByRole('link', { name: 'Privacy Policy' })).toBeInTheDocument();
+  expect(queryByRole('link', { name: 'Terms of Service' })).not.toBeInTheDocument();
+});
+
+test('claims agreement to terms a deployment published without a privacy policy', () => {
+  const { getByRole, getByText, queryByRole } = setup({
+    useGetStartupConfigReturnValue: withInterface({
+      termsOfService: { externalUrl: 'https://example.com/terms' },
+    }),
+  });
+
+  expect(getByText(/By continuing, you agree to the/i)).toBeInTheDocument();
+  expect(getByRole('link', { name: 'Terms of Service' })).toBeInTheDocument();
+  expect(queryByRole('link', { name: 'Privacy Policy' })).not.toBeInTheDocument();
+});
+
+/** `externalUrl` is an optional string, so an operator can set it to nothing.
+ *  A blank one would link back to this page and name a policy that does not
+ *  exist, which is worse than saying nothing. */
+test('treats a blank policy url as a policy the deployment never published', () => {
+  const { getByText, queryByRole } = setup({
+    useGetStartupConfigReturnValue: withInterface({
+      privacyPolicy: { externalUrl: '  ' },
+      termsOfService: { externalUrl: 'https://example.com/terms' },
+    }),
+  });
+
+  expect(getByText(/By continuing, you agree to the/i)).toBeInTheDocument();
+  expect(queryByRole('link', { name: 'Privacy Policy' })).not.toBeInTheDocument();
+  expect(document.querySelector('a[href=""]')).toBeNull();
+});
+
+test('says nothing about policies a deployment never configured', () => {
+  const { queryByText } = setup();
+
+  expect(queryByText(/By continuing/i)).not.toBeInTheDocument();
+});
+
+/** A deployment that collects an explicit acceptance after sign-in is not one
+ *  where continuing is the agreement, so the form states nothing. */
+test('says nothing on a deployment that accepts its terms in a modal', () => {
+  const { queryByText } = setup({
+    useGetStartupConfigReturnValue: withInterface({
+      privacyPolicy: { externalUrl: 'https://example.com/privacy' },
+      termsOfService: { externalUrl: 'https://example.com/terms', modalAcceptance: true },
+    }),
+  });
+
+  expect(queryByText(/By continuing/i)).not.toBeInTheDocument();
+});
+
+test('says nothing when every configured policy url is blank', () => {
+  const { queryByText } = setup({
+    useGetStartupConfigReturnValue: withInterface({
+      privacyPolicy: { externalUrl: '' },
+      termsOfService: { externalUrl: '' },
+    }),
+  });
+
+  expect(queryByText(/By continuing/i)).not.toBeInTheDocument();
 });

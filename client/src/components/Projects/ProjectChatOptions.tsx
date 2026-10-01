@@ -40,7 +40,7 @@ function ProjectChatOptions({ conversation, isMenuOpen, setIsMenuOpen }: Project
       {
         label: localize('com_ui_change_project'),
         onClick: () => setShowProjectDialog(true),
-        icon: <FolderInput className="size-4 text-text-secondary" aria-hidden="true" />,
+        icon: <FolderInput className="text-text-secondary size-4" aria-hidden="true" />,
         /** Hiding the menu here restores focus to the trigger, which the dialog
          *  mounting alongside it reads as an outside interaction and closes on.
          *  Both dialogs receive setIsMenuOpen and close the menu themselves. */
@@ -76,7 +76,7 @@ function ProjectChatOptions({ conversation, isMenuOpen, setIsMenuOpen }: Project
         icon: assignConversationToProject.isLoading ? (
           <Spinner className="size-4" />
         ) : (
-          <FolderX className="size-4 text-text-secondary" aria-hidden="true" />
+          <FolderX className="text-text-secondary size-4" aria-hidden="true" />
         ),
       },
       {
@@ -84,7 +84,7 @@ function ProjectChatOptions({ conversation, isMenuOpen, setIsMenuOpen }: Project
         onClick: () => setShowDeleteDialog(true),
         hideOnClick: false,
         render: (props) => <button {...props} />,
-        icon: <Trash2 className="size-4 text-text-secondary" aria-hidden="true" />,
+        icon: <Trash2 className="text-text-secondary size-4" aria-hidden="true" />,
       },
     ];
   }, [
@@ -112,9 +112,9 @@ function ProjectChatOptions({ conversation, isMenuOpen, setIsMenuOpen }: Project
             ref={menuButtonRef}
             aria-label={localize('com_nav_convo_menu_options')}
             className={cn(
-              'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-secondary outline-none transition-colors',
+              'text-text-secondary flex h-8 w-8 shrink-0 items-center justify-center rounded-full outline-hidden transition-colors',
               'hover:bg-surface-hover hover:text-text-primary',
-              'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary',
+              'focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:ring-inset',
               isMenuOpen && 'bg-surface-hover text-text-primary',
             )}
           >
