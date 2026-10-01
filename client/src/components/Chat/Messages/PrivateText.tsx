@@ -215,7 +215,7 @@ export function PrivateText({ message }: { message: TMessage }) {
       <Suspense fallback={null}>
         <DisplayMessage text={text ?? message.text} isCreatedByUser={true} message={message} />
       </Suspense>
-      <p className="mt-1 text-xs text-text-secondary" role="status">
+      <p className="text-text-secondary mt-1 text-xs" role="status">
         {localize('com_ui_private_text_hidden')}
         {text == null && (
           <span>
@@ -228,7 +228,7 @@ export function PrivateText({ message }: { message: TMessage }) {
         )}
       </p>
       {text == null && !state.loading && state.retry != null && (
-        <button type="button" onClick={state.retry} className="text-xs text-text-primary underline">
+        <button type="button" onClick={state.retry} className="text-text-primary text-xs underline">
           {localize('com_ui_private_text_retry')}
         </button>
       )}

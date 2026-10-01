@@ -702,6 +702,7 @@ export interface PrivateTextWrite {
 }
 
 export interface PrivateTextRead {
+  readonly _id?: unknown;
   readonly messageId: string;
   readonly text: string;
   readonly privacyRevision: string;
@@ -709,6 +710,9 @@ export interface PrivateTextRead {
 }
 
 export interface MessageMethods {
+  getPersistedPrivateTextId(
+    input: Parameters<MessageMethods['hasPersistedPrivateText']>[0],
+  ): Promise<string | null>;
   hasPersistedPrivateText(input: {
     userId: string;
     tenantId?: string;
@@ -1260,8 +1264,12 @@ export function createMessageMethods(
         { messageId: params.messageId, user: userId },
         { ...update, userSubmittedPaths, userSubmittedMessageFieldPaths },
         {
-          upsert: true, stampModelOutputOnInsert, unsetContextMeta, retentionOnInsert,
-          unsetPrivateText: metadata?.privateText == null && Object.prototype.hasOwnProperty.call(update, 'text'),
+          upsert: true,
+          stampModelOutputOnInsert,
+          unsetContextMeta,
+          retentionOnInsert,
+          unsetPrivateText:
+            metadata?.privateText == null && Object.prototype.hasOwnProperty.call(update, 'text'),
         },
       );
 
@@ -1374,7 +1382,11 @@ export function createMessageMethods(
               messageId: message.messageId,
               ...(message.user != null ? { user: message.user } : {}),
             },
-            update: { $set: normalizedMessage, $inc: { __v: 1 }, $unset: { privateText: 1, privacyRevision: 1 } },
+            update: {
+              $set: normalizedMessage,
+              $inc: { __v: 1 },
+              $unset: { privateText: 1, privacyRevision: 1 },
+            },
             timestamps: !overrideTimestamp,
             upsert: true,
           },
@@ -1531,7 +1543,11 @@ export function createMessageMethods(
     { messageId, text }: { messageId: string; text: string },
   ) {
     try {
-      await writeMessage({ messageId, user: userId }, { text }, { upsert: false, unsetPrivateText: true });
+      await writeMessage(
+        { messageId, user: userId },
+        { text },
+        { upsert: false, unsetPrivateText: true },
+      );
     } catch (err) {
       logger.error('Error updating message text:', err);
       throw err;
@@ -2443,8 +2459,11 @@ export function createMessageMethods(
   ) {
     try {
       const { messageId, ...update } = message;
+      delete update.privateText;
+      delete update.privacyRevision;
       const updatedMessage = await writeMessage({ messageId, user: userId }, update, {
         upsert: false,
+        unsetPrivateText: Object.prototype.hasOwnProperty.call(update, 'text'),
       });
 
       if (!updatedMessage) {
@@ -4118,39 +4137,44 @@ export function createMessageMethods(
     return Message.meiliSearch(query, searchOptions, hydrate);
   }
 
-  async function hasPersistedPrivateText(input: {
+  async function getPersistedPrivateTextId(input: {
     userId: string;
     tenantId?: string;
     conversationId: string;
     messageId: string;
     privacyRevision: string;
     text: string;
-  }): Promise<boolean> {
+  }): Promise<string | null> {
     if (
       !input.userId ||
       !input.messageId ||
       !input.privacyRevision ||
       !UUID_REGEX.test(input.conversationId)
     ) {
-      return false;
+      return null;
     }
     const activeTenant = tenantStorage.getStore()?.tenantId;
     if (activeTenant != null && activeTenant !== input.tenantId) {
-      return false;
+      return null;
     }
     const Message = mongoose.models.Message as Model<IMessage>;
-    return (
-      (await Message.exists({
-        user: input.userId,
-        ...traceTenantScope(input.tenantId),
-        conversationId: input.conversationId,
-        messageId: input.messageId,
-        text: input.text,
-        privacyRevision: input.privacyRevision,
-        privateText: { $exists: true },
-        $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }],
-      })) != null
-    );
+    const stored = await Message.exists({
+      user: input.userId,
+      ...traceTenantScope(input.tenantId),
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      text: input.text,
+      privacyRevision: input.privacyRevision,
+      privateText: { $exists: true },
+      $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }],
+    });
+    return stored == null ? null : String(stored._id);
+  }
+
+  async function hasPersistedPrivateText(
+    input: Parameters<MessageMethods['hasPersistedPrivateText']>[0],
+  ): Promise<boolean> {
+    return (await getPersistedPrivateTextId(input)) != null;
   }
 
   async function getPrivateMessageTexts(input: {
@@ -4176,13 +4200,14 @@ export function createMessageMethods(
       privateText: { $exists: true },
       $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }],
     })
-      .select('messageId text privacyRevision +privateText -_id')
+      .select('messageId text privacyRevision +privateText')
       .limit(50)
       .lean<PrivateTextRead[]>();
   }
 
   return {
     hasPersistedPrivateText,
+    getPersistedPrivateTextId,
     getPrivateMessageTexts,
     saveMessage,
     bulkSaveMessages,

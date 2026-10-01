@@ -11,8 +11,13 @@ import {
   isPreDenialTextSubmission,
   isPrivateTextChatSubmission,
   getPreinspectedPrivateText,
+  getPrivateTextInspectionTokens,
   privateTextBinding,
 } from './submission';
+import {
+  createModelBoundChatModelCallback,
+  assertModelBoundContent,
+} from '../../middleware/modelBoundContent';
 import { createMessageFilterPii } from '../../middleware/messageFilterPii';
 import { createPrivateTextCipher } from './crypto';
 import { createPrivateTextView } from './view';
@@ -102,9 +107,17 @@ describe('private text submission boundary', () => {
     const saveMessage: MessageMethods['saveMessage'] = jest.fn(
       async (_ctx, message) => message as IMessage,
     );
-    const hasPersistedPrivateText = jest.fn(async () => true);
+    const hasPersistedPrivateText = jest.fn(
+      async (_input: Parameters<MessageMethods['hasPersistedPrivateText']>[0]) => true,
+    );
     const getPrivateMessageTexts = jest.fn(async (): Promise<never[]> => []);
-    const store = { saveMessage, hasPersistedPrivateText, getPrivateMessageTexts };
+    const store = {
+      saveMessage,
+      getPersistedPrivateTextId: async (
+        input: Parameters<MessageMethods['hasPersistedPrivateText']>[0],
+      ) => ((await hasPersistedPrivateText(input)) ? 'protected-row-id' : null),
+      getPrivateMessageTexts,
+    };
     const { message } = submit();
     expect(
       await saveAbortedUserMessage(
@@ -114,7 +127,7 @@ describe('private text submission boundary', () => {
         { context: 'Stop' },
         'tenant-a',
       ),
-    ).toBe(true);
+    ).toEqual({ _id: 'protected-row-id' });
     expect(hasPersistedPrivateText).toHaveBeenCalledWith({
       userId: 'owner',
       tenantId: 'tenant-a',
@@ -141,7 +154,7 @@ describe('private text submission boundary', () => {
         { context: 'ordinary Stop' },
         'tenant-a',
       ),
-    ).toBe(true);
+    ).toEqual({ _id: undefined });
     expect(saveMessage).toHaveBeenCalledTimes(1);
   });
 
@@ -158,7 +171,7 @@ describe('private text submission boundary', () => {
     ]);
     const store = {
       saveMessage,
-      hasPersistedPrivateText: jest.fn(async () => true),
+      getPersistedPrivateTextId: jest.fn(async () => 'protected-row-id'),
       getPrivateMessageTexts,
     };
     const finalEvent = { requestMessage: { messageId: message.messageId, privacyRevision: '' } };
@@ -172,7 +185,7 @@ describe('private text submission boundary', () => {
         'tenant-a',
         finalEvent,
       ),
-    ).toBe(true);
+    ).toEqual({ _id: undefined });
     expect(saveMessage).not.toHaveBeenCalled();
     expect(finalEvent.requestMessage.privacyRevision).toBe(message.privacyRevision);
     getPrivateMessageTexts.mockResolvedValueOnce([]);
@@ -255,6 +268,79 @@ describe('private text submission boundary', () => {
     expect(getPreinspectedPrivateText(req)).toBeUndefined();
     await secondPass(req, res as unknown as Response, next);
     expect(res.status).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps trusted placeholders safe through every provider call, including restored history', () => {
+    const { message } = submit();
+    const patterns: FiltersConfig = {
+      messages: {
+        pii: {
+          action: 'redact',
+          fields: ['text', 'content_part', 'assembled_context'],
+          starterPatterns: [],
+          customPatterns: [
+            { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+            { id: 'hex', label: 'Credential', regex: '[a-f0-9]{32}', category: 'credential' },
+          ],
+        },
+      },
+    };
+    const privateTextTokens = getPrivateTextInspectionTokens([message]);
+    expect(privateTextTokens.size).toBe(1);
+    const providerMessage = { role: 'user', content: message.text };
+    const storedMessages = [{ ...message, role: 'user' }];
+    const callback = createModelBoundChatModelCallback({
+      filters: patterns,
+      storedMessages,
+      privateTextTokens,
+    });
+    expect(() => callback.handleChatModelStart(undefined, [[providerMessage]])).not.toThrow();
+    expect(() =>
+      callback.handleChatModelStart(undefined, [
+        [providerMessage, { role: 'user', content: 'Follow up' }],
+      ]),
+    ).not.toThrow();
+    const restored = createModelBoundChatModelCallback({
+      filters: patterns,
+      storedMessages: JSON.parse(JSON.stringify(storedMessages)) as typeof storedMessages,
+      privateTextTokens: getPrivateTextInspectionTokens(
+        JSON.parse(JSON.stringify(storedMessages)) as typeof storedMessages,
+      ),
+    });
+    expect(() => restored.handleChatModelStart(undefined, [[providerMessage]])).not.toThrow();
+    for (const unsafe of [
+      original,
+      `${message.text} ${'f'.repeat(32)}`,
+      `Email [EMAIL_1_${'f'.repeat(32)}]`,
+    ]) {
+      expect(() =>
+        callback.handleChatModelStart(undefined, [[{ role: 'user', content: unsafe }]]),
+      ).toThrow();
+    }
+    expect(getPrivateTextInspectionTokens([{ ...message, privacyRevision: undefined }]).size).toBe(
+      0,
+    );
+    expect(
+      getPrivateTextInspectionTokens([{ ...message, privacyRevision: 'f'.repeat(32) }]).size,
+    ).toBe(0);
+    const untrusted = createModelBoundChatModelCallback({
+      filters: patterns,
+      storedMessages: [],
+      privateTextTokens: new Set(),
+    });
+    expect(() => untrusted.handleChatModelStart(undefined, [[providerMessage]])).toThrow();
+    expect(() =>
+      assertModelBoundContent({
+        filters: {
+          ...patterns,
+          agentInstructions: {
+            pii: { customPatterns: [{ id: 'hex', label: 'Credential', regex: '[a-f0-9]{32}' }] },
+          },
+        },
+        privateTextTokens,
+        agents: [{ instructions: message.text }],
+      }),
+    ).toThrow();
   });
 
   it('uses stable retry revisions and distinct namespaces for different turns or originals', () => {

@@ -51,7 +51,8 @@ jest.mock('@librechat/api', () => ({
 jest.mock('~/models', () => ({
   initializeMessageBudget: jest.fn(),
   saveMessage: (...args) => mockSaveMessage(...args),
-  hasPersistedPrivateText: (...args) => mockHasPersistedPrivateText(...args),
+  getPersistedPrivateTextId: async (...args) =>
+    (await mockHasPersistedPrivateText(...args)) ? 'protected-row-id' : null,
   getPrivateMessageTexts: (...args) => mockGetPrivateMessageTexts(...args),
   saveConvo: (...args) => mockSaveConvo(...args),
 }));

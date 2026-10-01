@@ -58,7 +58,7 @@ const {
   getFiles,
   saveMessage,
   saveConvo,
-  hasPersistedPrivateText,
+  getPersistedPrivateTextId,
   getPrivateMessageTexts,
 } = require('~/models');
 const {
@@ -856,7 +856,7 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
             let persistedRequestId;
             try {
               const persistedRequest = await saveAbortedUserMessage(
-                { saveMessage, hasPersistedPrivateText, getPrivateMessageTexts },
+                { saveMessage, getPersistedPrivateTextId, getPrivateMessageTexts },
                 messageContext,
                 requestMessage,
                 { context: 'api/server/routes/agents/index.js - abort user prerequisite' },

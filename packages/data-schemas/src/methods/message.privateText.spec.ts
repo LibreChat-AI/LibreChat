@@ -70,6 +70,7 @@ it('stores both views atomically and excludes ciphertext from ordinary and clien
       privacyRevision: 'turn',
     };
     expect(await methods.hasPersistedPrivateText(protectedRow)).toBe(true);
+    expect(await methods.getPersistedPrivateTextId(protectedRow)).toBe(String(saved?._id));
     for (const mismatch of [
       { userId: 'other' },
       { tenantId: 'tenant-b' },

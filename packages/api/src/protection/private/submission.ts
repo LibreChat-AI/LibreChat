@@ -269,6 +269,40 @@ export function getPreinspectedPrivateText(req: Request): string | undefined {
   return capture != null && req.body?.text === capture.text ? capture.text : undefined;
 }
 
+/** Only call with server-owned canonical rows; generic writes strip their private revision. */
+export function getPrivateTextInspectionTokens(
+  messages: readonly (PrivateTextMessage | null | undefined)[],
+): ReadonlySet<string> {
+  const tokens = new Set<string>();
+  // Mirror the existing provider work and maximum transformed-text ceilings.
+  if (messages.length > 4096) {
+    throw unavailable();
+  }
+  for (const message of messages) {
+    if (
+      message?.isCreatedByUser !== true ||
+      typeof message.text !== 'string' ||
+      !/^[a-f0-9]{32}$/.test(message.privacyRevision ?? '')
+    ) {
+      continue;
+    }
+    if (message.text.length > 524288) {
+      throw unavailable();
+    }
+    for (const match of message.text.matchAll(
+      /\[(?:EMAIL|PHONE|NAME|CREDENTIAL|CUSTOM)_\d+_([a-f0-9]{32})\]/g,
+    )) {
+      if (match[1] === message.privacyRevision) {
+        tokens.add(match[0]);
+        if (tokens.size > 4096) {
+          throw unavailable();
+        }
+      }
+    }
+  }
+  return tokens;
+}
+
 /** The preliminary job record precedes the created event and may be read by Stop. */
 export function stampPreliminaryPrivateTextMessage<T extends PrivateTextMessage>(
   req: object | undefined,
@@ -359,13 +393,16 @@ export async function requirePrivateTextPersistence(
  * omit the revision, so their prerequisite is an insert-only write.
  */
 export async function saveAbortedUserMessage(
-  store: Pick<MessageMethods, 'saveMessage' | 'hasPersistedPrivateText' | 'getPrivateMessageTexts'>,
+  store: Pick<
+    MessageMethods,
+    'saveMessage' | 'getPersistedPrivateTextId' | 'getPrivateMessageTexts'
+  >,
   ctx: Parameters<MessageMethods['saveMessage']>[0],
   message: Parameters<MessageMethods['saveMessage']>[1],
   metadata: Parameters<MessageMethods['saveMessage']>[2],
   tenantId?: string,
   finalEvent?: { requestMessage?: { privacyRevision?: string } | null },
-): Promise<boolean> {
+): Promise<{ _id?: unknown }> {
   const revision = message.privacyRevision;
   if (typeof revision !== 'string' || revision.length === 0) {
     if (!message.messageId || !message.conversationId) {
@@ -385,7 +422,7 @@ export async function saveAbortedUserMessage(
         if (typeof saved.text !== 'string') {
           throw unavailable();
         }
-        const exists = await store.hasPersistedPrivateText({
+        const exists = await store.getPersistedPrivateTextId({
           userId: ctx.userId,
           tenantId,
           conversationId: message.conversationId,
@@ -400,7 +437,7 @@ export async function saveAbortedUserMessage(
           finalEvent.requestMessage.privacyRevision = saved.privacyRevision;
         }
       }
-      return true;
+      return { _id: saved._id };
     }
     const rows = await store.getPrivateMessageTexts({
       userId: ctx.userId,
@@ -421,12 +458,12 @@ export async function saveAbortedUserMessage(
     if (finalEvent?.requestMessage != null) {
       finalEvent.requestMessage.privacyRevision = row.privacyRevision;
     }
-    return true;
+    return { _id: row._id };
   }
   if (!message.messageId || !message.conversationId || typeof message.text !== 'string') {
     throw unavailable();
   }
-  const persisted = await store.hasPersistedPrivateText({
+  const persisted = await store.getPersistedPrivateTextId({
     userId: ctx.userId,
     tenantId,
     conversationId: message.conversationId,
@@ -437,5 +474,5 @@ export async function saveAbortedUserMessage(
   if (!persisted) {
     throw unavailable();
   }
-  return true;
+  return { _id: persisted };
 }

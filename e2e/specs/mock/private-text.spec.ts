@@ -33,6 +33,7 @@ test('owner sees original after reload while provider, sharing, and canonical re
         starterPatterns: [],
         customPatterns: [
           { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+          { id: 'hex', label: 'Credential', regex: '[a-f0-9]{32}', category: 'credential' },
         ],
       },
     },
