@@ -1001,7 +1001,7 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
           {
             providerExecutionId: `exec-${streamId}`,
             providerDrained: true,
-            userSubmittedPaths: ['/content/0/steer', '/content/1/tool_call/args'],
+            userSubmittedPaths: ['/content/0/steer', '/content/2', '/content/1/tool_call/args'],
             userSubmittedMessageFieldPaths: claimedMessageFieldPaths,
           },
           job.createdAt,
@@ -1018,7 +1018,7 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
 
         expect(result.success).toBe(true);
         const responseMessage = responseMessageOf(result.finalEvent);
-        expect(responseMessage?.userSubmittedPaths).toEqual(['/content/0/steer']);
+        expect(responseMessage?.userSubmittedPaths).toEqual(['/content/0/steer', '/content/2']);
         expect(responseMessage).not.toHaveProperty('userSubmittedMessageFieldPaths');
       });
 
@@ -1033,7 +1033,7 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
 
         expect(result.success).toBe(true);
         const responseMessage = responseMessageOf(result.finalEvent);
-        expect(responseMessage?.userSubmittedPaths).toEqual(['/content/0/steer']);
+        expect(responseMessage?.userSubmittedPaths).toEqual(['/content/0/steer', '/content/2']);
         expect(responseMessage).not.toHaveProperty('userSubmittedMessageFieldPaths');
       });
 
@@ -1057,7 +1057,7 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
 
         expect(result.success).toBe(true);
         const claimedProvenance = {
-          userSubmittedPaths: ['/content/0/steer', '/content/1/tool_call/args'],
+          userSubmittedPaths: ['/content/0/steer', '/content/2', '/content/1/tool_call/args'],
           userSubmittedMessageFieldPaths: claimedMessageFieldPaths,
         };
         expect(responseMessageOf(result.finalEvent)).toMatchObject(claimedProvenance);
@@ -1097,7 +1097,7 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
         expect(result.success).toBe(true);
         expect(persisted).toEqual([
           expect.objectContaining({
-            userSubmittedPaths: ['/content/0/steer'],
+            userSubmittedPaths: ['/content/0/steer', '/content/2'],
             userSubmittedMessageFieldPaths: [],
           }),
         ]);

@@ -369,10 +369,12 @@ function getSteerUserSubmittedPaths(content: readonly TMessageContentParts[]): s
   return paths;
 }
 
-/** A path the latest approval claim added is user-authored only once the
- * resumed tool call completed in this content: until then the part still holds
- * the model's arguments and no decision output. An `ask_user_question` answer
- * stamped onto the content counts as completed, since the stamp is its output. */
+/** A tool-call path the latest approval claim added is user-authored only once
+ * the resumed tool call completed in this content: until then the part still
+ * holds the model's arguments and no decision output. An `ask_user_question`
+ * answer stamped onto the content counts as completed, since the stamp is its
+ * output. Other claimed paths (steers already in the seed content) need no
+ * decision to apply and are kept. */
 function getPublishedProvenance(
   jobData: SerializableJobData,
   content: readonly TMessageContentParts[],
@@ -386,9 +388,12 @@ function getPublishedProvenance(
       userSubmittedMessageFieldPaths: claimedFieldPaths,
     };
   }
-  const isCompletedToolCallPath = (path: string): boolean => {
+  const isAppliedPath = (path: string): boolean => {
     const match = /^\/content\/(\d+)\/tool_call\//.exec(path);
-    const part = match == null ? undefined : content[Number(match[1])];
+    if (match == null) {
+      return true;
+    }
+    const part = content[Number(match[1])];
     const output =
       part?.type === 'tool_call' ? (part.tool_call as { output?: unknown })?.output : undefined;
     return typeof output === 'string' && output.length > 0;
@@ -398,11 +403,9 @@ function getPublishedProvenance(
     (preResume.userSubmittedMessageFieldPaths ?? []).map(({ path, field }) => `${field}:${path}`),
   );
   return {
-    userSubmittedPaths: claimedPaths.filter(
-      (path) => prePaths.has(path) || isCompletedToolCallPath(path),
-    ),
+    userSubmittedPaths: claimedPaths.filter((path) => prePaths.has(path) || isAppliedPath(path)),
     userSubmittedMessageFieldPaths: claimedFieldPaths.filter(
-      ({ path, field }) => preFieldPaths.has(`${field}:${path}`) || isCompletedToolCallPath(path),
+      ({ path, field }) => preFieldPaths.has(`${field}:${path}`) || isAppliedPath(path),
     ),
   };
 }
