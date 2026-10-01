@@ -643,6 +643,10 @@ export function getOpenAILLMConfig({
     {
       streaming,
       model: modelOptions.model ?? '',
+      /** Default to 0 retries to avoid long delays from LangChain's
+       *  exponential backoff (up to ~2 min with default maxRetries=6).
+       *  Can be overridden via modelOptions or customParams.defaultParams. */
+      maxRetries: 0,
     },
     modelOptions,
   ) as OpenAILLMConfig;
