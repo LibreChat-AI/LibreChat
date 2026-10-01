@@ -1,6 +1,7 @@
 import React from 'react';
 import { renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { TConversation } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
 import { useChatActions } from '../facade';
 import { ChatProvider } from '../provider';
@@ -9,19 +10,44 @@ const mockUseChatHelpers = jest.fn();
 
 jest.mock('../useChatHelpers', () => ({
   __esModule: true,
-  default: (...args: unknown[]) => mockUseChatHelpers(...args),
+  default: (index?: number, paramId?: string) => mockUseChatHelpers(index, paramId),
 }));
 
-const contract = {
-  conversation: { conversationId: 'convo-1' },
-  messagesKey: 'convo-1',
+const noop = () => undefined;
+
+const contract: ChatContract = {
+  index: 0,
+  conversation: { conversationId: 'convo-1' } as TConversation,
+  setConversation: noop,
+  newConversation: noop,
+  preset: null,
+  setPreset: noop,
+  optionSettings: {},
+  setOptionSettings: noop,
   getMessages: () => [],
+  messagesKey: 'convo-1',
+  setMessages: noop,
+  setSiblingIdx: noop,
   latestMessageId: undefined,
-  isSubmitting: false,
+  latestMessageDepth: undefined,
   ask: jest.fn(),
   regenerate: jest.fn(),
+  isSubmitting: false,
+  setIsSubmitting: noop,
+  handleRegenerate: noop,
+  handleContinue: noop,
   stopGenerating: jest.fn(() => Promise.resolve()),
-} as unknown as ChatContract;
+  handleStopGenerating: noop,
+  abortScroll: false,
+  setAbortScroll: noop,
+  files: new Map(),
+  setFiles: noop,
+  filesLoading: false,
+  setFilesLoading: noop,
+  showPopover: false,
+  setShowPopover: noop,
+  feedbackEnabled: false,
+};
 
 const renderUnder = (props: { index?: number; conversationId?: string }) => {
   const queryClient = new QueryClient();

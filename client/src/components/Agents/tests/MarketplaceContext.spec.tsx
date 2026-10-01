@@ -13,7 +13,7 @@ const mockUseChatHelpers = jest.fn();
 
 jest.mock('~/hooks/Chat/useChatHelpers', () => ({
   __esModule: true,
-  default: (...args: unknown[]) => mockUseChatHelpers(...args),
+  default: (index?: number, paramId?: string) => mockUseChatHelpers(index, paramId),
 }));
 
 const chatHelpers = {
