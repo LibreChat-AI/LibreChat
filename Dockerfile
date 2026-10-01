@@ -1,19 +1,52 @@
 # v0.8.8
 
-# Base node image
-FROM node:24.16.0-alpine AS node
+# ── Stage 1: download crypt_shared ──────────────────────────────────────────
+# mongo_crypt_v1.so is the Automatic Encryption Shared Library required for
+# CSFLE.  Pinned to 8.1.1 with verified SHA-256 checksums (both amd64 and
+# arm64) for reproducible, supply-chain-safe builds.
+FROM alpine:3.21 AS crypt-shared
 
-RUN apk upgrade --no-cache
-RUN apk add --no-cache jemalloc
-RUN apk add --no-cache python3 py3-pip uv
+ARG CRYPT_VERSION=8.1.1
+ARG CRYPT_BASE_URL=https://downloads.mongodb.com/linux/mongo_crypt_shared_v1-linux
+
+# SHA-256 digests verified 2026-09-22
+ARG CRYPT_SHA256_AMD64=f0297a398de4a0705e2b111126fe5355214b0f0711171aa23f7317432e445dab
+ARG CRYPT_SHA256_ARM64=6aab6738312db6935e5e07d14c86e2cb0185a3d488cec311dbeffaa9aa88e62e
+
+RUN apk add --no-cache curl tar && \
+    ARCH="$(uname -m)" && \
+    case "$ARCH" in \
+      x86_64)  MONGO_ARCH=x86_64;  EXPECTED_SHA256="$CRYPT_SHA256_AMD64" ;; \
+      aarch64) MONGO_ARCH=aarch64; EXPECTED_SHA256="$CRYPT_SHA256_ARM64" ;; \
+      *)       echo "Unsupported arch: $ARCH" && exit 1 ;; \
+    esac && \
+    URL="${CRYPT_BASE_URL}-${MONGO_ARCH}-enterprise-ubuntu2204-${CRYPT_VERSION}.tgz" && \
+    curl -fsSL "$URL" -o /tmp/crypt_shared.tgz && \
+    echo "${EXPECTED_SHA256}  /tmp/crypt_shared.tgz" | sha256sum -c - && \
+    mkdir -p /cryptlib /tmp/crypt_extract && \
+    tar -xzf /tmp/crypt_shared.tgz -C /tmp/crypt_extract && \
+    find /tmp/crypt_extract -name 'mongo_crypt_v1.so' -exec cp {} /cryptlib/mongo_crypt_v1.so \; && \
+    rm -rf /tmp/crypt_shared.tgz /tmp/crypt_extract
+
+# ── Stage 2: application ─────────────────────────────────────────────────────
+# Debian Bookworm (glibc) is required: mongo_crypt_v1.so uses glibc symbols
+# (e.g. pthread_cond_clockwait) that Alpine's musl/gcompat layer does not provide.
+FROM node:24.16.0-bookworm-slim AS node
+
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libjemalloc2 \
+      python3 \
+    && ln -s "$(find /usr/lib -name 'libjemalloc.so.2' -print -quit)" /usr/local/lib/libjemalloc.so.2 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set environment variable to use jemalloc
-ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
+ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so.2
 # Disable dependency installation analytics before any npm lifecycle scripts run.
 ENV SCARF_ANALYTICS=false
 
 # Add `uv` for extended MCP support
-COPY --from=ghcr.io/astral-sh/uv:0.9.5-python3.12-alpine /usr/local/bin/uv /usr/local/bin/uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.9.5-python3.12-bookworm /usr/local/bin/uv /usr/local/bin/uvx /bin/
 RUN uv --version
 
 # Set configurable max-old-space-size with default
@@ -23,6 +56,10 @@ ARG NPM_CI_ATTEMPTS=2
 
 RUN mkdir -p /app && chown node:node /app
 WORKDIR /app
+
+# Bundle crypt_shared so CSFLE works without a host mount
+COPY --from=crypt-shared --chown=node:node /cryptlib/mongo_crypt_v1.so /app/lib/mongo_crypt_v1.so
+ENV MONGO_CRYPT_SHARED_LIB_PATH=/app/lib/mongo_crypt_v1.so
 
 USER node
 
