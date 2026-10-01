@@ -4,6 +4,8 @@ const request = require('supertest');
 const mockForceRefreshCloudFrontAuthCookies = jest.fn();
 
 jest.mock('@librechat/api', () => ({
+  limiterCache: jest.fn(),
+  createTwoFactorManagementLimiter: jest.fn(() => (req, res, next) => next()),
   createSetBalanceConfig: jest.fn(() => (req, res, next) => next()),
   forceRefreshCloudFrontAuthCookies: (...args) => mockForceRefreshCloudFrontAuthCookies(...args),
 }));
