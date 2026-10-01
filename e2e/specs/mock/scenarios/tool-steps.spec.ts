@@ -84,3 +84,39 @@ test.describe('tool call steps', () => {
     await expect(toolOutput(page)).toBeVisible();
   });
 });
+
+test.describe('tool call groups', () => {
+  test.skip(({ isMobile }) => isMobile === true, 'composer MCP picker is desktop-only');
+
+  test('opening a group of two calls leaves each call collapsed @scenario:multi-call-group-keeps-calls-collapsed', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const label = uniqueLabel('pair');
+    await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+    /** No `activityLabel` here, so the group keeps its generic "Ran 2 actions" header. */
+    await selectMockEndpoint(page, { label: 'Mock Provider D', model: 'mock-model-d' });
+    await page.getByRole('button', { name: 'Attach and tools' }).click();
+    const server = page
+      .getByRole('dialog', { name: 'Attach and tools' })
+      .getByRole('button', { name: /^E2E Memory\b/ });
+    await server.click();
+    await expect(server).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Escape');
+
+    const response = await sendMessageAndWaitForCompletion(page, `E2E_ACTIVITY_REPLY:${label}`, {
+      timeout: 60_000,
+    });
+    expect(response.ok()).toBeTruthy();
+    await expect(messagesView(page).getByText(`E2E activity reply done ${label}`)).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const header = messagesView(page).getByRole('button', { name: /^Ran 2 actions/ });
+    await expect(header).toHaveAttribute('aria-expanded', 'false');
+    await header.click();
+    await expect(header).toHaveAttribute('aria-expanded', 'true');
+    await expect(messagesView(page).locator('button[aria-expanded="false"]')).toHaveCount(2);
+    await expect(messagesView(page).locator('button[aria-expanded="true"]')).toHaveCount(1);
+  });
+});
