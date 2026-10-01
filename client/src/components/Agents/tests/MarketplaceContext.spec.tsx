@@ -9,8 +9,11 @@ import { useChatContext } from '~/Providers';
 
 const mockResetNewConversation = jest.fn();
 
-jest.mock('~/hooks', () => ({
-  useChatHelpers: jest.fn(),
+const mockUseChatHelpers = jest.fn();
+
+jest.mock('~/hooks/Chat/useChatHelpers', () => ({
+  __esModule: true,
+  default: (...args: unknown[]) => mockUseChatHelpers(...args),
 }));
 
 const chatHelpers = {
@@ -51,15 +54,14 @@ const renderProvider = (children: React.ReactNode = <Consumer />) => {
 describe('MarketplaceProvider', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { useChatHelpers } = require('~/hooks');
-    (useChatHelpers as jest.Mock).mockReturnValue(chatHelpers);
+    mockUseChatHelpers.mockReturnValue(chatHelpers);
   });
 
   it('hands the marketplace the chat context its panels read', () => {
     renderProvider();
 
     expect(screen.getByTestId('conversation-id')).toHaveTextContent('marketplace');
+    expect(mockUseChatHelpers).toHaveBeenCalledWith(0, 'new');
   });
 
   it('passes the host reset straight through to the marketplace that asks for it', async () => {
