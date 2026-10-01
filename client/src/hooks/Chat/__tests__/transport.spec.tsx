@@ -5,13 +5,13 @@ import { QueryKeys } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type {
-  ChatEvent,
   TEnqueueAgentQueuedTurnRequest,
   TSubmission,
   TConversation,
   ChatTransportOptions,
   ChatTransportRequest,
 } from 'librechat-data-provider';
+import type { MutableSnapshot } from 'recoil';
 import type { Transport } from '~/hooks/Chat/contract';
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import useResumableSSE from '~/hooks/SSE/useResumableSSE';
@@ -32,7 +32,8 @@ type StreamCall = { url: string; options: ChatTransportOptions };
 
 /**
  * A transport that records every request and answers from the test, standing in for the
- * network at the contract boundary. `streams` holds each attachment so a test can push events.
+ * network at the contract boundary. `streams` and `sends` keep each connection's options, so a
+ * test can push events through `onEvent` or watch its `signal`.
  */
 function createFakeTransport(overrides: Partial<Transport> = {}) {
   const streams: StreamCall[] = [];
@@ -63,17 +64,12 @@ function createFakeTransport(overrides: Partial<Transport> = {}) {
     cancelQueued: jest.fn(),
     ...overrides,
   };
-  const emit = (event: ChatEvent) => streams[streams.length - 1].options.onEvent(event);
-  return { transport, streams, sends, emit };
+  return { transport, streams, sends };
 }
-
-type SeedState = Parameters<
-  NonNullable<React.ComponentProps<typeof RecoilRoot>['initializeState']>
->[0];
 
 function createWrapper(
   transport: Transport,
-  seed?: (state: SeedState) => void,
+  seed?: (state: MutableSnapshot) => void,
   seedCache?: (queryClient: QueryClient) => void,
 ) {
   const queryClient = new QueryClient({
@@ -134,7 +130,7 @@ const buildChatHelpers = () => ({
   newConversation: jest.fn(),
 });
 
-const seedSteerableRun = ({ set }: SeedState) => {
+const seedSteerableRun = ({ set }: MutableSnapshot) => {
   set(store.conversationByIndex(0), {
     conversationId: 'convo-1',
     endpoint: 'agents',
@@ -254,7 +250,7 @@ describe('chat transport boundary', () => {
   });
 
   describe('abort', () => {
-    const seedRun = ({ set }: SeedState) => {
+    const seedRun = ({ set }: MutableSnapshot) => {
       set(store.conversationByIndex(0), {
         conversationId: 'convo-1',
         endpoint: 'agents',
