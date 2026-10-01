@@ -1,0 +1,53 @@
+name: Docker Canary Images Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - canary
+    paths:
+      # Include the workflow itself so its first merge onto canary builds that commit.
+      - '.github/workflows/canary-images.yml'
+      - '.github/workflows/docker-publish.yml'
+      - '.env.example'
+      - 'api/**'
+      - 'client/**'
+      - 'config/**'
+      - 'skill/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile'
+      - 'Dockerfile.multi'
+      - '.dockerignore'
+      - '!**.md'
+      # Deployment skills are Markdown the image ships and reads at runtime.
+      - 'skill/**/*.md'
+      - '!skill/README.md'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    # A manual dispatch must not publish another branch under canary tags.
+    if: github.ref == 'refs/heads/canary'
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      images: >-
+        [{"target":"api-build","file":"Dockerfile.multi","image_name":"librechat-canary-api"},
+         {"target":"node","file":"Dockerfile","image_name":"librechat-canary"}]
+      tag_suffixes: |
+        ${{ github.sha }}
+        latest
+      checkout_ref: ${{ github.sha }}
+      build_branch: canary
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      LEGACY_GHCR_TOKEN: ${{ secrets.LEGACY_GHCR_TOKEN }}
