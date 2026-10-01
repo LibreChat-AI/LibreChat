@@ -150,6 +150,12 @@ export interface IThemeRGB {
   'rgb-avatar-text'?: string;
   /** Behind an agent or assistant avatar while its image loads or where it is transparent. */
   'rgb-avatar-placeholder'?: string;
+  /** The hairline around the default avatar, drawn at 10% so it only shows against a dark page. */
+  'rgb-avatar-edge'?: string;
+  /** The three tones of in-app artwork, such as the file drop zone's illustration. */
+  'rgb-illustration-subtle'?: string;
+  'rgb-illustration'?: string;
+  'rgb-illustration-strong'?: string;
 
   /**
    * Code syntax highlighting. Declared here rather than left as literals in the
@@ -300,6 +306,10 @@ export interface IThemeVariables {
   '--avatar-fill': string;
   '--avatar-text': string;
   '--avatar-placeholder': string;
+  '--avatar-edge': string;
+  '--illustration-subtle': string;
+  '--illustration': string;
+  '--illustration-strong': string;
 
   '--syntax-text': string;
   '--syntax-comment': string;
@@ -424,6 +434,10 @@ export interface IThemeColors {
   'avatar-fill'?: string;
   'avatar-text'?: string;
   'avatar-placeholder'?: string;
+  'avatar-edge'?: string;
+  'illustration-subtle'?: string;
+  illustration?: string;
+  'illustration-strong'?: string;
 
   'series-1'?: string;
   'series-2'?: string;
@@ -538,6 +552,8 @@ export interface IThemeAppearance {
   alertScrimOpacity: string;
   modalScrimOpacity: string;
   elevationSurface: string;
+  /** The lift a dragged badge takes while it is held. */
+  elevationDrag: string;
   shadow2xs: string;
   shadowXs: string;
   shadowSm: string;

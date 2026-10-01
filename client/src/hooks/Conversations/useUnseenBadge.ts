@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { readThemeColor } from '@librechat/client';
 import { useReplyAlertPreferences } from './replyNotificationSettings';
 import { getDocumentTitleRevision } from '~/utils';
 
@@ -10,10 +11,7 @@ const FALLBACK_ICON_SIZE = 32;
  * as the sidebar indicator. Returns null when the role cannot be read, which leaves the plain
  * favicon in place rather than painting a colour the active theme never chose.
  */
-const badgeColor = (): string | null => {
-  const value = getComputedStyle(document.documentElement).getPropertyValue('--status-info').trim();
-  return value === '' ? null : `rgb(${value})`;
-};
+const badgeColor = (): string | null => readThemeColor('--status-info');
 
 const drawBadgedFavicon = (
   source: string,

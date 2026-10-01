@@ -218,6 +218,7 @@ export const themeAppearanceProperties: Readonly<
   alertScrimOpacity: '--theme-alert-scrim-opacity',
   modalScrimOpacity: '--theme-modal-scrim-opacity',
   elevationSurface: '--theme-elevation-surface',
+  elevationDrag: '--theme-elevation-drag',
   shadow2xs: '--theme-shadow-2xs',
   shadowXs: '--theme-shadow-xs',
   shadowSm: '--theme-shadow-sm',
@@ -292,6 +293,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   alertScrimOpacity: '0.9',
   modalScrimOpacity: '0.65',
   elevationSurface: '0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
+  elevationDrag: '0 10px 25px rgb(0 0 0 / 0.1)',
   shadow2xs: '0 1px rgb(0 0 0 / 0.05)',
   shadowXs: '0 1px 2px 0 rgb(0 0 0 / 0.05)',
   shadowSm: '0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)',
@@ -432,6 +434,7 @@ function knownAppearance(appearance?: Partial<IThemeAppearance>): Partial<ITheme
 
 const shadowAppearanceKeys: ReadonlyArray<keyof IThemeAppearance> = [
   'elevationSurface',
+  'elevationDrag',
   'shadow2xs',
   'shadowXs',
   'shadowSm',

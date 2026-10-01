@@ -12,6 +12,7 @@ export {
 } from './context/ThemeProvider';
 
 // Export utility functions
+export { readThemeColor } from './utils/color';
 export {
   default as applyTheme,
   applyResolvedTheme,

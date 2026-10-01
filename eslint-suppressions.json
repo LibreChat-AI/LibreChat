@@ -216,9 +216,6 @@
   "client/src/components/Chat/Input/Files/DragDropOverlay.tsx": {
     "shadcn/no-inline-styles": {
       "count": 3
-    },
-    "shadcn/no-raw-colors": {
-      "count": 5
     }
   },
   "client/src/components/Chat/Input/Files/FileRow.tsx": {
@@ -990,11 +987,6 @@
       "count": 1
     }
   },
-  "client/src/components/Endpoints/Icon.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Endpoints/MessageEndpointIcon.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
@@ -1474,11 +1466,6 @@
   "client/src/components/Prompts/utils/SkeletonForm.tsx": {
     "shadcn/no-restyle": {
       "count": 3
-    }
-  },
-  "client/src/components/Share/MessageIcon.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
     }
   },
   "client/src/components/Share/MessagesView.tsx": {
@@ -2182,7 +2169,7 @@
   },
   "packages/client/src/components/Avatar.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 2
+      "count": 1
     }
   },
   "packages/client/src/components/Badge.tsx": {

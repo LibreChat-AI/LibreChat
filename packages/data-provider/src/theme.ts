@@ -109,6 +109,10 @@ export const themeColorTokens = Object.freeze([
   'rgb-avatar-fill',
   'rgb-avatar-text',
   'rgb-avatar-placeholder',
+  'rgb-avatar-edge',
+  'rgb-illustration-subtle',
+  'rgb-illustration',
+  'rgb-illustration-strong',
   'rgb-syntax-text',
   'rgb-syntax-comment',
   'rgb-syntax-meta',
@@ -394,6 +398,8 @@ const appearanceValidators = {
   /** Released themes may hold `var()` here, so this role keeps its original, looser check. */
   elevationSurface: (value: unknown) =>
     typeof value === 'string' && value.trim().length > 0 && !/[;{}]|url\s*\(/i.test(value),
+  /** The lift a dragged badge takes while it is held. */
+  elevationDrag: isShadow,
   shadow2xs: isShadow,
   shadowXs: isShadow,
   shadowSm: isShadow,

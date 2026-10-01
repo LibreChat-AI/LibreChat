@@ -149,6 +149,9 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-avatar-fill': 'click.avatar.color.background.default',
     'rgb-avatar-text': 'click.avatar.color.text.default',
     'rgb-avatar-placeholder': 'global.color.background.muted',
+    'rgb-illustration-subtle': 'palette.info.200',
+    'rgb-illustration': 'palette.info.400',
+    'rgb-illustration-strong': 'palette.info.600',
     'rgb-syntax-text': 'click.codeblock.lightMode.color.text.default',
     'rgb-syntax-comment': 'global.color.text.muted',
     'rgb-syntax-meta': 'palette.slate.700',
@@ -265,6 +268,9 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-avatar-fill': 'click.avatar.color.background.default',
     'rgb-avatar-text': 'click.avatar.color.text.default',
     'rgb-avatar-placeholder': 'global.color.background.muted',
+    'rgb-illustration-subtle': 'palette.info.200',
+    'rgb-illustration': 'palette.info.400',
+    'rgb-illustration-strong': 'palette.info.600',
     'rgb-syntax-text': 'click.codeblock.darkMode.color.text.default',
     'rgb-syntax-comment': 'global.color.text.muted',
     'rgb-syntax-meta': 'palette.slate.400',
@@ -292,6 +298,8 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
 /** Click UI has no scrim for media; a lightbox or preview frames the user's image in black. */
 const MEDIA_OVERLAY_REASON =
   'Click UI has no media scrim; the image frame stays black in both modes';
+const AVATAR_EDGE_REASON =
+  'Click UI avatars draw no edge; the theme keeps the 10% hairline every LibreChat avatar has';
 const MEDIA_SCRIM_DEPARTURE =
   'the dialog scrim is the nearest Click UI job; a lightbox frames the user image in black instead';
 
@@ -299,11 +307,13 @@ const MEDIA_SCRIM_DEPARTURE =
 const unsourcedColors: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> = {
   light: {
     'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON,
+    'rgb-avatar-edge': AVATAR_EDGE_REASON,
   },
   dark: {
     'rgb-surface-overlay':
       'Click UI dark dialog.color.opaqueBackground is a gray that leaves the dialog under 3:1',
     'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON,
+    'rgb-avatar-edge': AVATAR_EDGE_REASON,
   },
 };
 
@@ -327,6 +337,11 @@ interface Departure {
  */
 const departures: Record<ThemeMode, Partial<Record<keyof IThemeRGB, Departure>>> = {
   light: {
+    'rgb-avatar-edge': {
+      counterpart: 'global.color.stroke.default',
+      status: 'near',
+      reason: AVATAR_EDGE_REASON,
+    },
     'rgb-surface-media-overlay': {
       counterpart: 'click.dialog.color.opaqueBackground.default',
       status: 'near',
@@ -428,6 +443,11 @@ const departures: Record<ThemeMode, Partial<Record<keyof IThemeRGB, Departure>>>
       counterpart: 'click.dialog.color.opaqueBackground.default',
       status: 'mismatch',
       reason: MEDIA_SCRIM_DEPARTURE,
+    },
+    'rgb-avatar-edge': {
+      counterpart: 'global.color.stroke.default',
+      status: 'mismatch',
+      reason: AVATAR_EDGE_REASON,
     },
   },
 };
@@ -540,6 +560,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   shadow2xl: 'shadow.1',
   elevationSurface: 'shadow.1',
   menuShadow: 'click.genericMenu.panel.shadow.default',
+  elevationDrag: 'shadow.1',
   controlHeight: 'click.genericMenu.panel.size.height',
   controlPaddingX: 'click.button.basic.space.x',
   controlGap: 'click.button.basic.space.gap',
@@ -737,7 +758,7 @@ function comparable(key: keyof IThemeAppearance, raw: string | number): string {
   if (scrimKeys.has(key)) {
     return /^[\d.]+$/.test(value) ? String(Number(value)) : String(parseColor(value)[3]);
   }
-  if (/shadow/i.test(key) || key === 'elevationSurface') {
+  if (/shadow/i.test(key) || key === 'elevationSurface' || key === 'elevationDrag') {
     return normalizeShadow(value);
   }
   /** Click UI's mono tail names `"SFMono Regular"`, which no platform installs; the theme keeps

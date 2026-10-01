@@ -828,7 +828,7 @@ const ChatForm = memo(function ChatForm({
                    follows the theme instead of the raw `violet-800/60` edge that
                    composited to 1.48:1 on the high contrast dark canvas.
                    Held at half alpha in the standard palettes, where series-6 is
-                   a saturated #7e23cd / #ab68fe and a full-strength edge reads as
+                   a saturated purple in both modes and a full-strength edge reads as
                    a warning rather than a quiet mode hint. The contrast modes take
                    it opaque, because that is the only way it clears the 3:1
                    non-text floor there. */

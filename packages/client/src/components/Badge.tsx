@@ -128,7 +128,7 @@ export default function Badge({
         className={badgeClassName}
         animate={{
           scale: isDragging ? 1.1 : 1,
-          boxShadow: isDragging ? '0 10px 25px rgba(0,0,0,0.1)' : undefined,
+          boxShadow: isDragging ? 'var(--theme-elevation-drag)' : undefined,
         }}
         whileTap={{ scale: getWhileTapScale() }}
         transition={{ type: 'tween', duration: 0.1, ease: 'easeOut' }}
@@ -145,7 +145,7 @@ export default function Badge({
       className={badgeClassName}
       animate={{
         scale: isDragging ? 1.1 : 1,
-        boxShadow: isDragging ? '0 10px 25px rgba(0,0,0,0.1)' : undefined,
+        boxShadow: isDragging ? 'var(--theme-elevation-drag)' : undefined,
       }}
       whileTap={{ scale: getWhileTapScale() }}
       transition={{ type: 'tween', duration: 0.1, ease: 'easeOut' }}

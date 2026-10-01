@@ -86,9 +86,8 @@ const UserAvatar = memo(
             style={{
               width: '20px',
               height: '20px',
-              boxShadow: 'rgba(240, 246, 252, 0.1) 0px 0px 0px 1px',
             }}
-            className="bg-avatar-fill text-avatar-text relative flex h-9 w-9 items-center justify-center rounded-sm p-1"
+            className="bg-avatar-fill text-avatar-text ring-avatar-edge/10 relative flex h-9 w-9 items-center justify-center rounded-sm p-1 ring-1"
           >
             <UserIcon />
           </div>

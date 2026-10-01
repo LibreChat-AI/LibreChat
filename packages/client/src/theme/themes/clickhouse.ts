@@ -141,6 +141,10 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-avatar-fill': '105 110 121', // #696e79 (avatar.color.background.default)
   'rgb-avatar-text': '255 255 255', // #ffffff (avatar.color.text.default)
   'rgb-avatar-placeholder': '246 247 250', // #f6f7fa (background.muted)
+  'rgb-avatar-edge': '240 246 252', // #f0f6fc (Click UI avatars draw no edge)
+  'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
+  'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
+  'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
 
   // Code syntax
   'rgb-syntax-text': '40 40 40', // #282828 (codeblock.lightMode.color.text.default)
@@ -288,6 +292,10 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-avatar-fill': '128 134 145', // #808691 (avatar.color.background.default)
   'rgb-avatar-text': '31 31 28', // #1f1f1c (avatar.color.text.default)
   'rgb-avatar-placeholder': '40 40 40', // #282828 (background.muted)
+  'rgb-avatar-edge': '240 246 252', // #f0f6fc (Click UI avatars draw no edge)
+  'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
+  'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
+  'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
 
   // Code syntax
   'rgb-syntax-text': '255 255 255', // #ffffff (codeblock.darkMode.color.text.default)
@@ -441,6 +449,7 @@ const clickHouseElevation = (alpha: number): Partial<IThemeAppearance> => ({
   menuShadow: elevation(alpha), // genericMenu.panel.shadow.default, which is shadow.1
   /** Click UI's tooltip draws no shadow (Tooltip.module.css). */
   tooltipShadow: 'none',
+  elevationDrag: elevation(alpha), // shadow.1
 });
 
 const clickHouseLightAppearance: Partial<IThemeAppearance> = {

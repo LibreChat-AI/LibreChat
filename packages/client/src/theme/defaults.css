@@ -79,6 +79,10 @@ html {
   --avatar-fill: 121 137 255;
   --avatar-text: var(--text-primary);
   --avatar-placeholder: var(--surface-secondary);
+  --avatar-edge: 240 246 252;
+  --illustration-subtle: 175 193 255;
+  --illustration: 121 137 255;
+  --illustration-strong: 60 70 255;
   --presentation: var(--white);
   --text-primary: var(--gray-800);
   --text-secondary: var(--gray-600);
@@ -265,6 +269,7 @@ html {
     'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, 'Cascadia Mono', 'Liberation Mono',
     Consolas, monospace;
   --theme-elevation-surface: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --theme-elevation-drag: 0 10px 25px rgb(0 0 0 / 0.1);
   --theme-shadow-2xs: 0 1px rgb(0 0 0 / 0.05);
   --theme-shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.05);
   --theme-shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
@@ -298,6 +303,10 @@ html {
   --avatar-fill: 121 137 255;
   --avatar-text: var(--text-primary);
   --avatar-placeholder: var(--surface-tertiary);
+  --avatar-edge: 240 246 252;
+  --illustration-subtle: 175 193 255;
+  --illustration: 121 137 255;
+  --illustration-strong: 60 70 255;
   --presentation: var(--gray-800);
   --text-primary: var(--gray-100);
   --focus-outline: 255 255 255;

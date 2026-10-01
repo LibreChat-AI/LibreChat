@@ -153,6 +153,10 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-avatar-fill': '121 137 255', // #7989ff (the default avatar fill in every bundled theme)
   'rgb-avatar-text': '0 0 0', // #000000 (matching text-primary)
   'rgb-avatar-placeholder': '255 255 255', // #ffffff (matching surface-secondary)
+  'rgb-avatar-edge': '240 246 252', // #f0f6fc
+  'rgb-illustration-subtle': '175 193 255', // #afc1ff
+  'rgb-illustration': '121 137 255', // #7989ff
+  'rgb-illustration-strong': '60 70 255', // #3c46ff
 
   /** Code syntax highlighting at AAA on the white code surface. */
   'rgb-syntax-text': '0 0 0', // #000000
@@ -317,6 +321,10 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-avatar-fill': '121 137 255', // #7989ff (the default avatar fill in every bundled theme)
   'rgb-avatar-text': '255 255 255', // #ffffff (matching text-primary)
   'rgb-avatar-placeholder': '0 0 0', // #000000 (matching surface-tertiary)
+  'rgb-avatar-edge': '240 246 252', // #f0f6fc
+  'rgb-illustration-subtle': '175 193 255', // #afc1ff
+  'rgb-illustration': '121 137 255', // #7989ff
+  'rgb-illustration-strong': '60 70 255', // #3c46ff
 
   /** Code syntax highlighting at AAA on the black code surface. */
   'rgb-syntax-text': '255 255 255', // #ffffff

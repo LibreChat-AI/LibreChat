@@ -37,7 +37,8 @@ through `radius3xl` (`--theme-radius-*`), `font-sans` reads `fontFamily` (`--the
 `shadow-2xl` (and bare `shadow`, which matches `sm`) read `shadow2xs` through `shadow2xl`
 (`--theme-shadow-*`). A shadow step must be a concrete `box-shadow` list (no `var()`, `env()` or
 `attr()`) or `none`. `elevationSurface` stays the separate role behind `shadow-theme-surface` and
-keeps its original validation, so a released theme holding `var()` there still loads. On every
+keeps its original validation, so a released theme holding `var()` there still loads. `elevationDrag`
+(`--theme-elevation-drag`) is the lift a dragged badge takes while it is held. On every
 shadow role, `none` is written as a transparent layer so Tailwind can still compose it with ring
 utilities.
 The defaults reproduce the scale those utilities had before, so a theme that names none of them
@@ -299,6 +300,7 @@ function MyComponent() {
 - `bg-surface-chat` - Chat interface background
 - `bg-surface-code` - Code block chrome: toolbar, output and result switcher
 - `bg-surface-code-body` - Code block pane behind the highlighted code
+- `fill-illustration-subtle`, `fill-illustration`, `fill-illustration-strong` - The three tones of in-app artwork, such as the file drop zone's illustration
 - `bg-surface-qr` - Backdrop behind a QR code, kept light in every mode so it scans
 
 ### Border Colors

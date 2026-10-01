@@ -25,6 +25,10 @@
   --color-avatar-fill: rgb(var(--avatar-fill));
   --color-avatar-text: rgb(var(--avatar-text));
   --color-avatar-placeholder: rgb(var(--avatar-placeholder));
+  --color-avatar-edge: rgb(var(--avatar-edge));
+  --color-illustration-subtle: rgb(var(--illustration-subtle));
+  --color-illustration: rgb(var(--illustration));
+  --color-illustration-strong: rgb(var(--illustration-strong));
   --color-presentation: rgb(var(--presentation));
   --color-accent-primary: rgb(var(--accent-primary));
   --color-accent-primary-hover: rgb(var(--accent-primary-hover));

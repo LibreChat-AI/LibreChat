@@ -128,6 +128,10 @@ export const darkTheme: IThemeRGB = {
   'rgb-avatar-fill': '121 137 255', // #7989ff (the default avatar fill in every bundled theme)
   'rgb-avatar-text': '236 236 236', // #ececec (gray-100, matching text-primary)
   'rgb-avatar-placeholder': '47 47 47', // #2f2f2f (gray-700, matching surface-tertiary)
+  'rgb-avatar-edge': '240 246 252', // #f0f6fc at 10%, a hairline that only shows against a dark page
+  'rgb-illustration-subtle': '175 193 255', // #afc1ff
+  'rgb-illustration': '121 137 255', // #7989ff
+  'rgb-illustration-strong': '60 70 255', // #3c46ff
 
   /** Code syntax highlighting, measured against the `surface-code` fill. The
    *  comment and meta values are the flattened equivalents of the alpha-blended

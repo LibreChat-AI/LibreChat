@@ -47,14 +47,14 @@ const lastSentences = (text: string): string => {
  *  panel uses.
  *
  *  Custom-CSS exception, narrowly scoped: this is a `mask-image` stencil, not
- *  paint. Only the alpha channel is read, so `#000` means "keep this pixel"
+ *  paint. Only the alpha channel is read, so `black` means "keep this pixel"
  *  and `transparent` means "hide it". The hue never reaches the screen and no
  *  theme could meaningfully restyle it. Routing it through a theme role would
  *  invite a token with alpha, which would silently wash out the text the mask
  *  is supposed to keep. Tailwind has no mask-image utility that expresses a
  *  four-stop gradient with `calc()` offsets, hence the inline style. */
 const PEEK_FADE =
-  'linear-gradient(to bottom, transparent, #000 1.25rem, #000 calc(100% - 1.25rem), transparent)';
+  'linear-gradient(to bottom, transparent, black 1.25rem, black calc(100% - 1.25rem), transparent)';
 
 /**
  * Collapsed live preview of streaming reasoning. Mirrors the expanded thought
