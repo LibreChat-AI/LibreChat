@@ -7,7 +7,7 @@ import type { Agents, TMessage, TConversation, TSubmission } from 'librechat-dat
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
 import type { QueuedMessage } from '~/hooks/Chat/queue';
-import type { PendingSteer } from '~/store/families';
+import type { PendingSteer } from '~/hooks/Chat/queue';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';

@@ -12,7 +12,7 @@ import {
 } from 'librechat-data-provider';
 import type { TMessage, TSubmission } from 'librechat-data-provider';
 import type { Query, QueryKey } from '@tanstack/react-query';
-import type { PendingSteer } from '~/store/families';
+import type { PendingSteer } from '~/hooks/Chat/queue';
 import {
   activeUsageResponseIdFamily,
   liveTokensFamily,

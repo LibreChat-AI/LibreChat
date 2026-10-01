@@ -46,7 +46,7 @@ import type { DrainAfterAbort, QueuedMessageOrigin } from '~/hooks/Chat/queue';
 import type { GenerationProtocolVersion } from '~/data-provider';
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData, TFinalResData } from '~/common';
-import type { PendingSteer } from '~/store/families';
+import type { PendingSteer } from '~/hooks/Chat/queue';
 import {
   logger,
   clearComposerDrafts,

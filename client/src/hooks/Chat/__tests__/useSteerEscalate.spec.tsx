@@ -3,7 +3,7 @@ import { RecoilRoot, useRecoilValue } from 'recoil';
 import { getDefaultStore, useAtomValue } from 'jotai';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { MutableSnapshot } from 'recoil';
-import type { PendingSteer } from '~/store/families';
+import type { PendingSteer } from '~/hooks/Chat/queue';
 import { escalatingSteerFamily } from '~/store/steer';
 import useSteerEscalate from '../useSteerEscalate';
 import store from '~/store';

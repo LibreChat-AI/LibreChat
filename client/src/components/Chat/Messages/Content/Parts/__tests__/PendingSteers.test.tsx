@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import type { Agents, TConversation, TMessage } from 'librechat-data-provider';
-import type { PendingSteer } from '~/store/families';
+import type { PendingSteer } from '~/hooks/Chat/queue';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { hasLiveRunPause } from '~/hooks/Chat/useSteering';
 import { applyPendingAction } from '~/utils/approval';

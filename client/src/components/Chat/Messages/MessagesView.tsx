@@ -10,8 +10,8 @@ import {
   useMessageScrolling,
   useConversationSeen,
 } from '~/hooks';
+import { MessagePartsHostProvider, appMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { MessagesViewProvider, useChatContext, useFileMapContext } from '~/Providers';
-import { MessagePartsHostProvider, appMessagePartsHost } from '~/hooks/Chat/parts';
 import { RowMountProvider, useProgressiveRowMount } from '~/hooks/Messages';
 import { useChatSurface } from '~/components/Chat/Subagents/surface';
 import useThreadRows from '~/hooks/Messages/useThreadRows';

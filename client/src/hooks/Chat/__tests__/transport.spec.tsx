@@ -14,7 +14,7 @@ import type {
 } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { Transport } from '~/hooks/Chat/contract';
-import type { PendingSteer } from '~/store/families';
+import type { PendingSteer } from '~/hooks/Chat/queue';
 import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import { useSteerReclaim } from '~/hooks/Chat/useSteerCancel';
