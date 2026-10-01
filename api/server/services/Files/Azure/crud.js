@@ -254,6 +254,9 @@ async function getAzureFileStream(_req, fileURL, { signal } = {}) {
   try {
     const url = new URL(fileURL);
     const configuredClient = await getAzureContainerClient();
+    if (!configuredClient) {
+      throw new Error('Azure Blob Service not initialized');
+    }
     const configuredURL = configuredClient.url ? new URL(configuredClient.url) : undefined;
     const configuredPrefix = configuredURL?.pathname.replace(/\/$/, '');
     let containerClient = configuredClient;
