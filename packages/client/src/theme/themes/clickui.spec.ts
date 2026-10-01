@@ -13,13 +13,14 @@ import {
   TableRow,
 } from '../../components/Table';
 import { OGDialog, OGDialogContent, OGDialogTitle } from '../../components/OriginalDialog';
+import { resolveTheme, themeAppearanceProperties } from '../registry';
+import { Tabs, TabsList, TabsTrigger } from '../../components/Tabs';
 import { Button } from '../../components/Button';
 import { Switch } from '../../components/Switch';
 import Dropdown from '../../components/Dropdown';
 import { Input } from '../../components/Input';
 import { clickHouseTheme } from './clickhouse';
 import Badge from '../../components/Badge';
-import { resolveTheme } from '../registry';
 import snapshot from './clickui.json';
 
 jest.mock('react-i18next', () => ({
@@ -744,20 +745,23 @@ function comparable(key: keyof IThemeAppearance, raw: string | number): string {
  * regresses fails by name, so move its pin when a change closes a gap. Run with
  * `CLICKUI_PARITY_REPORT=1` to print every decision and every role's status.
  */
-type ParityKind = 'color' | 'shape';
-type Utility = 'bg' | 'text' | 'border' | 'rounded' | 'w' | 'h' | 'py' | 'px' | 'gap';
+type ParityKind = 'color' | 'shape' | 'shadow';
+type Utility = 'bg' | 'text' | 'border' | 'rounded' | 'shadow' | 'w' | 'h' | 'py' | 'px' | 'gap';
 
 interface ParityProbe {
   /** The Click UI component token the primitive should reproduce. */
-  token: string;
+  token?: string;
+  /** What Click UI's component stylesheet draws for a decision no token carries, and where. */
+  untokened?: { value: string; source: string };
   kind: ParityKind;
   utility: Utility;
   /** A state the utility is written under, such as `data-[state=checked]:`. */
   variant?: string;
   /** Renders the primitive and returns the element that paints the decision. */
   element?: () => Element;
-  /** The value a stylesheet draws for the decision, when no class a theme role backs does. */
-  literal?: () => string;
+  /** The value a stylesheet draws for the decision in a mode, when no class a theme role backs
+   *  does, with any theme role it reads resolved under the ClickHouse theme. */
+  literal?: (mode: ThemeMode) => string;
   /** The modes where the theme lands within deltaE2000 5 of Click UI rather than on it. */
   near?: ThemeMode[];
   /** Why the theme departs from Click UI on purpose, per mode. */
@@ -821,17 +825,39 @@ const dropdownProbe = () =>
     '[role="combobox"]',
   );
 
-/** The value of `property` in the first `selector` rule of a primitive's stylesheet. */
-const stylesheetValue = (file: string, selector: string, property: string) => () => {
-  const css = readFileSync(join(__dirname, '../../components', file), 'utf8');
+/** The value of `property` in the first `selector` rule of a stylesheet under `src/`. */
+const cssValue = (path: string, selector: string, property: string) => {
+  const css = readFileSync(join(__dirname, '../..', path), 'utf8');
   const start = css.indexOf(`${selector} {`);
   const rule = start === -1 ? '' : css.slice(start, css.indexOf('}', start));
   const value = new RegExp(`${property}:\\s*([^;]+);`).exec(rule)?.[1];
   if (value === undefined) {
-    throw new Error(`${file} has no ${property} in a ${selector} rule`);
+    throw new Error(`${path} has no ${property} in a ${selector} rule`);
   }
-  return value;
+  return value.replace(/\s+/g, ' ').trim();
 };
+
+/** The value of `property` in the first `selector` rule of a primitive's stylesheet. */
+const stylesheetValue = (file: string, selector: string, property: string) => () =>
+  cssValue(`components/${file}`, selector, property);
+
+/** The app stylesheet, which repaints some primitive rules after the package's own. */
+const APP_STYLESHEET = '../../../client/src/style.css';
+
+/** A `var(--theme-*, fallback)` value resolved to the role it reads under the ClickHouse theme. */
+function resolveRoleVar(value: string, mode: ThemeMode): string {
+  const property = /^var\(\s*(--theme-[a-z0-9-]+)/.exec(value)?.[1];
+  if (property === undefined) {
+    return value;
+  }
+  const role = (Object.keys(themeAppearanceProperties) as Array<keyof IThemeAppearance>).find(
+    (key) => themeAppearanceProperties[key] === property,
+  );
+  if (role === undefined) {
+    throw new Error(`${property} is not an appearance role`);
+  }
+  return resolveTheme(clickHouseTheme, mode).appearance[role];
+}
 
 /**
  * The open Dropdown menu's corner. jsdom loads no stylesheet, so the rendered popover is checked
@@ -850,6 +876,54 @@ const popoverCorner = () => {
       throw new Error(`The open Dropdown menu sets its own corner (${override ?? 'inline'})`);
     }
     return stylesheetValue('Dropdown.css', '.popover-ui', 'border-radius')();
+  } finally {
+    cleanup();
+  }
+};
+
+/**
+ * The Dropdown menu's shadow. The package rule reads `shadowLg`; the app stylesheet repeats it in
+ * light and repaints it in dark with a literal, and the app's rules win, so dark reads that one.
+ */
+const menuShadow = (mode: ThemeMode) => {
+  if (mode === 'dark') {
+    return cssValue(APP_STYLESHEET, '.popover-ui:where(.dark, .dark *)', 'box-shadow');
+  }
+  const own = cssValue('components/Dropdown.css', '.popover-ui', 'box-shadow');
+  const app = cssValue(APP_STYLESHEET, '.popover-ui', 'box-shadow');
+  if (app !== own) {
+    throw new Error(
+      `The app's .popover-ui shadow (${app}) no longer repeats Dropdown.css (${own})`,
+    );
+  }
+  return resolveRoleVar(own, mode);
+};
+
+/** The Tooltip's shadow: `.tooltip` in light, and its `.dark` rule in dark. Tooltip renders the
+ *  bare `tooltip` class, so nothing but this stylesheet paints it. */
+const tooltipShadow = (mode: ThemeMode) =>
+  cssValue(
+    'components/Tooltip.css',
+    mode === 'dark' ? '.tooltip:where(.dark, .dark *)' : '.tooltip',
+    'box-shadow',
+  );
+
+/** The Tabs trigger's corner, an arbitrary `rounded-[...]` value on the rendered trigger. */
+const tabsCorner = () => {
+  try {
+    const trigger = mount(
+      createElement(
+        Tabs,
+        { defaultValue: 'a' },
+        createElement(TabsList, null, createElement(TabsTrigger, { value: 'a' }, 'A')),
+      ),
+      '[role="tab"]',
+    );
+    const corner = /(?:^|\s)rounded-\[([^\]]+)\]/.exec(trigger.getAttribute('class') ?? '')?.[1];
+    if (corner === undefined) {
+      throw new Error('The Tabs trigger no longer draws a literal corner; probe its role instead');
+    }
+    return corner;
   } finally {
     cleanup();
   }
@@ -958,6 +1032,30 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'shape',
     utility: 'rounded',
     literal: popoverCorner,
+  },
+  'Dropdown menu shadow': {
+    token: 'click.genericMenu.panel.shadow.default',
+    kind: 'shadow',
+    utility: 'shadow',
+    literal: menuShadow,
+  },
+  'Tooltip corner': {
+    token: 'click.tooltip.radii.all',
+    kind: 'shape',
+    utility: 'rounded',
+    literal: stylesheetValue('Tooltip.css', '.tooltip', 'border-radius'),
+  },
+  'Tooltip shadow': {
+    untokened: { value: 'none', source: 'Tooltip.module.css .content sets no box-shadow' },
+    kind: 'shadow',
+    utility: 'shadow',
+    literal: tooltipShadow,
+  },
+  'Tabs corner': {
+    token: 'click.tabs.radii.all',
+    kind: 'shape',
+    utility: 'rounded',
+    literal: tabsCorner,
   },
   'Dialog surface': {
     token: 'click.dialog.color.background.default',
@@ -1148,6 +1246,27 @@ const notExpressible: Record<string, NotExpressible> = {
       'the popover corner is a 0.7rem literal in Dropdown.css, and no radius role defaults to 0.7rem',
     issue: 'https://github.com/berry-13/LibreChat/issues/196',
   },
+  'Dropdown menu shadow': {
+    decisions: { dark: ['Dropdown menu shadow'] },
+    reason:
+      "light reads shadowLg, but the app's dark .popover-ui rule repaints the shadow with a 0.25-alpha literal that no shadow role defaults to",
+    issue: 'https://github.com/berry-13/LibreChat/issues/217',
+  },
+  'Tooltip corner and shadow': {
+    decisions: {
+      light: ['Tooltip corner', 'Tooltip shadow'],
+      dark: ['Tooltip corner', 'Tooltip shadow'],
+    },
+    reason:
+      'Tooltip.css draws a 0.275rem corner and a black drop shadow as literals; no radius role defaults to 0.275rem and no shadow role to either shadow, where Click UI draws 0.25rem and no shadow',
+    issue: 'https://github.com/berry-13/LibreChat/issues/215',
+  },
+  'Tabs corner': {
+    decisions: { light: ['Tabs corner'], dark: ['Tabs corner'] },
+    reason:
+      'the Tabs trigger corner is a rounded-[0.185rem] literal, and no radius role defaults to 0.185rem',
+    issue: 'https://github.com/berry-13/LibreChat/issues/216',
+  },
 };
 
 type Verdict = 'match' | 'near' | 'deviation' | 'not expressible';
@@ -1319,11 +1438,18 @@ interface ParityResult {
 const nearColor = (a: Rgba, b: Rgba) => Math.abs(a[3] - b[3]) < 0.01 && deltaE(a, b) < NEAR;
 
 function measure(mode: ThemeMode, decision: string, probe: ParityProbe): ParityResult {
-  const source = clickToken(mode, probe.token);
+  const source = probe.token !== undefined ? clickToken(mode, probe.token) : probe.untokened?.value;
+  if (source === undefined) {
+    throw new Error(`Parity probe ${decision} names neither a Click UI token nor a drawn value`);
+  }
   const base = { decision, clickUi: source };
   if (probe.literal) {
-    const value = probe.literal();
-    return { ...base, theme: `literal = ${value}`, measured: value === source ? 'match' : 'off' };
+    const value = probe.literal(mode);
+    const same =
+      probe.kind === 'shadow'
+        ? normalizeShadow(value) === normalizeShadow(source)
+        : value === source;
+    return { ...base, theme: `literal = ${value}`, measured: same ? 'match' : 'off' };
   }
   if (!probe.element) {
     throw new Error(`Parity probe ${decision} has neither an element nor a literal`);
@@ -1469,7 +1595,7 @@ describe('ClickHouse theme drift against Click UI', () => {
       ...Object.values(departures[mode]).map((departure) => departure.counterpart),
       ...Object.values(appearanceSources),
       ...Object.values(appearanceDecisions).flatMap(({ token }) => (token ? [token] : [])),
-      ...Object.values(parityProbes).map((probe) => probe.token),
+      ...Object.values(parityProbes).flatMap((probe) => (probe.token ? [probe.token] : [])),
     ]);
 
     expect(Object.keys(tokens[mode]).filter((token) => !cited.has(token))).toEqual([]);

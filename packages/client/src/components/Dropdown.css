@@ -11,9 +11,12 @@
   background-color: rgb(var(--surface-primary));
   padding: 0.5rem;
   color: rgb(var(--text-primary));
-  box-shadow:
+  /* The `shadowLg` role, whose default is this literal. */
+  box-shadow: var(
+    --theme-shadow-lg,
     0 10px 15px -3px rgb(0 0 0 / 0.1),
-    0 4px 6px -4px rgb(0 0 0 / 0.1);
+    0 4px 6px -4px rgb(0 0 0 / 0.1)
+  );
   transform-origin: var(--popover-transform-origin, top);
   opacity: 0;
   transition-property: opacity, scale;
