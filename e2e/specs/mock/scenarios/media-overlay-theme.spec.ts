@@ -133,8 +133,13 @@ async function expectSamePaint(page: Page, actual: string, expected: string) {
   got.forEach((channel, index) => expect(Math.abs(channel - want[index])).toBeLessThanOrEqual(1));
 }
 
+/** Attaches what the page shows to the report, for the pull request's screenshots. */
+async function capture(page: Page, name: string) {
+  await test.info().attach(name, { body: await page.screenshot(), contentType: 'image/png' });
+}
+
 /** Opens the message image lightbox and reads its scrim and close control at rest and on hover. */
-async function lightboxPaint(page: Page, conversationId: string, mode: Mode) {
+async function lightboxPaint(page: Page, conversationId: string, mode: Mode, theme = 'default') {
   await page.goto(`/c/${conversationId}?${THEME_PARAM}=${mode}`);
   const trigger = page.getByRole('button', { name: `View ${IMAGE_NAME} in dialog` });
   await expect(trigger).toBeVisible({ timeout: 20000 });
@@ -149,6 +154,7 @@ async function lightboxPaint(page: Page, conversationId: string, mode: Mode) {
 
   const scrim = await scrimColor(dialog);
   expect(scrim).not.toBe('');
+  await capture(page, `lightbox-${theme}-${mode}`);
   const ink = await inkOf(close);
   await close.hover();
   const hoverInk = await inkOf(close);
@@ -187,7 +193,12 @@ test.describe('media overlay roles', () => {
 
     try {
       for (const mode of MODES) {
-        const { scrim, ...controls } = await lightboxPaint(page, conversationId, mode);
+        const { scrim, ...controls } = await lightboxPaint(
+          page,
+          conversationId,
+          mode,
+          'clickhouse',
+        );
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
         await expectSamePaint(page, scrim, 'rgb(0 0 0 / 0.9)');
         expect(controls).toEqual({ ink: WHITE_INK, hoverInk: WHITE_INK });
@@ -210,7 +221,7 @@ test.describe('media overlay roles', () => {
         ['light', 'rgb(20 30 40 / 0.9)', 'rgb(250, 240, 200)'],
         ['dark', 'rgb(40 20 30 / 0.9)', 'rgb(200, 240, 250)'],
       ] as const) {
-        const { scrim, ...controls } = await lightboxPaint(page, conversationId, mode);
+        const { scrim, ...controls } = await lightboxPaint(page, conversationId, mode, 'custom');
         await expectSamePaint(page, scrim, expectedScrim);
         expect(controls).toEqual({ ink, hoverInk: ink });
       }
@@ -242,6 +253,7 @@ test.describe('media overlay roles', () => {
         exact: true,
       });
       await expect(prompt).toBeVisible();
+      await capture(page, `drop-backdrop-${mode}`);
       /* The backdrop is the fixed layer beneath the prompt's own overlay. */
       const backdrop = await prompt.evaluate((node) => {
         const overlay = node.closest('.fixed');
