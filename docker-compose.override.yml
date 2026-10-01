@@ -25,6 +25,10 @@ services:
       source: ./certs/documentdb
       target: /app/certs/documentdb
       read_only: true
+    - type: bind
+      source: ${AWS_PROFILE_DIR}
+      target: /home/node/.aws
+      read_only: true
     # Amazon DocumentDB is an external managed service, so the API must not wait
     # for the local MongoDB compatibility baseline.
     # depends_on:
@@ -49,9 +53,19 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION: ${AWS_REGION}
       AWS_DEFAULT_REGION: ${AWS_REGION}
+      AWS_SDK_LOAD_CONFIG: "1"
       AWS_BUCKET_NAME: plastic-ai-files
       AWS_ENDPOINT_URL: http://ministack:${MINISTACK_PORT}
+      # The global endpoint keeps local AWS services on ministack. Bedrock uses
+      # its explicit librechat.yaml baseURL, while profile/SSO resolution must
+      # reach real AWS instead of inheriting the global ministack endpoint.
+      AWS_ENDPOINT_URL_SSO: https://portal.sso.${AWS_REGION}.amazonaws.com
+      AWS_ENDPOINT_URL_SSO_OIDC: https://oidc.${AWS_REGION}.amazonaws.com
+      AWS_ENDPOINT_URL_STS: https://sts.${AWS_REGION}.amazonaws.com
       AWS_FORCE_PATH_STYLE: "true"
+      BEDROCK_AWS_DEFAULT_REGION: ${BEDROCK_AWS_DEFAULT_REGION}
+      BEDROCK_AWS_PROFILE: ${BEDROCK_AWS_PROFILE}
+      HOME: /home/node
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1},${no_proxy:-},meilisearch,chat-meilisearch,rag_api,vectordb,ministack,ollama,host.docker.internal
       no_proxy: ${no_proxy:-localhost,127.0.0.1,::1},${NO_PROXY:-},meilisearch,chat-meilisearch,rag_api,vectordb,ministack,ollama,host.docker.internal
     networks:
