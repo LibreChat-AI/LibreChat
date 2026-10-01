@@ -1180,11 +1180,6 @@
       "count": 2
     }
   },
-  "client/src/components/Nav/AgentMarketplaceButton.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
   "client/src/components/Nav/ExportConversation/ExportModal.tsx": {
     "shadcn/no-restyle": {
       "count": 3
@@ -2108,7 +2103,7 @@
       "count": 2
     },
     "shadcn/no-restyle": {
-      "count": 4
+      "count": 3
     }
   },
   "client/src/components/Variables/Editor.tsx": {

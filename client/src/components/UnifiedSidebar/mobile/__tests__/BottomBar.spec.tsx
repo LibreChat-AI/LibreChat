@@ -47,18 +47,21 @@ describe('mobile bottom bar', () => {
     expect(screen.queryByTestId('nav-new-chat-fab')).not.toBeInTheDocument();
   });
 
-  /** Searching messages only means anything from the conversation list, and an
-   *  empty footer would still take its padding out of the list above it. */
-  it('stands down on a panel that has nothing to search', () => {
+  /** Searching messages only means anything from the conversation list. What
+   *  remains is an empty spacer for the bottom safe-area inset, so the panel
+   *  above still stops short of the home indicator. */
+  it('stands down to the safe-area spacer on a panel that has nothing to search', () => {
     activePanel.active = 'prompts';
     const { container } = renderBar();
 
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByTestId('search-bar')).not.toBeInTheDocument();
+    expect(container.firstElementChild).toBeEmptyDOMElement();
   });
 
-  it('stands down where the deployment has search off', () => {
+  it('stands down to the safe-area spacer where the deployment has search off', () => {
     const { container } = renderBar(false);
 
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByTestId('search-bar')).not.toBeInTheDocument();
+    expect(container.firstElementChild).toBeEmptyDOMElement();
   });
 });

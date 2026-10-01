@@ -45,8 +45,8 @@ export default function AgentMarketplaceButton({
     <Button
       asChild
       variant="ghost"
-      size={isRow ? 'default' : 'icon'}
-      className={cn('shrink-0', isRow ? 'h-10 w-full justify-start px-1.5' : 'h-9 w-9')}
+      size={isRow ? 'row' : 'icon'}
+      className={cn('shrink-0', isRow ? 'w-full justify-start' : 'h-9 w-9')}
     >
       <Link
         to="/agents"

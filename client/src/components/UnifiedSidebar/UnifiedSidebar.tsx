@@ -19,8 +19,8 @@ import {
 import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog';
 import { ChatContext, ChatFormProvider, ActivePanelProvider } from '~/Providers';
 import { MobileHeader, MobileBottomBar, MobileShortcutTargets } from './mobile';
-import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
 import AgentMarketplaceButton from '~/components/Nav/AgentMarketplaceButton';
+import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
 import useUnifiedSidebarLinks from '~/hooks/Nav/useUnifiedSidebarLinks';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import useSidebarState from '~/hooks/Nav/useSidebarState';
@@ -195,9 +195,13 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
       id={MOBILE_DRAWER_ID}
       className={cn(
         /** The close swipe reads horizontal touches here (the drawer holds no
-         * horizontal scrollers), while pinch-zoom stays with the browser —
+         * horizontal scrollers), while pinch-zoom stays with the browser:
          * this full-viewport surface must not disable zooming entirely. */
         'bg-surface-primary-alt text-text-primary fixed inset-y-0 left-0 flex touch-pan-y touch-pinch-zoom flex-col',
+        /** In dark mode the scrim and the drawer are both near-black, and no
+         *  scrim opacity separates them by 3:1, so the drawer draws its own
+         *  edge. Light palettes get that separation from the scrim. */
+        'dark:border-border-xheavy dark:border-r',
         expanded ? 'translate-x-0' : '-translate-x-full',
       )}
       style={{
@@ -230,7 +234,7 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
               destination like the panels themselves, not a row of whichever
               list happens to be showing, so it stays put while they change and
               does not scroll away with the chats. */}
-          <div className="shrink-0 px-3 pt-2">
+          <div className="shrink-0 px-3 pt-2 empty:hidden">
             <AgentMarketplaceButton layout="row" onNavigate={handleCollapse} />
           </div>
           <nav

@@ -3,6 +3,7 @@ import { useRecoilValue } from 'recoil';
 import type { NavLink } from '~/common';
 import { useActivePanel, resolveActivePanel, DEFAULT_PANEL } from '~/Providers';
 import SearchBar from '~/components/Nav/SearchBar';
+import { cn } from '~/utils';
 import store from '~/store';
 
 /**
@@ -20,18 +21,22 @@ function BottomBar({ links }: { links: NavLink[] }) {
   /** Searching messages only means anything from the conversation list. */
   const showSearch = search.enabled === true && resolveActivePanel(active, links) === DEFAULT_PANEL;
 
-  if (!showSearch) {
-    return null;
-  }
-
+  /** Without search the footer shrinks to the bottom safe-area inset alone, so
+   *  the panel content still stops above the home indicator. */
   return (
     <div
-      className="flex shrink-0 items-center px-3 pt-2"
-      style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom, 0px))' }}
+      className={cn('flex shrink-0 items-center', showSearch && 'px-3 pt-2')}
+      style={{
+        paddingBottom: showSearch
+          ? 'calc(0.75rem + env(safe-area-inset-bottom, 0px))'
+          : 'env(safe-area-inset-bottom, 0px)',
+      }}
     >
-      <div className="min-w-0 flex-1">
-        <SearchBar isSmallScreen={true} />
-      </div>
+      {showSearch && (
+        <div className="min-w-0 flex-1">
+          <SearchBar isSmallScreen={true} />
+        </div>
+      )}
     </div>
   );
 }
