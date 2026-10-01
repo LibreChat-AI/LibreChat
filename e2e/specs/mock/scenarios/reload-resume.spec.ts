@@ -3,6 +3,8 @@ import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
   messagesView,
+  replyPrompt,
+  replyText,
   selectMockEndpoint,
   sendMessage,
 } from '../helpers';
@@ -22,10 +24,19 @@ test.describe('reload during a reply', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
+    /** A new chat only takes its `/c/:id` route when its first reply ends, so
+     *  the slow reply runs in a conversation that is already persisted: the
+     *  reload then lands on that conversation while the reply is streaming. */
+    const setup = await sendMessage(page, replyPrompt(`${label}-setup`));
+    expect(setup.ok()).toBeTruthy();
+    await expect(messagesView(page).getByText(replyText(`${label}-setup`))).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/, { timeout: 15_000 });
+
     const response = await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
     expect(response.ok()).toBeTruthy();
     await expect(messagesView(page).getByText('chunk-010')).toBeVisible({ timeout: 15_000 });
-    await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/, { timeout: 15_000 });
 
     /** Only the page that loads after the reload asks for the stream with a
      *  resume cursor, so this waiter sees the reattachment and not the
