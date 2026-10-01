@@ -2341,3 +2341,28 @@ describe('interface theme config', () => {
     expect(chatProjectsConfigSchema.safeParse({ maxDescriptionLength: 10001 }).success).toBe(false);
   });
 });
+
+describe('built-in endpoint model lists', () => {
+  const parse = (endpoints: Record<string, unknown>) =>
+    configSchema.safeParse({ version: '1.0', endpoints });
+
+  it.each([
+    EModelEndpoint.openAI,
+    EModelEndpoint.google,
+    EModelEndpoint.anthropic,
+    EModelEndpoint.bedrock,
+  ])('accepts a models list for %s', (endpoint) => {
+    const result = parse({ [endpoint]: { models: ['model-a'] } });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.endpoints?.[endpoint]).toMatchObject({
+      models: ['model-a'],
+    });
+  });
+
+  it.each([EModelEndpoint.openAI, EModelEndpoint.google])(
+    'rejects a non-array models value for %s',
+    (endpoint) => {
+      expect(parse({ [endpoint]: { models: 'model-a' } }).success).toBe(false);
+    },
+  );
+});

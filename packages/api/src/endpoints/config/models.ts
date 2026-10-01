@@ -14,6 +14,17 @@ import type { GetAppConfigOptions } from '~/app/service';
 import { fetchModels as defaultFetchModels } from '~/endpoints/models';
 import { getTokenConfigKey } from '~/endpoints/custom/initialize';
 import { getAppConfigOptionsFromUser } from '~/app/service';
+
+/**
+ * Built-in endpoints whose configured `models` list replaces their `*_MODELS`
+ * environment list. Read per request, so principal overrides can narrow them.
+ */
+const CONFIGURED_MODEL_LIST_ENDPOINTS = [
+  EModelEndpoint.openAI,
+  EModelEndpoint.google,
+  EModelEndpoint.anthropic,
+  EModelEndpoint.bedrock,
+] as const;
 import { resolveConfigSecret } from '~/admin/secrets';
 import { validateEndpointURL } from '~/auth';
 import { tokenConfigCache } from '~/cache';
@@ -72,9 +83,13 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       modelsConfig[EModelEndpoint.azureAssistants] = azureConfig.assistantModels;
     }
 
-    const bedrockConfig = appConfig.endpoints?.[EModelEndpoint.bedrock];
-    if (bedrockConfig?.models && Array.isArray(bedrockConfig.models)) {
-      modelsConfig[EModelEndpoint.bedrock] = bedrockConfig.models;
+    for (const endpoint of CONFIGURED_MODEL_LIST_ENDPOINTS) {
+      const models = appConfig.endpoints?.[endpoint]?.models;
+      if (Array.isArray(models)) {
+        modelsConfig[endpoint] = models.filter(
+          (model): model is string => typeof model === 'string',
+        );
+      }
     }
 
     if (!Array.isArray(appConfig.endpoints?.[EModelEndpoint.custom])) {

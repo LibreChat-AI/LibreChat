@@ -1931,6 +1931,17 @@ export type TVertexAIConfig = TVertexAISchema & {
  * Anthropic endpoint schema with optional Vertex AI configuration.
  * Extends baseEndpointSchema with Vertex AI support.
  */
+/**
+ * A built-in endpoint whose configured `models` list replaces its `*_MODELS`
+ * environment list. Read from the per-request config, so principal overrides
+ * can narrow it.
+ */
+export const modelListEndpointSchema = baseEndpointSchema.merge(
+  z.object({
+    models: z.array(z.string()).optional(),
+  }),
+);
+
 export const anthropicEndpointSchema = baseEndpointSchema.merge(
   z.object({
     /** Vertex AI configuration for running Anthropic models on Google Cloud */
@@ -3708,8 +3719,8 @@ export const configSchema = z.object({
        * endpoint > a custom endpoint's own config.
        */
       all: baseEndpointSchema.omit({ baseURL: true }).optional(),
-      [EModelEndpoint.openAI]: baseEndpointSchema.optional(),
-      [EModelEndpoint.google]: baseEndpointSchema.optional(),
+      [EModelEndpoint.openAI]: modelListEndpointSchema.optional(),
+      [EModelEndpoint.google]: modelListEndpointSchema.optional(),
       [EModelEndpoint.anthropic]: anthropicEndpointSchema.optional(),
       [EModelEndpoint.azureOpenAI]: azureEndpointSchema.optional(),
       [EModelEndpoint.azureAssistants]: assistantEndpointSchema.optional(),
