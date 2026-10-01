@@ -1,6 +1,6 @@
 {
   "name": "@librechat/data-schemas",
-  "version": "0.0.71",
+  "version": "0.0.74",
   "description": "Mongoose schemas and models for LibreChat",
   "type": "module",
   "main": "dist/index.cjs",

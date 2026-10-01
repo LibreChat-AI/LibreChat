@@ -25,6 +25,7 @@ import {
 
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT = 24 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
+export const AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT = 5_000;
 import {
   MAX_SUBAGENTS,
   MAX_SUBAGENTS_CEILING,
@@ -1204,6 +1205,17 @@ export const CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS = 5 * 60_000;
  * initial admission wait or an already-admitted operation's execution budget.
  */
 export const CODE_ENVIRONMENT_QUEUE_WAIT_DEFAULT_MS = 5 * 60_000;
+/** Code API's per-request admission ceiling, independent of the retry horizon. */
+export const CODE_ENVIRONMENT_ADMISSION_MAX_MS = 5 * 60_000;
+/** Minimum command admission time reserved inside an opted-in HTTP budget. */
+export const CODE_ENVIRONMENT_COMMAND_ADMISSION_DEFAULT_MS = 10_000;
+/** Five seconds each for command settlement and transport delivery. */
+const CODE_ENVIRONMENT_COMMAND_BUDGET_GRACE_MS = 10_000;
+/** Maximum opt-in HTTP budget: five minutes of admission and execution plus settlement and delivery. */
+export const CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS =
+  CODE_ENVIRONMENT_ADMISSION_MAX_MS +
+  CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS +
+  CODE_ENVIRONMENT_COMMAND_BUDGET_GRACE_MS;
 
 /**
  * Typed user-tunable surface for one attached code environment. Omitted fields
@@ -1239,6 +1251,60 @@ export const codeEnvironmentUserConfigSchema = z
           .min(0)
           .max(CODE_ENVIRONMENT_QUEUE_WAIT_DEFAULT_MS)
           .optional(),
+        /** Total HTTP budget for one workspace tool call, including retries,
+         * execution, settlement, and delivery. Only set this after verifying
+         * the shortest timeout on the actual Code API path and updating Code API
+         * to honor per-request queue allowances. Omission keeps the 30-second
+         * per-attempt admission budget. */
+        maxRequestTimeoutMs: z
+          .number()
+          .int()
+          .min(1)
+          .max(CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS)
+          .optional(),
+        /** Admission allowance before local dispatch overhead for a Bash command inside
+         * maxRequestTimeoutMs. Omission reserves ten seconds; ignored without a total HTTP budget. */
+        minCommandAdmissionMs: z
+          .number()
+          .int()
+          .min(1_000)
+          .max(CODE_ENVIRONMENT_ADMISSION_MAX_MS)
+          .optional(),
+      })
+      .strict()
+      .superRefine((limits, context) => {
+        if (
+          limits.maxRequestTimeoutMs == null ||
+          limits.maxRequestTimeoutMs >
+            (limits.minCommandAdmissionMs ?? CODE_ENVIRONMENT_COMMAND_ADMISSION_DEFAULT_MS) +
+              CODE_ENVIRONMENT_COMMAND_BUDGET_GRACE_MS
+        ) {
+          return;
+        }
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [
+            limits.minCommandAdmissionMs == null ? 'maxRequestTimeoutMs' : 'minCommandAdmissionMs',
+          ],
+          message: 'Command admission and settlement reserves must leave time for execution',
+        });
+      })
+      .optional(),
+    workspaces: z
+      .object({
+        /** Run requests aimed at `.worktrees/<name>` in that worktree's own lane when the
+         * worker advertises linked-worktree lanes. Omission keeps every request scoped to
+         * its checkout. */
+        linkedWorktrees: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    edits: z
+      .object({
+        /** Whether a worker that negotiated `tolerant_match` may fall back from exact matching
+         * to whitespace-tolerant strategies, as skill and sandbox edits already do. Omission
+         * allows it; `false` requires every attached-workspace edit to match exactly. */
+        tolerantMatching: z.boolean().optional(),
       })
       .strict()
       .optional(),
@@ -1575,6 +1641,15 @@ export const agentsEndpointSchema = baseEndpointSchema
           /** Cooperative cancellation for process-local ordinary tools. Off
            * by default so existing deployments opt into the new control. */
           ordinaryToolCancellation: z.boolean().optional().default(false),
+          /** During graceful shutdown, how long an interrupted background tool gets to
+           * settle on its own before its result is recorded as interrupted. */
+          shutdownInterruptGraceMs: z
+            .number()
+            .int()
+            .min(0)
+            .max(60_000)
+            .optional()
+            .default(AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT),
         })
         .optional(),
       skills: z
@@ -1656,6 +1731,14 @@ export const endpointSchema = baseEndpointSchema.merge(
         EModelEndpoint,
       ).join(', ')}`,
     }),
+    /** Limit this YAML custom endpoint to one tenant. Omit for deployment-wide endpoints. */
+    tenantId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[-a-zA-Z0-9_.]+$/, 'must be a valid tenant id without whitespace')
+      .refine((tenantId) => tenantId !== '__SYSTEM__', 'system tenant is not allowed')
+      .optional(),
     apiKey: z.string(),
     /** Masked preview of the API key, stored at write time so admin
      * reads can show which key is configured without returning the secret. */
@@ -1970,6 +2053,12 @@ export enum RateLimitPrefix {
 }
 
 export const rateLimitSchema = z.object({
+  twoFactorManagement: z
+    .object({
+      /** Shared budget; setup needs enable, verify, and confirm within five minutes. */
+      requestsPerFiveMinutes: z.number().int().min(3).optional().default(7),
+    })
+    .optional(),
   agentEvents: z
     .object({
       userMax: z.number().int().positive().optional(),
@@ -3289,7 +3378,12 @@ export const alternateName = {
 const responsesOnlyOpenAIModels = ['gpt-6-astra'];
 /** Tool calls with Sol/Luna's default reasoning require Responses. Do not offer
  * these on Assistants, which cannot use the native request-routing path. */
-const responsesReasoningOpenAIModels = ['gpt-6-sol', 'gpt-6-luna'];
+const responsesReasoningOpenAIModels = ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna'];
+/** Catalog models whose native execution defaults to the Responses API. */
+export const responsesPreferredOpenAIModels: readonly string[] = [
+  ...responsesOnlyOpenAIModels,
+  ...responsesReasoningOpenAIModels,
+];
 
 const sharedOpenAIModels = [
   'gpt-5.6',
@@ -3323,6 +3417,7 @@ const sharedAnthropicModels = [
   'claude-fable-5',
   'claude-opus-5-5',
   'claude-opus-5',
+  'claude-sonnet-5-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-sonnet-5',
@@ -3360,6 +3455,7 @@ export const bedrockModels = [
   'global.anthropic.claude-fable-5',
   'global.anthropic.claude-opus-5-5',
   'global.anthropic.claude-opus-5',
+  'global.anthropic.claude-sonnet-5-5',
   'global.anthropic.claude-opus-4-8',
   'global.anthropic.claude-opus-4-7',
   'global.anthropic.claude-sonnet-5',
@@ -3903,6 +3999,14 @@ export enum ErrorTypes {
    * Provider throttled or refused the request for exceeding a rate/spend allowance
    */
   MODEL_RATE_LIMIT = 'model_rate_limit',
+  /**
+   * Provider accepted the request, then closed the connection before the response finished
+   */
+  MODEL_STREAM_CLOSED = 'model_stream_closed',
+  /**
+   * Provider accepted the request, then sent nothing for longer than the model response timeout
+   */
+  MODEL_STREAM_STALLED = 'model_stream_stalled',
   /**
    * An agent model provider failed and the run could not recover.
    */

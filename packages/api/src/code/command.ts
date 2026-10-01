@@ -1,5 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import { tool } from '@librechat/agents/langchain/tools';
+import { CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS } from 'librechat-data-provider';
 import {
   BashExecutionToolDefinition,
   BashToolOutputReferencesGuide,
@@ -16,6 +17,7 @@ import type { WorkspaceExecuteCommandResult } from './workspace';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeBridgeFetch } from './bridge';
 import {
+  fitWorkspaceCommandTimeoutToBudget,
   executeWorkspaceTool,
   WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
   WORKSPACE_COMMAND_MAX_TIMEOUT_MS,
@@ -101,7 +103,23 @@ export function resolveAttachedWorkspaceCommandTimeoutMax(
   } else if (upstreamMaxTimeoutMs != null) {
     requested = upstream;
   }
-  return Math.min(requested, upstream);
+  return fitCommandTimeoutMaxToBudget(
+    Math.min(requested, upstream),
+    resolveAttachedWorkspaceRequestTimeoutMs(configSchema),
+    configSchema?.limits?.minCommandAdmissionMs,
+  );
+}
+
+function fitCommandTimeoutMaxToBudget(
+  maxTimeoutMs: number,
+  maxRequestTimeoutMs?: number,
+  minCommandAdmissionMs?: number,
+): number {
+  if (maxRequestTimeoutMs == null) return maxTimeoutMs;
+  return Math.min(
+    maxTimeoutMs,
+    fitWorkspaceCommandTimeoutToBudget(maxRequestTimeoutMs, minCommandAdmissionMs),
+  );
 }
 
 /**
@@ -140,9 +158,30 @@ export function resolveAttachedWorkspaceQueueWaitMs(
   return Math.min(WORKSPACE_QUEUE_MAX_WAIT_MS, configured);
 }
 
+export function resolveAttachedWorkspaceRequestTimeoutMs(
+  configSchema?: CodeEnvironmentUserConfigSchema,
+): number | undefined {
+  const configured = configSchema?.limits?.maxRequestTimeoutMs;
+  if (
+    configured == null ||
+    !Number.isSafeInteger(configured) ||
+    configured < 1 ||
+    configured > CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS
+  ) {
+    return undefined;
+  }
+  return configured;
+}
+
+const linkedWorktreeWorkingDirectorySchema: BoundedWorkingDirectorySchema = {
+  ...attachedWorkingDirectorySchema,
+  description: `${attachedWorkingDirectorySchema.description} To work in a linked worktree, pass its directory here (for example ".worktrees/fix-auth") instead of running cd inside the command: commands in different .worktrees/<name> directories then run in parallel, while a cd from the workspace root waits for all of them.`,
+};
+
 export function buildAttachedWorkspaceBashSchema(
   maxTimeoutMs: number = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
   environment?: CodeWorkspaceDescriptor['environment'],
+  linkedWorktrees = false,
 ): NonNullable<LCTool['parameters']> {
   const effectiveMaxTimeoutMs = normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs);
   return {
@@ -150,7 +189,10 @@ export function buildAttachedWorkspaceBashSchema(
     properties: {
       ...bashSchema.properties,
       command: attachedCommandSchema,
-      cwd: attachedWorkingDirectorySchema,
+      cwd:
+        linkedWorktrees === true
+          ? linkedWorktreeWorkingDirectorySchema
+          : attachedWorkingDirectorySchema,
       timeoutMs: buildAttachedTimeoutSchema(effectiveMaxTimeoutMs),
       ...(environment?.actions.length
         ? {
@@ -286,23 +328,38 @@ export function createAttachedWorkspaceBashTool({
   gitIdentity,
   maxTimeoutMs = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
   maxQueueWaitMs,
+  codeApiMaxRetryWaitMs,
+  maxRequestTimeoutMs,
+  minCommandAdmissionMs,
+  linkedWorktrees = false,
   fetchImpl,
 }: {
   baseUrl: string;
   authHeaders: () => Promise<Record<string, string>> | Record<string, string>;
   workspaceId: string;
   workspaceInstanceId?: string;
+  /** The worker runs each `.worktrees/<name>` in its own lane; a matching `cwd` is routed there. */
+  linkedWorktrees?: boolean;
   environment?: CodeWorkspaceDescriptor['environment'];
   gitIdentity?: AgentGitIdentity | null;
   /** Effective admin/upstream ceiling already intersected with the protocol hard cap. */
   maxTimeoutMs?: number;
-  /** Deployment admission budget; omitted keeps the built-in default. */
+  /** Retry horizon across typed queue expirations, not an admission budget. */
   maxQueueWaitMs?: number;
+  codeApiMaxRetryWaitMs?: number;
+  /** Verified total HTTP budget; omission keeps the legacy per-attempt timeout. */
+  maxRequestTimeoutMs?: number;
+  /** Minimum time for command admission inside an opted-in HTTP budget. */
+  minCommandAdmissionMs?: number;
   fetchImpl?: CodeBridgeFetch;
 }): DynamicStructuredTool {
-  const effectiveMaxTimeoutMs = normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs);
+  const effectiveMaxTimeoutMs = fitCommandTimeoutMaxToBudget(
+    normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs),
+    maxRequestTimeoutMs,
+    minCommandAdmissionMs,
+  );
   const schema = structuredClone(
-    buildAttachedWorkspaceBashSchema(effectiveMaxTimeoutMs, environment),
+    buildAttachedWorkspaceBashSchema(effectiveMaxTimeoutMs, environment, linkedWorktrees),
   );
   const actions = environment?.actions ?? [];
   return tool(
@@ -360,6 +417,7 @@ export function createAttachedWorkspaceBashTool({
           baseURL: baseUrl,
           /** Passed as a supplier: a queued call outlives its minted token. */
           authHeaders,
+          linkedWorktrees,
           request: {
             protocolVersion: 1,
             operation: 'execute_command',
@@ -376,6 +434,8 @@ export function createAttachedWorkspaceBashTool({
           signal,
           fetchImpl,
           ...(maxQueueWaitMs == null ? {} : { maxQueueWaitMs }),
+          ...(codeApiMaxRetryWaitMs == null ? {} : { codeApiMaxRetryWaitMs }),
+          ...(maxRequestTimeoutMs == null ? {} : { maxRequestTimeoutMs }),
         });
         if (result.operation !== 'execute_command') {
           throw new Error('Attached workspace returned an unexpected command result.');

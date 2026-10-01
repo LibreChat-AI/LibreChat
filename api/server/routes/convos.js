@@ -52,6 +52,9 @@ const { storage, importFileFilter } = require('~/server/routes/files/multer');
 const requireJwtAuth = require('~/server/middleware/requireJwtAuth');
 const { importConversations } = require('~/server/utils/import');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
+const {
+  pendingBackgroundToolCompletions,
+} = require('~/server/services/Endpoints/agents/backgroundCompletion');
 const getLogStores = require('~/cache/getLogStores');
 const db = require('~/models');
 
@@ -152,6 +155,7 @@ const subagentControlHandler = createSubagentControlHandler({
 const backgroundTaskPolicy = createBackgroundTaskPolicyMiddleware({ getAppConfig });
 const backgroundTaskIndexHandler = createBackgroundTaskIndexHandler({
   registry: backgroundTaskRegistry,
+  pending: pendingBackgroundToolCompletions,
 });
 const backgroundTaskCancelHandler = createBackgroundTaskCancelHandler({
   registry: backgroundTaskRegistry,

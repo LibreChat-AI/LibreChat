@@ -3642,6 +3642,7 @@ describe('runCheckBackgroundTask delivery semantics', () => {
       list: async () => [
         {
           taskId: localTaskId,
+          toolCallId: `call-${localTaskId}`,
           toolName: 'bash_tool',
           dispatchedAt: new Date('2026-09-24T12:00:00Z'),
           result: { status: 'completed', settledAt: new Date('2026-09-24T12:01:00Z') },
@@ -3649,6 +3650,7 @@ describe('runCheckBackgroundTask delivery semantics', () => {
         },
         {
           taskId: 'earlier-turn-task',
+          toolCallId: 'call-earlier-turn-task',
           toolName: 'slow_task',
           dispatchedAt: new Date('2026-09-24T11:00:00Z'),
           result: { status: 'error', settledAt: new Date('2026-09-24T11:05:00Z') },
@@ -3656,6 +3658,7 @@ describe('runCheckBackgroundTask delivery semantics', () => {
         },
         {
           taskId: 'other-replica-task',
+          toolCallId: 'call-other-replica-task',
           toolName: 'slow_task',
           dispatchedAt: new Date('2026-09-24T11:30:00Z'),
           claimedByWakeup: false,
@@ -3751,6 +3754,7 @@ describe('runCheckBackgroundTask delivery semantics', () => {
           list: async () => [
             {
               taskId: waiting,
+              toolCallId: `call-${waiting}`,
               toolName: 'bash_tool',
               dispatchedAt: new Date('2026-09-24T12:00:00Z'),
               result: { status: 'completed', settledAt: new Date('2026-09-24T12:01:00Z') },
@@ -3783,12 +3787,14 @@ describe('runCheckBackgroundTask delivery semantics', () => {
           dead: [
             {
               taskId,
+              toolCallId: `call-${taskId}`,
               toolName: 'bash_tool',
               dispatchedAt: new Date('2026-09-24T12:00:00Z'),
               claimedByWakeup: false,
             },
             {
               taskId: 'restored-dead-task',
+              toolCallId: 'call-restored-dead-task',
               toolName: 'slow_task',
               dispatchedAt: new Date('2026-09-24T11:00:00Z'),
               result: { status: 'completed', settledAt: new Date('2026-09-24T11:01:00Z') },
@@ -3882,7 +3888,7 @@ describe('runCheckBackgroundTask delivery semantics', () => {
     );
     expect(listed.outstanding).toBe(1);
     expect(listed.partial).toBe(true);
-    expect(listed.warning).toContain('More undelivered results exist');
+    expect(listed.warning).toContain('result list may be incomplete');
   });
 
   it('lets a finished local task be cancelled without the live-cancellation policy', async () => {

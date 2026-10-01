@@ -3,7 +3,7 @@ import { QueryKeys } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { BackgroundTaskIndex } from 'librechat-data-provider';
-import { useBackgroundTasksQuery } from './queries';
+import { backgroundTasksRefetchInterval, useBackgroundTasksQuery } from './queries';
 
 const mockGetBackgroundTasks = jest.fn();
 
@@ -117,5 +117,32 @@ describe('background task discovery polling', () => {
     expect(mockGetBackgroundTasks).toHaveBeenCalledTimes(calls + 1);
     unmount();
     client.clear();
+  });
+});
+
+describe('backgroundTasksRefetchInterval', () => {
+  const index = (tasks: BackgroundTaskIndex['tasks']): BackgroundTaskIndex => ({
+    conversationId: 'convo-1',
+    cancellable: false,
+    tasks,
+  });
+  const task = (extra: Partial<BackgroundTaskIndex['tasks'][number]>) => ({
+    taskId: 'task-1',
+    toolName: 'bash_tool',
+    toolCallId: 'call-1',
+    status: 'completed' as const,
+    cancellationRequested: false,
+    startedAt: '2026-09-25T14:52:02.000Z',
+    ...extra,
+  });
+
+  it('polls undelivered results slower than running work and faster than idle', () => {
+    expect(backgroundTasksRefetchInterval(index([task({ status: 'running' })]))).toBe(2_000);
+    expect(backgroundTasksRefetchInterval(index([task({ delivery: 'pending' })]))).toBe(10_000);
+    expect(backgroundTasksRefetchInterval(index([task({ delivery: 'pending' })]), true)).toBe(
+      5_000,
+    );
+    expect(backgroundTasksRefetchInterval(index([task({ delivery: 'delivered' })]))).toBe(60_000);
+    expect(backgroundTasksRefetchInterval(index([task({ delivery: 'failed' })]))).toBe(60_000);
   });
 });

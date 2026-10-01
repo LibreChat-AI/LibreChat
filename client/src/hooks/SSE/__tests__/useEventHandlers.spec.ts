@@ -403,6 +403,95 @@ describe('resolveErrorTurn', () => {
     metadata: { streamStartFailed: true },
   } as unknown as TResData;
 
+  it('keeps a failed regeneration under its existing user turn when no content streamed', () => {
+    const regenerateSubmission = {
+      ...submission,
+      isRegenerate: true,
+      userMessage: {
+        ...userMessage,
+        messageId: 'temporary-user-id',
+        overrideParentMessageId: userMessage.messageId,
+      },
+      initialResponse: { ...initialResponse, messageId: 'response-id_' },
+    } as EventSubmission;
+    const siblings = [
+      { ...initialResponse, messageId: 'previous-sibling' },
+      { ...initialResponse, messageId: 'response-id' },
+    ];
+
+    const failedSubmission = {
+      ...regenerateSubmission,
+      regenerateMessages: [userMessage, ...siblings],
+    };
+    const { errorResponse } = resolveErrorTurn({
+      data: {
+        text: 'Model spec mismatch',
+        metadata: { streamStartFailed: true },
+      } as unknown as TResData,
+      submission: failedSubmission,
+      getMessages: () => [userMessage, siblings[0], regenerateSubmission.initialResponse],
+      isNewConversationRoute: false,
+    });
+
+    expect(errorResponse.messageId).toBe('response-id_');
+    expect(errorResponse.parentMessageId).toBe(userMessage.messageId);
+    expect(errorResponse.text).toBe('Model spec mismatch');
+    expect(
+      mergeErrorMessages({ ...failedSubmission, errorMessage: errorResponse }).map(
+        (message) => message.messageId,
+      ),
+    ).toEqual(['user-1', 'previous-sibling', 'response-id', 'response-id_']);
+
+    const addressed = resolveErrorTurn({
+      data: {
+        conversationId: 'conversation-1',
+        messageId: 'response-id_',
+        isCreatedByUser: false,
+        text: 'Model spec mismatch',
+      } as unknown as TResData,
+      submission: failedSubmission,
+      getMessages: () => [userMessage, regenerateSubmission.initialResponse],
+      isNewConversationRoute: false,
+    });
+    expect(addressed.errorResponse.parentMessageId).toBe(userMessage.messageId);
+  });
+
+  it.each([
+    ['transport failure', undefined],
+    [
+      'server-addressed failure',
+      {
+        conversationId: 'conversation-1',
+        messageId: 'response-id_',
+        isCreatedByUser: false,
+        text: 'Model spec mismatch',
+      },
+    ],
+  ])('keeps a partially streamed regeneration on its original branch after a %s', (_name, data) => {
+    const regenerateSubmission = {
+      ...submission,
+      isRegenerate: true,
+      userMessage: {
+        ...userMessage,
+        messageId: 'temporary-user-id',
+        overrideParentMessageId: userMessage.messageId,
+      },
+      initialResponse: { ...initialResponse, messageId: 'response-id_' },
+    } as EventSubmission;
+    const streamed = { ...regenerateSubmission.initialResponse, content: streamedParts };
+
+    const { errorResponse } = resolveErrorTurn({
+      data: data as TResData | undefined,
+      submission: regenerateSubmission,
+      getMessages: () => [userMessage, streamed],
+      isNewConversationRoute: false,
+    });
+
+    expect(errorResponse.messageId).toBe('response-id_');
+    expect(errorResponse.parentMessageId).toBe(userMessage.messageId);
+    expect(errorResponse.content?.at(-1)?.type).toBe(ContentTypes.ERROR);
+  });
+
   it('keeps what the run streamed and takes the failure as one more part', () => {
     const { conversationId, errorResponse, recover } = resolveErrorTurn({
       data: startFailure,

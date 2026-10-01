@@ -190,6 +190,58 @@ test.describe('thread fold regressions', () => {
     await expect(siblingCounter(page)).toHaveText('2 / 2');
   });
 
+  /** A manual compaction is a new assistant turn under the current leaf, not a
+   *  regenerated sibling of that leaf. Keep the summarizer open long enough to
+   *  assert the live tree: the complete transcript stays visible and no sibling
+   *  navigation appears beside the "Summarizing..." row. */
+  test('a live manual compaction stays below the turn it summarizes', async ({ page, request }) => {
+    test.setTimeout(120000);
+    const label = uniqueLabel('fold-live-compact');
+    const setupPrompt = replyPrompt(`${label}-setup`);
+    const setupReply = replyText(`${label}-setup`);
+    const latestPrompt = replyPrompt(`${label}-latest`);
+    const latestReply = replyText(`${label}-latest`);
+
+    await openMockChat(page);
+    await sendAndExpectReply(page, setupPrompt, setupReply);
+    await sendAndExpectReply(page, latestPrompt, latestReply);
+    await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/, { timeout: 15000 });
+
+    const behavior = await request.post(`${LABEL_SERVER}/__e2e/behavior`, {
+      data: { delayMs: 10000 },
+    });
+    expect(behavior.ok()).toBeTruthy();
+
+    await page.getByTestId('token-usage').click();
+    await page.getByRole('button', { name: 'Compact context' }).click();
+
+    await expect(messagesView(page).getByText('Summarizing...')).toBeVisible({ timeout: 30000 });
+    await expect(messagesView(page).getByText(setupPrompt)).toBeVisible();
+    await expect(messagesView(page).getByText(setupReply)).toBeVisible();
+    await expect(messagesView(page).getByText(latestPrompt)).toBeVisible();
+    await expect(messagesView(page).getByText(latestReply)).toBeVisible();
+    await expect(messageTurns(page)).toHaveCount(5);
+    await expect(messageTurns(page).nth(3)).toContainText(latestReply);
+    await expect(messageTurns(page).nth(4)).toContainText('Summarizing...');
+    await expect(page.getByRole('navigation', { name: 'Sibling message navigation' })).toHaveCount(
+      0,
+    );
+
+    await expect(messagesView(page).getByText('You compacted the context')).toBeVisible({
+      timeout: 60000,
+    });
+    await expect(messagesView(page).getByText(setupPrompt)).toBeVisible();
+    await expect(messagesView(page).getByText(setupReply)).toBeVisible();
+    await expect(messagesView(page).getByText(latestPrompt)).toBeVisible();
+    await expect(messagesView(page).getByText(latestReply)).toBeVisible();
+    await expect(messageTurns(page)).toHaveCount(5);
+    await expect(messageTurns(page).nth(3)).toContainText(latestReply);
+    await expect(messageTurns(page).nth(4)).toContainText('You compacted the context');
+    await expect(page.getByRole('navigation', { name: 'Sibling message navigation' })).toHaveCount(
+      0,
+    );
+  });
+
   /**
    * A manual compaction submits no user turn: it hangs a summarize-only response
    * off the branch's leaf and puts that leaf in the submission's user-message

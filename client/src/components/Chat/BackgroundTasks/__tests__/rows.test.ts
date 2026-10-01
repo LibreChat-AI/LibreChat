@@ -2,6 +2,8 @@ import { ContentTypes } from 'librechat-data-provider';
 import type { ParentSubagentSummary, TMessage } from 'librechat-data-provider';
 import {
   RECENT_SUBAGENT_WINDOW_MS,
+  countAwaitingDelivery,
+  countFailedDelivery,
   buildTaskRows,
   findToolCallArgs,
   subagentTaskKey,
@@ -25,6 +27,55 @@ const child = (overrides: Partial<ParentSubagentSummary>): ParentSubagentSummary
 });
 
 describe('buildTaskRows', () => {
+  it('keeps a finished result the agent has not received ahead of delivered ones', () => {
+    const tool = (taskId: string, extra: object) => ({
+      taskId,
+      toolName: 'bash_tool',
+      toolCallId: `call-${taskId}`,
+      status: 'completed' as const,
+      cancellationRequested: false,
+      startedAt: iso(RECENT_SUBAGENT_WINDOW_MS * 2),
+      settledAt: iso(RECENT_SUBAGENT_WINDOW_MS * 2 - 1_000),
+      ...extra,
+    });
+    const rows = buildTaskRows({
+      now,
+      args: new Map(),
+      describe: () => ({}),
+      stoppingThreads: new Set(),
+      subagents: [],
+      tools: [
+        tool('recent-delivered', {
+          delivery: 'delivered',
+          startedAt: iso(2_000),
+          settledAt: iso(1_000),
+        }),
+        tool('old-pending', { delivery: 'pending' }),
+        tool('old-failed', {
+          delivery: 'failed',
+          startedAt: iso(RECENT_SUBAGENT_WINDOW_MS * 3),
+          settledAt: iso(RECENT_SUBAGENT_WINDOW_MS * 3 - 1_000),
+        }),
+        tool('old-delivered', { delivery: 'delivered' }),
+        {
+          ...tool('running', {}),
+          status: 'running' as const,
+          delivery: 'pending' as const,
+          settledAt: undefined,
+        },
+      ],
+    });
+
+    expect(rows.map((row) => [row.id, row.status, row.delivery])).toEqual([
+      ['tool:running', 'running', undefined],
+      ['tool:old-pending', 'completed', 'pending'],
+      ['tool:old-failed', 'completed', 'failed'],
+      ['tool:recent-delivered', 'completed', undefined],
+    ]);
+    expect(countAwaitingDelivery(rows)).toBe(1);
+    expect(countFailedDelivery(rows)).toBe(1);
+  });
+
   it('orders active rows first and drops subagents settled past the retention window', () => {
     const rows = buildTaskRows({
       now,

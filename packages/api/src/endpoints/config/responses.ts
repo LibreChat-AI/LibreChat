@@ -1,4 +1,8 @@
-import { EModelEndpoint, mapModelToAzureConfig } from 'librechat-data-provider';
+import {
+  EModelEndpoint,
+  mapModelToAzureConfig,
+  responsesPreferredOpenAIModels,
+} from 'librechat-data-provider';
 import type { ResponsesApiRouting } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import { getOpenAIEndpointParameters } from '../openai/parameters';
@@ -19,7 +23,7 @@ export function getResponsesApiRouting(
   const models =
     isAzure && azureConfig
       ? Object.keys(azureConfig.modelGroupMap ?? {})
-      : ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'];
+      : responsesPreferredOpenAIModels;
   const result: ResponsesApiRouting = {};
   for (const model of ['*', ...models]) {
     try {

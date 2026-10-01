@@ -134,6 +134,76 @@ describe('BackgroundTasksButton', () => {
     await waitFor(() => expect(getTasks).toHaveBeenCalledWith(conversationId));
   });
 
+  it.each(['pending', 'failed'] as const)(
+    'keeps a long-waiting %s result visible without rescheduling its expiry',
+    async (delivery) => {
+      jest.useFakeTimers();
+      try {
+        const old = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+        const startedAt = new Date(Date.now() - 2 * 60 * 60_000 - 1_000).toISOString();
+        jest
+          .spyOn(dataService, 'getBackgroundTasks')
+          .mockResolvedValue(
+            index({ tasks: [{ ...index().tasks[1], startedAt, settledAt: old, delivery }] }),
+          );
+        renderButton([], []);
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(100);
+        });
+        const trigger = screen.getByTestId('header-background-tasks-button');
+        expect(trigger).toHaveAccessibleName(
+          delivery === 'pending'
+            ? 'com_ui_background_tasks_pending_label'
+            : 'com_ui_background_tasks_failed_label',
+        );
+        expect(screen.getByTestId('background-tasks-indicator')).toHaveClass(
+          delivery === 'pending' ? 'bg-status-info' : 'bg-status-warning',
+        );
+        expect(screen.getByTestId('background-tasks-indicator')).not.toHaveClass('animate-pulse');
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(1_100);
+        });
+        expect(trigger).toBeInTheDocument();
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it('announces a failed-only result inside the task list after its tool settled hours ago', async () => {
+    const old = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(
+      index({
+        tasks: [{ ...index().tasks[1], startedAt: old, settledAt: old, delivery: 'failed' }],
+      }),
+    );
+    renderButton([], []);
+    const trigger = await screen.findByTestId('header-background-tasks-button');
+    const user = userEvent.setup();
+    await user.click(trigger);
+    const dialog = await screen.findByRole('dialog', { name: 'com_ui_background_tasks' });
+    expect(within(dialog).getByTestId('background-task-delivery')).toHaveTextContent(
+      'com_ui_background_tasks_result_undelivered',
+    );
+  });
+
+  it('keeps an incomplete empty index discoverable and recovers after the store returns', async () => {
+    const getTasks = jest
+      .spyOn(dataService, 'getBackgroundTasks')
+      .mockResolvedValueOnce(index({ tasks: [], complete: false }))
+      .mockResolvedValue(index({ tasks: [], complete: true }));
+    const { queryClient } = renderButton([], []);
+    const trigger = await screen.findByTestId('header-background-tasks-button');
+    expect(trigger).toHaveAccessibleName('com_ui_background_tasks_incomplete');
+    expect(screen.getByTestId('background-tasks-indicator')).toHaveClass('bg-status-warning');
+    const user = userEvent.setup();
+    await user.click(trigger);
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_background_tasks_incomplete');
+    await queryClient.invalidateQueries([QueryKeys.backgroundTasks, conversationId]);
+    await waitFor(() => expect(screen.queryByTestId('header-background-tasks-button')).toBeNull());
+    expect(getTasks).toHaveBeenCalledTimes(2);
+  });
+
   it.each(['tool', 'subagent'])(
     'ages out the last finished %s even while the panel is closed',
     async (kind) => {

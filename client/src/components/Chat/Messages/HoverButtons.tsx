@@ -12,8 +12,8 @@ import {
   RegenerateIcon,
 } from '@librechat/client';
 import type { TConversation, TMessage, TFeedback } from 'librechat-data-provider';
+import { useMessagesIsSubmitting, useOptionalMessagesOperations } from '~/Providers';
 import { useGenerationsByLatest, useLocalize } from '~/hooks';
-import { useOptionalMessagesOperations } from '~/Providers';
 import { hasEditablePart } from './Content/editableParts';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import { Fork } from '~/components/Conversations';
@@ -29,11 +29,14 @@ type THoverButtons = {
   copyToClipboard: (setIsCopied: React.Dispatch<React.SetStateAction<boolean>>) => void;
   getCanCopy: () => boolean;
   conversation: TConversation | null;
-  isSubmitting: boolean;
   message: TMessage;
   regenerate: () => void;
   handleContinue: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  /** The tail as of the row's last render, which the row re-renders on whenever
+   *  this message enters or leaves it; compared against, never sent anywhere. */
   latestMessageId?: string;
+  /** The tail at call time, for actions that send it (forking at a split target). */
+  getLatestMessageId?: () => string | undefined;
   isLast: boolean;
   index: number;
   handleFeedback?: ({ feedback }: { feedback: TFeedback | undefined }) => void;
@@ -129,15 +132,18 @@ const HoverButtons = ({
   copyToClipboard,
   getCanCopy,
   conversation,
-  isSubmitting,
   message,
   regenerate,
   handleContinue,
   latestMessageId,
+  getLatestMessageId,
   isLast,
   handleFeedback,
 }: THoverButtons) => {
   const localize = useLocalize();
+  /** Subscribed here rather than passed down: a send toggles the rerun controls on
+   *  every row, and only this toolbar has to re-render for it. */
+  const isSubmitting = useMessagesIsSubmitting();
   const [isCopied, setIsCopied] = useState(false);
   const [TextToSpeech] = useRecoilState<boolean>(store.textToSpeech);
   const { getMessages } = useOptionalMessagesOperations();
@@ -282,7 +288,7 @@ const HoverButtons = ({
           messageId={message.messageId}
           conversationId={conversation.conversationId}
           forkingSupported={forkingSupported}
-          latestMessageId={latestMessageId}
+          getLatestMessageId={getLatestMessageId ?? (() => latestMessageId)}
           isLast={isLast}
         />
       )}

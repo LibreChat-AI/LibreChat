@@ -426,6 +426,11 @@ registration:
 #     - '127.0.0.1:8080'
 
 # rateLimits:
+#   # Shared account budget for all authenticated 2FA management operations.
+#   # Always active; successful and failed requests count. Uses Redis when enabled.
+#   # Minimum 3, so enable -> verify -> confirm can complete within one window.
+#   twoFactorManagement:
+#     requestsPerFiveMinutes: 7
 #   # Authenticated agent-event admission has its own API-key-principal bucket.
 #   agentEvents:
 #     userMax: 40
@@ -720,6 +725,24 @@ endpoints:
   #             # Maximum Bash execution budget the model may request per call.
   #             # Omit to preserve the historical 30-second limit. Hard cap: 300000.
   #             maxCommandTimeoutMs: 120000
+  #             # Optional total HTTP budget per workspace tool call, including
+  #             # admission, retries, worst-case execution, settlement, and delivery.
+  #             # Do NOT enable until every LibreChat API replica recognizes this
+  #             # strict config field, Code API honors X-LibreChat-Workspace-Queue-Wait-Ms,
+  #             # and a non-mutating timed canary verifies the live CDN, load balancer,
+  #             # ingress, and caller can all outlast this value. The Nginx example
+  #             # (120s) cannot establish the live limit. Omission keeps 30s admission.
+  #             # With 125s total, a read can queue <=90s, a default command <=85s,
+  #             # a 90s command <=25s. With the default 10s admission reserve,
+  #             # commands >105s cannot fit; the 120s command ceiling above requires
+  #             # a VERIFIED total budget of at least 140s to be usable.
+  #             # maxRequestTimeoutMs: 125000
+  #             # Optional command admission allowance before local dispatch overhead.
+  #             # Omission reserves 10s; valid range: 1000–300000 ms. The HTTP budget
+  #             # must exceed this allowance plus 10s settlement/delivery grace;
+  #             # with the 10s default, a budget of 20s or less is rejected.
+  #             # Smaller allowances give a busy worker less time to accept the call.
+  #             # minCommandAdmissionMs: 10000
   #           permissions:
   #             fileWrite:
   #               allowed: [allow, ask, deny]
@@ -888,6 +911,8 @@ endpoints:
     # https://docs.x.ai/developers/grok-4-7
     # Set XAI_API_KEY in your environment. No separate SpaceXAI provider is needed.
     - name: 'xai'
+      # Optional: expose this endpoint only to users in the named tenant.
+      # tenantId: 'your-tenant-id'
       apiKey: '${XAI_API_KEY}'
       baseURL: 'https://api.x.ai/v1'
       models:

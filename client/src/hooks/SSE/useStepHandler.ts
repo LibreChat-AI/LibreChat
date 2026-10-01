@@ -9,6 +9,8 @@ import {
   ToolCallTypes,
   getNonEmptyValue,
   getRunStepDurationMs,
+  getRunStepCloseMetadata,
+  getToolTimingDurations,
 } from 'librechat-data-provider';
 import type {
   Agents,
@@ -60,12 +62,16 @@ type TUseStepHandler = {
   onSubagentIndexChange?: (conversationId: string) => void;
 };
 
+const toolTimingKey = (stepId: string, callId: string) => `${stepId}\u0000${callId}`;
+
 type TStepEvent =
   | { event: StepEvents.ON_RUN_STEP; data: Agents.RunStep }
   | { event: StepEvents.ON_AGENT_UPDATE; data: Agents.AgentUpdate }
   | { event: StepEvents.ON_MESSAGE_DELTA; data: Agents.MessageDeltaEvent }
   | { event: StepEvents.ON_REASONING_DELTA; data: Agents.ReasoningDeltaEvent }
   | { event: StepEvents.ON_RUN_STEP_DELTA; data: Agents.RunStepDeltaEvent }
+  | { event: StepEvents.ON_TOOL_CALLS_DISPATCHED; data: Agents.ToolCallsDispatchedEvent }
+  | { event: StepEvents.ON_TOOL_PREPARATION; data: Agents.ToolPreparationMarker }
   | { event: StepEvents.ON_RUN_STEP_COMPLETED; data: { result: Agents.ToolEndEvent } }
   | { event: StepEvents.ON_RUN_STEP_CLOSED; data: Agents.RunStepClosedEvent }
   | { event: StepEvents.ON_SUMMARIZE_START; data: Agents.SummarizeStartEvent }
@@ -164,6 +170,10 @@ export default function useStepHandler({
 }: TUseStepHandler) {
   const subagentStore = useStore();
   const toolCallIdMap = useRef(new Map<string, string | undefined>());
+  const firstFragmentByCall = useRef(new Map<string, number>());
+  const firstFragmentByStep = useRef(new Map<string, number>());
+  const dispatchedByCall = useRef(new Map<string, number>());
+  const completedByCall = useRef(new Map<string, number>());
   const messageMap = useRef(new Map<string, TMessage>());
   const stepMap = useRef(new Map<string, Agents.RunStep>());
   /** Buffer for deltas that arrive before their corresponding run step */
@@ -621,7 +631,9 @@ export default function useStepHandler({
       };
     } else if (contentType === ContentTypes.TOOL_CALL && 'tool_call' in contentPart) {
       const existingContent = updatedContent[index] as Agents.ToolCallContent | undefined;
-      const existingToolCall = existingContent?.tool_call;
+      const existingToolCall = existingContent?.tool_call as
+        | (Agents.ToolCall & PartMetadata)
+        | undefined;
       const toolCallArgs = (contentPart.tool_call as Agents.ToolCall).args;
       /** When args are a valid object, they are likely already invoked */
       let args =
@@ -646,6 +658,11 @@ export default function useStepHandler({
         type: ToolCallTypes.TOOL_CALL,
         auth: contentPart.tool_call.auth,
         expires_at: contentPart.tool_call.expires_at,
+        toolPreparationStartedAt:
+          contentPart.tool_call.toolPreparationStartedAt ??
+          existingToolCall?.toolPreparationStartedAt,
+        toolDispatchedAt:
+          contentPart.tool_call.toolDispatchedAt ?? existingToolCall?.toolDispatchedAt,
       };
 
       if (finalUpdate) {
@@ -719,6 +736,11 @@ export default function useStepHandler({
       const shouldRemoveRegenerateResponse = (message: TMessage, responseMessageId: string) =>
         submission.isRegenerate &&
         !message.isCreatedByUser &&
+        /** A compaction's preliminary response is `${anchorId}_`. The ordinary
+         *  regenerate alias set strips that suffix, but here the base ID is the
+         *  assistant ANCHOR, not a response being replaced. Keep it so the
+         *  summary remains its child instead of becoming an orphan root. */
+        (submission.compact !== true || message.messageId !== userMessage.messageId) &&
         getRegenerateResponseIds(responseMessageId).has(message.messageId);
       const shouldRemoveInitialResponse = (message: TMessage, responseMessageId: string) => {
         const initialResponseId = submission.initialResponse?.messageId;
@@ -950,6 +972,7 @@ export default function useStepHandler({
 
         // Store tool call IDs if present
         if (runStep.stepDetails.type === StepTypes.TOOL_CALLS) {
+          const streamedCallCount = runStep.stepDetails.tool_calls?.length ?? 0;
           let updatedResponse = { ...response };
           ((runStep.stepDetails.tool_calls ?? []) as Agents.ToolCall[]).forEach((toolCall) => {
             const toolCallId = toolCall.id ?? '';
@@ -964,6 +987,14 @@ export default function useStepHandler({
                 args: toolCall.args,
                 id: toolCallId,
                 stepId: runStep.id,
+                toolPreparationStartedAt:
+                  firstFragmentByCall.current.get(toolTimingKey(runStep.id, toolCallId)) ??
+                  (streamedCallCount <= 1
+                    ? firstFragmentByStep.current.get(runStep.id)
+                    : undefined),
+                toolDispatchedAt: dispatchedByCall.current.get(
+                  toolTimingKey(runStep.id, toolCallId),
+                ),
               },
             };
 
@@ -1194,8 +1225,92 @@ export default function useStepHandler({
             scheduleCoalescedMessagesFlush(responseMessageId);
           }
         }
+      } else if (stepEvent.event === StepEvents.ON_TOOL_PREPARATION) {
+        const { id, index, toolCallId, observed_at: at } = stepEvent.data;
+        if (!id || typeof at !== 'number' || !Number.isFinite(at) || at < 0) return;
+        const runStep = stepMap.current.get(id);
+        const declaredCalls =
+          runStep?.stepDetails.type === StepTypes.TOOL_CALLS
+            ? runStep.stepDetails.tool_calls
+            : undefined;
+        const resolvedId =
+          toolCallId ??
+          (index === 0 && declaredCalls?.length === 1 ? declaredCalls[0]?.id : undefined);
+        if (resolvedId) {
+          const key = toolTimingKey(id, resolvedId);
+          firstFragmentByCall.current.set(
+            key,
+            Math.min(firstFragmentByCall.current.get(key) ?? at, at),
+          );
+        } else if (index === 0) {
+          firstFragmentByStep.current.set(
+            id,
+            Math.min(firstFragmentByStep.current.get(id) ?? at, at),
+          );
+        }
+        if (!runStep?.runId || (runStep.status && runStep.status !== 'in_progress')) return;
+        const responseId =
+          runStep.runId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID
+            ? (submission.initialResponse?.messageId ?? '')
+            : runStep.runId;
+        const response = messageMap.current.get(responseId);
+        const contentIndex = runStep.index + editPrefixOffset;
+        const part = response?.content?.[contentIndex];
+        if (
+          !response ||
+          part?.type !== ContentTypes.TOOL_CALL ||
+          part.tool_call.runStepStatus != null ||
+          (resolvedId && part.tool_call.id !== resolvedId)
+        )
+          return;
+        const content = [...(response.content ?? [])];
+        content[contentIndex] = {
+          ...part,
+          tool_call: {
+            ...part.tool_call,
+            toolPreparationStartedAt: Math.min(part.tool_call.toolPreparationStartedAt ?? at, at),
+          },
+        };
+        const updated = { ...response, content };
+        messageMap.current.set(responseId, updated);
+        setMessages(
+          mergeResponseMessage(messages, updated, responseId, { ensureUserMessage: true }),
+        );
       } else if (stepEvent.event === StepEvents.ON_RUN_STEP_DELTA) {
         const runStepDelta = stepEvent.data;
+        const at = runStepDelta.observed_at;
+        if (typeof at === 'number' && Number.isFinite(at) && at >= 0) {
+          for (const chunk of runStepDelta.delta.tool_calls ?? []) {
+            if (chunk.id) {
+              const first =
+                chunk.index === 0 ? firstFragmentByStep.current.get(runStepDelta.id) : undefined;
+              const key = toolTimingKey(runStepDelta.id, chunk.id);
+              firstFragmentByCall.current.set(
+                key,
+                Math.min(firstFragmentByCall.current.get(key) ?? at, first ?? at, at),
+              );
+              if (first != null) firstFragmentByStep.current.delete(runStepDelta.id);
+            } else if (chunk.index === 0 && runStepDelta.delta.tool_calls?.length === 1) {
+              const declared = stepMap.current.get(runStepDelta.id)?.stepDetails;
+              const firstCallId =
+                declared?.type === StepTypes.TOOL_CALLS && declared.tool_calls?.length === 1
+                  ? declared.tool_calls[0]?.id
+                  : undefined;
+              if (firstCallId) {
+                const key = toolTimingKey(runStepDelta.id, firstCallId);
+                firstFragmentByCall.current.set(
+                  key,
+                  Math.min(firstFragmentByCall.current.get(key) ?? at, at),
+                );
+              } else {
+                firstFragmentByStep.current.set(
+                  runStepDelta.id,
+                  Math.min(firstFragmentByStep.current.get(runStepDelta.id) ?? at, at),
+                );
+              }
+            }
+          }
+        }
         const runStep = stepMap.current.get(runStepDelta.id);
         let responseMessageId = runStep?.runId ?? '';
         if (responseMessageId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID) {
@@ -1219,7 +1334,7 @@ export default function useStepHandler({
           let updatedResponse = { ...response };
 
           runStepDelta.delta.tool_calls.forEach((toolCallDelta) => {
-            const toolCallId = toolCallIdMap.current.get(runStepDelta.id) ?? '';
+            const toolCallId = toolCallDelta.id || toolCallIdMap.current.get(runStepDelta.id) || '';
 
             const contentPart: Agents.MessageContentComplex = {
               type: ContentTypes.TOOL_CALL,
@@ -1228,6 +1343,14 @@ export default function useStepHandler({
                 args: toolCallDelta.args ?? '',
                 id: toolCallId,
                 stepId: runStepDelta.id,
+                toolPreparationStartedAt:
+                  firstFragmentByCall.current.get(toolTimingKey(runStepDelta.id, toolCallId)) ??
+                  (toolCallDelta.index === 0
+                    ? firstFragmentByStep.current.get(runStepDelta.id)
+                    : undefined),
+                toolDispatchedAt: dispatchedByCall.current.get(
+                  toolTimingKey(runStepDelta.id, toolCallId),
+                ),
               },
             };
 
@@ -1254,11 +1377,55 @@ export default function useStepHandler({
             }),
           );
         }
+      } else if (stepEvent.event === StepEvents.ON_TOOL_CALLS_DISPATCHED) {
+        const { dispatched_at: at, toolCalls } = stepEvent.data;
+        if (typeof at !== 'number' || !Number.isFinite(at) || at < 0) return;
+        for (const call of toolCalls ?? []) {
+          if (!call.id) continue;
+          if (!call.stepId) continue;
+          const key = toolTimingKey(call.stepId, call.id);
+          const dispatchedAt = Math.min(dispatchedByCall.current.get(key) ?? at, at);
+          dispatchedByCall.current.set(key, dispatchedAt);
+          const runStep = stepMap.current.get(call.stepId ?? '');
+          if (!runStep?.runId) continue;
+          const responseId =
+            runStep.runId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID
+              ? (submission.initialResponse?.messageId ?? '')
+              : runStep.runId;
+          const response = messageMap.current.get(responseId);
+          const index = runStep.index + editPrefixOffset;
+          const part = response?.content?.[index];
+          if (
+            !response ||
+            part?.type !== ContentTypes.TOOL_CALL ||
+            part.tool_call.id !== call.id ||
+            part.tool_call.runStepStatus != null
+          )
+            continue;
+          const content = [...(response.content ?? [])];
+          content[index] = {
+            ...part,
+            tool_call: { ...part.tool_call, toolDispatchedAt: dispatchedAt },
+          };
+          const updated = { ...response, content };
+          messageMap.current.set(responseId, updated);
+          setMessages(
+            mergeResponseMessage(messages, updated, responseId, { ensureUserMessage: true }),
+          );
+        }
       } else if (stepEvent.event === StepEvents.ON_RUN_STEP_COMPLETED) {
         const { result } = stepEvent.data;
 
         const { id: stepId } = result;
-        clearSandboxStarting(result.tool_call?.id);
+        const completedCallId = result.tool_call?.id;
+        if (
+          completedCallId &&
+          typeof result.completed_at === 'number' &&
+          Number.isFinite(result.completed_at)
+        ) {
+          completedByCall.current.set(toolTimingKey(stepId, completedCallId), result.completed_at);
+        }
+        clearSandboxStarting(completedCallId);
 
         const runStep = stepMap.current.get(stepId);
         let responseMessageId = runStep?.runId ?? '';
@@ -1345,13 +1512,34 @@ export default function useStepHandler({
          *  server already stamped in place, rather than overwriting it with
          *  `undefined`. */
         const durationMs = getRunStepDurationMs(closed);
+        const callId = existingToolCall.id ?? '';
+        const key = toolTimingKey(closed.id, callId);
+        const singleCallStep =
+          runStep.stepDetails.type === StepTypes.TOOL_CALLS &&
+          (runStep.stepDetails.tool_calls?.length ?? 0) <= 1;
+        const observedAt = Math.min(
+          firstFragmentByCall.current.get(key) ?? Infinity,
+          existingToolCall.toolPreparationStartedAt ?? Infinity,
+          singleCallStep ? (firstFragmentByStep.current.get(closed.id) ?? Infinity) : Infinity,
+        );
+        const timing = getToolTimingDurations({
+          observedAt: Number.isFinite(observedAt) ? observedAt : undefined,
+          dispatchedAt: existingToolCall.toolDispatchedAt ?? dispatchedByCall.current.get(key),
+          completedAt: completedByCall.current.get(key),
+        });
+        firstFragmentByCall.current.delete(key);
+        firstFragmentByStep.current.delete(closed.id);
+        dispatchedByCall.current.delete(key);
+        completedByCall.current.delete(key);
         const updatedContent = [...(response.content ?? [])];
         updatedContent[currentIndex] = {
           ...existing,
           [ContentTypes.TOOL_CALL]: {
             ...existingToolCall,
             runStepStatus: closed.status,
+            ...getRunStepCloseMetadata(closed),
             ...(durationMs != null && { runStepDurationMs: durationMs }),
+            ...timing,
           },
         };
 
@@ -1554,6 +1742,10 @@ export default function useStepHandler({
     }
     cancelPendingDeltaFlush();
     toolCallIdMap.current.clear();
+    firstFragmentByCall.current.clear();
+    firstFragmentByStep.current.clear();
+    dispatchedByCall.current.clear();
+    completedByCall.current.clear();
     messageMap.current.clear();
     stepMap.current.clear();
     pendingDeltaBuffer.current.clear();

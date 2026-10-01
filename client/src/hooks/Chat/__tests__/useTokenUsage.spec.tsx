@@ -138,6 +138,50 @@ describe('useTokenUsage — post-snapshot output', () => {
     expect(result.current.runwayTurns).toBe(2);
   });
 
+  it('never reports less than the instructions and messages the snapshot breaks down', () => {
+    /** Remaining was measured as if only the 2 message tokens were sent, while the
+     *  same snapshot publishes a 57-token system prompt: 7 used would leave the
+     *  breakdown a negative message share. */
+    const inconsistent = {
+      ...tailSnapshot,
+      remainingContextTokens: 199998,
+      completedOutputTokens: 5,
+      breakdown: { maxContextTokens: 200000, instructionTokens: 57, messageTokens: 2 },
+    } as ContextSnapshot;
+    const { result } = renderTokenUsage(undefined, { snapshot: inconsistent });
+
+    expect(result.current.usedTokens).toBe(57 + 2 + 5);
+  });
+
+  it('includes the summary when a remaining-based count undercuts the breakdown', () => {
+    const inconsistent = {
+      ...tailSnapshot,
+      remainingContextTokens: 199998,
+      completedOutputTokens: 5,
+      breakdown: {
+        ...tailSnapshot.breakdown,
+        instructionTokens: 57,
+        summaryTokens: 11,
+        messageTokens: 2,
+      },
+    } as ContextSnapshot;
+    const { result } = renderTokenUsage(undefined, { snapshot: inconsistent });
+
+    expect(result.current.usedTokens).toBe(57 + 11 + 2 + 5);
+    expect(result.current.usedTokens - 57 - 11).toBe(7);
+  });
+
+  it('keeps the remaining-based count when it exceeds the breakdown', () => {
+    const withSummary = {
+      ...tailSnapshot,
+      breakdown: { ...tailSnapshot.breakdown, summaryTokens: 700 },
+    } as ContextSnapshot;
+    const { result } = renderTokenUsage(undefined, { snapshot: withSummary });
+
+    /** 195000 pre-invoke used covers content the 14700-token breakdown omits. */
+    expect(result.current.usedTokens).toBe(197000);
+  });
+
   it('counts the finalized output in what a summarization could reclaim', () => {
     const { result } = renderTokenUsage();
 
@@ -156,6 +200,20 @@ describe('useTokenUsage — post-snapshot output', () => {
       contextBudget: 200000,
       breakdown: { maxContextTokens: 200000, instructionTokens: 4000, messageTokens },
     }) as unknown as ContextSnapshot;
+
+  const summarizedLegacySnapshot = (): ContextSnapshot => ({
+    ...legacySnapshot(2),
+    anchorMessageId: 'a2',
+    completedOutputTokens: 5,
+    breakdown: { ...legacySnapshot(2).breakdown, instructionTokens: 57, summaryTokens: 11 },
+  });
+
+  it('includes the summary in a snapshot saved without remaining headroom', () => {
+    const { result } = renderTokenUsage(undefined, { snapshot: summarizedLegacySnapshot() });
+
+    expect(result.current.usedTokens).toBe(57 + 11 + 2 + 5);
+    expect(result.current.usedTokens - 57 - 11).toBe(7);
+  });
 
   it('projects a branch whose snapshots predate the remaining-token field', () => {
     /** Both readings are instruction+messages sums — 13000 then 14000, so the
@@ -243,6 +301,21 @@ describe('useTokenUsage — post-snapshot output', () => {
     expect(result.current.cacheWrite).toBe(200);
     expect(result.current.snapshot?.model).toBe('test-model');
     expect(result.current.runwayTurns).toBe(194);
+  });
+
+  it('restores the summary in a legacy snapshot saved on the viewed branch', () => {
+    const saved = summarizedLegacySnapshot();
+    const { result } = renderTokenUsage(new Map(), {
+      snapshot: { ...tailSnapshot, anchorMessageId: 'unrelated-branch' },
+      messages: messages.map((message) =>
+        message.messageId === 'a2'
+          ? ({ ...message, metadata: { contextUsage: saved } } as TMessage)
+          : message,
+      ),
+    });
+
+    expect(result.current.snapshot?.anchorMessageId).toBe('a2');
+    expect(result.current.usedTokens).toBe(57 + 11 + 2 + 5);
   });
 
   it('excludes the retained latest tool result from compaction savings', () => {

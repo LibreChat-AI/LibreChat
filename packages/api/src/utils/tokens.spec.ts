@@ -141,6 +141,32 @@ describe('Gemini 3.8 Flash', () => {
   });
 });
 
+describe('GPT point releases', () => {
+  it('inherit their family context window and output limit', () => {
+    for (const model of ['gpt-6.1-sol', 'gpt-6.1-sol-2026-10-01', 'openai/gpt-6.1-sol']) {
+      expect(getModelMaxTokens(model, EModelEndpoint.openAI)).toBe(1050000);
+      expect(getModelMaxOutputTokens(model, EModelEndpoint.openAI)).toBe(128000);
+    }
+    expect(getModelMaxTokens('gpt-6.2-astra', EModelEndpoint.openAI)).toBe(1050000);
+    expect(getModelMaxTokens('us.openai.gpt-6.1-sol', EModelEndpoint.bedrock)).toBe(950000);
+  });
+
+  it('prefer an explicit entry for the release over its family', () => {
+    const override: EndpointTokenConfig = {
+      'gpt-6.1-sol': { context: 400000, prompt: 1, completion: 1 },
+    };
+    expect(getModelMaxTokens('gpt-6.1-sol', EModelEndpoint.openAI, override)).toBe(400000);
+    expect(findMatchingPattern('gpt-6.1-sol', { 'gpt-6-sol': 1, 'gpt-6.1-sol': 2 })).toBe(
+      'gpt-6.1-sol',
+    );
+  });
+
+  it('leave unknown families unresolved', () => {
+    expect(getModelMaxTokens('gpt-7.1-sol', EModelEndpoint.openAI)).toBeUndefined();
+    expect(findMatchingPattern('gpt-6.1-nova', { 'gpt-6-sol': 1 })).toBeNull();
+  });
+});
+
 describe('GPT-6 Astra', () => {
   it('resolves 1.05M context and 128K output', () => {
     expect(getModelMaxTokens('gpt-6-astra', EModelEndpoint.openAI)).toBe(1050000);
@@ -294,6 +320,20 @@ describe('Opus 5.5 token limits', () => {
   ])('resolves %s to the existing modern Claude profile', (model) => {
     expect(getModelMaxTokens(model)).toBe(1000000);
     expect(getModelMaxOutputTokens(model)).toBe(128000);
+  });
+});
+
+describe('Sonnet 5.5 token limits', () => {
+  it.each([
+    'claude-sonnet-5-5',
+    'claude-sonnet-5.5',
+    'anthropic/claude-sonnet-5-5',
+    'global.anthropic.claude-sonnet-5-5',
+  ])('resolves %s to the modern Claude profile', (model) => {
+    expect(getModelMaxTokens(model)).toBe(1000000);
+    expect(getModelMaxOutputTokens(model)).toBe(128000);
+    expect(getModelMaxTokens(model, EModelEndpoint.anthropic)).toBe(1000000);
+    expect(getModelMaxOutputTokens(model, EModelEndpoint.anthropic)).toBe(128000);
   });
 });
 

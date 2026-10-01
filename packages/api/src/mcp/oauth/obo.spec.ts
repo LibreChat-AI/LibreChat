@@ -192,7 +192,7 @@ describe('resolveOboToken', () => {
         mockResolver,
         createLazyOboUpstreamTokenProvider(lookup),
       ),
-    ).rejects.toMatchObject({ reason: 'session_refresh_failed', retryable: false });
+    ).rejects.toMatchObject({ reason: 'missing_upstream_provider', retryable: false });
     expect(mockExtractOpenIDTokenInfo).not.toHaveBeenCalled();
     expect(mockResolver).not.toHaveBeenCalled();
   });

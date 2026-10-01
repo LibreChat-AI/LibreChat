@@ -1,11 +1,15 @@
+import { z } from 'zod';
 import { response } from 'express';
-import { AIMessageChunk } from '@librechat/agents/langchain/messages';
+import { tool } from '@langchain/core/tools';
+import { AIMessageChunk, HumanMessage } from '@librechat/agents/langchain/messages';
 import {
   ChatModelStreamHandler,
   HandlerRegistry,
   Providers,
   StandardGraph,
+  Run,
 } from '@librechat/agents';
+import type { BaseMessage } from '@langchain/core/messages';
 import type { Response } from 'express';
 import type { ChatCompletionChunk, ToolCall } from './types';
 import {
@@ -14,6 +18,7 @@ import {
   createOpenAIContentAggregator,
   createOpenAIToolCallStream,
   OpenAIRunStepHandler,
+  createChunk,
   OpenAIRunStepDeltaHandler,
   sendFinalChunk,
 } from './handlers';
@@ -33,13 +38,16 @@ describe('tool-call projection with real SDK graph dispatch', () => {
         return true;
       });
       const config = { tracker, context, res };
-      const stream = createOpenAIToolCallStream({ toolCalls: tracker.toolCalls });
-      const handlers = streaming
-        ? createOpenAIHandlers(config)
-        : {
-            on_run_step: new OpenAIRunStepHandler(stream),
-            on_run_step_delta: new OpenAIRunStepDeltaHandler(stream),
-          };
+      const stream = createOpenAIToolCallStream({
+        toolCalls: tracker.toolCalls,
+        emit: streaming
+          ? (delta) => frames.push(`data: ${JSON.stringify(createChunk(context, delta))}\n\n`)
+          : undefined,
+      });
+      const handlers = {
+        on_run_step: new OpenAIRunStepHandler(stream),
+        on_run_step_delta: new OpenAIRunStepDeltaHandler(stream),
+      };
       const graph = new StandardGraph({
         runId: 'test',
         agents: [{ agentId: 'agent', provider: Providers.OPENAI, tools: [] }],
@@ -47,7 +55,10 @@ describe('tool-call projection with real SDK graph dispatch', () => {
       graph.config = { configurable: { run_id: 'test', thread_id: 'thread' } };
       graph.handlerRegistry = new HandlerRegistry();
       for (const [event, handler] of Object.entries(handlers)) {
-        graph.handlerRegistry.register(event, handler);
+        graph.handlerRegistry.register(
+          event,
+          handler as unknown as Parameters<HandlerRegistry['register']>[1],
+        );
       }
       const producer = new ChatModelStreamHandler();
       for (const chunk of [
@@ -70,8 +81,7 @@ describe('tool-call projection with real SDK graph dispatch', () => {
         );
       }
       expect(frames).toEqual([]);
-      if (streaming) tracker.finishToolCalls?.();
-      else stream.finish();
+      stream.finish();
       expect([...tracker.toolCalls.values()].map((call) => call.function.arguments)).toEqual([
         '{"city":"Madrid"}',
         '{"city":"Paris"}',
@@ -99,14 +109,7 @@ describe('tool-call projection with real SDK graph dispatch', () => {
           }
         }
         expect([...received.values()]).toEqual([...tracker.toolCalls.values()]);
-        await producer.handle(
-          'on_chat_model_stream',
-          {
-            chunk: new AIMessageChunk({ content: 'Both tools completed. Here is the answer.' }),
-          },
-          { langgraph_node: 'agent=agent', langgraph_step: 3 },
-          graph,
-        );
+        tracker.addText();
         expect(tracker.hasText).toBe(true);
         sendFinalChunk(config, 'stop');
         const final: ChatCompletionChunk = JSON.parse(frames[frames.length - 2].slice(6));
@@ -156,7 +159,7 @@ describe('tool-call projection with real SDK graph dispatch', () => {
     expect(new Set([...tracker.toolCalls.values()].map((call) => call.id)).size).toBe(4);
   });
   it.each([true, false])(
-    'projects complete-only SDK messages at response completion (stream=%s)',
+    'omits graph-owned SDK calls from accepted output (stream=%s)',
     async (streaming) => {
       const frames: string[] = [];
       const res: Response = Object.create(response);
@@ -191,21 +194,24 @@ describe('tool-call projection with real SDK graph dispatch', () => {
         { langgraph_node: 'agent=agent', langgraph_step: 1 },
         graph,
       );
+      await handlers.on_model_response.handle('on_model_response', {
+        type: 'model_response',
+        id: 'accepted-internal',
+        agentId: 'agent',
+        toolCalls: [{ id: 'a', name: 'get_time', args: { city: 'Madrid' } }],
+        toolCallDispositions: ['sdk'],
+        invalidToolCalls: [],
+      });
       const target = streaming ? tracker : aggregator;
       expect(target.toolCalls.size).toBe(0);
       if (streaming) sendFinalChunk(config);
       else target.finishToolCalls?.();
-      expect(target.toolCalls.get(0)?.function.arguments).toBe('{"city":"Madrid"}');
+      expect(target.toolCalls.size).toBe(0);
       if (streaming) {
         const chunks: ChatCompletionChunk[] = frames
           .filter((frame) => frame !== 'data: [DONE]\n\n')
           .map((frame) => JSON.parse(frame.slice(6)));
-        expect(
-          chunks
-            .flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])
-            .map((call) => call.function?.arguments)
-            .join(''),
-        ).toBe('{"city":"Madrid"}');
+        expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])).toEqual([]);
       }
     },
   );
@@ -258,6 +264,77 @@ describe('tool-call projection with real SDK graph dispatch', () => {
       '{"i":1}',
     ]);
   });
+  it('keeps tools executed by the SDK out of the final OpenAI response', async () => {
+    const frames: string[] = [];
+    const tracker = createOpenAIStreamTracker();
+    const context = { requestId: 'accepted', created: 1, model: 'fixture' };
+    const res: Response = Object.create(response);
+    jest.spyOn(res, 'write').mockImplementation((frame) => {
+      frames.push(String(frame));
+      return true;
+    });
+    const config = { tracker, context, res };
+    const executed: string[] = [];
+    const handlers = createOpenAIHandlers(config);
+    const run = await Run.create({
+      runId: 'accepted-host-integration',
+      skipCleanup: true,
+      tokenCounter: () => 1,
+      graphConfig: {
+        type: 'standard',
+        maxContextTokens: 100_000,
+        llmConfig: {
+          provider: Providers.OPENAI,
+          streaming: false,
+          streamUsage: false,
+        },
+        tools: [
+          tool(
+            async ({ city }) => {
+              executed.push(city);
+              return 'sunny';
+            },
+            {
+              name: 'lookup',
+              description: 'Weather',
+              schema: z.object({ city: z.string() }),
+            },
+          ),
+        ],
+      },
+      customHandlers: handlers,
+    });
+    if (run.Graph == null) throw new Error('Missing graph');
+    let calls = 0;
+    run.Graph.overrideModel = {
+      invoke: async (messages: BaseMessage[]): Promise<AIMessageChunk> => {
+        calls++;
+        return messages.some((message) => message.getType() === 'tool')
+          ? new AIMessageChunk('done')
+          : new AIMessageChunk({
+              content: '',
+              tool_calls: [{ id: 'internal', name: 'lookup', args: { city: 'Paris' } }],
+            });
+      },
+    };
+
+    await run.processStream(
+      { messages: [new HumanMessage('weather')] },
+      { configurable: { thread_id: 'accepted-host-integration' }, version: 'v2' },
+    );
+    sendFinalChunk(config);
+
+    expect(calls).toBe(2);
+    expect(executed).toEqual(['Paris']);
+    expect(tracker.toolCalls.size).toBe(0);
+    const chunks: ChatCompletionChunk[] = frames
+      .filter((frame) => frame !== 'data: [DONE]\n\n')
+      .map((frame) => JSON.parse(frame.slice(6)));
+    expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])).toEqual([]);
+    expect(chunks.some((chunk) => chunk.choices[0].delta.content === 'done')).toBe(true);
+    expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('stop');
+  });
+
   it('assembles the name before emitting when real SDK chunks split it', async () => {
     const tracker = createOpenAIStreamTracker();
     const emitted: ChatCompletionChunk['choices'][number]['delta'][] = [];

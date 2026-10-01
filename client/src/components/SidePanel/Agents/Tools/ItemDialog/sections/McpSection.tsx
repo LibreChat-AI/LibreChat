@@ -344,6 +344,7 @@ export default function McpSection({ item }: Props) {
   const isConnected = connectionState === 'connected' || liveServer.isConnected === true;
   const isReadyForAgent = liveServer.isReadyForAgent ?? isConnected;
   const isBusy = isInitializing || connectionState === 'connecting';
+  const canCancel = statusIconProps?.canCancel === true;
 
   /** Close + clear the OAuth dialog once the server is ready, and don't let it
    * reopen on its own if the connection later drops. No useEffect — adjust state
@@ -429,6 +430,13 @@ export default function McpSection({ item }: Props) {
     }
   };
 
+  const handleCancel = (e: MouseEvent) => {
+    setAutoSelectPending(false);
+    setOauthOpen(false);
+    setOauthUrl(null);
+    statusIconProps?.onCancel(e);
+  };
+
   return (
     <div className="flex flex-col gap-5">
       {item.description && (
@@ -463,15 +471,17 @@ export default function McpSection({ item }: Props) {
           <div className="min-h-0 overflow-hidden">
             <Button
               type="button"
-              variant="submit"
+              variant={canCancel ? 'outline' : 'submit'}
               className="mt-5 w-full gap-2"
-              disabled={isBusy}
+              disabled={isBusy && !canCancel}
               tabIndex={isReadyForAgent ? -1 : undefined}
               aria-hidden={isReadyForAgent || undefined}
-              onClick={handleConnect}
+              onClick={canCancel ? handleCancel : handleConnect}
             >
-              {isBusy && <Spinner className="size-4" />}
-              {localize('com_nav_mcp_connect_server', { 0: serverName })}
+              {isBusy && !canCancel && <Spinner className="size-4" />}
+              {canCancel
+                ? localize('com_ui_cancel')
+                : localize('com_nav_mcp_connect_server', { 0: serverName })}
             </Button>
           </div>
         </div>
@@ -490,7 +500,7 @@ export default function McpSection({ item }: Props) {
                   size="md"
                   pressed={allDeferred}
                   label={localize(allDeferred ? 'com_ui_mcp_undefer_all' : 'com_ui_mcp_defer_all')}
-                  activeBorderClass="border-series-4"
+                  activeClass="border-series-4 text-series-4 hover:text-series-4"
                   onToggle={() => toggleDeferAll(tools)}
                 />
               )}
@@ -500,7 +510,7 @@ export default function McpSection({ item }: Props) {
                   size="md"
                   pressed={allProgrammatic}
                   label={programmaticBulkLabel}
-                  activeBorderClass="border-series-6"
+                  activeClass="border-series-6 text-series-6 hover:text-series-6"
                   tooltip={programmaticBulkTooltip}
                   disabled={!programmaticToolsAvailable && !allProgrammatic}
                   onToggle={() => toggleProgrammaticAll(tools)}
@@ -514,7 +524,7 @@ export default function McpSection({ item }: Props) {
                   label={localize(
                     allBackground ? 'com_ui_mcp_unbackground_all' : 'com_ui_mcp_background_all',
                   )}
-                  activeBorderClass="border-series-1"
+                  activeClass="border-series-1 text-series-1 hover:text-series-1"
                   onToggle={() => toggleBackgroundAll(tools)}
                 />
               )}
@@ -525,7 +535,7 @@ export default function McpSection({ item }: Props) {
                   pressed={allIntent}
                   disabled={intentEligibleTools.length === 0}
                   label={localize(allIntent ? 'com_ui_mcp_unintent_all' : 'com_ui_mcp_intent_all')}
-                  activeBorderClass="border-series-3"
+                  activeClass="border-series-3 text-series-3 hover:text-series-3"
                   onToggle={() => toggleIntentAll(intentEligibleTools)}
                 />
               )}

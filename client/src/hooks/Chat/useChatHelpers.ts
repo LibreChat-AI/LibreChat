@@ -109,6 +109,10 @@ export default function useChatHelpers(index = 0, paramId?: string) {
   const setSiblingIdx = useSetAtom(
     siblingIdxFamily(siblingKey(latestMessage?.parentMessageId ?? null)),
   );
+  /** The setter is rebound whenever the tail's parent changes (every turn); the
+   *  ref keeps `handleContinue` referentially stable so rows do not re-render. */
+  const setSiblingIdxRef = useRef(setSiblingIdx);
+  setSiblingIdxRef.current = setSiblingIdx;
 
   const setMessages = useCallback(
     (messages: TMessage[]) => {
@@ -374,9 +378,9 @@ export default function useChatHelpers(index = 0, paramId?: string) {
     (e: React.MouseEvent<HTMLButtonElement>) => {
       e.preventDefault();
       continueGeneration();
-      setSiblingIdx(0);
+      setSiblingIdxRef.current(0);
     },
-    [continueGeneration, setSiblingIdx],
+    [continueGeneration],
   );
 
   const [preset, setPreset] = useRecoilState(store.presetByIndex(index));

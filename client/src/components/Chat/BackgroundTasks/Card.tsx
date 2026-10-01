@@ -2,8 +2,8 @@ import { memo, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, Square } from 'lucide-react';
 import { Spinner, TooltipAnchor } from '@librechat/client';
+import type { TaskRow, TaskRowDelivery, TaskRowStatus } from './rows';
 import type { TranslationKeys } from '~/hooks/useLocalize';
-import type { TaskRow, TaskRowStatus } from './rows';
 import { getRunStepDurationLabels, getToolDisplayLabel, cn } from '~/utils';
 import { useLocalize } from '~/hooks';
 
@@ -18,6 +18,15 @@ const STATUS_KEYS: Record<TaskRowStatus, TranslationKeys> = {
 const STATUS_CLASSES: Partial<Record<TaskRowStatus, string>> = {
   error: 'text-status-error',
   cancelled: 'text-status-warning',
+};
+
+const DELIVERY_KEYS: Record<TaskRowDelivery, TranslationKeys> = {
+  pending: 'com_ui_background_tasks_result_pending',
+  failed: 'com_ui_background_tasks_result_undelivered',
+};
+
+const DELIVERY_CLASSES: Partial<Record<TaskRowDelivery, string>> = {
+  failed: 'text-status-warning',
 };
 
 function TaskCard({
@@ -85,6 +94,14 @@ function TaskCard({
               </span>
             )}
             {row.status === 'stopping' && <span>{localize(STATUS_KEYS.stopping)}</span>}
+            {row.delivery != null && (
+              <span
+                className={DELIVERY_CLASSES[row.delivery]}
+                data-testid="background-task-delivery"
+              >
+                {localize(DELIVERY_KEYS[row.delivery])}
+              </span>
+            )}
             {duration != null && (
               <span
                 className="tabular-nums"

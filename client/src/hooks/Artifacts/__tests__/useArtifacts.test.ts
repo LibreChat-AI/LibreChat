@@ -506,6 +506,34 @@ describe('useArtifacts', () => {
       expect(mockSetCurrentArtifactId).toHaveBeenCalledWith('artifact-2');
     });
 
+    it('does not select a historical sibling artifact when regeneration begins', () => {
+      const selected = createArtifact({
+        id: 'selected',
+        messageId: 'original-response',
+        lastUpdateTime: 1000,
+      });
+      const historical = createArtifact({
+        id: 'historical',
+        messageId: 'previous-sibling',
+        lastUpdateTime: 2000,
+        content: 'old preview',
+      });
+      (useRecoilValue as jest.Mock).mockReturnValue({ selected });
+      (useRecoilState as jest.Mock).mockReturnValue(['selected', mockSetCurrentArtifactId]);
+      const { rerender } = renderHook(() => useArtifacts());
+      mockSetCurrentArtifactId.mockClear();
+
+      (useArtifactsContext as jest.Mock).mockReturnValue({
+        ...defaultContext,
+        isSubmitting: true,
+        latestMessageId: 'original-response_',
+      });
+      (useRecoilValue as jest.Mock).mockReturnValue({ selected, historical });
+      rerender();
+
+      expect(mockSetCurrentArtifactId).not.toHaveBeenCalled();
+    });
+
     it('should not advance to a new CODE artifact during streaming', () => {
       const artifact1 = createArtifact({ id: 'artifact-1', lastUpdateTime: 1000, content: 'c1' });
 

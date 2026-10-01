@@ -62,6 +62,8 @@ function createOboToolCallErrorMessage(
     failureSuffix = 'Re-authenticate the user or verify the configured OBO scopes and retry.';
   } else if (error.reason === 'session_refresh_failed') {
     failureSuffix = 'Please sign in again.';
+  } else if (error.reason === 'missing_upstream_provider') {
+    failureSuffix = 'Configure a renewable upstream credential provider before retrying.';
   }
 
   return `${logPrefix} ${error.userMessage} Cannot execute tool ${toolName}. ${failureSuffix}`;
@@ -1323,11 +1325,16 @@ Please follow these instructions when using tools from the respective MCP server
             );
           }
           if (!oboUpstreamTokenProvider) {
-            throw new McpError(
-              ErrorCode.InternalError,
-              `${logPrefix} Internal: upstreamTokenProvider not plumbed for OBO tool call. ` +
-                'OBO requires a live upstream-token closure; the caller must construct one via ' +
-                'createOpenIDSessionTokenProvider() and forward it through callTool().',
+            const missing = new OboTokenResolutionError(
+              'missing_upstream_provider',
+              'No upstream credential provider is configured for this OBO MCP tool.',
+            );
+            throw Object.assign(
+              new McpError(
+                ErrorCode.InternalError,
+                createOboToolCallErrorMessage(logPrefix, toolName, missing),
+              ),
+              { cause: missing },
             );
           }
           const oboTrusted = oboTrustChecker
@@ -1361,10 +1368,14 @@ Please follow these instructions when using tools from the respective MCP server
             );
           } catch (error) {
             if (error instanceof OboTokenResolutionError) {
-              throw new McpError(
+              const failure = new McpError(
                 ErrorCode.InternalError,
                 createOboToolCallErrorMessage(logPrefix, toolName, error),
               );
+              if (error.reason === 'missing_upstream_provider') {
+                throw Object.assign(failure, { cause: error });
+              }
+              throw failure;
             }
             throw error;
           }

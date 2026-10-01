@@ -7,7 +7,9 @@ import {
   bedrockModels,
   configSchema,
   codeEnvironmentUserConfigSchema,
+  CODE_ENVIRONMENT_ADMISSION_MAX_MS,
   excludedKeys,
+  endpointSchema,
   resolveEndpointType,
   webSearchSchema,
 } from './config';
@@ -24,6 +26,76 @@ const endpointsConfig: TEndpointsConfig = {
   'Some Endpoint': { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
   Gemini: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
 };
+
+describe('authenticated 2FA management rate limits', () => {
+  it('accepts an account budget and defaults an empty configuration to seven requests', () => {
+    for (const [input, expected] of [
+      [{}, 7],
+      [{ requestsPerFiveMinutes: 3 }, 3],
+    ] as const) {
+      const result = configSchema.parse({
+        version: '1.0',
+        rateLimits: { twoFactorManagement: input },
+      });
+      expect(result.rateLimits?.twoFactorManagement?.requestsPerFiveMinutes).toBe(expected);
+    }
+  });
+
+  it.each([0, -1, 1, 2, 1.5, Infinity, '7'])('rejects an invalid budget: %s', (value) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        rateLimits: { twoFactorManagement: { requestsPerFiveMinutes: value } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('tenant-scoped custom endpoints', () => {
+  const endpoint = {
+    name: 'Private Gateway',
+    apiKey: 'test-key',
+    baseURL: 'https://gateway.example',
+    models: { default: ['test-model'] },
+  };
+
+  it('keeps unscoped endpoints backward compatible', () => {
+    expect(endpointSchema.parse(endpoint)).not.toHaveProperty('tenantId');
+  });
+
+  it.each(['tenant-a', 'tenant_123.example', '-tenant', 'a'.repeat(128)])(
+    'preserves the exact valid tenant ID %s',
+    (tenantId) => {
+      expect(endpointSchema.parse({ ...endpoint, tenantId }).tenantId).toBe(tenantId);
+      expect(
+        configSchema.parse({ version: '1.2.1', endpoints: { custom: [{ ...endpoint, tenantId }] } })
+          .endpoints?.custom?.[0].tenantId,
+      ).toBe(tenantId);
+    },
+  );
+
+  it.each([
+    '',
+    ' ',
+    ' tenant-a',
+    'tenant-a ',
+    'tenant a',
+    'tenant/a',
+    'tenant:a',
+    'tenant\\a',
+    'tenant😀',
+    '__SYSTEM__',
+    'a'.repeat(129),
+  ])('rejects the unreachable tenant ID %j', (tenantId) => {
+    expect(endpointSchema.safeParse({ ...endpoint, tenantId }).success).toBe(false);
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        endpoints: { custom: [{ ...endpoint, tenantId }] },
+      }).success,
+    ).toBe(false);
+  });
+});
 
 describe('agent model response timeouts', () => {
   it('ships finite defaults and accepts explicit overrides including disabled timeouts', () => {
@@ -561,8 +633,138 @@ describe('attached code environment user config schema', () => {
     },
   );
 
+  it.each([60_000, 125_000, 610_000])(
+    'accepts a bounded %i ms workspace HTTP limit',
+    (maxRequestTimeoutMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { maxRequestTimeoutMs } })).toEqual({
+        limits: { maxRequestTimeoutMs },
+      });
+    },
+  );
+
+  it.each([0, -1, 0.5, 610_001, NaN, Infinity])(
+    'rejects an invalid workspace HTTP limit of %s',
+    (maxRequestTimeoutMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { maxRequestTimeoutMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it('accepts an explicit tolerant-matching opt-in and nothing else under edits', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({ edits: { tolerantMatching: true } })).toEqual({
+      edits: { tolerantMatching: true },
+    });
+    expect(codeEnvironmentUserConfigSchema.parse({})).toEqual({});
+    expect(
+      codeEnvironmentUserConfigSchema.safeParse({ edits: { tolerantMatching: 'yes' } }).success,
+    ).toBe(false);
+    expect(codeEnvironmentUserConfigSchema.safeParse({ edits: { fuzzy: true } }).success).toBe(
+      false,
+    );
+  });
+
   it('keeps an omitted admission budget backward compatible', () => {
     expect(codeEnvironmentUserConfigSchema.parse({ limits: {} })).toEqual({ limits: {} });
+  });
+
+  it.each([1_000, 15_000, CODE_ENVIRONMENT_ADMISSION_MAX_MS])(
+    'accepts a bounded %i ms command admission allowance',
+    (minCommandAdmissionMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { minCommandAdmissionMs } })).toEqual({
+        limits: { minCommandAdmissionMs },
+      });
+    },
+  );
+
+  it.each([0, -1, 0.5, 999, CODE_ENVIRONMENT_ADMISSION_MAX_MS + 1, NaN, Infinity])(
+    'rejects an invalid command admission allowance of %s',
+    (minCommandAdmissionMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { minCommandAdmissionMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it.each([20_001, 90_000])(
+    'preserves omission of the command admission allowance with a fitting %i ms budget',
+    (maxRequestTimeoutMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { maxRequestTimeoutMs } })).toEqual({
+        limits: { maxRequestTimeoutMs },
+      });
+    },
+  );
+
+  it.each([5_000, 10_002, 15_000, 20_000])(
+    'rejects an undersized %i ms request budget with the default command reserve',
+    (maxRequestTimeoutMs) => {
+      const parsed = codeEnvironmentUserConfigSchema.safeParse({ limits: { maxRequestTimeoutMs } });
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        expect(parsed.error.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ path: ['limits', 'maxRequestTimeoutMs'] }),
+          ]),
+        );
+      }
+    },
+  );
+
+  it.each([
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 79_999 },
+    { maxRequestTimeoutMs: 11_001, minCommandAdmissionMs: 1_000 },
+    { maxRequestTimeoutMs: 610_000, minCommandAdmissionMs: 300_000 },
+  ])('accepts an admission reserve with execution time left: %j', (limits) => {
+    expect(codeEnvironmentUserConfigSchema.parse({ limits })).toEqual({ limits });
+  });
+
+  it.each([
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 80_000 },
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 100_000 },
+    { maxRequestTimeoutMs: 11_000, minCommandAdmissionMs: 1_000 },
+  ])('rejects a command reserve that cannot fit inside its request budget: %j', (limits) => {
+    const parsed = codeEnvironmentUserConfigSchema.safeParse({ limits });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: ['limits', 'minCommandAdmissionMs'] }),
+        ]),
+      );
+    }
+  });
+
+  it('allows a command reserve without a request budget (the legacy per-attempt path)', () => {
+    expect(
+      codeEnvironmentUserConfigSchema.parse({ limits: { minCommandAdmissionMs: 300_000 } }),
+    ).toEqual({ limits: { minCommandAdmissionMs: 300_000 } });
+  });
+
+  it.each([
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 100_000 },
+    { maxRequestTimeoutMs: 15_000 },
+  ])('rejects an impossible command reserve in the top-level deployment config: %j', (limits) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: {
+          agents: {
+            statefulCodeSessions: {
+              allowedEnvironments: ['user'],
+              environments: [
+                {
+                  id: 'personal-vm',
+                  name: 'Personal VM',
+                  type: 'attached',
+                  baseURL: 'https://code.example.com/v1',
+                  configSchema: { limits },
+                },
+              ],
+            },
+          },
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it('accepts typed permission controls exposed by the administrator', () => {
@@ -584,7 +786,11 @@ describe('attached code environment user config schema', () => {
                     fileWrite: { allowed: ['allow', 'ask', 'deny'], default: 'ask' },
                     commandExecution: { allowed: ['ask', 'deny'], default: 'ask' },
                   },
-                  limits: { maxCommandTimeoutMs: 120000 },
+                  limits: {
+                    maxCommandTimeoutMs: 120000,
+                    maxRequestTimeoutMs: 125_000,
+                    minCommandAdmissionMs: 15_000,
+                  },
                 },
               },
             ],
@@ -597,6 +803,50 @@ describe('attached code environment user config schema', () => {
       throw new Error(result.error.toString());
     }
     expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            environments: [
+              {
+                configSchema: {
+                  limits: { maxRequestTimeoutMs: 125_000, minCommandAdmissionMs: 15_000 },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+  });
+
+  it.each([
+    [{ linkedWorktrees: true }, true],
+    [{ linkedWorktrees: 'yes' }, false],
+    [{ linkedWorktrees: true, subdirectories: true }, false],
+  ])('validates the linked worktree lane toggle %p', (workspaces, valid) => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            allowedEnvironments: ['user'],
+            environments: [
+              {
+                id: 'personal-vm',
+                name: 'Personal VM',
+                type: 'attached',
+                baseURL: 'https://code.example.com/v1',
+                default: true,
+                configSchema: { workspaces },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(valid);
   });
 
   it('rejects an attached command timeout above the protocol hard cap', () => {
@@ -771,6 +1021,7 @@ describe('agent background task config', () => {
       completionWakeups: true,
       completionResultMaxChars: 24 * 1024,
       ordinaryToolCancellation: false,
+      shutdownInterruptGraceMs: 5_000,
     });
   });
 
@@ -789,6 +1040,7 @@ describe('agent background task config', () => {
       completionWakeups: false,
       completionResultMaxChars: 24 * 1024,
       ordinaryToolCancellation: false,
+      shutdownInterruptGraceMs: 5_000,
     });
   });
 
@@ -807,7 +1059,29 @@ describe('agent background task config', () => {
       completionWakeups: true,
       completionResultMaxChars: 24 * 1024,
       ordinaryToolCancellation: true,
+      shutdownInterruptGraceMs: 5_000,
     });
+  });
+
+  it('accepts a bounded shutdown interrupt grace', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: { shutdownInterruptGraceMs: 0 } } },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs).toBe(0);
+    }
+  });
+
+  it.each([-1, 60_001, 1.5])('rejects an unsafe shutdown interrupt grace: %s', (graceMs) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { backgroundTasks: { shutdownInterruptGraceMs: graceMs } } },
+      }).success,
+    ).toBe(false);
   });
 
   it('accepts a bounded durable completion result limit', () => {

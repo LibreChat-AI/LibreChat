@@ -4,6 +4,7 @@ import {
   Constants,
   ContentTypes,
   StepTypes,
+  StepEvents,
   UsageEvents,
   ApprovalEvents,
   SteerEvents,
@@ -443,8 +444,42 @@ function getReplayStepId(event: t.ServerSentEvent): unknown {
     const result = 'result' in event.data ? event.data.result : undefined;
     return result != null && typeof result === 'object' && 'id' in result ? result.id : undefined;
   }
+  if (event.event === StepEvents.ON_TOOL_PREPARATION) {
+    const marker = event.data as { id?: unknown; toolCallId?: unknown; index?: unknown };
+    return typeof marker.id === 'string'
+      ? `${marker.id}:${typeof marker.toolCallId === 'string' ? marker.toolCallId : `#${marker.index}`}`
+      : undefined;
+  }
+  if (event.event === StepEvents.ON_TOOL_CALLS_DISPATCHED) {
+    const calls = (event.data as { toolCalls?: unknown }).toolCalls;
+    return Array.isArray(calls)
+      ? JSON.stringify(calls.map((call) => [call?.stepId, call?.id]))
+      : undefined;
+  }
 
   return undefined;
+}
+
+function isToolTimingReplayEvent(event: t.ServerSentEvent): boolean {
+  if (!('event' in event) || event.data == null || typeof event.data !== 'object') return false;
+  if (event.event === StepEvents.ON_TOOL_PREPARATION) {
+    const marker = event.data as { id?: unknown; observed_at?: unknown };
+    return (
+      typeof marker.id === 'string' &&
+      marker.id !== '' &&
+      typeof marker.observed_at === 'number' &&
+      Number.isFinite(marker.observed_at)
+    );
+  }
+  if (event.event === StepEvents.ON_TOOL_CALLS_DISPATCHED) {
+    const dispatch = event.data as { dispatched_at?: unknown; toolCalls?: unknown };
+    return (
+      typeof dispatch.dispatched_at === 'number' &&
+      Number.isFinite(dispatch.dispatched_at) &&
+      Array.isArray(dispatch.toolCalls)
+    );
+  }
+  return false;
 }
 
 function isOAuthReplayEvent(event: t.ServerSentEvent): boolean {
@@ -7468,6 +7503,9 @@ class GenerationJobManagerClass {
     if (event.event === UsageEvents.ON_TOKEN_USAGE) {
       return this.trackTokenUsage(streamId, event, expectedCreatedAt);
     }
+    if (isToolTimingReplayEvent(event)) {
+      return this.trackReplayEvent(streamId, event, expectedCreatedAt);
+    }
     if (
       (event.event === 'on_run_step' ||
         event.event === 'on_run_step_delta' ||
@@ -7758,7 +7796,7 @@ class GenerationJobManagerClass {
     event: t.ServerSentEvent,
     expectedCreatedAt: number,
   ): Promise<void> {
-    if (!isOAuthReplayEvent(event)) {
+    if (!isOAuthReplayEvent(event) && !isToolTimingReplayEvent(event)) {
       return;
     }
 

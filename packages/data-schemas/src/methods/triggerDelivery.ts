@@ -50,10 +50,6 @@ const CLAIM_CANDIDATE_BATCH = 8;
 const MAX_PENDING_BACKGROUND_COMPLETIONS = 200;
 /** Every status before a delivery settles, i.e. whose result has not reached its conversation. */
 const DEAD_STATUSES: IAgentTriggerDelivery['status'][] = ['dead', 'capability_dead'];
-/** Dead to every worker version, including a capability row a legacy worker still sees leased. */
-function isDeadDelivery(row: Pick<IAgentTriggerDelivery, 'status' | 'capabilityStatus'>): boolean {
-  return DEAD_STATUSES.includes(row.status) || row.capabilityStatus === 'dead';
-}
 const UNDELIVERED_STATUSES: IAgentTriggerDelivery['status'][] = [
   'staging',
   'capability_staging',
@@ -282,7 +278,7 @@ export interface PendingAgentBackgroundToolCompletions {
   completions: PendingAgentBackgroundToolCompletion[];
   /** Completions whose delivery dead-lettered: never delivered, recoverable only by a poll. */
   dead: PendingAgentBackgroundToolCompletion[];
-  /** More undelivered completions exist than were returned. */
+  /** The first page overflowed; separate reads may not cover one complete snapshot. */
   truncated: boolean;
 }
 
@@ -2359,37 +2355,30 @@ export function createAgentTriggerDeliveryMethods(
     ) {
       throw new TypeError('Invalid pending background completion lookup');
     }
-    const rows = await Delivery()
-      .find({
-        user: input.user,
-        'envelope.event.source.type': 'internal',
-        'envelope.event.source.id': input.sourceId,
-        'envelope.target.conversationId': input.conversationId,
-        ...(input.taskId != null && { 'envelope.event.payload.taskId': input.taskId }),
-        /** Legacy rows keep results only on the parent message, so a missing
-         * receipt cannot tell running from finished; they drain on their own path. */
-        requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
-        /** Dead letters are read too, so a caller can tell "delivered" from "failed". */
-        status: { $in: [...UNDELIVERED_STATUSES, ...DEAD_STATUSES] },
-      })
-      .select(
-        'deliveryKey createdAt status capabilityStatus envelope.event.payload ' +
-          'backgroundToolResult.status backgroundToolResult.settledAt backgroundToolResult.resultClaim',
-      )
-      .sort({ createdAt: 1, _id: 1 })
-      .limit(limit + 1)
-      .lean<
-        Array<
-          Pick<
-            IAgentTriggerDelivery,
-            'deliveryKey' | 'createdAt' | 'backgroundToolResult' | 'status' | 'capabilityStatus'
-          > & {
-            envelope?: { event?: { payload?: Record<string, unknown> } };
-          }
-        >
-      >();
-    const dead: PendingAgentBackgroundToolCompletion[] = [];
-    const completions = rows.slice(0, limit).flatMap((row) => {
+    type CompletionRow = Pick<
+      IAgentTriggerDelivery,
+      'deliveryKey' | 'createdAt' | 'backgroundToolResult' | 'status' | 'capabilityStatus'
+    > & { envelope?: { event?: { payload?: Record<string, unknown> } } };
+    const scope = {
+      user: input.user,
+      'envelope.event.source.type': 'internal',
+      'envelope.event.source.id': input.sourceId,
+      'envelope.target.conversationId': input.conversationId,
+      ...(input.taskId != null && { 'envelope.event.payload.taskId': input.taskId }),
+      /** Legacy rows keep results only on the parent message. */
+      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+    };
+    const read = (filter: FilterQuery<IAgentTriggerDelivery>) =>
+      Delivery()
+        .find({ ...scope, ...filter })
+        .select(
+          'deliveryKey createdAt status capabilityStatus envelope.event.payload ' +
+            'backgroundToolResult.status backgroundToolResult.settledAt backgroundToolResult.resultClaim',
+        )
+        .sort({ updatedAt: -1, _id: -1 })
+        .limit(limit + 1)
+        .lean<CompletionRow[]>();
+    const project = (row: CompletionRow): PendingAgentBackgroundToolCompletion | undefined => {
       const payload = row.envelope?.event?.payload;
       const taskId = payload?.taskId;
       const toolCallId = payload?.toolCallId;
@@ -2400,30 +2389,60 @@ export function createAgentTriggerDeliveryMethods(
         typeof toolCallId !== 'string' ||
         typeof toolName !== 'string'
       ) {
-        return [];
+        return undefined;
       }
       const receipt = row.backgroundToolResult;
-      return [
-        {
-          deliveryKey: row.deliveryKey,
-          taskId,
-          toolCallId,
-          toolName,
-          dispatchedAt: row.createdAt,
-          ...(receipt != null && {
-            result: { status: receipt.status, settledAt: receipt.settledAt },
-          }),
-          claimedByWakeup: receipt?.resultClaim != null,
-        },
-      ].filter((completion) => {
-        if (!isDeadDelivery(row)) {
-          return true;
+      return {
+        deliveryKey: row.deliveryKey,
+        taskId,
+        toolCallId,
+        toolName,
+        dispatchedAt: row.createdAt,
+        ...(receipt != null && {
+          result: { status: receipt.status, settledAt: receipt.settledAt },
+        }),
+        claimedByWakeup: receipt?.resultClaim != null,
+      };
+    };
+    const classify = (rows: CompletionRow[]): PendingAgentBackgroundToolCompletions => {
+      const completions: PendingAgentBackgroundToolCompletion[] = [];
+      const dead: PendingAgentBackgroundToolCompletion[] = [];
+      for (const row of rows.slice(0, limit)) {
+        const completion = project(row);
+        if (completion == null) continue;
+        if (DEAD_STATUSES.includes(row.status) || row.capabilityStatus === 'dead') {
+          dead.push(completion);
+        } else {
+          completions.push(completion);
         }
-        dead.push(completion);
-        return false;
-      });
-    });
-    return { completions, dead, truncated: rows.length > limit };
+      }
+      return { completions: completions.reverse(), dead, truncated: rows.length > limit };
+    };
+    const first = classify(
+      await read({ status: { $in: [...UNDELIVERED_STATUSES, ...DEAD_STATUSES] } }),
+    );
+    if (!first.truncated) return first;
+
+    /** Overfull conversations need separate bounded reads so old dead letters
+     * cannot hide pending work. Separate reads can straddle a transition, so
+     * absence is not evidence of delivery until a later single read fits. */
+    const [waitingRows, deadRows] = await Promise.all([
+      read({ status: { $in: UNDELIVERED_STATUSES }, capabilityStatus: { $ne: 'dead' } }),
+      read({
+        $or: [
+          { status: { $in: DEAD_STATUSES } },
+          { status: { $in: UNDELIVERED_STATUSES }, capabilityStatus: 'dead' },
+        ],
+      }),
+    ]);
+    const waiting = classify(waitingRows);
+    const dead = classify(deadRows);
+    const failedIds = new Set(dead.dead.map(({ taskId }) => taskId));
+    return {
+      completions: waiting.completions.filter(({ taskId }) => !failedIds.has(taskId)),
+      dead: dead.dead,
+      truncated: true,
+    };
   }
 
   async function listUndeliveredAgentTriggerTaskIds(input: {

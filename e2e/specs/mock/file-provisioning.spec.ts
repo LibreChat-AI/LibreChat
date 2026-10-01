@@ -5,7 +5,9 @@ import {
   NEW_CHAT_PATH,
   uniqueName,
   sendMessage,
+  getRagQueries,
   getRagEmbedded,
+  sendMessageAndWaitForCompletion,
   enableFileSearch,
   selectMockEndpoint,
   resetProvisioning,
@@ -118,10 +120,10 @@ test.describe('file provisioning — lazy (unified upload, at tool-execute)', ()
       .toContain(fileName);
   });
 
-  test('a unified attachment is embedded into the vector DB when file_search runs', async ({
+  test('a unified attachment stays searchable after lazy embedding on a later turn', async ({
     page,
   }) => {
-    test.setTimeout(120000);
+    test.setTimeout(180000);
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[1]);
     await resetProvisioning(page);
@@ -144,11 +146,20 @@ test.describe('file provisioning — lazy (unified upload, at tool-execute)', ()
     ).not.toContain(fileId);
     await expect(page.getByRole('button', { name: fileName })).toBeVisible({ timeout: 15000 });
 
-    // Embedding fires at ON_TOOL_EXECUTE, independent of the file_search tool result.
-    await sendMessage(page, `E2E_FILE_SEARCH:${uniqueName('q')}`);
-
+    // The first tool call lazily embeds the attachment and searches it.
+    await sendMessageAndWaitForCompletion(page, `E2E_FILE_SEARCH:${uniqueName('first')}`);
     await expect
       .poll(async () => (await getRagEmbedded(page)).map((e) => e.file_id), { timeout: 30000 })
       .toContain(fileId);
+    await expect
+      .poll(async () => (await getRagQueries(page)).filter((q) => q.file_id === fileId).length)
+      .toBe(1);
+
+    // A completed, persisted turn must still expose the embedded file to the next call.
+    await sendMessageAndWaitForCompletion(page, `E2E_FILE_SEARCH:${uniqueName('second')}`);
+    await expect
+      .poll(async () => (await getRagQueries(page)).filter((q) => q.file_id === fileId).length)
+      .toBe(2);
+    expect((await getRagEmbedded(page)).filter((e) => e.file_id === fileId)).toHaveLength(1);
   });
 });

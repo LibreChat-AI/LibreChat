@@ -161,7 +161,7 @@ describe('MeterSwatch', () => {
   });
 });
 
-/** CLAUDE.md requires a deliberately different reference theme, to prove the
+/** AGENTS.md requires a deliberately different reference theme, to prove the
  *  component follows theme data rather than the bundled LibreChat values. */
 const referenceTheme: ThemeDefinition = {
   version: THEME_VERSION,

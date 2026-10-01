@@ -250,6 +250,16 @@ const toContentPart = (item: ChildActivityItem): TMessageContentParts => {
       output: item.output ?? '',
       progress: item.status === 'running' ? 0.1 : 1,
       ...(item.status === 'running' ? {} : { runStepStatus: item.status }),
+      ...(item.toolPreparationStartedAt == null
+        ? {}
+        : { toolPreparationStartedAt: item.toolPreparationStartedAt }),
+      ...(item.toolDispatchedAt == null ? {} : { toolDispatchedAt: item.toolDispatchedAt }),
+      ...(item.toolPreparationDurationMs == null
+        ? {}
+        : { toolPreparationDurationMs: item.toolPreparationDurationMs }),
+      ...(item.toolExecutionDurationMs == null
+        ? {}
+        : { toolExecutionDurationMs: item.toolExecutionDurationMs }),
       ...(item.inputValidationError === true ? { inputValidationError: true } : {}),
       ...(item.approval == null ? {} : { approval: item.approval }),
     },

@@ -30,7 +30,7 @@ function BackgroundTasksButton({
   const [wide, setWide] = useState(false);
   const [popoverElement, setPopoverElement] = useState<HTMLDivElement | null>(null);
   const view = useBackgroundTasks({ conversationId, isSubmitting, now });
-  const { rows, activeCount } = view;
+  const { rows, activeCount, awaitingCount, failedCount, incomplete } = view;
 
   useEffect(() => {
     setNow(Date.now());
@@ -41,7 +41,10 @@ function BackgroundTasksButton({
 
   const nextExpiry = rows.reduce(
     (next, row) =>
-      row.settledAt != null && row.status !== 'running' && row.status !== 'stopping'
+      row.settledAt != null &&
+      row.delivery == null &&
+      row.status !== 'running' &&
+      row.status !== 'stopping'
         ? Math.min(next, row.settledAt + RECENT_SUBAGENT_WINDOW_MS + 1)
         : next,
     Infinity,
@@ -52,13 +55,22 @@ function BackgroundTasksButton({
     return () => clearTimeout(timer);
   }, [nextExpiry]);
 
-  if (rows.length === 0 && !view.loadFailed) {
+  if (rows.length === 0 && !view.loadFailed && !incomplete) {
     return null;
   }
 
   const title = localize('com_ui_background_tasks');
   const triggerLabel =
-    activeCount > 0 ? localize('com_ui_background_tasks_label', { 0: activeCount }) : title;
+    [
+      ...(activeCount > 0 ? [localize('com_ui_background_tasks_label', { 0: activeCount })] : []),
+      ...(awaitingCount > 0
+        ? [localize('com_ui_background_tasks_pending_label', { 0: awaitingCount })]
+        : []),
+      ...(failedCount > 0
+        ? [localize('com_ui_background_tasks_failed_label', { 0: failedCount })]
+        : []),
+      ...(incomplete ? [localize('com_ui_background_tasks_incomplete')] : []),
+    ].join('; ') || title;
   const running = rows.filter((row) => row.status === 'running' || row.status === 'stopping');
   const finished = rows.filter((row) => row.status !== 'running' && row.status !== 'stopping');
   const anyStoppable = running.some(view.canStop);
@@ -94,10 +106,15 @@ function BackgroundTasksButton({
             className="relative inline-flex size-9 flex-shrink-0 items-center justify-center rounded-xl border border-border-light bg-presentation text-text-primary transition-all ease-in-out hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary"
           >
             <ListTodo className="icon-md" aria-hidden="true" />
-            {activeCount > 0 && (
+            {(activeCount > 0 || awaitingCount > 0 || failedCount > 0 || incomplete) && (
               <span
                 aria-hidden="true"
-                className="absolute -right-0.5 -top-0.5 size-2 animate-pulse rounded-full bg-status-info ring-2 ring-presentation motion-reduce:animate-none"
+                data-testid="background-tasks-indicator"
+                className={cn(
+                  'absolute -right-0.5 -top-0.5 size-2 rounded-full ring-2 ring-presentation',
+                  failedCount > 0 || incomplete ? 'bg-status-warning' : 'bg-status-info',
+                  activeCount > 0 && 'animate-pulse motion-reduce:animate-none',
+                )}
               />
             )}
           </Ariakit.PopoverDisclosure>
@@ -138,6 +155,11 @@ function BackgroundTasksButton({
           </Ariakit.PopoverDismiss>
         </div>
         <div className="space-y-4 overflow-y-auto px-3 pb-3">
+          {incomplete && (
+            <p role="status" className="text-sm text-status-warning">
+              {localize('com_ui_background_tasks_incomplete')}
+            </p>
+          )}
           {view.loadFailed && (
             <div role="alert" className="text-sm text-status-error">
               <p>{localize('com_ui_background_tasks_load_failed')}</p>

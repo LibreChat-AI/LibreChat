@@ -1,4 +1,4 @@
-# v0.8.8-rc4
+# v0.8.8
 
 # Base node image
 FROM node:24.16.0-alpine AS node
@@ -58,8 +58,8 @@ COPY --chown=node:node . .
 
 RUN \
     # React client build with configurable memory
-    NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}" npm run frontend; \
-    npm prune --production; \
+    NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}" npm run frontend && \
+    npm prune --production && \
     npm cache clean --force
 
 # Optional build metadata surfaced in Settings -> About for support triage.

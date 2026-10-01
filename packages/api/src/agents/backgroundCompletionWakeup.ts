@@ -581,12 +581,14 @@ export function createPendingBackgroundCompletions(deps: {
       const { completions, dead, truncated } = await read(input);
       const project = ({
         taskId,
+        toolCallId,
         toolName,
         dispatchedAt,
         result,
         claimedByWakeup,
       }: PendingBackgroundCompletion): PendingBackgroundCompletion => ({
         taskId,
+        toolCallId,
         toolName,
         dispatchedAt,
         ...(result != null && { result }),
