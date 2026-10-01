@@ -161,16 +161,33 @@ test.describe('roles for former colour literals', () => {
     page,
   }) => {
     test.setTimeout(60000);
-    const cases: Array<[unknown, string | undefined]> = [
-      [null, '0 10px 25px rgb(0 0 0 / 0.1)'],
-      [clickHouseTheme, clickHouseTheme.modes.light?.appearance?.elevationDrag],
+    /* One init script for both cases: Playwright does not order several init scripts, so a
+     * second bridge could run before the first and leave the earlier theme in place. */
+    await page.addInitScript((definition) => {
+      const params = new URL(location.href).searchParams;
+      localStorage.setItem('color-theme', 'light');
+      localStorage.removeItem('theme-colors');
+      localStorage.removeItem('theme-name');
+      if (params.get('e2eDefinition') === 'clickhouse') {
+        localStorage.setItem('theme-definition', JSON.stringify(definition));
+        localStorage.setItem('theme-source', 'definition');
+      } else {
+        localStorage.removeItem('theme-definition');
+        localStorage.removeItem('theme-source');
+      }
+    }, clickHouseTheme);
+    const cases: Array<[string, string | undefined]> = [
+      ['stock', '0 10px 25px rgb(0 0 0 / 0.1)'],
+      ['clickhouse', clickHouseTheme.modes.light?.appearance?.elevationDrag],
     ];
     for (const [definition, expected] of cases) {
-      await installThemeBridge(page, definition);
-      await page.goto(`${NEW_CHAT_PATH}?${THEME_PARAM}=light`);
+      await page.goto(`${NEW_CHAT_PATH}?e2eDefinition=${definition}`);
       await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible({
         timeout: 20000,
       });
+      if (definition === 'clickhouse') {
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
+      }
       /* The badge animates to `var(--theme-elevation-drag)`; compare what that resolves to
        * against the value the theme declares, both as the browser computes a box-shadow. */
       const [lift, declared] = await page.evaluate((value) => {
