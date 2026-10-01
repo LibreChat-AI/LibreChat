@@ -93,7 +93,7 @@ function createChunkProcessor(user, messageId) {
       notFoundCount++;
       return [];
     } else {
-      const text = message.content?.length > 0 ? parseTextParts(message.content) : message.text;
+      const text = message.content?.length > 0 ? parseTextParts(message.content, true) : message.text;
       messageCache.set(
         cacheKey,
         {

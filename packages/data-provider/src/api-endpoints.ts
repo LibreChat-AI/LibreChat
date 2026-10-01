@@ -358,6 +358,7 @@ export const fileUpload = () => `${BASE_URL}/api/files`;
 export const fileDelete = () => `${BASE_URL}/api/files`;
 export const fileDownload = (userId: string, fileId: string) =>
   `${BASE_URL}/api/files/download/${userId}/${fileId}`;
+
 /* Deferred-preview lifecycle endpoint. Returns
  * `{ status, text?, textFormat?, previewError? }` so the frontend can
  * poll while background HTML extraction is in flight. See PR #12957. */
