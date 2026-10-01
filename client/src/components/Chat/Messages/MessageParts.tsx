@@ -22,6 +22,7 @@ import ContentParts from './Content/ContentParts';
 import SiblingSwitch from './SiblingSwitch';
 import { AuthorContext } from '~/Providers';
 import HoverButtons from './HoverButtons';
+import Throughput from './Throughput';
 import SubRow from './SubRow';
 import store from '~/store';
 
@@ -103,6 +104,13 @@ function MessageParts(props: TMessageProps) {
   );
 
   const { hasParallelContent } = useContentMetadata(message);
+  const showElapsed = shouldShowElapsed({
+    isSubmitting,
+    isLatestMessage: messageId === latestMessageId,
+    isCreatedByUser,
+    siblingIdx,
+    siblingCount,
+  });
 
   if (!message) {
     return null;
@@ -139,13 +147,14 @@ function MessageParts(props: TMessageProps) {
                   dot vacates, so the retry navigation beside it — whose width the footer
                   reserves whether or not hover has revealed it — must never push the
                   timer inboard of that column. */}
-              {shouldShowElapsed({
-                isSubmitting,
-                isLatestMessage: messageId === latestMessageId,
-                isCreatedByUser,
-                siblingIdx,
-                siblingCount,
-              }) && <Elapsed index={index} />}
+              {showElapsed && <Elapsed index={index} />}
+              {isCreatedByUser !== true && (
+                <Throughput
+                  conversationId={message.conversationId ?? conversation?.conversationId}
+                  messageId={messageId ?? ''}
+                  streaming={showElapsed}
+                />
+              )}
               {/* While the answer is generating every other action is withheld, which
                   would otherwise leave this counter sitting alone under a half-written
                   response. It reveals on hover there, like the actions it sits with. */}

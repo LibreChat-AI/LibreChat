@@ -6,6 +6,8 @@ import {
   contextSnapshotFamily,
   liveTokensFamily,
   subagentUsageFamily,
+  settledThroughputAtom,
+  throughputSamplesFamily,
   pendingSubagentUsageFamily,
 } from '~/store/usage';
 import useUsageHandler from '~/hooks/SSE/useUsageHandler';
@@ -283,5 +285,151 @@ describe('useUsageHandler — live snapshot reconciliation', () => {
     );
 
     expect(store.get(subagentUsageFamily(convo)).output).toBe(3780);
+  });
+});
+
+describe('useUsageHandler — token throughput', () => {
+  const textDelta = (text: string) => ({ delta: { content: [{ type: 'text', text }] } });
+  const submissionFor = (convo: string) => ({
+    userMessage: { messageId: 'u1', conversationId: convo },
+    conversation: { conversationId: convo },
+  });
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(100_000);
+    getDefaultStore().set(settledThroughputAtom, new Map());
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('samples the live estimate on each flush and settles the confirmed rate at finalize', () => {
+    const convo = 'convo-throughput-live';
+    const submission = submissionFor(convo);
+    const { result } = renderHook(() => useUsageHandler());
+    const store = getDefaultStore();
+
+    result.current.contextHandler(inflatedSnapshot({ calibrationRatio: 1 }), submission);
+    jest.setSystemTime(100_800);
+    result.current.tapStream(textDelta('a'.repeat(40)), submission);
+    jest.setSystemTime(101_100);
+    result.current.tapStream(textDelta('b'.repeat(40)), submission);
+
+    const samples = store.get(throughputSamplesFamily(convo));
+    expect(samples).toEqual([
+      { at: 100_800, tokens: 10 },
+      { at: 101_100, tokens: 20 },
+    ]);
+
+    jest.setSystemTime(104_800);
+    result.current.tapStream(textDelta('c'.repeat(40)), submission);
+    result.current.usageHandler(
+      primaryUsage({ output_tokens: 400, total_tokens: 56173 }),
+      submission,
+    );
+    result.current.finalizeUsage(
+      {
+        requestMessage: { messageId: 'u1', conversationId: convo },
+        responseMessage: { messageId: 'r1', conversationId: convo },
+        conversation: { conversationId: convo },
+      },
+      submission,
+    );
+
+    /** 400 confirmed tokens across the 4 s first-to-last delta span; TTFT
+     *  from the pre-invoke snapshot to the first delta */
+    expect(store.get(settledThroughputAtom).get('r1')).toEqual({
+      responseId: 'r1',
+      outputTokens: 400,
+      durationMs: 4_000,
+      ttftMs: 800,
+      estimated: false,
+    });
+    expect(store.get(throughputSamplesFamily(convo))).toEqual([]);
+  });
+
+  it('settles an estimated rate when no provider usage confirmed the output', () => {
+    const convo = 'convo-throughput-estimate';
+    const submission = submissionFor(convo);
+    const { result } = renderHook(() => useUsageHandler());
+    const store = getDefaultStore();
+
+    result.current.tapStream(textDelta('a'.repeat(80)), submission);
+    jest.setSystemTime(102_000);
+    result.current.tapStream(textDelta('b'.repeat(80)), submission);
+    result.current.attributePending('r-partial', submission);
+
+    expect(store.get(settledThroughputAtom).get('r-partial')).toEqual({
+      responseId: 'r-partial',
+      outputTokens: 40,
+      durationMs: 2_000,
+      ttftMs: null,
+      estimated: true,
+    });
+  });
+
+  it('withholds the settled rate for a resumed turn and ignores the replay burst', () => {
+    const convo = 'convo-throughput-resume';
+    const submission = submissionFor(convo);
+    const { result } = renderHook(() => useUsageHandler());
+    const store = getDefaultStore();
+
+    result.current.seedLive(2_000, submission);
+    /** Replayed deltas arrive synchronously after the seed */
+    result.current.tapStream(textDelta('a'.repeat(400)), submission);
+    result.current.tapStream(textDelta('b'.repeat(400)), submission);
+    expect(store.get(throughputSamplesFamily(convo))).toEqual([]);
+
+    /** The guard lifts on the next macrotask; live deltas then sample again */
+    jest.advanceTimersByTime(1);
+    jest.setSystemTime(100_500);
+    result.current.tapStream(textDelta('c'.repeat(40)), submission);
+    expect(store.get(throughputSamplesFamily(convo))).toHaveLength(1);
+
+    result.current.usageHandler(primaryUsage({ output_tokens: 900 }), submission);
+    result.current.finalizeUsage(
+      {
+        requestMessage: { messageId: 'u1', conversationId: convo },
+        responseMessage: { messageId: 'r1', conversationId: convo },
+        conversation: { conversationId: convo },
+      },
+      submission,
+    );
+    expect(store.get(settledThroughputAtom).get('r1')).toBeUndefined();
+  });
+
+  it('carries the settled rate through the new-conversation id handoff', () => {
+    const fromKey = String(Constants.NEW_CONVO);
+    const realId = 'convo-throughput-real';
+    const submission = {
+      userMessage: { messageId: 'u1', conversationId: fromKey },
+      conversation: { conversationId: fromKey },
+    };
+    const { result } = renderHook(() => useUsageHandler());
+    const store = getDefaultStore();
+
+    result.current.tapStream(textDelta('a'.repeat(40)), submission);
+    jest.setSystemTime(101_000);
+    result.current.tapStream(textDelta('b'.repeat(40)), submission);
+    result.current.usageHandler(
+      primaryUsage({ output_tokens: 50, total_tokens: 55823 }),
+      submission,
+    );
+    result.current.finalizeUsage(
+      {
+        requestMessage: { messageId: 'u1', conversationId: realId },
+        responseMessage: { messageId: 'r1', conversationId: realId },
+        conversation: { conversationId: realId },
+      },
+      submission,
+    );
+
+    expect(store.get(settledThroughputAtom).get('r1')).toMatchObject({
+      responseId: 'r1',
+      outputTokens: 50,
+      durationMs: 1_000,
+    });
   });
 });

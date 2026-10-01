@@ -1,6 +1,7 @@
 import { atomFamily } from 'jotai/utils';
 import { atom, getDefaultStore } from 'jotai';
 import type { TMessage, TContextUsageEvent } from 'librechat-data-provider';
+import type { ThroughputSample, SettledThroughput } from '~/utils/throughput';
 import type { BranchTotals, BranchUsage } from '~/utils/tokens';
 import { EMPTY_BRANCH, EMPTY_USAGE } from '~/utils/tokens';
 import { createStorageAtom } from './jotai-utils';
@@ -85,6 +86,39 @@ export const totalUsageFamily = atomFamily((_conversationId: string) =>
 
 /** Throttled in-flight output token estimate for the current model call */
 export const liveTokensFamily = atomFamily((_conversationId: string) => atom<number>(0));
+
+/**
+ * Live token readings of the streaming response, appended on each throttled
+ * flush. Only the throughput indicator under the streaming row subscribes, so
+ * the per-flush write re-renders nothing else.
+ */
+export const throughputSamplesFamily = atomFamily((_conversationId: string) =>
+  atom<ThroughputSample[]>([]),
+);
+
+/**
+ * Settled speed of completed responses, keyed by response message id and
+ * bounded to the newest entries. Keyed by message rather than conversation so
+ * the post-finalize navigation of a new chat, which remounts the usage hook and
+ * drops that conversation's atoms, cannot lose the figure. Session-scoped.
+ */
+export const settledThroughputAtom = atom<ReadonlyMap<string, SettledThroughput>>(new Map());
+
+const SETTLED_THROUGHPUT_LIMIT = 50;
+
+export function recordSettledThroughput(settled: SettledThroughput): void {
+  const store = getDefaultStore();
+  const next = new Map(store.get(settledThroughputAtom));
+  next.delete(settled.responseId);
+  next.set(settled.responseId, settled);
+  if (next.size > SETTLED_THROUGHPUT_LIMIT) {
+    const oldest = next.keys().next().value;
+    if (oldest != null) {
+      next.delete(oldest);
+    }
+  }
+  store.set(settledThroughputAtom, next);
+}
 
 /**
  * Subagent model calls COMMITTED to the conversation, accumulated from
@@ -204,6 +238,7 @@ export function removeUsageAtoms(conversationId: string): void {
   pendingUsageFamily.remove(conversationId);
   totalUsageFamily.remove(conversationId);
   liveTokensFamily.remove(conversationId);
+  throughputSamplesFamily.remove(conversationId);
   subagentUsageFamily.remove(conversationId);
   pendingSubagentUsageFamily.remove(conversationId);
   calibrationFamily.remove(conversationId);

@@ -2312,6 +2312,7 @@ export const interfaceSchema = z
     webSearch: z.boolean().optional(),
     contextUsage: z.boolean().optional(),
     contextCost: z.boolean().optional(),
+    tokenThroughput: z.boolean().optional(),
     feedback: z.boolean().optional(),
     currency: z
       .object({
@@ -2421,6 +2422,7 @@ export const interfaceSchema = z
     webSearch: true,
     contextUsage: true,
     contextCost: false,
+    tokenThroughput: false,
     feedback: true,
     peoplePicker: {
       users: true,

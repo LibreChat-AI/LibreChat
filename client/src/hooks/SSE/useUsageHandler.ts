@@ -7,6 +7,7 @@ import type {
   TTokenUsageEvent,
   TContextUsageEvent,
 } from 'librechat-data-provider';
+import type { SettledThroughput } from '~/utils/throughput';
 import type { ContextSnapshot } from '~/store/usage';
 import {
   overheadKey,
@@ -25,6 +26,8 @@ import {
   EMPTY_USAGE_TOTALS,
   contextSnapshotFamily,
   snapshotsByAnchorFamily,
+  throughputSamplesFamily,
+  recordSettledThroughput,
 } from '~/store/usage';
 import {
   sumBranch,
@@ -35,7 +38,9 @@ import {
   migrateIndex,
   sumTotalUsage,
   estimateTokens,
+  appendBounded,
   normalizeUsageUnits,
+  THROUGHPUT_MAX_SAMPLES,
 } from '~/utils';
 
 const FLUSH_INTERVAL_MS = 250;
@@ -118,12 +123,84 @@ export default function useUsageHandler(): UsageHandlers {
   /** Provider-confirmed output tokens since the last snapshot (current run) */
   const confirmedRef = useRef(0);
   const lastFlushRef = useRef(0);
+  /** Wall-clock bounds of the turn's streamed output, for the settled rate */
+  const firstDeltaAtRef = useRef<number | null>(null);
+  const lastDeltaAtRef = useRef<number | null>(null);
+  /** First pre-invoke snapshot of the turn: the TTFT origin */
+  const turnStartAtRef = useRef<number | null>(null);
+  /** Provider-confirmed primary output across every call of the turn */
+  const turnOutputRef = useRef(0);
+  /** A resumed turn's timing is partial, so its settled rate is withheld */
+  const resumedRef = useRef(false);
+  /** Set for the synchronous replay burst that follows `seedLive`, so
+   *  replayed deltas stamp neither timing nor samples */
+  const replayingRef = useRef(false);
 
   return useMemo<UsageHandlers>(() => {
     const jotai = getDefaultStore();
 
     const setLive = (convoKey: string, value: number) => {
       jotai.set(liveTokensFamily(convoKey), value);
+    };
+
+    const recordDelta = (now: number) => {
+      if (replayingRef.current) {
+        return;
+      }
+      firstDeltaAtRef.current ??= now;
+      lastDeltaAtRef.current = now;
+    };
+
+    const pushSample = (convoKey: string, tokens: number, now: number) => {
+      if (replayingRef.current) {
+        return;
+      }
+      const samplesAtom = throughputSamplesFamily(convoKey);
+      jotai.set(
+        samplesAtom,
+        appendBounded(jotai.get(samplesAtom), { at: now, tokens }, THROUGHPUT_MAX_SAMPLES),
+      );
+    };
+
+    const resetThroughput = (convoKey: string) => {
+      firstDeltaAtRef.current = null;
+      lastDeltaAtRef.current = null;
+      turnStartAtRef.current = null;
+      turnOutputRef.current = 0;
+      resumedRef.current = false;
+      jotai.set(throughputSamplesFamily(convoKey), []);
+    };
+
+    /** Settle the turn's speed onto its response: confirmed output over the
+     *  first-to-last delta span, or the char estimate when no provider usage
+     *  arrived. A resumed turn saw only part of the span, so it settles nothing. */
+    const settleThroughput = (convoKey: string, responseId: string | null) => {
+      const first = firstDeltaAtRef.current;
+      const last = lastDeltaAtRef.current;
+      if (responseId == null || resumedRef.current || first == null || last == null) {
+        return;
+      }
+      const durationMs = last - first;
+      if (durationMs <= 0) {
+        return;
+      }
+      const confirmed = turnOutputRef.current;
+      const estimated = confirmed <= 0;
+      const outputTokens = estimated
+        ? estimateTokens(streamCharsRef.current, jotai.get(calibrationFamily(convoKey)))
+        : confirmed;
+      if (outputTokens <= 0) {
+        return;
+      }
+      const startedAt = turnStartAtRef.current;
+      const settled: SettledThroughput = {
+        responseId,
+        outputTokens,
+        durationMs,
+        ttftMs: startedAt != null && first >= startedAt ? first - startedAt : null,
+        estimated,
+      };
+      recordSettledThroughput(settled);
     };
 
     /** Flush the in-flight pending usage into a response's index entry, then
@@ -183,6 +260,9 @@ export default function useUsageHandler(): UsageHandlers {
       streamCharsRef.current = 0;
       confirmedRef.current = 0;
       setLive(convoKey, 0);
+      if (!replayingRef.current) {
+        turnStartAtRef.current ??= Date.now();
+      }
     };
 
     /** Folds one usage event into the in-flight pending holder exactly once per
@@ -282,9 +362,13 @@ export default function useUsageHandler(): UsageHandlers {
       reconcileLiveSnapshot(data, submission);
       /** Use the repaired completion count (not raw output_tokens) so the
        *  snapshot gauge keeps the full response for under-reporting providers */
-      confirmedRef.current += normalizeUsageUnits(data).output;
+      const confirmedOutput = normalizeUsageUnits(data).output;
+      confirmedRef.current += confirmedOutput;
+      turnOutputRef.current += confirmedOutput;
       streamCharsRef.current = 0;
-      setLive(getConvoKey(submission), confirmedRef.current);
+      const convoKey = getConvoKey(submission);
+      setLive(convoKey, confirmedRef.current);
+      pushSample(convoKey, confirmedRef.current, Date.now());
     };
 
     const tapStream: UsageHandlers['tapStream'] = (data, submission) => {
@@ -294,13 +378,16 @@ export default function useUsageHandler(): UsageHandlers {
       }
       streamCharsRef.current += chars;
       const now = Date.now();
+      recordDelta(now);
       if (now - lastFlushRef.current < FLUSH_INTERVAL_MS) {
         return;
       }
       lastFlushRef.current = now;
       const convoKey = getConvoKey(submission);
       const ratio = jotai.get(calibrationFamily(convoKey));
-      setLive(convoKey, confirmedRef.current + estimateTokens(streamCharsRef.current, ratio));
+      const live = confirmedRef.current + estimateTokens(streamCharsRef.current, ratio);
+      setLive(convoKey, live);
+      pushSample(convoKey, live, now);
     };
 
     const tapContent: UsageHandlers['tapContent'] = (text, submission) => {
@@ -311,13 +398,16 @@ export default function useUsageHandler(): UsageHandlers {
       /** Cumulative per part — replace the running char count, don't add */
       streamCharsRef.current = value.length;
       const now = Date.now();
+      recordDelta(now);
       if (now - lastFlushRef.current < FLUSH_INTERVAL_MS) {
         return;
       }
       lastFlushRef.current = now;
       const convoKey = getConvoKey(submission);
       const ratio = jotai.get(calibrationFamily(convoKey));
-      setLive(convoKey, confirmedRef.current + estimateTokens(streamCharsRef.current, ratio));
+      const live = confirmedRef.current + estimateTokens(streamCharsRef.current, ratio);
+      setLive(convoKey, live);
+      pushSample(convoKey, live, now);
     };
 
     const resetLive: UsageHandlers['resetLive'] = (submission) => {
@@ -325,6 +415,7 @@ export default function useUsageHandler(): UsageHandlers {
       confirmedRef.current = 0;
       const convoKey = getConvoKey(submission);
       setLive(convoKey, 0);
+      resetThroughput(convoKey);
       /** Terminal path with no salvageable response (stream error / intentional
        *  close): discard the in-flight pending usage — and the subagent share
        *  inside it — so neither can merge into the next response nor outlive the
@@ -340,6 +431,7 @@ export default function useUsageHandler(): UsageHandlers {
 
     const attributePending: UsageHandlers['attributePending'] = (responseId, submission) => {
       const convoKey = getConvoKey(submission);
+      settleThroughput(convoKey, responseId);
       /** Flush the billed-but-uncommitted usage onto the stopped partial reply
        *  (when its id is known and events were folded), then reset pending and
        *  the live estimate. Index-derived branch/total then reflect it. */
@@ -351,6 +443,7 @@ export default function useUsageHandler(): UsageHandlers {
       streamCharsRef.current = 0;
       confirmedRef.current = 0;
       setLive(convoKey, 0);
+      resetThroughput(convoKey);
     };
 
     const backfillUsage: UsageHandlers['backfillUsage'] = (entries, submission) => {
@@ -364,6 +457,17 @@ export default function useUsageHandler(): UsageHandlers {
 
     const seedLive: UsageHandlers['seedLive'] = (chars, submission) => {
       const convoKey = getConvoKey(submission);
+      /** The replay that follows runs synchronously in this same task, so the
+       *  guard lifts on the next macrotask, once live deltas can arrive. Timing
+       *  restarts from the first live delta; the settled rate stays withheld. */
+      resumedRef.current = true;
+      replayingRef.current = true;
+      firstDeltaAtRef.current = null;
+      lastDeltaAtRef.current = null;
+      jotai.set(throughputSamplesFamily(convoKey), []);
+      setTimeout(() => {
+        replayingRef.current = false;
+      }, 0);
       /** A completed resumed call already carries exact output in its snapshot.
        * Trailing text is the same output, not a new streaming delta. */
       if (chars <= 0 || jotai.get(contextSnapshotFamily(convoKey))?.completedOutputTokens != null) {
@@ -406,6 +510,7 @@ export default function useUsageHandler(): UsageHandlers {
 
       const userMsgId = submission.userMessage?.messageId ?? null;
       const responseId = data.responseMessage?.messageId ?? null;
+      settleThroughput(realId, responseId);
 
       /** Flush the in-flight response's pending usage into its index entry, then
        *  reset pending. Branch/total are summed from the index, so this single
@@ -455,6 +560,7 @@ export default function useUsageHandler(): UsageHandlers {
       streamCharsRef.current = 0;
       confirmedRef.current = 0;
       setLive(realId, 0);
+      resetThroughput(realId);
     };
 
     return {

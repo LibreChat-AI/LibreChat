@@ -177,6 +177,30 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.contextCost).toBe(true);
   });
 
+  it('disables token throughput by default', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.tokenThroughput).toBe(false);
+  });
+
+  it('preserves an enabled token throughput flag', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        tokenThroughput: true,
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.tokenThroughput).toBe(true);
+  });
+
   it('passes through a configured display currency', async () => {
     const config: Partial<TCustomConfig> = {
       interface: {

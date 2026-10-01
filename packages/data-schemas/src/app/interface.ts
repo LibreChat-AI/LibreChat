@@ -45,6 +45,7 @@ export async function loadDefaultInterface({
     buildInfo: interfaceConfig?.buildInfo ?? defaults.buildInfo,
     contextUsage: interfaceConfig?.contextUsage ?? defaults.contextUsage,
     contextCost: interfaceConfig?.contextCost ?? defaults.contextCost,
+    tokenThroughput: interfaceConfig?.tokenThroughput ?? defaults.tokenThroughput,
     feedback: interfaceConfig?.feedback ?? defaults.feedback,
     currency: interfaceConfig?.currency ?? defaults.currency,
 

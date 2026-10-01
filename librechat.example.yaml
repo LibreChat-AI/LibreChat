@@ -145,6 +145,8 @@ interface:
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
   # Minimum interval between syntax-highlighting passes while streamed code changes (default: 300 ms)
   # codeHighlightThrottleMs: 300
+  # Show live tokens-per-second under the streaming response (default: false)
+  # tokenThroughput: true
   # Enable/disable file search as a chatarea selection (default: true)
   # Note: This setting does not disable the Agents File Search Capability.
   # To disable the Agents Capability, see the Agents Endpoint configuration instead.

@@ -19,6 +19,7 @@ import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
+import Throughput from '~/components/Chat/Messages/Throughput';
 import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
 import SubRow from '~/components/Chat/Messages/SubRow';
 import { MessageContext } from '~/Providers';
@@ -154,6 +155,14 @@ const MessageRender = memo(function MessageRender({
     [messageId, conversation?.conversationId, isSubmitting, isLatestMessage],
   );
 
+  const showElapsed = shouldShowElapsed({
+    isSubmitting,
+    isLatestMessage,
+    isCreatedByUser: msg?.isCreatedByUser,
+    siblingIdx,
+    siblingCount,
+  });
+
   if (!msg) {
     return null;
   }
@@ -184,13 +193,14 @@ const MessageRender = memo(function MessageRender({
               dot vacates, so the retry navigation beside it — whose width the footer
               reserves whether or not hover has revealed it — must never push the
               timer inboard of that column. */}
-          {shouldShowElapsed({
-            isSubmitting,
-            isLatestMessage,
-            isCreatedByUser: msg.isCreatedByUser,
-            siblingIdx,
-            siblingCount,
-          }) && <Elapsed index={index} />}
+          {showElapsed && <Elapsed index={index} />}
+          {msg.isCreatedByUser !== true && (
+            <Throughput
+              conversationId={msg.conversationId ?? conversation?.conversationId}
+              messageId={msg.messageId}
+              streaming={showElapsed}
+            />
+          )}
           {/* A user turn is right-aligned, so its retry navigation belongs at the
               outer edge under the bubble rather than inboard of the actions.
 

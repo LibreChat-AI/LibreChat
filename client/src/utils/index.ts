@@ -30,6 +30,7 @@ export * from './textarea';
 export * from './messages';
 export * from './focus';
 export * from './tokens';
+export * from './throughput';
 export * from './redirect';
 export * from './links';
 export * from './languages';
