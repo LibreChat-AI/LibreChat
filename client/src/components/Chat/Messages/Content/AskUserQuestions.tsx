@@ -209,26 +209,33 @@ export default function AskUserQuestions({
           </fieldset>
         </AutoHeight>
       </div>
-      {(form.status === 'error' || form.status === 'expired') && (
-        <div className="text-text-warning flex items-center gap-1.5 px-3 pt-2 text-xs">
-          <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
-          {form.status === 'expired'
-            ? localize('com_ui_approval_expired')
-            : localize('com_ui_ask_answer_error')}
-        </div>
-      )}
-      {showRemaining && (
-        <button
-          type="button"
-          className="text-text-secondary hover:text-text-primary shrink-0 px-3 pt-2 text-left text-xs hover:underline"
-          onClick={() => goToStep(firstUnanswered)}
-        >
-          {localize(
-            remaining === 1 ? 'com_ui_questions_remaining_one' : 'com_ui_questions_remaining',
-            { 0: remaining },
+      {/* Status lines come and go with the step (the remaining-questions link
+          appears only on the last one), so they ease in with the rest of the
+          card instead of popping its height. */}
+      <div className="shrink-0 px-3">
+        <AutoHeight>
+          {(form.status === 'error' || form.status === 'expired') && (
+            <div className="text-text-warning flex items-center gap-1.5 pt-2 text-xs">
+              <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
+              {form.status === 'expired'
+                ? localize('com_ui_approval_expired')
+                : localize('com_ui_ask_answer_error')}
+            </div>
           )}
-        </button>
-      )}
+          {showRemaining && (
+            <button
+              type="button"
+              className="text-text-secondary hover:text-text-primary pt-2 text-left text-xs select-none hover:underline"
+              onClick={() => goToStep(firstUnanswered)}
+            >
+              {localize(
+                remaining === 1 ? 'com_ui_questions_remaining_one' : 'com_ui_questions_remaining',
+                { 0: remaining },
+              )}
+            </button>
+          )}
+        </AutoHeight>
+      </div>
       <div
         className={cn(
           'flex shrink-0 items-center gap-2 p-3',
@@ -237,6 +244,7 @@ export default function AskUserQuestions({
       >
         <Button
           type="button"
+          className="select-none"
           size="sm"
           variant="outline"
           disabled={form.locked}
@@ -248,6 +256,7 @@ export default function AskUserQuestions({
           {stepped && (
             <Button
               type="button"
+              className="select-none"
               size="sm"
               variant="outline"
               disabled={navLocked || activeIndex === 0}
@@ -259,6 +268,7 @@ export default function AskUserQuestions({
           {isLastStep ? (
             <Button
               type="button"
+              className="select-none"
               size="sm"
               variant="submit"
               disabled={!form.canSubmit}
@@ -271,6 +281,7 @@ export default function AskUserQuestions({
           ) : (
             <Button
               type="button"
+              className="select-none"
               size="sm"
               variant="submit"
               disabled={navLocked}

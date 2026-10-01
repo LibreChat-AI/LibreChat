@@ -170,7 +170,7 @@ const buttonVariantRecipe = cva(
          * chosen row.
          */
         option:
-          'w-full justify-start gap-2.5 whitespace-normal text-left font-normal text-text-primary transition-opacity enabled:duration-500 disabled:duration-500 disabled:transition-all hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
+          'w-full select-none justify-start gap-2.5 whitespace-normal text-left font-normal text-text-primary transition-opacity enabled:duration-500 disabled:duration-500 disabled:transition-all hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
         card: 'justify-start whitespace-normal rounded-2xl text-left font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
       },
       size: {
