@@ -599,6 +599,12 @@ export namespace Agents {
      * tool execution so an approval cannot migrate to another VM or workspace.
      */
     codeExecutionBinding?: CodeExecutionApprovalBinding;
+    /**
+     * Server-only MCP key-spelling pairs the paused run knew for the tools it offered
+     * "Always allow", including pairs lazily resolved subagents reported. Resume rechecks
+     * eligibility against them before remembering a tool.
+     */
+    toolApprovalAliases?: Array<{ name: string; aliasName: string }>;
   }
 
   export interface CodeExecutionApprovalTargetBinding {

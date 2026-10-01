@@ -62,6 +62,7 @@ const {
   markToolApprovalAllowAlways,
   resolveRunToolApprovalAllows,
   getRunMCPToolAliases,
+  collectAllowAlwaysAliases,
   agentRunUsesCheckpointer,
   canAgentGraphPause,
   getPluginHookSource,
@@ -4358,7 +4359,7 @@ class AgentClient extends BaseClient {
             {
               policy: appConfig?.endpoints?.[EModelEndpoint.agents]?.toolApproval,
               agents: reachableAgents,
-              aliases: getRunMCPToolAliases(this.run),
+              aliases: getRunMCPToolAliases(run),
               storedTools: resolveRunToolApprovalAllows(
                 appConfig?.endpoints?.[EModelEndpoint.agents]?.toolApproval,
                 this.options.req?.resolvedConversation,
@@ -4411,6 +4412,7 @@ class AgentClient extends BaseClient {
       // so the server restores it and rebuilds the same graph (and the fingerprint matches).
       resumeContext,
       codeExecutionBinding,
+      toolApprovalAliases: collectAllowAlwaysAliases(interruptPayload, getRunMCPToolAliases(run)),
     });
 
     // Job-replacement guard: streamId == conversationId is reused per conversation, so a

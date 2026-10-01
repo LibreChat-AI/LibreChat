@@ -8,6 +8,7 @@ import {
   markToolApprovalAllowAlways,
   applyConversationToolAllows,
   resolveRunToolApprovalAllows,
+  collectAllowAlwaysAliases,
   MAX_CONVERSATION_TOOL_ALLOWS,
   buildEffectiveToolApprovalPolicy,
 } from './allow';
@@ -315,6 +316,28 @@ describe('recordToolApprovalAllows', () => {
       agents: [
         { mcpToolAliases: [{ name: GITHUB_SEARCH, aliasName: 'legacy_search_mcp_github' }] },
       ],
+      request: {},
+      addConvoToolApprovalAllows,
+    });
+    expect(stored).toEqual([]);
+    expect(addConvoToolApprovalAllows).not.toHaveBeenCalled();
+  });
+
+  it('rechecks against the alias pairs the paused run kept for its offers', async () => {
+    const pairs = [{ name: GITHUB_SEARCH, aliasName: 'legacy_search_mcp_github' }];
+    expect(collectAllowAlwaysAliases(offered, [...pairs, { name: 'x', aliasName: 'y' }])).toEqual(
+      pairs,
+    );
+    expect(collectAllowAlwaysAliases(payloadFor(GITHUB_SEARCH), pairs)).toBeUndefined();
+
+    const addConvoToolApprovalAllows = jest.fn().mockResolvedValue(true);
+    const stored = await recordToolApprovalAllows({
+      userId: 'u1',
+      conversationId: 'c1',
+      policy: enabled({ ask: ['legacy_search_mcp_github'] }),
+      pendingAction: { payload: offered, toolApprovalAliases: pairs },
+      resolutions,
+      agents: [{}],
       request: {},
       addConvoToolApprovalAllows,
     });

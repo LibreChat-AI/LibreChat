@@ -225,6 +225,49 @@ export function markToolApprovalAllowAlways(
 }
 
 /**
+ * The alias pairs a pause must keep so resume can recheck its offers against the same
+ * spellings the paused run healed with: only pairs of tools marked `allow_always`, since
+ * resume stores nothing else. Undefined when nothing was offered.
+ */
+export function collectAllowAlwaysAliases(
+  payload: Agents.ToolApprovalInterruptPayload | undefined,
+  aliases: readonly MCPToolAlias[],
+): MCPToolAlias[] | undefined {
+  if (payload?.type !== 'tool_approval' || aliases.length === 0) {
+    return undefined;
+  }
+  const nameByToolCallId = new Map(
+    payload.action_requests.map((request) => [request.tool_call_id, request.name]),
+  );
+  const offered = new Set<string>();
+  for (const config of payload.review_configs) {
+    const name = nameByToolCallId.get(config.tool_call_id);
+    if (config.allow_always === true && typeof name === 'string') {
+      offered.add(name);
+    }
+  }
+  const kept = aliases
+    .filter(({ name, aliasName }) => offered.has(name) || offered.has(aliasName))
+    .map(({ name, aliasName }) => ({ name, aliasName }));
+  return kept.length > 0 ? kept : undefined;
+}
+
+/** Alias pairs persisted on a pending action, dropping any malformed entry. */
+function readPendingActionAliases(value: unknown): MCPToolAlias[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(
+    (entry): entry is MCPToolAlias =>
+      entry != null &&
+      typeof entry.name === 'string' &&
+      typeof entry.aliasName === 'string' &&
+      entry.name !== '' &&
+      entry.aliasName !== '',
+  );
+}
+
+/**
  * Tool names the user approved with `scope: 'session'` in a validated resume batch.
  * Eligibility is re-checked against the live policy, so a pause created before an
  * admin tightened the config cannot store a now-ineligible name.
@@ -326,7 +369,7 @@ export interface RecordToolApprovalAllowsInput {
   userId: string;
   conversationId: string;
   policy: TToolApprovalPolicy | undefined;
-  pendingAction: Pick<Agents.PendingAction, 'payload'>;
+  pendingAction: Pick<Agents.PendingAction, 'payload' | 'toolApprovalAliases'>;
   resolutions: unknown;
   /** Reachable agents of the rebuilt run; eligibility heals against their MCP aliases. */
   agents?: readonly (ToolAllowAlwaysAgent | null | undefined)[];
@@ -370,7 +413,11 @@ export async function recordToolApprovalAllows({
   if (payload?.type !== 'tool_approval' || !Array.isArray(resolutions)) {
     return [];
   }
-  const aliases = collectAgentAliases(agents);
+  /** The rebuilt agents' aliases miss pairs lazy subagents reported to the paused run. */
+  const aliases = [
+    ...collectAgentAliases(agents),
+    ...readPendingActionAliases(pendingAction.toolApprovalAliases),
+  ];
   const eligible = collectToolApprovalAllows(
     payload,
     resolutions as Agents.ToolApprovalResolution[],
