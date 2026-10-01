@@ -457,7 +457,7 @@
   "com_endpoint_plug_resend_files": "Resend Files",
   "com_endpoint_presence_penalty": "Presence Penalty",
   "com_endpoint_preset": "preset",
-  "com_endpoint_preset_custom_name_placeholder": "something needs to go here. was empty",
+  "com_endpoint_preset_custom_name_placeholder": "Set a custom name for the preset",
   "com_endpoint_preset_default": "is now the default preset.",
   "com_endpoint_preset_default_item": "Default:",
   "com_endpoint_preset_default_none": "No default preset active.",
