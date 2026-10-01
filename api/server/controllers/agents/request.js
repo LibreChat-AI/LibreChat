@@ -53,7 +53,8 @@ const {
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
   settleExistingRowsBeforeErrorTurn,
-  isSettledJobRecord,
+  resolveDisconnectSnapshotMode,
+  resolveReconciledSnapshotEnvelope,
   markAbortedCompactionContent,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
@@ -1861,20 +1862,10 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
      * overwrite this with the complete response using the same messageId pattern.
      */
     job.emitter.on('allSubscribersLeft', async (aggregatedContent) => {
-      if (partialResponseSaved || !aggregatedContent || aggregatedContent.length === 0) {
-        return;
-      }
-
-      /** The run is still live here: mark what streamed, but leave the outcome
-       *  to whichever path settles the turn (the terminal abort synthesizes
-       *  the typed failure a stopped compaction with no summary needs). */
-      const persistableContent = markAbortedCompactionContent(
-        filterPersistableAbortContent(aggregatedContent),
-        isCompaction,
-        { synthesizeFailure: false },
-      );
-      if (persistableContent.length === 0) {
-        logger.debug('[ResumableAgentController] No persistable content to save partial response');
+      /** Empty content is rejected only after the snapshot mode is known: a
+       *  reconciled compaction synthesizes its terminal outcome from nothing,
+       *  while a live run has nothing persistable. */
+      if (partialResponseSaved || !aggregatedContent) {
         return;
       }
 
@@ -1887,6 +1878,47 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         return;
       }
 
+      /** How this snapshot may persist is decided in @librechat/api: live
+       *  runs keep the marker-only shape, a failed terminal write (settled
+       *  for a reconciliation frame) promotes the snapshot to the turn's
+       *  terminal row, and a durably settled compaction withholds it. */
+      const snapshotMode = await resolveDisconnectSnapshotMode(
+        isCompaction,
+        jobRecord,
+        jobCreatedAt,
+        {
+          anchorExists: async () =>
+            (
+              await getMessages(
+                {
+                  user: userId,
+                  messageId: resumeState.userMessage.messageId,
+                  conversationId,
+                },
+                '_id',
+              )
+            ).length > 0,
+        },
+      );
+      if (snapshotMode === 'skip') {
+        logger.debug(
+          '[ResumableAgentController] Skipping compaction partial save for a settled job',
+        );
+        return;
+      }
+      if (snapshotMode !== 'terminal' && aggregatedContent.length === 0) {
+        return;
+      }
+      const persistableContent = markAbortedCompactionContent(
+        filterPersistableAbortContent(aggregatedContent),
+        isCompaction,
+        { synthesizeFailure: snapshotMode === 'terminal' },
+      );
+      if (persistableContent.length === 0) {
+        logger.debug('[ResumableAgentController] No persistable content to save partial response');
+        return;
+      }
+
       partialResponseSaved = true;
       const responseConversationId = resumeState.conversationId || conversationId;
       /** The run publishes its calibration and fading tiers onto the job; a
@@ -1896,17 +1928,6 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
        * record is the source, since the client-facing resume snapshot never
        * carries server-private state. */
       const contextMeta = jobRecord?.createdAt === jobCreatedAt ? jobRecord.contextMeta : undefined;
-      /** A compaction whose settling path (completion, error, abort) owns the
-       *  final row must not have it reopened as an unfinished snapshot here;
-       *  the guard reads the same record, so the window is the settling
-       *  path's own commit span. Ordinary turns keep the pre-change behavior
-       *  exactly: their snapshot is the fallback row, settled or not. */
-      if (isCompaction && isSettledJobRecord(jobRecord, jobCreatedAt)) {
-        logger.debug(
-          '[ResumableAgentController] Skipping compaction partial save for a settled job',
-        );
-        return;
-      }
 
       try {
         const partialMessage = {
@@ -1915,8 +1936,12 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           parentMessageId: resumeState.userMessage.messageId,
           sender: client?.sender ?? 'AI',
           content: persistableContent,
-          unfinished: true,
-          error: false,
+          /** A snapshot promoted to the terminal row settles with the
+           *  envelope its reconciled claim's status dictates; a live-run
+           *  snapshot keeps the live shape. */
+          ...(snapshotMode === 'terminal'
+            ? resolveReconciledSnapshotEnvelope(jobRecord?.status)
+            : { unfinished: true, error: false }),
           isCreatedByUser: false,
           user: userId,
           endpoint: endpointOption.endpoint,
