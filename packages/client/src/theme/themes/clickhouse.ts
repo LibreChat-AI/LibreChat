@@ -347,6 +347,9 @@ const clickHouseShape = {
   surfaceRadius: '0.5rem',
   largeSurfaceRadius: '0.75rem',
   roundControlRadius: '9999px',
+  menuRadius: '0.25rem', // genericMenu.panel.radii.all
+  tooltipRadius: '0.25rem', // tooltip.radii.all
+  tabRadius: '0.25rem', // tabs.radii.all
   radiusSm: '0.25rem', // border.radii.1
   radiusMd: '0.25rem', // border.radii.1
   radiusLg: '0.25rem', // border.radii.1

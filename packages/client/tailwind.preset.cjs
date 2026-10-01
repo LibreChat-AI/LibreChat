@@ -102,6 +102,7 @@ module.exports = {
         'theme-control-round': 'var(--theme-round-control-radius, 9999px)',
         'theme-surface': 'var(--theme-surface-radius, 1rem)',
         'theme-surface-lg': 'var(--theme-large-surface-radius, 1.5rem)',
+        'theme-tab': 'var(--theme-tab-radius, 0.185rem)',
       },
       boxShadow: {
         'theme-surface':

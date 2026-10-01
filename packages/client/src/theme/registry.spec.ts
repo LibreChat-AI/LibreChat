@@ -948,6 +948,27 @@ describe('theme registry', () => {
     ].forEach((appearance) => expect(issues(appearance)).toHaveLength(1));
   });
 
+  it('keeps the menu, tooltip and tab corners on their old literals unless a theme names its own', () => {
+    expect(defaultAppearance).toMatchObject({
+      menuRadius: '0.7rem',
+      tooltipRadius: '0.275rem',
+      tabRadius: '0.185rem',
+    });
+    const corners = { menuRadius: '4px', tooltipRadius: '0.25rem', tabRadius: '0' };
+    const { appearance } = resolveTheme(
+      { version: 1, name: 'corner-reference', modes: { light: { appearance: corners } } },
+      'light',
+    );
+    expect(appearance).toMatchObject(corners);
+    expect(
+      validateThemeDefinition({
+        version: 1,
+        name: 'corner-values',
+        modes: { light: { appearance: { menuRadius: 'round' } } },
+      }),
+    ).toHaveLength(1);
+  });
+
   it('keeps a 2px focus outline 2px off the edge unless a theme names its own', () => {
     expect(defaultAppearance).toMatchObject({ focusRingWidth: '2px', focusRingOffset: '2px' });
     const { appearance } = resolveTheme(

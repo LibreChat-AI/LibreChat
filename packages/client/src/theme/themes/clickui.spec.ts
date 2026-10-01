@@ -487,6 +487,9 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   largeSurfaceRadius: 'border.radii.3',
   radius3xl: 'border.radii.3',
   roundControlRadius: 'border.radii.full',
+  menuRadius: 'click.genericMenu.panel.radii.all',
+  tooltipRadius: 'click.tooltip.radii.all',
+  tabRadius: 'click.tabs.radii.all',
   fontFamily: 'typography.font.families.regular',
   monoFontFamily: 'typography.font.families.mono',
   displayFontFamily: 'typography.font.families.display',
@@ -837,10 +840,6 @@ const cssValue = (path: string, selector: string, property: string) => {
   return value.replace(/\s+/g, ' ').trim();
 };
 
-/** The value of `property` in the first `selector` rule of a primitive's stylesheet. */
-const stylesheetValue = (file: string, selector: string, property: string) => () =>
-  cssValue(`components/${file}`, selector, property);
-
 /** The app stylesheet, which repaints some primitive rules after the package's own. */
 const APP_STYLESHEET = '../../../client/src/style.css';
 
@@ -860,11 +859,26 @@ function resolveRoleVar(value: string, mode: ThemeMode): string {
 }
 
 /**
+ * A primitive rule's value with the theme role it reads resolved, after checking that the app
+ * stylesheet, which loads after the package's and repeats the rule, still draws the same value.
+ */
+function appCopyResolved(file: string, selector: string, property: string, mode: ThemeMode) {
+  const own = cssValue(`components/${file}`, selector, property);
+  const app = cssValue(APP_STYLESHEET, selector, property);
+  if (app !== own) {
+    throw new Error(
+      `The app's ${selector} ${property} (${app}) no longer repeats ${file} (${own})`,
+    );
+  }
+  return resolveRoleVar(own, mode);
+}
+
+/**
  * The open Dropdown menu's corner. jsdom loads no stylesheet, so the rendered popover is checked
  * to take its corner from `.popover-ui` alone (no radius utility or inline radius overrides it)
  * before the rule's value is read.
  */
-const popoverCorner = () => {
+const popoverCorner = (mode: ThemeMode) => {
   try {
     fireEvent.click(dropdownProbe());
     const popover = document.querySelector<HTMLElement>('[role="listbox"]');
@@ -875,7 +889,7 @@ const popoverCorner = () => {
     if (override !== undefined || popover.style.borderRadius !== '') {
       throw new Error(`The open Dropdown menu sets its own corner (${override ?? 'inline'})`);
     }
-    return stylesheetValue('Dropdown.css', '.popover-ui', 'border-radius')();
+    return appCopyResolved('Dropdown.css', '.popover-ui', 'border-radius', mode);
   } finally {
     cleanup();
   }
@@ -908,26 +922,16 @@ const tooltipShadow = (mode: ThemeMode) =>
     'box-shadow',
   );
 
-/** The Tabs trigger's corner, an arbitrary `rounded-[...]` value on the rendered trigger. */
-const tabsCorner = () => {
-  try {
-    const trigger = mount(
-      createElement(
-        Tabs,
-        { defaultValue: 'a' },
-        createElement(TabsList, null, createElement(TabsTrigger, { value: 'a' }, 'A')),
-      ),
-      '[role="tab"]',
-    );
-    const corner = /(?:^|\s)rounded-\[([^\]]+)\]/.exec(trigger.getAttribute('class') ?? '')?.[1];
-    if (corner === undefined) {
-      throw new Error('The Tabs trigger no longer draws a literal corner; probe its role instead');
-    }
-    return corner;
-  } finally {
-    cleanup();
-  }
-};
+/** The Tabs trigger, which takes its corner from a radius utility. */
+const tabsProbe = () =>
+  mount(
+    createElement(
+      Tabs,
+      { defaultValue: 'a' },
+      createElement(TabsList, null, createElement(TabsTrigger, { value: 'a' }, 'A')),
+    ),
+    '[role="tab"]',
+  );
 
 const bothModes = (reason: string): Partial<Record<ThemeMode, string>> => ({
   light: reason,
@@ -1028,7 +1032,7 @@ const parityProbes: Record<string, ParityProbe> = {
     element: dropdownProbe,
   },
   'Dropdown menu corner': {
-    token: 'border.radii.1',
+    token: 'click.genericMenu.panel.radii.all',
     kind: 'shape',
     utility: 'rounded',
     literal: popoverCorner,
@@ -1043,7 +1047,7 @@ const parityProbes: Record<string, ParityProbe> = {
     token: 'click.tooltip.radii.all',
     kind: 'shape',
     utility: 'rounded',
-    literal: stylesheetValue('Tooltip.css', '.tooltip', 'border-radius'),
+    literal: (mode) => appCopyResolved('Tooltip.css', '.tooltip', 'border-radius', mode),
   },
   'Tooltip shadow': {
     untokened: { value: 'none', source: 'Tooltip.module.css .content sets no box-shadow' },
@@ -1055,7 +1059,7 @@ const parityProbes: Record<string, ParityProbe> = {
     token: 'click.tabs.radii.all',
     kind: 'shape',
     utility: 'rounded',
-    literal: tabsCorner,
+    element: tabsProbe,
   },
   'Dialog surface': {
     token: 'click.dialog.color.background.default',
@@ -1240,32 +1244,17 @@ const notExpressible: Record<string, NotExpressible> = {
     issue: 'https://github.com/berry-13/LibreChat/issues/206',
   },
 
-  'Dropdown menu corner': {
-    decisions: { light: ['Dropdown menu corner'], dark: ['Dropdown menu corner'] },
-    reason:
-      'the popover corner is a 0.7rem literal in Dropdown.css, and no radius role defaults to 0.7rem',
-    issue: 'https://github.com/berry-13/LibreChat/issues/196',
-  },
   'Dropdown menu shadow': {
     decisions: { dark: ['Dropdown menu shadow'] },
     reason:
       "light reads shadowLg, but the app's dark .popover-ui rule repaints the shadow with a 0.25-alpha literal that no shadow role defaults to",
     issue: 'https://github.com/berry-13/LibreChat/issues/217',
   },
-  'Tooltip corner and shadow': {
-    decisions: {
-      light: ['Tooltip corner', 'Tooltip shadow'],
-      dark: ['Tooltip corner', 'Tooltip shadow'],
-    },
+  'Tooltip shadow': {
+    decisions: { light: ['Tooltip shadow'], dark: ['Tooltip shadow'] },
     reason:
-      'Tooltip.css draws a 0.275rem corner and a black drop shadow as literals; no radius role defaults to 0.275rem and no shadow role to either shadow, where Click UI draws 0.25rem and no shadow',
-    issue: 'https://github.com/berry-13/LibreChat/issues/215',
-  },
-  'Tabs corner': {
-    decisions: { light: ['Tabs corner'], dark: ['Tabs corner'] },
-    reason:
-      'the Tabs trigger corner is a rounded-[0.185rem] literal, and no radius role defaults to 0.185rem',
-    issue: 'https://github.com/berry-13/LibreChat/issues/216',
+      'Tooltip.css draws a black drop shadow, a different one in each mode, and no shadow role defaults to either, where Click UI draws none',
+    issue: 'https://github.com/berry-13/LibreChat/issues/220',
   },
 };
 
@@ -1296,6 +1285,7 @@ const radiusRoles: Record<string, keyof IThemeAppearance> = {
   'theme-control-round': 'roundControlRadius',
   'theme-surface': 'surfaceRadius',
   'theme-surface-lg': 'largeSurfaceRadius',
+  'theme-tab': 'tabRadius',
 };
 
 const fixedRadii: Record<string, string> = { full: '9999px', none: '0px' };

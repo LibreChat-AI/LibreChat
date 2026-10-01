@@ -198,6 +198,9 @@ html {
   --theme-round-control-radius: 9999px;
   --theme-surface-radius: 1rem;
   --theme-large-surface-radius: 1.5rem;
+  --theme-menu-radius: 0.7rem;
+  --theme-tooltip-radius: 0.275rem;
+  --theme-tab-radius: 0.185rem;
   --theme-radius-sm: calc(0.5rem - 4px);
   --theme-radius-md: calc(0.5rem - 2px);
   --theme-radius-lg: 0.5rem;

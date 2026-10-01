@@ -449,6 +449,11 @@ export interface IThemeAppearance {
   roundControlRadius: string;
   surfaceRadius: string;
   largeSurfaceRadius: string;
+  /** The corners of a menu panel (`.popover-ui`), a tooltip and a tab trigger, apart from the
+   *  control and surface radii; their defaults are the literals those primitives drew. */
+  menuRadius: string;
+  tooltipRadius: string;
+  tabRadius: string;
   radiusSm: string;
   radiusMd: string;
   radiusLg: string;

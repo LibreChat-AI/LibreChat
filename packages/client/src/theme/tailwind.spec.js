@@ -150,6 +150,7 @@ describe('LibreChat Tailwind preset', () => {
         '--theme-large-surface-radius',
         defaultAppearance.largeSurfaceRadius,
       ],
+      ['rounded-theme-tab', '--theme-tab-radius', defaultAppearance.tabRadius],
       ['shadow-theme-surface', '--theme-elevation-surface', defaultAppearance.elevationSurface],
       ['duration-theme-fast', '--theme-motion-fast', defaultAppearance.motionFast],
       ['duration-theme-normal', '--theme-motion-normal', defaultAppearance.motionNormal],

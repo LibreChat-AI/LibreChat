@@ -4,7 +4,7 @@
   flex-direction: column;
   overflow: auto;
   overscroll-behavior: contain;
-  border-radius: 0.7rem;
+  border-radius: var(--theme-menu-radius, 0.7rem);
   border-width: 1px;
   border-style: solid;
   border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));

@@ -59,6 +59,10 @@ them.
 > `calc(0.5rem - 4px)` and `--radius` no longer retunes them. Set the `radiusSm` through
 > `radius3xl` appearance roles, or the properties behind them, to reshape the scale.
 
+Three primitives keep corners of their own outside that scale: the menu panel (`.popover-ui`) reads
+`menuRadius` (0.7rem), the tooltip reads `tooltipRadius` (0.275rem) and the tab trigger reads
+`tabRadius` (0.185rem, through `rounded-theme-tab`). The defaults are the corners they always drew.
+
 The bundled ClickHouse theme (`themes/clickhouse.ts`) is the reference for a theme that changes
 shape as well as color: it tightens the radius scale to Click UI's `border.radii` steps, sets the
 mono family to Inconsolata over a real fallback stack, and raises every surface with Click UI's

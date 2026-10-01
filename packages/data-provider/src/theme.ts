@@ -322,6 +322,10 @@ const appearanceValidators = {
   roundControlRadius: isLength,
   surfaceRadius: isLength,
   largeSurfaceRadius: isLength,
+  /** A menu panel's, a tooltip's and a tab trigger's corner. */
+  menuRadius: isLength,
+  tooltipRadius: isLength,
+  tabRadius: isLength,
   radiusSm: isLength,
   radiusMd: isLength,
   radiusLg: isLength,

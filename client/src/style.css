@@ -1973,7 +1973,7 @@ html {
 .tooltip {
   z-index: 150;
   cursor: pointer;
-  border-radius: 0.275rem;
+  border-radius: var(--theme-tooltip-radius, 0.275rem);
   background-color: rgb(var(--surface-primary));
   padding-top: 0.25rem;
   padding-bottom: 0.25rem;
@@ -2064,7 +2064,7 @@ html[data-input-modality='keyboard']
   flex-direction: column;
   overflow: auto;
   overscroll-behavior: contain;
-  border-radius: 0.7rem;
+  border-radius: var(--theme-menu-radius, 0.7rem);
   border-width: 1px;
   border-style: solid;
   border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));

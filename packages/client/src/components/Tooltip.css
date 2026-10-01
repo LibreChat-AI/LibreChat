@@ -2,7 +2,7 @@
   z-index: 150;
   cursor: pointer;
   pointer-events: auto;
-  border-radius: 0.275rem;
+  border-radius: var(--theme-tooltip-radius, 0.275rem);
   background-color: rgb(var(--surface-primary));
   padding-top: 0.25rem;
   padding-bottom: 0.25rem;
