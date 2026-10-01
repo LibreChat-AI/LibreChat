@@ -3122,12 +3122,47 @@ export type TOpenIdDiscoveryConfig = z.infer<typeof openIdDiscoverySchema>;
 /** Maximum CAS attempts per ACL document, including the initial attempt. */
 export const permissionWriteAttemptsSchema = z.number().int().min(1).max(100).default(3);
 
+export const classificationProviderSchema = z
+  .object({
+    baseURL: z.string().url().optional(),
+    model: z.string().optional(),
+    /** Which wire vocabulary the endpoint speaks. */
+    dialect: z.enum(['port', 'systemone']).optional(),
+    /** Nests `state` and `questions` under this key, for hosts that wrap them. */
+    requestKey: z.string().optional(),
+    /** Reads the answer envelope from this key, for hosts that wrap the response. */
+    responseKey: z.string().optional(),
+    /** Ceiling for one judgment, retries and backoff included. A judgment that
+     *  misses it is abandoned, never awaited. */
+    timeoutMs: z.number().int().positive().max(60_000).optional(),
+    /** Retries inside `timeoutMs`, for a rate limit, server or network error only. */
+    maxRetries: z.number().int().nonnegative().max(5).optional(),
+    /** Environment variable holding this provider's key. Never the key itself. */
+    apiKeyEnv: z.string().optional(),
+  })
+  /** Strict so a misspelled key fails loudly here rather than as a missing
+   *  setting much later. */
+  .strict();
+
+export type TClassificationProviderConfig = z.infer<typeof classificationProviderSchema>;
+
+/** Every capability defaults to off, so an unset block changes nothing. */
+export const classificationSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Which registered provider answers. An unknown name disables classification. */
+  provider: z.string().default('http'),
+  providers: z.record(z.string(), classificationProviderSchema).default({}),
+});
+
+export type TClassificationConfig = z.infer<typeof classificationSchema>;
+
 export const configSchema = z.object({
   version: z.string(),
   permissions: z.object({ maxWriteAttempts: permissionWriteAttemptsSchema }).optional(),
   cache: z.boolean().default(true),
   ocr: ocrSchema.optional(),
   webSearch: webSearchSchema.optional(),
+  classification: classificationSchema.optional(),
   langfuse: langfuseConfigSchema.optional(),
   memory: memorySchema.optional(),
   summarization: summarizationConfigSchema.optional(),

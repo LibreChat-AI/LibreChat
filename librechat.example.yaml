@@ -520,6 +520,40 @@ actions:
 #     - 'host.docker.internal:8080'
 #     - '127.0.0.1:8080'
 
+# Classification: small typed judgments (yes/no, pick one) that code can branch
+# on. Off unless enabled. The key is read from the environment variable named by
+# apiKeyEnv, never written here. `timeoutMs` bounds each judgment, retries
+# included.
+# classification:
+#   enabled: true
+#   provider: http
+#   providers:
+#     http:
+#       baseURL: https://classifier.example.com/v1/classify
+#       apiKeyEnv: CLASSIFIER_API_KEY
+#       timeoutMs: 4000
+#
+#   # Known hosts ship as presets, so naming one is usually enough. Cloudflare
+#   # is the exception: its URL carries your account id.
+#   provider: cloudflare
+#   providers:
+#     cloudflare:
+#       baseURL: https://api.cloudflare.com/client/v4/accounts/<account-id>/ai/run
+#       apiKeyEnv: CLOUDFLARE_API_TOKEN
+#
+#   # A host with no preset needs no code either, only its shape. `dialect`
+#   # picks the wire vocabulary, `requestKey` nests the body, `responseKey`
+#   # unwraps the reply.
+#   provider: inhouse
+#   providers:
+#     inhouse:
+#       baseURL: https://classify.internal/v1/run
+#       model: your-model
+#       dialect: systemone
+#       requestKey: input
+#       responseKey: result
+#       apiKeyEnv: INHOUSE_CLASSIFIER_KEY
+
 # Example MCP Servers Object Structure
 # mcpServers:
 #   everything:
