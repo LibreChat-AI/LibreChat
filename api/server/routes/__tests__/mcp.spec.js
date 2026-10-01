@@ -967,9 +967,10 @@ describe('MCP Routes', () => {
       expect(staleResponse.headers.location).toBe(`${basePath}/oauth/error?error=invalid_state`);
       expect(MCPOAuthHandler.completeOAuthFlow).not.toHaveBeenCalled();
 
-      /** The stale callback consumed the CSRF cookie; the current tab recovers via the fresh PENDING flow */
+      /** The stale callback consumed the CSRF cookie; the initiating browser retains its session binding. */
       const legitResponse = await request(app)
         .get('/api/mcp/test-server/oauth/callback')
+        .set('Cookie', [`oauth_session=${generateTestCsrfToken('test-user-id')}`])
         .query({ code: 'current-auth-code', state: flowId });
 
       expect(legitResponse.status).toBe(302);
@@ -977,8 +978,50 @@ describe('MCP Routes', () => {
       expect(MCPOAuthHandler.completeOAuthFlow).toHaveBeenCalledTimes(1);
     });
 
-    describe('CSRF fallback via active PENDING flow', () => {
-      it('should proceed when a fresh PENDING flow exists and no cookies are present', async () => {
+    describe('browser binding for active PENDING flows', () => {
+      it.each([
+        { cookies: [] },
+        { cookies: ['oauth_csrf=invalid'] },
+        { cookies: [`oauth_session=${generateTestCsrfToken('victim-user-id')}`] },
+        {
+          cookies: [
+            'oauth_csrf=invalid',
+            `oauth_session=${generateTestCsrfToken('victim-user-id')}`,
+          ],
+        },
+      ])(
+        'rejects an unbound pending flow with %j before exchange or mutation',
+        async ({ cookies }) => {
+          const flowId = 'test-user-id:test-server';
+          const mockFlowManager = {
+            getFlowState: jest.fn().mockResolvedValue({
+              status: 'PENDING',
+              createdAt: Date.now(),
+              metadata: { state: flowId, userId: 'test-user-id', codeVerifier: 'test-verifier' },
+            }),
+            completeFlow: jest.fn(),
+            failFlow: jest.fn(),
+            deleteFlow: jest.fn(),
+          };
+          require('~/config').getFlowStateManager.mockReturnValue(mockFlowManager);
+          const response = await request(app)
+            .get('/api/mcp/test-server/oauth/callback')
+            .set('Cookie', cookies)
+            .query({ code: 'victim-auth-code', state: flowId });
+
+          expect(response.headers.location).toBe(
+            `${getBasePath()}/oauth/error?error=csrf_validation_failed`,
+          );
+          expect(MCPOAuthHandler.completeOAuthFlow).not.toHaveBeenCalled();
+          expect(MCPTokenStorage.storeTokens).not.toHaveBeenCalled();
+          expect(mockFlowManager.getFlowState).not.toHaveBeenCalled();
+          expect(mockFlowManager.completeFlow).not.toHaveBeenCalled();
+          expect(mockFlowManager.failFlow).not.toHaveBeenCalled();
+          expect(mockFlowManager.deleteFlow).not.toHaveBeenCalled();
+        },
+      );
+
+      it('should proceed when a fresh PENDING flow has a valid session binding', async () => {
         const flowId = 'test-user-id:test-server';
         const pendingCreatedAt = Date.now();
         const mockFlowManager = {
@@ -1027,6 +1070,7 @@ describe('MCP Routes', () => {
 
         const response = await request(app)
           .get('/api/mcp/test-server/oauth/callback')
+          .set('Cookie', [`oauth_session=${generateTestCsrfToken('test-user-id')}`])
           .query({ code: 'test-code', state: flowId });
 
         const basePath = getBasePath();
@@ -1099,6 +1143,7 @@ describe('MCP Routes', () => {
 
         const response = await request(app)
           .get('/api/mcp/test-server/oauth/callback')
+          .set('Cookie', [`oauth_csrf=${generateTestCsrfToken(flowId)}`])
           .query({ code: 'test-code', state: flowId });
 
         expect(response.status).toBe(302);
@@ -1166,6 +1211,7 @@ describe('MCP Routes', () => {
 
         const response = await request(app)
           .get('/api/mcp/test-server/oauth/callback')
+          .set('Cookie', [`oauth_csrf=${generateTestCsrfToken(flowId)}`])
           .query({ code: 'test-code', state: flowId });
 
         expect(response.status).toBe(302);
@@ -1229,6 +1275,7 @@ describe('MCP Routes', () => {
 
         const response = await request(app)
           .get('/api/mcp/test-server/oauth/callback')
+          .set('Cookie', [`oauth_csrf=${generateTestCsrfToken(flowId)}`])
           .query({ code: 'test-code', state: flowId });
 
         expect(response.status).toBe(302);
