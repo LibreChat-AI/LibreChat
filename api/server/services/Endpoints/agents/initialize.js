@@ -473,6 +473,7 @@ const initializeClientWithProvider = async ({
           agentId,
           executionContext,
         ),
+        executionContext,
         toolRegistry: ctx.toolRegistry,
         callerCapabilityProjection,
         backgroundToolNames: ctx.backgroundToolNames,

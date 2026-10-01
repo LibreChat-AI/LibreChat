@@ -79,13 +79,15 @@ function makeAgent(overrides?: Record<string, unknown>) {
 async function captureRunConfig(
   agent = makeAgent(),
   subagentTasks?: SubagentTaskConfig,
+  hitlCapable = false,
 ): Promise<Record<string, unknown>> {
-  return captureAgentsRunConfig([agent], subagentTasks);
+  return captureAgentsRunConfig([agent], subagentTasks, hitlCapable);
 }
 
 async function captureAgentsRunConfig(
   agents: Array<ReturnType<typeof makeAgent>>,
   subagentTasks?: SubagentTaskConfig,
+  hitlCapable = false,
 ): Promise<Record<string, unknown>> {
   await createRun({
     agents: agents as never,
@@ -93,6 +95,7 @@ async function captureAgentsRunConfig(
     streaming: true,
     streamUsage: true,
     subagentTasks,
+    hitlCapable,
   });
   const createMock = Run.create as jest.Mock;
   expect(createMock).toHaveBeenCalledTimes(1);
@@ -127,6 +130,36 @@ describe('createRun code-tool eager/session wiring', () => {
     const [agentInput] = (runConfig.graphConfig as { agents: Array<Record<string, unknown>> })
       .agents;
     expect(agentInput.codeSessionKey).toBe(codeSessionKey);
+  });
+
+  it('gives a self-spawned child the isolated checkout warning without changing the parent', async () => {
+    const runConfig = await captureRunConfig(
+      makeAgent({
+        subagents: { enabled: true, allowSelf: true },
+        codeExecutionContext: {
+          baseUrl: 'https://attached.example/v1',
+          codeSessionKey: 'attached',
+          executionProfile: 'stateful',
+          statefulSessions: true,
+          environmentType: 'attached',
+          environmentId: 'machine',
+          codeWorkspace: {
+            environmentId: 'machine',
+            workspaceId: 'repo',
+            operations: ['execute_command'],
+            workspaceInstanceId: 'a'.repeat(64),
+          },
+        },
+      }),
+      undefined,
+      true,
+    );
+    const [parent] = (runConfig.graphConfig as { agents: Array<Record<string, unknown>> }).agents;
+    const [self] = parent.subagentConfigs as Array<{
+      agentInputs?: { additional_instructions?: string };
+    }>;
+    expect(parent.additional_instructions ?? '').not.toContain('private checkout');
+    expect(self.agentInputs?.additional_instructions).toContain('private checkout');
   });
 
   it('registers detached task controls only on a spawn-capable parent', async () => {

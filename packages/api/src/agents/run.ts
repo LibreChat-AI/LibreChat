@@ -117,6 +117,7 @@ import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
+import { getSubagentCodeCloneInstructions } from '~/agents/execution';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -1886,6 +1887,11 @@ function buildSubagentConfigs(
   if (allowSelf) {
     const selfName = agentInput.name ?? agent.name ?? 'self';
     countSubagentConfig(state);
+    const hasIsolatedCodeClone =
+      getSubagentCodeCloneInstructions(true, agent.codeExecutionContext) != null;
+    const selfChildInputs = hasIsolatedCodeClone
+      ? buildIsolatedAgentInputs(agent, toInput)
+      : agentInput;
     /**
      * Self-spawn reuses the parent's AgentInputs. When the parent has
      * background or host-injected intent tools, provide a sanitized copy so
@@ -1901,6 +1907,12 @@ function buildSubagentConfigs(
       stripBackgroundFromToolRegistry(agentInput.toolRegistry, agent.backgroundToolNames),
       agent.intentToolNames,
     );
+    let selfToolRegistry = sanitizedToolRegistry;
+    if (detachedTasksEnabled && sanitizedToolRegistry != null) {
+      selfToolRegistry = new Map(sanitizedToolRegistry);
+    } else if (hasIsolatedCodeClone) {
+      selfToolRegistry = selfChildInputs.toolRegistry;
+    }
     configs.push({
       self: true,
       type: SELF_SUBAGENT_TYPE,
@@ -1908,13 +1920,13 @@ function buildSubagentConfigs(
       description: `Spawn ${selfName} in an isolated context to handle a focused subtask. Verbose tool output stays in the child's context; only a summary returns.`,
       /** Self-spawn reuses the parent's config, so mirror the parent's recursion limit. */
       maxTurns: resolveSubagentMaxTurns(agentsEConfig, agent),
-      ...(hasBackground || hasInjectedIntent
+      ...(hasBackground || hasInjectedIntent || hasIsolatedCodeClone
         ? {
             agentInputs: {
-              ...agentInput,
+              ...selfChildInputs,
               toolDefinitions: stripIntentFromToolDefinitions(
                 stripBackgroundFromToolDefinitions(
-                  agentInput.toolDefinitions,
+                  selfChildInputs.toolDefinitions,
                   agent.backgroundToolNames,
                 ),
                 agent.intentToolNames,
@@ -1922,10 +1934,7 @@ function buildSubagentConfigs(
               /** `registerBackgroundTaskTool` mutates the parent registry after
                * configs are built. Detach its self-child snapshot so the host
                * poll tool cannot appear there through that shared Map. */
-              toolRegistry:
-                detachedTasksEnabled && sanitizedToolRegistry != null
-                  ? new Map(sanitizedToolRegistry)
-                  : sanitizedToolRegistry,
+              toolRegistry: selfToolRegistry,
             },
           }
         : {}),
@@ -2412,7 +2421,11 @@ export async function createRun({
 
     const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
 
-    const additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
+    const additionalInstructions = [
+      dynamicToolInstructions,
+      agent.additional_instructions ?? '',
+      getSubagentCodeCloneInstructions(isSubagent, agent.codeExecutionContext) ?? '',
+    ]
       .join('\n')
       .trim();
 

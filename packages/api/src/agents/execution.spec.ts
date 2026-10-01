@@ -8,8 +8,98 @@ import {
   codeExecutionAuthHeaders,
   codeExecutionHeaders,
   getCodeWorkspaceSelections,
+  getSubagentCodeCloneInstructions,
   resolveCodeExecutionContext,
+  resolveSubagentCodeExecutionContext,
 } from './execution';
+
+describe('resolveSubagentCodeExecutionContext', () => {
+  const parent: CodeExecutionContext = {
+    baseUrl: 'http://attached.test/v1',
+    codeSessionKey: 'parent',
+    executionProfile: 'stateful',
+    statefulSessions: true,
+    environmentType: 'attached',
+    environmentId: 'machine',
+    codeWorkspace: {
+      environmentId: 'machine',
+      workspaceId: 'repo',
+      operations: ['execute_command'],
+      workspaceInstanceId: 'a'.repeat(64),
+    },
+  };
+
+  const lineage = (...runIds: string[]) => ({
+    ancestry: runIds.map((subagentRunId) => ({ subagentRunId })),
+  });
+
+  it('keeps the parent and workers without clone support unchanged', () => {
+    expect(resolveSubagentCodeExecutionContext(parent)).toBe(parent);
+    expect(resolveSubagentCodeExecutionContext(parent, lineage())).toBe(parent);
+    const legacy = {
+      ...parent,
+      codeWorkspace: { ...parent.codeWorkspace!, workspaceInstanceId: undefined },
+    };
+    expect(resolveSubagentCodeExecutionContext(legacy, lineage('child-1'))).toBe(legacy);
+  });
+
+  it('isolates parallel and nested children while reusing a resumed child clone', () => {
+    const first = resolveSubagentCodeExecutionContext(parent, lineage('child-1'));
+    const resumed = resolveSubagentCodeExecutionContext(parent, lineage('child-1'));
+    const parallel = resolveSubagentCodeExecutionContext(parent, lineage('child-2'));
+    const nested = resolveSubagentCodeExecutionContext(parent, lineage('child-1', 'nested'));
+    expect(first.codeWorkspace?.workspaceInstanceId).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.codeWorkspace?.workspaceInstanceId).toBe(
+      resumed.codeWorkspace?.workspaceInstanceId,
+    );
+    expect(first.codeWorkspace?.workspaceInstanceId).not.toBe(
+      parallel.codeWorkspace?.workspaceInstanceId,
+    );
+    expect(first.codeWorkspace?.workspaceInstanceId).not.toBe(
+      nested.codeWorkspace?.workspaceInstanceId,
+    );
+    expect(parent.codeWorkspace?.workspaceInstanceId).toBe('a'.repeat(64));
+    expect(first.codeWorkspace?.workspaceId).toBe(parent.codeWorkspace?.workspaceId);
+  });
+
+  it('does not use the parent checkout when a child lineage is incomplete', () => {
+    expect(() => resolveSubagentCodeExecutionContext(parent, lineage(''))).toThrow(
+      'No code tool was started',
+    );
+  });
+
+  it('fails closed when a child loses the clone capability negotiated at run start', () => {
+    const downgraded = {
+      ...parent,
+      codeWorkspace: { ...parent.codeWorkspace!, workspaceInstanceId: undefined },
+    };
+    expect(() =>
+      resolveSubagentCodeExecutionContext(downgraded, lineage('child-1'), parent),
+    ).toThrow('No code tool was started');
+    expect(() =>
+      resolveSubagentCodeExecutionContext(
+        { ...parent, codeWorkspace: { ...parent.codeWorkspace!, workspaceId: 'other-repo' } },
+        lineage('child-1'),
+        parent,
+      ),
+    ).toThrow('No code tool was started');
+    expect(resolveSubagentCodeExecutionContext(downgraded, lineage('child-1'), downgraded)).toBe(
+      downgraded,
+    );
+    expect(resolveSubagentCodeExecutionContext(downgraded, lineage(), parent)).toBe(downgraded);
+  });
+
+  it('explains the separate checkout only to child runs that can use it', () => {
+    expect(getSubagentCodeCloneInstructions(true, parent)).toContain('not visible to the parent');
+    expect(getSubagentCodeCloneInstructions(false, parent)).toBeUndefined();
+    expect(
+      getSubagentCodeCloneInstructions(true, {
+        ...parent,
+        codeWorkspace: { ...parent.codeWorkspace!, workspaceInstanceId: undefined },
+      }),
+    ).toBeUndefined();
+  });
+});
 
 jest.mock('@librechat/agents', () => ({
   Constants: { EXECUTE_CODE: 'execute_code' },

@@ -120,6 +120,10 @@ jest.mock('@librechat/api', () => ({
   resolveCodeExecutionContext: (...args) => mockResolveCodeExecutionContext(...args),
   resolveCodeExecutionWorkspaceContext: (...args) =>
     mockResolveCodeExecutionWorkspaceContext(...args),
+  resolveSubagentCodeExecutionContext: (...args) =>
+    jest
+      .requireActual('../../../../packages/api/src/agents/execution.ts')
+      .resolveSubagentCodeExecutionContext(...args),
   createAttachedWorkspaceBashTool: (...args) => mockCreateAttachedWorkspaceBashTool(...args),
 }));
 
@@ -3099,6 +3103,99 @@ describe('ToolService - Action Capability Gating', () => {
         expect.objectContaining({ requestedSelections: req.body.codeWorkspaces }),
       );
       expect(result.loadedTools).toContainEqual({ name: AgentConstants.BASH_TOOL });
+    });
+
+    it('routes a trusted child tool batch to its own attached checkout', async () => {
+      const capabilities = [
+        AgentCapabilities.tools,
+        AgentCapabilities.execute_code,
+        AgentCapabilities.stateful_code_sessions,
+      ];
+      const req = createMockReq(capabilities);
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+      const parentInstanceId = 'a'.repeat(64);
+      mockResolveCodeExecutionContext.mockReturnValueOnce({
+        baseUrl: 'http://attached-code.test/v1',
+        codeSessionKey: 'execute_code:stateful:attached',
+        executionProfile: 'stateful',
+        statefulSessions: true,
+        environmentType: 'attached',
+        environmentId: 'personal-machine',
+      });
+      mockResolveCodeExecutionWorkspaceContext.mockImplementationOnce(async ({ context }) => ({
+        ...context,
+        codeWorkspace: {
+          environmentId: 'personal-machine',
+          workspaceId: 'project-a',
+          operations: ['execute_command'],
+          workspaceInstanceId: parentInstanceId,
+        },
+      }));
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: {
+          id: 'attached-agent',
+          tools: [Tools.execute_code],
+          stateful_code_sessions: true,
+        },
+        toolNames: [AgentConstants.BASH_TOOL],
+        toolRegistry: new Map([[AgentConstants.BASH_TOOL, { name: AgentConstants.BASH_TOOL }]]),
+        executionContext: { ancestry: [{ subagentRunId: 'child-run-1' }] },
+        actionsEnabled: false,
+      });
+
+      const childInstanceId =
+        result.configurable.codeExecutionContext.codeWorkspace.workspaceInstanceId;
+      expect(childInstanceId).toMatch(/^[a-f0-9]{64}$/);
+      expect(childInstanceId).not.toBe(parentInstanceId);
+      expect(mockCreateAttachedWorkspaceBashTool).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceInstanceId: childInstanceId }),
+      );
+    });
+
+    it('does not load child code tools if live worker capability loses the original checkout', async () => {
+      const capabilities = [
+        AgentCapabilities.tools,
+        AgentCapabilities.execute_code,
+        AgentCapabilities.stateful_code_sessions,
+      ];
+      const req = createMockReq(capabilities);
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+      const expectedContext = {
+        baseUrl: 'http://attached-code.test/v1',
+        codeSessionKey: 'execute_code:stateful:attached',
+        executionProfile: 'stateful',
+        statefulSessions: true,
+        environmentType: 'attached',
+        environmentId: 'personal-machine',
+        codeWorkspace: {
+          environmentId: 'personal-machine',
+          workspaceId: 'project-a',
+          operations: ['execute_command'],
+          workspaceInstanceId: 'a'.repeat(64),
+        },
+      };
+      mockResolveCodeExecutionContext.mockReturnValueOnce(expectedContext);
+
+      await expect(
+        loadToolsForExecution({
+          req,
+          res: {},
+          agent: {
+            id: 'attached-agent',
+            tools: [Tools.execute_code],
+            stateful_code_sessions: true,
+            codeExecutionContext: expectedContext,
+          },
+          toolNames: [AgentConstants.BASH_TOOL],
+          toolRegistry: new Map([[AgentConstants.BASH_TOOL, { name: AgentConstants.BASH_TOOL }]]),
+          executionContext: { ancestry: [{ subagentRunId: 'child-run-1' }] },
+          actionsEnabled: false,
+        }),
+      ).rejects.toThrow('No code tool was started');
+      expect(mockCreateAttachedWorkspaceBashTool).not.toHaveBeenCalled();
     });
 
     it('resolves stateful routing when handle_skill is the only requested tool', async () => {

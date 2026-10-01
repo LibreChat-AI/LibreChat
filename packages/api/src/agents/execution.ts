@@ -56,6 +56,86 @@ export interface CodeExecutionContext {
   };
 }
 
+/** Child checkout boundaries must be visible to the model, not just the scheduler. */
+export const SUBAGENT_CODE_CLONE_INSTRUCTIONS: string =
+  'Your attached code tools use a private checkout for this subagent run. Changes in the parent ' +
+  'checkout, including uncommitted changes, are not copied here, and your edits are not visible ' +
+  'to the parent. If you change files that the parent needs, commit and push an authorized branch ' +
+  'and report its repository, branch, and commit. If you cannot push, say that the edits remain ' +
+  'only in your private checkout; do not claim that the parent can use them.';
+
+export function getSubagentCodeCloneInstructions(
+  isSubagent: boolean,
+  context?: CodeExecutionContext,
+): string | undefined {
+  return isSubagent &&
+    context?.environmentType === 'attached' &&
+    context.codeWorkspace?.workspaceInstanceId
+    ? SUBAGENT_CODE_CLONE_INSTRUCTIONS
+    : undefined;
+}
+
+/**
+ * Child runs need separate clones even when they belong to the same chat. The
+ * SDK supplies this ancestry on the tool event itself; inherited configurable
+ * values and model-provided arguments must not establish a checkout identity.
+ * A resumed child retains its run IDs, so it returns to the same clone.
+ */
+export function resolveSubagentCodeExecutionContext(
+  context: CodeExecutionContext,
+  executionContext?: { readonly ancestry: readonly { readonly subagentRunId: string }[] },
+  expectedContext?: CodeExecutionContext | null,
+): CodeExecutionContext {
+  const workspace = context.codeWorkspace;
+  const parentInstanceId = workspace?.workspaceInstanceId;
+  const ancestry = executionContext?.ancestry;
+  const expectedWorkspace = expectedContext?.codeWorkspace;
+  if (
+    ancestry?.length &&
+    ancestry.some(({ subagentRunId }) => !subagentRunId) &&
+    (expectedWorkspace?.workspaceInstanceId || parentInstanceId)
+  ) {
+    throw new Error(
+      'The subagent checkout identity is incomplete. No code tool was started. Retry the subagent.',
+    );
+  }
+  if (
+    ancestry?.length &&
+    expectedContext?.environmentType === 'attached' &&
+    expectedWorkspace?.workspaceInstanceId &&
+    (context.environmentType !== 'attached' ||
+      context.environmentId !== expectedContext.environmentId ||
+      context.bridgeWorkerId !== expectedContext.bridgeWorkerId ||
+      context.baseUrl !== expectedContext.baseUrl ||
+      workspace?.workspaceId !== expectedWorkspace.workspaceId ||
+      parentInstanceId !== expectedWorkspace.workspaceInstanceId)
+  ) {
+    throw new Error(
+      'The attached workspace changed or lost isolated checkout support during this subagent run. ' +
+        'No code tool was started. Reconnect the worker and retry the subagent.',
+    );
+  }
+  if (
+    context.environmentType !== 'attached' ||
+    workspace == null ||
+    parentInstanceId == null ||
+    ancestry == null ||
+    ancestry.length === 0 ||
+    ancestry.some(({ subagentRunId }) => !subagentRunId)
+  ) {
+    return context;
+  }
+
+  const workspaceInstanceId = createHash('sha256')
+    .update('librechat-subagent-workspace-v1\0')
+    .update(JSON.stringify([parentInstanceId, ancestry.map(({ subagentRunId }) => subagentRunId)]))
+    .digest('hex');
+  return {
+    ...context,
+    codeWorkspace: { ...workspace, workspaceInstanceId },
+  };
+}
+
 /** Removes live capability data before a workspace binding is persisted. */
 export function getCodeWorkspaceSelections(
   contexts: Array<

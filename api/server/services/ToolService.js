@@ -57,6 +57,7 @@ const {
   createContextProgrammaticBashTool,
   resolveCodeExecutionContext,
   resolveCodeExecutionWorkspaceContext,
+  resolveSubagentCodeExecutionContext,
   resolveRunFileCodeExecutionContext,
   resolveCallerCapabilityProjectionSnapshot,
   CREATE_FILE_TOOL_NAME,
@@ -2146,6 +2147,7 @@ async function loadToolsForExecution({
   actionsEnabled,
   accessibleMcpServerNames,
   runFileCodeExecutionContext,
+  executionContext,
 }) {
   const appConfig = req.config;
   const allLoadedTools = [];
@@ -2237,13 +2239,18 @@ async function loadToolsForExecution({
     agentId: agent?.id,
     conversationId: conversationId ?? runtimeRequestBody?.conversationId,
   });
-  const codeExecutionContext = await resolveCodeExecutionWorkspaceContext({
+  const resolvedCodeExecutionContext = await resolveCodeExecutionWorkspaceContext({
     context: baseCodeExecutionContext,
     requestedSelections: runtimeRequestBody?.codeWorkspaces,
     persistedSelections: req.resolvedConversation?.codeWorkspaces,
     environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
     getAppConfig,
   });
+  const codeExecutionContext = resolveSubagentCodeExecutionContext(
+    resolvedCodeExecutionContext,
+    executionContext,
+    agent?.codeExecutionContext,
+  );
   Object.assign(
     codeExecutionContext,
     resolveRunFileCodeExecutionContext(codeExecutionContext, runFileCodeExecutionContext),
