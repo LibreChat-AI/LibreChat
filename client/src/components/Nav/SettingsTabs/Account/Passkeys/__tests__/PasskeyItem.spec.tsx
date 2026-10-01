@@ -53,7 +53,10 @@ describe('PasskeyItem rename controls', () => {
     const saveButton = screen.getByRole('button', { name: 'Save' });
     const cancelButton = screen.getByRole('button', { name: 'Cancel' });
 
-    expect(input).toHaveClass('h-theme-field');
+    /** The field takes the buttons' height role, so a theme whose field and button heights
+     *  differ still draws one row height. */
+    expect(input).toHaveClass('h-theme-button');
+    expect(input).not.toHaveClass('h-theme-field');
     expect(input.parentElement?.parentElement).toHaveClass('py-2');
     expect(saveButton).toHaveClass('size-theme-button');
     expect(cancelButton).toHaveClass('size-theme-button');
