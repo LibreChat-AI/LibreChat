@@ -55,5 +55,9 @@ test.describe('reload during a reply', () => {
     const assistantMessage = messagesView(page).locator('.message-render').last();
     await expect(assistantMessage).toContainText(SLOW_REPLY_LAST_CHUNK, { timeout: 90_000 });
     await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden();
+    /** The reloaded page held none of the reply, so its opening chunks prove the
+     *  reattachment replayed what streamed before the reload, not only what came after. */
+    await expect(assistantMessage).toContainText('chunk-000');
+    await expect(assistantMessage).toContainText('chunk-010');
   });
 });
