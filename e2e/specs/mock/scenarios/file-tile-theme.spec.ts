@@ -37,7 +37,7 @@ async function installThemeBridge(page: Page, definition: unknown) {
 const rgbCss = (triplet: string | undefined) => `rgb(${(triplet ?? '').split(' ').join(', ')})`;
 
 /** Attaches a text file and reads its chip's tile fill and glyph stroke. */
-async function tilePaint(page: Page, mode: Mode) {
+async function tilePaint(page: Page, mode: Mode, theme: string) {
   await page.goto(`${NEW_CHAT_PATH}?${THEME_PARAM}=${mode}`);
   await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible({
     timeout: 20000,
@@ -55,6 +55,10 @@ async function tilePaint(page: Page, mode: Mode) {
   await expect(tile).toBeVisible({ timeout: 20000 });
   const glyph = tray.locator('svg path[stroke-width], svg path.stroke-file-ink').first();
   await expect(glyph).toBeVisible();
+  await test.info().attach(`file-tile-${theme}-${mode}`, {
+    body: await tray.screenshot(),
+    contentType: 'image/png',
+  });
   return {
     fill: await tile.evaluate((node) => getComputedStyle(node).fill),
     ink: await glyph.evaluate((node) => getComputedStyle(node).stroke),
@@ -69,7 +73,7 @@ test.describe('file-type tile roles', () => {
     await installThemeBridge(page, null);
 
     for (const mode of MODES) {
-      expect(await tilePaint(page, mode)).toEqual({
+      expect(await tilePaint(page, mode, 'default')).toEqual({
         fill: 'rgb(255, 85, 136)',
         ink: 'rgb(255, 255, 255)',
       });
@@ -84,7 +88,7 @@ test.describe('file-type tile roles', () => {
 
     for (const mode of MODES) {
       const colors = clickHouseTheme.modes[mode]?.colors ?? {};
-      const paint = await tilePaint(page, mode);
+      const paint = await tilePaint(page, mode, 'clickhouse');
       await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
       expect(paint).toEqual({
         fill: rgbCss(colors['rgb-file-document']),
