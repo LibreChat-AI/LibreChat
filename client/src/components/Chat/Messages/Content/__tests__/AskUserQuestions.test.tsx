@@ -54,6 +54,10 @@ const renderBatch = (actionId: string, batch: Agents.AskUserQuestionBatchItem[] 
     </RecoilRoot>,
   );
 
+/** Every step stays mounted for the swap animation; only the active one is
+ *  exposed, the rest sit in a closed, `aria-hidden` collapse. */
+const isShown = (text: string) => screen.getByText(text).closest('[aria-hidden="true"]') == null;
+
 describe('AskUserQuestions', () => {
   beforeEach(() => {
     mockStatus = 'idle';
@@ -63,30 +67,30 @@ describe('AskUserQuestions', () => {
   test('shows one question at a time and walks the batch with Next/Back', () => {
     renderBatch('ask-steps');
 
-    expect(screen.getByText('Where should this run?')).toBeInTheDocument();
-    expect(screen.queryByText('Which time window?')).not.toBeInTheDocument();
+    expect(isShown('Where should this run?')).toBe(true);
+    expect(isShown('Which time window?')).toBe(false);
     expect(screen.getByText('Question 1 of 2')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
 
-    expect(screen.getByText('Which time window?')).toBeInTheDocument();
-    expect(screen.queryByText('Where should this run?')).not.toBeInTheDocument();
+    expect(isShown('Which time window?')).toBe(true);
+    expect(isShown('Where should this run?')).toBe(false);
     expect(screen.getByText('Question 2 of 2')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));
 
-    expect(screen.getByText('Where should this run?')).toBeInTheDocument();
+    expect(isShown('Where should this run?')).toBe(true);
     expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
   });
 
   test('advances automatically when a single-select choice is picked', () => {
     renderBatch('ask-advance');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Staging' }));
+    fireEvent.click(screen.getByRole('button', { name: /Staging/ }));
 
-    expect(screen.getByText('Which time window?')).toBeInTheDocument();
+    expect(isShown('Which time window?')).toBe(true);
     expect(screen.getByText('Question 2 of 2')).toBeInTheDocument();
   });
 
@@ -104,16 +108,16 @@ describe('AskUserQuestions', () => {
       { id: 'window', question: 'Which time window?' },
     ]);
 
-    fireEvent.click(screen.getByRole('checkbox', { name: 'us-east' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /us-east/ }));
 
-    expect(screen.getByText('Which regions?')).toBeInTheDocument();
+    expect(isShown('Which regions?')).toBe(true);
     expect(screen.getByText('Question 1 of 2')).toBeInTheDocument();
   });
 
   test('submits one answer map after every question is complete', () => {
     renderBatch('ask-batch');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Staging' }));
+    fireEvent.click(screen.getByRole('button', { name: /Staging/ }));
     fireEvent.change(screen.getByRole('textbox', { name: /Which time window/ }), {
       target: { value: 'Last seven days' },
     });
@@ -147,9 +151,9 @@ describe('AskUserQuestions', () => {
     expect(screen.getByRole('button', { name: 'Submit' })).toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: '1 question still needs an answer' }));
-    expect(screen.getByText('Where should this run?')).toBeInTheDocument();
+    expect(isShown('Where should this run?')).toBe(true);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Staging' }));
+    fireEvent.click(screen.getByRole('button', { name: /Staging/ }));
     expect(screen.getByRole('button', { name: 'Submit' })).toBeEnabled();
   });
 
@@ -157,7 +161,7 @@ describe('AskUserQuestions', () => {
     renderBatch('ask-dots');
 
     fireEvent.click(screen.getByRole('button', { name: 'Go to question 2, not answered' }));
-    expect(screen.getByText('Which time window?')).toBeInTheDocument();
+    expect(isShown('Which time window?')).toBe(true);
 
     fireEvent.change(screen.getByRole('textbox', { name: /Which time window/ }), {
       target: { value: 'Today' },
@@ -165,7 +169,7 @@ describe('AskUserQuestions', () => {
     expect(screen.getByRole('button', { name: 'Go to question 2, answered' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Go to question 1, not answered' }));
-    expect(screen.getByText('Where should this run?')).toBeInTheDocument();
+    expect(isShown('Where should this run?')).toBe(true);
   });
 
   test('retains partial answers and the current step across surface remounts', () => {
@@ -194,7 +198,7 @@ describe('AskUserQuestions', () => {
     expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
     expect(screen.queryByRole('group', { name: 'Question navigation' })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Yes' }));
+    fireEvent.click(screen.getByRole('button', { name: /Yes/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
 
     expect(mockSubmitAskAnswer).toHaveBeenCalledWith(
@@ -213,7 +217,7 @@ describe('AskUserQuestions', () => {
       },
     ]);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Yes' }));
+    fireEvent.click(screen.getByRole('button', { name: /Yes/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
 
     expect(mockSubmitAskAnswer).toHaveBeenCalledWith(
@@ -228,7 +232,7 @@ describe('AskUserQuestions', () => {
     const view = renderBatch('ask-expired');
 
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-    expect(screen.getByText('Which time window?')).toBeInTheDocument();
+    expect(isShown('Which time window?')).toBe(true);
 
     mockStatus = 'submitting';
     view.rerender(

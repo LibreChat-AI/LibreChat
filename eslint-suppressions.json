@@ -411,11 +411,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/AskUserQuestions.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/Container.tsx": {
     "shadcn/no-raw-colors": {
       "count": 1

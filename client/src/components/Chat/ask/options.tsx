@@ -23,6 +23,7 @@ export default function AskOptions({
   multiSelect,
   checked,
   selected,
+  selectedIsAnswer = false,
   locked,
   onActivate,
   optionRefs,
@@ -33,6 +34,9 @@ export default function AskOptions({
   multiSelect: boolean;
   checked: number[];
   selected?: number | null;
+  /** `selected` is the recorded answer rather than a keyboard highlight, so a
+   *  single-select row announces it as pressed. */
+  selectedIsAnswer?: boolean;
   locked: boolean;
   onActivate: (index: number) => void;
   optionRefs?: React.MutableRefObject<(HTMLButtonElement | null)[]>;
@@ -54,9 +58,10 @@ export default function AskOptions({
             variant="ghost"
             role={multiSelect ? 'checkbox' : undefined}
             aria-checked={multiSelect ? isChecked : undefined}
+            aria-pressed={!multiSelect && selectedIsAnswer ? selected === index : undefined}
             disabled={locked}
             className={cn(
-              'flex h-auto w-full justify-start gap-2.5 whitespace-normal px-2.5 py-2 text-left text-sm font-normal text-text-primary',
+              'text-text-primary flex h-auto w-full justify-start gap-2.5 px-2.5 py-2 text-left text-sm font-normal whitespace-normal',
               selected === index && 'bg-surface-active hover:bg-surface-active',
             )}
             onClick={() => onActivate(index)}
