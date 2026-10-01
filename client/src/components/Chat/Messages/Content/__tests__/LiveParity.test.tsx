@@ -1,6 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider, useSetAtom } from 'jotai';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ContentTypes, Tools, Constants, ToolCallTypes } from 'librechat-data-provider';
@@ -14,6 +15,7 @@ import { resolveAskUserQuestionPart } from '~/utils/approval';
 import { sandboxStartingByToolCallId } from '~/store';
 import ContentParts from '../ContentParts';
 import { getLiveActivity } from '../live';
+import * as mcpHooks from '~/hooks/MCP';
 import store from '~/store';
 
 /**
@@ -28,7 +30,11 @@ import store from '~/store';
  */
 jest.mock('~/hooks/MCP', () => {
   const mcpServerNames: string[] = [];
-  return { useMCPIconMap: () => new Map(), useMCPServerNames: () => mcpServerNames };
+  return {
+    __esModule: true,
+    useMCPIconMap: () => new Map(),
+    useMCPServerNames: () => mcpServerNames,
+  };
 });
 
 type Verdict = 'running' | 'completed' | 'failed' | 'cancelled';
@@ -157,6 +163,7 @@ const mount = (
         />
       </RecoilRoot>
     </QueryClientProvider>,
+    { wrapper: MemoryRouter },
   );
 
 /** What the real card says, read the way a user would, in the real English
@@ -882,9 +889,9 @@ describe('live fold parity with the cards it hides', () => {
     );
     const button = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
 
-    expect(button).toHaveTextContent('Querying the graph');
+    expect(button).toHaveTextContent('Preparing lookup');
     expect(within(button).getByTestId('live-phase-outcome')).toHaveTextContent('1/2 failed');
-    expect(button).toHaveAccessibleName(/Querying the graph.*1\/2 failed/);
+    expect(button).toHaveAccessibleName(/Preparing lookup.*1\/2 failed/);
   });
 
   it('announces a failure on the SAME call at once, without waiting for another source', () => {
@@ -1114,11 +1121,20 @@ describe('live activity hardening transitions', () => {
     act(() => {
       jest.advanceTimersByTime(500);
     });
+    expect(header).toHaveAccessibleName('Preparing Code ×2');
+    const dispatched = toPart(
+      { name: Tools.execute_code, args: '{"intent":"Checking the data"}', output: '' },
+      'sandbox-call',
+    );
+    view.rerender(frame([earlier, dispatched]));
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
     expect(header).toHaveAccessibleName('Checking the data');
     expect(screen.queryByTestId('live-phase-combo')).toBeNull();
 
     view.rerender(
-      frame([earlier, named, toPart({ name: Tools.execute_code, output: '' }, 'next-call')]),
+      frame([earlier, dispatched, toPart({ name: Tools.execute_code, output: '' }, 'next-call')]),
     );
     act(() => {
       jest.advanceTimersByTime(500);
@@ -1156,6 +1172,14 @@ describe('live activity hardening transitions', () => {
       frame([
         toPart({ name: Tools.execute_code, args: '{"intent":"Checking the data', output: '' }),
       ]),
+    );
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(screen.getByTestId('activity-phase-card')).toBe(card);
+    expect(screen.getByRole('button')).toHaveAccessibleName('Preparing Code');
+    view.rerender(
+      frame([toPart({ name: Tools.execute_code, args: '{"intent":"Checking the data"}' })]),
     );
     act(() => {
       jest.advanceTimersByTime(500);
@@ -1594,3 +1618,87 @@ describe('tool pane identity at finalization', () => {
     expect(toggles(container)[1]).toHaveAttribute('aria-expanded', 'false');
   });
 });
+
+describe('preparation labels across rendered tool cards', () => {
+  it.each([
+    'lookup',
+    Tools.bash_tool,
+    Tools.execute_code,
+    'create_file',
+    'edit_file',
+    'read_file',
+    'set_memory',
+    'skill',
+    Tools.web_search,
+    'file_search',
+    Constants.SUBAGENT,
+    'image_gen_oai',
+    'ask_user_question',
+    Constants.CHECK_BACKGROUND_TASK,
+  ])('does not present %s as executing while its args are streaming', (name) => {
+    const part = toPart({ name, args: '{"intent":"Checking a record","value":"unfinished' });
+    const { container } = mount([part], undefined, false);
+    expect(container.textContent).toContain('Preparing ');
+    if (name === Constants.SUBAGENT) {
+      expect(screen.getByRole('button', { name: /^Preparing / })).toBeInTheDocument();
+    } else {
+      expect(container.querySelector('.shimmer')).toHaveTextContent(/^Preparing /);
+    }
+    for (const announcement of container.querySelectorAll('[aria-live]')) {
+      expect(announcement).toHaveTextContent(/^Preparing /);
+    }
+  });
+
+  it('keeps collapsed activity in preparation until dispatch, without a sandbox-startup override', () => {
+    const call = {
+      name: Tools.bash_tool,
+      args: '{"command":"echo hi',
+      toolPreparationStartedAt: 100,
+    };
+    const preparing = getLiveActivity([toPart(call)], (key) => key, []);
+    expect(preparing.text).toBe('com_ui_tool_preparing');
+    expect(preparing.pendingToolCallId).toBeUndefined();
+    const dispatched = getLiveActivity(
+      [toPart({ ...call, args: '{"command":"echo hi"}', toolDispatchedAt: 200 })],
+      (key) => key,
+      [],
+    );
+    expect(dispatched.text).toBe('com_assistants_running_var');
+  });
+});
+
+it('keeps delimiter-bearing MCP server names out of preparation labels', () => {
+  const names = jest.spyOn(mcpHooks, 'useMCPServerNames').mockReturnValue(['Google_mcp_Workspace']);
+  try {
+    mount(
+      [toPart({ name: 'search_mcp_Google_mcp_Workspace', args: '{"query":"partial' })],
+      undefined,
+      false,
+    );
+    const card = screen.getByTestId('tool-call');
+    expect(within(card).getByRole('button')).toHaveTextContent('Preparing search');
+    expect(within(card).getByRole('button')).not.toHaveTextContent('Preparing search_mcp_Google');
+  } finally {
+    names.mockRestore();
+  }
+});
+
+it.each(['lookup', 'image_gen_oai'])(
+  'prepares legacy %s function cards while arguments stream',
+  (name) => {
+    const part: TMessageContentParts = {
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id: 'legacy',
+        type: ToolCallTypes.FUNCTION,
+        function: { name, arguments: '{"prompt":"unfinished', output: '' },
+        progress: 0.1,
+      },
+    };
+    const { container } = mount([part], undefined, false);
+    expect(container.querySelector('.shimmer')).toHaveTextContent(/^Preparing /);
+    for (const announcement of container.querySelectorAll('[aria-live]')) {
+      expect(announcement).toHaveTextContent(/^Preparing /);
+    }
+  },
+);

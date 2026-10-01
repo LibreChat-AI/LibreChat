@@ -286,7 +286,7 @@ export function magnifyFalloff(distance: number, influence: number): number {
  *  exists to navigate. */
 const indicatorButtonClasses = cn(
   'flex w-full shrink-0 items-center justify-end rounded-sm transition-opacity duration-300',
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-xheavy',
+  'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy',
 );
 
 const dimIndicatorClasses =
@@ -355,7 +355,7 @@ const chevronButtonClasses = cn(
   'group-focus-within/nav:text-text-secondary group-focus-within/nav:opacity-100',
   'group-hover/nav:hover:text-text-primary',
   'group-hover/nav:disabled:opacity-30 group-focus-within/nav:disabled:opacity-30',
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-xheavy',
+  'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy',
 );
 
 function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivElement> }) {
@@ -1597,7 +1597,7 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
       aria-label={localize('com_ui_message_nav')}
       aria-keyshortcuts="Shift+Alt+M"
       className={cn(
-        'group/nav absolute right-2 top-1/2 z-40 hidden max-h-[min(24rem,calc(100%-2rem))]',
+        'group/nav absolute top-1/2 right-2 z-40 hidden max-h-[min(24rem,calc(100%-2rem))]',
         '-translate-y-1/2 flex-col items-end gap-1.5 px-1.5 py-2 md:flex',
       )}
     >
@@ -1613,7 +1613,7 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
 
       {startEntry && (
         <div
-          className="flex w-14 cursor-pointer touch-none select-none flex-col items-stretch"
+          className="flex w-14 cursor-pointer touch-none flex-col items-stretch select-none"
           onPointerDown={handlePointerDown}
           onPointerEnter={handleStartPointerEnter}
           onPointerLeave={clearTooltip}
@@ -1643,7 +1643,7 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
         onKeyDown={handleColumnKeyDown}
         onScroll={handleColumnScroll}
         data-message-nav-column=""
-        className="relative flex min-h-0 w-14 cursor-pointer touch-none select-none flex-col items-stretch gap-1.5 overflow-y-auto [&::-webkit-scrollbar]:hidden"
+        className="relative flex min-h-0 w-14 cursor-pointer touch-none flex-col items-stretch gap-1.5 overflow-y-auto select-none [&::-webkit-scrollbar]:hidden"
         style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
       >
         {messageEntries.map((entry) => {
@@ -1668,7 +1668,7 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
 
       {endEntry && (
         <div
-          className="flex w-14 cursor-pointer touch-none select-none flex-col items-stretch"
+          className="flex w-14 cursor-pointer touch-none flex-col items-stretch select-none"
           onPointerDown={handlePointerDown}
           onPointerEnter={handleEndPointerEnter}
           onPointerLeave={clearTooltip}
@@ -1709,7 +1709,7 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
               transform: 'translateY(-50%)',
               zIndex: 999,
             }}
-            className="pointer-events-none max-w-[280px] rounded-xl border border-border-light bg-surface-secondary px-3 py-2 text-text-secondary shadow-lg"
+            className="border-border-light bg-surface-secondary text-text-secondary pointer-events-none max-w-[280px] rounded-xl border px-3 py-2 shadow-lg"
           >
             <p className="line-clamp-3 text-xs">{tipText}</p>
           </div>,

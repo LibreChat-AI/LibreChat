@@ -27,6 +27,43 @@ import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from '~/agents/invocation';
 
 const DEFAULT_OUTPUT_BYTES = 256 * 1024;
 
+export const ATTACHED_WORKSPACE_EXECUTOR = 'attached_workspace';
+
+/** Tools built by `createAttachedWorkspaceBashTool`. Membership is object
+ *  identity, so neither a tool name nor anything a command prints can claim it. */
+const attachedWorkspaceBashTools = new WeakSet<object>();
+
+export function isAttachedWorkspaceBashTool(value: unknown): boolean {
+  return typeof value === 'object' && value != null && attachedWorkspaceBashTools.has(value);
+}
+
+interface ExecutorTarget {
+  executor?: string;
+}
+
+/**
+ * Consumes the run step the execute handler recorded when it resolved the
+ * attached-workspace tool, and stamps the executor on the completion event's
+ * tool call (streamed) and on the aggregated part (persisted). A step that was
+ * not recorded is left untouched, whatever its output says.
+ */
+export function stampCommandExecutor(
+  attachedStepIds: Set<string> | null | undefined,
+  result: { id?: unknown; tool_call?: ExecutorTarget } | null | undefined,
+  part?: ExecutorTarget | null,
+): void {
+  const stepId = result?.id;
+  if (typeof stepId !== 'string' || attachedStepIds?.delete(stepId) !== true) {
+    return;
+  }
+  if (result?.tool_call != null) {
+    result.tool_call.executor = ATTACHED_WORKSPACE_EXECUTOR;
+  }
+  if (part != null) {
+    part.executor = ATTACHED_WORKSPACE_EXECUTOR;
+  }
+}
+
 export const ATTACHED_WORKSPACE_BASH_DESCRIPTION = `Runs bash commands inside the selected attached environment and returns stdout/stderr. Its workspace may be an existing project, Git repository, or empty directory.
 
 Session behavior:
@@ -362,7 +399,7 @@ export function createAttachedWorkspaceBashTool({
     buildAttachedWorkspaceBashSchema(effectiveMaxTimeoutMs, environment, linkedWorktrees),
   );
   const actions = environment?.actions ?? [];
-  return tool(
+  const bashTool = tool(
     async (
       rawInput: {
         command?: string;
@@ -457,4 +494,6 @@ export function createAttachedWorkspaceBashTool({
       responseFormat: 'content_and_artifact',
     },
   ) as unknown as DynamicStructuredTool;
+  attachedWorkspaceBashTools.add(bashTool);
+  return bashTool;
 }

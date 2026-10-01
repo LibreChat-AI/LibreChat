@@ -21,6 +21,7 @@ const checkInviteUser = require('./checkInviteUser');
 const requireJwtAuth = require('./requireJwtAuth');
 const { requireRumProxyAuth } = require('./requireJwtAuth');
 const configMiddleware = require('./config/app');
+const { strictConfigMiddleware } = require('./config/app');
 const validateModel = require('./validateModel');
 const moderateText = require('./moderateText');
 const logHeaders = require('./logHeaders');
@@ -55,6 +56,7 @@ module.exports = {
   requireSameOrigin,
   canDeleteAccount,
   configMiddleware,
+  strictConfigMiddleware,
   checkDomainAllowed,
   validateMessageReq,
   canReadActiveJobConversation,

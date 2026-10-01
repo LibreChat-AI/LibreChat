@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { CODE_APPROVAL_MODES } from '../code/approval';
+import { reasoningOverrideSchema } from '../schemas';
 
 export const agentQueuedTurnStatuses = [
   'queued',
@@ -33,6 +34,7 @@ export const enqueueAgentQueuedTurnSchema = z.object({
   manualSkills: z.array(z.string().trim().min(1)).optional(),
   /** Selected when queued, revalidated against live policy at turn admission. */
   codeApprovalMode: z.enum(CODE_APPROVAL_MODES).optional(),
+  reasoningOverride: reasoningOverrideSchema.optional(),
   priority: z.boolean().optional(),
   expectedPredecessorCreatedAt: z.number().int().nonnegative().optional(),
 });

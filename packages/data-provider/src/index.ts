@@ -4,6 +4,7 @@ export * from './bedrock';
 export * from './balance';
 export * from './config';
 export * from './footer';
+export * from './theme';
 export * from './langchain';
 export * from './filters';
 export * from './file-config';
@@ -13,6 +14,8 @@ export * from './messages';
 export * from './errors';
 /* run steps */
 export * from './runSteps';
+/* ui parts */
+export * from './parts';
 export * from './toolTiming';
 /* artifacts  */
 export * from './artifacts';
@@ -24,6 +27,8 @@ export * from './models';
 export * from './families';
 /* mcp */
 export * from './mcp';
+export * from './mcp/appMime';
+export * from './mcp/csp';
 /* RBAC */
 export * from './permissions';
 export * from './roles';
@@ -45,6 +50,7 @@ export * from './types/web';
 export * from './types/graph';
 export * from './types/insights';
 export * from './types/traces';
+export * from './types/transport';
 export * from './types/subagents';
 export * from './types/background';
 export * from './types/queuedTurns';

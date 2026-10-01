@@ -42,6 +42,7 @@ jest.mock('~/hooks/Nav/useUnifiedSidebarLinks', () => ({
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
   useChatHelpers: () => ({}),
+  useShowMarketplace: () => false,
 }));
 
 jest.mock('~/Providers', () => ({

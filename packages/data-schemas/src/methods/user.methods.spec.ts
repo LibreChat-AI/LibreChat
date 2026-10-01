@@ -1,6 +1,10 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { AUTH_USER_DOC_BY_ID_PREFIX, CacheKeys } from 'librechat-data-provider';
+import {
+  CacheKeys,
+  AUTH_USER_DOC_BY_ID_PREFIX,
+  AUTH_USER_DOC_CACHE_TTL_MS,
+} from 'librechat-data-provider';
 import type * as t from '~/types';
 import { createUserMethods, USER_DELETION_FENCE_STALE_MS } from './user';
 import balanceSchema from '~/schema/balance';
@@ -128,6 +132,30 @@ describe('User personalization', () => {
 });
 
 describe('User Methods - Database Tests', () => {
+  describe('findOwnerContactUsers', () => {
+    test('returns only projected owner contact rows for matching ids', async () => {
+      const owner = await User.create({
+        name: 'Ada Owner',
+        username: 'ada',
+        email: 'ada@example.com',
+        provider: 'local',
+      });
+      await User.create({
+        name: 'Other User',
+        username: 'other',
+        email: 'other@example.com',
+        provider: 'local',
+      });
+
+      const rows = await methods.findOwnerContactUsers([
+        owner._id.toString(),
+        new mongoose.Types.ObjectId().toString(),
+      ]);
+
+      expect(rows).toEqual([{ _id: owner._id, name: 'Ada Owner', username: 'ada' }]);
+      expect(rows[0]).not.toHaveProperty('email');
+    });
+  });
   describe('findUser', () => {
     test('should find user by exact email', async () => {
       await User.create({
@@ -369,6 +397,67 @@ describe('User Methods - Database Tests', () => {
       expect(updated?.expiresAt).toBeUndefined();
     });
 
+    test.each([new Date(Date.now() + 604800 * 1000), undefined])(
+      'should preserve expiresAt %s and invalidate auth cache when requested',
+      async (expiresAt) => {
+        enableAuthUserDocCache();
+        const user = await User.create({
+          name: 'Pending User',
+          email: 'pending@example.com',
+          provider: 'local',
+          emailVerified: false,
+          expiresAt,
+        });
+        const userId = user._id?.toString() ?? '';
+        const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
+        const cache = {
+          get: jest.fn().mockResolvedValue(['auth-cache-key']),
+          set: jest.fn().mockResolvedValue(true),
+          delete: jest.fn().mockResolvedValue(true),
+        };
+        const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache });
+
+        const updated = await methodsWithCache.updateUser(
+          userId,
+          { password: 'new-password-hash', credentialsChangedAt: new Date() },
+          {},
+          { preserveExpiresAt: true },
+        );
+
+        const stored = await User.findById(userId).select('+password').lean();
+        expect(stored?.password).toBe('new-password-hash');
+        expect(updated?.credentialsChangedAt).toBeInstanceOf(Date);
+        expect(updated?.emailVerified).toBe(false);
+        expect(updated?.expiresAt).toEqual(expiresAt);
+        expect(cache.get).toHaveBeenCalledWith(indexKey);
+        expect(cache.delete).toHaveBeenCalledWith('auth-cache-key');
+        expect(cache.delete).toHaveBeenCalledWith(indexKey);
+      },
+    );
+
+    test('should update only when the expected account state still matches', async () => {
+      const user = await User.create({
+        name: 'Conditional User',
+        email: 'original@example.com',
+        password: 'original-password-hash',
+        provider: 'local',
+      });
+
+      const staleUpdate = await methods.updateUser(
+        user._id?.toString() ?? '',
+        { email: 'stale@example.com' },
+        { email: 'different@example.com', password: 'original-password-hash' },
+      );
+      const currentUpdate = await methods.updateUser(
+        user._id?.toString() ?? '',
+        { email: 'current@example.com' },
+        { email: 'original@example.com', password: 'original-password-hash' },
+      );
+
+      expect(staleUpdate).toBeNull();
+      expect(currentUpdate?.email).toBe('current@example.com');
+    });
+
     test('should invalidate cached auth user documents on update', async () => {
       enableAuthUserDocCache();
       const user = await User.create({
@@ -393,6 +482,119 @@ describe('User Methods - Database Tests', () => {
       expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-a');
       expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-b');
       expect(cache.delete).toHaveBeenCalledWith(indexKey);
+    });
+
+    describe('when auth cache eviction fails', () => {
+      const cachedKeys = ['auth-cache-key-a', 'auth-cache-key-b'];
+
+      /** Rejects the named operations the way the throwing Redis-backed auth cache does. */
+      function makeFailingCache(failing: { indexRead?: boolean; deleteKey?: string }) {
+        return {
+          get: jest.fn(async () => {
+            if (failing.indexRead) {
+              throw new Error('WRONGTYPE');
+            }
+            return cachedKeys;
+          }),
+          set: jest.fn().mockResolvedValue(true),
+          delete: jest.fn(async (key: string) => {
+            if (key === failing.deleteKey) {
+              throw new Error('redis unavailable');
+            }
+            return true;
+          }),
+        };
+      }
+
+      async function createCachedUser() {
+        enableAuthUserDocCache();
+        const user = await User.create({
+          name: 'Credential User',
+          email: 'credential@example.com',
+          provider: 'openid',
+        });
+        return user._id?.toString() ?? '';
+      }
+
+      test.each<[string, { indexRead?: boolean; deleteKey?: string }]>([
+        ['the reverse index read fails', { indexRead: true }],
+        ['an indexed document delete fails', { deleteKey: 'auth-cache-key-a' }],
+      ])('waits out the cache TTL at the credential barrier when %s', async (_label, failing) => {
+        const userId = await createCachedUser();
+        const cache = makeFailingCache(failing);
+        const delay = jest.fn().mockResolvedValue(undefined);
+        const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+        const updated = await methodsWithCache.updateUser(userId, {
+          password: 'new-password-hash',
+          credentialsChangedAt: new Date(),
+        });
+        expect(updated?.credentialsChangedAt).toBeInstanceOf(Date);
+        expect(delay).not.toHaveBeenCalled();
+
+        await methodsWithCache.awaitAuthUserDocEviction(userId);
+
+        expect(delay).toHaveBeenCalledTimes(1);
+        expect(delay.mock.calls[0][0]).toBeGreaterThan(AUTH_USER_DOC_CACHE_TTL_MS);
+        expect(cache.delete).not.toHaveBeenCalledWith(`${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`);
+        if (!failing.indexRead) {
+          expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-b');
+        }
+      });
+
+      test('passes the barrier at once when only the index delete fails', async () => {
+        const userId = await createCachedUser();
+        const cache = makeFailingCache({ deleteKey: `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}` });
+        const delay = jest.fn().mockResolvedValue(undefined);
+        const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+        await methodsWithCache.awaitAuthUserDocEviction(userId);
+
+        expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-a');
+        expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-b');
+        expect(delay).not.toHaveBeenCalled();
+      });
+
+      test('passes the barrier at once when a retried eviction succeeds', async () => {
+        const userId = await createCachedUser();
+        const cache = makeFailingCache({ indexRead: true });
+        const delay = jest.fn().mockResolvedValue(undefined);
+        const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+        await methodsWithCache.updateUser(userId, { credentialsChangedAt: new Date() });
+        cache.get.mockResolvedValue(cachedKeys);
+        await methodsWithCache.awaitAuthUserDocEviction(userId);
+
+        expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-a');
+        expect(delay).not.toHaveBeenCalled();
+      });
+
+      test('waits at the barrier when the cache can read but not delete', async () => {
+        const userId = await createCachedUser();
+        const delay = jest.fn().mockResolvedValue(undefined);
+        const methodsWithCache = createUserMethods(mongoose, {
+          getCache: () => ({ get: jest.fn(), set: jest.fn() }),
+          delay,
+        });
+
+        await methodsWithCache.awaitAuthUserDocEviction(userId);
+
+        expect(delay).toHaveBeenCalledTimes(1);
+      });
+
+      test('keeps updates themselves best effort', async () => {
+        const userId = await createCachedUser();
+        const delay = jest.fn().mockResolvedValue(undefined);
+        const methodsWithCache = createUserMethods(mongoose, {
+          getCache: () => makeFailingCache({ indexRead: true }),
+          delay,
+        });
+
+        const updated = await methodsWithCache.updateUser(userId, { name: 'Renamed' });
+
+        expect(updated?.name).toBe('Renamed');
+        expect(delay).not.toHaveBeenCalled();
+      });
     });
 
     test('should invalidate cached auth user documents on delete', async () => {

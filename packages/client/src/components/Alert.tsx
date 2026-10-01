@@ -8,9 +8,10 @@ const alertVariants: (
   props?:
     | ({
         variant?: 'info' | 'success' | 'warning' | 'error' | 'neutral' | null | undefined;
+        elevation?: 'flat' | 'raised' | null | undefined;
       } & ClassProp)
     | undefined,
-) => string = cva('relative flex gap-3 rounded-xl border px-4 py-3 text-sm', {
+) => string = cva('relative flex gap-3 rounded-xl border border-border-light px-4 py-3 text-sm', {
   variants: {
     variant: {
       info: 'border-status-info-border bg-status-info-subtle text-status-info',
@@ -19,9 +20,15 @@ const alertVariants: (
       error: 'border-status-error-border bg-status-error-subtle text-status-error',
       neutral: 'border-status-neutral-border bg-status-neutral-subtle text-status-neutral',
     },
+    /** `raised` lifts a notice off the surface it sits on with the lightest shadow. */
+    elevation: {
+      flat: '',
+      raised: 'shadow-xs',
+    },
   },
   defaultVariants: {
     variant: 'info',
+    elevation: 'flat',
   },
 });
 
@@ -44,11 +51,16 @@ export interface AlertProps
 
 const Alert: React.ForwardRefExoticComponent<AlertProps & React.RefAttributes<HTMLDivElement>> =
   React.forwardRef<HTMLDivElement, AlertProps>(
-    ({ className, variant = 'info', icon, role = 'alert', children, ...props }, ref) => {
+    ({ className, variant = 'info', elevation, icon, role = 'alert', children, ...props }, ref) => {
       const resolvedVariant = (variant ?? 'info') as AlertVariant;
       const DefaultIcon = defaultIcons[resolvedVariant];
       return (
-        <div ref={ref} role={role} className={cn(alertVariants({ variant }), className)} {...props}>
+        <div
+          ref={ref}
+          role={role}
+          className={cn(alertVariants({ variant, elevation }), className)}
+          {...props}
+        >
           {icon !== false && (
             <span className="mt-0.5 shrink-0" aria-hidden="true">
               {icon ?? <DefaultIcon className="size-4" />}

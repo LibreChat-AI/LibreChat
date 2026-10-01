@@ -1,20 +1,12 @@
 import { memo, useEffect, useLayoutEffect, useRef } from 'react';
-import {
-  useRecoilCallback,
-  useRecoilState,
-  useRecoilValue,
-  useResetRecoilState,
-  useSetRecoilState,
-} from 'recoil';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { Artifact } from '~/common';
 import { artifactRowKind, isCodeOnlyArtifact } from '~/utils/artifacts';
 import useToolArtifactClaim, { isStrictlyNewer } from './claim';
-import { useMessageContext } from '~/Providers/MessageContext';
+import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import { displayFilename } from './attachmentTypes';
 import { useAttachmentLink } from './LogLink';
 import ArtifactRow from './ArtifactRow';
-import store from '~/store';
 
 interface ToolArtifactCardProps {
   attachment: TAttachment;
@@ -70,42 +62,36 @@ interface ToolArtifactCardProps {
  *     of context.
  */
 const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) => {
-  const { isSubmitting, messageId } = useMessageContext();
+  const {
+    useMessage,
+    useArtifactPanel,
+    useToolArtifactClaim: useGlobalClaim,
+  } = useMessagePartsHost();
+  const { isSubmitting, messageId } = useMessage();
   const ownerMessageId = messageId || attachment.messageId || '';
   const file = attachment as TFile & TAttachmentMetadata;
   const fileId = file.file_id;
-  const setVisible = useSetRecoilState(store.artifactsVisibility);
-  const setArtifacts = useSetRecoilState(store.artifactsState);
-  const setCurrentArtifactId = useSetRecoilState(store.currentArtifactId);
-  const resetCurrentArtifactId = useResetRecoilState(store.currentArtifactId);
-  const currentArtifactId = useRecoilValue(store.currentArtifactId);
-  const existingEntry = useRecoilValue(store.artifactByIdSelector(artifact.id));
+  const {
+    currentArtifactId,
+    registered: existingEntry,
+    register,
+    open,
+    close,
+    consumeJustResolved,
+  } = useArtifactPanel(artifact.id);
   const { isMyClaim: canRender, claimKey } = useToolArtifactClaim(artifact.id);
   // Global (message-independent) claim — used only as the registration
   // tie-break below, never for the render-null gate. Reuses the same
   // `claimKey` as the display claim above so the two never fight over the
   // SAME atom entry in the no-message fallback, where both keys collapse
-  // to `store.toolArtifactClaim(artifact.id)`.
-  const [globalClaim, setGlobalClaim] = useRecoilState(store.toolArtifactClaim(artifact.id));
+  // to `toolArtifactClaim(artifact.id)`.
+  const [globalClaim, setGlobalClaim] = useGlobalClaim(artifact.id);
   const isMyGlobalClaim = globalClaim === claimKey;
   const isSelected = artifact.id === currentArtifactId;
-  /* Read+reset only for this response — `useRecoilCallback` avoids subscribing
-   * to other file or message flags (no re-renders when other previews resolve).
-   * The deferred-preview hook flips this to `true` on the pending→ready
-   * edge; we consume it once and reset, so repeat mounts (panel close
-   * then reopen, history scroll) don't auto-open a second time. */
-  const consumeJustResolved = useRecoilCallback(
-    ({ snapshot, reset }) =>
-      (ownerId: string, id: string) => {
-        const signal = store.previewJustResolved([ownerId, id]);
-        const flagged = snapshot.getLoadable(signal).valueMaybe() ?? false;
-        if (flagged) {
-          reset(signal);
-        }
-        return flagged;
-      },
-    [],
-  );
+  /* `consumeJustResolved` reads and resets only this response's flag, without
+   * subscribing to other file or message flags. The deferred-preview hook flips
+   * it to `true` on the pending→ready edge; we consume it once, so repeat mounts
+   * (panel close then reopen, history scroll) don't auto-open a second time. */
   /** Positional reconciliation can reuse this card for another response with the same file ID. */
   const mountedDuringStreamRef = useRef({ ownerMessageId, isSubmitting: isSubmitting === true });
   if (mountedDuringStreamRef.current.ownerMessageId !== ownerMessageId) {
@@ -146,8 +132,8 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
     if (!isNewerOrTied) {
       return;
     }
-    setArtifacts((prev) => ({ ...(prev ?? {}), [artifact.id]: artifact }));
-  }, [artifact, existingEntry, isMyGlobalClaim, setArtifacts]);
+    register(artifact);
+  }, [artifact, existingEntry, isMyGlobalClaim, register]);
 
   useEffect(() => {
     if (isCodeOnlyArtifact(artifact.type)) {
@@ -180,21 +166,12 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
       return;
     }
     // Streaming arrival or just-resolved preview: focus the new artifact
-    // AND force the panel visible. Without `setVisible(true)`, a session
+    // AND force the panel visible. Without revealing it, a session
     // where the user had previously closed the panel (visibility=false)
     // would surface the selection in the chip ("click to close") but
-    // never actually open — `Presentation` gates rendering on visibility.
-    setCurrentArtifactId(artifact.id);
-    setVisible(true);
-  }, [
-    artifact.id,
-    artifact.type,
-    fileId,
-    ownerMessageId,
-    consumeJustResolved,
-    setCurrentArtifactId,
-    setVisible,
-  ]);
+    // never actually open: `Presentation` gates rendering on visibility.
+    open(artifact.id);
+  }, [artifact.id, artifact.type, fileId, ownerMessageId, consumeJustResolved, open]);
 
   const { handleDownload } = useAttachmentLink({
     href: attachment.filepath ?? '',
@@ -206,14 +183,12 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
 
   const handleOpen = () => {
     if (isSelected) {
-      resetCurrentArtifactId();
-      setVisible(false);
+      close();
       return;
     }
     // Registration already happened in the mount effect; the click only
     // needs to focus + reveal the panel for users who have closed it.
-    setCurrentArtifactId(artifact.id);
-    setVisible(true);
+    open(artifact.id);
   };
 
   // Another card holds the message-scoped display claim for this file —

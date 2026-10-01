@@ -77,7 +77,7 @@ function DynamicCombobox({
       )}
     >
       <HoverCard openDelay={300}>
-        <HoverCardTrigger className="grid w-full items-center gap-2">
+        <HoverCardTrigger className="grid h-full w-full content-between items-center gap-2">
           {showLabel === true && (
             <div className="flex w-full justify-between">
               <Label
@@ -86,7 +86,7 @@ function DynamicCombobox({
               >
                 {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}
                 {showDefault && (
-                  <small className="opacity-40 high-contrast:opacity-100">
+                  <small className="high-contrast:opacity-100 opacity-40">
                     ({localize('com_endpoint_default')}: {defaultValue})
                   </small>
                 )}

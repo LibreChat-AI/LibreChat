@@ -63,7 +63,7 @@ export default function StackedToolIcons({
 
   if (status != null) {
     const StatusIcon = status === 'failed' ? TriangleAlert : X;
-    return <StatusIcon className="size-4 shrink-0 text-text-warning" aria-hidden="true" />;
+    return <StatusIcon className="text-text-warning size-4 shrink-0" aria-hidden="true" />;
   }
 
   const visibleIcons = uniqueIcons.slice(0, maxIcons);
@@ -82,7 +82,7 @@ export default function StackedToolIcons({
         <div
           key={icon.key}
           className={cn(
-            'relative flex items-center justify-center rounded-full border border-border-medium bg-surface-secondary',
+            'border-border-medium bg-surface-secondary relative flex items-center justify-center rounded-full border',
             'h-[22px] w-[22px]',
             index > 0 && '-ml-2.5',
           )}
@@ -103,8 +103,8 @@ export default function StackedToolIcons({
       {overflowCount > 0 && (
         <div
           className={cn(
-            'relative flex items-center justify-center rounded-full border border-border-medium bg-surface-tertiary',
-            '-ml-2.5 h-[22px] w-[22px] text-xs font-medium text-text-secondary',
+            'border-border-medium bg-surface-tertiary relative flex items-center justify-center rounded-full border',
+            'text-text-secondary -ml-2.5 h-[22px] w-[22px] text-xs font-medium',
           )}
           style={{ zIndex: 0 }}
         >

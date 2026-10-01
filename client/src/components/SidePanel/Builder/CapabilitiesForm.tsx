@@ -48,7 +48,7 @@ export default function CapabilitiesForm({
     <div className="mb-4">
       <div className="mb-1.5 flex items-center">
         <span>
-          <label className="text-token-text-primary block font-medium">
+          <label className="text-text-primary block font-medium">
             {localize('com_assistants_capabilities')}
           </label>
         </span>

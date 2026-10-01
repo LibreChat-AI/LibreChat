@@ -1,10 +1,8 @@
 import { useId, useLayoutEffect } from 'react';
 import { atom } from 'jotai';
-import { useRecoilState } from 'recoil';
 import { atomFamily } from 'jotai/utils';
 import type { Artifact } from '~/common';
-import { useMessageContext } from '~/Providers';
-import store from '~/store';
+import { useMessagePartsHost } from '~/hooks/Chat/parts';
 
 interface ToolArtifactClaim {
   /** False only while another mounted instance holds this display key. */
@@ -36,9 +34,10 @@ interface ToolArtifactClaim {
  */
 export default function useToolArtifactClaim(id: string): ToolArtifactClaim {
   const claimKey = useId();
-  const { messageId } = useMessageContext();
+  const { useMessage, useToolArtifactClaim: useClaimState } = useMessagePartsHost();
+  const { messageId } = useMessage();
   const displayKey = messageId ? `${messageId}::${id}` : id;
-  const [claim, setClaim] = useRecoilState(store.toolArtifactClaim(displayKey));
+  const [claim, setClaim] = useClaimState(displayKey);
 
   useLayoutEffect(() => {
     // Always (re)claim on mount — a later card for the same key displaces

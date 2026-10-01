@@ -330,7 +330,7 @@ export default function Artifacts() {
 
   return (
     <Tabs.Root value={displayedTab} onValueChange={setActiveTab} asChild>
-      <div ref={artifactContainerRef} className="flex h-full w-full flex-col bg-surface-primary">
+      <div ref={artifactContainerRef} className="bg-surface-primary flex h-full w-full flex-col">
         {/* Mobile backdrop with dynamic blur */}
         {isMobile && (
           <div
@@ -357,20 +357,20 @@ export default function Artifacts() {
           aria-modal={isMobile || undefined}
           aria-label={currentArtifact.title ?? localize('com_ui_artifacts')}
           className={cn(
-            'flex w-full flex-col bg-surface-primary text-xl text-text-primary motion-reduce:transition-none',
+            'bg-surface-primary text-text-primary flex w-full flex-col text-xl motion-reduce:transition-none',
             isMobile
               ? cn(
                   'fixed z-[100] shadow-[0_-10px_60px_rgba(0,0,0,0.35)]',
                   isFullscreen ? 'inset-0 rounded-none' : 'inset-x-0 bottom-0 rounded-t-[20px]',
                   isVisible && !isClosing
                     ? 'translate-y-0 opacity-100'
-                    : 'duration-250 translate-y-full opacity-0 transition-all',
+                    : 'translate-y-full opacity-0 transition-all',
                   isDragging ? '' : 'transition-all duration-300',
                 )
               : cn(
                   'h-full shadow-2xl',
                   isVisible && !isClosing
-                    ? 'duration-350 translate-x-0 opacity-100 transition-all'
+                    ? 'translate-x-0 opacity-100 transition-all duration-150'
                     : 'translate-x-5 opacity-0 transition-all duration-300',
                 ),
           )}
@@ -387,21 +387,21 @@ export default function Artifacts() {
               aria-valuemin={10}
               aria-valuemax={100}
               aria-valuenow={Math.round(height)}
-              className="flex flex-shrink-0 cursor-grab items-center justify-center bg-surface-primary-alt pb-1.5 pt-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-border-heavy active:cursor-grabbing"
+              className="bg-surface-primary-alt focus-visible:ring-border-heavy flex shrink-0 cursor-grab items-center justify-center pt-2.5 pb-1.5 focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset active:cursor-grabbing"
               onPointerDown={handleDragStart}
               onPointerMove={handleDragMove}
               onPointerUp={handleDragEnd}
               onPointerCancel={handleDragEnd}
               onKeyDown={handleDragKeyDown}
             >
-              <div className="h-1 w-12 rounded-full bg-border-xheavy opacity-40 transition-all duration-200 active:opacity-60 high-contrast:opacity-100 motion-reduce:transition-none" />
+              <div className="bg-border-xheavy high-contrast:opacity-100 h-1 w-12 rounded-full opacity-40 transition-all duration-200 active:opacity-60 motion-reduce:transition-none" />
             </div>
           )}
 
           {/* Header */}
           <div
             className={cn(
-              'flex h-[52px] flex-shrink-0 items-center justify-between gap-2 border-b border-border-light bg-surface-primary-alt p-2 transition-all duration-300 motion-reduce:transition-none',
+              'border-border-light bg-surface-primary-alt flex h-[52px] shrink-0 items-center justify-between gap-2 border-b p-2 transition-all duration-300 motion-reduce:transition-none',
               isMobile ? 'justify-center' : 'overflow-hidden',
             )}
           >
@@ -472,7 +472,7 @@ export default function Artifacts() {
                 </Button>
               )}
               {displayedTab !== 'preview' && isMutating && (
-                <RefreshCw size={16} className="animate-spin text-text-secondary" />
+                <RefreshCw size={16} className="text-text-secondary animate-spin" />
               )}
               {orderedArtifactIds.length > 1 && (
                 <ArtifactVersion
@@ -517,7 +517,7 @@ export default function Artifacts() {
             </div>
           </div>
 
-          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-surface-primary">
+          <div className="bg-surface-primary relative flex min-h-0 flex-1 flex-col overflow-hidden">
             <div className="absolute inset-0 flex flex-col">
               <ArtifactTabs
                 artifact={currentArtifact}
@@ -529,7 +529,7 @@ export default function Artifacts() {
 
             <div
               className={cn(
-                'absolute inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm transition-opacity duration-300 ease-in-out',
+                'absolute inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-xs transition-opacity duration-300 ease-in-out',
                 isRefreshing ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0',
               )}
               aria-hidden={!isRefreshing}
@@ -547,7 +547,7 @@ export default function Artifacts() {
           </div>
 
           {isMobile && (
-            <div className="flex-shrink-0 border-t border-border-light bg-surface-primary-alt p-2">
+            <div className="border-border-light bg-surface-primary-alt shrink-0 border-t p-2">
               <Radio
                 fullWidth
                 options={tabOptions}

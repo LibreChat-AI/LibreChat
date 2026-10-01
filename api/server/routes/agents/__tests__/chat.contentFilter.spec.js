@@ -16,7 +16,7 @@ jest.mock('@librechat/api', () => ({
   createMessageFilterPii: mockCreateMessageFilterPii,
   generateCheckAccess: jest.fn(() => (_req, _res, next) => next()),
   skipAgentCheck: jest.fn(),
-  applyResumeContext: jest.fn(),
+  applyResumeRequest: jest.fn(),
   GenerationJobManager: {
     getJob: jest.fn(),
   },

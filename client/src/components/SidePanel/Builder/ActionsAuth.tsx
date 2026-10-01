@@ -74,28 +74,28 @@ export default function ActionsAuth({ disableOAuth }: { disableOAuth?: boolean }
   return (
     <OGDialog open={openAuthDialog} onOpenChange={setOpenAuthDialog}>
       <div className="mb-4">
-        <label className="mb-1.5 block font-medium text-text-primary">
+        <label className="text-text-primary mb-1.5 block font-medium">
           {localize('com_ui_authentication')}
         </label>
         <OGDialogTrigger asChild>
           <button
             type="button"
-            className="group flex w-full items-center gap-3 rounded-xl border border-border-light bg-transparent px-3 py-2.5 text-left transition-colors hover:bg-surface-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+            className="group border-border-light hover:bg-surface-secondary focus-visible:ring-text-primary rounded-theme-control flex w-full items-center gap-3 border bg-transparent px-3 py-2.5 text-left transition-colors focus:outline-hidden focus-visible:ring-2"
           >
-            <current.icon className="size-5 shrink-0 text-text-secondary" aria-hidden={true} />
+            <current.icon className="text-text-secondary size-5 shrink-0" aria-hidden={true} />
             <span className="min-w-0 flex-1">
-              <span className="block text-sm font-medium text-text-primary">
+              <span className="text-text-primary block text-sm font-medium">
                 {localize(current.titleKey)}
               </span>
-              <span className="block truncate text-xs text-text-secondary">
+              <span className="text-text-secondary block truncate text-xs">
                 {localize(current.descKey)}
               </span>
             </span>
-            <ChevronRight className="size-4 shrink-0 text-text-secondary" aria-hidden={true} />
+            <ChevronRight className="text-text-secondary size-4 shrink-0" aria-hidden={true} />
           </button>
         </OGDialogTrigger>
       </div>
-      <OGDialogContent className="w-full max-w-lg bg-surface-dialog text-text-primary">
+      <OGDialogContent className="bg-surface-dialog text-text-primary w-full max-w-lg">
         <OGDialogHeader>
           <OGDialogTitle className="text-lg font-semibold">
             {localize('com_ui_authentication')}
@@ -178,7 +178,7 @@ function Field({
 }) {
   return (
     <div className="space-y-1.5">
-      <label htmlFor={htmlFor} className="block text-xs font-medium text-text-secondary">
+      <label htmlFor={htmlFor} className="text-text-secondary block text-xs font-medium">
         {label}
       </label>
       {children}
@@ -202,7 +202,7 @@ function SegmentedField({
   const localize = useLocalize();
   return (
     <div className="space-y-1.5">
-      <label id={id} className="block text-xs font-medium text-text-secondary">
+      <label id={id} className="text-text-secondary block text-xs font-medium">
         {label}
       </label>
       <Radio
