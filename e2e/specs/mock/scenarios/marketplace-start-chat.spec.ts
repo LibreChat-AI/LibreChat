@@ -58,9 +58,12 @@ test.describe('marketplace start chat', () => {
 
     try {
       await page.goto(`/agents/all?q=${encodeURIComponent(name)}`, { timeout: 10_000 });
-      const heading = page.getByRole('heading', { name, exact: true });
-      await expect(heading).toBeVisible({ timeout: 30_000 });
-      await heading.click();
+      await expect(page.getByRole('heading', { name, exact: true })).toBeVisible({
+        timeout: 30_000,
+      });
+      /** The card's heading sits under its click layer; the button that opens the dialog
+       *  takes its accessible name from that heading. */
+      await page.getByRole('button', { name, exact: true }).click();
 
       await page.getByRole('button', { name: 'Start Chat' }).click();
       /** The chat route applies `agent_id` and then drops it from the URL, so the turn's
