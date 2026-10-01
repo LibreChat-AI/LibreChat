@@ -1,7 +1,8 @@
 import * as React from 'react';
 import { JSX } from 'react/jsx-runtime';
 import * as AlertDialogPrimitive from '@radix-ui/react-alert-dialog';
-import { cn } from '~/utils';
+import { useDialogDepth } from './OriginalDialog';
+import { cn, disabledFillClasses } from '~/utils';
 
 const AlertDialog: React.FC<AlertDialogPrimitive.AlertDialogProps> = AlertDialogPrimitive.Root;
 
@@ -11,28 +12,42 @@ const AlertDialogTrigger: React.ForwardRefExoticComponent<
 
 type AlertPortalProps = AlertDialogPrimitive.AlertDialogPortalProps & { className?: string };
 
-const AlertDialogPortal = ({ className = '', children, ...props }: AlertPortalProps) => (
-  <AlertDialogPrimitive.Portal className={cn(className)} {...(props as AlertPortalProps)}>
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
-      {children}
-    </div>
-  </AlertDialogPrimitive.Portal>
-);
+const AlertDialogPortal = ({ className = '', children, ...props }: AlertPortalProps) => {
+  const dialogDepth = useDialogDepth();
+  const zIndex = dialogDepth > 0 ? 190 + (dialogDepth - 1) * 60 : 50;
+
+  return (
+    <AlertDialogPrimitive.Portal className={cn(className)} {...(props as AlertPortalProps)}>
+      <div
+        className="fixed inset-0 z-50 flex items-end justify-center sm:items-center"
+        style={{ zIndex }}
+      >
+        {children}
+      </div>
+    </AlertDialogPrimitive.Portal>
+  );
+};
 AlertDialogPortal.displayName = AlertDialogPrimitive.Portal.displayName;
 
 const AlertDialogOverlay = React.forwardRef<
   React.ElementRef<typeof AlertDialogPrimitive.Overlay>,
   React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Overlay>
->(({ className = '', ...props }, ref) => (
-  <AlertDialogPrimitive.Overlay
-    className={cn(
-      'fixed inset-0 z-50 bg-surface-overlay/90 transition-opacity animate-in fade-in',
-      className,
-    )}
-    {...props}
-    ref={ref}
-  />
-));
+>(({ className = '', style, ...props }, ref) => {
+  const dialogDepth = useDialogDepth();
+  const zIndex = dialogDepth > 0 ? 190 + (dialogDepth - 1) * 60 : 50;
+
+  return (
+    <AlertDialogPrimitive.Overlay
+      className={cn(
+        'bg-scrim-alert animate-in fade-in fixed inset-0 z-50 transition-opacity',
+        className,
+      )}
+      style={{ ...style, zIndex }}
+      {...props}
+      ref={ref}
+    />
+  );
+});
 AlertDialogOverlay.displayName = AlertDialogPrimitive.Overlay.displayName;
 
 const AlertDialogContent: React.ForwardRefExoticComponent<
@@ -41,21 +56,27 @@ const AlertDialogContent: React.ForwardRefExoticComponent<
 > = React.forwardRef<
   React.ElementRef<typeof AlertDialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Content>
->(({ className = '', ...props }, ref) => (
-  <AlertDialogPortal>
-    <AlertDialogOverlay />
-    <AlertDialogPrimitive.Content
-      ref={ref}
-      className={cn(
-        /** The dialog surface is otherwise borderless: in high contrast it sits on
-         *  a canvas of its own colour, so it needs a drawn edge. */
-        'fixed z-50 grid w-full max-w-lg scale-100 gap-4 bg-surface-dialog p-6 opacity-100 animate-in fade-in-90 slide-in-from-bottom-10 high-contrast:border high-contrast:border-solid high-contrast:border-border-medium sm:rounded-lg sm:zoom-in-90 sm:slide-in-from-bottom-0 md:w-full',
-        className,
-      )}
-      {...props}
-    />
-  </AlertDialogPortal>
-));
+>(({ className = '', style, ...props }, ref) => {
+  const dialogDepth = useDialogDepth();
+  const zIndex = dialogDepth > 0 ? 200 + (dialogDepth - 1) * 60 : 50;
+
+  return (
+    <AlertDialogPortal>
+      <AlertDialogOverlay />
+      <AlertDialogPrimitive.Content
+        ref={ref}
+        className={cn(
+          /** The dialog surface is otherwise borderless: in high contrast it sits on
+           *  a canvas of its own colour, so it needs a drawn edge. */
+          'bg-surface-dialog animate-in fade-in-90 slide-in-from-bottom-10 high-contrast:border high-contrast:border-solid high-contrast:border-border-medium sm:zoom-in-90 sm:slide-in-from-bottom-0 fixed z-50 grid w-full max-w-lg scale-100 gap-4 p-6 opacity-100 sm:rounded-lg md:w-full',
+          className,
+        )}
+        style={{ ...style, zIndex }}
+        {...props}
+      />
+    </AlertDialogPortal>
+  );
+});
 AlertDialogContent.displayName = AlertDialogPrimitive.Content.displayName;
 
 const AlertDialogHeader: {
@@ -89,7 +110,7 @@ const AlertDialogTitle: React.ForwardRefExoticComponent<
 >(({ className = '', ...props }, ref) => (
   <AlertDialogPrimitive.Title
     ref={ref}
-    className={cn('text-lg font-semibold text-text-primary', className)}
+    className={cn('text-text-primary font-display text-lg font-semibold', className)}
     {...props}
   />
 ));
@@ -107,7 +128,7 @@ const AlertDialogDescription: React.ForwardRefExoticComponent<
 >(({ className = '', ...props }, ref) => (
   <AlertDialogPrimitive.Description
     ref={ref}
-    className={cn('text-sm text-text-secondary', className)}
+    className={cn('text-text-secondary text-sm', className)}
     {...props}
   />
 ));
@@ -126,7 +147,8 @@ const AlertDialogAction: React.ForwardRefExoticComponent<
   <AlertDialogPrimitive.Action
     ref={ref}
     className={cn(
-      'inline-flex h-10 items-center justify-center rounded-md bg-surface-inverted px-4 py-2 text-sm font-semibold text-text-inverted transition-colors hover:bg-surface-inverted-hover focus:outline-none focus:ring-2 focus:ring-text-primary focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50',
+      'bg-surface-inverted text-text-inverted hover:bg-surface-inverted-hover focus:ring-focus-control inline-flex h-10 items-center justify-center rounded-md px-4 py-2 text-sm font-semibold transition-colors focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50',
+      disabledFillClasses,
       className,
     )}
     {...props}
@@ -147,7 +169,8 @@ const AlertDialogCancel: React.ForwardRefExoticComponent<
   <AlertDialogPrimitive.Cancel
     ref={ref}
     className={cn(
-      'mt-2 inline-flex h-10 items-center justify-center rounded-md border border-border-light bg-transparent px-4 py-2 text-sm font-semibold text-text-primary transition-colors hover:bg-surface-hover focus:outline-none focus:ring-2 focus:ring-text-primary focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0',
+      'border-border-light text-text-primary hover:bg-surface-hover focus:ring-focus-control mt-2 inline-flex h-10 items-center justify-center rounded-md border bg-transparent px-4 py-2 text-sm font-semibold transition-colors focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0',
+      disabledFillClasses,
       className,
     )}
     {...props}

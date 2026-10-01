@@ -94,6 +94,8 @@ export interface BranchTotals {
   containsAnchor: boolean;
   /** Provider usage/cost summed along the active branch */
   usage: BranchUsage;
+  /** Recorded usage of the selected response, never an earlier ancestor's usage. */
+  lastTurnUsage?: BranchUsage;
   /** Compacted-context baseline from the deepest summarized response on the
    *  branch (0 if none). The branch walk stops there, so `input`/`output` cover
    *  only the post-summary messages; the estimate adds this to avoid counting
@@ -429,6 +431,7 @@ export function sumBranch(
    *  message total holding tokens whose tool share had been removed, so both
    *  tail figures are zero for a counted tail. */
   const tailEntry = index.get(tailId);
+  const lastTurnUsage = tailEntry?.isCreatedByUser === false ? tailEntry.usage : undefined;
   const tailCounted = tailEntry != null && tailEntry.tokenCount > 0;
   const tailEstTokens = tailCounted ? 0 : (tailEntry?.estTokens ?? 0);
   const tailEstToolTokens = tailCounted
@@ -485,7 +488,15 @@ export function sumBranch(
     currentId = entry.parentMessageId;
   }
 
-  return { ...totals, tailEstTokens, tailEstToolTokens, tailId, usage, summaryBaseline };
+  return {
+    ...totals,
+    tailEstTokens,
+    tailEstToolTokens,
+    tailId,
+    usage,
+    lastTurnUsage,
+    summaryBaseline,
+  };
 }
 
 /**

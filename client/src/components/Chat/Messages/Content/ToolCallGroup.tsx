@@ -1,6 +1,5 @@
-import { useState, useRef, useMemo, useEffect, useCallback } from 'react';
+import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
-import { Button } from '@librechat/client';
 import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
 import { ChevronDown, ListChecks, MessageCircleQuestion, Users } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
@@ -28,7 +27,9 @@ import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from './rows';
+import { MCPAppViews } from '~/components/MCPUIResource';
 import { StackedToolIcons } from './ToolOutput';
+import { SoleToolContext } from './disclosure';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
 import SearchVerticals from './verticals';
@@ -111,6 +112,7 @@ export default function ToolCallGroup({
     return parts.map(({ part }) => summary.metaOf(part)).filter((m): m is ToolMeta => m != null);
   }, [parts, attachmentsByToolCallId]);
   const count = toolMetadata.length;
+  const phaseSole = useContext(SoleToolContext);
   /** Approval state is read from the RAW parts, not `toolMetadata`: a pending
    *  call can be nested inside a subagent's content, which never surfaces as
    *  a tool entry here. */
@@ -150,8 +152,17 @@ export default function ToolCallGroup({
     let taskCheckCount = 0;
     let failedCount = 0;
     let cancelledCount = 0;
+    let preparingCount = 0;
+    let executingCount = 0;
 
     for (const tool of toolMetadata) {
+      if (!tool.hasOutput && !tool.failed && !tool.cancelled) {
+        if (tool.preparing) {
+          preparingCount++;
+        } else {
+          executingCount++;
+        }
+      }
       if (tool.name === Tools.web_search) {
         webSearchCount++;
       } else if (tool.name === 'file_search' || tool.name === 'retrieval') {
@@ -192,6 +203,8 @@ export default function ToolCallGroup({
       taskCheckCount,
       failedCount,
       cancelledCount,
+      preparingCount,
+      executingCount,
       toolNameSummary,
     };
   }, [toolMetadata, localize, mcpServerNames]);
@@ -396,6 +409,19 @@ export default function ToolCallGroup({
    *  read as the activity the assistant performed. Mixed implementation-level
    *  tool calls fall back to the user-facing concept of "actions". */
   const resolveGroupLabel = (): string => {
+    if (isGroupLive && activitySummary.preparingCount > 0 && activitySummary.executingCount === 0) {
+      if (count === 1) {
+        return singleToolLabel
+          ? localize('com_ui_tool_preparing', { 0: singleToolLabel })
+          : localize('com_assistants_preparing_action');
+      }
+      return localize(
+        activitySummary.preparingCount === 1
+          ? 'com_ui_preparing_one_action'
+          : 'com_ui_preparing_n_actions',
+        { 0: String(activitySummary.preparingCount) },
+      );
+    }
     if (allSubagents) {
       if (count === 1) {
         return localize(subagentsDone ? 'com_ui_subagent_complete' : 'com_ui_subagent_running');
@@ -514,13 +540,12 @@ export default function ToolCallGroup({
   }, [hasActiveToolCall, userOverride, suppressAutoExpand]);
 
   return (
-    <div className="mb-2 mt-1" ref={rootRef}>
+    <div className="mt-1 mb-2" ref={rootRef}>
       <div className="flex w-full items-center gap-2">
-        <Button
-          variant="ghost"
+        <button
           type="button"
           className={cn(
-            'inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-text-secondary hover:bg-transparent hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy focus-visible:ring-offset-0',
+            'text-text-secondary hover:text-text-secondary focus-visible:ring-border-heavy inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none',
             /** An open header is the title of the rows under it, so it is the
              *  one line in the fold set in the primary colour. */
             isExpanded && 'text-text-primary hover:text-text-primary',
@@ -536,7 +561,7 @@ export default function ToolCallGroup({
               className={cn(
                 ROW_GLYPH_SLOT,
                 'text-text-secondary',
-                isGroupLive && 'animate-pulse text-text-primary',
+                isGroupLive && 'text-text-primary animate-pulse',
               )}
               aria-hidden="true"
             >
@@ -566,7 +591,7 @@ export default function ToolCallGroup({
           </span>
           {visibleGroupDetail && (
             <span
-              className="min-w-0 max-w-[40%] truncate text-xs font-normal text-text-secondary"
+              className="text-text-secondary max-w-[40%] min-w-0 truncate text-xs font-normal"
               title={visibleGroupDetail}
             >
               · {visibleGroupDetail}
@@ -574,12 +599,12 @@ export default function ToolCallGroup({
           )}
           <ChevronDown
             className={cn(
-              'size-4 shrink-0 text-text-secondary transition-transform duration-200 ease-out',
+              'text-text-secondary size-4 shrink-0 transition-transform duration-200 ease-out',
               isExpanded && 'rotate-180',
             )}
             aria-hidden="true"
           />
-        </Button>
+        </button>
         {!withinActivityPhase && !parentPhaseOwnsFailurePill && (
           <FailedRevealPill
             count={activitySummary.failedCount}
@@ -598,57 +623,60 @@ export default function ToolCallGroup({
           <div className={cn('overflow-hidden', FOLD_RAIL_CLASSES)} ref={expandRef}>
             <ToolAuthWarningContext.Provider value>
               <FailedRevealContext.Provider value={revealValue}>
-                <div className="flex flex-col py-0.5">
-                  {parts.map(({ part, idx }, partIndex) => {
-                    if (part.type === ContentTypes.THINK) {
-                      const think = part.think;
-                      const reasoning = typeof think === 'string' ? think : (think?.value ?? '');
-                      /** A detached-subagent projection carries an empty THINK
-                       *  part flagged `reasoning_unavailable`, which `Part`
-                       *  renders as a `ReasoningMarker`. `ReasoningCompact` has
-                       *  no text to show and returns null, so the marker has to
-                       *  keep going through the standalone path or it vanishes
-                       *  the moment its call joins a group. */
-                      if (reasoning.trim() === '' && part.reasoning_unavailable === true) {
-                        return renderPart(
-                          part,
-                          idx,
-                          isLast && idx === lastContentIdx,
-                          handleToolExpand,
+                <SoleToolContext.Provider value={phaseSole ?? count === 1}>
+                  <div className="flex flex-col py-0.5">
+                    {parts.map(({ part, idx }, partIndex) => {
+                      if (part.type === ContentTypes.THINK) {
+                        const think = part.think;
+                        const reasoning = typeof think === 'string' ? think : (think?.value ?? '');
+                        /** A detached-subagent projection carries an empty THINK
+                         *  part flagged `reasoning_unavailable`, which `Part`
+                         *  renders as a `ReasoningMarker`. `ReasoningCompact` has
+                         *  no text to show and returns null, so the marker has to
+                         *  keep going through the standalone path or it vanishes
+                         *  the moment its call joins a group. */
+                        if (reasoning.trim() === '' && part.reasoning_unavailable === true) {
+                          return renderPart(
+                            part,
+                            idx,
+                            isLast && idx === lastContentIdx,
+                            handleToolExpand,
+                          );
+                        }
+                        const streaming = isSubmitting && idx === lastContentIdx;
+                        const isAfterTool =
+                          partIndex > 0 &&
+                          parts[partIndex - 1]?.part.type === ContentTypes.TOOL_CALL;
+                        /** Mirrors the standalone `Reasoning` path: the authored
+                         *  label wins, generic text is only a fallback. */
+                        const generatedLabel = part.reasoning_label?.trim();
+                        const label =
+                          generatedLabel ||
+                          (streaming ? localize('com_ui_thinking') : localize('com_ui_thoughts'));
+                        return (
+                          <ReasoningCompact
+                            key={`reasoning-${idx}`}
+                            partKeyIndex={getPartKeyIndex(part, idx)}
+                            reasoning={reasoning}
+                            label={label}
+                            showThinking={showThinking}
+                            isAfterTool={isAfterTool}
+                            isStreaming={streaming}
+                          />
                         );
                       }
-                      const streaming = isSubmitting && idx === lastContentIdx;
-                      const isAfterTool =
-                        partIndex > 0 && parts[partIndex - 1]?.part.type === ContentTypes.TOOL_CALL;
-                      /** Mirrors the standalone `Reasoning` path: the authored
-                       *  label wins, generic text is only a fallback. */
-                      const generatedLabel = part.reasoning_label?.trim();
-                      const label =
-                        generatedLabel ||
-                        (streaming ? localize('com_ui_thinking') : localize('com_ui_thoughts'));
-                      return (
-                        <ReasoningCompact
-                          key={`reasoning-${idx}`}
-                          partKeyIndex={getPartKeyIndex(part, idx)}
-                          reasoning={reasoning}
-                          label={label}
-                          showThinking={showThinking}
-                          isAfterTool={isAfterTool}
-                          isStreaming={streaming}
-                        />
+                      return renderPart(
+                        part,
+                        idx,
+                        isLast && idx === lastContentIdx,
+                        handleToolExpand,
                       );
-                    }
-                    return renderPart(
-                      part,
-                      idx,
-                      isLast && idx === lastContentIdx,
-                      handleToolExpand,
-                    );
-                  })}
-                </div>
+                    })}
+                  </div>
+                </SoleToolContext.Provider>
               </FailedRevealContext.Provider>
             </ToolAuthWarningContext.Provider>
-            {hasPendingAuthRequest && <ToolAuthWarning className="mb-1 mt-2.5" />}
+            {hasPendingAuthRequest && <ToolAuthWarning className="mt-2.5 mb-1" />}
           </div>
         )}
       </div>
@@ -656,6 +684,7 @@ export default function ToolCallGroup({
         <>
           <SearchVerticals attachments={groupAttachments} />
           <AttachmentGroup attachments={groupAttachments} />
+          <MCPAppViews attachments={groupAttachments} />
         </>
       )}
     </div>

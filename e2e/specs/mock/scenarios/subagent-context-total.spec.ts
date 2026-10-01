@@ -97,7 +97,7 @@ test.describe('subagent context usage totals', () => {
       const totals = popover.getByTestId('token-usage-totals');
       await expect(totals).toBeVisible({ timeout: 10000 });
       await expect(totals.getByRole('heading', { name: 'Totals' })).toBeVisible();
-      await expect(totals.getByText('Input', { exact: true })).toBeVisible();
+      await expect(totals.getByText('Input (uncached)', { exact: true })).toBeVisible();
       await expect(totals.getByText('Output', { exact: true })).toBeVisible();
 
       const subagentRow = totals

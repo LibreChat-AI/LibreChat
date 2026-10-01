@@ -170,7 +170,7 @@ function DynamicInput({
       }`}
     >
       <HoverCard openDelay={300}>
-        <HoverCardTrigger className="grid w-full items-center gap-2">
+        <HoverCardTrigger className="grid h-full w-full content-between items-center gap-2">
           <div className="flex w-full justify-between">
             <Label
               htmlFor={`${settingKey}-dynamic-input`}
@@ -178,7 +178,7 @@ function DynamicInput({
             >
               {labelCode ? localize(label as TranslationKeys) || label : label || settingKey}{' '}
               {showDefault && (
-                <small className="opacity-40 high-contrast:opacity-100">
+                <small className="high-contrast:opacity-100 opacity-40">
                   (
                   {typeof defaultValue === 'undefined' || !(defaultValue as string).length
                     ? localize('com_endpoint_default_blank')
@@ -197,7 +197,7 @@ function DynamicInput({
             onBlur={handleInputBlur}
             placeholder={placeholderText}
             className={cn(
-              'flex h-9 max-h-9 w-full resize-none rounded-lg border border-border-light bg-surface-secondary px-3 py-2',
+              'border-border-light bg-surface-secondary flex h-9 max-h-9 w-full resize-none rounded-lg border px-3 py-2',
             )}
           />
         </HoverCardTrigger>

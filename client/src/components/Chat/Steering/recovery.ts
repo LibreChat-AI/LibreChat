@@ -1,5 +1,5 @@
 import { atomFamily, atomWithStorage, createJSONStorage } from 'jotai/utils';
-import type { QueuedMessage } from '~/store/families';
+import type { QueuedMessage } from '~/hooks/Chat/queue';
 
 export type RecoveryDisposition = 'blocked' | 'cancelling' | 'cancelled' | 'dismissed';
 export type RecoveryDispositions = Partial<Record<string, RecoveryDisposition>>;

@@ -77,7 +77,7 @@ function TraceSummaryBar({
     >
       {items.map((item) => (
         <div key={item.key} className="flex items-baseline gap-1.5">
-          <dt className="text-xs text-text-secondary">{localize(item.label)}</dt>
+          <dt className="text-text-secondary text-xs">{localize(item.label)}</dt>
           <dd
             className={cn(
               'font-medium tabular-nums',

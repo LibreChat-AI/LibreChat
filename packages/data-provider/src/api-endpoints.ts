@@ -155,6 +155,8 @@ export const updateConversation = () => `${conversationsRoot}/update`;
 export const archiveConversation = () => `${conversationsRoot}/archive`;
 export const archiveAllConversations = () => `${conversationsRoot}/archive/all`;
 export const pinConversation = () => `${conversationsRoot}/pin`;
+export const markConversationSeen = () => `${conversationsRoot}/seen`;
+export const markConversationUnread = () => `${conversationsRoot}/unread`;
 
 export const deleteConversation = () => `${conversationsRoot}`;
 
@@ -173,6 +175,15 @@ export const projects = (params: q.ProjectListParams = {}) => {
 };
 
 export const projectById = (id: string) => `${projectsRoot}/${encodeURIComponent(id)}`;
+
+export const projectFiles = (projectId: string) => `${projectById(projectId)}/files`;
+export const projectAvailableFiles = (
+  projectId: string,
+  params: q.ProjectAvailableFilesParams = {},
+) => `${projectById(projectId)}/files/available${buildQuery(params)}`;
+
+export const projectFile = (projectId: string, fileId: string) =>
+  `${projectFiles(projectId)}/${encodeURIComponent(fileId)}`;
 
 export const projectConversation = (conversationId: string) =>
   `${projectsRoot}/conversations/${encodeURIComponent(conversationId)}`;
@@ -212,6 +223,10 @@ export const requestPasswordReset = () => `${BASE_URL}/api/auth/requestPasswordR
 export const resetPassword = () => `${BASE_URL}/api/auth/resetPassword`;
 
 export const verifyEmail = () => `${BASE_URL}/api/user/verify`;
+
+export const requestEmailChange = () => `${BASE_URL}/api/user/email/change`;
+
+export const confirmEmailChange = () => `${BASE_URL}/api/user/email/verify`;
 
 // Auth page URLs (for client-side navigation and redirects)
 export const loginPage = () => `${BASE_URL}/login`;
@@ -575,6 +590,14 @@ export const confirmTwoFactor = () => `${BASE_URL}/api/auth/2fa/confirm`;
 export const disableTwoFactor = () => `${BASE_URL}/api/auth/2fa/disable`;
 export const regenerateBackupCodes = () => `${BASE_URL}/api/auth/2fa/backup/regenerate`;
 export const verifyTwoFactorTemp = () => `${BASE_URL}/api/auth/2fa/verify-temp`;
+
+// Passkey (WebAuthn) Endpoints
+export const passkeys = () => `${BASE_URL}/api/auth/passkey`;
+export const passkey = (passkeyId: string) => `${passkeys()}/${encodeURIComponent(passkeyId)}`;
+export const passkeyRegistrationOptions = () => `${passkeys()}/register/options`;
+export const passkeyRegistrationVerify = () => `${passkeys()}/register/verify`;
+export const passkeyLoginOptions = () => `${passkeys()}/login/options`;
+export const passkeyLoginVerify = () => `${passkeys()}/login/verify`;
 
 /* Memories */
 export const memories = () => `${BASE_URL}/api/memories`;

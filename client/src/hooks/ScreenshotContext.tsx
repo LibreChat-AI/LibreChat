@@ -1,6 +1,6 @@
 import { createContext, useRef, useContext, RefObject, ReactNode } from 'react';
 import { toCanvas } from 'html-to-image';
-import { ThemeContext, isDark } from '@librechat/client';
+import { ThemeContext, isDark, readThemeColor } from '@librechat/client';
 import { completeProgressiveRowMounts } from '~/hooks/Messages/useProgressiveRowMount';
 
 type ScreenshotContextType = {
@@ -62,11 +62,8 @@ export const useScreenshot = () => {
      *  an export matches the selected appearance and the state colours keep the
      *  contrast they were calibrated against. The token is a channel triplet,
      *  not a colour, so it has to be wrapped before html-to-image sees it. */
-    const canvasTriplet = getComputedStyle(document.documentElement)
-      .getPropertyValue('--surface-primary')
-      .trim();
     const fallbackBackground = isDark(theme) ? '#171717' : 'white';
-    const backgroundColor = canvasTriplet ? `rgb(${canvasTriplet})` : fallbackBackground;
+    const backgroundColor = readThemeColor('--surface-primary') ?? fallbackBackground;
     const canvas = await toCanvas(node, {
       backgroundColor,
       pixelRatio,

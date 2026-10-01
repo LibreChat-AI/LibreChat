@@ -10,3 +10,5 @@ export { default as useMediaQuery } from './useMediaQuery';
 export { default as useDelayedRender } from './useDelayedRender';
 export { default as useInputModality } from './useInputModality';
 export { default as useOnClickOutside } from './useOnClickOutside';
+export { default as useAutoRetry, DEFAULT_AUTO_RETRY_DELAYS_MS } from './useAutoRetry';
+export type { UseAutoRetryOptions, AutoRetryState } from './useAutoRetry';

@@ -215,7 +215,7 @@ export default function FileAuthoringCall({
           icon={
             <Icon
               className={cn(
-                'size-4 shrink-0 text-text-secondary',
+                'text-text-secondary size-4 shrink-0',
                 phase === 'running' && 'animate-pulse',
               )}
               aria-hidden="true"
@@ -231,7 +231,7 @@ export default function FileAuthoringCall({
             <div
               className={cn(
                 toolPanelSpacingClassName,
-                'overflow-hidden rounded-lg border border-border-light bg-surface-secondary',
+                'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
               )}
             >
               <CodeWindowHeader
@@ -249,7 +249,7 @@ export default function FileAuthoringCall({
                 <pre
                   ref={previewPaneRef}
                   onScroll={onPreviewPaneScroll}
-                  className="max-h-[300px] overflow-auto bg-surface-chat p-4 font-mono text-xs dark:bg-surface-primary-alt"
+                  className="bg-surface-code-body max-h-[300px] overflow-auto p-4 font-mono text-xs"
                 >
                   <code className={`hljs language-${previewLang} !whitespace-pre`}>
                     {highlighted ?? preview}
@@ -259,7 +259,7 @@ export default function FileAuthoringCall({
               {showOutputSection && (
                 <pre
                   className={cn(
-                    'max-h-[300px] overflow-auto whitespace-pre-wrap break-words border-t border-border-light px-3 py-2 font-mono text-xs',
+                    'border-border-light max-h-[300px] overflow-auto border-t px-3 py-2 font-mono text-xs break-words whitespace-pre-wrap',
                     phase === 'failed' ? 'text-status-error' : 'text-text-secondary',
                   )}
                 >

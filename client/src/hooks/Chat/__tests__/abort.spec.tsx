@@ -1,10 +1,12 @@
 import React from 'react';
 import { Constants } from 'librechat-data-provider';
+import { useAtomValue, useSetAtom, getDefaultStore } from 'jotai';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { RecoilRoot, useSetRecoilState, useRecoilValue } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TSubmission, TConversation } from 'librechat-data-provider';
-import type { DrainAfterAbort, RunEnd } from '~/store/families';
+import type { DrainAfterAbort, RunEnd } from '~/hooks/Chat/queue';
+import { drainAfterAbortByIndex, runEndByIndex, resetQueueFamilies } from '~/hooks/Chat/queue';
 import useChatHelpers from '../useChatHelpers';
 import { useAbortCleanup } from '../abort';
 import store from '~/store';
@@ -86,6 +88,8 @@ function setup() {
   renderHook(() => null, { wrapper });
   return { handles, current };
 }
+
+beforeEach(() => resetQueueFamilies());
 
 describe('useAbortCleanup', () => {
   it('clears all submissions when the captured submission is still current', async () => {
@@ -180,9 +184,9 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
   function setupStop(conversationId: string, generationCreatedAt: number | null = 41) {
     let setDrainAfterAbort: ((value: DrainAfterAbort | false) => void) | undefined;
     function RunEndProbe() {
-      observed.runEnd = useRecoilValue(store.runEndByIndex(INDEX));
-      observed.drainAfterAbort = useRecoilValue(store.drainAfterAbortByIndex(INDEX));
-      setDrainAfterAbort = useSetRecoilState(store.drainAfterAbortByIndex(INDEX));
+      observed.runEnd = useAtomValue(runEndByIndex(INDEX));
+      observed.drainAfterAbort = useAtomValue(drainAfterAbortByIndex(INDEX));
+      setDrainAfterAbort = useSetAtom(drainAfterAbortByIndex(INDEX));
       return null;
     }
     const queryClient = new QueryClient();
@@ -195,7 +199,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
               endpoint: 'agents',
             } as TConversation);
             // Arm interrupt & send so the abort response writes the drain signal.
-            set(store.drainAfterAbortByIndex(INDEX), {
+            getDefaultStore().set(drainAfterAbortByIndex(INDEX), {
               conversationId,
               generationCreatedAt: 41,
             });

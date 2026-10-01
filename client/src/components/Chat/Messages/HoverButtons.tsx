@@ -228,7 +228,7 @@ const HoverButtons = ({
   const handleCopy = () => copyToClipboard(setIsCopied);
 
   return (
-    <div className="group visible flex justify-center gap-0.5 self-end focus-within:outline-none lg:justify-start">
+    <div className="group visible flex justify-center gap-0.5 self-end focus-within:outline-hidden lg:justify-start">
       {/* Text to Speech */}
       {TextToSpeech && !error && !isActiveStreamingMessage && (
         <MessageAudio
@@ -315,7 +315,7 @@ const HoverButtons = ({
         <HoverButton
           onClick={(e) => e && handleContinue(e)}
           title={localize('com_ui_continue')}
-          icon={<ContinueIcon className="w-19 h-19 -rotate-180" />}
+          icon={<ContinueIcon className="-rotate-180" />}
           isLast={isLast}
           dataTestId={isLast ? 'continue-generation-button' : undefined}
           className="active"

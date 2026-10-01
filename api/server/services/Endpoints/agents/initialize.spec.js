@@ -771,6 +771,48 @@ describe('initializeClient — processAgent ACL gate', () => {
       canCreateSkillSpy.mockRestore();
     }
   });
+  it('starts Project lookup as soon as the conversation snapshot resolves', async () => {
+    const models = deferred();
+    const conversation = deferred();
+    const project = deferred();
+    const req = makeReq();
+    delete req.resolvedConversation;
+    const getConvoSpy = jest.spyOn(db, 'getConvo').mockReturnValue(conversation.promise);
+    const getChatProjectSpy = jest.spyOn(db, 'getChatProject').mockReturnValue(project.promise);
+    getModelsConfig.mockReturnValueOnce(models.promise);
+    mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
+
+    try {
+      const initialization = initializeClient({
+        req,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      });
+
+      conversation.resolve({
+        conversationId: 'conv_1',
+        chatProjectId: 'project-1',
+        user: req.user.id,
+        tenantId: null,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(getChatProjectSpy).toHaveBeenCalledWith(req.user.id, 'project-1');
+
+      models.resolve({});
+      project.resolve({
+        _id: 'project-1',
+        instructions: '',
+        contextRevision: 0,
+        file_ids: [],
+        tenantId: null,
+      });
+      await initialization;
+    } finally {
+      getConvoSpy.mockRestore();
+      getChatProjectSpy.mockRestore();
+    }
+  });
 
   it('resolves model-spec skill names through deployment-aware skill methods', async () => {
     const deploymentSkillId = new mongoose.Types.ObjectId();
