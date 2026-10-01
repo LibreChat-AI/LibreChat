@@ -12,7 +12,7 @@ const FilePreview = ({
   file?: Partial<ExtendedFile | TFile>;
   fileType: {
     paths: React.FC;
-    fill: string;
+    fillClassName: string;
     title: string;
   };
   className?: string;
