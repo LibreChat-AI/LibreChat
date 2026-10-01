@@ -636,6 +636,12 @@ class BaseClient {
       });
     }
 
+    // A created frame enables Stop and owner reads on other replicas. Protected
+    // turns must have their atomic user/conversation write committed first.
+    await requirePrivateTextPersistence(this.options.req, () =>
+      this.saveMessageToDatabase(userMessage, saveOptions, user),
+    );
+
     if (typeof opts?.onStart === 'function') {
       const isNewConvo = !requestConvoId && parentMessageId === Constants.NO_PARENT;
       opts.onStart(userMessage, responseMessageId, isNewConvo);

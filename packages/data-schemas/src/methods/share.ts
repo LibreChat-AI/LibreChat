@@ -75,7 +75,16 @@ export type SharedLinkContentPreflight = (
   snapshot: SharedLinkContentSnapshot,
 ) => void | Promise<void>;
 
-export type SharedMessagesPreflight = (snapshot: t.SharedMessagesResult) => void | Promise<void>;
+export type SharedMessagesPreflight = (
+  snapshot: t.SharedMessagesResult,
+  context?: {
+    readonly canonicalMessages: readonly {
+      readonly text?: string;
+      readonly isCreatedByUser?: boolean;
+      readonly privacyRevision?: string;
+    }[];
+  },
+) => void | Promise<void>;
 
 export interface GetSharedMessagesOptions {
   readonly snapshotFiles?: boolean;
@@ -1048,7 +1057,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       };
 
       try {
-        await options?.preflight?.(result);
+        await options?.preflight?.(result, { canonicalMessages: messagesToShare });
       } catch (error) {
         preflightFailed = true;
         throw error;

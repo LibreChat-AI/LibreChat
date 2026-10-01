@@ -2,6 +2,7 @@ const { Constants, ContentTypes, EModelEndpoint } = require('librechat-data-prov
 const BaseClientClass = require('../BaseClient');
 const {
   ContentFilterError,
+  createPrivateTextIngress,
   resolveTurnDeliveryRouting,
   buildSteerMedia,
   Tokenizer,
@@ -1732,6 +1733,67 @@ describe('BaseClient', () => {
           responseMessageId: response.messageId,
         }),
       );
+    });
+
+    test('protected created events wait for the atomic user write and fail closed on write failure', async () => {
+      const req = {
+        user: { id: 'owner' },
+        path: '/',
+        body: { text: 'alice@example.com', clientRequestId: 'created-privacy' },
+      };
+      const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+      const next = jest.fn();
+      createPrivateTextIngress({
+        getFilters: () => ({
+          messages: {
+            pii: {
+              action: 'redact',
+              fields: ['text'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+              ],
+            },
+          },
+        }),
+        getLegacyPii: () => undefined,
+        getKey: () => 'ab'.repeat(32),
+      })(req, res, next);
+      expect(next).toHaveBeenCalledTimes(1);
+      const client = Object.create(BaseClientClass.prototype);
+      client.options = { req };
+      client.sender = 'Agent';
+      client.resolveStartUserMessage = jest.fn(() => ({
+        messageId: 'private-user',
+        conversationId: 'private-conversation',
+        text: req.body.text,
+        isCreatedByUser: true,
+      }));
+      client.setMessageOptions = jest.fn(async () => ({
+        user: 'owner',
+        saveOptions: {},
+        conversationId: 'private-conversation',
+        responseMessageId: 'private-response',
+        parentMessageId: Constants.NO_PARENT,
+      }));
+      const committed = deferred();
+      let written;
+      client.saveMessageToDatabase = jest.fn((message) => {
+        written = message;
+        return committed.promise;
+      });
+      const onStart = jest.fn();
+      const started = client.handleStartMethods(req.body.text, { onStart });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(client.saveMessageToDatabase).toHaveBeenCalledTimes(1);
+      expect(onStart).not.toHaveBeenCalled();
+      committed.resolve({ message: { ...written } });
+      await started;
+      expect(onStart).toHaveBeenCalledTimes(1);
+      client.saveMessageToDatabase.mockResolvedValueOnce({});
+      await expect(client.handleStartMethods(req.body.text, { onStart })).rejects.toThrow();
+      expect(onStart).toHaveBeenCalledTimes(1);
     });
 
     test('onStart is called with the correct arguments', async () => {

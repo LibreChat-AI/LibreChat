@@ -276,7 +276,7 @@ export function getPrivateTextInspectionTokens(
   const tokens = new Set<string>();
   // Mirror the existing provider work and maximum transformed-text ceilings.
   if (messages.length > 4096) {
-    throw unavailable();
+    return tokens;
   }
   for (const message of messages) {
     if (
@@ -287,7 +287,7 @@ export function getPrivateTextInspectionTokens(
       continue;
     }
     if (message.text.length > 524288) {
-      throw unavailable();
+      return new Set();
     }
     for (const match of message.text.matchAll(
       /\[(?:EMAIL|PHONE|NAME|CREDENTIAL|CUSTOM)_\d+_([a-f0-9]{32})\]/g,
@@ -295,7 +295,7 @@ export function getPrivateTextInspectionTokens(
       if (match[1] === message.privacyRevision) {
         tokens.add(match[0]);
         if (tokens.size > 4096) {
-          throw unavailable();
+          return new Set();
         }
       }
     }

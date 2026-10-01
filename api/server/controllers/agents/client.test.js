@@ -7336,6 +7336,47 @@ describe('AgentClient - titleConvo', () => {
     });
 
     it.each([Providers.GOOGLE, Providers.VERTEXAI])(
+      'allows protected text through the late %s urlContext preflight without exempting raw content',
+      async (provider) => {
+        const filters = {
+          messages: {
+            pii: {
+              action: 'redact',
+              fields: ['text', 'content_part'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+                { id: 'hex', label: 'Credential', regex: '[a-f0-9]{32}', category: 'credential' },
+              ],
+            },
+          },
+        };
+        const { client, invokeModel } = createClient({ provider, filters });
+        const req = client.options.req;
+        req.body.text = 'Email alice@example.com';
+        req.body.clientRequestId = 'google-private-text';
+        require('@librechat/api').createPrivateTextIngress({
+          getFilters: () => filters,
+          getLegacyPii: () => undefined,
+          getKey: () => 'ab'.repeat(32),
+        })(req, { status: jest.fn().mockReturnThis(), json: jest.fn() }, jest.fn());
+        client.skipSaveUserMessage = false;
+        client.saveMessageToDatabase.mockImplementation(async (message) => ({
+          message: { ...message },
+        }));
+        await expect(
+          client.sendMessage(req.body.text, {
+            conversationId: 'protected-google',
+            parentMessageId: Constants.NO_PARENT,
+            user: 'user-123',
+          }),
+        ).resolves.toBeDefined();
+        expect(invokeModel).toHaveBeenCalledTimes(1);
+        expect(req.body.text).not.toContain('alice@example.com');
+      },
+    );
+
+    it.each([Providers.GOOGLE, Providers.VERTEXAI])(
       'blocks a late %s fileUri before model invocation under strict content policy',
       async (provider) => {
         const { client, invokeModel } = createClient({
