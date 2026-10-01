@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect, useCallback } from 'react';
+import React, { useMemo, useState, useEffect, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
 import {
   Constants,
@@ -8,8 +8,8 @@ import {
   splitToolCallName,
 } from 'librechat-data-provider';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
+import { toolPanelSpacingClassName, useToolExpansion, SoleToolContext } from './disclosure';
 import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
-import { toolPanelSpacingClassName, useToolExpansion } from './disclosure';
 import { cn, getToolDisplayLabel, logger, openInNewTab } from '~/utils';
 import { isToolCallPreparing, useToolPreparation } from './preparation';
 import { ToolIcon, getToolIconType, isError } from './ToolOutput';
@@ -190,7 +190,10 @@ export default function ToolCall({
     () => (args?.length ?? 0) > 0 || (output?.length ?? 0) > 0,
     [args, output],
   );
-  const [showInfo, setShowInfo] = useToolExpansion(hasInfo);
+  /** The preference opens a card once it has output; a sole call opens on
+   *  its arguments too, so a call that returned nothing still shows them. */
+  const soleTool = useContext(SoleToolContext) === true;
+  const [showInfo, setShowInfo] = useToolExpansion(soleTool ? hasInfo : (output?.length ?? 0) > 0);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
 
