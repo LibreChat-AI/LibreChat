@@ -108,58 +108,72 @@ async function openChat(page: Page) {
 
 const rgb = (channels?: string) => `rgb(${(channels ?? '').split(' ').join(', ')})`;
 
-for (const mode of ['light', 'dark'] as Mode[]) {
-  test.describe(`deployment theme first paint (${mode})`, () => {
-    test.use({ colorScheme: mode, viewport: { width: 1280, height: 800 } });
+/** Reloads throttled with the config held, and checks every frame before the answer. */
+async function expectFirstPaint(page: Page, mode: Mode) {
+  let held = false;
+  const answeredAt = await serveTheme(
+    page,
+    () => 'clickhouse',
+    () => held,
+  );
+  const { colors } = resolveTheme(clickHouseTheme, mode);
 
-    test(`a signed-in reload paints the cached deployment theme from the first frame @scenario:deployment-theme-first-paint-${mode}`, async ({
-      page,
-    }) => {
-      test.setTimeout(120000);
-      let held = false;
-      const answeredAt = await serveTheme(
-        page,
-        () => 'clickhouse',
-        () => held,
-      );
-      const { colors } = resolveTheme(clickHouseTheme, mode);
+  await openChat(page);
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
+  await expect
+    .poll(() => page.evaluate((key) => localStorage.getItem(key), CACHE_KEY))
+    .not.toBeNull();
 
-      await openChat(page);
-      await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
-      await expect
-        .poll(() => page.evaluate((key) => localStorage.getItem(key), CACHE_KEY))
-        .not.toBeNull();
+  await sampleFrames(page);
+  await throttle(page);
+  held = true;
+  const reloadedAt = Date.now();
+  await page.reload();
+  await expect(page.getByTestId('composer-surface')).toBeVisible({ timeout: 60000 });
+  await expect.poll(() => answeredAt.some((at) => at > reloadedAt)).toBe(true);
 
-      await sampleFrames(page);
-      await throttle(page);
-      held = true;
-      const reloadedAt = Date.now();
-      await page.reload();
-      await expect(page.getByTestId('composer-surface')).toBeVisible({ timeout: 60000 });
-      await expect.poll(() => answeredAt.some((at) => at > reloadedAt)).toBe(true);
+  const answered = Math.min(...answeredAt.filter((at) => at > reloadedAt));
+  const frames = (await page.evaluate(() => window.__themeFrames ?? [])).filter(
+    (frame) => frame.at < answered,
+  );
 
-      const answered = Math.min(...answeredAt.filter((at) => at > reloadedAt));
-      const frames = (await page.evaluate(() => window.__themeFrames ?? [])).filter(
-        (frame) => frame.at < answered,
-      );
+  /** Frames of both surfaces landed before the answer, so both were tested. */
+  expect(frames.length).toBeGreaterThan(0);
+  expect(frames[0].shell).not.toBeNull();
+  expect(frames.some((frame) => frame.app)).toBe(true);
 
-      /** Frames of both surfaces landed before the answer, so both were tested. */
-      expect(frames.length).toBeGreaterThan(0);
-      expect(frames[0].shell).not.toBeNull();
-      expect(frames.some((frame) => frame.app)).toBe(true);
-
-      for (const frame of frames) {
-        expect(frame.theme).toBe('clickhouse');
-        expect(frame.surface).toBe(colors['rgb-surface-primary']);
-        if (frame.shell !== null) {
-          expect(frame.shell).toBe(rgb(colors['rgb-surface-primary-alt']));
-        }
-      }
-      await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
-      await expect(page.locator('html')).not.toHaveAttribute('data-theme-boot');
-    });
-  });
+  for (const frame of frames) {
+    expect(frame.theme).toBe('clickhouse');
+    expect(frame.surface).toBe(colors['rgb-surface-primary']);
+    if (frame.shell !== null) {
+      expect(frame.shell).toBe(rgb(colors['rgb-surface-primary-alt']));
+    }
+  }
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
+  await expect(page.locator('html')).not.toHaveAttribute('data-theme-boot');
 }
+
+test.describe('deployment theme first paint (light)', () => {
+  test.use({ colorScheme: 'light', viewport: { width: 1280, height: 800 } });
+
+  test('a signed-in reload paints the cached deployment theme from the first frame in light @scenario:deployment-theme-first-paint-light', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await expectFirstPaint(page, 'light');
+  });
+});
+
+test.describe('deployment theme first paint (dark)', () => {
+  test.use({ colorScheme: 'dark', viewport: { width: 1280, height: 800 } });
+
+  test('a signed-in reload paints the cached deployment theme from the first frame in dark @scenario:deployment-theme-first-paint-dark', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await expectFirstPaint(page, 'dark');
+  });
+});
 
 test('a deployment theme removed since the last visit wins once the config answers @scenario:deployment-theme-removed-wins-over-cache', async ({
   page,
