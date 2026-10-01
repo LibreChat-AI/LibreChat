@@ -866,6 +866,8 @@ const ChatForm = memo(function ChatForm({
                       'relative flex-1',
                       listening &&
                         '[&_textarea]:caret-transparent [&_textarea]:placeholder:text-transparent',
+                      /* Locked behind a question: the placeholder is a notice, not text. */
+                      answerMode.composerLocked && '[&_textarea]:select-none',
                     )}
                     style={
                       isCollapsed
