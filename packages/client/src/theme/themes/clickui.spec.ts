@@ -461,6 +461,18 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     reason:
       'border: Click UI InputWrapper swaps the stroke to field.color.stroke.active on focus; keyboard focus adds a 1px ring in that color to hold the 2px focus floor',
   },
+  focusRingWidth: {
+    value: '2px',
+    status: 'match',
+    reason:
+      '2px: Click UI draws keyboard focus as a literal `outline: 2px solid` in outline.default (BaseButton, IconButton, Dropdown and ContextMenu triggers); no token carries the width',
+  },
+  focusRingOffset: {
+    value: '2px',
+    status: 'match',
+    reason:
+      '2px: the same Click UI focus rules set a literal `outline-offset: 2px`; no token carries the offset',
+  },
 };
 
 const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {

@@ -213,6 +213,8 @@ html {
   --theme-field-height: 2.5rem;
   --theme-field-padding-y: 0.5rem;
   --theme-field-focus-style: ring;
+  --theme-focus-ring-width: 2px;
+  --theme-focus-ring-offset: 2px;
   --theme-label-size: var(--theme-text-sm, 0.875rem);
   --theme-label-leading: 1;
   --theme-label-font-weight: inherit;

@@ -473,6 +473,10 @@ export interface IThemeAppearance {
   /** The field's vertical padding, which has to leave its line room inside `fieldHeight`. */
   fieldPaddingY: string;
   fieldFocusStyle: 'ring' | 'border';
+  /** The keyboard focus outline's width and its offset from the element's edge, apart from the
+   *  heavier outline the contrast modes keep. */
+  focusRingWidth: string;
+  focusRingOffset: string;
   /** A field label's size, leading and weight. The size follows `textSm` when a theme omits it,
    *  and the default weight is `inherit`. */
   labelSize: string;

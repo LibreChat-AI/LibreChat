@@ -948,6 +948,38 @@ describe('theme registry', () => {
     ].forEach((appearance) => expect(issues(appearance)).toHaveLength(1));
   });
 
+  it('keeps a 2px focus outline 2px off the edge unless a theme names its own', () => {
+    expect(defaultAppearance).toMatchObject({ focusRingWidth: '2px', focusRingOffset: '2px' });
+    const { appearance } = resolveTheme(
+      {
+        version: 1,
+        name: 'focus-ring-reference',
+        modes: { dark: { appearance: { focusRingWidth: '0.25rem', focusRingOffset: '-1px' } } },
+      },
+      'dark',
+    );
+    expect(appearance).toMatchObject({ focusRingWidth: '0.25rem', focusRingOffset: '-1px' });
+  });
+
+  it('rejects a focus outline that would vanish or is not a fixed length', () => {
+    const issues = (appearance: Record<string, string>) =>
+      validateThemeDefinition({
+        version: 1,
+        name: 'focus-ring-values',
+        modes: { light: { appearance } },
+      });
+
+    expect(issues({ focusRingWidth: '3px', focusRingOffset: '0' })).toEqual([]);
+    [
+      { focusRingWidth: '0' },
+      { focusRingWidth: '0px' },
+      { focusRingWidth: '-2px' },
+      { focusRingWidth: '2em' },
+      { focusRingOffset: '2' },
+      { focusRingOffset: 'calc(2px + 1px)' },
+    ].forEach((appearance) => expect(issues(appearance)).toHaveLength(1));
+  });
+
   it('does not count the dialog title ink among the surfaces the verified mark sits on', () => {
     const { colors } = resolveTheme(
       {

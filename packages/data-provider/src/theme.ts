@@ -208,6 +208,13 @@ const isTableLength = (value: unknown): value is string =>
   typeof value === 'string' && /^(0|\d*\.?\d+(px|rem))$/.test(value);
 const isSwitchLength = (value: unknown): value is string =>
   typeof value === 'string' && /^\d*\.?\d+(px|rem)$/.test(value) && parseFloat(value) > 0;
+/**
+ * A focus outline's width is a positive px or rem length (`isSwitchLength`), so the indicator
+ * never vanishes; its offset may also be zero or negative, drawing the outline on or inside the
+ * element's edge.
+ */
+const isFocusRingOffset = (value: unknown): value is string =>
+  typeof value === 'string' && /^(0|-?\d*\.?\d+(px|rem))$/.test(value);
 /** A numeric CSS font weight, 1 to 1000, which is all a label weight needs. */
 const isFontWeight = (value: unknown): value is string =>
   typeof value === 'string' &&
@@ -335,6 +342,9 @@ const appearanceValidators = {
   fieldHeight: isLength,
   fieldPaddingY: isLength,
   fieldFocusStyle: (value: unknown) => value === 'ring' || value === 'border',
+  /** The keyboard focus outline's width and offset. */
+  focusRingWidth: isSwitchLength,
+  focusRingOffset: isFocusRingOffset,
   /** A field label's size, leading and weight; `inherit` keeps the weight of the text around it. */
   labelSize: isLength,
   labelLeading: isLineHeight,

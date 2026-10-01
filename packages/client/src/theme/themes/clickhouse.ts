@@ -389,6 +389,10 @@ const clickHouseShape = {
   fieldHeight: '2rem',
   fieldPaddingY: '0.2813rem', // field.space.y
   fieldFocusStyle: 'border' as const,
+  /** Click UI's keyboard focus outline: 2px in `outline.default`, 2px off the edge
+   *  (BaseButton.module.css, IconButton, Dropdown and ContextMenu triggers). */
+  focusRingWidth: '2px',
+  focusRingOffset: '2px',
   /** `field.typography.label.default`: 500 0.75rem/1.5. */
   labelSize: '0.75rem',
   labelLeading: '1.5',

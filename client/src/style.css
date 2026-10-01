@@ -2037,23 +2037,25 @@ html[data-input-modality='keyboard']
     ),
     textarea
   ):not(.lc-field):focus-visible {
-  outline: 2px solid rgb(var(--focus-control)) !important;
-  outline-offset: 2px !important;
+  outline: var(--theme-focus-ring-width, 2px) solid rgb(var(--focus-control)) !important;
+  outline-offset: var(--theme-focus-ring-offset, 2px) !important;
 }
 
 /* The focus outline is the theme's `focus-outline` role: black and white in the
  * default theme, and whatever a theme names, or its `ring-primary` when it names
- * only that (see `resolveTheme`). The contrast modes keep their own 3px rule. */
+ * only that (see `resolveTheme`). Its width and offset are the `focusRingWidth`
+ * and `focusRingOffset` roles, 2px each by default. The contrast modes keep their
+ * own 3px rule. */
 @layer base {
   :focus-visible {
-    outline: 2px solid rgb(var(--focus-outline));
-    outline-offset: 2px;
+    outline: var(--theme-focus-ring-width, 2px) solid rgb(var(--focus-outline));
+    outline-offset: var(--theme-focus-ring-offset, 2px);
   }
 }
 
 .dark :focus-visible {
-  outline: 2px solid rgb(var(--focus-outline));
-  outline-offset: 2px;
+  outline: var(--theme-focus-ring-width, 2px) solid rgb(var(--focus-outline));
+  outline-offset: var(--theme-focus-ring-offset, 2px);
 }
 
 .popover-ui {

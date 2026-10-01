@@ -341,6 +341,9 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   keeps the half-opacity treatment every primitive carries.
 - `font-display` - Headings (`displayFontFamily`). Follows the theme's
   `fontFamily` when it names no display family.
+- Keyboard focus outline - The global `:focus-visible` outline is drawn in
+  `focus-outline`, `focusRingWidth` wide and `focusRingOffset` off the edge (2px
+  each by default). The contrast modes keep their own 3px outline.
 - `border-border-field-focus` - A form field's edge while it holds focus, under
   `fieldFocusStyle: border`. Follows `focus-control` when a theme names only that.
 - Form fields and labels - `h-theme-field` (`fieldHeight`) sizes `Input`, `Dropdown`

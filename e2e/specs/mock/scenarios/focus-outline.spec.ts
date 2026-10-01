@@ -49,6 +49,16 @@ const FOCUS_ROLE_THEME = {
   },
 } as const;
 
+/** Names the outline's width and offset, so an outline still drawn at the 2px literals shows. */
+const FOCUS_RING_SIZE_THEME = {
+  version: 1,
+  name: 'e2e-focus-ring-size',
+  modes: {
+    light: { appearance: { focusRingWidth: '3px', focusRingOffset: '1px' } },
+    dark: { appearance: { focusRingWidth: '4px', focusRingOffset: '0' } },
+  },
+} as const;
+
 /** Leaves `rgb-ring-primary` to the default, which resolves to a gray too dim for a dark surface. */
 const RINGLESS_THEME = {
   version: 1,
@@ -240,6 +250,21 @@ test.describe('keyboard focus outline', () => {
 
       expect(await keyboardFocusOutline(modePage)).toEqual(outline(expected[mode].outline));
       expect(await keyboardFocusRing(modePage)).toBe(expected[mode].ring);
+    }
+  });
+
+  test('a theme that names the focus outline width and offset draws them in both modes @scenario:focus-outline-width-offset-roles', async ({
+    page,
+  }) => {
+    const expected: Record<'light' | 'dark', Outline> = {
+      light: { color: 'rgb(0, 0, 0)', style: 'solid', width: '3px', offset: '1px' },
+      dark: { color: 'rgb(255, 255, 255)', style: 'solid', width: '4px', offset: '0px' },
+    };
+    for (const mode of ['light', 'dark'] as const) {
+      const modePage = mode === 'light' ? page : await page.context().newPage();
+      await openChat(modePage, mode, FOCUS_RING_SIZE_THEME);
+
+      expect(await keyboardFocusOutline(modePage)).toEqual(expected[mode]);
     }
   });
 

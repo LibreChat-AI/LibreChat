@@ -150,7 +150,14 @@ describe('shared field and dropdown interaction styles', () => {
     );
     expect(appStyles).toMatch(/html\[data-input-modality='pointer'\]/);
     expect(appStyles).toMatch(/html\[data-input-modality='keyboard'\]/);
-    expect(appStyles).toMatch(/outline:\s*2px solid rgb\(var\(--focus-control\)\) !important;/);
+    expect(appStyles).toMatch(
+      /outline:\s*var\(--theme-focus-ring-width, 2px\) solid rgb\(var\(--focus-control\)\) !important;\s*outline-offset:\s*var\(--theme-focus-ring-offset, 2px\) !important;/,
+    );
+    /** The global outline, in both its layered and its unlayered dark rule, reads the roles. */
+    const roleOutline =
+      ':focus-visible \\{\\s*outline: var\\(--theme-focus-ring-width, 2px\\) solid rgb\\(var\\(--focus-outline\\)\\);\\s*outline-offset: var\\(--theme-focus-ring-offset, 2px\\);';
+    expect(appStyles).toMatch(new RegExp(`@layer base \\{\\s*${roleOutline}`));
+    expect(appStyles).toMatch(new RegExp(`\\.dark ${roleOutline}`));
     expect(appStyles).not.toMatch(/textarea\s*\n\):hover,/);
   });
 
