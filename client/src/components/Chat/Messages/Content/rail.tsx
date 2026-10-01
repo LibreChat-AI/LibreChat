@@ -126,9 +126,15 @@ export function revealFoldHeader(
   const pinned = root.getBoundingClientRect().top < header.getBoundingClientRect().top;
   const target = pinned ? root : header;
   const previousMargin = target.style.scrollMarginTop;
-  if (stickyHeader != null) {
-    target.style.scrollMarginTop = `${stickyHeader.getBoundingClientRect().height}px`;
-  }
+  /** The host message's scroll margin reserves its overlaid chat toolbar. */
+  const message = root.closest('.message-render');
+  const hostMargin =
+    message == null ? 0 : parseFloat(getComputedStyle(message).scrollMarginTop) || 0;
+  const targetMargin = parseFloat(getComputedStyle(target).scrollMarginTop) || 0;
+  target.style.scrollMarginTop = `${Math.max(
+    targetMargin,
+    hostMargin + (stickyHeader?.getBoundingClientRect().height ?? 0),
+  )}px`;
   try {
     target.scrollIntoView({ block: pinned ? 'start' : 'nearest', behavior: 'instant' });
   } finally {

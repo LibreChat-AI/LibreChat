@@ -39,6 +39,27 @@ describe('revealFoldHeader', () => {
     expect(header.style.scrollMarginTop).toBe('8px');
   });
 
+  it.each([false, true])('reserves the host toolbar for a pinned=%s header', (pinned) => {
+    const message = box(0);
+    message.className = 'message-render';
+    message.style.scrollMarginTop = '64px';
+    const root = box(-400);
+    const header = box(pinned ? 0 : -400);
+    message.append(root);
+    root.append(header);
+    const target = pinned ? root : header;
+    const phaseHeader = pinned ? null : box(0, 36);
+    target.scrollIntoView = jest.fn(() => {
+      expect(target.style.scrollMarginTop).toBe(pinned ? '64px' : '100px');
+    });
+    revealFoldHeader(root, header, phaseHeader);
+    expect(target.scrollIntoView).toHaveBeenCalledWith({
+      block: pinned ? 'start' : 'nearest',
+      behavior: 'instant',
+    });
+    expect(target.style.scrollMarginTop).toBe('');
+  });
+
   it('does nothing after the fold has unmounted', () => {
     expect(() => revealFoldHeader(null, null)).not.toThrow();
   });

@@ -234,7 +234,13 @@ test.describe('activity fold', () => {
     await expect(groupHeader.getByTestId('fold-rail-knob')).toBeVisible();
     expect(await groupLabel.boundingBox()).toEqual(beforeGroupHover);
 
-    /** Make the real fold tall enough to exercise its pinned ancestor. */
+    /** Keep room below the historical fold so collapse cannot clamp away an overlap. */
+    const phaseCard = messagesView(page).getByTestId('activity-phase-card');
+    await phaseCard.evaluate((card) => {
+      const spacer = document.createElement('div');
+      spacer.style.height = '1200px';
+      card.after(spacer);
+    });
     await group.locator('> div > div').evaluate((rows) => {
       (rows as HTMLElement).style.paddingBottom = '1200px';
     });
@@ -248,8 +254,23 @@ test.describe('activity fold', () => {
         return phaseBox != null && groupBox != null && groupBox.y >= phaseBox.y + phaseBox.height;
       })
       .toBe(true);
+    const isPointerAccessible = (button: typeof header) =>
+      button.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        return element.contains(document.elementFromPoint(box.left + 12, box.top + box.height / 2));
+      });
     await expect(groupHeader).toBeInViewport();
+    await expect.poll(() => isPointerAccessible(groupHeader)).toBe(true);
     await shot(page, 'nested-rail-revealed');
+
+    await phaseRail.locator('..').evaluate((rows) => {
+      (rows as HTMLElement).style.paddingBottom = '1200px';
+    });
+    await phaseRail.click({ position: { x: 12, y: 900 } });
+    await expect(header).toHaveAttribute('aria-expanded', 'false');
+    await expect(header).toBeInViewport();
+    await expect.poll(() => isPointerAccessible(header)).toBe(true);
+    await shot(page, 'phase-rail-revealed');
     expect(problems.filter((line) => !line.includes('favicon'))).toEqual([]);
   });
 });
