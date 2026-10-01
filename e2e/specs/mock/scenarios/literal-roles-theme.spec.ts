@@ -42,6 +42,31 @@ async function installThemeBridge(page: Page, definition: unknown) {
 
 const rgbCss = (triplet: string | undefined) => `rgb(${(triplet ?? '').split(' ').join(', ')})`;
 
+/**
+ * The RGBA a colour paints, whatever syntax the browser serialises it in: an alpha utility
+ * computes to `oklab(...)` where the same colour written by hand reads `rgba(...)`.
+ */
+const painted = (page: Page, color: string): Promise<number[]> =>
+  page.evaluate((value) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      return [];
+    }
+    context.fillStyle = value;
+    context.fillRect(0, 0, 1, 1);
+    return Array.from(context.getImageData(0, 0, 1, 1).data);
+  }, color);
+
+/** The colour of the 1px spread layer in a computed `box-shadow` list, the one a `ring-1` draws. */
+function ringColor(boxShadow: string): string {
+  const layers = boxShadow.split(/,(?![^(]*\))/).map((layer) => layer.trim());
+  const ring = layers.find((layer) => layer.endsWith('0px 0px 0px 1px')) ?? '';
+  return ring.replace(/\s*0px 0px 0px 1px$/, '');
+}
+
 /** The default avatar only draws once the user's image fails to load. */
 async function failUserAvatar(page: Page) {
   await page.route(`${MISSING_AVATAR}*`, (route) => route.abort());
@@ -87,7 +112,18 @@ test.describe('roles for former colour literals', () => {
       const avatar = page.getByTestId('nav-user').locator('div[aria-hidden="true"]').first();
       await expect(avatar).toBeVisible({ timeout: 20000 });
       const shadow = await avatar.evaluate((node) => getComputedStyle(node).boxShadow);
-      expect(shadow).toContain('rgba(240, 246, 252, 0.1) 0px 0px 0px 1px');
+      const ring = ringColor(shadow);
+      expect(ring).not.toBe('');
+      const [got, want] = await Promise.all([
+        painted(page, ring),
+        painted(page, 'rgb(240 246 252 / 0.1)'),
+      ]);
+      expect(got).toHaveLength(4);
+      /* An oklab round trip may move a channel by one step; at 10% alpha the canvas rounds
+       * the unpremultiplied value a step further. */
+      got.forEach((channel, index) =>
+        expect(Math.abs(channel - want[index])).toBeLessThanOrEqual(2),
+      );
     }
   });
 
