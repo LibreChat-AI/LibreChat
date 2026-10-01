@@ -422,7 +422,14 @@ describe('ActivityPhaseGroup', () => {
 
     const trigger = screen.getByRole('button', { name: LABEL });
     fireEvent.click(trigger);
+    const rail = screen.getByTestId('fold-rail');
+    fireEvent.mouseEnter(rail);
+    expect(screen.getByTestId('fold-rail-knob')).toBeInTheDocument();
     fireEvent.click(trigger);
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    expect(rail).toBeDisabled();
+    fireEvent.mouseEnter(rail);
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
     fireEvent.transitionEnd(screen.getByTestId('activity-phase-panel'));
     expect(screen.getByTestId('phase-content')).toBeInTheDocument();
 

@@ -21,7 +21,7 @@ import {
   useFailedRevealTrigger,
 } from './reveal';
 import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
-import { FoldRail, RailGlyph, revealFoldHeader, useRailHover } from './rail';
+import { FoldRail, RailGlyph, FoldHeaderContext, revealFoldHeader, useRailHover } from './rail';
 import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
 import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
@@ -95,6 +95,7 @@ export default function ToolCallGroup({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const headerRef = useRef<HTMLDivElement | null>(null);
   const railHover = useRailHover();
+  const phaseHeader = useContext(FoldHeaderContext);
   const cancelLayoutReconcileRef = useRef<(() => void) | null>(null);
   const retainedForPendingApprovalRef = useRef(false);
 
@@ -355,9 +356,9 @@ export default function ToolCallGroup({
     if (!isExpanded) {
       return;
     }
-    revealFoldHeader(rootRef.current, headerRef.current);
+    revealFoldHeader(rootRef.current, headerRef.current, phaseHeader?.header.current);
     handleToggle();
-  }, [isExpanded, handleToggle]);
+  }, [isExpanded, handleToggle, phaseHeader]);
 
   const handleToolExpand = useCallback(() => {
     setUserOverride(true);
@@ -636,7 +637,11 @@ export default function ToolCallGroup({
       >
         {shouldRenderBody && (
           <div className={cn('overflow-hidden', FOLD_RAIL_CLASSES)} ref={expandRef}>
-            <FoldRail hover={railHover} onCollapse={handleRailCollapse} />
+            <FoldRail
+              hover={railHover}
+              expanded={isExpanded && (phaseHeader?.expanded ?? true)}
+              onCollapse={handleRailCollapse}
+            />
             <ToolAuthWarningContext.Provider value>
               <FailedRevealContext.Provider value={revealValue}>
                 <SoleToolContext.Provider value={phaseSole ?? count === 1}>

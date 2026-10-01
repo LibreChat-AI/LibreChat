@@ -1,6 +1,6 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { createContext, useEffect, useState, useSyncExternalStore } from 'react';
 import { CircleMinus } from 'lucide-react';
-import type { ReactNode } from 'react';
+import type { ReactNode, RefObject } from 'react';
 import { ROW_GLYPH_SLOT } from './rows';
 import { cn } from '~/utils';
 
@@ -14,6 +14,11 @@ export type RailHover = {
   set: (hovered: boolean) => void;
   subscribe: (listener: () => void) => () => void;
 };
+
+export const FoldHeaderContext = createContext<{
+  header: RefObject<HTMLDivElement>;
+  expanded: boolean;
+} | null>(null);
 
 function createRailHover(): RailHover {
   let hovered = false;
@@ -45,16 +50,17 @@ export function useRailHover(): RailHover {
  *  hovered, so the reader sees which fold the rail closes before clicking. */
 export function RailGlyph({ hover, children }: { hover: RailHover; children: ReactNode }) {
   const hovered = useSyncExternalStore(hover.subscribe, hover.get, hover.get);
-  if (!hovered) {
-    return <>{children}</>;
-  }
   return (
-    <span
-      className={cn(ROW_GLYPH_SLOT, 'text-text-primary')}
-      aria-hidden="true"
-      data-testid="fold-rail-knob"
-    >
-      <CircleMinus size={16} />
+    <span className={cn(ROW_GLYPH_SLOT, 'relative')} aria-hidden="true">
+      <span className={cn('flex', hovered && 'invisible')}>{children}</span>
+      {hovered && (
+        <span
+          className={cn(ROW_GLYPH_SLOT, 'text-text-primary absolute inset-y-0 left-0')}
+          data-testid="fold-rail-knob"
+        >
+          <CircleMinus size={16} />
+        </span>
+      )}
     </span>
   );
 }
@@ -66,18 +72,31 @@ export function RailGlyph({ hover, children }: { hover: RailHover; children: Rea
  * screen-reader users reach, so the rail is hidden from both and never takes
  * focus. Must sit in a `FOLD_RAIL_CLASSES` wrapper, whose inset it fills.
  */
-export function FoldRail({ hover, onCollapse }: { hover: RailHover; onCollapse: () => void }) {
-  /** A rail can unmount under the pointer (an auto-collapse, a finished
-   *  fold animation) without a `mouseleave`; the knob must not stay up. */
-  useEffect(() => () => hover.set(false), [hover]);
+export function FoldRail({
+  hover,
+  expanded,
+  onCollapse,
+}: {
+  hover: RailHover;
+  expanded: boolean;
+  onCollapse: () => void;
+}) {
+  /** Collapsed approval bodies stay mounted without a pointer leave. */
+  useEffect(() => {
+    if (!expanded) {
+      hover.set(false);
+    }
+    return () => hover.set(false);
+  }, [hover, expanded]);
   return (
     <button
       type="button"
       tabIndex={-1}
       aria-hidden="true"
-      className="group/rail absolute inset-y-0 left-0 w-6 cursor-pointer"
+      disabled={!expanded}
+      className="group/rail absolute inset-y-0 left-0 w-6 cursor-pointer disabled:pointer-events-none"
       onMouseDown={(event) => event.preventDefault()}
-      onMouseEnter={() => hover.set(true)}
+      onMouseEnter={() => expanded && hover.set(true)}
       onMouseLeave={() => hover.set(false)}
       onClick={() => {
         hover.set(false);
@@ -96,13 +115,23 @@ export function FoldRail({ hover, onCollapse }: { hover: RailHover; onCollapse: 
  * pinned (sticky) header sits below its card's top; scrolling the card to the
  * start puts the header where it will rest once the rows are gone.
  */
-export function revealFoldHeader(root: HTMLElement | null, header: HTMLElement | null) {
+export function revealFoldHeader(
+  root: HTMLElement | null,
+  header: HTMLElement | null,
+  stickyHeader?: HTMLElement | null,
+) {
   if (root == null || header == null || typeof root.scrollIntoView !== 'function') {
     return;
   }
-  if (root.getBoundingClientRect().top < header.getBoundingClientRect().top) {
-    root.scrollIntoView({ block: 'start' });
-    return;
+  const pinned = root.getBoundingClientRect().top < header.getBoundingClientRect().top;
+  const target = pinned ? root : header;
+  const previousMargin = target.style.scrollMarginTop;
+  if (stickyHeader != null) {
+    target.style.scrollMarginTop = `${stickyHeader.getBoundingClientRect().height}px`;
   }
-  header.scrollIntoView({ block: 'nearest' });
+  try {
+    target.scrollIntoView({ block: pinned ? 'start' : 'nearest', behavior: 'instant' });
+  } finally {
+    target.style.scrollMarginTop = previousMargin;
+  }
 }

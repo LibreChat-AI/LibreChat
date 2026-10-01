@@ -20,9 +20,9 @@ import {
   LIVE_ACTIVITY_THROTTLE_MS,
   LIVE_REASONING_HOLD_MS,
 } from './live';
+import { FoldRail, RailGlyph, FoldHeaderContext, revealFoldHeader, useRailHover } from './rail';
 import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
-import { FoldRail, RailGlyph, revealFoldHeader, useRailHover } from './rail';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import useThrottledValue from '~/hooks/Messages/useThrottledValue';
 import { AttachmentGroup, StreamingThoughtPeek } from './Parts';
@@ -594,6 +594,7 @@ export default function ActivityPhaseGroup({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const headerRef = useRef<HTMLDivElement | null>(null);
   const railHover = useRailHover();
+  const railScope = useMemo(() => ({ header: headerRef, expanded: isExpanded }), [isExpanded]);
   const panelId = useId();
   const lineId = useId();
   const comboId = useId();
@@ -895,10 +896,12 @@ export default function ActivityPhaseGroup({
       >
         {shouldRenderBody && (
           <div className={cn('overflow-hidden', FOLD_RAIL_CLASSES)} ref={expandRef}>
-            <FoldRail hover={railHover} onCollapse={handleRailCollapse} />
-            <FailedRevealContext.Provider value={revealValue}>
-              {children}
-            </FailedRevealContext.Provider>
+            <FoldRail hover={railHover} expanded={isExpanded} onCollapse={handleRailCollapse} />
+            <FoldHeaderContext.Provider value={railScope}>
+              <FailedRevealContext.Provider value={revealValue}>
+                {children}
+              </FailedRevealContext.Provider>
+            </FoldHeaderContext.Provider>
           </div>
         )}
       </div>

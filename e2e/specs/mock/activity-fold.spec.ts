@@ -217,6 +217,39 @@ test.describe('activity fold', () => {
     await groupHeader.click();
     await expect(messagesView(page).locator('[data-testid="tool-call"]').first()).toBeVisible();
     await shot(page, 'clean-open-group');
+
+    const phaseRail = messagesView(page)
+      .getByTestId('activity-phase-panel')
+      .locator('> div > [data-testid="fold-rail"]');
+    const groupRail = group.locator('> div > [data-testid="fold-rail"]');
+    const phaseLabel = header.getByText(PHASE_LABEL, { exact: true });
+    const beforeHover = await phaseLabel.boundingBox();
+    await phaseRail.hover();
+    await expect(header.getByTestId('fold-rail-knob')).toBeVisible();
+    expect(await phaseLabel.boundingBox()).toEqual(beforeHover);
+
+    const groupLabel = groupHeader.locator('[role="status"]');
+    const beforeGroupHover = await groupLabel.boundingBox();
+    await groupRail.hover();
+    await expect(groupHeader.getByTestId('fold-rail-knob')).toBeVisible();
+    expect(await groupLabel.boundingBox()).toEqual(beforeGroupHover);
+
+    /** Make the real fold tall enough to exercise its pinned ancestor. */
+    await group.locator('> div > div').evaluate((rows) => {
+      (rows as HTMLElement).style.paddingBottom = '1200px';
+    });
+    await groupRail.click({ position: { x: 12, y: 900 } });
+    await expect(groupHeader).toHaveAttribute('aria-expanded', 'false');
+    await expect(header).toHaveAttribute('aria-expanded', 'true');
+    await expect
+      .poll(async () => {
+        const phaseBox = await header.boundingBox();
+        const groupBox = await groupHeader.boundingBox();
+        return phaseBox != null && groupBox != null && groupBox.y >= phaseBox.y + phaseBox.height;
+      })
+      .toBe(true);
+    await expect(groupHeader).toBeInViewport();
+    await shot(page, 'nested-rail-revealed');
     expect(problems.filter((line) => !line.includes('favicon'))).toEqual([]);
   });
 });

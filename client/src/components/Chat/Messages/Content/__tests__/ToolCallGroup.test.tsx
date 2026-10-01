@@ -7,6 +7,7 @@ import { SoleToolContext, useToolAutoExpand } from '../disclosure';
 import { FailedRevealContext, useFailedReveal } from '../reveal';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
 import ToolCallGroup from '../ToolCallGroup';
+import { FoldHeaderContext } from '../rail';
 import { ToolAuthWarning } from '../auth';
 
 const mockMCPServerNames: string[] = [];
@@ -622,13 +623,45 @@ describe('ToolCallGroup image hoisting', () => {
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
     const collapsible = screen.getByTestId('tool-call-group-panel');
     expect(screen.getByTestId('approval-0')).toBeInTheDocument();
+    const rail = screen.getByTestId('fold-rail');
+    fireEvent.mouseEnter(rail);
+    expect(screen.getByTestId('fold-rail-knob')).toBeInTheDocument();
 
     fireEvent.click(button);
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    expect(rail).toBeDisabled();
+    fireEvent.mouseEnter(rail);
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
     fireEvent.transitionEnd(collapsible);
 
     expect(button).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByTestId('approval-0')).toBeInTheDocument();
     expect(screen.getByTestId('approval-1')).toBeInTheDocument();
+  });
+
+  it('clears a retained group rail when its containing phase collapses', () => {
+    const phaseHeader = { current: document.createElement('div') };
+    const groupProps = {
+      ...baseProps,
+      parts: [{ part: makeApprovalPart('t1'), idx: 0 }],
+    };
+    const group = (expanded: boolean) => (
+      <RecoilRoot>
+        <FoldHeaderContext.Provider value={{ header: phaseHeader, expanded }}>
+          <ToolCallGroup {...groupProps} />
+        </FoldHeaderContext.Provider>
+      </RecoilRoot>
+    );
+    const { rerender } = render(group(true));
+    const rail = screen.getByTestId('fold-rail');
+    fireEvent.mouseEnter(rail);
+    expect(screen.getByTestId('fold-rail-knob')).toBeInTheDocument();
+    rerender(group(false));
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    expect(rail).toBeDisabled();
+    rerender(group(true));
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    expect(rail).not.toBeDisabled();
   });
 
   it('keeps deeply nested unresolved approval bodies mounted while the group is collapsed', () => {
