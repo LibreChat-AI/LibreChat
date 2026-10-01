@@ -109,13 +109,12 @@ export default function AskUserQuestions({
   const text = Object.hasOwn(form.state.text, question.id) ? form.state.text[question.id] : '';
 
   return (
-    /* Only the active step renders and the whole form sits in one
-       `AutoHeight`: switching questions lays the new one out at its final size
-       at once, and only the card's outer height eases to fit. `className`
-       carries the surface's height cap, so the measured height respects it and
-       a long question scrolls inside. */
-    <AutoHeight>
-      <div className={cn('flex min-h-0 flex-col', className)}>
+    <div className={cn('flex min-h-0 flex-col', className)}>
+      {/* Only the active step renders, laid out at its final size at once.
+          One `AutoHeight` holds everything above the buttons and clips only at
+          its bottom edge, so the header and title stay put and the footer
+          rides that edge as the card eases to the new height. */}
+      <AutoHeight>
         {stepped && (
           <p className="sr-only" aria-live="polite">
             {localize('com_ui_question_step', { 0: activeIndex + 1, 1: total })}
@@ -180,7 +179,7 @@ export default function AskUserQuestions({
         </div>
         {/* `pb-1 -mb-1` keeps the answer field's focus ring inside the padding
           box, so focusing it never counts as overflow and draws a scrollbar. */}
-        <div ref={scrollRef} className="-mb-1 min-h-0 flex-1 overflow-y-auto px-3 pb-1">
+        <div ref={scrollRef} className="-mb-1 max-h-[45vh] overflow-y-auto px-3 pb-1">
           <fieldset
             key={question.id}
             ref={stepRef}
@@ -233,63 +232,63 @@ export default function AskUserQuestions({
             </button>
           )}
         </div>
-        <div
-          className={cn(
-            'flex shrink-0 items-center gap-2 p-3',
-            stepped ? 'justify-between' : 'justify-end',
-          )}
+      </AutoHeight>
+      <div
+        className={cn(
+          'flex shrink-0 items-center gap-2 p-3',
+          stepped ? 'justify-between' : 'justify-end',
+        )}
+      >
+        <Button
+          type="button"
+          className="select-none"
+          size="sm"
+          variant="outline"
+          disabled={form.locked}
+          onClick={form.skip}
         >
-          <Button
-            type="button"
-            className="select-none"
-            size="sm"
-            variant="outline"
-            disabled={form.locked}
-            onClick={form.skip}
-          >
-            {localize('com_ui_skip')}
-          </Button>
-          <div className="flex items-center gap-2">
-            {stepped && (
-              <Button
-                type="button"
-                className="select-none"
-                size="sm"
-                variant="outline"
-                disabled={navLocked || activeIndex === 0}
-                onClick={() => goToStep(activeIndex - 1)}
-              >
-                {localize('com_ui_back')}
-              </Button>
-            )}
-            {isLastStep ? (
-              <Button
-                type="button"
-                className="select-none"
-                size="sm"
-                variant="submit"
-                disabled={!form.canSubmit}
-                onClick={form.submit}
-              >
-                {form.status === 'submitting'
-                  ? localize('com_ui_submitting')
-                  : localize('com_ui_submit')}
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                className="select-none"
-                size="sm"
-                variant="submit"
-                disabled={navLocked}
-                onClick={() => goToStep(activeIndex + 1)}
-              >
-                {localize('com_ui_next')}
-              </Button>
-            )}
-          </div>
+          {localize('com_ui_skip')}
+        </Button>
+        <div className="flex items-center gap-2">
+          {stepped && (
+            <Button
+              type="button"
+              className="select-none"
+              size="sm"
+              variant="outline"
+              disabled={navLocked || activeIndex === 0}
+              onClick={() => goToStep(activeIndex - 1)}
+            >
+              {localize('com_ui_back')}
+            </Button>
+          )}
+          {isLastStep ? (
+            <Button
+              type="button"
+              className="select-none"
+              size="sm"
+              variant="submit"
+              disabled={!form.canSubmit}
+              onClick={form.submit}
+            >
+              {form.status === 'submitting'
+                ? localize('com_ui_submitting')
+                : localize('com_ui_submit')}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              className="select-none"
+              size="sm"
+              variant="submit"
+              disabled={navLocked}
+              onClick={() => goToStep(activeIndex + 1)}
+            >
+              {localize('com_ui_next')}
+            </Button>
+          )}
         </div>
       </div>
-    </AutoHeight>
+    </div>
   );
 }

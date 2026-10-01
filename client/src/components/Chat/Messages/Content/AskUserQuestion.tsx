@@ -81,7 +81,6 @@ function AskUserQuestionsCard({
       <AskUserQuestions
         actionId={actionId}
         questions={questions}
-        className="max-h-[70vh]"
         headerAction={
           onExpand != null && (
             <TooltipAnchor
