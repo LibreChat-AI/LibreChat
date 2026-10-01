@@ -155,6 +155,14 @@ test.describe('primitive size roles', () => {
     });
     expect(explicit).toBe('20px');
     expect(await probeStyle(page, 'min-h-theme-target', 'min-height')).toBe('32px');
+    /** An icon square on a button role smaller than the target keeps the target. */
+    expect(
+      await probeStyle(
+        page,
+        'size-theme-button-xs min-h-theme-target min-w-theme-target',
+        'height',
+      ),
+    ).toBe('32px');
     expect(await probeStyle(page, 'h-theme-target', 'height')).toBe('32px');
   });
 });

@@ -295,3 +295,16 @@ describe('Button', () => {
       .forEach((circle) => expect(circle).toHaveAttribute('stroke', 'currentColor'));
   });
 });
+
+describe('Button icon squares', () => {
+  it.each(['icon', 'icon-sm', 'icon-xs'] as const)(
+    'keeps the %s square at least the target minimum',
+    (size) => {
+      render(<Button size={size} aria-label="Probe" />);
+      expect(screen.getByRole('button', { name: 'Probe' })).toHaveClass(
+        'min-h-theme-target',
+        'min-w-theme-target',
+      );
+    },
+  );
+});

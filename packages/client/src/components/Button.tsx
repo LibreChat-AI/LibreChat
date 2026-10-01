@@ -164,9 +164,10 @@ const buttonVariantRecipe = cva(
         xs: 'h-theme-button-xs rounded-md px-2.5 text-xs',
         sm: 'h-theme-button-sm rounded-lg px-3',
         lg: 'h-theme-button-lg rounded-lg px-8',
-        icon: 'size-theme-button',
-        'icon-sm': 'size-theme-icon-button-sm p-0',
-        'icon-xs': 'size-theme-button-xs',
+        /** Icon squares follow the button roles but never shrink below the target minimum. */
+        icon: 'size-theme-button min-h-theme-target min-w-theme-target',
+        'icon-sm': 'size-theme-icon-button-sm min-h-theme-target min-w-theme-target p-0',
+        'icon-xs': 'size-theme-button-xs min-h-theme-target min-w-theme-target',
         /**
          * A square icon control on the theme's control height — the size of
          * every button in the composer's action row, for a control that has to
