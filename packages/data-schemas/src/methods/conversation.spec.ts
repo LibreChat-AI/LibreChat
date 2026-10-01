@@ -8994,7 +8994,7 @@ describe('Conversation Operations', () => {
   describe('addConvoToolApprovalAllows', () => {
     const seed = async (user = 'allow-user') => {
       const conversationId = uuidv4();
-      await Conversation.create({ conversationId, user, title: 'Allow test' });
+      await Conversation.create({ conversationId, user, title: 'Allow test', endpoint: 'agents' });
       return conversationId;
     };
 
@@ -9027,6 +9027,23 @@ describe('Conversation Operations', () => {
           max: 2,
         }),
       ).toBe(false);
+      const stored = await Conversation.findOne({ conversationId }).lean();
+      expect(stored?.toolApprovalAllows).toEqual(['a', 'b']);
+    });
+
+    it('charges only names not stored yet against the bound', async () => {
+      const conversationId = await seed();
+      const write = (toolNames: string[]) =>
+        methods.addConvoToolApprovalAllows({
+          user: 'allow-user',
+          conversationId,
+          toolNames,
+          max: 2,
+        });
+      expect(await write(['a'])).toBe(true);
+      expect(await write(['a', 'b'])).toBe(true);
+      expect(await write(['b'])).toBe(true);
+      expect(await write(['a', 'c'])).toBe(false);
       const stored = await Conversation.findOne({ conversationId }).lean();
       expect(stored?.toolApprovalAllows).toEqual(['a', 'b']);
     });

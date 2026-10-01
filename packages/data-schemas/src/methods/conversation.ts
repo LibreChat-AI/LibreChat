@@ -2911,7 +2911,8 @@ export function createConversationMethods(
   /**
    * Remember tools the owner approved for the rest of one conversation. Owner-scoped,
    * idempotent (`$addToSet`), and bounded: the write matches only while the stored list
-   * has room, so concurrent resumes cannot grow it past `max`. Returns whether it applied.
+   * plus the names it does not hold yet fits `max`, so concurrent resumes cannot grow it
+   * past the cap and a name already stored costs no room. Returns whether it applied.
    */
   async function addConvoToolApprovalAllows({
     user,
@@ -2934,7 +2935,12 @@ export function createConversationMethods(
         {
           user,
           conversationId,
-          [`toolApprovalAllows.${max - names.length}`]: { $exists: false },
+          $expr: {
+            $lte: [
+              { $size: { $setUnion: [{ $ifNull: ['$toolApprovalAllows', []] }, names] } },
+              max,
+            ],
+          },
         },
         { $addToSet: { toolApprovalAllows: { $each: names } } },
         { timestamps: false },
