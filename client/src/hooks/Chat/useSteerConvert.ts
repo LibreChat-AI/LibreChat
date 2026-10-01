@@ -17,6 +17,7 @@ import {
   canRestoreRecovery,
 } from '~/components/Chat/Steering/recovery';
 import { fetchStreamStatus, getGenerationProtocolVersion } from '~/data-provider';
+import { queuedMessagesByConvoId } from '~/store/queue';
 import { useFileMapContext } from '~/Providers';
 import store from '~/store';
 
@@ -119,7 +120,7 @@ export default function useSteerConvert() {
         set(store.pendingSteersByConvoId(conversationId), (prev) =>
           prev.filter((steer) => !steerIds.has(steer.steerId)),
         );
-        set(store.queuedMessagesByConvoId(conversationId), (prev) => {
+        jotaiStore.set(queuedMessagesByConvoId(conversationId), (prev) => {
           /** A legacy status read is destructive: if a v2 live-final path
            * already created a receipt-bound item before the claim reached an
            * old replica, that source no longer exists. Downgrade the existing

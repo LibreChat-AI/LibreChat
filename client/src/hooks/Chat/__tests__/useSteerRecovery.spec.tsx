@@ -1,5 +1,5 @@
 import React from 'react';
-import { getDefaultStore } from 'jotai';
+import { getDefaultStore, useAtomValue } from 'jotai';
 import { act, render, renderHook } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState, type MutableSnapshot } from 'recoil';
 import type { RewakeDrain } from '~/Providers/ComposerRestoreContext';
@@ -7,6 +7,7 @@ import {
   ComposerRestoreProvider,
   useComposerRestoreHost,
 } from '~/Providers/ComposerRestoreContext';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/store/queue';
 import { pendingSteerCancelClientIdsFamily } from '~/store/steer';
 import useSteerRecovery from '../useSteerRecovery';
 import store from '~/store';
@@ -62,13 +63,15 @@ function setup(initialize?: (snapshot: MutableSnapshot) => void, rewake?: Rewake
     () => ({
       recovery: useSteerRecovery(CONVO_ID),
       chips: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
-      queue: useRecoilValue(store.queuedMessagesByConvoId(CONVO_ID)),
+      queue: useAtomValue(queuedMessagesByConvoId(CONVO_ID)),
       applied: useRecoilValue(store.appliedSteerIdsByConvoId(CONVO_ID)),
       accepted: useRecoilValue(store.acceptedSteerClientIdsByConvoId(CONVO_ID)),
     }),
     { wrapper },
   );
 }
+
+beforeEach(() => resetQueueFamilies());
 
 describe('useSteerRecovery', () => {
   beforeEach(() => {
@@ -242,7 +245,7 @@ describe('useSteerRecovery', () => {
         function Tree() {
           recovery = useSteerRecovery(CONVO_ID);
           chips = useRecoilValue(store.pendingSteersByConvoId(CONVO_ID));
-          queue = useRecoilValue(store.queuedMessagesByConvoId(CONVO_ID));
+          queue = useAtomValue(queuedMessagesByConvoId(CONVO_ID));
           accepted = useRecoilValue(store.acceptedSteerClientIdsByConvoId(CONVO_ID));
           const setChips = useSetRecoilState(store.pendingSteersByConvoId(CONVO_ID));
           /* What the optimistic cancel does to a `sending` chip: hide it and
@@ -433,6 +436,8 @@ describe('useSteerRecovery', () => {
        every retry earns that same 409 and Retry would be dead for good. */
     it('also routes to the queue on RUN_PAUSED / RUN_REPLACED / STEER_UNSUPPORTED / STEER_QUEUE_FULL', async () => {
       for (const code of ['RUN_PAUSED', 'RUN_REPLACED', 'STEER_UNSUPPORTED', 'STEER_QUEUE_FULL']) {
+        /** Each code gets its own render; the queue lives in the shared default store. */
+        resetQueueFamilies();
         mockMutateAsync.mockRejectedValue({ response: { data: { code } } });
         const { result } = setup(({ set }) => {
           set(store.pendingSteersByConvoId(CONVO_ID), [
@@ -511,7 +516,7 @@ describe('useSteerRecovery', () => {
          away while the conversation's state stays behind to be read. */
       const Observer = () => {
         chips = useRecoilValue(store.pendingSteersByConvoId(CONVO_ID));
-        queue = useRecoilValue(store.queuedMessagesByConvoId(CONVO_ID));
+        queue = useAtomValue(queuedMessagesByConvoId(CONVO_ID));
         setSubmitting = useSetRecoilState(store.isSubmittingFamily(0));
         return null;
       };
@@ -576,7 +581,7 @@ describe('useSteerRecovery', () => {
       const Tree = () => {
         recovery = useSteerRecovery(CONVO_ID);
         chips = useRecoilValue(store.pendingSteersByConvoId(CONVO_ID));
-        queue = useRecoilValue(store.queuedMessagesByConvoId(CONVO_ID));
+        queue = useAtomValue(queuedMessagesByConvoId(CONVO_ID));
         const setConvo = useSetRecoilState(store.conversationByIndex(0));
         navigateAway = () => setConvo({ conversationId: 'a-different-chat' } as never);
         return null;
@@ -978,7 +983,7 @@ describe('useSteerRecovery', () => {
         set(store.pendingSteersByConvoId(CONVO_ID), [
           { steerId: 's-old', text: 'older failed steer', status: 'failed', createdAt: 0 },
         ]);
-        set(store.queuedMessagesByConvoId(CONVO_ID), [
+        getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [
           { id: 'existing', text: 'first', createdAt: 1 },
         ]);
       });

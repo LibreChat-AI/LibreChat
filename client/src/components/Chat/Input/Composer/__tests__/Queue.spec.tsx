@@ -1,7 +1,7 @@
 import React from 'react';
+import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
-import { getDefaultStore } from 'jotai';
-import { RecoilRoot, useSetRecoilState } from 'recoil';
+import { getDefaultStore, useSetAtom } from 'jotai';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { ReasoningEffort } from 'librechat-data-provider';
 import { act, render, screen, within, fireEvent } from '@testing-library/react';
@@ -11,10 +11,10 @@ import {
   QueuedTurnPortalProvider,
   useQueuedTurnPortal,
 } from '~/components/Chat/Steering/QueuedTurnPortal';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/store/queue';
 import { hasQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import Queue from '../Queue';
-import store from '~/store';
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, options?: Record<string, string | number>) => {
     if (!options) {
@@ -140,7 +140,9 @@ function renderQueue(
   } = {},
 ) {
   return render(
-    <RecoilRoot initializeState={({ set }) => set(store.queuedMessagesByConvoId(CONVO_ID), items)}>
+    <RecoilRoot
+      initializeState={() => getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), items)}
+    >
       {/* Mirrors `App`, which mounts the provider around the whole tree. */}
       <DndProvider backend={HTML5Backend}>
         <QueuedTurnPortalProvider>
@@ -160,6 +162,8 @@ function renderQueue(
     </RecoilRoot>,
   );
 }
+
+beforeEach(() => resetQueueFamilies());
 
 describe('Queue', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -620,8 +624,8 @@ describe('Queue', () => {
     render(
       <DndProvider backend={HTML5Backend}>
         <RecoilRoot
-          initializeState={({ set }) =>
-            set(store.queuedMessagesByConvoId(CONVO_ID), [
+          initializeState={() =>
+            getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [
               queued({ id: 'q1' }),
               queued({ id: 'q2' }),
             ])
@@ -635,8 +639,8 @@ describe('Queue', () => {
           />
         </RecoilRoot>
         <RecoilRoot
-          initializeState={({ set }) =>
-            set(store.queuedMessagesByConvoId(CONVO_ID), [
+          initializeState={() =>
+            getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [
               queued({ id: 'q3' }),
               queued({ id: 'q4' }),
             ])
@@ -669,13 +673,16 @@ describe('Queue', () => {
   it('forgets its last announcement once the queue empties', () => {
     let setQueue: (items: QueuedMessage[]) => void = () => undefined;
     const Driver = () => {
-      setQueue = useSetRecoilState(store.queuedMessagesByConvoId(CONVO_ID));
+      setQueue = useSetAtom(queuedMessagesByConvoId(CONVO_ID));
       return null;
     };
     render(
       <RecoilRoot
-        initializeState={({ set }) =>
-          set(store.queuedMessagesByConvoId(CONVO_ID), [queued({ id: 'q1' }), queued({ id: 'q2' })])
+        initializeState={() =>
+          getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [
+            queued({ id: 'q1' }),
+            queued({ id: 'q2' }),
+          ])
         }
       >
         <Driver />
