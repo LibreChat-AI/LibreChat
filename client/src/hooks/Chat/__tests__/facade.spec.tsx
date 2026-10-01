@@ -6,8 +6,8 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import type { TConversation, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
 import { ChatContext } from '~/Providers/ChatContext';
-import { resumeRequestFamily } from '~/store/resume';
 import { useChat, useChatActions } from '../facade';
+import { resumeRequestFamily } from '../resume';
 
 const userMessage: TMessage = {
   messageId: 'user-1',

@@ -23,7 +23,7 @@ import { isMemoryFailureOutput } from '~/components/Chat/Messages/Content/Parts/
 import { getToolMeta } from '~/components/Chat/Messages/Content/outcome';
 import { useChatContext } from '~/Providers/ChatContext';
 import { isEmptyContentPart } from '~/utils/messages';
-import { resumeRequestFamily } from '~/store/resume';
+import { resumeRequestFamily } from './resume';
 import { mapAttachments } from '~/utils/map';
 
 /** AI SDK `ChatStatus`. */

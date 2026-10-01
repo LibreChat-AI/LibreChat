@@ -42,8 +42,8 @@ import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
+import { resumeRequestFamily } from '~/hooks/Chat/resume';
 import { revealedQueuedTurnFamily } from '~/store/steer';
-import { resumeRequestFamily } from '~/store/resume';
 import { useFileMapContext } from '~/Providers';
 import store from '~/store';
 
