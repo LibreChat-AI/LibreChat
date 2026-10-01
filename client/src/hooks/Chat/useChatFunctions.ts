@@ -52,6 +52,7 @@ import { withSubmittedCodeDecision } from '~/hooks/Agents/codeDecision';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useGetSender from '~/hooks/Conversations/useGetSender';
 import { activeUsageResponseIdFamily } from '~/store/usage';
@@ -241,7 +242,7 @@ export default function useChatFunctions({
   const setFilesToDelete = useSetFilesToDelete();
   const getEphemeralAgent = useGetEphemeralAgent();
   const agentsMap = useAgentsMapContext();
-  const isTemporary = useRecoilValue(store.isTemporary);
+  const { isTemporary } = useChatSettings();
   const { getExpiry } = useUserKey(immutableConversation?.endpoint ?? '');
   const setIsSubmitting = useSetRecoilState(store.isSubmittingFamily(index));
   const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(index));

@@ -5,6 +5,7 @@ import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import type { TConversation } from 'librechat-data-provider';
 import { TemporaryChat, TemporaryChatIndicator } from '../TemporaryChat';
+import ChatSettingsProvider from '~/routes/ChatSettings';
 import store from '~/store';
 
 jest.mock('@librechat/client', () => ({
@@ -44,7 +45,7 @@ function renderChat(
         }
       }}
     >
-      {ui}
+      <ChatSettingsProvider>{ui}</ChatSettingsProvider>
     </RecoilRoot>,
   );
 }

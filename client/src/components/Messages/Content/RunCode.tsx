@@ -1,16 +1,15 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import debounce from 'lodash/debounce';
-import { useRecoilCallback } from 'recoil';
 import { Tools } from 'librechat-data-provider';
 import { SquareTerminal, Check, X } from 'lucide';
 import { MorphIcon, Spinner, TooltipAnchor, useToastContext } from '@librechat/client';
 import type { IconNode } from '@librechat/client';
 import type { CodeBarProps } from '~/common';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useToolCallMutation } from '~/data-provider';
 import { cn, normalizeLanguage } from '~/utils';
 import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
 type RunState = 'idle' | 'loading' | 'success' | 'error';
 
@@ -33,13 +32,7 @@ const RunCode: React.FC<CodeBarProps & { iconOnly?: boolean }> = React.memo(
 
     const { messageId, conversationId, partIndex } = useMessageContext();
     const normalizedLang = useMemo(() => normalizeLanguage(lang), [lang]);
-    // Read at click time so retention context is current without re-rendering every code block.
-    const getIsTemporary = useRecoilCallback(
-      ({ snapshot }) =>
-        () =>
-          snapshot.getPromise(store.isTemporary),
-      [],
-    );
+    const { isTemporary } = useChatSettings();
 
     const handleExecute = useCallback(async () => {
       const codeString: string = codeRef.current?.textContent ?? '';
@@ -59,7 +52,7 @@ const RunCode: React.FC<CodeBarProps & { iconOnly?: boolean }> = React.memo(
         conversationId: conversationId ?? '',
         lang: normalizedLang,
         code: codeString,
-        isTemporary: await getIsTemporary(),
+        isTemporary,
       });
     }, [
       codeRef,
@@ -69,7 +62,7 @@ const RunCode: React.FC<CodeBarProps & { iconOnly?: boolean }> = React.memo(
       blockIndex,
       conversationId,
       normalizedLang,
-      getIsTemporary,
+      isTemporary,
     ]);
 
     const debouncedExecute = useMemo(
@@ -118,9 +111,9 @@ const RunCode: React.FC<CodeBarProps & { iconOnly?: boolean }> = React.memo(
         aria-label={label}
         aria-busy={isLoading || undefined}
         className={cn(
-          'inline-flex select-none items-center justify-center text-text-secondary transition-all duration-200 ease-out',
+          'text-text-secondary inline-flex items-center justify-center transition-all duration-200 ease-out select-none',
           'hover:bg-surface-hover hover:text-text-primary',
-          'focus-visible:outline focus-visible:outline-2 focus-visible:outline-border-heavy',
+          'focus-visible:outline-border-heavy focus-visible:outline focus-visible:outline-2',
           'disabled:pointer-events-none disabled:opacity-50',
           isError && 'text-text-destructive hover:text-text-destructive',
           iconOnly

@@ -7,6 +7,9 @@ export const defaultChatSettings: ChatSettings = {
   setDuringRunDefaultAction: () => undefined,
   steerInterruptsByDefault: false,
   resetVisibleArtifacts: () => undefined,
+  saveDrafts: true,
+  isTemporary: false,
+  setIsTemporary: () => undefined,
 };
 
 export const ChatSettingsContext = createContext<ChatSettings>(defaultChatSettings);
