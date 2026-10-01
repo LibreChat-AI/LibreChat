@@ -614,7 +614,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     mode === 'dark'
       ? customColors?.['rgb-border-xheavy']
       : customColors?.['rgb-surface-primary-alt'];
-  const drawerEdgeFallback =
+  const drawerEdgeFallback: Partial<IThemeRGB> =
     customColors?.['rgb-drawer-edge'] === undefined && drawerEdgeSource !== undefined
       ? { 'rgb-drawer-edge': drawerEdgeSource }
       : {};
