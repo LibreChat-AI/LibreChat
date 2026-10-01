@@ -61,6 +61,17 @@ async function sizes(page: Page): Promise<Record<string, string>> {
   return result;
 }
 
+/** Names the icon and target sizes apart from every default, so a size still drawn by a fixed
+ *  utility shows. */
+const REFERENCE_SIZE_THEME = {
+  version: 1,
+  name: 'e2e-size-reference',
+  modes: {
+    light: { appearance: { iconSize: '1.5rem', minTargetSize: '2rem' } },
+    dark: { appearance: { iconSize: '1.5rem', minTargetSize: '2rem' } },
+  },
+} as const;
+
 const DEFAULT_SIZES = {
   'h-theme-button-xs': '28px',
   'h-theme-button-lg': '44px',
@@ -111,5 +122,24 @@ test.describe('primitive size roles', () => {
         'h-theme-field': '32px',
       });
     }
+  });
+
+  test('a theme naming its own icon and target sizes resizes a menu glyph and the hit area @scenario:primitive-sizes-reference-theme', async ({
+    page,
+  }) => {
+    await openChat(page, 'light', REFERENCE_SIZE_THEME);
+
+    /** The menu row's icon slot, holding a glyph a caller sized itself, as the export menu does. */
+    const glyph = await page.evaluate(() => {
+      const slot = document.createElement('span');
+      slot.className = 'size-theme-icon mr-2 [&>svg]:size-theme-icon';
+      slot.innerHTML = '<svg class="size-4" viewBox="0 0 24 24"></svg>';
+      document.body.append(slot);
+      const width = getComputedStyle(slot.querySelector('svg') as SVGElement).width;
+      slot.remove();
+      return width;
+    });
+    expect(glyph).toBe('24px');
+    expect(await probeStyle(page, 'h-theme-target', 'height')).toBe('32px');
   });
 });

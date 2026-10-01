@@ -69,9 +69,11 @@ module.exports = {
         /**
          * The comfortable tap target (2.75rem / 44px), held against the theme's
          * own control height with `max()` so a theme that already draws larger
-         * controls is never shrunk on a phone. Pair it with `touch:`.
+         * controls is never shrunk on a phone, nor below the theme's minimum target size. Pair it
+         * with `touch:`.
          */
-        'theme-control-touch': 'max(var(--theme-control-height, 2.25rem), 2.75rem)',
+        'theme-control-touch':
+          'max(var(--theme-control-height, 2.25rem), 2.75rem, var(--theme-min-target-size, 1.5rem))',
         /** The switch knob inside the track's 2px border, in px so it holds at any root size,
          *  and how far it travels when checked (the borders cancel out of the travel). */
         'theme-switch-thumb': 'max(0px, calc(var(--theme-switch-height, 1.5rem) - 4px))',

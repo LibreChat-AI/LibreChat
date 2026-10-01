@@ -196,7 +196,7 @@ describe('LibreChat Tailwind preset', () => {
     /** The tap-target floor is the role's reason to exist, so the floor itself is asserted
      *  rather than only the control-height variable it is built from. */
     expect(css).toContain(
-      `max(var(--theme-control-height, ${defaultAppearance.controlHeight}), 2.75rem)`,
+      `max(var(--theme-control-height, ${defaultAppearance.controlHeight}), 2.75rem, var(--theme-min-target-size, ${defaultAppearance.minTargetSize}))`,
     );
 
     /** A stylesheet that predates the control spacing roles pads controls with the shared
