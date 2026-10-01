@@ -106,7 +106,6 @@ jest.mock('~/Providers/AgentsMapContext', () => ({
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {
-    isTemporary: 'isTemporary',
     isSubmittingFamily: () => 'isSubmitting',
     submissionStartFamily: () => 'submissionStart',
     showStopButtonByIndex: () => 'showStopButton',

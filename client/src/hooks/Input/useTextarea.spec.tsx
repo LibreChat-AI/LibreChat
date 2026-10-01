@@ -63,7 +63,6 @@ jest.mock('~/store', () => ({
   __esModule: true,
   default: {
     enterToSend: { key: 'enterToSend' },
-    saveDrafts: { key: 'saveDrafts' },
     pasteLongTextAsFile: { key: 'pasteLongTextAsFile' },
     activePromptByIndex: jest.fn(() => ({ key: 'activePrompt' })),
     pendingComposerTextByConvoId: jest.fn(() => ({ key: 'pendingComposerText' })),
