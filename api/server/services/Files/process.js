@@ -1217,6 +1217,36 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
       basePath,
       entity_id,
     });
+
+    /**
+     * Auto-RAG for chat-input paperclip uploads: when a user drops a text-bearing
+     * file into the chat input (message_file === true, no tool_resource), also
+     * index it in the vector DB so chat-time retrieval works without the user
+     * having to opt in via an Agent. Images (→ Vision) and audio (→ STT) are
+     * intentionally skipped. rag-api failures must not fail the upload.
+     *
+     * Upstream v0.8.2 never embeds chat-paperclip uploads — only Agent
+     * file_search and tool_resource=context paths do.
+     */
+    if (
+      messageAttachment &&
+      !tool_resource &&
+      process.env.RAG_API_URL &&
+      !isImageFile
+    ) {
+      const { isTextBearingMimeType, tryEmbedChatAttachment } = require('./VectorDB/autoEmbed');
+      if (isTextBearingMimeType(file.mimetype)) {
+        const embedResult = await tryEmbedChatAttachment({
+          req,
+          file,
+          file_id,
+          entity_id,
+        });
+        if (embedResult.embedded) {
+          embeddingResult = embedResult;
+        }
+      }
+    }
   }
 
   if (shouldUploadToCodeEnv) {
@@ -1301,6 +1331,10 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
   ) {
     embedded = embeddingResult?.embedded;
     filename = embeddingResult?.filename || filename;
+  } else if (embeddingResult?.embedded) {
+    // Chat-paperclip auto-RAG: flag the file as embedded so chat-time
+    // createContextHandlers triggers retrieval for it.
+    embedded = true;
   }
 
   let filepath = _filepath;
