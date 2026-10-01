@@ -116,7 +116,10 @@ test.describe('tool call groups', () => {
     await expect(header).toHaveAttribute('aria-expanded', 'false');
     await header.click();
     await expect(header).toHaveAttribute('aria-expanded', 'true');
-    await expect(messagesView(page).locator('button[aria-expanded="false"]')).toHaveCount(2);
-    await expect(messagesView(page).locator('button[aria-expanded="true"]')).toHaveCount(1);
+    const calls = messagesView(page).getByRole('button', { name: /^Ran remember_fact/ });
+    await expect(calls).toHaveCount(2);
+    for (const call of await calls.all()) {
+      await expect(call).toHaveAttribute('aria-expanded', 'false');
+    }
   });
 });
