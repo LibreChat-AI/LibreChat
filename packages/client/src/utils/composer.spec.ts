@@ -42,7 +42,7 @@ describe('composerControlClasses', () => {
 
     expect(classes).toContain('h-theme-control');
     expect(classes).toContain('rounded-theme-control-round');
-    expect(classes).toContain('gap-theme-compact');
+    expect(classes).toContain('gap-theme-control-gap');
   });
 
   it('draws its border and fills from semantic roles', () => {

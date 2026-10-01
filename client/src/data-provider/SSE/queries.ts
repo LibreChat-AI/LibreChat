@@ -21,6 +21,9 @@ export interface StreamStatusResponse {
    *  can rebuild a clock-local elapsed baseline free of cross-machine skew. */
   elapsedMs?: number;
   resumeState?: Agents.ResumeState;
+  /** The run's temporary state as the server recorded it at admission, so a rebuilt
+   *  submission keeps a hidden chat out of history and titling after a reload. */
+  isTemporary?: boolean;
   /** Live pending approval when `status === 'requires_action'`; mirrors
    *  `resumeState.pendingAction`, surfaced top-level for the resume-on-load path. */
   pendingAction?: Agents.PendingAction;

@@ -71,7 +71,7 @@ export default function CodeAnalyze({
           icon={
             <Terminal
               className={cn(
-                'size-4 shrink-0 text-text-secondary',
+                'text-text-secondary size-4 shrink-0',
                 phase === 'running' && 'animate-pulse',
               )}
               aria-hidden="true"
@@ -80,18 +80,13 @@ export default function CodeAnalyze({
         />
       </div>
       {showCode && (
-        <div className="code-analyze-block mb-3 mt-0.5 overflow-hidden rounded-xl bg-black">
+        <div className="code-analyze-block bg-surface-code mt-0.5 mb-3 overflow-hidden rounded-xl">
           <MarkdownLite content={code ? `\`\`\`python\n${code}\n\`\`\`` : ''} />
           {logs && (
-            <div className="bg-gray-700 p-4 text-xs">
-              <div className="mb-1 text-gray-400">{localize('com_ui_result')}</div>
-              <div
-                className="prose flex flex-col-reverse text-white"
-                style={{
-                  color: 'white',
-                }}
-              >
-                <pre className="shrink-0">{logs}</pre>
+            <div className="bg-surface-tertiary p-4 text-xs">
+              <div className="text-text-secondary mb-1">{localize('com_ui_result')}</div>
+              <div className="prose flex flex-col-reverse">
+                <pre className="text-text-primary! shrink-0">{logs}</pre>
               </div>
             </div>
           )}

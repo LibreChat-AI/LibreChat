@@ -17,7 +17,7 @@ export default function FileIcon({
       xmlns="http://www.w3.org/2000/svg"
       viewBox="0 0 36 36"
       fill="none"
-      className="h-10 w-10 flex-shrink-0"
+      className="h-10 w-10 shrink-0"
       width="36"
       height="36"
       aria-hidden="true"

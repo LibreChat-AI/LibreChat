@@ -118,7 +118,7 @@ export default function VariableEditor({
                   id={`${id}-variables-menu-button`}
                   aria-label={localize('com_ui_variables')}
                   title={localize('com_ui_variables')}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-surface-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+                  className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary inline-flex h-7 w-7 items-center justify-center rounded-lg transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
                 >
                   <PlusCircle className="h-4 w-4" strokeWidth={1.75} aria-hidden={true} />
                 </Menu.MenuButton>
@@ -136,7 +136,7 @@ export default function VariableEditor({
                 variant="ghost"
                 onClick={() => setIsDialogOpen(true)}
                 aria-label={localize('com_ui_expand_editor')}
-                className="h-7 w-7 p-0 text-text-secondary hover:bg-surface-secondary hover:text-text-primary"
+                className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary h-7 w-7 p-0"
               >
                 <Maximize2 className="h-4 w-4" strokeWidth={1.75} aria-hidden={true} />
               </Button>

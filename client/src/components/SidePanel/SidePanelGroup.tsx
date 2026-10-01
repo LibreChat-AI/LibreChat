@@ -26,25 +26,29 @@ const SidePanelGroup = memo(({ panel, children }: SidePanelProps) => {
 
   return (
     <>
-      <ResizablePanelGroup
-        orientation="horizontal"
-        defaultLayout={defaultLayout}
-        onLayoutChanged={onLayoutChanged}
-        className="relative flex-1 bg-presentation"
-      >
-        <ResizablePanel defaultSize="50" minSize={minSizeMain} id="messages-view">
-          {children}
-        </ResizablePanel>
+      {/* The surface behind the panels is this group's host, not the group
+          primitive: the resizer owns its own chrome, and the caller owns the
+          backdrop the panels sit on. */}
+      <div className="bg-surface-primary-alt relative min-w-0 flex-1">
+        <ResizablePanelGroup
+          orientation="horizontal"
+          defaultLayout={defaultLayout}
+          onLayoutChanged={onLayoutChanged}
+        >
+          <ResizablePanel defaultSize="50" minSize={minSizeMain} id="messages-view">
+            {children}
+          </ResizablePanel>
 
-        {!isSmallScreen && (
-          <ArtifactsPanel
-            panel={panel}
-            minSizeMain={minSizeMain}
-            shouldRender={shouldRenderPanel}
-            onRenderChange={setShouldRenderPanel}
-          />
-        )}
-      </ResizablePanelGroup>
+          {!isSmallScreen && (
+            <ArtifactsPanel
+              panel={panel}
+              minSizeMain={minSizeMain}
+              shouldRender={shouldRenderPanel}
+              onRenderChange={setShouldRenderPanel}
+            />
+          )}
+        </ResizablePanelGroup>
+      </div>
       {panel != null && isSmallScreen && <div className="fixed inset-0 z-[100]">{panel}</div>}
     </>
   );

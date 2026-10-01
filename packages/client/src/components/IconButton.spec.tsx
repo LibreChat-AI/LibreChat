@@ -32,4 +32,18 @@ describe('IconButton', () => {
       'rounded-theme-control-round',
     );
   });
+
+  it('provides a theme-aware primary action', () => {
+    render(
+      <IconButton label="Send" variant="primary">
+        send
+      </IconButton>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Send' })).toHaveClass(
+      'bg-surface-inverted',
+      'text-text-inverted',
+      'hover:bg-surface-inverted-hover',
+    );
+  });
 });

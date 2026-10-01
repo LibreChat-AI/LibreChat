@@ -82,7 +82,7 @@ const LabelController: React.FC<LabelControllerProps> = ({
   <div className="flex items-center justify-between gap-4 px-4 py-3.5">
     <Label
       htmlFor={id}
-      className="w-auto cursor-pointer select-none break-normal text-sm font-medium text-text-primary"
+      className="text-text-primary w-auto cursor-pointer text-sm font-medium break-normal select-none"
     >
       {label}
     </Label>
@@ -186,7 +186,7 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
     <Button
       size="sm"
       variant="outline"
-      className="relative h-9 w-full gap-2 rounded-lg border-border-light font-medium focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-text-primary"
+      className="border-border-light relative h-9 w-full gap-2 rounded-lg font-medium"
       aria-label={localize('com_ui_admin_settings')}
     >
       <ShieldEllipsis className="size-5 cursor-pointer" aria-hidden="true" />
@@ -203,7 +203,7 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
         >
           <OGDialogHeader className="px-5 py-5 pr-14 text-left sm:px-6">
             <div className="flex items-center gap-3">
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-border-light bg-surface-secondary text-text-secondary">
+              <div className="border-border-light bg-surface-secondary text-text-secondary flex size-10 shrink-0 items-center justify-center rounded-xl border">
                 <ShieldEllipsis className="size-5" aria-hidden="true" />
               </div>
               <div className="min-w-0 space-y-1">
@@ -221,8 +221,8 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
 
           <form onSubmit={handleSubmit(onSubmit)}>
             <div className="space-y-4 p-4 sm:p-6">
-              <div className="grid gap-3 rounded-xl border border-border-light bg-surface-secondary p-4 sm:grid-cols-[minmax(0,1fr)_9rem] sm:items-center">
-                <span id={roleLabelId} className="text-sm font-semibold text-text-primary">
+              <div className="border-border-light bg-surface-secondary grid gap-3 rounded-xl border p-4 sm:grid-cols-[minmax(0,1fr)_9rem] sm:items-center">
+                <span id={roleLabelId} className="text-text-primary text-sm font-semibold">
                   {localize('com_ui_role_select')}
                 </span>
                 <DropdownPopup
@@ -233,13 +233,13 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
                   trigger={
                     <Ariakit.MenuButton
                       aria-labelledby={`${roleLabelId} ${roleValueId}`}
-                      className="inline-flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-border-medium bg-transparent px-3 text-sm text-text-primary transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+                      className="border-border-medium text-text-primary hover:bg-surface-hover focus-visible:ring-text-primary inline-flex h-10 w-full items-center justify-between gap-2 rounded-lg border bg-transparent px-3 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
                     >
                       <span id={roleValueId} className="truncate font-medium">
                         {selectedRole}
                       </span>
                       <ChevronDown
-                        className="size-4 shrink-0 text-text-secondary"
+                        className="text-text-secondary size-4 shrink-0"
                         aria-hidden="true"
                       />
                     </Ariakit.MenuButton>
@@ -250,7 +250,7 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
                 />
               </div>
 
-              <div className="divide-y divide-border-light overflow-hidden rounded-xl border border-border-light bg-surface-secondary">
+              <div className="divide-border-light border-border-light bg-surface-secondary divide-y overflow-hidden rounded-xl border">
                 {permissions.map(({ permission, labelKey }) => {
                   const label = localize(labelKey);
                   const needsConfirm =
@@ -275,7 +275,7 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
                       {showAdminWarning &&
                         selectedRole === SystemRoles.ADMIN &&
                         permission === Permissions.USE && (
-                          <div className="whitespace-normal break-words border-t border-border-light px-4 py-3 text-sm text-text-destructive">
+                          <div className="border-border-light text-text-destructive border-t px-4 py-3 text-sm break-words whitespace-normal">
                             <span>{localize('com_ui_admin_access_warning')}</span>{' '}
                             <a
                               href="https://www.librechat.ai/docs/configuration/librechat_yaml/object_structure/interface"

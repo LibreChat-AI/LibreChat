@@ -36,6 +36,16 @@ jest.mock('~/server/controllers/auth/TwoFactorAuthController', () => ({
   verify2FAWithTempToken: (...args) => mockVerify2FAWithTempToken(...args),
 }));
 
+jest.mock('~/server/controllers/auth/PasskeyController', () => ({
+  listPasskeys: jest.fn((req, res) => res.status(204).end()),
+  updatePasskey: jest.fn((req, res) => res.status(204).end()),
+  removePasskey: jest.fn((req, res) => res.status(204).end()),
+  authenticatePasskey: jest.fn((req, res, next) => next()),
+  loginPasskeyOptions: jest.fn((req, res) => res.status(204).end()),
+  registerPasskeyOptions: jest.fn((req, res) => res.status(204).end()),
+  registerPasskeyVerify: jest.fn((req, res) => res.status(204).end()),
+}));
+
 jest.mock('~/server/controllers/auth/LogoutController', () => ({
   logoutController: jest.fn((req, res) => res.status(204).end()),
 }));
@@ -59,6 +69,8 @@ jest.mock('~/server/middleware', () => {
     logHeaders: pass,
     requireSameOrigin: pass,
     loginLimiter: pass,
+    passkeyLimiter: pass,
+    passkeyStepUpLimiter: pass,
     setTwoFactorTempUser: (...args) => mockSetTwoFactorTempUser(...args),
     twoFactorTempLimiter: (...args) => mockTwoFactorTempLimiter(...args),
     checkBan: (...args) => mockCheckBan(...args),

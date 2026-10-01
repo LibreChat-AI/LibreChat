@@ -40,7 +40,7 @@ export default function ExportAndShareMenu({
               <Ariakit.MenuButton
                 id="export-menu-button"
                 aria-label={description}
-                className="relative inline-flex size-9 flex-shrink-0 items-center justify-center rounded-xl border border-border-light bg-presentation text-text-primary transition-all ease-in-out hover:bg-surface-tertiary disabled:pointer-events-none disabled:opacity-50 radix-state-open:bg-surface-tertiary"
+                className="border-border-light bg-presentation text-text-primary hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary relative inline-flex size-9 shrink-0 items-center justify-center rounded-xl border transition-all ease-in-out disabled:pointer-events-none disabled:opacity-50"
               >
                 <Share2
                   className="icon-md text-text-primary"
@@ -49,7 +49,7 @@ export default function ExportAndShareMenu({
                 />
                 {hasSharedLink && (
                   <span
-                    className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-status-info ring-2 ring-presentation"
+                    className="bg-status-info ring-presentation absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2"
                     data-testid="header-shared-link-indicator"
                     aria-hidden="true"
                   />
@@ -59,7 +59,7 @@ export default function ExportAndShareMenu({
           />
         }
         items={items}
-        className={isSmallScreen ? '' : 'absolute right-0 top-0 mt-2'}
+        className={isSmallScreen ? '' : 'absolute top-0 right-0 mt-2'}
       />
       {dialogs}
     </>

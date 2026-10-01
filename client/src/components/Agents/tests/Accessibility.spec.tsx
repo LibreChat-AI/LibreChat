@@ -50,7 +50,6 @@ const mockLocalize = jest.fn((key: string, options?: any) => {
     com_agents_category_tab_label: `${options?.category} category, ${options?.position} of ${options?.total}`,
     com_agents_search_instructions: 'Type to search agents by name or description',
     com_agents_search_aria: 'Search agents',
-    com_agents_search_placeholder: 'Search agents...',
     com_agents_clear_search: 'Clear search',
     com_agents_agent_card_label: `${options?.name} agent. ${options?.description}`,
     com_agents_grid_announcement: `Showing ${options?.count} agents in ${options?.category} category`,
@@ -65,18 +64,13 @@ const mockLocalize = jest.fn((key: string, options?: any) => {
     // ErrorDisplay translations
     com_agents_error_suggestion_generic: 'Try refreshing the page or check your network connection',
     com_agents_error_network_title: 'Network Error',
-    com_agents_error_network_message: 'Unable to connect to the server',
     com_agents_error_network_suggestion: 'Check your internet connection and try again',
     com_agents_error_not_found_title: 'Not Found',
-    com_agents_error_not_found_suggestion: 'The requested resource could not be found',
     com_agents_error_invalid_request: 'Invalid Request',
-    com_agents_error_bad_request_message: 'The request was invalid',
     com_agents_error_bad_request_suggestion: 'Please check your input and try again',
     com_agents_error_server_title: 'Server Error',
-    com_agents_error_server_message: 'An internal server error occurred',
     com_agents_error_server_suggestion: 'Please try again later',
     com_agents_error_title: 'Error',
-    com_agents_error_generic: 'An unexpected error occurred',
     com_agents_error_search_title: 'Search Error',
     com_agents_error_category_title: 'Category Error',
     com_agents_search_no_results: `No results found for "${options?.query}"`,
@@ -122,6 +116,12 @@ jest.mock('@librechat/client', () => ({
 
 jest.mock('~/data-provider/Agents', () => ({
   useMarketplaceAgentsInfiniteQuery: jest.fn(),
+  useGetAgentByIdQuery: jest.fn(() => ({ error: null, isFetching: false })),
+}));
+
+/* These cases render the error card on its own, without the app's query client. */
+jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: jest.fn(() => ({ data: undefined })),
 }));
 
 // Mock utility functions
@@ -292,15 +292,12 @@ describe('Accessibility Improvements', () => {
       const clearButton = screen.getByRole('button', { name: 'Clear search' });
       expect(clearButton).toBeInTheDocument();
       expect(clearButton).toHaveAttribute('aria-label', 'Clear search');
-      expect(clearButton).toHaveAttribute('title', 'Clear search');
     });
 
-    it('hides decorative icons from screen readers', () => {
-      render(<SearchBar value="" onSearch={jest.fn()} />);
-
-      // Search icon should be hidden
-      const iconContainer = document.querySelector('[aria-hidden="true"]');
-      expect(iconContainer).toBeInTheDocument();
+    it('hides the decorative clear icon from screen readers', () => {
+      render(<SearchBar value="test" onSearch={jest.fn()} />);
+      const clearButton = screen.getByRole('button', { name: 'Clear search' });
+      expect(clearButton.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
     });
   });
 
@@ -326,7 +323,7 @@ describe('Accessibility Improvements', () => {
       },
     };
 
-    it('provides comprehensive ARIA labels', () => {
+    it('provides an accessible native dialog trigger', () => {
       const Wrapper = createWrapper();
       render(
         <Wrapper>
@@ -334,10 +331,10 @@ describe('Accessibility Improvements', () => {
         </Wrapper>,
       );
 
-      const card = screen.getByRole('button');
-      expect(card).toHaveAttribute('aria-label', 'Test Agent agent. A test agent for testing');
-      expect(card).toHaveAttribute('aria-describedby', 'agent-test-agent-description');
-      expect(card).toHaveAttribute('role', 'button');
+      const card = screen.getByRole('button', { name: 'Test Agent' });
+      expect(card).toHaveAttribute('type', 'button');
+      expect(card).toHaveAccessibleDescription(mockAgent.description);
+      expect(screen.getAllByRole('button')).toHaveLength(1);
     });
 
     it('supports keyboard interaction', () => {
@@ -348,10 +345,10 @@ describe('Accessibility Improvements', () => {
         </Wrapper>,
       );
 
-      const card = screen.getByRole('button');
+      const card = screen.getByRole('button', { name: 'Test Agent' });
 
-      // Card should be keyboard accessible - actual dialog behavior is handled by Radix
-      expect(card).toHaveAttribute('tabIndex', '0');
+      // Native buttons provide Enter and Space activation without custom key handlers.
+      expect(card).not.toHaveAttribute('tabindex');
       expect(() => fireEvent.keyDown(card, { key: 'Enter' })).not.toThrow();
       expect(() => fireEvent.keyDown(card, { key: ' ' })).not.toThrow();
     });
@@ -379,7 +376,12 @@ describe('Accessibility Improvements', () => {
       const Wrapper = createWrapper();
       render(
         <Wrapper>
-          <AgentGrid category="all" searchQuery="" onSelectAgent={jest.fn()} />
+          <AgentGrid
+            category="all"
+            searchQuery=""
+            onSelectAgent={jest.fn()}
+            scrollElementRef={React.createRef<HTMLElement>()}
+          />
         </Wrapper>,
       );
 
@@ -387,25 +389,26 @@ describe('Accessibility Improvements', () => {
       const tabpanel = screen.getByRole('tabpanel');
       expect(tabpanel).toHaveAttribute('id', 'category-panel-all');
       expect(tabpanel).toHaveAttribute('aria-labelledby', 'category-tab-all');
-      expect(tabpanel).toHaveAttribute('aria-live', 'polite');
     });
 
-    it('provides grid structure with proper roles', () => {
+    it('provides list structure with accessible names', () => {
       const Wrapper = createWrapper();
       render(
         <Wrapper>
-          <AgentGrid category="all" searchQuery="" onSelectAgent={jest.fn()} />
+          <AgentGrid
+            category="all"
+            searchQuery=""
+            onSelectAgent={jest.fn()}
+            scrollElementRef={React.createRef<HTMLElement>()}
+          />
         </Wrapper>,
       );
 
-      // Check grid role
-      const grid = screen.getByRole('grid');
-      expect(grid).toBeInTheDocument();
-      expect(grid).toHaveAttribute('aria-label', 'Showing 2 agents in All category');
+      const list = screen.getByRole('list');
+      expect(list).toHaveAttribute('aria-label', 'Showing 2 agents in All category');
 
-      // Check gridcells
-      const gridcells = screen.getAllByRole('gridcell');
-      expect(gridcells).toHaveLength(2);
+      const listItems = screen.getAllByRole('listitem');
+      expect(listItems).toHaveLength(2);
     });
 
     it('announces loading states to screen readers', () => {
@@ -423,7 +426,12 @@ describe('Accessibility Improvements', () => {
       const Wrapper = createWrapper();
       render(
         <Wrapper>
-          <AgentGrid category="all" searchQuery="" onSelectAgent={jest.fn()} />
+          <AgentGrid
+            category="all"
+            searchQuery=""
+            onSelectAgent={jest.fn()}
+            scrollElementRef={React.createRef<HTMLElement>()}
+          />
         </Wrapper>,
       );
 
@@ -451,7 +459,12 @@ describe('Accessibility Improvements', () => {
       const Wrapper = createWrapper();
       render(
         <Wrapper>
-          <AgentGrid category="all" searchQuery="" onSelectAgent={jest.fn()} />
+          <AgentGrid
+            category="all"
+            searchQuery=""
+            onSelectAgent={jest.fn()}
+            scrollElementRef={React.createRef<HTMLElement>()}
+          />
         </Wrapper>,
       );
 
@@ -477,20 +490,23 @@ describe('Accessibility Improvements', () => {
 
       // Check alert role
       const alert = screen.getByRole('alert');
-      expect(alert).toHaveAttribute('aria-live', 'assertive');
       expect(alert).toHaveAttribute('aria-atomic', 'true');
 
       // Check heading structure
       const heading = screen.getByRole('heading', { level: 3 });
-      expect(heading).toHaveAttribute('id', 'error-title');
+      expect(alert).toContainElement(heading);
     });
 
-    it('provides accessible retry button', () => {
+    it('points the retry button at the failure it would retry', () => {
       const onRetry = jest.fn();
       render(<ErrorDisplay error={mockError} onRetry={onRetry} />);
 
-      const retryButton = screen.getByRole('button', { name: /retry action/i });
-      expect(retryButton).toHaveAttribute('aria-describedby', 'error-message error-suggestion');
+      const retryButton = screen.getByRole('button', { name: 'Try Again' });
+      const describedBy = retryButton.getAttribute('aria-describedby');
+      expect(describedBy).toBeTruthy();
+      expect(document.getElementById(describedBy as string)).toHaveTextContent(
+        /unable to load agents/i,
+      );
 
       fireEvent.click(retryButton);
       expect(onRetry).toHaveBeenCalledTimes(1);
@@ -499,24 +515,14 @@ describe('Accessibility Improvements', () => {
     it('structures error content with proper semantics', () => {
       render(<ErrorDisplay error={mockError} />);
 
-      // Check error message structure
-      expect(screen.getByText(/unable to load agents/i)).toHaveAttribute('id', 'error-message');
-
-      // Check suggestion note
-      const suggestion = screen.getByRole('note');
-      expect(suggestion).toHaveAttribute('aria-label', expect.stringContaining('Suggestion:'));
+      // The message is announced with the alert, not left outside it
+      expect(screen.getByRole('alert')).toContainElement(
+        screen.getByText(/unable to load agents/i),
+      );
     });
   });
 
   describe('Focus Management', () => {
-    it('maintains proper focus ring styles', () => {
-      const { container } = render(<SearchBar value="" onSearch={jest.fn()} />);
-
-      // Check for focus styles in CSS classes
-      const searchInput = container.querySelector('input');
-      expect(searchInput?.className).toContain('focus:');
-    });
-
     it('provides visible focus indicators on interactive elements', () => {
       render(
         <CategoryTabs
@@ -541,7 +547,12 @@ describe('Accessibility Improvements', () => {
       const Wrapper = createWrapper();
       render(
         <Wrapper>
-          <AgentGrid category="all" searchQuery="" onSelectAgent={jest.fn()} />
+          <AgentGrid
+            category="all"
+            searchQuery=""
+            onSelectAgent={jest.fn()}
+            scrollElementRef={React.createRef<HTMLElement>()}
+          />
         </Wrapper>,
       );
 

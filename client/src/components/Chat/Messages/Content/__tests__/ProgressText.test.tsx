@@ -277,3 +277,29 @@ describe('ProgressText fixed siblings', () => {
     expect(container.querySelector('svg')).toHaveClass('shrink-0');
   });
 });
+
+describe('ProgressText verdict', () => {
+  it('names the failure reason inside the button on a failed card', () => {
+    renderProgressText({ phase: 'failed', verdict: 'exit code 2' });
+    expect(screen.getByRole('button')).toHaveTextContent('· com_ui_tool_failed· exit code 2');
+  });
+
+  it('keeps the failure verdict but hides preparation, call, total, and live timers', () => {
+    renderProgressText({
+      phase: 'failed',
+      verdict: 'exit code 2',
+      durationMs: 248_000,
+      toolPreparationDurationMs: 242_000,
+      toolExecutionDurationMs: 5_700,
+      phaseStartAt: 1_000,
+    });
+    expect(screen.getByRole('button')).toHaveTextContent('exit code 2');
+    expect(screen.queryByText(/Preparation|Tool call|Total elapsed|took/)).toBeNull();
+    expect(screen.queryByTestId('stream-elapsed')).toBeNull();
+  });
+
+  it('shows no verdict on a successful card', () => {
+    renderProgressText({ verdict: 'exit code 2' });
+    expect(screen.queryByText(/exit code 2/)).not.toBeInTheDocument();
+  });
+});

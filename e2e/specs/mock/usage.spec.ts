@@ -80,9 +80,12 @@ test.describe('context usage gauge', () => {
      *  Input/Output rows when the lib predates on_context_usage */
     const popover = await openBreakdown(page);
     await expect(popover.getByText('Context window')).toBeVisible();
+    const lastTurn = popover.getByTestId('token-usage-last-turn');
+    await expect(lastTurn.getByRole('heading', { name: 'Last turn' })).toBeVisible();
+    await expect(lastTurn.getByText('Input (uncached)')).toBeVisible();
     const usageSection = popover.getByTestId('token-usage-totals');
     await expect(usageSection).toBeVisible({ timeout: 10000 });
-    await expect(usageSection.getByText('Input', { exact: true })).toBeVisible();
+    await expect(usageSection.getByText('Input (uncached)', { exact: true })).toBeVisible();
     await expect(usageSection.getByText('Output', { exact: true })).toBeVisible();
 
     /** Cost row: interface.contextCost is enabled in the harness yaml, the
@@ -91,7 +94,7 @@ test.describe('context usage gauge', () => {
      *  conversation shows only the branch cost, no all-branches total line. */
     const costSection = popover.getByTestId('token-usage-cost');
     await expect(costSection).toBeVisible();
-    await expect(costSection.getByText(/\$\d|<\$0\.01/)).toBeVisible();
+    await expect(costSection.getByText(/\$\d|<\$0\.01/).first()).toBeVisible();
     await expect(costSection.getByText('All branches')).toHaveCount(0);
     await page.keyboard.press('Escape');
 
@@ -103,9 +106,10 @@ test.describe('context usage gauge', () => {
     await expectGaugeAboveZero(page);
     const reloaded = await openBreakdown(page);
     await expect(reloaded.getByTestId('context-breakdown')).toBeVisible({ timeout: 10000 });
+    await expect(reloaded.getByTestId('token-usage-last-turn')).toContainText('Input (uncached)');
     const reloadedCost = reloaded.getByTestId('token-usage-cost');
     await expect(reloadedCost).toBeVisible();
-    await expect(reloadedCost.getByText(/\$\d|<\$0\.01/)).toBeVisible();
+    await expect(reloadedCost.getByText(/\$\d|<\$0\.01/).first()).toBeVisible();
   });
 
   test('renders the granular breakdown from the live context snapshot', async ({ page }) => {

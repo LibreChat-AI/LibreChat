@@ -74,6 +74,12 @@ jest.mock('../Attachment', () => ({
   AttachmentGroup: () => <div data-testid="task-attachments" />,
 }));
 
+jest.mock('~/components/MCPUIResource', () => ({
+  MCPAppViews: ({ attachments }: { attachments?: unknown[] }) => (
+    <div data-testid="task-app-views" data-count={attachments?.length ?? 0} />
+  ),
+}));
+
 const completed = {
   background_task_id: 'bg-1',
   tool: 'bash_tool',
@@ -99,6 +105,27 @@ function renderCall(
 }
 
 describe('BackgroundTaskCall', () => {
+  it('renders App attachments once on a standalone card and leaves grouped cards to their parent', () => {
+    const attachments = [{ type: 'ui_resources' }] as NonNullable<
+      React.ComponentProps<typeof BackgroundTaskCall>['attachments']
+    >;
+    const { rerender } = renderCall(JSON.stringify(completed), { attachments });
+    expect(screen.getByTestId('task-app-views')).toHaveAttribute('data-count', '1');
+
+    rerender(
+      <RecoilRoot>
+        <BackgroundTaskCall
+          args={'{"background_task_id":"bg-1"}'}
+          output={JSON.stringify(completed)}
+          isSubmitting={false}
+          attachments={attachments}
+          hideAttachments
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.queryByTestId('task-app-views')).not.toBeInTheDocument();
+  });
+
   it('presents a completed code task as a native result without leaking its JSON envelope', () => {
     renderCall(JSON.stringify(completed));
     const header = screen.getByTestId('task-header');
@@ -424,6 +451,10 @@ describe('BackgroundTaskCall', () => {
       </RecoilRoot>,
     );
     expect(screen.getByTestId('task-header')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('task-header').parentElement?.nextElementSibling).toHaveAttribute(
+      'data-expanded',
+      'true',
+    );
     expect(screen.getByTestId('task-output')).toHaveTextContent('checked at=2026-09-27');
   });
 });

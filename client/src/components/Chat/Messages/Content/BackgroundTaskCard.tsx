@@ -64,18 +64,18 @@ export default function BackgroundTaskCard({
 
   return (
     <div
-      className="min-w-0 rounded-lg border border-border-light bg-surface-secondary/50 p-3"
+      className="border-border-light bg-surface-secondary/50 min-w-0 rounded-lg border p-3"
       data-testid="background-task-card"
     >
       <div className="flex min-w-0 items-start gap-2.5">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-surface-tertiary">
-          <ToolIcon type={iconType} iconUrl={iconUrl} className="text-text-primary" />
+        <span className="bg-surface-tertiary flex size-8 shrink-0 items-center justify-center rounded-md">
+          <ToolIcon type={iconType} iconUrl={iconUrl} />
         </span>
         <div className="min-w-0 flex-1 pt-0.5">
-          <div className="truncate text-sm font-semibold text-text-primary" title={title}>
+          <div className="text-text-primary truncate text-sm font-semibold" title={title}>
             {title}
           </div>
-          {subtitle && <div className="truncate text-xs text-text-secondary">{subtitle}</div>}
+          {subtitle && <div className="text-text-secondary truncate text-xs">{subtitle}</div>}
           {delivery && (
             <div
               className={cn(
@@ -89,7 +89,7 @@ export default function BackgroundTaskCard({
         </div>
         <span
           className={cn(
-            'inline-flex shrink-0 items-center gap-1.5 rounded-full bg-surface-tertiary px-2 py-1 text-xs text-text-secondary',
+            'bg-surface-tertiary text-text-secondary inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-xs',
             failed && 'text-status-error',
           )}
         >
@@ -98,7 +98,7 @@ export default function BackgroundTaskCard({
         </span>
       </div>
       {result && (
-        <div className="mt-3 border-t border-border-light pt-2.5">
+        <div className="border-border-light mt-3 border-t pt-2.5">
           <div
             className={cn(
               'mb-1.5 text-xs font-medium',
@@ -107,7 +107,7 @@ export default function BackgroundTaskCard({
           >
             {localize(failed && !error ? 'com_ui_error' : 'com_ui_output')}
           </div>
-          <div className="min-w-0 rounded-md bg-surface-primary p-2.5">
+          <div className="bg-surface-primary min-w-0 rounded-md p-2.5">
             <OutputRenderer
               text={isCode ? formatBackgroundCodeOutput(result) : result}
               copyText={result}
@@ -116,11 +116,11 @@ export default function BackgroundTaskCard({
         </div>
       )}
       {error && (
-        <div className="mt-3 border-t border-border-light pt-2.5">
-          <div className="mb-1.5 text-xs font-medium text-status-error">
+        <div className="border-border-light mt-3 border-t pt-2.5">
+          <div className="text-status-error mb-1.5 text-xs font-medium">
             {localize('com_ui_error')}
           </div>
-          <div className="min-w-0 rounded-md bg-surface-primary p-2.5">
+          <div className="bg-surface-primary min-w-0 rounded-md p-2.5">
             <OutputRenderer
               text={isCode ? formatBackgroundCodeOutput(error) : error}
               copyText={error}
@@ -129,18 +129,18 @@ export default function BackgroundTaskCard({
         </div>
       )}
       {!result && !error && task.resultClaimed && task.status !== 'claimed' && (
-        <p className="mt-2 text-xs text-text-secondary">
+        <p className="text-text-secondary mt-2 text-xs">
           {localize('com_ui_background_tasks_result_claimed')}
         </p>
       )}
       {!result && !error && task.resultAvailable && !task.resultClaimed && (
-        <p className="mt-2 text-xs text-text-secondary">
+        <p className="text-text-secondary mt-2 text-xs">
           {localize('com_ui_background_tasks_result_available')}
         </p>
       )}
-      {noteKey && <p className="mt-2 text-xs text-text-secondary">{localize(noteKey)}</p>}
+      {noteKey && <p className="text-text-secondary mt-2 text-xs">{localize(noteKey)}</p>}
       {messageKey && messageKey !== noteKey && (
-        <p className="mt-2 text-xs text-text-secondary">{localize(messageKey)}</p>
+        <p className="text-text-secondary mt-2 text-xs">{localize(messageKey)}</p>
       )}
       {!result &&
         !error &&
@@ -149,7 +149,7 @@ export default function BackgroundTaskCard({
         task.result === '' &&
         !task.note &&
         !task.message && (
-          <p className="mt-2 text-xs text-text-secondary">
+          <p className="text-text-secondary mt-2 text-xs">
             {localize('com_ui_background_tasks_no_output')}
           </p>
         )}

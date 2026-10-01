@@ -33,6 +33,7 @@ const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
 const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
+const ASSERT_PROJECT_CONTEXT_MARKER = 'E2E_ASSERT_PROJECT_CONTEXT:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
 const REPLY_MARKER = 'E2E_REPLY:';
 const THINK_REPLY_MARKER = 'E2E_THINK_REPLY:';
@@ -49,6 +50,12 @@ const EMPTY_SLOW_REPLY_MARKER = 'E2E_EMPTY_SLOW_REPLY:';
 const EMPTY_REPLY_MARKER = 'E2E_EMPTY_REPLY:';
 const SLOW_COUNTED_REPLY_MARKER = 'E2E_SLOW_COUNTED_REPLY:';
 const STEER_TOOL_REPLY_MARKER = 'E2E_STEER_TOOL_REPLY:';
+const MCP_APP_MARKER = 'E2E_MCP_APP:';
+const MCP_APP_PHASE_MARKER = 'E2E_MCP_APP_PHASE:';
+const MCP_LINK_APP_MARKER = 'E2E_MCP_LINK_APP:';
+const MCP_LEGACY_MARKER = 'E2E_MCP_LEGACY:';
+const MCP_LEGACY_MIMELESS_MARKER = 'E2E_MCP_LEGACY_MIMELESS:';
+const MCP_LEGACY_ACTION_MARKER = 'E2E_LEGACY_ACTION';
 const STEER_SPLIT_REPLY_MARKER = 'E2E_STEER_SPLIT_REPLY:';
 const STEER_LATE_REPLY_MARKER = 'E2E_STEER_LATE_REPLY:';
 const ACTIVITY_REPLY_MARKER = 'E2E_ACTIVITY_REPLY:';
@@ -99,6 +106,7 @@ const PROVIDER_FILE_ASSERTION_FINAL_TEXT = 'E2E provider file assertion passed';
 const AGENT_CONTEXT_ASSERTION_FINAL_TEXT = 'E2E agent context assertion passed';
 const HISTORY_ASSERTION_PRESENT_TEXT = 'E2E history assertion present';
 const HISTORY_ASSERTION_ABSENT_TEXT = 'E2E history assertion absent';
+const PROJECT_CONTEXT_ASSERTION_FINAL_TEXT = 'E2E project context assertion passed';
 const QUOTE_ASSERTION_FINAL_TEXT = 'E2E quote assertion passed';
 const STEER_TOOL_FINAL_TEXT = 'E2E steer tool reply done';
 const STEER_SPLIT_FINAL_TEXT = 'E2E steer split reply done';
@@ -106,9 +114,11 @@ const STEER_LATE_FINAL_TEXT = 'E2E steer late reply done';
 const SLOW_REPLY_CONTINUATION_TEXT = 'E2E slow reply continued';
 const ACTIVITY_FINAL_TEXT = 'E2E activity reply done';
 const ACTIVITY_PHASE_FINAL_TEXT = 'E2E activity phase reply done';
+const MCP_APP_PHASE_FINAL_TEXT = 'E2E MCP App phase complete';
 const ACTIVITY_FAILED_FINAL_TEXT = 'E2E activity failed reply done';
 const SLOW_ECHO_TOOL_NAME_PREFIX = 'slow_echo';
 const STEER_TOOL_NAME_PREFIX = 'remember_fact';
+const MCP_APP_TOOL_NAME_PREFIX = 'show_app';
 const ASK_USER_QUESTION_TOOL_NAME = 'ask_user_question';
 const SLOW_CHUNK_DELAY_MS = Number(process.env.MOCK_LLM_SLOW_CHUNK_DELAY_MS) || 35;
 /** The highlight cancellation scenario has to open the code card and stop the
@@ -436,6 +446,44 @@ function agentContextAssertionResponses({ messages, text }) {
       `E2E agent context assertion failed: expected ${expected}; saw ${
         promptText ? 'prompt context without marker' : 'no prompt context'
       }`,
+    ],
+  };
+}
+
+function collectSystemPromptText(messages) {
+  return (messages ?? [])
+    .filter((message) => messageType(message) === 'system')
+    .map((message) => getContentText(message.content))
+    .join('\n');
+}
+
+/**
+ * Project probes deliberately inspect only system messages. The user marker
+ * itself and prior human/history messages must never satisfy this assertion.
+ * An optional second token asserts that a value is absent after a detach/move.
+ */
+function projectContextAssertionResponses({ messages, text }) {
+  const markerIndex = text.indexOf(ASSERT_PROJECT_CONTEXT_MARKER);
+  if (markerIndex === -1) {
+    return null;
+  }
+  const [expected, absent] = text
+    .slice(markerIndex + ASSERT_PROJECT_CONTEXT_MARKER.length)
+    .trim()
+    .split(/\s+/, 2);
+  const systemText = collectSystemPromptText(messages);
+  const foundExpected = expected === '-' || (Boolean(expected) && systemText.includes(expected));
+  const foundAbsent = Boolean(absent) && systemText.includes(absent);
+  if (foundExpected && !foundAbsent) {
+    return {
+      responses: [`${PROJECT_CONTEXT_ASSERTION_FINAL_TEXT}: ${expected || 'absent check'}`],
+    };
+  }
+  return {
+    responses: [
+      `E2E project context assertion failed: expected ${expected || 'a marker'}${
+        absent ? ` without ${absent}` : ''
+      }; saw ${systemText || 'no system context'}`,
     ],
   };
 }
@@ -1286,6 +1334,155 @@ function steerToolReplyResponses(label, toolNames) {
       }
       return { response: `${STEER_TOOL_FINAL_TEXT} ${label} ${steerEchoSuffix(messages)}` };
     },
+  };
+}
+
+function mcpAppResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(MCP_APP_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    return { responses: ['E2E MCP App unavailable: show_app was not advertised.'] };
+  }
+  return {
+    responses: ['', `E2E MCP App complete: ${label}`],
+    toolCalls: [
+      {
+        id: `call_e2e_mcp_app_${label}`,
+        name: toolName,
+        args: { label },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
+/** Two sequential App calls so Provider F creates two labeled activities and
+ *  one enclosing activity phase through the normal graph lifecycle. */
+function mcpAppPhaseResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(MCP_APP_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    return { responses: ['E2E MCP App phase unavailable: show_app was not advertised.'] };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_mcp_app_phase_alpha_${label}`,
+              name: toolName,
+              args: { label: `phase alpha ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      if (invocation === 2) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_mcp_app_phase_beta_${label}`,
+              name: toolName,
+              args: { label: `phase beta ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `${MCP_APP_PHASE_FINAL_TEXT}: ${label}` };
+    },
+  };
+}
+
+function mcpLinkAppResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith('show_link_app'));
+  if (!toolName) {
+    return { responses: ['E2E MCP link App unavailable: show_link_app was not advertised.'] };
+  }
+  return {
+    responses: ['', `E2E MCP link App complete: ${label}`],
+    toolCalls: [
+      {
+        id: `call_e2e_mcp_link_app_${label}`,
+        name: toolName,
+        args: { label },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
+function legacyResourceResponses(
+  label,
+  toolNames,
+  { toolPrefix, callIdPrefix, completionPrefix, unavailable },
+) {
+  const candidates = Array.from(toolNames);
+  const toolName =
+    candidates.find((name) => name === toolPrefix) ??
+    candidates.find(
+      (name) =>
+        name.startsWith(toolPrefix) &&
+        (toolPrefix !== 'show_legacy' || !name.startsWith('show_legacy_mimeless')),
+    );
+  if (!toolName) {
+    return { responses: [unavailable] };
+  }
+  return {
+    responses: [''],
+    toolCalls: [
+      {
+        id: `${callIdPrefix}_${label}`,
+        name: toolName,
+        args: { label },
+        type: 'tool_call',
+      },
+    ],
+    resolveOnStream: (streamMessages) => {
+      const toolResult = findLastToolMessageText(streamMessages, 'UI Resource ID:');
+      const resourceId = toolResult.match(/UI Resource ID: ([a-f0-9]+)/)?.[1];
+      return resourceId ? { responses: [`${completionPrefix}: \\ui{${resourceId}}`] } : null;
+    },
+  };
+}
+
+function mcpLegacyResponses(label, toolNames) {
+  return legacyResourceResponses(label, toolNames, {
+    toolPrefix: 'show_legacy',
+    callIdPrefix: 'call_e2e_mcp_legacy',
+    completionPrefix: 'Legacy MCP-UI',
+    unavailable: 'E2E legacy MCP-UI unavailable: show_legacy was not advertised.',
+  });
+}
+
+function mcpLegacyMimelessResponses(label, toolNames) {
+  return legacyResourceResponses(label, toolNames, {
+    toolPrefix: 'show_legacy_mimeless',
+    callIdPrefix: 'call_e2e_mcp_legacy_mimeless',
+    completionPrefix: 'MIME-less Legacy MCP-UI',
+    unavailable: 'E2E MIME-less legacy MCP-UI unavailable: tool was not advertised.',
+  });
+}
+
+function mcpLegacyActionResponses(toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith('legacy_action'));
+  if (!toolName) {
+    return { responses: ['E2E legacy action unavailable: legacy_action was not advertised.'] };
+  }
+  return {
+    responses: ['', 'E2E legacy action complete'],
+    toolCalls: [
+      {
+        id: 'call_e2e_mcp_legacy_action',
+        name: toolName,
+        args: { label: 'legacy-view' },
+        type: 'tool_call',
+      },
+    ],
   };
 }
 
@@ -3109,6 +3306,35 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return steerToolReplyResponses(steerToolLabel, toolNames);
   }
 
+  const mcpAppLabel = getMarkerValue(text, MCP_APP_MARKER);
+  if (mcpAppLabel) {
+    return mcpAppResponses(mcpAppLabel, toolNames);
+  }
+
+  const mcpAppPhaseLabel = getMarkerValue(text, MCP_APP_PHASE_MARKER);
+  if (mcpAppPhaseLabel) {
+    return mcpAppPhaseResponses(mcpAppPhaseLabel, toolNames);
+  }
+
+  const mcpLinkAppLabel = getMarkerValue(text, MCP_LINK_APP_MARKER);
+  if (mcpLinkAppLabel) {
+    return mcpLinkAppResponses(mcpLinkAppLabel, toolNames);
+  }
+
+  const mcpLegacyLabel = getMarkerValue(text, MCP_LEGACY_MARKER);
+  if (mcpLegacyLabel) {
+    return mcpLegacyResponses(mcpLegacyLabel, toolNames);
+  }
+
+  const mcpLegacyMimelessLabel = getMarkerValue(text, MCP_LEGACY_MIMELESS_MARKER);
+  if (mcpLegacyMimelessLabel) {
+    return mcpLegacyMimelessResponses(mcpLegacyMimelessLabel, toolNames);
+  }
+
+  if (text.includes(MCP_LEGACY_ACTION_MARKER)) {
+    return mcpLegacyActionResponses(toolNames);
+  }
+
   const provisioningTool = provisioningToolResponses({ text, toolNames });
   if (provisioningTool) {
     return provisioningTool;
@@ -3147,6 +3373,21 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   const askUserQuestionLabel = getMarkerValue(text, ASK_USER_QUESTION_MARKER);
   if (askUserQuestionLabel) {
     return askUserQuestionResponses(askUserQuestionLabel, toolNames);
+  }
+
+  if (text.includes(ASSERT_PROJECT_CONTEXT_MARKER)) {
+    return {
+      responses: [MOCK_REPLY],
+      resolveOnStream: async (streamMessages, streamOptions, runManager) => {
+        const agentView = await getStreamAgentView({
+          graph,
+          messages: streamMessages,
+          options: streamOptions,
+          runManager,
+        });
+        return projectContextAssertionResponses({ messages: agentView.messages, text });
+      },
+    };
   }
 
   if (text.includes(ASSERT_AGENT_CONTEXT_MARKER)) {

@@ -51,12 +51,10 @@ const Avatar: React.FC<AvatarProps> = ({
     () => (
       <div
         style={{
-          backgroundColor: 'rgb(121, 137, 255)',
           width: `${size}px`,
           height: `${size}px`,
-          boxShadow: 'rgba(240, 246, 252, 0.1) 0px 0px 0px 1px',
         }}
-        className={`relative flex items-center justify-center rounded-full p-1 text-text-primary ${className}`}
+        className={`bg-avatar-fill text-avatar-text ring-avatar-edge/10 relative flex items-center justify-center rounded-full p-1 ring-1 ${className}`}
         aria-hidden="true"
       >
         <UserIcon />

@@ -192,13 +192,13 @@ function TokenUsageIndicator({
           popover.show();
         }}
         className={cn(
-          'flex size-theme-control items-center justify-center rounded-theme-control-round transition-colors',
-          'hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary',
-          'duration-300 animate-in fade-in zoom-in-95',
+          'size-theme-control rounded-theme-control-round flex items-center justify-center transition-colors',
+          'hover:bg-surface-hover focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:outline-hidden',
+          'animate-in fade-in zoom-in-95 duration-300',
         )}
       >
         {showCompactingIndicator ? (
-          <Spinner className="size-5 text-text-secondary" />
+          <Spinner className="text-text-secondary size-5" />
         ) : (
           <span
             role="meter"
@@ -215,7 +215,7 @@ function TokenUsageIndicator({
       {/* Focus the labelled dialog on keyboard/click open so screen readers
           enter and announce the breakdown, and so focus stays contained instead
           of falling back to the body (which the composer's global focus logic
-          would steal). The visible ring is suppressed via focus:outline-none,
+          would steal). The visible ring is suppressed via focus:outline-hidden,
           and finalFocus returns focus to the gauge trigger on close. */}
       <Ariakit.Popover
         store={popover}
@@ -224,6 +224,10 @@ function TokenUsageIndicator({
         unmountOnHide
         autoFocusOnShow={focusOnShow}
         finalFocus={disclosureRef}
+        /* Without this the gauge could not close its own popup: mousedown on
+           the trigger counts as "outside", so Ariakit hid the popup and the
+           button's own click immediately re-opened it. */
+        hideOnInteractOutside={(event) => !disclosureRef.current?.contains(event.target as Node)}
         aria-label={localize('com_ui_context_usage')}
         onPointerEnter={cancelTimers}
         onPointerLeave={(e) => {
@@ -232,7 +236,7 @@ function TokenUsageIndicator({
           }
         }}
         className={cn(
-          'z-[200] rounded-xl border border-border-medium bg-surface-secondary p-3 text-text-primary shadow-lg focus:outline-none',
+          'border-border-medium bg-surface-secondary text-text-primary z-[200] max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain rounded-xl border p-3 shadow-lg focus:outline-hidden',
           'origin-bottom translate-y-1 scale-95 opacity-0 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none',
           'data-[enter]:translate-y-0 data-[enter]:scale-100 data-[enter]:opacity-100',
           'data-[leave]:translate-y-1 data-[leave]:scale-95 data-[leave]:opacity-0',
@@ -250,7 +254,7 @@ function TokenUsageIndicator({
           />
           {compactionAvailable && (
             <>
-              <div className="border-t border-border-light" role="separator" />
+              <div className="border-border-light border-t" role="separator" />
               <CompactAction
                 compact={compaction.compact}
                 canCompact={compaction.canCompact}

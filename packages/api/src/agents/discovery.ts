@@ -125,12 +125,14 @@ export interface DiscoverConnectedAgentsParams {
   statefulSessionsAvailable?: InitializeAgentParams['statefulSessionsAvailable'];
   /** Deployment policy for stateful workspace scopes, forwarded unchanged to every referenced agent. */
   allowedStatefulCodeEnvironments?: InitializeAgentParams['allowedStatefulCodeEnvironments'];
-  /**
-   * Run-level inline memory availability gate. Forwarded verbatim to every
-   * handoff agent so sub-agents that list the `memory` capability expand the
-   * `set_memory` + `delete_memory` pair only when the parent run permits it.
-   */
   memoryAvailable?: InitializeAgentParams['memoryAvailable'];
+  /**
+   * Explicitly enables the authoritative ChatProject guidance/resources for
+   * every discovered handoff and saved graph member. This is intentionally
+   * independent of the request marker so remote callers can opt in without
+   * broadening unrelated agent initialization.
+   */
+  useChatProjectContext?: InitializeAgentParams['useChatProjectContext'];
   /**
    * Run-level `run_in_background` capability gate. Forwarded verbatim so a
    * handoff/connected agent's own event-driven tools with
@@ -261,6 +263,7 @@ async function initializeReferencedAgent(
           endpoint: EModelEndpoint.agents,
         },
         allowedProviders: params.allowedProviders,
+        useChatProjectContext: params.useChatProjectContext,
         accessibleSkillIds: scopedSkillIds,
         skillAuthoringAvailable: params.computeSkillAuthoringAvailable?.(agent, scopedSkillIds),
         skillStates: params.skillStates,

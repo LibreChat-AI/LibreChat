@@ -68,6 +68,11 @@ const defaultAgentCapabilitiesWithoutMemory = defaultAgentCapabilities.filter(
 );
 
 describe('AppService', () => {
+  it('preserves the YAML passkey cap in the effective configuration', async () => {
+    const result = await AppService({ config: { passkeys: { perUserMax: 2 } } });
+    expect(result?.passkeys).toEqual({ perUserMax: 2 });
+  });
+
   const mockSystemTools: Record<string, FunctionTool> = {
     ExampleTool: {
       type: 'function',

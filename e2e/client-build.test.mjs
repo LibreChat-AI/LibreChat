@@ -14,8 +14,8 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 // without requiring a database or identity provider. It does not simulate an active model run.
 test(
   'an old tab retains its bundle identity and draft across a worker update',
-  /** Allow setup plus both activations; individual browser waits remain bounded. */
-  { timeout: 60000 },
+  /** Allow a slow CI browser launch plus both activations; individual browser waits remain bounded. */
+  { timeout: 90000 },
   async () => {
     const temporary = await mkdtemp(path.join(tmpdir(), 'librechat-builds-'));
     const appHtml = await readFile(path.join(root, 'client/index.html'), 'utf8');
@@ -78,7 +78,9 @@ test(
       browser = await chromium.launch({
         headless: true,
         channel: process.env.PLAYWRIGHT_CHANNEL,
-        timeout: 10000,
+        // CI runners can take longer than 10s to start Chrome under contention.
+        // Keep startup independently bounded; page/worker waits still use 10s.
+        timeout: 30000,
       });
       const page = await browser.newPage();
       page.setDefaultTimeout(10000);

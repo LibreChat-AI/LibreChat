@@ -408,6 +408,11 @@ export type TChatProject = {
   _id: string;
   name: string;
   description?: string;
+  instructions?: string;
+  contextRevision?: number;
+  file_ids?: string[];
+  hasInstructions?: boolean;
+  fileCount?: number;
   user?: string;
   conversationCount: number;
   lastConversationAt?: string | null;
@@ -419,10 +424,21 @@ export type TChatProject = {
 export type TCreateChatProjectRequest = {
   name: string;
   description?: string;
+  instructions?: string;
 };
 
 export type TUpdateChatProjectRequest = Partial<TCreateChatProjectRequest> & {
   projectId: string;
+  /** Revision the edit was based on; a stale value is rejected with a 409 conflict. */
+  contextRevision?: number;
+};
+
+export type TChatProjectFile = {
+  file_id: string;
+  filename?: string;
+  type?: string;
+  bytes?: number;
+  availability: 'ready' | 'unavailable';
 };
 
 export type TDeleteChatProjectResponse = {
@@ -474,6 +490,30 @@ export type TPinConversationRequest = {
 };
 
 export type TPinConversationResponse = TConversation;
+
+export type TMarkConversationSeenRequest = {
+  conversationId: string;
+  /** The reply the client had on screen; the server acknowledges no newer one. */
+  lastResponseAt?: string;
+};
+
+export type TMarkConversationSeenResponse = {
+  modified: boolean;
+};
+
+export type TMarkConversationUnreadRequest = {
+  conversationId: string;
+};
+
+export type TMarkConversationUnreadResponse = {
+  modified: boolean;
+  /** The stamp the server settled on, so the client never has to invent its own marker. */
+  lastResponseAt?: string;
+  /** Durable messageId paired with a real reply stamp; absent for synthetic markers. */
+  lastResponseMessageId?: string;
+  /** True only when the settled stamp is the synthetic mark-unread marker. */
+  lastResponseIsManual?: boolean;
+};
 
 export type TSharedMessagesResponse = Omit<TSharedLink, 'messages'> & {
   messages: TMessage[];
@@ -778,6 +818,153 @@ export type TVerify2FATempResponse = {
   message?: string;
 };
 
+/* Passkeys (WebAuthn) */
+
+/**
+ * WebAuthn ceremony payloads, mirroring the W3C `*JSON` dictionaries that the
+ * browser's `PublicKeyCredential` serializes to. They are declared here rather
+ * than imported so `librechat-data-provider` stays dependency-free; the client
+ * hands them straight to `@simplewebauthn/browser`, which validates the shape.
+ */
+export type TPasskeyTransport =
+  | 'ble'
+  | 'cable'
+  | 'hybrid'
+  | 'internal'
+  | 'nfc'
+  | 'smart-card'
+  | 'usb';
+
+export type TPasskeyCredentialDescriptor = {
+  id: string;
+  type: 'public-key';
+  transports?: TPasskeyTransport[];
+};
+
+/** https://w3c.github.io/webauthn/#dictdef-publickeycredentialcreationoptionsjson */
+export type TPasskeyCreationOptions = {
+  rp: { id?: string; name: string };
+  user: { id: string; name: string; displayName: string };
+  challenge: string;
+  pubKeyCredParams: Array<{ alg: number; type: 'public-key' }>;
+  timeout?: number;
+  excludeCredentials?: TPasskeyCredentialDescriptor[];
+  authenticatorSelection?: {
+    authenticatorAttachment?: 'platform' | 'cross-platform';
+    residentKey?: 'discouraged' | 'preferred' | 'required';
+    requireResidentKey?: boolean;
+    userVerification?: 'discouraged' | 'preferred' | 'required';
+  };
+  attestation?: 'none' | 'indirect' | 'direct' | 'enterprise';
+  hints?: string[];
+};
+
+/** https://w3c.github.io/webauthn/#dictdef-publickeycredentialrequestoptionsjson */
+export type TPasskeyRequestOptions = {
+  challenge: string;
+  timeout?: number;
+  rpId?: string;
+  allowCredentials?: TPasskeyCredentialDescriptor[];
+  userVerification?: 'discouraged' | 'preferred' | 'required';
+  hints?: string[];
+};
+
+/** https://w3c.github.io/webauthn/#dictdef-registrationresponsejson */
+export type TPasskeyRegistrationResponse = {
+  id: string;
+  rawId: string;
+  type: 'public-key';
+  authenticatorAttachment?: 'platform' | 'cross-platform';
+  clientExtensionResults: Record<string, boolean | string | number | object>;
+  response: {
+    clientDataJSON: string;
+    attestationObject: string;
+    authenticatorData?: string;
+    transports?: TPasskeyTransport[];
+    publicKeyAlgorithm?: number;
+    publicKey?: string;
+  };
+};
+
+/** https://w3c.github.io/webauthn/#dictdef-authenticationresponsejson */
+export type TPasskeyAuthenticationResponse = {
+  id: string;
+  rawId: string;
+  type: 'public-key';
+  authenticatorAttachment?: 'platform' | 'cross-platform';
+  clientExtensionResults: Record<string, boolean | string | number | object>;
+  response: {
+    clientDataJSON: string;
+    authenticatorData: string;
+    signature: string;
+    userHandle?: string;
+  };
+};
+
+/**
+ * A registered credential as exposed to the client. Deliberately excludes the
+ * public key and credential ID: the UI only needs to identify and label it.
+ */
+export type TPasskey = {
+  id: string;
+  name: string;
+  deviceType: 'singleDevice' | 'multiDevice';
+  backedUp: boolean;
+  transports: TPasskeyTransport[];
+  createdAt: string;
+  lastUsedAt: string | null;
+};
+
+export type TPasskeysResponse = {
+  passkeys: TPasskey[];
+};
+
+export type TPasskeyResponse = {
+  passkey: TPasskey;
+};
+
+/**
+ * Enrollment is password-confirmed on both steps: a passkey is a durable
+ * single-factor login, so an access token alone must not be enough to mint one.
+ */
+export type TPasskeyRegistrationOptionsRequest = {
+  password: string;
+};
+
+export type TVerifyPasskeyRegistrationRequest = TPasskeyRegistrationOptionsRequest & {
+  credential: TPasskeyRegistrationResponse;
+  name?: string;
+};
+
+export type TPasskeyAuthenticationOptionsResponse = {
+  options: TPasskeyRequestOptions;
+  /** Opaque handle tying the assertion back to its server-side challenge. */
+  sessionId: string;
+};
+
+export type TVerifyPasskeyLoginRequest = {
+  credential: TPasskeyAuthenticationResponse;
+  sessionId: string;
+};
+
+export type TRenamePasskeyRequest = {
+  passkeyId: string;
+  name: string;
+};
+
+/**
+ * Removal is password-confirmed too: deleting a passkey takes a login factor
+ * away, so a bearer token alone must not be enough.
+ *
+ * `password` is optional because an account provisioned by an identity provider
+ * has no local password to confirm with, and its stranded credentials must stay
+ * removable. The server only waives the check when no password hash exists.
+ */
+export type TDeletePasskeyRequest = {
+  passkeyId: string;
+  password?: string;
+};
+
 export type TDisable2FARequest = TOTPVerificationPayload;
 
 export type TDisable2FAResponse = {
@@ -813,6 +1000,36 @@ export type TVerifyEmail = {
 };
 
 export type TResendVerificationEmail = Omit<TVerifyEmail, 'token'>;
+
+export type EmailChangeErrorCode =
+  | 'account_modified'
+  | 'current_password_invalid'
+  | 'email_change_disabled'
+  | 'email_delivery_failed'
+  | 'email_domain_not_allowed'
+  | 'email_in_use'
+  | 'email_service_unavailable'
+  | 'invalid_request'
+  | 'invalid_token'
+  | 'local_account_required'
+  | 'request_in_progress'
+  | 'same_email';
+
+export type TRequestEmailChange = {
+  currentPassword: string;
+  newEmail: string;
+};
+
+export type TConfirmEmailChange = {
+  email: string;
+  token: string;
+  userId: string;
+};
+
+export type TEmailChangeResponse = {
+  message: string;
+  code?: EmailChangeErrorCode;
+};
 
 export type TRefreshTokenResponse = {
   token: string;

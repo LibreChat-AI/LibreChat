@@ -19,6 +19,15 @@ const {
   enable2FA,
   verify2FA,
 } = require('~/server/controllers/TwoFactorController');
+const {
+  listPasskeys,
+  updatePasskey,
+  removePasskey,
+  authenticatePasskey,
+  loginPasskeyOptions,
+  registerPasskeyOptions,
+  registerPasskeyVerify,
+} = require('~/server/controllers/auth/PasskeyController');
 const { verify2FAWithTempToken } = require('~/server/controllers/auth/TwoFactorAuthController');
 const { logoutController } = require('~/server/controllers/auth/LogoutController');
 const { loginController } = require('~/server/controllers/auth/LoginController');
@@ -114,6 +123,45 @@ router.post(
   middleware.requireJwtAuth,
   twoFactorManagementLimiter,
   regenerateBackupCodes,
+);
+
+/* Passkeys (WebAuthn) */
+router.post(
+  '/passkey/login/options',
+  middleware.logHeaders,
+  middleware.passkeyLimiter,
+  middleware.checkBan,
+  loginPasskeyOptions,
+);
+router.post(
+  '/passkey/login/verify',
+  middleware.logHeaders,
+  middleware.requireSameOrigin,
+  middleware.passkeyLimiter,
+  middleware.checkBan,
+  authenticatePasskey,
+  setBalanceConfig,
+  loginController,
+);
+router.get('/passkey', middleware.requireJwtAuth, listPasskeys);
+router.post(
+  '/passkey/register/options',
+  middleware.requireJwtAuth,
+  middleware.passkeyStepUpLimiter,
+  registerPasskeyOptions,
+);
+router.post(
+  '/passkey/register/verify',
+  middleware.requireJwtAuth,
+  middleware.passkeyStepUpLimiter,
+  registerPasskeyVerify,
+);
+router.patch('/passkey/:passkeyId', middleware.requireJwtAuth, updatePasskey);
+router.delete(
+  '/passkey/:passkeyId',
+  middleware.requireJwtAuth,
+  middleware.passkeyStepUpLimiter,
+  removePasskey,
 );
 
 router.get('/graph-token', middleware.requireJwtAuth, graphTokenController);

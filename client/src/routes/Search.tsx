@@ -2,10 +2,12 @@ import { memo, useCallback, useEffect, useMemo, useRef, type FC } from 'react';
 import { useAtomValue } from 'jotai';
 import throttle from 'lodash/throttle';
 import { useRecoilValue } from 'recoil';
-import { Spinner, useToastContext } from '@librechat/client';
+import { Search as SearchIcon, SearchX } from 'lucide-react';
+import { EmptyState, Spinner, useToastContext } from '@librechat/client';
 import { List, CellMeasurer, CellMeasurerCache } from 'react-virtualized';
 import type { Index, ListRowProps } from 'react-virtualized';
 import type { TMessage } from 'librechat-data-provider';
+import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
 import { useElementSize, useLocalize, useAuthContext } from '~/hooks';
 import SearchMessage from '~/components/Chat/Messages/SearchMessage';
 import { useMessagesInfiniteQuery } from '~/data-provider';
@@ -273,11 +275,15 @@ export default function Search() {
     if (resultsCount === 0) {
       return localize('com_ui_nothing_found');
     }
+    /** More pages remain, so the loaded count is a floor rather than the total. */
+    if (hasNextPage) {
+      return localize('com_ui_results_found_more', { count: resultsCount });
+    }
     if (resultsCount === 1) {
       return localize('com_ui_result_found', { count: resultsCount });
     }
     return localize('com_ui_results_found', { count: resultsCount });
-  }, [resultsCount, localize]);
+  }, [resultsCount, hasNextPage, localize]);
 
   const loadingSpinner = (
     <div className="absolute inset-0 flex items-center justify-center">
@@ -288,7 +294,21 @@ export default function Search() {
   if (!searchQuery) {
     /** A fresh query is typed but its debounce hasn't fired yet: show loading
      *  rather than a blank route during that first delay. */
-    return search.query && search.isTyping ? loadingSpinner : null;
+    if (search.query && search.isTyping) {
+      return loadingSpinner;
+    }
+    /** Standing on the results route with nothing to show results for: cleared the
+     *  field, or arrived here directly. A blank page reads as a failure, so the
+     *  route says what it is waiting for instead. */
+    return (
+      <div className="absolute inset-0 flex items-center justify-center">
+        <EmptyState
+          icon={SearchIcon}
+          title={localize('com_nav_search_placeholder')}
+          description={localize('com_ui_search_a_message')}
+        />
+      </div>
+    );
   }
 
   const hasResults = resultsCount > 0;
@@ -308,18 +328,21 @@ export default function Search() {
           {resultsAnnouncement}
         </div>
         <div className="absolute inset-0 flex items-center justify-center">
-          <div className="rounded-lg bg-surface-secondary p-6 text-lg text-text-secondary">
-            {localize('com_ui_nothing_found')}
-          </div>
+          <EmptyState icon={SearchX} description={localize('com_ui_nothing_found')} />
         </div>
       </>
     );
   }
 
   return (
-    <div className="relative flex h-full w-full flex-col bg-presentation pt-4">
-      <div className="sr-only" role="alert" aria-atomic="true">
-        {resultsAnnouncement}
+    <div className="bg-surface-primary-alt relative flex h-full w-full flex-col pt-4">
+      {/* The count is the page's one heading, and the live region at the same time:
+          announced to a screen reader and read by everyone else, rather than said
+          twice out of two nodes. Aligned to the column the results sit in. */}
+      <div className={cn('mx-auto px-4 pb-2', getMessageRowWidthClass())}>
+        <p className="text-text-secondary text-sm" role="status" aria-atomic="true">
+          {resultsAnnouncement}
+        </p>
       </div>
       <div ref={listContainerRef} className="min-h-0 flex-1">
         <List
@@ -334,18 +357,18 @@ export default function Search() {
           overscanRowCount={10}
           aria-label={localize('com_nav_search_placeholder')}
           className={cn(
-            'outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring-primary',
+            'focus-visible:ring-ring-primary outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
             showingStale && 'opacity-70',
           )}
           style={{ outline: 'none' }}
         />
       </div>
       {isFetchingNextPage && (
-        <div className="pointer-events-none absolute bottom-0 left-0 right-0 flex justify-center py-4">
+        <div className="pointer-events-none absolute right-0 bottom-0 left-0 flex justify-center py-4">
           <Spinner className="text-text-primary" />
         </div>
       )}
-      <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-[5%] bg-gradient-to-t from-presentation to-transparent" />
+      <div className="from-surface-primary-alt pointer-events-none absolute right-0 bottom-0 left-0 h-[5%] bg-gradient-to-t to-transparent" />
     </div>
   );
 }

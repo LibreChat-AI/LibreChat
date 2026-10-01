@@ -88,7 +88,7 @@ const ToolMermaidArtifact = memo(({ attachment, text }: ToolMermaidArtifactProps
         <div className="flex items-center justify-between gap-2">
           {attachment.filename && (
             <div
-              className="truncate text-[10px] font-medium uppercase tracking-wide text-text-secondary"
+              className="text-text-secondary truncate text-[10px] font-medium tracking-wide uppercase"
               title={visibleFilename}
             >
               {visibleFilename}
@@ -102,8 +102,8 @@ const ToolMermaidArtifact = memo(({ attachment, text }: ToolMermaidArtifactProps
               title={localize('com_ui_download')}
               className={cn(
                 'inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs',
-                'text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy',
+                'text-text-secondary hover:bg-surface-hover hover:text-text-primary transition-colors',
+                'focus-visible:ring-border-heavy focus-visible:ring-2 focus-visible:outline-hidden',
               )}
             >
               <Download className="size-3" aria-hidden="true" />

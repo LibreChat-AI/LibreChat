@@ -80,7 +80,12 @@ const addTitle = async (req, { text, responseText, conversationId }) => {
         conversationId,
         title,
       },
-      { context: 'api/server/services/Endpoints/assistants/addTitle.js', noUpsert: true },
+      {
+        context: 'api/server/services/Endpoints/assistants/addTitle.js',
+        noUpsert: true,
+        preserveUpdatedAt: true,
+        appendMessageIds: [],
+      },
     );
   } catch (error) {
     logger.error('[addTitle] Error generating title:', error);
@@ -112,7 +117,12 @@ const addTitle = async (req, { text, responseText, conversationId }) => {
         conversationId,
         title: fallbackTitle,
       },
-      { context: 'api/server/services/Endpoints/assistants/addTitle.js', noUpsert: true },
+      {
+        context: 'api/server/services/Endpoints/assistants/addTitle.js',
+        noUpsert: true,
+        preserveUpdatedAt: true,
+        appendMessageIds: [],
+      },
     );
   }
 };

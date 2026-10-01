@@ -67,7 +67,7 @@ export default function SandboxArtifactTabs({
 
   if (isLoading) {
     return (
-      <div className="flex h-full w-full items-center justify-center gap-2 text-sm text-text-secondary">
+      <div className="text-text-secondary flex h-full w-full items-center justify-center gap-2 text-sm">
         <Spinner size={16} />
         {localize('com_ui_preview_preparing')}
       </div>
@@ -79,7 +79,7 @@ export default function SandboxArtifactTabs({
       <Tabs.Content
         value="code"
         id="artifacts-code"
-        className="h-full w-full flex-grow overflow-auto"
+        className="h-full w-full grow overflow-auto"
         tabIndex={-1}
       >
         <ArtifactCodeEditor
@@ -89,11 +89,7 @@ export default function SandboxArtifactTabs({
         />
       </Tabs.Content>
 
-      <Tabs.Content
-        value="preview"
-        className="h-full w-full flex-grow overflow-hidden"
-        tabIndex={-1}
-      >
+      <Tabs.Content value="preview" className="h-full w-full grow overflow-hidden" tabIndex={-1}>
         <ArtifactPreview
           files={previewFiles}
           fileKey={fileKey}

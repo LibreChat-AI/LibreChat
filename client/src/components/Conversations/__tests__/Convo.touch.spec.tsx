@@ -44,6 +44,7 @@ jest.mock('~/store', () => ({
 jest.mock('~/utils', () => ({
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
   logger: { error: jest.fn() },
+  isConversationUnseen: () => false,
 }));
 
 jest.mock('../ConvoOptions', () => ({

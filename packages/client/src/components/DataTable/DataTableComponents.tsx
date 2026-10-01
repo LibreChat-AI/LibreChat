@@ -86,8 +86,9 @@ const TableRowComponent = <TData extends Record<string, unknown>>(
         return (
           <CellComponent
             key={cell.id}
+            size="dense"
             className={cn(
-              'max-w-0 truncate px-3 py-1 text-sm transition-colors',
+              'max-w-0 truncate px-3 text-sm transition-colors',
               'group-hover:bg-surface-secondary-alt group-data-[state=selected]:bg-surface-active',
               cell.column.id === 'select' && 'w-8 p-1',
               meta?.className,
@@ -127,7 +128,9 @@ export const MemoizedTableRow: React.MemoExoticComponent<(props: GenericRowProps
     (prev: GenericRowProps, next: GenericRowProps) =>
       prev.row.original === next.row.original &&
       prev.selected === next.selected &&
-      prev.cellsVersion === next.cellsVersion,
+      prev.cellsVersion === next.cellsVersion &&
+      /** The row height follows the theme, so a theme switch has to reach mounted rows. */
+      prev.style?.height === next.style?.height,
   );
 
 export const SkeletonRows: React.MemoExoticComponent<
@@ -165,11 +168,8 @@ export const SkeletonRows: React.MemoExoticComponent<
             return (
               <TableCell
                 key={columnKey}
-                className={cn(
-                  'px-3 py-1',
-                  meta?.className,
-                  meta?.desktopOnly && 'hidden md:table-cell',
-                )}
+                size="dense"
+                className={cn('px-3', meta?.className, meta?.desktopOnly && 'hidden md:table-cell')}
               >
                 <Skeleton className="h-6 w-full" />
               </TableCell>

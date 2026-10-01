@@ -14,6 +14,7 @@ const AdvancedButton: React.FC<AdvancedButtonProps> = ({ setActivePanel }) => {
   return (
     <Button
       variant="subtle"
+      shape="theme"
       onClick={() => setActivePanel(Panel.advanced)}
       aria-label={localize('com_ui_advanced')}
       className="h-9 w-full px-3"
