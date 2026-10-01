@@ -201,7 +201,7 @@ const buttonVariantRecipe = cva(
       {
         variant: 'section-header',
         size: 'default',
-        class: 'h-auto px-1 py-2',
+        class: 'h-auto min-h-0 px-1 py-2',
       },
       /* Sized by the text it stands for, like `section-header`, so the default
        * size recipe must not pad it away from the content it lines up with. */
