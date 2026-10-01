@@ -5,6 +5,8 @@ const {
   GenerationJobManager,
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
   hasPersistableAbortContent,
+  resolveAbortedTurnAnchorDecision,
+  planAbortedTurnPersistence,
   buildAbortedResponseMetadata,
   isPendingActionStale,
   toClientPendingAction,
@@ -49,7 +51,7 @@ const {
   getServerGenerationProtocol,
   negotiateExistingGenerationProtocol,
 } = require('~/server/controllers/agents/protocol');
-const { getFiles, saveMessage } = require('~/models');
+const { getFiles, getMessages, saveMessage } = require('~/models');
 const {
   recordScheduleOutcome,
   beginScheduledStop,
@@ -764,15 +766,27 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
            * its parent and the preliminary-parent fence correctly rejects it. */
           const shouldPersistAbortedTurn =
             hasPersistableAbortContent(content) || jobData?.createdEventEmitted === true;
-          /** A compaction's `userMessage` is the already-persisted leaf
-           *  projected for identity only; upserting it would erase a user
-           *  leaf's text or turn an assistant leaf into an empty user row. */
-          const shouldPersistAnchor = jobData?.compact !== true;
+          /** The stopped turn's persistence plan (which rows to write, and
+           *  whether the normal FINAL must be withheld for a reconciliation
+           *  frame instead) comes from @librechat/api, decided from the
+           *  compaction anchor this route reads. */
+          const abortPersistencePlan = planAbortedTurnPersistence(
+            await resolveAbortedTurnAnchorDecision(jobData, {
+              messageExists: (messageId, conversationId) =>
+                getMessages({ user: req?.user?.id, messageId, conversationId }, '_id').then(
+                  (rows) => rows.length > 0,
+                ),
+            }),
+            shouldPersistAbortedTurn,
+          );
+          if (abortPersistencePlan.withholdFinal && abortPersistencePlan.withholdReason) {
+            persistenceErrors.push(new Error(abortPersistencePlan.withholdReason));
+          }
 
           if (
             jobData?.userMessage?.messageId &&
             jobData?.responseMessageId &&
-            shouldPersistAbortedTurn
+            abortPersistencePlan.writeResponseRow
           ) {
             const messageContext = {
               userId: req?.user?.id,
@@ -833,7 +847,7 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
              * write and checkpoint cleanup so every independently useful
              * operation gets a chance to succeed. A compaction skips the
              * prerequisite: its anchor is the persisted leaf itself. */
-            if (shouldPersistAnchor) {
+            if (abortPersistencePlan.writeUserRow) {
               try {
                 const persistedRequest = await saveMessage(messageContext, requestMessage, {
                   context: 'api/server/routes/agents/index.js - abort user prerequisite',

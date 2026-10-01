@@ -24,6 +24,7 @@ const mockGenerationJobManager = {
 };
 
 const mockSaveMessage = jest.fn();
+const mockGetMessages = jest.fn(async () => [{ _id: 'existing-anchor' }]);
 
 const mockRecordScheduleOutcome = jest.fn();
 const mockBeginScheduledStop = jest.fn();
@@ -47,6 +48,7 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/models', () => ({
   saveMessage: (...args) => mockSaveMessage(...args),
+  getMessages: (...args) => mockGetMessages(...args),
 }));
 
 jest.mock('~/server/services/Schedules', () => ({
@@ -420,6 +422,66 @@ describe('Agent Abort Endpoint', () => {
           }),
           expect.objectContaining({ context: expect.stringContaining('abort endpoint') }),
         );
+      });
+
+      /** Stop can win the race before the branch loaded, so the projected
+       *  anchor names a row that was never written: a response persisted
+       *  there would be orphaned on reload. */
+      it('persists nothing when the compaction anchor was never written', async () => {
+        mockGetMessages.mockResolvedValueOnce([]);
+        const jobStreamId = 'test-stream-compact-unanchored';
+
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'test-user-123', generationProtocolVersion: 2 },
+        });
+
+        const abortResult = {
+          success: true,
+          jobData: {
+            compact: true,
+            createdEventEmitted: true,
+            userMessage: {
+              messageId: 'never-persisted-leaf',
+              parentMessageId: 'older-response',
+              conversationId: jobStreamId,
+              text: '',
+            },
+            responseMessageId: 'compaction-response-2',
+            conversationId: jobStreamId,
+            endpoint: 'agents',
+            sender: 'TestAgent',
+            model: 'agent-1',
+          },
+          content: [
+            {
+              type: 'error',
+              error: JSON.stringify({ type: 'compaction_failed' }),
+              initiatedBy: 'user',
+            },
+          ],
+          text: '',
+        };
+        let beforePublishError;
+        mockGenerationJobManager.abortJob.mockImplementation(async (_streamId, options) => {
+          try {
+            await options.beforePublish(abortResult);
+          } catch (error) {
+            /** The manager catches this failure and publishes a
+             *  reconciliation frame instead of the normal FINAL. */
+            beforePublishError = error;
+          }
+          return abortResult;
+        });
+
+        const response = await request(app)
+          .post('/api/agents/chat/abort')
+          .set('X-LibreChat-Generation-Protocol', '2')
+          .send({ conversationId: jobStreamId, generationProtocolVersion: 2 });
+
+        expect(response.status).toBe(200);
+        expect(mockSaveMessage).not.toHaveBeenCalled();
+        expect(beforePublishError).toBeInstanceOf(Error);
+        expect(beforePublishError.message).toContain('anchor unavailable');
       });
     });
 

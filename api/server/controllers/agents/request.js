@@ -52,6 +52,8 @@ const {
   resolvePersistableCodeEnvironmentDecision,
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
+  settleExistingRowsBeforeErrorTurn,
+  isSettledJobRecord,
   markAbortedCompactionContent,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
@@ -427,23 +429,6 @@ async function saveErrorTurn(
     }
 
     const userId = req.user.id;
-    const existing = await getMessages(
-      { user: userId, messageId: errorMessageId, conversationId },
-      '_id',
-    );
-    if (existing.length > 0) {
-      return;
-    }
-    if (liveResponseMessageId != null && liveResponseMessageId !== errorMessageId) {
-      const partial = await getMessages(
-        { user: userId, messageId: liveResponseMessageId, conversationId },
-        '_id',
-      );
-      if (partial.length > 0) {
-        return;
-      }
-    }
-
     const reqCtx = {
       userId,
       isTemporary:
@@ -454,6 +439,24 @@ async function saveErrorTurn(
         req?._agentEventBindingRetention?.expiredAt ?? req?.resolvedConversation?.expiredAt,
       interfaceConfig: req?.config?.interfaceConfig,
     };
+    /** The existing-row settlement (which row a failed turn settles, and
+     *  whether its error row may be written at all) lives in @librechat/api;
+     *  this supplies the caller's reads and write. */
+    const coveredByExistingRow = await settleExistingRowsBeforeErrorTurn(req.body, {
+      userId,
+      conversationId,
+      errorMessageId,
+      liveResponseMessageId,
+      getMessages,
+      saveFinalizedTurn: (message) =>
+        saveMessage(reqCtx, message, {
+          context: 'api/server/controllers/agents/request.js - finalize failed compaction turn',
+        }),
+    });
+    if (coveredByExistingRow) {
+      return;
+    }
+
     const context = 'api/server/controllers/agents/request.js - failed turn';
     const endpoint = endpointOption?.endpoint;
     const model = getAgentResponseModel(req, endpointOption);
@@ -551,6 +554,13 @@ async function saveErrorTurn(
   }
 }
 
+/**
+ * The disconnect save is marker-only while the run is still live; a failed
+ * turn is what settles it, so a compaction's partial row is finalized here
+ * with the terminal outcome instead of keeping the snapshot's live-run
+ * marking. The decision lives in @librechat/api; this is the wiring, reusing
+ * the row the caller already loaded.
+ */
 function classifyScheduledFailure(error, aborted = false) {
   if (aborted || error?.code === 'SCHEDULE_NO_LONGER_ACTIVE') {
     return { status: 'interrupted', error: error?.message };
@@ -1888,6 +1898,14 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
        * record is the source, since the client-facing resume snapshot never
        * carries server-private state. */
       const contextMeta = jobRecord?.createdAt === jobCreatedAt ? jobRecord.contextMeta : undefined;
+      /** A job whose settling path (completion, error, abort) owns the final
+       *  row must not have it reopened as an unfinished snapshot here; the
+       *  guard reads the same record, so the window is the settling path's
+       *  own commit span. */
+      if (isSettledJobRecord(jobRecord, jobCreatedAt)) {
+        logger.debug('[ResumableAgentController] Skipping partial response save for a settled job');
+        return;
+      }
 
       try {
         const partialMessage = {

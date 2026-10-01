@@ -224,6 +224,7 @@ export function markAbortedCompactionContent(
     return contentParts;
   }
   let hasOutcome = false;
+  let removedUnfinishedRound = false;
   for (let index = contentParts.length - 1; index >= 0; index -= 1) {
     const part = contentParts[index];
     if (part == null) {
@@ -256,11 +257,283 @@ export function markAbortedCompactionContent(
       continue;
     }
     contentParts.splice(index, 1);
+    removedUnfinishedRound = true;
   }
-  if (!hasOutcome && synthesizeFailure) {
+  /** An earlier round's checkpoint is not this round's outcome: a round the
+   *  run opened but never finished still records the typed failure beside it,
+   *  or the stopped turn reads as the successful compaction the checkpoint
+   *  describes. */
+  if ((!hasOutcome || removedUnfinishedRound) && synthesizeFailure) {
     contentParts.push(...compactionFailureContent());
   }
   return contentParts;
+}
+
+/** Whether a job record has reached a status whose path owns the turn's final
+ *  row (completion, error, or abort): the disconnect snapshot must not be
+ *  written over it, or the settled row reopens as an unfinished response.
+ *  Only a same-epoch record is trusted. */
+export function isSettledJobRecord(
+  jobRecord: { createdAt?: number; status?: string } | null | undefined,
+  jobCreatedAt?: number,
+): boolean {
+  if (jobRecord == null || (jobCreatedAt != null && jobRecord.createdAt !== jobCreatedAt)) {
+    return false;
+  }
+  return (
+    jobRecord.status === 'complete' ||
+    jobRecord.status === 'error' ||
+    jobRecord.status === 'aborted'
+  );
+}
+
+/** How the abort route persists a stopped turn's prerequisite rows. */
+export type AbortAnchorDecision = 'persist' | 'skip-anchor' | 'skip-turn';
+
+/**
+ * Decides how a stopped turn's persistence treats its user row, reading the
+ * anchor through the caller's database reader. A compaction's `userMessage`
+ * is the branch leaf projected for identity only: when the leaf is persisted,
+ * the projection must never be upserted over it (an ordinary prerequisite
+ * write would erase a user leaf's text or turn an assistant leaf into an
+ * empty user row), so only the aborted response is written. When the leaf is
+ * NOT persisted, Stop won the race before the branch loaded and there is
+ * nothing to anchor the response onto, so nothing is written at all; a read
+ * that fails says the same thing, without throwing past the caller's
+ * remaining cleanup. Ordinary turns keep the prerequisite write.
+ */
+export async function resolveAbortedTurnAnchorDecision(
+  jobData:
+    | {
+        compact?: boolean;
+        conversationId?: string;
+        userMessage?: { messageId?: string } | null;
+      }
+    | null
+    | undefined,
+  {
+    messageExists,
+  }: { messageExists: (messageId: string, conversationId?: string) => Promise<boolean> },
+): Promise<AbortAnchorDecision> {
+  const anchorId = jobData?.userMessage?.messageId;
+  if (jobData?.compact !== true || anchorId == null || anchorId.length === 0) {
+    return 'persist';
+  }
+  try {
+    const anchorExists = await messageExists(anchorId, jobData.conversationId);
+    return anchorExists ? 'skip-anchor' : 'skip-turn';
+  } catch {
+    return 'skip-turn';
+  }
+}
+
+/** The abort route's persistence plan for a stopped turn: which rows to write
+ *  and whether the normal FINAL must be withheld (the manager publishes a
+ *  reconciliation frame instead, so the client is never pointed at a response
+ *  that was deliberately never persisted). */
+export interface AbortedTurnPersistencePlan {
+  writeUserRow: boolean;
+  writeResponseRow: boolean;
+  withholdFinal: boolean;
+  withholdReason?: string;
+}
+
+export function planAbortedTurnPersistence(
+  anchorDecision: AbortAnchorDecision,
+  shouldPersistAbortedTurn: boolean,
+): AbortedTurnPersistencePlan {
+  const active = shouldPersistAbortedTurn && anchorDecision !== 'skip-turn';
+  /** Withholding the FINAL only matters when a row would otherwise have been
+   *  written: an abort with no persistable content and no created event
+   *  publishes an early-abort FINAL of its own, and nothing was withheld. */
+  const withhold = shouldPersistAbortedTurn && anchorDecision === 'skip-turn';
+  return {
+    writeUserRow: active && anchorDecision === 'persist',
+    writeResponseRow: active,
+    withholdFinal: withhold,
+    ...(withhold && {
+      withholdReason: 'Compaction anchor unavailable; abort turn withheld',
+    }),
+  };
+}
+
+/** A message row as the failed-turn settlement reads it: identity for the
+ *  anchor-shaped check, content and envelope for the live row it finalizes. */
+export type ReadableMessageRow = {
+  messageId: string;
+  content?: unknown;
+  unfinished?: boolean;
+};
+
+/**
+ * Settles the rows a failed generation already persisted before its error row
+ * is written, through the caller's injected reads and write. Returns whether
+ * an existing row covers the turn, in which case the caller skips the fresh
+ * error row entirely.
+ *
+ * The error id can normalize back to the compaction anchor itself when the
+ * anchor ends in `_`: a match there never receives the error row, and the
+ * failed run settles its own distinct live response row instead. Ordinary
+ * turns keep their existing behavior: a found partial row is preserved as it
+ * stands and blocks the error row.
+ */
+export async function settleExistingRowsBeforeErrorTurn(
+  requestBody: { compact?: boolean } | null | undefined,
+  {
+    userId,
+    conversationId,
+    errorMessageId,
+    liveResponseMessageId,
+    getMessages,
+    saveFinalizedTurn,
+  }: {
+    userId: string;
+    conversationId: string;
+    errorMessageId: string;
+    liveResponseMessageId?: string | null;
+    getMessages: (
+      filter: { user: string; messageId: string; conversationId: string },
+      projection?: string,
+    ) => Promise<ReadableMessageRow[]>;
+    saveFinalizedTurn: (message: Record<string, unknown>) => Promise<unknown>;
+  },
+): Promise<boolean> {
+  const isCompaction = requestBody?.compact === true;
+  const settleLiveRow = async (): Promise<boolean> => {
+    if (liveResponseMessageId == null || liveResponseMessageId === errorMessageId) {
+      return false;
+    }
+    /** Full documents only where the compaction finalization needs the
+     *  content; ordinary failures keep the id-only projection. */
+    const partial = await getMessages(
+      { user: userId, messageId: liveResponseMessageId, conversationId },
+      isCompaction ? undefined : '_id',
+    );
+    if (partial.length === 0) {
+      return false;
+    }
+    await persistFinalizedCompactionTurn(partial[0], requestBody, {
+      messageId: liveResponseMessageId,
+      conversationId,
+      saveMessage: saveFinalizedTurn,
+    });
+    return true;
+  };
+  const existing = await getMessages(
+    { user: userId, messageId: errorMessageId, conversationId },
+    '_id',
+  );
+  if (existing.length > 0) {
+    if (isCompaction) {
+      await settleLiveRow();
+    }
+    return true;
+  }
+  return settleLiveRow();
+}
+
+/**
+ * Finalizes a failed compaction's already-persisted partial row, with the
+ * write injected so the operation runs against whatever persistence the
+ * caller owns. The row settles with the terminal envelope the error path
+ * writes (an errored, finished turn): with the snapshot's `unfinished` flag
+ * left in place, restored sessions and downstream readers would keep
+ * classifying the failed turn as an incomplete response. Returns whether a
+ * write happened.
+ */
+export async function persistFinalizedCompactionTurn(
+  partialRow: { content?: unknown } | null | undefined,
+  requestBody: { compact?: boolean } | null | undefined,
+  {
+    messageId,
+    conversationId,
+    saveMessage,
+  }: {
+    messageId: string;
+    conversationId: string;
+    saveMessage: (message: Record<string, unknown>) => Promise<unknown>;
+  },
+): Promise<boolean> {
+  const finalized = resolveFinalizedCompactionTurn(partialRow, requestBody);
+  if (!finalized.write) {
+    return false;
+  }
+  const saved = await saveMessage({
+    messageId,
+    conversationId,
+    unfinished: false,
+    error: true,
+    ...(finalized.content != null && { content: finalized.content }),
+  });
+  if (saved == null) {
+    /** The same contract the surrounding failed-turn persistence holds: a
+     *  falsy save is a failure to settle, not a settled row. */
+    throw new Error('Failed compaction turn could not be finalized');
+  }
+  return true;
+}
+
+/** What a failed compaction does with its already-persisted partial row. */
+export type FinalizedCompactionTurn =
+  /** Not the failed run's row, or one holding nothing but a completed
+   *  checkpoint worth keeping exactly as it stands. */
+  | { write: false }
+  /** The parts already carry the failure (an error part, a failed summary);
+   *  only the snapshot's live-run flags remain to settle. */
+  | { write: true; content?: undefined }
+  /** The parts need the terminal marking applied. */
+  | { write: true; content: TMessageContentParts[] };
+
+/**
+ * The disconnect save is marker-only because the run is still live when it
+ * fires, so when the run then fails that snapshot is the row that stays: a
+ * partial summary is marked failed beside its text, a snapshot with no
+ * summary or error part gets the typed failure, and a snapshot whose parts
+ * already carry the failure still settles its live-run flags. A completed
+ * checkpoint is preserved as content, but a snapshot still flagged
+ * `unfinished` settles its envelope even then, or the restored conversation
+ * keeps treating the terminal job as live; a row that was already settled is
+ * left alone. Rows of turns that were not compactions are never written.
+ */
+export function resolveFinalizedCompactionTurn(
+  partialRow: { content?: unknown; unfinished?: boolean } | null | undefined,
+  requestBody: { compact?: boolean } | null | undefined,
+): FinalizedCompactionTurn {
+  if (requestBody?.compact !== true) {
+    return { write: false };
+  }
+  const content = Array.isArray(partialRow?.content)
+    ? (partialRow.content as TMessageContentParts[])
+    : [];
+  /** Every part is inspected: a row can hold an earlier round's terminal
+   *  outcome beside a later unfinished summary, and that summary still needs
+   *  its failure marked. */
+  let sawFailure = false;
+  let sawCheckpoint = false;
+  let unfinishedSummary = false;
+  for (const part of content) {
+    if (part?.type === ContentTypes.SUMMARY) {
+      if (part.failed === true) {
+        sawFailure = true;
+      } else if (isUsableSummaryPart(part)) {
+        sawCheckpoint = true;
+      } else {
+        unfinishedSummary = true;
+      }
+    } else if (part?.type === ContentTypes.ERROR) {
+      sawFailure = true;
+    }
+  }
+  if (unfinishedSummary) {
+    return { write: true, content: markAbortedCompactionContent(content, true) };
+  }
+  if (sawFailure) {
+    return { write: true };
+  }
+  if (sawCheckpoint) {
+    return partialRow?.unfinished === true ? { write: true } : { write: false };
+  }
+  return { write: true, content: markAbortedCompactionContent(content, true) };
 }
 
 /**

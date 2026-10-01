@@ -17,8 +17,14 @@ import {
   getSummaryPartText,
   markAbortedCompactionContent,
   markCompactionOutcome,
+  persistFinalizedCompactionTurn,
+  isSettledJobRecord,
+  planAbortedTurnPersistence,
+  resolveAbortedTurnAnchorDecision,
+  settleExistingRowsBeforeErrorTurn,
   resolveFailedTurnContent,
   resolveCheckpointMessage,
+  resolveFinalizedCompactionTurn,
   restoreCompactionSemanticIndex,
   restoreCompactionSemanticIndexSnapshot,
   stripUnusableSummaryParts,
@@ -397,6 +403,27 @@ describe('markAbortedCompactionContent', () => {
     ]);
   });
 
+  /** An earlier round's checkpoint is not the stopped round's outcome: the
+   *  failure lands beside it, or the row reads as the successful compaction
+   *  the checkpoint describes (and as a leaf that can no longer compact). */
+  it('records the typed failure beside an earlier checkpoint when the current round streamed nothing', () => {
+    const parts = [completedSummary('An earlier checkpoint.'), emptySummaryPlaceholder()];
+
+    markAbortedCompactionContent(parts, true);
+
+    expect(parts).toEqual([
+      expect.objectContaining({
+        type: ContentTypes.SUMMARY,
+        initiatedBy: 'user',
+      }),
+      {
+        type: ContentTypes.ERROR,
+        error: JSON.stringify({ type: ErrorTypes.COMPACTION_FAILED }),
+        initiatedBy: 'user',
+      },
+    ]);
+  });
+
   /** A run stopped before any part streamed still needs an identifiable row:
    *  an empty one reads as an answer to the message it hangs off. */
   it('records the typed failure when nothing streamed before the stop', () => {
@@ -429,6 +456,310 @@ describe('markAbortedCompactionContent', () => {
 
     expect(markAbortedCompactionContent(parts, false)).toBe(parts);
     expect(parts[0]).not.toHaveProperty('initiatedBy');
+  });
+});
+
+describe('resolveAbortedTurnAnchorDecision', () => {
+  const reader = (exists: boolean) => jest.fn(async () => exists);
+  const jobData = {
+    compact: true,
+    conversationId: 'conversation-1',
+    userMessage: { messageId: 'leaf-1' },
+  };
+
+  it('keeps the prerequisite user write for an ordinary turn', async () => {
+    const messageExists = reader(true);
+
+    await expect(resolveAbortedTurnAnchorDecision({}, { messageExists })).resolves.toBe('persist');
+    await expect(resolveAbortedTurnAnchorDecision(null, { messageExists })).resolves.toBe(
+      'persist',
+    );
+    expect(messageExists).not.toHaveBeenCalled();
+  });
+
+  /** The compaction's `userMessage` is the persisted leaf projected for
+   *  identity only; upserting it would erase the leaf. */
+  it('skips the prerequisite write for a compaction anchored on a persisted leaf', async () => {
+    await expect(
+      resolveAbortedTurnAnchorDecision(jobData, { messageExists: reader(true) }),
+    ).resolves.toBe('skip-anchor');
+  });
+
+  /** Stop can win the race before the branch loaded, leaving the projection
+   *  with no row behind it: a response written there would be orphaned. */
+  it('skips the whole turn when the compaction anchor was never persisted', async () => {
+    await expect(
+      resolveAbortedTurnAnchorDecision(jobData, { messageExists: reader(false) }),
+    ).resolves.toBe('skip-turn');
+  });
+
+  /** A read that throws must not escape past the caller's remaining cleanup:
+   *  nothing is known about the anchor, so nothing is written either. */
+  it('skips the whole turn when the anchor read fails', async () => {
+    const messageExists = jest.fn(async () => {
+      throw new Error('mongo unavailable');
+    });
+
+    await expect(resolveAbortedTurnAnchorDecision(jobData, { messageExists })).resolves.toBe(
+      'skip-turn',
+    );
+  });
+});
+
+describe('persistFinalizedCompactionTurn', () => {
+  it('writes the finalized content with the terminal envelope', async () => {
+    const saved: Record<string, unknown>[] = [];
+    const partialRow = {
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'Half a summary' }],
+          summarizing: true,
+        },
+      ],
+    };
+
+    await persistFinalizedCompactionTurn(
+      partialRow,
+      { compact: true },
+      {
+        messageId: 'response-1',
+        conversationId: 'conversation-1',
+        saveMessage: async (message) => {
+          saved.push(message);
+          return message;
+        },
+      },
+    );
+
+    /** The snapshot was saved `unfinished` with no error while the run was
+     *  live; the settled row must not keep reading as an incomplete
+     *  response. */
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({
+      messageId: 'response-1',
+      conversationId: 'conversation-1',
+      unfinished: false,
+      error: true,
+    });
+    expect(saved[0].content).toEqual([
+      expect.objectContaining({ type: ContentTypes.SUMMARY, failed: true, initiatedBy: 'user' }),
+    ]);
+  });
+
+  it('writes only the envelope when the parts already carry the failure', async () => {
+    const saved: Record<string, unknown>[] = [];
+    const partialRow = {
+      content: [{ type: ContentTypes.ERROR, error: 'Summarization failed', initiatedBy: 'user' }],
+    };
+
+    await persistFinalizedCompactionTurn(
+      partialRow,
+      { compact: true },
+      {
+        messageId: 'response-1',
+        conversationId: 'conversation-1',
+        saveMessage: async (message) => {
+          saved.push(message);
+          return message;
+        },
+      },
+    );
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toEqual({
+      messageId: 'response-1',
+      conversationId: 'conversation-1',
+      unfinished: false,
+      error: true,
+    });
+  });
+
+  it('writes nothing when the row needs no finalization', async () => {
+    const saveMessage = jest.fn();
+
+    await persistFinalizedCompactionTurn(
+      { content: [{ type: ContentTypes.TEXT, text: 'An ordinary partial' }] },
+      {},
+      { messageId: 'response-1', conversationId: 'conversation-1', saveMessage },
+    );
+
+    expect(saveMessage).not.toHaveBeenCalled();
+  });
+
+  /** The surrounding failed-turn persistence treats a falsy save as a
+   *  failure, not a settled row. */
+  it('fails when the injected save resolves falsy', async () => {
+    const partialRow = {
+      content: [
+        {
+          type: ContentTypes.ERROR,
+          error: 'Summarization failed',
+          initiatedBy: 'user',
+        },
+      ],
+    };
+
+    await expect(
+      persistFinalizedCompactionTurn(
+        partialRow,
+        { compact: true },
+        {
+          messageId: 'response-1',
+          conversationId: 'conversation-1',
+          saveMessage: async () => null,
+        },
+      ),
+    ).rejects.toThrow('Failed compaction turn could not be finalized');
+  });
+});
+
+describe('resolveFinalizedCompactionTurn', () => {
+  const compactionFailed = JSON.stringify({ type: ErrorTypes.COMPACTION_FAILED });
+
+  it('leaves a partial row of a turn that was not a compaction alone', () => {
+    const row = { content: [{ type: ContentTypes.TEXT, text: 'Partial answer' }] };
+
+    expect(resolveFinalizedCompactionTurn(row, {})).toEqual({ write: false });
+  });
+
+  /** The disconnect snapshot is marker-only, so a run that fails afterwards
+   *  leaves a row with no summary or error part and no marker at all. */
+  it('finalizes a snapshot without a summary or error part with the typed failure', () => {
+    const row = { content: [{ type: ContentTypes.THINK, think: 'Picking what to summarize' }] };
+
+    expect(resolveFinalizedCompactionTurn(row, { compact: true })).toEqual({
+      write: true,
+      content: [
+        { type: ContentTypes.THINK, think: 'Picking what to summarize' },
+        { type: ContentTypes.ERROR, error: compactionFailed, initiatedBy: 'user' },
+      ],
+    });
+  });
+
+  it('marks a partial summary failed beside its text', () => {
+    const row = {
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'Half a summary' }],
+          summarizing: true,
+          initiatedBy: 'user',
+        },
+      ],
+    };
+
+    expect(resolveFinalizedCompactionTurn(row, { compact: true })).toEqual({
+      write: true,
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'Half a summary' }],
+          summarizing: true,
+          initiatedBy: 'user',
+          failed: true,
+        },
+      ],
+    });
+  });
+
+  /** The parts already carry the failure, but the snapshot's live-run flags
+   *  are still unsettled: the write settles the envelope without touching
+   *  content. */
+  it('settles only the envelope of a row whose parts already carry the failure', () => {
+    const failedSummary = {
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'Half a summary' }],
+          summarizing: true,
+          failed: true,
+          initiatedBy: 'user',
+        },
+      ],
+    };
+    const recordedFailure = {
+      content: [{ type: ContentTypes.ERROR, error: 'Summarization failed', initiatedBy: 'user' }],
+    };
+
+    expect(resolveFinalizedCompactionTurn(failedSummary, { compact: true })).toEqual({
+      write: true,
+    });
+    expect(resolveFinalizedCompactionTurn(recordedFailure, { compact: true })).toEqual({
+      write: true,
+    });
+  });
+
+  /** A checkpoint the run completed before failing is preserved as content,
+   *  but a snapshot still flagged unfinished settles its envelope: the
+   *  restored conversation must not keep treating the terminal job as live. */
+  it('settles the envelope of an unfinished snapshot holding a completed checkpoint', () => {
+    const snapshot = {
+      unfinished: true,
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'A finished checkpoint.' }],
+          boundary: completedBoundary,
+        },
+      ],
+    };
+
+    expect(resolveFinalizedCompactionTurn(snapshot, { compact: true })).toEqual({ write: true });
+  });
+
+  it('leaves an already-settled checkpoint row untouched', () => {
+    const row = {
+      unfinished: false,
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'A finished checkpoint.' }],
+          boundary: completedBoundary,
+        },
+      ],
+    };
+
+    expect(resolveFinalizedCompactionTurn(row, { compact: true })).toEqual({ write: false });
+  });
+
+  /** A row can hold an earlier round's terminal outcome beside a later
+   *  unfinished summary: only the inspection of every part catches it, and
+   *  the failure lands on the summary that never finished. */
+  it('finalizes a later unfinished summary beside an earlier terminal outcome', () => {
+    const row = {
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'An earlier checkpoint.' }],
+          boundary: completedBoundary,
+        },
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'A later partial round.' }],
+          summarizing: true,
+        },
+      ],
+    };
+
+    expect(resolveFinalizedCompactionTurn(row, { compact: true })).toEqual({
+      write: true,
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'An earlier checkpoint.' }],
+          boundary: completedBoundary,
+          initiatedBy: 'user',
+        },
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'A later partial round.' }],
+          summarizing: true,
+          initiatedBy: 'user',
+          failed: true,
+        },
+      ],
+    });
   });
 });
 
@@ -669,5 +1000,152 @@ describe('unusable summary parts', () => {
     const payload = [{ role: 'assistant', content: [completeSummary] }];
 
     expect(stripUnusableSummaryParts(payload)).toBe(payload);
+  });
+});
+
+describe('planAbortedTurnPersistence', () => {
+  it('writes both rows for an ordinary turn the abort must persist', () => {
+    expect(planAbortedTurnPersistence('persist', true)).toEqual({
+      writeUserRow: true,
+      writeResponseRow: true,
+      withholdFinal: false,
+    });
+  });
+
+  it('writes only the response for a compaction anchored on a persisted leaf', () => {
+    expect(planAbortedTurnPersistence('skip-anchor', true)).toEqual({
+      writeUserRow: false,
+      writeResponseRow: true,
+      withholdFinal: false,
+    });
+  });
+
+  it('withholds the final and every row when the anchor never persisted', () => {
+    expect(planAbortedTurnPersistence('skip-turn', true)).toEqual({
+      writeUserRow: false,
+      writeResponseRow: false,
+      withholdFinal: true,
+      withholdReason: expect.stringContaining('anchor unavailable'),
+    });
+  });
+
+  it('writes nothing for a turn the abort would not persist', () => {
+    expect(planAbortedTurnPersistence('persist', false)).toEqual({
+      writeUserRow: false,
+      writeResponseRow: false,
+      withholdFinal: false,
+    });
+  });
+
+  /** An abort with no persistable content and no created event publishes an
+   *  early-abort FINAL of its own; withholding it would replace that frame
+   *  with a reconciliation one even though no row was ever at stake. */
+  it('does not withhold the final when no row needed writing', () => {
+    expect(planAbortedTurnPersistence('skip-turn', false)).toEqual({
+      writeUserRow: false,
+      writeResponseRow: false,
+      withholdFinal: false,
+    });
+  });
+});
+
+describe('settleExistingRowsBeforeErrorTurn', () => {
+  const partialSummaryRow = () => ({
+    messageId: 'live-response',
+    unfinished: true,
+    content: [
+      {
+        type: ContentTypes.SUMMARY,
+        content: [{ type: ContentTypes.TEXT, text: 'Half a summary' }],
+        summarizing: true,
+      },
+    ],
+  });
+  const deps = (rowsByMessageId: Record<string, unknown[]>) => {
+    const saved: Record<string, unknown>[] = [];
+    return {
+      saved,
+      deps: {
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        errorMessageId: 'error-target',
+        liveResponseMessageId: 'live-response',
+        getMessages: jest.fn(async ({ messageId }: { messageId: string }) =>
+          (rowsByMessageId[messageId] ?? []).map((row) => row),
+        ) as never,
+        saveFinalizedTurn: async (message: Record<string, unknown>) => {
+          saved.push(message);
+          return message;
+        },
+      },
+    };
+  };
+
+  it('settles a compaction snapshot under its live id and blocks the error row', async () => {
+    const { saved, deps: d } = deps({ 'live-response': [partialSummaryRow()] });
+
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toBe(true);
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({
+      messageId: 'live-response',
+      unfinished: false,
+      error: true,
+    });
+  });
+
+  /** The error id normalizes back to the anchor itself when the anchor ends
+   *  in `_`: the anchor match must not stop the live row from settling, and
+   *  nothing may be written over that match. */
+  it('settles the live row past an anchor-shaped collision', async () => {
+    const { saved, deps: d } = deps({
+      'error-target': [{ messageId: 'error-target', _id: 'anchor-shaped-match' }],
+      'live-response': [partialSummaryRow()],
+    });
+
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toBe(true);
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ messageId: 'live-response' });
+  });
+
+  it('blocks the error row for an ordinary turn with an existing row, writing nothing', async () => {
+    const { saved, deps: d } = deps({
+      'error-target': [{ messageId: 'error-target', _id: 'existing' }],
+      'live-response': [{ messageId: 'live-response', _id: 'partial' }],
+    });
+
+    await expect(settleExistingRowsBeforeErrorTurn({}, d)).resolves.toBe(true);
+
+    expect(saved).toHaveLength(0);
+    // The ordinary early return never reads the live row.
+    expect(d.getMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets the error row through when no row covers the turn', async () => {
+    const { saved, deps: d } = deps({});
+
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toBe(false);
+
+    expect(saved).toHaveLength(0);
+  });
+});
+
+describe('isSettledJobRecord', () => {
+  it.each(['complete', 'error', 'aborted'])('treats a %s record as settled', (status) => {
+    expect(isSettledJobRecord({ createdAt: 1000, status })).toBe(true);
+  });
+
+  it('leaves live and missing records unsettled', () => {
+    expect(isSettledJobRecord({ createdAt: 1000, status: 'running' })).toBe(false);
+    expect(isSettledJobRecord({ createdAt: 1000, status: 'requires_action' })).toBe(false);
+    expect(isSettledJobRecord(null)).toBe(false);
+    expect(isSettledJobRecord(undefined)).toBe(false);
+  });
+
+  /** Another epoch's record describes a different generation, not this one. */
+  it('ignores a record from another epoch', () => {
+    expect(isSettledJobRecord({ createdAt: 2000, status: 'error' }, 1000)).toBe(false);
+    expect(isSettledJobRecord({ createdAt: 1000, status: 'error' }, 1000)).toBe(true);
   });
 });
