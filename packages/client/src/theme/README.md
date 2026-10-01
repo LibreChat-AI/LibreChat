@@ -63,6 +63,12 @@ Three primitives keep corners of their own outside that scale: the menu panel (`
 `menuRadius` (0.7rem), the tooltip reads `tooltipRadius` (0.275rem) and the tab trigger reads
 `tabRadius` (0.185rem, through `rounded-theme-tab`). The defaults are the corners they always drew.
 
+Most appearance defaults hold in both modes. `darkAppearanceDefaults` lists the ones that differ in
+dark mode, and `defaultAppearanceFor(mode)` returns the full set for a mode: the menu panel's
+`menuShadow` and the tooltip's `tooltipShadow` are heavier on a dark page, as they always were. A
+theme that names a role in one mode replaces that mode's default only, and a theme that names
+`shadowLg` but not `menuShadow` keeps shading its light menus with `shadowLg`.
+
 The bundled ClickHouse theme (`themes/clickhouse.ts`) is the reference for a theme that changes
 shape as well as color: it tightens the radius scale to Click UI's `border.radii` steps, sets the
 mono family to Inconsolata over a real fallback stack, and raises every surface with Click UI's

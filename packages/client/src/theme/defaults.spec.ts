@@ -1,7 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import type { IThemeRGB } from './types';
-import { defaultAppearance, defaultBrands, themeAppearanceProperties } from './registry';
+import {
+  defaultBrands,
+  defaultAppearance,
+  darkAppearanceDefaults,
+  themeAppearanceProperties,
+} from './registry';
 import { defaultTheme } from './themes/default';
 import { darkTheme } from './themes/dark';
 
@@ -17,7 +22,7 @@ function declarations(selector: string): Map<string, string> {
   return new Map(
     Array.from(withoutComments.matchAll(/(--[\w-]+):\s*([^;]+);/g), (match) => [
       match[1],
-      match[2].replace(/\s+/g, ' ').trim(),
+      match[2].replace(/\s+/g, ' ').replace(/\(\s+/g, '(').replace(/\s+\)/g, ')').trim(),
     ]),
   );
 }
@@ -87,6 +92,7 @@ const stockAliases: Partial<
   labelSize: 'textSm',
   dialogTitleSize: 'textLg',
   dialogTitleFontFamily: 'displayFontFamily',
+  menuShadow: 'shadowLg',
 };
 
 /** Color roles split out of a broader one read it in the stylesheet, in both modes, so a
@@ -117,6 +123,19 @@ describe('the stock appearance and brands', () => {
         source ? `var(${themeAppearanceProperties[source]}, ${value})` : value,
       ]);
     });
+  });
+
+  it('declares the appearance defaults that differ in dark mode in the dark rule only', () => {
+    Object.entries(darkAppearanceDefaults).forEach(([key, value]) => {
+      const property = themeAppearanceProperties[key as keyof typeof defaultAppearance];
+      expect([property, dark.get(property)]).toEqual([property, value?.replace(/\s+/g, ' ')]);
+    });
+    const darkOnly = [...dark.keys()].filter((property) => property.startsWith('--theme-'));
+    expect(darkOnly.sort()).toEqual(
+      Object.keys(darkAppearanceDefaults)
+        .map((key) => themeAppearanceProperties[key as keyof typeof defaultAppearance])
+        .sort(),
+    );
   });
 
   it.each([

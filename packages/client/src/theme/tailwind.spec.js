@@ -238,7 +238,10 @@ describe('LibreChat Tailwind preset', () => {
     const stockStyles = fs.readFileSync(path.resolve(__dirname, 'defaults.css'), 'utf8');
 
     /** Prettier wraps a long font stack, so declarations compare with whitespace collapsed. */
-    const collapsed = stockStyles.replace(/\s+/g, ' ');
+    const collapsed = stockStyles
+      .replace(/\s+/g, ' ')
+      .replace(/\(\s+/g, '(')
+      .replace(/\s+\)/g, ')');
     /** Roles split out of a broader one alias the role they were split from. */
     const aliases = {
       controlPaddingX: 'spaceNormal',
@@ -246,6 +249,7 @@ describe('LibreChat Tailwind preset', () => {
       labelSize: 'textSm',
       dialogTitleSize: 'textLg',
       dialogTitleFontFamily: 'displayFontFamily',
+      menuShadow: 'shadowLg',
     };
     Object.entries(themeAppearanceProperties).forEach(([key, property]) => {
       const value = aliases[key]

@@ -1982,11 +1982,11 @@ html {
   font-size: 1rem;
   line-height: 1.5rem;
   color: rgb(var(--text-primary));
-  box-shadow: 0 2px 4px 0 rgb(0 0 0 / 0.25);
+  box-shadow: var(--theme-tooltip-shadow, 0 2px 4px 0 rgb(0 0 0 / 0.25));
 }
 
 .tooltip:where(.dark, .dark *) {
-  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+  box-shadow: var(--theme-tooltip-shadow, 0 1px 2px 0 rgb(0 0 0 / 0.35));
 }
 
 @layer base {
@@ -2071,9 +2071,9 @@ html[data-input-modality='keyboard']
   background-color: rgb(var(--surface-primary));
   padding: 0.5rem;
   color: rgb(var(--text-primary));
-  /* The `shadowLg` role, whose default is this literal. */
+  /* The `menuShadow` role, whose light default is this literal. */
   box-shadow: var(
-    --theme-shadow-lg,
+    --theme-menu-shadow,
     0 10px 15px -3px rgb(0 0 0 / 0.1),
     0 4px 6px -4px rgb(0 0 0 / 0.1)
   );
@@ -2108,9 +2108,11 @@ html[data-input-modality='keyboard']
 .popover-ui:where(.dark, .dark *) {
   background-color: rgb(var(--surface-secondary));
   color: rgb(var(--text-secondary));
-  box-shadow:
+  box-shadow: var(
+    --theme-menu-shadow,
     0 10px 15px -3px rgb(0 0 0 / 0.25),
-    0 4px 6px -4px rgb(0 0 0 / 0.1);
+    0 4px 6px -4px rgb(0 0 0 / 0.1)
+  );
 }
 
 .select-item {

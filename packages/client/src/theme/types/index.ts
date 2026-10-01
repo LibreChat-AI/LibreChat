@@ -536,6 +536,10 @@ export interface IThemeAppearance {
   shadowLg: string;
   shadowXl: string;
   shadow2xl: string;
+  /** The menu panel's and the tooltip's shadows. Their dark defaults differ from the light ones,
+   *  and the light menu shadow follows `shadowLg` when a theme names only that. */
+  menuShadow: string;
+  tooltipShadow: string;
   motionFast: string;
   motionNormal: string;
 }

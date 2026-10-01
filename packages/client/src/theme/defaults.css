@@ -269,6 +269,12 @@ html {
   --theme-shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
   --theme-shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
   --theme-shadow-2xl: 0 25px 50px -12px rgb(0 0 0 / 0.25);
+  --theme-menu-shadow: var(
+    --theme-shadow-lg,
+    0 10px 15px -3px rgb(0 0 0 / 0.1),
+    0 4px 6px -4px rgb(0 0 0 / 0.1)
+  );
+  --theme-tooltip-shadow: 0 2px 4px 0 rgb(0 0 0 / 0.25);
   --theme-motion-fast: 150ms;
   --theme-motion-normal: 200ms;
   --switch-unchecked: 148 148 148;
@@ -412,6 +418,9 @@ html {
   --provider-azure: linear-gradient(0.375turn, #61bde2, #4389d0);
   --provider-bedrock: #268672;
   --provider-foreground: #ffffff;
+  /* The appearance defaults that differ in dark mode (`darkAppearanceDefaults`). */
+  --theme-menu-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.25), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --theme-tooltip-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.35);
 }
 
 /* A root other than the document one that a legacy palette themes (`THEME_SCOPE_ATTRIBUTE` in

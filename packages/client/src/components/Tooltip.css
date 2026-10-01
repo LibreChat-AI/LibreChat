@@ -11,7 +11,7 @@
   font-size: 1rem;
   line-height: 1.5rem;
   color: rgb(var(--text-primary));
-  box-shadow: 0 2px 4px 0 rgb(0 0 0 / 0.25);
+  box-shadow: var(--theme-tooltip-shadow, 0 2px 4px 0 rgb(0 0 0 / 0.25));
   /* Enhanced layout for longer descriptions */
   max-width: 320px;
   word-wrap: break-word;
@@ -25,7 +25,7 @@
 }
 
 .tooltip:where(.dark, .dark *) {
-  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+  box-shadow: var(--theme-tooltip-shadow, 0 1px 2px 0 rgb(0 0 0 / 0.35));
 }
 
 /* The contrast edge ships with the primitive: the app stylesheet is not part of

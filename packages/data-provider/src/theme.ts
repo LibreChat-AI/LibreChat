@@ -399,6 +399,9 @@ const appearanceValidators = {
   shadowLg: isShadow,
   shadowXl: isShadow,
   shadow2xl: isShadow,
+  /** The menu panel's and the tooltip's shadows, `none` included. */
+  menuShadow: isShadow,
+  tooltipShadow: isShadow,
   motionFast: isDuration,
   motionNormal: isDuration,
 } satisfies Record<string, (value: unknown) => boolean>;

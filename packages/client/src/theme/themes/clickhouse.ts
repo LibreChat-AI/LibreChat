@@ -434,6 +434,9 @@ const clickHouseElevation = (alpha: number): Partial<IThemeAppearance> => ({
   shadowXl: elevation(alpha), // shadow.1
   shadow2xl: elevation(alpha), // shadow.1
   elevationSurface: elevation(alpha), // shadow.1
+  menuShadow: elevation(alpha), // genericMenu.panel.shadow.default, which is shadow.1
+  /** Click UI's tooltip draws no shadow (Tooltip.module.css). */
+  tooltipShadow: 'none',
 });
 
 const clickHouseLightAppearance: Partial<IThemeAppearance> = {

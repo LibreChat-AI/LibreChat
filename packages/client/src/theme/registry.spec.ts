@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import type { ThemeDefinition } from './types';
 import {
   collectThemeWarnings,
+  darkAppearanceDefaults,
+  defaultAppearanceFor,
   defaultAppearance,
   defaultBrands,
   fromLegacyTheme,
@@ -51,7 +53,7 @@ describe('theme registry', () => {
     expect(light.appearance.controlRadius).toBe('0.25rem');
     expect(light.appearance.fontFamily).toBe(defaultAppearance.fontFamily);
     expect(dark.colors['rgb-text-primary']).toBe(darkTheme['rgb-text-primary']);
-    expect(dark.appearance).toEqual(defaultAppearance);
+    expect(dark.appearance).toEqual(defaultAppearanceFor('dark'));
   });
 
   it('derives omitted code surfaces from the mode-specific legacy canvas', () => {
@@ -948,6 +950,69 @@ describe('theme registry', () => {
     ].forEach((appearance) => expect(issues(appearance)).toHaveLength(1));
   });
 
+  describe('appearance defaults that differ per mode', () => {
+    const lightMenu = '0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)';
+    const darkMenu = '0 10px 15px -3px rgb(0 0 0 / 0.25), 0 4px 6px -4px rgb(0 0 0 / 0.1)';
+    const lightTooltip = '0 2px 4px 0 rgb(0 0 0 / 0.25)';
+    const darkTooltip = '0 1px 2px 0 rgb(0 0 0 / 0.35)';
+    const shadows = (theme: ThemeDefinition, mode: 'light' | 'dark') => {
+      const { menuShadow, tooltipShadow } = resolveTheme(theme, mode).appearance;
+      return { menuShadow, tooltipShadow };
+    };
+    const theme = (modes: ThemeDefinition['modes']): ThemeDefinition => ({
+      version: 1,
+      name: 'mode-default-reference',
+      modes,
+    });
+
+    it('keeps the menu and tooltip shadows each mode drew before they had roles', () => {
+      expect(shadows(theme({}), 'light')).toEqual({
+        menuShadow: lightMenu,
+        tooltipShadow: lightTooltip,
+      });
+      expect(shadows(theme({}), 'dark')).toEqual({
+        menuShadow: darkMenu,
+        tooltipShadow: darkTooltip,
+      });
+      expect(defaultAppearanceFor('light')).toBe(defaultAppearance);
+      expect(defaultAppearanceFor('dark')).toEqual({
+        ...defaultAppearance,
+        ...darkAppearanceDefaults,
+      });
+    });
+
+    it('shades light menus with a theme that names only shadowLg, and keeps the dark literal', () => {
+      const shadowLg = '0 4px 6px -1px rgb(21 21 21 / 0.15)';
+      const lgOnly = theme({
+        light: { appearance: { shadowLg } },
+        dark: { appearance: { shadowLg } },
+      });
+
+      expect(shadows(lgOnly, 'light').menuShadow).toBe(shadowLg);
+      expect(shadows(lgOnly, 'dark').menuShadow).toBe(darkMenu);
+    });
+
+    it('applies a value named in one mode to that mode only', () => {
+      const darkOnly = theme({
+        dark: { appearance: { menuShadow: 'none', tooltipShadow: 'none' } },
+      });
+
+      expect(shadows(darkOnly, 'light')).toEqual({
+        menuShadow: lightMenu,
+        tooltipShadow: lightTooltip,
+      });
+      expect(shadows(darkOnly, 'dark')).toEqual({ menuShadow: 'none', tooltipShadow: 'none' });
+    });
+
+    it('lets a named menu shadow win over shadowLg in light', () => {
+      const both = theme({
+        light: { appearance: { shadowLg: '0 1px 2px 0 rgb(0 0 0 / 0.5)', menuShadow: 'none' } },
+      });
+
+      expect(shadows(both, 'light').menuShadow).toBe('none');
+    });
+  });
+
   it('keeps the menu, tooltip and tab corners on their old literals unless a theme names its own', () => {
     expect(defaultAppearance).toMatchObject({
       menuRadius: '0.7rem',
@@ -1471,7 +1536,7 @@ describe('theme registry', () => {
       expect(light.colors['rgb-text-primary']).toBe('1 2 3');
       expect(light.appearance).toEqual({ ...defaultAppearance, controlRadius: '2px' });
       expect(light.brands['provider-openai']).toBe('#123456');
-      expect(resolveTheme(newerTheme, 'dark').appearance).toEqual(defaultAppearance);
+      expect(resolveTheme(newerTheme, 'dark').appearance).toEqual(defaultAppearanceFor('dark'));
     });
 
     it('reports nothing for a definition that only uses known tokens', () => {

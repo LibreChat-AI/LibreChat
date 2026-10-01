@@ -225,6 +225,8 @@ export const themeAppearanceProperties: Readonly<
   shadowLg: '--theme-shadow-lg',
   shadowXl: '--theme-shadow-xl',
   shadow2xl: '--theme-shadow-2xl',
+  menuShadow: '--theme-menu-shadow',
+  tooltipShadow: '--theme-tooltip-shadow',
   motionFast: '--theme-motion-fast',
   motionNormal: '--theme-motion-normal',
 });
@@ -297,9 +299,26 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   shadowLg: '0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
   shadowXl: '0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1)',
   shadow2xl: '0 25px 50px -12px rgb(0 0 0 / 0.25)',
+  menuShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
+  tooltipShadow: '0 2px 4px 0 rgb(0 0 0 / 0.25)',
   motionFast: '150ms',
   motionNormal: '200ms',
 });
+
+/**
+ * The defaults that differ in dark mode, over `defaultAppearance`. The menu panel and the tooltip
+ * always drew a heavier shadow on a dark page, so their dark defaults are those literals. A theme
+ * that names a role in a mode replaces the default for that mode only.
+ */
+export const darkAppearanceDefaults: Readonly<Partial<IThemeAppearance>> = Object.freeze({
+  menuShadow: '0 10px 15px -3px rgb(0 0 0 / 0.25), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
+  tooltipShadow: '0 1px 2px 0 rgb(0 0 0 / 0.35)',
+});
+
+/** Every appearance default in `mode`. */
+export function defaultAppearanceFor(mode: ThemeMode): IThemeAppearance {
+  return mode === 'dark' ? { ...defaultAppearance, ...darkAppearanceDefaults } : defaultAppearance;
+}
 
 export const themeBrandTokens: readonly (keyof IThemeBrands)[] = sharedBrandTokens;
 
@@ -446,16 +465,34 @@ const inheritedAppearance: ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAp
   ['dialogTitleFontFamily', 'displayFontFamily'],
 ];
 
-function withInheritedRoles(appearance?: Partial<IThemeAppearance>): IThemeAppearance {
+/**
+ * Pairs that hold in one mode only. The light menu panel read `shadowLg` before it had a role, so
+ * a theme that names `shadowLg` keeps shading its light menus with it; the dark panel always drew
+ * its own literal, which is now its dark default.
+ */
+const modeInheritedAppearance: Record<
+  ThemeMode,
+  ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAppearance]>
+> = {
+  light: [['menuShadow', 'shadowLg']],
+  dark: [],
+};
+
+function withInheritedRoles(
+  mode: ThemeMode,
+  appearance?: Partial<IThemeAppearance>,
+): IThemeAppearance {
   const known = knownAppearance(appearance);
-  const resolved = inheritedAppearance.reduce<Partial<IThemeAppearance>>(
+  const resolved = [...inheritedAppearance, ...modeInheritedAppearance[mode]].reduce<
+    Partial<IThemeAppearance>
+  >(
     (roles, [role, source]) =>
       roles[role] === undefined && roles[source] !== undefined
         ? { ...roles, [role]: roles[source] }
         : roles,
     known,
   );
-  return { ...defaultAppearance, ...resolved };
+  return { ...defaultAppearanceFor(mode), ...resolved };
 }
 
 export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedThemeDefinition {
@@ -652,7 +689,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...seriesEightFallback,
       ...verifiedFallback,
     } as Required<IThemeRGB>,
-    appearance: withComposableShadows(withInheritedRoles(definition?.appearance)),
+    appearance: withComposableShadows(withInheritedRoles(mode, definition?.appearance)),
     /** Mode last: a mode override is more specific than the theme-wide set. */
     brands: {
       ...defaultBrands,

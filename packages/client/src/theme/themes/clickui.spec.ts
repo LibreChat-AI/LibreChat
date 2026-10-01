@@ -462,6 +462,12 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     reason:
       'border: Click UI InputWrapper swaps the stroke to field.color.stroke.active on focus; keyboard focus adds a 1px ring in that color to hold the 2px focus floor',
   },
+  tooltipShadow: {
+    value: 'none',
+    status: 'match',
+    reason:
+      'none: Click UI Tooltip.module.css draws its tooltip with no shadow; no token carries it',
+  },
   focusRingWidth: {
     value: '2px',
     status: 'match',
@@ -512,6 +518,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   shadowXl: 'shadow.1',
   shadow2xl: 'shadow.1',
   elevationSurface: 'shadow.1',
+  menuShadow: 'click.genericMenu.panel.shadow.default',
   controlHeight: 'click.genericMenu.panel.size.height',
   controlPaddingX: 'click.button.basic.space.x',
   controlGap: 'click.button.basic.space.gap',
@@ -709,7 +716,7 @@ function comparable(key: keyof IThemeAppearance, raw: string | number): string {
   if (scrimKeys.has(key)) {
     return /^[\d.]+$/.test(value) ? String(Number(value)) : String(parseColor(value)[3]);
   }
-  if (key.startsWith('shadow') || key === 'elevationSurface') {
+  if (/shadow/i.test(key) || key === 'elevationSurface') {
     return normalizeShadow(value);
   }
   /** Click UI's mono tail names `"SFMono Regular"`, which no platform installs; the theme keeps
@@ -896,30 +903,25 @@ const popoverCorner = (mode: ThemeMode) => {
 };
 
 /**
- * The Dropdown menu's shadow. The package rule reads `shadowLg`; the app stylesheet repeats it in
- * light and repaints it in dark with a literal, and the app's rules win, so dark reads that one.
+ * The Dropdown menu's shadow, which reads `menuShadow`. The app stylesheet repeats the package rule
+ * and adds the dark rule, and the app's rules win, so dark reads that one.
  */
-const menuShadow = (mode: ThemeMode) => {
-  if (mode === 'dark') {
-    return cssValue(APP_STYLESHEET, '.popover-ui:where(.dark, .dark *)', 'box-shadow');
-  }
-  const own = cssValue('components/Dropdown.css', '.popover-ui', 'box-shadow');
-  const app = cssValue(APP_STYLESHEET, '.popover-ui', 'box-shadow');
-  if (app !== own) {
-    throw new Error(
-      `The app's .popover-ui shadow (${app}) no longer repeats Dropdown.css (${own})`,
-    );
-  }
-  return resolveRoleVar(own, mode);
-};
+const menuShadow = (mode: ThemeMode) =>
+  mode === 'dark'
+    ? resolveRoleVar(
+        cssValue(APP_STYLESHEET, '.popover-ui:where(.dark, .dark *)', 'box-shadow'),
+        mode,
+      )
+    : appCopyResolved('Dropdown.css', '.popover-ui', 'box-shadow', mode);
 
-/** The Tooltip's shadow: `.tooltip` in light, and its `.dark` rule in dark. Tooltip renders the
- *  bare `tooltip` class, so nothing but this stylesheet paints it. */
+/** The Tooltip's shadow, which reads `tooltipShadow`: `.tooltip` in light, and its `.dark` rule in
+ *  dark. Tooltip renders the bare `tooltip` class, so nothing but these rules paints it. */
 const tooltipShadow = (mode: ThemeMode) =>
-  cssValue(
-    'components/Tooltip.css',
+  appCopyResolved(
+    'Tooltip.css',
     mode === 'dark' ? '.tooltip:where(.dark, .dark *)' : '.tooltip',
     'box-shadow',
+    mode,
   );
 
 /** The Tabs trigger, which takes its corner from a radius utility. */
@@ -1242,19 +1244,6 @@ const notExpressible: Record<string, NotExpressible> = {
     reason:
       'the field is transparent and inks with text-primary; a color role is an opaque triplet, so no role can default to no fill, and no role holds field ink apart from body copy',
     issue: 'https://github.com/berry-13/LibreChat/issues/206',
-  },
-
-  'Dropdown menu shadow': {
-    decisions: { dark: ['Dropdown menu shadow'] },
-    reason:
-      "light reads shadowLg, but the app's dark .popover-ui rule repaints the shadow with a 0.25-alpha literal that no shadow role defaults to",
-    issue: 'https://github.com/berry-13/LibreChat/issues/217',
-  },
-  'Tooltip shadow': {
-    decisions: { light: ['Tooltip shadow'], dark: ['Tooltip shadow'] },
-    reason:
-      'Tooltip.css draws a black drop shadow, a different one in each mode, and no shadow role defaults to either, where Click UI draws none',
-    issue: 'https://github.com/berry-13/LibreChat/issues/220',
   },
 };
 
