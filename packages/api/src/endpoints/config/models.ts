@@ -19,12 +19,34 @@ import { getAppConfigOptionsFromUser } from '~/app/service';
  * Built-in endpoints whose configured `models` list replaces their `*_MODELS`
  * environment list. Read per request, so principal overrides can narrow them.
  */
-const CONFIGURED_MODEL_LIST_ENDPOINTS = [
+type ConfiguredModelListEndpoint =
+  | EModelEndpoint.openAI
+  | EModelEndpoint.google
+  | EModelEndpoint.anthropic
+  | EModelEndpoint.bedrock;
+
+const CONFIGURED_MODEL_LIST_ENDPOINTS: readonly ConfiguredModelListEndpoint[] = [
   EModelEndpoint.openAI,
   EModelEndpoint.google,
   EModelEndpoint.anthropic,
   EModelEndpoint.bedrock,
-] as const;
+];
+
+/**
+ * The model list configured for a built-in endpoint in the resolved config, or
+ * `undefined` when none is set. A configured list replaces the environment list
+ * and makes provider discovery unnecessary.
+ */
+export function configuredModelList(
+  appConfig: AppConfig | null | undefined,
+  endpoint: ConfiguredModelListEndpoint,
+): string[] | undefined {
+  const models = appConfig?.endpoints?.[endpoint]?.models;
+  if (!Array.isArray(models)) {
+    return undefined;
+  }
+  return models.filter((model): model is string => typeof model === 'string');
+}
 import { resolveConfigSecret } from '~/admin/secrets';
 import { validateEndpointURL } from '~/auth';
 import { tokenConfigCache } from '~/cache';
@@ -84,11 +106,9 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
     }
 
     for (const endpoint of CONFIGURED_MODEL_LIST_ENDPOINTS) {
-      const models = appConfig.endpoints?.[endpoint]?.models;
-      if (Array.isArray(models)) {
-        modelsConfig[endpoint] = models.filter(
-          (model): model is string => typeof model === 'string',
-        );
+      const models = configuredModelList(appConfig, endpoint);
+      if (models) {
+        modelsConfig[endpoint] = models;
       }
     }
 

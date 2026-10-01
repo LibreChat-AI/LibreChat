@@ -16,7 +16,7 @@ jest.mock('~/utils', () => {
 });
 
 import { SCOPED_TOKEN_CONFIG_KEY_PREFIX } from '../keys';
-import { createLoadConfigModels } from './models';
+import { createLoadConfigModels, configuredModelList } from './models';
 
 describe('createLoadConfigModels – user-provided baseURL header guard', () => {
   const fetchModels = jest.fn().mockResolvedValue([]);
@@ -337,5 +337,19 @@ describe('createLoadConfigModels � configured model lists for built-in endpoin
     });
     expect(models[EModelEndpoint.google]).toEqual([]);
     expect(models[EModelEndpoint.bedrock]).toEqual(['ok']);
+  });
+});
+
+describe('configuredModelList', () => {
+  it('returns string entries of a configured list and undefined otherwise', () => {
+    const appConfig = {
+      endpoints: {
+        [EModelEndpoint.openAI]: { models: ['a', 7, 'b'] },
+        [EModelEndpoint.google]: { streamRate: 25 },
+      },
+    } as unknown as Parameters<typeof configuredModelList>[0];
+    expect(configuredModelList(appConfig, EModelEndpoint.openAI)).toEqual(['a', 'b']);
+    expect(configuredModelList(appConfig, EModelEndpoint.google)).toBeUndefined();
+    expect(configuredModelList(undefined, EModelEndpoint.anthropic)).toBeUndefined();
   });
 });
