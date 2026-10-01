@@ -65,6 +65,39 @@ export const dalle3Schema: ExtendedJsonSchema = {
   required: ['prompt', 'style', 'quality', 'size'],
 };
 
+/** Azure OpenAI Sora Video Generation tool JSON schema */
+export const soraVideoGenSchema: ExtendedJsonSchema = {
+  type: 'object',
+  properties: {
+    prompt: {
+      type: 'string',
+      maxLength: 4000,
+      description: 'A detailed text prompt describing the video scene to generate.',
+    },
+    duration: {
+      type: 'integer',
+      enum: [5, 10, 15, 20],
+      description: 'The length of the video in seconds.',
+    },
+    resolution: {
+      type: 'string',
+      enum: ['1080p', '720p', '480p'],
+      description: 'The output resolution of the generated video.',
+    },
+    aspect_ratio: {
+      type: 'string',
+      enum: ['16:9', '9:16', '1:1'],
+      description: 'The aspect ratio for the video.',
+    },
+    fps: {
+      type: 'integer',
+      enum: [24, 30, 60],
+      description: 'Frames per second.',
+    },
+  },
+  required: ['prompt'],
+};
+
 /** Flux API tool JSON schema */
 export const fluxApiSchema: ExtendedJsonSchema = {
   type: 'object',
@@ -421,6 +454,13 @@ export const toolDefinitions: Record<string, ToolRegistryDefinition> = {
     schema: geminiToolkit.gemini_image_gen.schema,
     toolType: 'builtin',
     responseFormat: geminiToolkit.gemini_image_gen.responseFormat,
+  },
+  video_gen_sora_azure: {
+    name: oaiToolkit.video_gen_sora_azure.name,
+    description: oaiToolkit.video_gen_sora_azure.description,
+    schema: oaiToolkit.video_gen_sora_azure.schema,
+    toolType: 'builtin',
+    responseFormat: oaiToolkit.video_gen_sora_azure.responseFormat,
   },
 };
 

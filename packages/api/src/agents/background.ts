@@ -152,6 +152,7 @@ const EXCLUDED_BACKGROUND_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   ...imageGenTools,
   'image_gen_oai',
   'image_edit_oai',
+  'video_gen_sora_azure',
 ]);
 
 /**

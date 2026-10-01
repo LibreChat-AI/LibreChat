@@ -1,4 +1,5 @@
 import type { ExtendedJsonSchema } from '../registry/schema';
+import { soraVideoGenSchema } from '../registry/definitions';
 
 /** Default descriptions for image generation tool  */
 const DEFAULT_IMAGE_GEN_DESCRIPTION =
@@ -147,6 +148,12 @@ export const oaiToolkit: {
     readonly schema: ExtendedJsonSchema;
     readonly responseFormat: 'content_and_artifact';
   };
+  readonly video_gen_sora_azure: {
+    readonly name: 'video_gen_sora_azure';
+    readonly description: string;
+    readonly schema: ExtendedJsonSchema;
+    readonly responseFormat: 'content_and_artifact';
+  };
 } = {
   image_gen_oai: {
     name: 'image_gen_oai' as const,
@@ -158,6 +165,12 @@ export const oaiToolkit: {
     name: 'image_edit_oai' as const,
     description: getImageEditDescription(),
     schema: imageEditOaiJsonSchema,
+    responseFormat: 'content_and_artifact' as const,
+  },
+  video_gen_sora_azure: {
+    name: 'video_gen_sora_azure' as const,
+    description: 'Generates high-definition videos from text prompts using Azure OpenAI Sora.',
+    schema: soraVideoGenSchema,
     responseFormat: 'content_and_artifact' as const,
   },
 } as const;
