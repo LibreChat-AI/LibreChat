@@ -13,7 +13,10 @@ import type {
 } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { Transport } from '~/hooks/Chat/contract';
+import type { PendingSteer } from '~/store/families';
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
+import { useSteerReclaim } from '~/hooks/Chat/useSteerCancel';
+import useSteerEscalate from '~/hooks/Chat/useSteerEscalate';
 import useResumableSSE from '~/hooks/SSE/useResumableSSE';
 import useChatHelpers from '~/hooks/Chat/useChatHelpers';
 import useSteering from '~/hooks/Chat/useSteering';
@@ -351,6 +354,73 @@ describe('chat transport boundary', () => {
         expect(result.current.queue).toEqual([expect.objectContaining({ text: 'do not lose me' })]),
       );
       expect(fake.transport.steer).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('steer controls', () => {
+    const pendingSteer: PendingSteer = {
+      steerId: 'steer-1',
+      text: 'fold this in',
+      status: 'pending',
+      createdAt: 1,
+    };
+    const seedPendingSteer = (snapshot: MutableSnapshot) => {
+      seedSteerableRun(snapshot);
+      snapshot.set(store.pendingSteersByConvoId('convo-1'), [pendingSteer]);
+    };
+
+    it('withdraws a waiting steer through the host transport', async () => {
+      const fake = createFakeTransport({ cancelSteer: jest.fn(async () => ({ removed: true })) });
+      const { result } = renderHook(
+        () => ({
+          reclaim: useSteerReclaim('convo-1'),
+          pending: useRecoilValue(store.pendingSteersByConvoId('convo-1')),
+        }),
+        { wrapper: createWrapper(fake.transport, seedPendingSteer) },
+      );
+
+      let outcome = '';
+      await act(async () => {
+        outcome = await result.current.reclaim(pendingSteer);
+      });
+
+      expect(outcome).toBe('reclaimed');
+      expect((fake.transport.cancelSteer as jest.Mock).mock.calls[0][0]).toEqual({
+        conversationId: 'convo-1',
+        steerId: 'steer-1',
+        generationCreatedAt: 1000,
+      });
+      expect(result.current.pending).toEqual([]);
+    });
+
+    it('escalates a waiting steer to an interrupt through the host transport', async () => {
+      const fake = createFakeTransport({
+        armSteer: jest.fn(async () => ({
+          armed: true,
+          preemptRevision: 1,
+          generationProtocolVersion: 2,
+        })),
+      });
+      const { result } = renderHook(
+        () => ({
+          escalate: useSteerEscalate('convo-1'),
+          pending: useRecoilValue(store.pendingSteersByConvoId('convo-1')),
+        }),
+        { wrapper: createWrapper(fake.transport, seedPendingSteer) },
+      );
+
+      act(() => result.current.escalate({ steerId: 'steer-1' }));
+
+      await waitFor(() =>
+        expect(result.current.pending).toEqual([
+          expect.objectContaining({ steerId: 'steer-1', preempt: true }),
+        ]),
+      );
+      expect((fake.transport.armSteer as jest.Mock).mock.calls[0][0]).toEqual({
+        conversationId: 'convo-1',
+        steerId: 'steer-1',
+        generationCreatedAt: 1000,
+      });
     });
   });
 
