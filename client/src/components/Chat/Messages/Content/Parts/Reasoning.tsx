@@ -372,11 +372,11 @@ export const ReasoningCompact = memo(
       >
         <div ref={headerRef} className="relative flex h-5 shrink-0 items-center gap-1.5">
           <Button
-            variant="ghost"
+            variant="disclosure"
             onClick={handleToggle}
             aria-expanded={isExpanded}
             aria-controls={contentId}
-            className="group/disclosure text-text-secondary h-auto min-w-0 flex-1 justify-start gap-2 rounded-none p-0 font-normal hover:bg-transparent"
+            className="group/disclosure text-text-secondary min-w-0 flex-1 font-normal"
           >
             <span className={ROW_GLYPH_SLOT} aria-hidden="true">
               <Lightbulb className="text-text-secondary size-4 shrink-0" />
