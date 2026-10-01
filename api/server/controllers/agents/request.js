@@ -442,7 +442,7 @@ async function saveErrorTurn(
     /** The existing-row settlement (which row a failed turn settles, and
      *  whether its error row may be written at all) lives in @librechat/api;
      *  this supplies the caller's reads and write. */
-    const coveredByExistingRow = await settleExistingRowsBeforeErrorTurn(req.body, {
+    const settlement = await settleExistingRowsBeforeErrorTurn(req.body, {
       userId,
       conversationId,
       errorMessageId,
@@ -453,8 +453,13 @@ async function saveErrorTurn(
           context: 'api/server/controllers/agents/request.js - finalize failed compaction turn',
         }),
     });
-    if (coveredByExistingRow) {
+    if (settlement.covered) {
       return;
+    }
+    /** The anchor-shaped collision redirects the error row to the failed
+     *  run's own response id, so it can never overwrite the anchor. */
+    if (settlement.errorRowMessageId != null) {
+      errorMessageId = settlement.errorRowMessageId;
     }
 
     const context = 'api/server/controllers/agents/request.js - failed turn';
@@ -554,13 +559,6 @@ async function saveErrorTurn(
   }
 }
 
-/**
- * The disconnect save is marker-only while the run is still live; a failed
- * turn is what settles it, so a compaction's partial row is finalized here
- * with the terminal outcome instead of keeping the snapshot's live-run
- * marking. The decision lives in @librechat/api; this is the wiring, reusing
- * the row the caller already loaded.
- */
 function classifyScheduledFailure(error, aborted = false) {
   if (aborted || error?.code === 'SCHEDULE_NO_LONGER_ACTIVE') {
     return { status: 'interrupted', error: error?.message };
@@ -1898,12 +1896,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
        * record is the source, since the client-facing resume snapshot never
        * carries server-private state. */
       const contextMeta = jobRecord?.createdAt === jobCreatedAt ? jobRecord.contextMeta : undefined;
-      /** A job whose settling path (completion, error, abort) owns the final
-       *  row must not have it reopened as an unfinished snapshot here; the
-       *  guard reads the same record, so the window is the settling path's
-       *  own commit span. */
-      if (isSettledJobRecord(jobRecord, jobCreatedAt)) {
-        logger.debug('[ResumableAgentController] Skipping partial response save for a settled job');
+      /** A compaction whose settling path (completion, error, abort) owns the
+       *  final row must not have it reopened as an unfinished snapshot here;
+       *  the guard reads the same record, so the window is the settling
+       *  path's own commit span. Ordinary turns keep the pre-change behavior
+       *  exactly: their snapshot is the fallback row, settled or not. */
+      if (isCompaction && isSettledJobRecord(jobRecord, jobCreatedAt)) {
+        logger.debug(
+          '[ResumableAgentController] Skipping compaction partial save for a settled job',
+        );
         return;
       }
 

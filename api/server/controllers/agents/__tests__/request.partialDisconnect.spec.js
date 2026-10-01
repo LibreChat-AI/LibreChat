@@ -327,16 +327,34 @@ describe('ResumableAgentController tenant context', () => {
     });
     expect(savedMessage.content).toHaveLength(1);
   });
-  /** The settling path (completion, error, abort) owns the final row: a
-   *  disconnect snapshot landing after it would reopen the settled turn as
-   *  an unfinished response. */
-  it('skips the partial save when the job record has settled', async () => {
+  /** The settling path (completion, error, abort) owns the compaction's final
+   *  row: a disconnect snapshot landing after it would reopen the settled
+   *  turn as an unfinished response. */
+  it('skips the compaction partial save when the job record has settled', async () => {
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      { createdAt: 1000, status: 'error' },
+      {
+        body: { compact: true },
+        aggregatedContent: [{ type: 'text', text: 'Partial response' }],
+      },
+    );
+
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+  });
+
+  /** Ordinary turns keep the pre-change behavior exactly: their snapshot is
+   *  the fallback row even when the job record has settled, because the
+   *  terminal row write may still fail. */
+  it('still persists an ordinary partial save when the job record has settled', async () => {
     await firePartialDisconnect(
       { id: 'user-123' },
       { createdAt: 1000, status: 'error' },
       { aggregatedContent: [{ type: 'text', text: 'Partial response' }] },
     );
 
-    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    const [, savedMessage] = mockSaveMessage.mock.calls[0];
+    expect(savedMessage).toMatchObject({ unfinished: true, error: false });
   });
 });
