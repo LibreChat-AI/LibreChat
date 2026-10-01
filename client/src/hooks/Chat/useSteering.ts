@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { v4 } from 'uuid';
-import { useAtomValue, useStore } from 'jotai';
 import { useToastContext } from '@librechat/client';
-import { useRecoilValue, useSetRecoilState, useRecoilCallback } from 'recoil';
+import { useAtomValue, useSetAtom, useStore } from 'jotai';
+import { useRecoilValue, useRecoilCallback } from 'recoil';
 import {
   Constants,
   ContentTypes,
@@ -41,6 +41,14 @@ import {
   isDefiniteQueuedTurnsUnsupported,
   supportsGenerationProtocolV2,
 } from '~/data-provider';
+import {
+  settledQueuedTurnReceiptsByConvoId,
+  pendingQueuedTurnEnqueueIdsByConvoId,
+  pendingRunEndByConvoId,
+  queuedMessagesByConvoId,
+  drainAfterAbortByIndex,
+  runEndByIndex,
+} from '~/store/queue';
 import {
   appendAppliedSteerIds,
   carriedSteerContext,
@@ -612,9 +620,9 @@ export default function useSteering({
   const enabled = steerable && index === 0;
   const queueKey = hasRealConvoId ? conversationId : Constants.NEW_CONVO;
   const reasoningStateKey = getReasoningStateKey(conversationId, index);
-  const queuedMessages = useRecoilValue(store.queuedMessagesByConvoId(queueKey));
+  const queuedMessages = useAtomValue(queuedMessagesByConvoId(queueKey));
   const pendingReasoningOverride = useAtomValue(pendingReasoningOverrideFamily(reasoningStateKey));
-  const setQueuedMessages = useSetRecoilState(store.queuedMessagesByConvoId(queueKey));
+  const setQueuedMessages = useSetAtom(queuedMessagesByConvoId(queueKey));
   const { data: startupConfig } = useGetStartupConfig();
   /** Bound transport-outcome reconciliation while still guaranteeing several
    * list reads after the enqueue promise settles. Focus/remount remains a later
@@ -686,86 +694,75 @@ export default function useSteering({
     store.activeGenerationProtocolVersionByConvoId(queueKey),
   );
 
-  const applyQueuedTurnReceipts = useRecoilCallback(
-    ({ snapshot, set }) =>
-      (receipts: AgentQueuedTurnReceipt[], source: QueuedTurnReceiptSource = 'snapshot') => {
-        const previousSettled = snapshot
-          .getLoadable(store.settledQueuedTurnReceiptsByConvoId(queueKey))
-          .getValue();
-        const previousPending = snapshot
-          .getLoadable(store.pendingQueuedTurnEnqueueIdsByConvoId(queueKey))
-          .getValue();
-        const completedRequestIds = new Set(
-          source === 'enqueue' ? receipts.map((receipt) => receipt.clientRequestId) : [],
+  const applyQueuedTurnReceipts = useCallback(
+    (receipts: AgentQueuedTurnReceipt[], source: QueuedTurnReceiptSource = 'snapshot') => {
+      const previousSettled = jotaiStore.get(settledQueuedTurnReceiptsByConvoId(queueKey));
+      const previousPending = jotaiStore.get(pendingQueuedTurnEnqueueIdsByConvoId(queueKey));
+      const completedRequestIds = new Set(
+        source === 'enqueue' ? receipts.map((receipt) => receipt.clientRequestId) : [],
+      );
+      const nextPending = previousPending.filter((id) => !completedRequestIds.has(id));
+      const settledByRequestId = new Map(
+        previousSettled.map((receipt) => [receipt.clientRequestId, receipt]),
+      );
+      for (const receipt of receipts) {
+        const existing = settledByRequestId.get(receipt.clientRequestId);
+        const settled = mergeSettledQueuedTurnEvidence(existing, receipt, source);
+        if (settled == null) {
+          continue;
+        }
+        settledByRequestId.set(receipt.clientRequestId, settled);
+      }
+      const terminalForReconciliation = new Map(settledByRequestId);
+      const pendingRequestIds = new Set(nextPending);
+      const nextSettled = [...settledByRequestId.values()].filter(
+        (receipt) =>
+          (receipt.status === 'admitted' &&
+            receipt.rootPredecessor !== true &&
+            receipt.boundaryConsumed !== true) ||
+          pendingRequestIds.has(receipt.clientRequestId),
+      );
+      if (source === 'enqueue') {
+        jotaiStore.set(pendingQueuedTurnEnqueueIdsByConvoId(queueKey), nextPending);
+      }
+      if (
+        nextSettled.length !== previousSettled.length ||
+        nextSettled.some((receipt, index) => receipt !== previousSettled[index])
+      ) {
+        jotaiStore.set(settledQueuedTurnReceiptsByConvoId(queueKey), nextSettled);
+      }
+      if (source !== 'direct') {
+        jotaiStore.set(queuedMessagesByConvoId(queueKey), (previous) =>
+          reconcileServerQueuedTurns(
+            previous,
+            receipts,
+            terminalForReconciliation,
+            source === 'snapshot',
+            fileMap,
+          ),
         );
-        const nextPending = previousPending.filter((id) => !completedRequestIds.has(id));
-        const settledByRequestId = new Map(
-          previousSettled.map((receipt) => [receipt.clientRequestId, receipt]),
-        );
-        for (const receipt of receipts) {
-          const existing = settledByRequestId.get(receipt.clientRequestId);
-          const settled = mergeSettledQueuedTurnEvidence(existing, receipt, source);
-          if (settled == null) {
-            continue;
-          }
-          settledByRequestId.set(receipt.clientRequestId, settled);
-        }
-        const terminalForReconciliation = new Map(settledByRequestId);
-        const pendingRequestIds = new Set(nextPending);
-        const nextSettled = [...settledByRequestId.values()].filter(
-          (receipt) =>
-            (receipt.status === 'admitted' &&
-              receipt.rootPredecessor !== true &&
-              receipt.boundaryConsumed !== true) ||
-            pendingRequestIds.has(receipt.clientRequestId),
-        );
-        if (source === 'enqueue') {
-          set(store.pendingQueuedTurnEnqueueIdsByConvoId(queueKey), nextPending);
-        }
-        if (
-          nextSettled.length !== previousSettled.length ||
-          nextSettled.some((receipt, index) => receipt !== previousSettled[index])
-        ) {
-          set(store.settledQueuedTurnReceiptsByConvoId(queueKey), nextSettled);
-        }
-        if (source !== 'direct') {
-          set(store.queuedMessagesByConvoId(queueKey), (previous) =>
-            reconcileServerQueuedTurns(
-              previous,
-              receipts,
-              terminalForReconciliation,
-              source === 'snapshot',
-              fileMap,
-            ),
-          );
-        }
-      },
-    [fileMap, queueKey],
+      }
+    },
+    [fileMap, queueKey, jotaiStore],
   );
 
-  const finishQueuedTurnEnqueue = useRecoilCallback(
-    ({ snapshot, set }) =>
-      (clientRequestId: string): boolean => {
-        const settledReceipts = snapshot
-          .getLoadable(store.settledQueuedTurnReceiptsByConvoId(queueKey))
-          .getValue();
-        const settled = settledReceipts.find(
-          (receipt) => receipt.clientRequestId === clientRequestId,
+  const finishQueuedTurnEnqueue = useCallback(
+    (clientRequestId: string): boolean => {
+      const settledReceipts = jotaiStore.get(settledQueuedTurnReceiptsByConvoId(queueKey));
+      const settled = settledReceipts.find(
+        (receipt) => receipt.clientRequestId === clientRequestId,
+      );
+      jotaiStore.set(pendingQueuedTurnEnqueueIdsByConvoId(queueKey), (previous) =>
+        previous.filter((id) => id !== clientRequestId),
+      );
+      if (settled != null && (settled.status !== 'admitted' || settled.boundaryConsumed === true)) {
+        jotaiStore.set(settledQueuedTurnReceiptsByConvoId(queueKey), (previous) =>
+          previous.filter((receipt) => receipt.clientRequestId !== clientRequestId),
         );
-        set(store.pendingQueuedTurnEnqueueIdsByConvoId(queueKey), (previous) =>
-          previous.filter((id) => id !== clientRequestId),
-        );
-        if (
-          settled != null &&
-          (settled.status !== 'admitted' || settled.boundaryConsumed === true)
-        ) {
-          set(store.settledQueuedTurnReceiptsByConvoId(queueKey), (previous) =>
-            previous.filter((receipt) => receipt.clientRequestId !== clientRequestId),
-          );
-        }
-        return settled != null;
-      },
-    [queueKey],
+      }
+      return settled != null;
+    },
+    [queueKey, jotaiStore],
   );
 
   useEffect(() => {
@@ -955,8 +952,8 @@ export default function useSteering({
    * not the one the words belong to. An entry is dropped once that conversation
    * starts another run; an older end no longer describes what is happening.
    */
-  const runEnd = useRecoilValue(store.runEndByIndex(index));
-  const parkedRunEnd = useRecoilValue(store.pendingRunEndByConvoId(queueKey));
+  const runEnd = useAtomValue(runEndByIndex(index));
+  const parkedRunEnd = useAtomValue(pendingRunEndByConvoId(queueKey));
   const runEndsRef = useRef<Map<string, RunEnd>>(new Map());
   const observedRunEnd = [runEnd, parkedRunEnd].find(
     (end) => end != null && end.conversationId === conversationId,
@@ -1096,175 +1093,173 @@ export default function useSteering({
     [markFilesUsage],
   );
 
-  const updateQueuedMessage = useRecoilCallback(
-    ({ set }) =>
-      (id: string, update: (item: QueuedMessage) => QueuedMessage | null) => {
-        set(store.queuedMessagesByConvoId(queueKey), (previous) =>
-          previous.flatMap((item) => {
-            if (item.id !== id) {
-              return [item];
-            }
-            const next = update(item);
-            return next == null ? [] : [next];
-          }),
-        );
-      },
-    [queueKey],
+  const updateQueuedMessage = useCallback(
+    (id: string, update: (item: QueuedMessage) => QueuedMessage | null) => {
+      jotaiStore.set(queuedMessagesByConvoId(queueKey), (previous) =>
+        previous.flatMap((item) => {
+          if (item.id !== id) {
+            return [item];
+          }
+          const next = update(item);
+          return next == null ? [] : [next];
+        }),
+      );
+    },
+    [queueKey, jotaiStore],
   );
 
-  const enqueue = useRecoilCallback(
-    ({ set }) =>
-      (
-        text: string,
-        options?: {
-          front?: boolean;
-          files?: TMessage['files'];
-          quotes?: string[];
-          manualSkills?: string[];
-          reasoningOverride?: TMessage['reasoningOverride'];
-          /** Set when the files were ALREADY queued/steered: their TTL was
-           *  held when they first entered the queue (or at the steer 202). */
-          skipUsageMark?: boolean;
-          id?: string;
-          createdAt?: number;
-          clientRequestId?: string;
-          expectedPredecessorCreatedAt?: number;
-          /** The queue lineage of a row being put back after its parked copy was
-           *  cancelled. The run it waited on may have ended meanwhile, which
-           *  clears the live pair, and the row must stay durable regardless. */
-          lineage?: { parentMessageId: string; predecessorCreatedAt: number };
-        },
-      ) => {
-        const trimmed = text.trim();
-        if (trimmed.length === 0) {
-          return;
-        }
-        const parentMessageId =
-          options?.lineage?.parentMessageId ??
-          (pendingReveal != null
-            ? pendingReveal.queueParentMessageId
-            : liveMessageState?.parentMessageId);
-        const predecessorCreatedAt =
-          options?.lineage?.predecessorCreatedAt ??
-          (pendingReveal != null
-            ? pendingReveal.queuePredecessorCreatedAt
-            : activeGenerationCreatedAt);
-        /** FINAL clears the active epoch before attachment. The revealed
-         * intent retains the queue's original parent/epoch pair. Its display
-         * parent and advancing completion boundary are not queue lineage.
-         * Without an authoritative pair, retain the follow-up locally. */
-        const serverOwned =
-          serverQueueEnabled && parentMessageId != null && predecessorCreatedAt != null;
-        const generatedClientRequestId = options?.clientRequestId == null;
-        const clientRequestId = options?.clientRequestId ?? (serverOwned ? v4() : undefined);
-        const item: QueuedMessage = {
-          id: options?.id ?? v4(),
-          text: trimmed,
-          createdAt: options?.createdAt ?? Date.now(),
-          ...(clientRequestId != null && { clientRequestId }),
-          ...(serverOwned && {
+  const enqueue = useCallback(
+    (
+      text: string,
+      options?: {
+        front?: boolean;
+        files?: TMessage['files'];
+        quotes?: string[];
+        manualSkills?: string[];
+        reasoningOverride?: TMessage['reasoningOverride'];
+        /** Set when the files were ALREADY queued/steered: their TTL was
+         *  held when they first entered the queue (or at the steer 202). */
+        skipUsageMark?: boolean;
+        id?: string;
+        createdAt?: number;
+        clientRequestId?: string;
+        expectedPredecessorCreatedAt?: number;
+        /** The queue lineage of a row being put back after its parked copy was
+         *  cancelled. The run it waited on may have ended meanwhile, which
+         *  clears the live pair, and the row must stay durable regardless. */
+        lineage?: { parentMessageId: string; predecessorCreatedAt: number };
+      },
+    ) => {
+      const trimmed = text.trim();
+      if (trimmed.length === 0) {
+        return;
+      }
+      const parentMessageId =
+        options?.lineage?.parentMessageId ??
+        (pendingReveal != null
+          ? pendingReveal.queueParentMessageId
+          : liveMessageState?.parentMessageId);
+      const predecessorCreatedAt =
+        options?.lineage?.predecessorCreatedAt ??
+        (pendingReveal != null
+          ? pendingReveal.queuePredecessorCreatedAt
+          : activeGenerationCreatedAt);
+      /** FINAL clears the active epoch before attachment. The revealed
+       * intent retains the queue's original parent/epoch pair. Its display
+       * parent and advancing completion boundary are not queue lineage.
+       * Without an authoritative pair, retain the follow-up locally. */
+      const serverOwned =
+        serverQueueEnabled && parentMessageId != null && predecessorCreatedAt != null;
+      const generatedClientRequestId = options?.clientRequestId == null;
+      const clientRequestId = options?.clientRequestId ?? (serverOwned ? v4() : undefined);
+      const item: QueuedMessage = {
+        id: options?.id ?? v4(),
+        text: trimmed,
+        createdAt: options?.createdAt ?? Date.now(),
+        ...(clientRequestId != null && { clientRequestId }),
+        ...(serverOwned && {
+          parentMessageId,
+          server: { status: 'sending' },
+        }),
+        ...((options?.expectedPredecessorCreatedAt ?? predecessorCreatedAt) != null && {
+          expectedPredecessorCreatedAt:
+            options?.expectedPredecessorCreatedAt ?? predecessorCreatedAt ?? undefined,
+        }),
+        ...(options?.files && options.files.length > 0 && { files: options.files }),
+        ...(options?.quotes && options.quotes.length > 0 && { quotes: options.quotes }),
+        ...(options?.manualSkills &&
+          options.manualSkills.length > 0 && {
+            manualSkills: options.manualSkills,
+          }),
+        ...(options?.reasoningOverride != null && {
+          reasoningOverride: options.reasoningOverride,
+        }),
+        ...(options?.front && { priority: true }),
+      };
+      jotaiStore.set(queuedMessagesByConvoId(queueKey), (prev) => insertQueuedMessage(prev, item));
+      if (options?.skipUsageMark !== true) {
+        markQueuedFilesUsage(options?.files);
+      }
+      if (!serverOwned || clientRequestId == null) {
+        return;
+      }
+      jotaiStore.set(pendingQueuedTurnEnqueueIdsByConvoId(queueKey), (previous) =>
+        previous.includes(clientRequestId) ? previous : [...previous, clientRequestId],
+      );
+      const serverFiles = toQueuedTurnFileRefs(item.files);
+      /** Commit the optimistic Recoil row before mutation callbacks can
+       * reconcile it. This also makes synchronous test/adaptor completions
+       * obey the same ordering as a real network response. */
+      queueMicrotask(() =>
+        enqueueAgentQueuedTurn(
+          {
+            conversationId,
+            clientRequestId,
             parentMessageId,
-            server: { status: 'sending' },
-          }),
-          ...((options?.expectedPredecessorCreatedAt ?? predecessorCreatedAt) != null && {
-            expectedPredecessorCreatedAt:
-              options?.expectedPredecessorCreatedAt ?? predecessorCreatedAt ?? undefined,
-          }),
-          ...(options?.files && options.files.length > 0 && { files: options.files }),
-          ...(options?.quotes && options.quotes.length > 0 && { quotes: options.quotes }),
-          ...(options?.manualSkills &&
-            options.manualSkills.length > 0 && {
-              manualSkills: options.manualSkills,
+            text: item.text,
+            ...(serverFiles != null && { files: serverFiles }),
+            ...(item.quotes != null && item.quotes.length > 0 && { quotes: item.quotes }),
+            ...(item.manualSkills != null &&
+              item.manualSkills.length > 0 && {
+                manualSkills: item.manualSkills,
+              }),
+            ...(codeApprovalMode != null && { codeApprovalMode }),
+            ...(item.reasoningOverride != null && {
+              reasoningOverride: item.reasoningOverride,
             }),
-          ...(options?.reasoningOverride != null && {
-            reasoningOverride: options.reasoningOverride,
-          }),
-          ...(options?.front && { priority: true }),
-        };
-        set(store.queuedMessagesByConvoId(queueKey), (prev) => insertQueuedMessage(prev, item));
-        if (options?.skipUsageMark !== true) {
-          markQueuedFilesUsage(options?.files);
-        }
-        if (!serverOwned || clientRequestId == null) {
-          return;
-        }
-        set(store.pendingQueuedTurnEnqueueIdsByConvoId(queueKey), (previous) =>
-          previous.includes(clientRequestId) ? previous : [...previous, clientRequestId],
-        );
-        const serverFiles = toQueuedTurnFileRefs(item.files);
-        /** Commit the optimistic Recoil row before mutation callbacks can
-         * reconcile it. This also makes synchronous test/adaptor completions
-         * obey the same ordering as a real network response. */
-        queueMicrotask(() =>
-          enqueueAgentQueuedTurn(
-            {
-              conversationId,
-              clientRequestId,
-              parentMessageId,
-              text: item.text,
-              ...(serverFiles != null && { files: serverFiles }),
-              ...(item.quotes != null && item.quotes.length > 0 && { quotes: item.quotes }),
-              ...(item.manualSkills != null &&
-                item.manualSkills.length > 0 && {
-                  manualSkills: item.manualSkills,
-                }),
-              ...(codeApprovalMode != null && { codeApprovalMode }),
-              ...(item.reasoningOverride != null && {
-                reasoningOverride: item.reasoningOverride,
-              }),
-              ...(item.priority === true && { priority: true }),
-              ...(item.expectedPredecessorCreatedAt != null && {
-                expectedPredecessorCreatedAt: item.expectedPredecessorCreatedAt,
-              }),
+            ...(item.priority === true && { priority: true }),
+            ...(item.expectedPredecessorCreatedAt != null && {
+              expectedPredecessorCreatedAt: item.expectedPredecessorCreatedAt,
+            }),
+          },
+          {
+            onSuccess: (receipt) => {
+              applyQueuedTurnReceipts([receipt], 'enqueue');
             },
-            {
-              onSuccess: (receipt) => {
-                applyQueuedTurnReceipts([receipt], 'enqueue');
-              },
-              onError: (error) => {
-                if (finishQueuedTurnEnqueue(clientRequestId)) {
-                  return;
+            onError: (error) => {
+              if (finishQueuedTurnEnqueue(clientRequestId)) {
+                return;
+              }
+              updateQueuedMessage(item.id, (current) => {
+                if (isDefiniteQueuedTurnsUnsupported(error)) {
+                  const {
+                    server: _server,
+                    parentMessageId: _parentMessageId,
+                    clientRequestId: fallbackClientRequestId,
+                    ...legacy
+                  } = current;
+                  return {
+                    ...legacy,
+                    ...(!generatedClientRequestId && fallbackClientRequestId != null
+                      ? { clientRequestId: fallbackClientRequestId }
+                      : {}),
+                  };
                 }
-                updateQueuedMessage(item.id, (current) => {
-                  if (isDefiniteQueuedTurnsUnsupported(error)) {
-                    const {
-                      server: _server,
-                      parentMessageId: _parentMessageId,
-                      clientRequestId: fallbackClientRequestId,
-                      ...legacy
-                    } = current;
-                    return {
-                      ...legacy,
-                      ...(!generatedClientRequestId && fallbackClientRequestId != null
-                        ? { clientRequestId: fallbackClientRequestId }
-                        : {}),
-                    };
-                  }
-                  if (!isDefiniteQueuedTurnRejection(error)) {
-                    return {
-                      ...current,
-                      server: {
-                        ...current.server,
-                        status: 'uncertain',
-                        uncertainSince: current.server?.uncertainSince ?? Date.now(),
-                      },
-                    };
-                  }
-                  const code = getSteerErrorCode(error);
+                if (!isDefiniteQueuedTurnRejection(error)) {
                   return {
                     ...current,
                     server: {
                       ...current.server,
-                      status: 'rejected',
-                      ...(code != null && { errorCode: code }),
+                      status: 'uncertain',
+                      uncertainSince: current.server?.uncertainSince ?? Date.now(),
                     },
                   };
-                });
-              },
+                }
+                const code = getSteerErrorCode(error);
+                return {
+                  ...current,
+                  server: {
+                    ...current.server,
+                    status: 'rejected',
+                    ...(code != null && { errorCode: code }),
+                  },
+                };
+              });
             },
-          ),
-        );
-      },
+          },
+        ),
+      );
+    },
     [
       queueKey,
       conversationId,
@@ -1278,6 +1273,7 @@ export default function useSteering({
       applyQueuedTurnReceipts,
       finishQueuedTurnEnqueue,
       updateQueuedMessage,
+      jotaiStore,
     ],
   );
 
@@ -1427,14 +1423,13 @@ export default function useSteering({
      would restore text the user already sent. Only autosave knows whether this
      composer is parked on the pane's pending key or on the conversation key, so
      the clear belongs there rather than being recomputed here. */
-  const removeQueued = useRecoilCallback(
-    ({ set }) =>
-      (id: string) => {
-        set(store.queuedMessagesByConvoId(queueKey), (prev) =>
-          prev.filter((item) => item.id !== id),
-        );
-      },
-    [queueKey],
+  const removeQueued = useCallback(
+    (id: string) => {
+      jotaiStore.set(queuedMessagesByConvoId(queueKey), (prev) =>
+        prev.filter((item) => item.id !== id),
+      );
+    },
+    [queueKey, jotaiStore],
   );
 
   /** Keeps a row in the queue but out of the run-end drain, for words that
@@ -1444,25 +1439,24 @@ export default function useSteering({
     [updateQueuedMessage],
   );
 
-  const downgradeServerQueuedTurn = useRecoilCallback(
-    ({ snapshot, set }) =>
-      (id: string): boolean => {
-        const queue = snapshot.getLoadable(store.queuedMessagesByConvoId(queueKey)).getValue();
-        let found = false;
-        const next = queue.map((item) => {
-          if (item.id !== id) {
-            return item;
-          }
-          found = true;
-          const { server: _server, parentMessageId: _parentMessageId, ...local } = item;
-          return local;
-        });
-        if (found) {
-          set(store.queuedMessagesByConvoId(queueKey), next);
+  const downgradeServerQueuedTurn = useCallback(
+    (id: string): boolean => {
+      const queue = jotaiStore.get(queuedMessagesByConvoId(queueKey));
+      let found = false;
+      const next = queue.map((item) => {
+        if (item.id !== id) {
+          return item;
         }
-        return found;
-      },
-    [queueKey],
+        found = true;
+        const { server: _server, parentMessageId: _parentMessageId, ...local } = item;
+        return local;
+      });
+      if (found) {
+        jotaiStore.set(queuedMessagesByConvoId(queueKey), next);
+      }
+      return found;
+    },
+    [queueKey, jotaiStore],
   );
 
   /**
@@ -1474,22 +1468,21 @@ export default function useSteering({
    * Addressed by id rather than by the index the caller is holding, which a
    * drain can invalidate between the drag starting and the drop landing.
    */
-  const reorderQueued = useRecoilCallback(
-    ({ set }) =>
-      (id: string, targetIndex: number) => {
-        set(store.queuedMessagesByConvoId(queueKey), (prev) => {
-          const from = prev.findIndex((item) => item.id === id);
-          const to = Math.min(Math.max(targetIndex, 0), prev.length - 1);
-          if (from === -1 || from === to) {
-            return prev;
-          }
-          const next = prev.slice();
-          const [moved] = next.splice(from, 1);
-          next.splice(to, 0, moved);
-          return next;
-        });
-      },
-    [queueKey],
+  const reorderQueued = useCallback(
+    (id: string, targetIndex: number) => {
+      jotaiStore.set(queuedMessagesByConvoId(queueKey), (prev) => {
+        const from = prev.findIndex((item) => item.id === id);
+        const to = Math.min(Math.max(targetIndex, 0), prev.length - 1);
+        if (from === -1 || from === to) {
+          return prev;
+        }
+        const next = prev.slice();
+        const [moved] = next.splice(from, 1);
+        next.splice(to, 0, moved);
+        return next;
+      });
+    },
+    [queueKey, jotaiStore],
   );
 
   /**
@@ -1497,26 +1490,25 @@ export default function useSteering({
    * Ids that have since drained are skipped rather than resurrected, and
    * anything queued mid-drag keeps its place at the back.
    */
-  const restoreQueuedOrder = useRecoilCallback(
-    ({ set }) =>
-      (ids: readonly string[]) => {
-        set(store.queuedMessagesByConvoId(queueKey), (prev) => {
-          const byId = new Map(prev.map((item) => [item.id, item]));
-          const restored: QueuedMessage[] = [];
-          for (const id of ids) {
-            const item = byId.get(id);
-            if (item != null) {
-              restored.push(item);
-              byId.delete(id);
-            }
+  const restoreQueuedOrder = useCallback(
+    (ids: readonly string[]) => {
+      jotaiStore.set(queuedMessagesByConvoId(queueKey), (prev) => {
+        const byId = new Map(prev.map((item) => [item.id, item]));
+        const restored: QueuedMessage[] = [];
+        for (const id of ids) {
+          const item = byId.get(id);
+          if (item != null) {
+            restored.push(item);
+            byId.delete(id);
           }
-          if (restored.length === 0) {
-            return prev;
-          }
-          return [...restored, ...byId.values()];
-        });
-      },
-    [queueKey],
+        }
+        if (restored.length === 0) {
+          return prev;
+        }
+        return [...restored, ...byId.values()];
+      });
+    },
+    [queueKey, jotaiStore],
   );
 
   /** Settle a queued row's terminal recovery source before an Edit/Remove.
@@ -1656,37 +1648,36 @@ export default function useSteering({
   /** Capture-then-remove, including the item's neighbours, so any refused send
    *  or rejected steer can restore the ORIGINAL item in place even if the run
    *  drains an adjacent entry while the request is in flight. */
-  const takeQueued = useRecoilCallback(
-    ({ snapshot, set }) =>
-      (id: string): QueuedMessageOrigin | undefined => {
-        const queue = snapshot.getLoadable(store.queuedMessagesByConvoId(queueKey)).getValue();
-        const index = queue.findIndex((item) => item.id === id);
-        if (index < 0) {
-          return undefined;
-        }
-        const item = queue[index];
-        let queuedOrigins = queuedOriginsRef.current.get(queueKey);
-        if (queuedOrigins == null) {
-          queuedOrigins = new Map();
-          queuedOriginsRef.current.set(queueKey, queuedOrigins);
-        }
-        let logicalQueue = queue;
-        for (const pendingOrigin of queuedOrigins.values()) {
-          logicalQueue = insertQueuedOrigin(logicalQueue, pendingOrigin);
-        }
-        const logicalIndex = logicalQueue.findIndex((queued) => queued.id === id);
-        const origin = {
-          item,
-          beforeIds: logicalQueue.slice(0, logicalIndex).map((queued) => queued.id),
-          afterIds: logicalQueue.slice(logicalIndex + 1).map((queued) => queued.id),
-        };
-        queuedOrigins.set(id, origin);
-        set(store.queuedMessagesByConvoId(queueKey), (prev) =>
-          prev.filter((item) => item.id !== id),
-        );
-        return origin;
-      },
-    [queueKey],
+  const takeQueued = useCallback(
+    (id: string): QueuedMessageOrigin | undefined => {
+      const queue = jotaiStore.get(queuedMessagesByConvoId(queueKey));
+      const index = queue.findIndex((item) => item.id === id);
+      if (index < 0) {
+        return undefined;
+      }
+      const item = queue[index];
+      let queuedOrigins = queuedOriginsRef.current.get(queueKey);
+      if (queuedOrigins == null) {
+        queuedOrigins = new Map();
+        queuedOriginsRef.current.set(queueKey, queuedOrigins);
+      }
+      let logicalQueue = queue;
+      for (const pendingOrigin of queuedOrigins.values()) {
+        logicalQueue = insertQueuedOrigin(logicalQueue, pendingOrigin);
+      }
+      const logicalIndex = logicalQueue.findIndex((queued) => queued.id === id);
+      const origin = {
+        item,
+        beforeIds: logicalQueue.slice(0, logicalIndex).map((queued) => queued.id),
+        afterIds: logicalQueue.slice(logicalIndex + 1).map((queued) => queued.id),
+      };
+      queuedOrigins.set(id, origin);
+      jotaiStore.set(queuedMessagesByConvoId(queueKey), (prev) =>
+        prev.filter((item) => item.id !== id),
+      );
+      return origin;
+    },
+    [queueKey, jotaiStore],
   );
 
   const releaseQueuedOrigin = useCallback(
@@ -1715,16 +1706,15 @@ export default function useSteering({
   /** Restore the exact item between its nearest surviving original neighbours,
    *  never duplicated. If every neighbour disappeared, newly front-prioritized
    *  entries stay ahead while ordinary entries created later stay behind. */
-  const restoreQueued = useRecoilCallback(
-    ({ set }) =>
-      (origin: QueuedMessageOrigin) => {
-        releaseQueuedOrigin(origin);
-        set(store.queuedMessagesByConvoId(queueKey), (prev) =>
-          canRestoreRecovery(jotaiStore.get(recoveryDispositionsFamily(queueKey)), origin.item)
-            ? insertQueuedOrigin(prev, origin)
-            : prev,
-        );
-      },
+  const restoreQueued = useCallback(
+    (origin: QueuedMessageOrigin) => {
+      releaseQueuedOrigin(origin);
+      jotaiStore.set(queuedMessagesByConvoId(queueKey), (prev) =>
+        canRestoreRecovery(jotaiStore.get(recoveryDispositionsFamily(queueKey)), origin.item)
+          ? insertQueuedOrigin(prev, origin)
+          : prev,
+      );
+    },
     [queueKey, releaseQueuedOrigin, jotaiStore],
   );
 
@@ -1739,17 +1729,16 @@ export default function useSteering({
    * then only inspects the active one's queue; this item would never be looked
    * at. Park ours alongside it.
    */
-  const rearmDrain = useRecoilCallback(
-    ({ snapshot, set }) =>
-      (convoId: string, end: RunEnd) => {
-        const indexArmed = snapshot.getLoadable(store.runEndByIndex(index)).getValue();
-        const parkedArmed = snapshot.getLoadable(store.pendingRunEndByConvoId(convoId)).getValue();
-        if (isSameRunEpoch(indexArmed, end) || isSameRunEpoch(parkedArmed, end)) {
-          return;
-        }
-        set(store.pendingRunEndByConvoId(convoId), end);
-      },
-    [index],
+  const rearmDrain = useCallback(
+    (convoId: string, end: RunEnd) => {
+      const indexArmed = jotaiStore.get(runEndByIndex(index));
+      const parkedArmed = jotaiStore.get(pendingRunEndByConvoId(convoId));
+      if (isSameRunEpoch(indexArmed, end) || isSameRunEpoch(parkedArmed, end)) {
+        return;
+      }
+      jotaiStore.set(pendingRunEndByConvoId(convoId), end);
+    },
+    [index, jotaiStore],
   );
 
   /**
@@ -1801,19 +1790,15 @@ export default function useSteering({
     [conversationId, convertSteersToQueued, rewakeDrain],
   );
 
-  const armDrainAfterAbort = useRecoilCallback(
-    ({ set }) =>
-      () => {
-        if (activeGenerationCreatedAt == null) {
-          return;
-        }
-        set(store.drainAfterAbortByIndex(index), {
-          conversationId: queueKey,
-          generationCreatedAt: activeGenerationCreatedAt,
-        });
-      },
-    [index, queueKey, activeGenerationCreatedAt],
-  );
+  const armDrainAfterAbort = useCallback(() => {
+    if (activeGenerationCreatedAt == null) {
+      return;
+    }
+    jotaiStore.set(drainAfterAbortByIndex(index), {
+      conversationId: queueKey,
+      generationCreatedAt: activeGenerationCreatedAt,
+    });
+  }, [index, queueKey, activeGenerationCreatedAt, jotaiStore]);
 
   /** POSTs a steer (text + files + quotes; the server merges the quotes into
    *  the model-bound turn at the injection boundary). `context` doubles as the

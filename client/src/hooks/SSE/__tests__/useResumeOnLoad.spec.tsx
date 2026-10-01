@@ -9,6 +9,7 @@ import type { ReactNode } from 'react';
 import type { PendingSteer, QueuedMessage } from '~/store/families';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/store/queue';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import useResumeOnLoad from '../useResumeOnLoad';
@@ -167,7 +168,7 @@ function renderUseResumeOnLoad({
     return null;
   };
   const QueuedMessagesProbe = () => {
-    const queued = useRecoilValue(store.queuedMessagesByConvoId(conversationId));
+    const queued = useAtomValue(queuedMessagesByConvoId(conversationId));
     onQueuedMessages?.(queued);
     return null;
   };
@@ -208,6 +209,8 @@ function renderUseResumeOnLoad({
     ),
   };
 }
+
+beforeEach(() => resetQueueFamilies());
 
 describe('useResumeOnLoad', () => {
   beforeEach(() => {

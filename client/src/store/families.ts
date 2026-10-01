@@ -472,16 +472,6 @@ export type QueuedMessageOrigin = {
   afterIds: string[];
 };
 
-/**
- * Per-conversation client-side queue of follow-up messages. Drained one per
- * run completion by `useQueueDrain` (each dequeued message starts a normal
- * turn whose own final event drains the next).
- */
-const queuedMessagesByConvoId = atomFamily<QueuedMessage[], string>({
-  key: 'queuedMessagesByConvoId',
-  default: [],
-});
-
 export type SettledQueuedTurnReceipt = {
   clientRequestId: string;
   status: 'admitted' | 'admitted_pending_boundary' | 'indeterminate' | 'cancelled' | 'dead';
@@ -489,21 +479,6 @@ export type SettledQueuedTurnReceipt = {
   rootPredecessor?: true;
   boundaryConsumed?: boolean;
 };
-
-/** Monotonic client knowledge of terminal server queue receipts. Admission
- * records preserve boundary multiplicity by request identity. Other terminal
- * records exist only while their original enqueue callback is outstanding. */
-const settledQueuedTurnReceiptsByConvoId = atomFamily<SettledQueuedTurnReceipt[], string>({
-  key: 'settledQueuedTurnReceiptsByConvoId',
-  default: [],
-});
-
-/** Enqueue callbacks that can still race newer GET/cancellation evidence.
- * Entries retire as soon as that one callback settles. */
-const pendingQueuedTurnEnqueueIdsByConvoId = atomFamily<string[], string>({
-  key: 'pendingQueuedTurnEnqueueIdsByConvoId',
-  default: [],
-});
 
 /**
  * One-shot run-termination signal written by the SSE final/error handlers and
@@ -526,82 +501,10 @@ export type RunEnd = {
   interruptArmed?: boolean;
 };
 
-/** A pane can receive A's terminal frame after the user has navigated to and
- * started B. Keep each terminal epoch until the queue drain has either parked
- * or consumed it; a single replaceable slot loses A when B finishes first. */
-const runEndsByIndex = atomFamily<RunEnd[], string | number>({
-  key: 'runEndsByIndex',
-  default: [],
-});
-
-/** Preserve the original nullable one-shot API for stream writers while the
- * backing state retains every not-yet-consumed terminal epoch. Writing null
- * consumes only the visible (oldest) signal. */
-const runEndByIndex = selectorFamily<RunEnd | null, string | number>({
-  key: 'runEndByIndex',
-  get:
-    (index) =>
-    ({ get }) =>
-      get(runEndsByIndex(index))[0] ?? null,
-  set:
-    (index) =>
-    ({ set }, value) => {
-      if (value instanceof DefaultValue) {
-        set(runEndsByIndex(index), []);
-        return;
-      }
-      if (value == null) {
-        set(runEndsByIndex(index), (prev) => prev.slice(1));
-        return;
-      }
-      set(runEndsByIndex(index), (prev) => [...prev, value]);
-    },
-});
-
-/** Foreign terminal epochs are moved off the shared pane immediately. This
- * per-conversation carrier is queued for the same reason as the pane carrier:
- * successive epochs cannot overwrite one another while the chat is hidden. */
-const pendingRunEndsByConvoId = atomFamily<RunEnd[], string>({
-  key: 'pendingRunEndsByConvoId',
-  default: [],
-});
-
-const pendingRunEndByConvoId = selectorFamily<RunEnd | null, string>({
-  key: 'pendingRunEndByConvoId',
-  get:
-    (conversationId) =>
-    ({ get }) =>
-      get(pendingRunEndsByConvoId(conversationId))[0] ?? null,
-  set:
-    (conversationId) =>
-    ({ set }, value) => {
-      if (value instanceof DefaultValue) {
-        set(pendingRunEndsByConvoId(conversationId), []);
-        return;
-      }
-      if (value == null) {
-        set(pendingRunEndsByConvoId(conversationId), (prev) => prev.slice(1));
-        return;
-      }
-      set(pendingRunEndsByConvoId(conversationId), (prev) => [...prev, value]);
-    },
-});
-
 export type DrainAfterAbort = {
   conversationId: string;
   generationCreatedAt: number;
 };
-
-/**
- * One-shot override armed by "interrupt & send": the next `aborted` run-end
- * for the exact conversation generation drains the queue exactly once (a
- * plain Stop press leaves queued chips for manual send). `false` remains the
- * clear value used by stream reconciliation paths.
- */
-const drainAfterAbortByIndex = atomFamily<DrainAfterAbort | false, string | number>({
-  key: 'drainAfterAbortByIndex',
-  default: false,
-});
 
 /**
  * Server steer ids whose `on_steer_applied` event already landed. The 202 ACK
@@ -807,12 +710,6 @@ export default {
   pendingManualSkillsByConvoId,
   pendingQuotesByConvoId,
   pendingSteersByConvoId,
-  queuedMessagesByConvoId,
-  settledQueuedTurnReceiptsByConvoId,
-  pendingQueuedTurnEnqueueIdsByConvoId,
-  runEndByIndex,
-  pendingRunEndByConvoId,
-  drainAfterAbortByIndex,
   appliedSteerIdsByConvoId,
   acceptedSteerClientIdsByConvoId,
   activeGenerationCreatedAtByConvoId,

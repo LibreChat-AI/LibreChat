@@ -18,6 +18,7 @@ import { claimQueuedIntent, releaseQueuedIntent, hasQueuedIntent } from '~/utils
 import { useQueuedTurnPortal } from '~/components/Chat/Steering/QueuedTurnPortal';
 import { escalatingSteerFamily, revealedQueuedTurnFamily } from '~/store/steer';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
+import { queuedMessagesByConvoId } from '~/store/queue';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';
@@ -615,7 +616,7 @@ function Queue({
      shared constant id would duplicate the element and point every handle's
      `aria-describedby` at whichever copy the document happened to keep. */
   const reorderHintId = useId();
-  const queued = useRecoilValue(store.queuedMessagesByConvoId(steering.queueKey));
+  const queued = useAtomValue(queuedMessagesByConvoId(steering.queueKey));
   const pendingSteers = useRecoilValue(store.pendingSteersByConvoId(conversationId));
   const escalating = useAtomValue(escalatingSteerFamily(conversationId));
   /* Only one interrupt can be unresolved at a time: a second arm would seal the
