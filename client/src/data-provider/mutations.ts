@@ -1600,34 +1600,6 @@ export const useForkSharedConvoMutation = (
   );
 };
 
-export const useUploadConversationsMutation = (
-  _options?: t.MutationOptions<t.TImportResponse, FormData>,
-) => {
-  const queryClient = useQueryClient();
-  const { onSuccess, onError, onMutate } = _options || {};
-
-  return useMutation<t.TImportResponse, unknown, FormData>({
-    mutationFn: (formData: FormData) => dataService.importConversationsFile(formData),
-    onSuccess: (data, variables, context) => {
-      /* TODO: optimize to return imported conversations and add manually */
-      queryClient.invalidateQueries([QueryKeys.allConversations]);
-      /** An import can carry already-archived chats. */
-      queryClient.invalidateQueries([QueryKeys.archivedConversations]);
-      /** An imported chat can carry `pinned: true`. */
-      queryClient.invalidateQueries([QueryKeys.pinnedConversations]);
-      if (onSuccess) {
-        onSuccess(data, variables, context);
-      }
-    },
-    onError: (err, variables, context) => {
-      if (onError) {
-        onError(err, variables, context);
-      }
-    },
-    onMutate,
-  });
-};
-
 export const useUpdatePresetMutation = (
   options?: t.UpdatePresetOptions,
 ): UseMutationResult<

@@ -28,13 +28,11 @@ jest.mock(
 it('exposes extracted image text without changing ordinary image previews', () => {
   render(
     <Files
-      message={
-        {
-          files: [
-            { file_id: 'text-image', type: 'image/png', llmDeliveryPath: 'text' },
-            { file_id: 'image', type: 'image/png' },
-          ],
-        } as TMessage
+      files={
+        [
+          { file_id: 'text-image', type: 'image/png', llmDeliveryPath: 'text' },
+          { file_id: 'image', type: 'image/png' },
+        ] as TMessage['files']
       }
     />,
   );

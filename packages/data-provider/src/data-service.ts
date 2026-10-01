@@ -870,6 +870,33 @@ export const importConversationsFile = (data: FormData): Promise<t.TImportRespon
   return request.postMultiPart(endpoints.importConversation(), data);
 };
 
+/**
+ * Confirms an inspected import job and starts running it in the background.
+ *
+ * @param jobId - The id of the job to start.
+ */
+export const startImportJob = (jobId: string): Promise<{ jobId: string }> => {
+  return request.post(endpoints.startImportJob(jobId), {});
+};
+
+/**
+ * Fetches the status of an import job.
+ *
+ * @param jobId - The id of the job to fetch.
+ */
+export const getImportJob = (jobId: string): Promise<t.TImportJob> => {
+  return request.get(endpoints.importJob(jobId));
+};
+
+/**
+ * Cancels an in-progress import job.
+ *
+ * @param jobId - The id of the job to cancel.
+ */
+export const cancelImportJob = (jobId: string): Promise<{ jobId: string }> => {
+  return request.delete(endpoints.importJob(jobId));
+};
+
 export const uploadAvatar = (data: FormData): Promise<f.AvatarUploadResponse> => {
   return request.postMultiPart(endpoints.avatar(), data);
 };

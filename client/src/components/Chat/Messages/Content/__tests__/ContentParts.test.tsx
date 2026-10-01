@@ -124,6 +124,19 @@ jest.mock('../Container', () => ({
   ),
 }));
 
+jest.mock('../Files', () => ({
+  __esModule: true,
+  default: ({ files }: { files?: Array<{ file_id: string; filename?: string }> }) => (
+    <>
+      {(files ?? []).map((file) => (
+        <div key={file.file_id} data-testid="content-file">
+          {file.filename}
+        </div>
+      ))}
+    </>
+  ),
+}));
+
 jest.mock('../Part', () => {
   const { useMessageContext } = jest.requireActual<typeof import('~/Providers/MessageContext')>(
     '~/Providers/MessageContext',
@@ -1005,5 +1018,124 @@ describe('ContentParts: settled content identity across compaction', () => {
       'data-animate-entrance',
       'true',
     );
+  });
+});
+
+describe('ContentParts: message files', () => {
+  const pdf = {
+    file_id: 'f1',
+    filename: 'report.pdf',
+    filepath: '/uploads/report.pdf',
+    type: 'application/pdf',
+  };
+  const png = {
+    file_id: 'f2',
+    filename: 'shot.png',
+    filepath: '/uploads/shot.png',
+    type: 'image/png',
+  };
+
+  /** `Container` is only reached by messages with no content at all, so an
+   * assistant turn carrying both reasoning and a generated file dropped the
+   * file entirely before this slot existed. */
+  it('renders a non-image file once alongside content parts', () => {
+    render(
+      <ContentParts
+        {...baseProps}
+        content={[{ type: ContentTypes.TEXT, text: 'hi' } as TMessageContentParts]}
+        files={[pdf]}
+      />,
+    );
+
+    expect(screen.getAllByTestId('content-file')).toHaveLength(1);
+    expect(screen.getByTestId('content-file')).toHaveTextContent('report.pdf');
+  });
+
+  /** Images already render as `image_file` parts; showing them here too would
+   * duplicate every generated image in an imported conversation. */
+  it('leaves image files to their image_file parts', () => {
+    render(
+      <ContentParts
+        {...baseProps}
+        content={[{ type: ContentTypes.TEXT, text: 'hi' } as TMessageContentParts]}
+        files={[png]}
+      />,
+    );
+
+    expect(screen.queryByTestId('content-file')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing extra when the message has no files', () => {
+    render(
+      <ContentParts
+        {...baseProps}
+        content={[{ type: ContentTypes.TEXT, text: 'hi' } as TMessageContentParts]}
+      />,
+    );
+
+    expect(screen.queryByTestId('content-file')).not.toBeInTheDocument();
+  });
+
+  /** The parallel and edit branches return before the sequential body, so each
+   * one has to render the slot itself or it silently drops the file. */
+  it('renders the file on the parallel-content path', () => {
+    render(
+      <ContentParts
+        {...baseProps}
+        content={[
+          { type: ContentTypes.TEXT, text: 'a', groupId: 'g1' } as unknown as TMessageContentParts,
+        ]}
+        files={[pdf]}
+      />,
+    );
+
+    expect(screen.getByTestId('parallel-renderer')).toBeInTheDocument();
+    expect(screen.getAllByTestId('content-file')).toHaveLength(1);
+  });
+
+  it('renders the file once when completed activity phases segment the content', () => {
+    const phase = {
+      type: ContentTypes.ACTIVITY_LABEL,
+      [ContentTypes.ACTIVITY_LABEL]: 'Research',
+      activity_label_type: 'phase',
+      activity_start_index: 0,
+      activity_count: 1,
+      pending: false,
+    } as unknown as TMessageContentParts;
+
+    render(
+      <ContentParts
+        {...baseProps}
+        content={[
+          { type: ContentTypes.TEXT, text: 'working' } as TMessageContentParts,
+          phase,
+          { type: ContentTypes.TEXT, text: 'done' } as TMessageContentParts,
+        ]}
+        files={[pdf]}
+      />,
+    );
+
+    expect(screen.getByTestId('activity-phase-group')).toBeInTheDocument();
+    expect(screen.getAllByTestId('content-file')).toHaveLength(1);
+  });
+
+  it('renders the file exactly once in edit mode, across several editable parts', () => {
+    render(
+      <ContentParts
+        {...baseProps}
+        edit
+        enterEdit={() => undefined}
+        setSiblingIdx={() => undefined}
+        siblingIdx={0}
+        content={[
+          { type: ContentTypes.THINK, think: 'reasoning' } as unknown as TMessageContentParts,
+          { type: ContentTypes.TEXT, text: 'answer' } as TMessageContentParts,
+        ]}
+        files={[pdf]}
+      />,
+    );
+
+    expect(screen.getAllByTestId('edit-text-part')).toHaveLength(2);
+    expect(screen.getAllByTestId('content-file')).toHaveLength(1);
   });
 });

@@ -400,6 +400,14 @@ const convoSchema: Schema<IConversation> = new Schema(
     lastSeenAt: {
       type: Date,
     },
+    importedFrom: {
+      type: {
+        source: { type: String, required: true },
+        externalId: { type: String, required: true },
+      },
+      default: undefined,
+      _id: false,
+    },
   },
   { timestamps: true },
 );
@@ -440,6 +448,10 @@ convoSchema.index({ user: 1, pinned: 1, updatedAt: -1, _id: -1 });
  *  `updatedAt` indexes above can serve them: a compound index only provides the sort when the
  *  keys before it are pinned by equality, and those two pin `chatProjectId` and `pinned`. */
 convoSchema.index({ user: 1, updatedAt: -1, _id: -1 });
+convoSchema.index(
+  { user: 1, 'importedFrom.source': 1, 'importedFrom.externalId': 1 },
+  { partialFilterExpression: { 'importedFrom.source': { $exists: true } } },
+);
 
 convoSchema.index({ user: 1, isTemporary: 1, expiredAt: 1 });
 /** Owner-scoped child-thread cascade lookup used when a parent is deleted. */

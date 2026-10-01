@@ -164,6 +164,12 @@ export const deleteAllConversation = () => `${conversationsRoot}/all`;
 
 export const importConversation = () => `${conversationsRoot}/import`;
 
+export const importJob = (jobId: string) =>
+  `${conversationsRoot}/import/jobs/${encodeURIComponent(jobId)}`;
+
+export const startImportJob = (jobId: string) =>
+  `${conversationsRoot}/import/jobs/${encodeURIComponent(jobId)}/start`;
+
 export const forkConversation = () => `${conversationsRoot}/fork`;
 
 export const duplicateConversation = () => `${conversationsRoot}/duplicate`;

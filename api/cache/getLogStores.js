@@ -7,6 +7,7 @@ const {
   sessionCache,
   standardCache,
   violationCache,
+  importJobsCache,
   userPrincipalsCache,
   registerShutdownTask,
 } = require('@librechat/api');
@@ -74,6 +75,7 @@ const namespaces = {
     Time.THIRTY_SECONDS,
   ),
   [CacheKeys.PASSKEY_CHALLENGE]: standardCache(CacheKeys.PASSKEY_CHALLENGE, Time.FIVE_MINUTES),
+  [CacheKeys.IMPORT_JOBS]: importJobsCache(),
 };
 
 /**

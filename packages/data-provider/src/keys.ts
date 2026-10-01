@@ -109,6 +109,8 @@ export enum QueryKeys {
   agentQueuedTurns = 'agentQueuedTurns',
   /* Combined Pinned-section display order (favorites + pinned chats) */
   pinnedOrder = 'pinnedOrder',
+  /* Import jobs */
+  importJob = 'importJob',
 }
 
 // Dynamic query keys that require parameters
