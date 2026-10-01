@@ -82,7 +82,6 @@ import {
   streamStatusQueryKey,
   generationProtocolHeaders,
   getGenerationProtocolVersion,
-  postGenerationRequest,
   supportsGenerationProtocolV2,
   GENERATION_PROTOCOL_VERSION,
 } from '~/data-provider';
@@ -96,10 +95,10 @@ import useEventHandlers, {
   keepLocalCodeApprovalMode,
 } from './useEventHandlers';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { useChatTransport } from '~/Providers/ChatTransportContext';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { liveAppliedSteerIdsAtom } from '~/store/steer';
 import { useAuthContext } from '~/hooks/AuthContext';
-import { createSSETransport } from './transport';
 import { useFileMapContext } from '~/Providers';
 import useUsageHandler from './useUsageHandler';
 import useLocalize from '~/hooks/useLocalize';
@@ -898,6 +897,7 @@ export default function useResumableSSE(
   const setActiveRunId = useSetRecoilState(store.activeRunFamily(runIndex));
 
   const { token, isAuthenticated } = useAuthContext();
+  const transport = useChatTransport();
   const fileMap = useFileMapContext();
   const fileMapRef = useRef(fileMap);
   fileMapRef.current = fileMap;
@@ -3906,7 +3906,7 @@ export default function useResumableSSE(
         );
       };
 
-      connection = createSSETransport({ token }).reconnectToStream(
+      connection = transport.stream({ token }).reconnectToStream(
         { url, headers: generationProtocolHeaders() },
         {
           signal: streamController.signal,
@@ -3954,6 +3954,7 @@ export default function useResumableSSE(
       setConversation,
       runIndex,
       token,
+      transport,
       setAbortScroll,
       setActiveRunId,
       setShowStopButton,
@@ -4004,7 +4005,7 @@ export default function useResumableSSE(
 
   /**
    * Start generation (POST request that returns streamId)
-   * Uses the generation protocol request wrapper, including auth refresh.
+   * Posts through the host transport, which owns auth refresh.
    * Retries transient network failures and startup readiness responses.
    * Readiness retries honor Retry-After until cleanup or the readiness window expires.
    */
@@ -4047,7 +4048,7 @@ export default function useResumableSSE(
         }
         requestAttempts += 1;
         try {
-          const data = await postGenerationRequest<unknown>(url, payload, { signal });
+          const data = await transport.start({ server: url, payload }, { signal });
           if (signal?.aborted) {
             return null;
           }
@@ -4248,6 +4249,7 @@ export default function useResumableSSE(
       setIsSubmitting,
       setShowStopButton,
       setSubmission,
+      transport,
     ],
   );
 
