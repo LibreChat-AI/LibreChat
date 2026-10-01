@@ -80,6 +80,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-border-medium-alt': '205 205 205', // #cdcdcd (gray-300)
   'rgb-border-heavy': '153 150 150', // #999696 (gray-400)
   'rgb-border-xheavy': '89 89 89', // #595959 (gray-500)
+  'rgb-drawer-edge': '247 247 248', // #f7f7f8 (gray-50, the drawer's own fill)
   'rgb-border-destructive': '220 38 38', // #dc2626 (red-600)
   'rgb-border-control': '227 227 227', // #e3e3e3 (gray-200), the stock field edge
   'rgb-border-field-focus': '33 33 33', // #212121 (gray-800, matching focus-control)

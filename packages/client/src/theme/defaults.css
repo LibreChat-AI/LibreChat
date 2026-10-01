@@ -151,6 +151,8 @@ html {
   --border-heavy-alpha: 1;
   --border-xheavy: var(--gray-500);
   --border-xheavy-alpha: 1;
+  /* The drawer's own fill: the scrim separates it in light. */
+  --drawer-edge: var(--surface-primary-alt);
   --border-destructive: var(--red-600);
   --border-control: var(--gray-200);
   --border-field-focus: var(--focus-control);
@@ -394,6 +396,8 @@ html {
   --border-medium: var(--gray-650);
   --border-heavy: var(--gray-500);
   --border-xheavy: var(--gray-400);
+  /* Dark draws a visible edge: the scrim and the drawer are both near-black. */
+  --drawer-edge: var(--border-xheavy);
   --border-destructive: var(--red-500);
   --border-control: var(--gray-800);
   --border-field-focus: var(--focus-control);

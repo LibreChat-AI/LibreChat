@@ -1035,7 +1035,7 @@
   },
   "client/src/components/Insights/InsightsView.tsx": {
     "shadcn/no-restyle": {
-      "count": 32
+      "count": 30
     }
   },
   "client/src/components/MCP/CustomUserVarsSection.tsx": {
@@ -2059,9 +2059,6 @@
   },
   "client/src/components/Web/Sources.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-raw-colors": {
       "count": 1
     },
     "shadcn/no-restyle": {
