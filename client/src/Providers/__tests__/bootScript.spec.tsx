@@ -131,6 +131,18 @@ describe('index.html deployment theme boot script', () => {
     expect(root().dataset.theme).toBe('acme');
   });
 
+  it('keeps a cached surface that is not an RGB triple out of the shell stylesheet', () => {
+    localStorage.setItem('color-theme', 'dark');
+    const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
+    entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
+      name === '--surface-primary-alt' ? [name, '0 0 0;}</style><b>x'] : [name, value],
+    );
+    writeThemeCache(entry);
+    boot();
+    expect(document.head.textContent).toContain('background-color: #0d0d0d');
+    expect(document.head.textContent).not.toContain('</style>');
+  });
+
   it('paints the stock shell for a corrupt entry', () => {
     localStorage.setItem('color-theme', 'dark');
     localStorage.setItem('deployment-theme', '{not json');
