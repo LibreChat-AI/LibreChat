@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useStore, useAtomValue } from 'jotai';
+import { useStore, useAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSetRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
 import {
@@ -43,7 +43,7 @@ import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { revealedQueuedTurnFamily } from '~/store/steer';
-import { resumeRequestAtom } from '~/hooks/Chat/resume';
+import { resumeRequestsAtom } from '~/hooks/Chat/resume';
 import { useFileMapContext } from '~/Providers';
 import store from '~/store';
 
@@ -1236,28 +1236,21 @@ export default function useResumeOnLoad(
    * An explicit `resumeStream` request takes the announcement's path: the
    * status read decides whether anything is running, and the effect above
    * builds the resume submission that `useResumableSSE` attaches through the
-   * host transport. A request made while this pane is already attached is
-   * answered by that attachment and changes nothing.
+   * host transport. The request is consumed either way: one made while this
+   * pane is already attached is answered by that attachment.
    */
-  const resumeRequest = useAtomValue(resumeRequestAtom);
-  const answeredResumeRequestRef = useRef<{ conversationId?: string; count: number }>({
-    conversationId,
-    count: resumeRequest.count,
-  });
+  const [resumeRequests, setResumeRequests] = useAtom(resumeRequestsAtom);
+  const resumeRequested = !!conversationId && resumeRequests.has(conversationId);
   useEffect(() => {
-    const answered = answeredResumeRequestRef.current;
-    if (answered.conversationId !== conversationId) {
-      answeredResumeRequestRef.current = { conversationId, count: resumeRequest.count };
+    if (!resumeRequested || !conversationId) {
       return;
     }
-    if (resumeRequest.count === answered.count) {
-      return;
-    }
-    answeredResumeRequestRef.current = { conversationId, count: resumeRequest.count };
-    if (resumeRequest.conversationId !== conversationId) {
-      return;
-    }
-    if (!resumableEnabled || !conversationId || conversationId === Constants.NEW_CONVO) {
+    setResumeRequests((pending) => {
+      const next = new Set(pending);
+      next.delete(conversationId);
+      return next;
+    });
+    if (!resumableEnabled || conversationId === Constants.NEW_CONVO) {
       return;
     }
     if (hasLiveSubmissionForThisConvo) {
@@ -1273,7 +1266,8 @@ export default function useResumeOnLoad(
     setExternalRunArm((arm) => arm + 1);
   }, [
     conversationId,
-    resumeRequest,
+    resumeRequested,
+    setResumeRequests,
     resumableEnabled,
     hasActiveSubmissionForThisConvo,
     hasLiveSubmissionForThisConvo,

@@ -23,7 +23,7 @@ import { isMemoryFailureOutput } from '~/components/Chat/Messages/Content/Parts/
 import { getToolMeta } from '~/components/Chat/Messages/Content/outcome';
 import { useChatContext } from '~/Providers/ChatContext';
 import { isEmptyContentPart } from '~/utils/messages';
-import { resumeRequestAtom } from './resume';
+import { resumeRequestsAtom } from './resume';
 import { mapAttachments } from '~/utils/map';
 
 /** AI SDK `ChatStatus`. */
@@ -68,8 +68,9 @@ export type UseChatHelpers = {
   /**
    * Reattaches this chat to its running generation, if the server has one. The request is
    * answered by the resume-on-load path the chat view mounts for its pane, which checks the
-   * stream status and attaches through the host transport. It resolves once requested, and does
-   * nothing for a chat that is new or already attached, or where no chat view is mounted.
+   * stream status and attaches through the host transport. It resolves once requested. It does
+   * nothing for a new chat or one already attached, and a request for a conversation no chat view
+   * shows waits until one does.
    */
   resumeStream: () => Promise<void>;
   /**
@@ -373,7 +374,9 @@ function useTurnActions(ask: ChatContract['ask'], id?: string) {
     if (!id || id === Constants.NEW_CONVO) {
       return;
     }
-    jotaiStore.set(resumeRequestAtom, ({ count }) => ({ conversationId: id, count: count + 1 }));
+    jotaiStore.set(resumeRequestsAtom, (pending) =>
+      pending.has(id) ? pending : new Set(pending).add(id),
+    );
   }, [id, jotaiStore]);
   return { sendMessage, resumeStream };
 }

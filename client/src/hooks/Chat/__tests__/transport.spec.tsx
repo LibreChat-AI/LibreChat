@@ -1,5 +1,5 @@
 import React from 'react';
-import { useAtomValue } from 'jotai';
+import { useAtomValue, getDefaultStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { QueryKeys, request } from 'librechat-data-provider';
@@ -26,6 +26,7 @@ import useSteerEscalate from '~/hooks/Chat/useSteerEscalate';
 import useResumableSSE from '~/hooks/SSE/useResumableSSE';
 import useResumeOnLoad from '~/hooks/SSE/useResumeOnLoad';
 import useChatHelpers from '~/hooks/Chat/useChatHelpers';
+import { resumeRequestsAtom } from '~/hooks/Chat/resume';
 import useSteering from '~/hooks/Chat/useSteering';
 import { useChat } from '~/hooks/Chat/facade';
 import useSSE from '~/hooks/SSE/useSSE';
@@ -610,6 +611,23 @@ describe('chat transport boundary', () => {
       await waitFor(() => expect(statusReads()).toBe(2));
       expect(fake.streams).toHaveLength(0);
       expect(result.current.status).toBe('ready');
+    });
+
+    it("answers its own conversation's request and leaves another pane's pending", async () => {
+      const store = getDefaultStore();
+      const fake = createFakeTransport();
+      const { result } = renderPane(fake.transport);
+      await waitFor(() => expect(statusReads()).toBe(1));
+
+      await act(async () => {
+        /** Another pane asks in the same tick, before any effect runs. */
+        store.set(resumeRequestsAtom, (pending) => new Set(pending).add('convo-2'));
+        await result.current.resumeStream();
+      });
+
+      await waitFor(() => expect(statusReads()).toBe(2));
+      expect([...store.get(resumeRequestsAtom)]).toEqual(['convo-2']);
+      store.set(resumeRequestsAtom, new Set<string>());
     });
 
     it('reports a reattached stream that fails as an error', async () => {

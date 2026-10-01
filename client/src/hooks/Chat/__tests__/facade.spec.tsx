@@ -7,7 +7,7 @@ import type { TConversation, TMessage, TMessageContentParts } from 'librechat-da
 import type { ChatContract } from '../contract';
 import { ChatContext } from '~/Providers/ChatContext';
 import { useChat, useChatActions } from '../facade';
-import { resumeRequestAtom } from '../resume';
+import { resumeRequestsAtom } from '../resume';
 
 const userMessage: TMessage = {
   messageId: 'user-1',
@@ -680,18 +680,18 @@ describe('useChat', () => {
 
   it('requests a resume of the chat it reads', async () => {
     const store = getDefaultStore();
-    const before = store.get(resumeRequestAtom).count;
+    store.set(resumeRequestsAtom, new Set(['convo-2']));
     const { result } = renderChat(createContract());
 
     await result.current.resumeStream();
     await result.current.resumeStream();
 
-    expect(store.get(resumeRequestAtom)).toEqual({ conversationId: 'convo-1', count: before + 2 });
+    expect([...store.get(resumeRequestsAtom)]).toEqual(['convo-2', 'convo-1']);
   });
 
   it('requests no resume for a chat that has no conversation yet', async () => {
     const store = getDefaultStore();
-    const before = store.get(resumeRequestAtom);
+    const before = store.get(resumeRequestsAtom);
     const { result } = renderChat(
       createContract({
         messagesKey: 'new',
@@ -701,7 +701,7 @@ describe('useChat', () => {
 
     await expect(result.current.resumeStream()).resolves.toBeUndefined();
     expect(result.current.id).toBe('new');
-    expect(store.get(resumeRequestAtom)).toBe(before);
+    expect(store.get(resumeRequestsAtom)).toBe(before);
   });
 
   it('writes UI messages back onto the stored messages', () => {
