@@ -48,20 +48,25 @@ async function openDrawer(page: Page, mode: Mode) {
   return drawer;
 }
 
+async function readEdge(page: Page, mode: Mode) {
+  const drawer = await openDrawer(page, mode);
+  return drawer.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return { width: style.borderRightWidth, color: style.borderRightColor };
+  });
+}
+
+/** Each tag is written out whole: the runner finds a scenario by its literal tag. */
 test.describe('mobile drawer edge role', () => {
-  for (const [mode, color] of [
-    ['light', 'rgb(200, 30, 40)'],
-    ['dark', 'rgb(30, 200, 40)'],
-  ] as const) {
-    test(`a theme that sets drawer-edge repaints the drawer edge in ${mode} @scenario:drawer-edge-follows-a-theme-${mode}`, async ({
-      page,
-    }) => {
-      const drawer = await openDrawer(page, mode);
-      const edge = await drawer.evaluate((node) => {
-        const style = getComputedStyle(node);
-        return { width: style.borderRightWidth, color: style.borderRightColor };
-      });
-      expect(edge).toEqual({ width: '1px', color });
-    });
-  }
+  test('a theme that sets drawer-edge repaints the drawer edge in light @scenario:drawer-edge-follows-a-theme-light', async ({
+    page,
+  }) => {
+    expect(await readEdge(page, 'light')).toEqual({ width: '1px', color: 'rgb(200, 30, 40)' });
+  });
+
+  test('a theme that sets drawer-edge repaints the drawer edge in dark @scenario:drawer-edge-follows-a-theme-dark', async ({
+    page,
+  }) => {
+    expect(await readEdge(page, 'dark')).toEqual({ width: '1px', color: 'rgb(30, 200, 40)' });
+  });
 });
