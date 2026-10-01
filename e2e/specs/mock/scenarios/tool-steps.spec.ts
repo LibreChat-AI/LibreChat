@@ -22,8 +22,7 @@ const uniqueLabel = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 /** The code-execution card's status toggle; a slow run appends its duration to the name. */
-const toolCard = (page: Page) =>
-  messagesView(page).getByRole('button', { name: /^Finished running/ });
+const toolCard = (page: Page) => messagesView(page).getByRole('button', { name: /^Ran command/ });
 const toolOutput = (page: Page) => messagesView(page).getByText(TOOL_OUTPUT, { exact: true });
 
 /** True when `first` sits before `second` in document order. */
@@ -65,5 +64,62 @@ test.describe('tool call steps', () => {
 
     await page.reload({ timeout: 10_000 });
     await expectOneToolCardBeforeReply(page, label);
+  });
+
+  test('a lone settled command opens its output without a click and reads Ran command @scenario:lone-tool-call-opens-and-reads-ran', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const label = uniqueLabel('lone');
+    await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    await enableCodeInterpreter(page);
+
+    const response = await sendMessageAndWaitForCompletion(page, `E2E_EXECUTE_CODE:${label}`);
+    expect(response.ok()).toBeTruthy();
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
+      timeout: 30_000,
+    });
+    await expect(toolCard(page)).toHaveCount(1, { timeout: 30_000 });
+    await expect(toolOutput(page)).toBeVisible();
+  });
+});
+
+test.describe('tool call groups', () => {
+  test.skip(({ isMobile }) => isMobile === true, 'composer MCP picker is desktop-only');
+
+  test('opening a group of two calls leaves each call collapsed @scenario:multi-call-group-keeps-calls-collapsed', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const label = uniqueLabel('pair');
+    await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+    /** No `activityLabel` here, so the group keeps its generic "Ran 2 actions" header. */
+    await selectMockEndpoint(page, { label: 'Mock Provider D', model: 'mock-model-d' });
+    await page.getByRole('button', { name: 'Attach and tools' }).click();
+    const server = page
+      .getByRole('dialog', { name: 'Attach and tools' })
+      .getByRole('button', { name: /^E2E Memory\b/ });
+    await server.click();
+    await expect(server).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Escape');
+
+    const response = await sendMessageAndWaitForCompletion(page, `E2E_ACTIVITY_REPLY:${label}`, {
+      timeout: 60_000,
+    });
+    expect(response.ok()).toBeTruthy();
+    await expect(messagesView(page).getByText(`E2E activity reply done ${label}`)).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const header = messagesView(page).getByRole('button', { name: /^Ran 2 actions/ });
+    await expect(header).toHaveAttribute('aria-expanded', 'false');
+    await header.click();
+    await expect(header).toHaveAttribute('aria-expanded', 'true');
+    const calls = messagesView(page).getByRole('button', { name: /^Ran remember_fact/ });
+    await expect(calls).toHaveCount(2);
+    for (const call of await calls.all()) {
+      await expect(call).toHaveAttribute('aria-expanded', 'false');
+    }
   });
 });

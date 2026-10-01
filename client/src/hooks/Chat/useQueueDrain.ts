@@ -1,10 +1,18 @@
-import { useRef, useEffect, useMemo } from 'react';
+import { useRef, useEffect, useMemo, useCallback } from 'react';
+import { useRecoilValue } from 'recoil';
 import { useAtomValue, useStore } from 'jotai';
-import { useRecoilValue, useRecoilCallback } from 'recoil';
 import { Constants, DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS } from 'librechat-data-provider';
-import type { DrainAfterAbort, QueuedMessage, QueuedMessageOrigin, RunEnd } from '~/store/families';
+import type { DrainAfterAbort, QueuedMessage, QueuedMessageOrigin, RunEnd } from './queue';
 import type { QueueSendLock } from '~/utils/queueIntent';
 import type { TAskFunction } from '~/common';
+import {
+  settledQueuedTurnReceiptsByConvoId,
+  pendingQueuedTurnEnqueueIdsByConvoId,
+  pendingRunEndByConvoId,
+  queuedMessagesByConvoId,
+  drainAfterAbortByIndex,
+  runEndByIndex,
+} from '~/hooks/Chat/queue';
 import {
   recoveryDispositionsFamily,
   recoveryDisposition,
@@ -87,9 +95,9 @@ export default function useQueueDrain(
   revealQueuedTurn?: (item: QueuedMessage, end: RunEnd) => void,
 ) {
   const jotaiStore = useStore();
-  const runEnd = useRecoilValue(store.runEndByIndex(index));
-  const parkedRunEnd = useRecoilValue(
-    store.pendingRunEndByConvoId(activeConversationId ?? Constants.NEW_CONVO),
+  const runEnd = useAtomValue(runEndByIndex(index));
+  const parkedRunEnd = useAtomValue(
+    pendingRunEndByConvoId(activeConversationId ?? Constants.NEW_CONVO),
   );
   const isSubmitting = useRecoilValue(store.isSubmittingFamily(index));
   /** Keyed by pane, because the contended resource is this pane's submission
@@ -101,19 +109,19 @@ export default function useQueueDrain(
   const { data: startupConfig } = useGetStartupConfig();
   const sendLockTimeoutMs =
     startupConfig?.interface?.queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
-  const ownQueue = useRecoilValue(
-    store.queuedMessagesByConvoId(activeConversationId ?? Constants.NEW_CONVO),
+  const ownQueue = useAtomValue(
+    queuedMessagesByConvoId(activeConversationId ?? Constants.NEW_CONVO),
   );
   /** `drainNext` merges this in, and it outlives the URL update: items queued
    *  during the first turn stay keyed here until that run ends. Renewing only
    *  the active id would skip them for the whole of that run. */
-  const newConvoQueue = useRecoilValue(store.queuedMessagesByConvoId(Constants.NEW_CONVO));
+  const newConvoQueue = useAtomValue(queuedMessagesByConvoId(Constants.NEW_CONVO));
   /** Receipt settlement can consume the parked terminal boundary without
    * changing whether another server-owned row remains. Subscribe here so the
    * drain effect observes that durable transition instead of reading it only
-   * through a callback snapshot whose other dependencies stayed unchanged. */
-  const settledQueuedTurnReceipts = useRecoilValue(
-    store.settledQueuedTurnReceiptsByConvoId(activeConversationId ?? Constants.NEW_CONVO),
+   * through a callback read whose other dependencies stayed unchanged. */
+  const settledQueuedTurnReceipts = useAtomValue(
+    settledQueuedTurnReceiptsByConvoId(activeConversationId ?? Constants.NEW_CONVO),
   );
   const hasServerOwnedQueue = [...ownQueue, ...newConvoQueue].some((item) => item.server != null);
   // A held head can leave the queue without changing the terminal signal.
@@ -176,252 +184,222 @@ export default function useQueueDrain(
    * waiting for it to become idle lets its own terminal signal replace the
    * first one. Matching interrupt intent travels with the exact terminal
    * epoch, while unrelated intent remains armed for its owner. */
-  const parkForeignRunEnd = useRecoilCallback(
-    ({ snapshot, set }) =>
-      (): boolean => {
-        const end = snapshot.getLoadable(store.runEndByIndex(index)).getValue();
-        if (
-          end == null ||
-          end.conversationId == null ||
-          end.conversationId === activeConversationId
-        ) {
-          return false;
-        }
-        const armed = snapshot.getLoadable(store.drainAfterAbortByIndex(index)).getValue();
-        const interruptArmed = matchesInterruptArm(armed, end);
-        if (interruptArmed) {
-          set(store.drainAfterAbortByIndex(index), false);
-        }
-        set(store.pendingRunEndByConvoId(end.conversationId), {
-          ...end,
-          ...((end.interruptArmed === true || interruptArmed) && {
-            interruptArmed: true,
-          }),
-        });
-        set(store.runEndByIndex(index), null);
-        return true;
-      },
-    [index, activeConversationId],
-  );
+  const parkForeignRunEnd = useCallback((): boolean => {
+    const end = jotaiStore.get(runEndByIndex(index));
+    if (end == null || end.conversationId == null || end.conversationId === activeConversationId) {
+      return false;
+    }
+    const armed = jotaiStore.get(drainAfterAbortByIndex(index));
+    const interruptArmed = matchesInterruptArm(armed, end);
+    if (interruptArmed) {
+      jotaiStore.set(drainAfterAbortByIndex(index), false);
+    }
+    jotaiStore.set(pendingRunEndByConvoId(end.conversationId), {
+      ...end,
+      ...((end.interruptArmed === true || interruptArmed) && {
+        interruptArmed: true,
+      }),
+    });
+    jotaiStore.set(runEndByIndex(index), null);
+    return true;
+  }, [index, activeConversationId, jotaiStore]);
 
-  // Fully synchronous reads (getLoadable): a useRecoilCallback snapshot is
-  // only guaranteed valid for the callback's synchronous execution, so no
-  // awaits may interleave with the reads.
-  const drainNext = useRecoilCallback(
-    ({ snapshot, set }) =>
-      ():
-        | {
-            kind: 'drain';
-            next: QueuedMessage;
-            conversationId: string;
-            queuedMessageOrigin: QueuedMessageOrigin;
-            expectedPredecessorCreatedAt?: number;
-          }
-        | { kind: 'reveal'; item: QueuedMessage; end: RunEnd }
-        | null => {
-        let end = snapshot.getLoadable(store.runEndByIndex(index)).getValue();
-        let fromParked = false;
-        if (
-          end != null &&
-          end.conversationId != null &&
-          end.conversationId !== activeConversationId
-        ) {
-          /**
-           * `ask` is the MOUNTED view's sender: draining another
-           * conversation's follow-up here would submit it into the wrong
-           * chat. Park the signal under ITS conversation (freeing the shared
-           * index slot so a later run cannot overwrite it) and drain when
-           * the user returns. The armed interrupt flag travels WITH the
-           * parked signal: leaving it on the index would let another run on
-           * this pane consume it (or drain the wrong conversation).
-           */
-          const armedNow = snapshot.getLoadable(store.drainAfterAbortByIndex(index)).getValue();
-          const interruptArmed = matchesInterruptArm(armedNow, end);
-          if (interruptArmed) {
-            set(store.drainAfterAbortByIndex(index), false);
-          }
-          set(store.pendingRunEndByConvoId(end.conversationId), {
-            ...end,
-            ...((end.interruptArmed === true || interruptArmed) && {
-              interruptArmed: true,
-            }),
-          });
-          set(store.runEndByIndex(index), null);
-          return null;
-        }
-        if (end == null && activeConversationId) {
-          const parked = snapshot
-            .getLoadable(store.pendingRunEndByConvoId(activeConversationId))
-            .getValue();
-          if (parked != null) {
-            end = parked;
-            fromParked = true;
-          }
-        }
-        if (end == null) {
-          return null;
-        }
-        const indexArmed = snapshot.getLoadable(store.drainAfterAbortByIndex(index)).getValue();
-        const matchingIndexArm = matchesInterruptArm(indexArmed, end);
-        const interruptArmed = matchingIndexArm || end.interruptArmed === true;
+  // Fully synchronous: every read and write below happens in one task, so no
+  // other writer can interleave between deciding and consuming the signal.
+  const drainNext = useCallback(():
+    | {
+        kind: 'drain';
+        next: QueuedMessage;
+        conversationId: string;
+        queuedMessageOrigin: QueuedMessageOrigin;
+        expectedPredecessorCreatedAt?: number;
+      }
+    | { kind: 'reveal'; item: QueuedMessage; end: RunEnd }
+    | null => {
+    let end = jotaiStore.get(runEndByIndex(index));
+    let fromParked = false;
+    if (end != null && end.conversationId != null && end.conversationId !== activeConversationId) {
+      /**
+       * `ask` is the MOUNTED view's sender: draining another
+       * conversation's follow-up here would submit it into the wrong
+       * chat. Park the signal under ITS conversation (freeing the shared
+       * index slot so a later run cannot overwrite it) and drain when
+       * the user returns. The armed interrupt flag travels WITH the
+       * parked signal: leaving it on the index would let another run on
+       * this pane consume it (or drain the wrong conversation).
+       */
+      const armedNow = jotaiStore.get(drainAfterAbortByIndex(index));
+      const interruptArmed = matchesInterruptArm(armedNow, end);
+      if (interruptArmed) {
+        jotaiStore.set(drainAfterAbortByIndex(index), false);
+      }
+      jotaiStore.set(pendingRunEndByConvoId(end.conversationId), {
+        ...end,
+        ...((end.interruptArmed === true || interruptArmed) && {
+          interruptArmed: true,
+        }),
+      });
+      jotaiStore.set(runEndByIndex(index), null);
+      return null;
+    }
+    if (end == null && activeConversationId) {
+      const parked = jotaiStore.get(pendingRunEndByConvoId(activeConversationId));
+      if (parked != null) {
+        end = parked;
+        fromParked = true;
+      }
+    }
+    if (end == null) {
+      return null;
+    }
+    const indexArmed = jotaiStore.get(drainAfterAbortByIndex(index));
+    const matchingIndexArm = matchesInterruptArm(indexArmed, end);
+    const interruptArmed = matchingIndexArm || end.interruptArmed === true;
 
-        const conversationId = end.conversationId;
-        if (!conversationId) {
-          return null;
-        }
+    const conversationId = end.conversationId;
+    if (!conversationId) {
+      return null;
+    }
 
-        const shouldMigrate =
-          end.startedAsNewConvo === true && conversationId !== Constants.NEW_CONVO;
-        const newConvoQueue = shouldMigrate
-          ? snapshot.getLoadable(store.queuedMessagesByConvoId(Constants.NEW_CONVO)).getValue()
-          : [];
-        const ownQueue = snapshot
-          .getLoadable(store.queuedMessagesByConvoId(conversationId))
-          .getValue();
-        /** Both queues are ordered independently, but migration crosses the
-         * key boundary: an interrupt queued under the resolved conversation
-         * must still outrank an ordinary follow-up captured under NEW_CONVO. */
-        const merged = shouldMigrate ? mergeQueuedMessages(newConvoQueue, ownQueue) : ownQueue;
+    const shouldMigrate = end.startedAsNewConvo === true && conversationId !== Constants.NEW_CONVO;
+    const newConvoQueue = shouldMigrate
+      ? jotaiStore.get(queuedMessagesByConvoId(Constants.NEW_CONVO))
+      : [];
+    const ownQueue = jotaiStore.get(queuedMessagesByConvoId(conversationId));
+    /** Both queues are ordered independently, but migration crosses the
+     * key boundary: an interrupt queued under the resolved conversation
+     * must still outrank an ordinary follow-up captured under NEW_CONVO. */
+    const merged = shouldMigrate ? mergeQueuedMessages(newConvoQueue, ownQueue) : ownQueue;
 
-        const shouldDrain = end.outcome === 'completed' || interruptArmed;
-        const settledReceipts = snapshot
-          .getLoadable(store.settledQueuedTurnReceiptsByConvoId(conversationId))
-          .getValue();
-        const pendingEnqueueIds = snapshot
-          .getLoadable(store.pendingQueuedTurnEnqueueIdsByConvoId(conversationId))
-          .getValue();
-        const consumedReceiptIndex = settledReceipts.findIndex(
-          (receipt) =>
+    const shouldDrain = end.outcome === 'completed' || interruptArmed;
+    const settledReceipts = jotaiStore.get(settledQueuedTurnReceiptsByConvoId(conversationId));
+    const pendingEnqueueIds = jotaiStore.get(pendingQueuedTurnEnqueueIdsByConvoId(conversationId));
+    const consumedReceiptIndex = settledReceipts.findIndex(
+      (receipt) =>
+        receipt.status === 'admitted' &&
+        receipt.boundaryConsumed !== true &&
+        end.generationCreatedAt != null &&
+        receipt.effectivePredecessorCreatedAt === end.generationCreatedAt,
+    );
+    const consumedByServerAdmission = consumedReceiptIndex >= 0;
+    const consumeEnd = () => {
+      if (fromParked && activeConversationId) {
+        jotaiStore.set(pendingRunEndByConvoId(activeConversationId), null);
+      } else {
+        jotaiStore.set(runEndByIndex(index), null);
+      }
+      if (matchingIndexArm) {
+        jotaiStore.set(drainAfterAbortByIndex(index), false);
+      }
+    };
+    if (consumedByServerAdmission) {
+      /** Admission consumed this terminal boundary on the server. A late
+       * client terminal observation cannot authorize a second successor. */
+      if (shouldMigrate && newConvoQueue.length > 0) {
+        jotaiStore.set(queuedMessagesByConvoId(Constants.NEW_CONVO), []);
+        jotaiStore.set(queuedMessagesByConvoId(conversationId), merged);
+      }
+      jotaiStore.set(settledQueuedTurnReceiptsByConvoId(conversationId), (previous) => {
+        let consumed = false;
+        return previous.flatMap((receipt) => {
+          if (
+            !consumed &&
             receipt.status === 'admitted' &&
             receipt.boundaryConsumed !== true &&
-            end.generationCreatedAt != null &&
-            receipt.effectivePredecessorCreatedAt === end.generationCreatedAt,
-        );
-        const consumedByServerAdmission = consumedReceiptIndex >= 0;
-        const consumeEnd = () => {
-          if (fromParked && activeConversationId) {
-            set(store.pendingRunEndByConvoId(activeConversationId), null);
-          } else {
-            set(store.runEndByIndex(index), null);
+            receipt.effectivePredecessorCreatedAt === end.generationCreatedAt
+          ) {
+            consumed = true;
+            return pendingEnqueueIds.includes(receipt.clientRequestId)
+              ? [{ ...receipt, boundaryConsumed: true }]
+              : [];
           }
-          if (matchingIndexArm) {
-            set(store.drainAfterAbortByIndex(index), false);
-          }
-        };
-        if (consumedByServerAdmission) {
-          /** Admission consumed this terminal boundary on the server. A late
-           * client terminal observation cannot authorize a second successor. */
-          if (shouldMigrate && newConvoQueue.length > 0) {
-            set(store.queuedMessagesByConvoId(Constants.NEW_CONVO), []);
-            set(store.queuedMessagesByConvoId(conversationId), merged);
-          }
-          set(store.settledQueuedTurnReceiptsByConvoId(conversationId), (previous) => {
-            let consumed = false;
-            return previous.flatMap((receipt) => {
-              if (
-                !consumed &&
-                receipt.status === 'admitted' &&
-                receipt.boundaryConsumed !== true &&
-                receipt.effectivePredecessorCreatedAt === end.generationCreatedAt
-              ) {
-                consumed = true;
-                return pendingEnqueueIds.includes(receipt.clientRequestId)
-                  ? [{ ...receipt, boundaryConsumed: true }]
-                  : [];
-              }
-              return [receipt];
-            });
-          });
-          consumeEnd();
-          return null;
-        }
-        /** A server-owned Agent row means the backend owns the next fresh-turn
-         * admission. Do not let a legacy/recovered local row race or overtake
-         * it. Keep this terminal boundary available until the authoritative
-         * queue snapshot proves whether a server-started successor now owns it. */
-        const serverOwnsBoundary = merged.some((item) => item.server != null);
-        if (serverOwnsBoundary) {
-          /** Keep the one-shot terminal signal until the authoritative snapshot
-           * removes the server row. If it was admitted, its own later terminal
-           * signal orders the remaining local queue; if it was cancelled/dead,
-           * this signal still lets the legacy successor make progress. The
-           * head the server is about to admit can already be shown as the
-           * next user turn; the signal itself stays untouched. */
-          const reveal = selectQueuedTurnReveal(end, merged);
-          return reveal == null ? null : { kind: 'reveal', item: reveal, end };
-        }
+          return [receipt];
+        });
+      });
+      consumeEnd();
+      return null;
+    }
+    /** A server-owned Agent row means the backend owns the next fresh-turn
+     * admission. Do not let a legacy/recovered local row race or overtake
+     * it. Keep this terminal boundary available until the authoritative
+     * queue snapshot proves whether a server-started successor now owns it. */
+    const serverOwnsBoundary = merged.some((item) => item.server != null);
+    if (serverOwnsBoundary) {
+      /** Keep the one-shot terminal signal until the authoritative snapshot
+       * removes the server row. If it was admitted, its own later terminal
+       * signal orders the remaining local queue; if it was cancelled/dead,
+       * this signal still lets the legacy successor make progress. The
+       * head the server is about to admit can already be shown as the
+       * next user turn; the signal itself stays untouched. */
+      const reveal = selectQueuedTurnReveal(end, merged);
+      return reveal == null ? null : { kind: 'reveal', item: reveal, end };
+    }
 
-        const head = merged[0];
-        if (
-          shouldDrain &&
-          head != null &&
-          recoveryDisposition(jotaiStore.get(recoveryDispositionsFamily(conversationId)), head) !=
-            null
-        ) {
-          // The first row still owns this boundary. Keep it until dismissal, even when
-          // a later local row is immediately sendable; a user must choose its fate.
-          if (shouldMigrate && newConvoQueue.length > 0) {
-            set(store.queuedMessagesByConvoId(Constants.NEW_CONVO), []);
-            set(store.queuedMessagesByConvoId(conversationId), merged);
-          }
-          return null;
-        }
-        // Intent-held and explicitly refused rows are skipped by the redesigned rail.
-        consumeEnd();
+    const head = merged[0];
+    if (
+      shouldDrain &&
+      head != null &&
+      recoveryDisposition(jotaiStore.get(recoveryDispositionsFamily(conversationId)), head) != null
+    ) {
+      // The first row still owns this boundary. Keep it until dismissal, even when
+      // a later local row is immediately sendable; a user must choose its fate.
+      if (shouldMigrate && newConvoQueue.length > 0) {
+        jotaiStore.set(queuedMessagesByConvoId(Constants.NEW_CONVO), []);
+        jotaiStore.set(queuedMessagesByConvoId(conversationId), merged);
+      }
+      return null;
+    }
+    // Intent-held and explicitly refused rows are skipped by the redesigned rail.
+    consumeEnd();
 
-        /** A row the rail is mid-edit or mid-remove on is spoken for: its words
-         * are already on their way to the composer, and sending them from here
-         * would deliver the message the user is in the middle of taking back.
-         * A row swept in from a REJECTED steer is spoken for too: it carries
-         * words the server refused, and its failure surface offers Retry and
-         * "Send as new" precisely so the user chooses.
-         * Both are skipped rather than blocking the whole queue, so an
-         * untouched follow-up behind them still goes on this run end. */
-        const nextIndex = shouldDrain
-          ? merged.findIndex(
-              (item) =>
-                !hasQueuedIntent(item.id) &&
-                item.needsExplicitSend !== true &&
-                recoveryDisposition(
-                  jotaiStore.get(recoveryDispositionsFamily(conversationId)),
-                  item,
-                ) == null,
-            )
-          : -1;
-        const next = nextIndex >= 0 ? merged[nextIndex] : null;
-        const remainder = nextIndex >= 0 ? merged.filter((_, at) => at !== nextIndex) : merged;
+    /** A row the rail is mid-edit or mid-remove on is spoken for: its words
+     * are already on their way to the composer, and sending them from here
+     * would deliver the message the user is in the middle of taking back.
+     * A row swept in from a REJECTED steer is spoken for too: it carries
+     * words the server refused, and its failure surface offers Retry and
+     * "Send as new" precisely so the user chooses.
+     * Both are skipped rather than blocking the whole queue, so an
+     * untouched follow-up behind them still goes on this run end. */
+    const nextIndex = shouldDrain
+      ? merged.findIndex(
+          (item) =>
+            !hasQueuedIntent(item.id) &&
+            item.needsExplicitSend !== true &&
+            recoveryDisposition(jotaiStore.get(recoveryDispositionsFamily(conversationId)), item) ==
+              null,
+        )
+      : -1;
+    const next = nextIndex >= 0 ? merged[nextIndex] : null;
+    const remainder = nextIndex >= 0 ? merged.filter((_, at) => at !== nextIndex) : merged;
 
-        if (shouldMigrate && newConvoQueue.length > 0) {
-          set(store.queuedMessagesByConvoId(Constants.NEW_CONVO), []);
+    if (shouldMigrate && newConvoQueue.length > 0) {
+      jotaiStore.set(queuedMessagesByConvoId(Constants.NEW_CONVO), []);
+    }
+    if (remainder.length !== ownQueue.length || shouldMigrate || next != null) {
+      jotaiStore.set(queuedMessagesByConvoId(conversationId), remainder);
+    }
+    return next
+      ? {
+          kind: 'drain',
+          next,
+          conversationId,
+          queuedMessageOrigin: {
+            item: next,
+            beforeIds: merged.slice(0, nextIndex).map((item) => item.id),
+            afterIds: merged.slice(nextIndex + 1).map((item) => item.id),
+          },
+          expectedPredecessorCreatedAt:
+            end.generationCreatedAt ?? next.expectedPredecessorCreatedAt,
         }
-        if (remainder.length !== ownQueue.length || shouldMigrate || next != null) {
-          set(store.queuedMessagesByConvoId(conversationId), remainder);
-        }
-        return next
-          ? {
-              kind: 'drain',
-              next,
-              conversationId,
-              queuedMessageOrigin: {
-                item: next,
-                beforeIds: merged.slice(0, nextIndex).map((item) => item.id),
-                afterIds: merged.slice(nextIndex + 1).map((item) => item.id),
-              },
-              expectedPredecessorCreatedAt:
-                end.generationCreatedAt ?? next.expectedPredecessorCreatedAt,
-            }
-          : null;
-      },
-    [index, activeConversationId, jotaiStore],
-  );
+      : null;
+  }, [index, activeConversationId, jotaiStore]);
 
-  const restoreQueued = useRecoilCallback(
-    ({ set }) =>
-      (convoId: string, origin: QueuedMessageOrigin) => {
-        if (!canRestoreRecovery(jotaiStore.get(recoveryDispositionsFamily(convoId)), origin.item))
-          return;
-        set(store.queuedMessagesByConvoId(convoId), (prev) => insertQueuedOrigin(prev, origin));
-      },
+  const restoreQueued = useCallback(
+    (convoId: string, origin: QueuedMessageOrigin) => {
+      if (!canRestoreRecovery(jotaiStore.get(recoveryDispositionsFamily(convoId)), origin.item))
+        return;
+      jotaiStore.set(queuedMessagesByConvoId(convoId), (prev) => insertQueuedOrigin(prev, origin));
+    },
     [jotaiStore],
   );
 

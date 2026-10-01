@@ -3,6 +3,7 @@ import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import { SoleToolContext, useToolAutoExpand } from '../disclosure';
 import { FailedRevealContext, useFailedReveal } from '../reveal';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
 import ToolCallGroup from '../ToolCallGroup';
@@ -1515,5 +1516,45 @@ describe('legacy function preparation groups', () => {
       </RecoilRoot>,
     );
     expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toBeInTheDocument();
+  });
+});
+
+describe('ToolCallGroup sole tool', () => {
+  function Probe({ idx }: { idx: number }) {
+    return <div data-testid={`probe-${idx}`}>{String(useToolAutoExpand())}</div>;
+  }
+  const props = (ids: string[]) =>
+    ({
+      parts: ids.map((id, idx) => ({ part: makePart(id), idx })),
+      isSubmitting: false,
+      isLast: false,
+      showThinking: false,
+      lastContentIdx: ids.length - 1,
+      renderPart: (_p: TMessageContentParts, idx: number) => <Probe key={idx} idx={idx} />,
+    }) satisfies React.ComponentProps<typeof ToolCallGroup>;
+
+  it('opens the only tool call inside the group by default', () => {
+    renderGroup(props(['only']));
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('probe-0')).toHaveTextContent('true');
+  });
+
+  it('keeps a one-call group collapsed when its phase holds several calls', () => {
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={false}>
+          <ToolCallGroup {...props(['only'])} />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('probe-0')).toHaveTextContent('false');
+  });
+
+  it('leaves calls collapsed when the group holds more than one', () => {
+    renderGroup(props(['a', 'b']));
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('probe-0')).toHaveTextContent('false');
+    expect(screen.getByTestId('probe-1')).toHaveTextContent('false');
   });
 });

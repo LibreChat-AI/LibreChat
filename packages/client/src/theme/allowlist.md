@@ -1,6 +1,6 @@
 # Colours outside the theme
 
-Every colour in `client/src` and `packages/client/src` comes from a semantic theme role, except the entries below. Each entry is one kind of colour that must not follow the theme, with the files that hold it and why the theme does not own it. Scrims, chips and progress drawn over the user's own media are not exceptions: they read `surface-media-overlay` and `text-on-media`, which every bundled theme keeps black and white. The drop zone's artwork reads the `illustration` roles, the default avatar's hairline `avatar-edge`, and a dragged badge's lift `elevationDrag`.
+Every colour in `client/src` and `packages/client/src` comes from a semantic theme role, except the entries below. Each entry is one kind of colour that must not follow the theme, with the files that hold it and why the theme does not own it. Scrims, chips and progress drawn over the user's own media are not exceptions: they read `surface-media-overlay` and `text-on-media`, which every bundled theme keeps black and white. The drop zone's artwork reads the `illustration` roles, file-type tiles the `file-*` roles, the default avatar's hairline `avatar-edge`, and a dragged badge's lift `elevationDrag`.
 
 Files an open pull request was editing when this list was last swept, with their counts, are listed in berry-13/LibreChat#195. Until those land, a file absent from this list is not evidence that it holds no literal colour.
 

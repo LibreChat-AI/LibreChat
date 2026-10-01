@@ -1,5 +1,4 @@
-import React, { useMemo, useState, useEffect, useCallback } from 'react';
-import { useRecoilValue } from 'recoil';
+import React, { useMemo, useState, useEffect, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
 import {
   Constants,
@@ -9,6 +8,7 @@ import {
   splitToolCallName,
 } from 'librechat-data-provider';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
+import { toolPanelSpacingClassName, useToolExpansion, SoleToolContext } from './disclosure';
 import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { cn, getToolDisplayLabel, logger, openInNewTab } from '~/utils';
 import { isToolCallPreparing, useToolPreparation } from './preparation';
@@ -16,7 +16,6 @@ import { ToolIcon, getToolIconType, isError } from './ToolOutput';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { MCPAppViews } from '~/components/MCPUIResource';
-import { toolPanelSpacingClassName } from './disclosure';
 import { useToolCallIntent } from './Parts/intent';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
@@ -24,7 +23,6 @@ import ProgressText from './ProgressText';
 import { TOOL_ROW_CLASSES } from './rows';
 import { ToolAuthWarning } from './auth';
 import { firstErrorLine } from './live';
-import store from '~/store';
 
 export default function ToolCall({
   initialProgress = 0.1,
@@ -66,17 +64,6 @@ export default function ToolCall({
   const localize = useLocalize();
   const [oauthError, setOAuthError] = useState<string | null>(null);
   const [oauthBinding, setOAuthBinding] = useState<'pending' | 'bound' | 'failed'>('pending');
-  const autoExpand = useRecoilValue(store.autoExpandTools);
-  const hasOutput = (output?.length ?? 0) > 0;
-  const [showInfo, setShowInfo] = useState(() => autoExpand && hasOutput);
-  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
-  const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
-
-  useEffect(() => {
-    if (autoExpand && hasOutput) {
-      setShowInfo(true);
-    }
-  }, [autoExpand, hasOutput]);
 
   const parsedAuthUrl = useMemo(() => {
     if (!auth) {
@@ -203,6 +190,12 @@ export default function ToolCall({
     () => (args?.length ?? 0) > 0 || (output?.length ?? 0) > 0,
     [args, output],
   );
+  /** The preference opens a card once it has output; a sole call opens on
+   *  its arguments too, so a call that returned nothing still shows them. */
+  const soleTool = useContext(SoleToolContext) === true;
+  const [showInfo, setShowInfo] = useToolExpansion(soleTool ? hasInfo : (output?.length ?? 0) > 0);
+  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
+  const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
 
   const authDomain = useMemo(() => {
     return parsedAuthUrl?.hostname ?? '';
@@ -299,8 +292,8 @@ export default function ToolCall({
     if (!showInfo) {
       onExpand?.();
     }
-    setShowInfo((prev) => !prev);
-  }, [mountBody, onExpand, showInfo]);
+    setShowInfo(!showInfo);
+  }, [mountBody, onExpand, setShowInfo, showInfo]);
 
   /** A failed row spends its subtitle on the error's first line: what went
    *  wrong is the fact the reader needs from that slot, ahead of which server

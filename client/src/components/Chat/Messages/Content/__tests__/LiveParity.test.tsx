@@ -1584,10 +1584,12 @@ describe('tool pane identity at finalization', () => {
     const frame = setup();
     const { container, rerender } = render(frame({ foldLiveActivity: true }));
     fireEvent.click(within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0]);
+    /** The phase's only call opens with it, so the choice to record is closing it. */
+    expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(toggles(container)[0]);
-    expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'true');
+    expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'false');
     rerender(frame({ messageId: 'server-response', isSubmitting: false, foldLiveActivity: true }));
-    expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'true');
+    expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'false');
   });
 
   it.each([

@@ -1,7 +1,13 @@
 import React from 'react';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState, type MutableSnapshot } from 'recoil';
-import { getDefaultStore, Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
+import {
+  getDefaultStore,
+  Provider as JotaiProvider,
+  createStore,
+  useAtomValue,
+  useSetAtom,
+} from 'jotai';
 import {
   Constants,
   ContentTypes,
@@ -10,8 +16,17 @@ import {
   ReasoningEffort,
 } from 'librechat-data-provider';
 import type { CodeApprovalMode, TConversation, TFile, TMessage } from 'librechat-data-provider';
-import type { QueuedMessage } from '~/store/families';
+import type { QueuedMessage } from '~/hooks/Chat/queue';
 import type { ExtendedFile } from '~/common';
+import {
+  pendingQueuedTurnEnqueueIdsByConvoId,
+  settledQueuedTurnReceiptsByConvoId,
+  queuedMessagesByConvoId,
+  pendingRunEndByConvoId,
+  drainAfterAbortByIndex,
+  runEndByIndex,
+  resetQueueFamilies,
+} from '~/hooks/Chat/queue';
 import {
   getReasoningStateKey,
   pendingReasoningOverrideFamily,
@@ -169,7 +184,7 @@ function setup(params: HookParams = {}, initialize?: (snapshot: MutableSnapshot)
 }
 
 function useQueue(convoId: string) {
-  return useRecoilValue(store.queuedMessagesByConvoId(convoId));
+  return useAtomValue(queuedMessagesByConvoId(convoId));
 }
 
 /** Puts a message in the queue and then sends it, which is the only order the
@@ -184,6 +199,8 @@ function sendFromQueue(
   current.setQueue([item]);
   current.steering.sendQueuedNow(item);
 }
+
+beforeEach(() => resetQueueFamilies());
 
 describe('useSteering', () => {
   beforeEach(() => {
@@ -219,7 +236,7 @@ describe('useSteering', () => {
       const wrapper = ({ children }: { children: React.ReactNode }) => (
         <RecoilRoot
           initializeState={withActiveGeneration(({ set }) => {
-            set(store.queuedMessagesByConvoId(CONVO_ID), [item]);
+            getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [item]);
             set(store.isSubmittingFamily(0), false);
           })}
         >
@@ -242,7 +259,7 @@ describe('useSteering', () => {
           return {
             steering,
             queue: useQueue(CONVO_ID),
-            setEnd: useSetRecoilState(store.runEndByIndex(0)),
+            setEnd: useSetAtom(runEndByIndex(0)),
           };
         },
         { wrapper },
@@ -310,7 +327,7 @@ describe('useSteering', () => {
       const wrapper = ({ children }: { children: React.ReactNode }) => (
         <RecoilRoot
           initializeState={withActiveGeneration(({ set }) => {
-            set(store.queuedMessagesByConvoId(CONVO_ID), [held, first, second]);
+            getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [held, first, second]);
             set(store.isSubmittingFamily(0), false);
           })}
         >
@@ -333,8 +350,8 @@ describe('useSteering', () => {
           return {
             steering,
             queue: useQueue(CONVO_ID),
-            end: useRecoilValue(store.runEndByIndex(0)),
-            setEnd: useSetRecoilState(store.runEndByIndex(0)),
+            end: useAtomValue(runEndByIndex(0)),
+            setEnd: useSetAtom(runEndByIndex(0)),
           };
         },
         { wrapper },
@@ -615,8 +632,8 @@ describe('useSteering', () => {
             stopGenerating: jest.fn(),
           }),
           queue: useQueue(CONVO_ID),
-          settledReceipts: useRecoilValue(store.settledQueuedTurnReceiptsByConvoId(CONVO_ID)),
-          pendingEnqueueIds: useRecoilValue(store.pendingQueuedTurnEnqueueIdsByConvoId(CONVO_ID)),
+          settledReceipts: useAtomValue(settledQueuedTurnReceiptsByConvoId(CONVO_ID)),
+          pendingEnqueueIds: useAtomValue(pendingQueuedTurnEnqueueIdsByConvoId(CONVO_ID)),
         }),
         { wrapper },
       );
@@ -902,8 +919,8 @@ describe('useSteering', () => {
         });
       });
       const { result } = setupServerQueue(
-        withActiveGeneration(({ set }) => {
-          set(store.queuedMessagesByConvoId(CONVO_ID), [
+        withActiveGeneration(() => {
+          getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [
             {
               id: 'unrelated-server-row',
               clientRequestId: 'unrelated-request',
@@ -1513,13 +1530,13 @@ describe('useSteering', () => {
         <RecoilRoot
           initializeState={withActiveGeneration(({ set }) => {
             set(store.isSubmittingFamily(0), false);
-            set(store.runEndByIndex(0), {
+            getDefaultStore().set(runEndByIndex(0), {
               conversationId: CONVO_ID,
               outcome: 'completed',
               endedAt: 200,
               generationCreatedAt: 41,
             });
-            set(store.queuedMessagesByConvoId(CONVO_ID), [
+            getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [
               {
                 id: 'client-admitted-race',
                 clientRequestId: 'client-admitted-race',
@@ -1549,7 +1566,7 @@ describe('useSteering', () => {
           useQueueDrain(0, CONVO_ID, ask);
           return {
             queue: useQueue(CONVO_ID),
-            runEnd: useRecoilValue(store.runEndByIndex(0)),
+            runEnd: useAtomValue(runEndByIndex(0)),
           };
         },
         { wrapper },
@@ -1755,10 +1772,10 @@ describe('useSteering', () => {
           queue: useQueue(CONVO_ID),
           /** What `useQueueDrain` watches: re-posting it is how this hook asks
            *  the drain to reconsider a queue it already passed over. */
-          parkedRunEnd: useRecoilValue(store.pendingRunEndByConvoId(CONVO_ID)),
+          parkedRunEnd: useAtomValue(pendingRunEndByConvoId(CONVO_ID)),
           /** Stands in for the drain CONSUMING a signal it has acted on. */
-          consumeIndexSignal: useSetRecoilState(store.runEndByIndex(0)),
-          consumeParkedSignal: useSetRecoilState(store.pendingRunEndByConvoId(CONVO_ID)),
+          consumeIndexSignal: useSetAtom(runEndByIndex(0)),
+          consumeParkedSignal: useSetAtom(pendingRunEndByConvoId(CONVO_ID)),
         }),
         { wrapper },
       );
@@ -1800,8 +1817,8 @@ describe('useSteering', () => {
       // The drain already consumed its one-shot signal against an empty queue,
       // so re-post it: the DRAIN sends (FIFO, via `ask`, which does not reset
       // the composer), never this hook.
-      const { result, sendNow } = setupWithQueue({ isSubmitting: false }, ({ set }) => {
-        set(store.runEndByIndex(0), runEnd('completed'));
+      const { result, sendNow } = setupWithQueue({ isSubmitting: false }, () => {
+        getDefaultStore().set(runEndByIndex(0), runEnd('completed'));
       });
       act(() => {
         // The drain ran against an empty queue and consumed the signal; the
@@ -1824,8 +1841,8 @@ describe('useSteering', () => {
       // The run finished with this conversation off-screen, so its signal was
       // parked rather than delivered on the index. Without watching the parked
       // carrier too, the outcome would never be seen and the item would strand.
-      const { result } = setupWithQueue({ isSubmitting: false }, ({ set }) => {
-        set(store.pendingRunEndByConvoId(CONVO_ID), runEnd('completed'));
+      const { result } = setupWithQueue({ isSubmitting: false }, () => {
+        getDefaultStore().set(pendingRunEndByConvoId(CONVO_ID), runEnd('completed'));
       });
       act(() => {
         result.current.consumeParkedSignal(null);
@@ -1844,8 +1861,8 @@ describe('useSteering', () => {
       (outcome) => {
         // The drain auto-sends only on a clean completion: a Stop or an error
         // means the user is taking over, so nothing may smuggle the text out.
-        const { result, sendNow } = setupWithQueue({ isSubmitting: false }, ({ set }) => {
-          set(store.runEndByIndex(0), runEnd(outcome));
+        const { result, sendNow } = setupWithQueue({ isSubmitting: false }, () => {
+          getDefaultStore().set(runEndByIndex(0), runEnd(outcome));
         });
         act(() => {
           result.current.consumeIndexSignal(null);
@@ -1860,8 +1877,8 @@ describe('useSteering', () => {
     );
 
     it('leaves the item for manual send when the completed run was another chat', () => {
-      const { result, sendNow } = setupWithQueue({ isSubmitting: false }, ({ set }) => {
-        set(store.runEndByIndex(0), runEnd('completed', 'convo-elsewhere'));
+      const { result, sendNow } = setupWithQueue({ isSubmitting: false }, () => {
+        getDefaultStore().set(runEndByIndex(0), runEnd('completed', 'convo-elsewhere'));
       });
       act(() => {
         result.current.consumeIndexSignal(null);
@@ -1877,9 +1894,9 @@ describe('useSteering', () => {
     it('keeps older queued follow-ups ahead of the reclaimed steer', () => {
       // The drain sends ONE item per run end, FIFO. Re-arming (rather than
       // sending here) is what keeps an older follow-up from being skipped.
-      const { result } = setupWithQueue({ isSubmitting: false }, ({ set }) => {
-        set(store.runEndByIndex(0), runEnd('completed'));
-        set(store.queuedMessagesByConvoId(CONVO_ID), [
+      const { result } = setupWithQueue({ isSubmitting: false }, () => {
+        getDefaultStore().set(runEndByIndex(0), runEnd('completed'));
+        getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [
           { id: 'older', text: 'queued first', createdAt: 500 },
         ]);
       });
@@ -1895,9 +1912,9 @@ describe('useSteering', () => {
     it('does not re-arm while this conversation’s run-end is still unconsumed', () => {
       // The drain has not run yet, so it will see this item on its own. Arming
       // a second carrier would drain twice and send two messages.
-      const { result } = setupWithQueue({ isSubmitting: false }, ({ set }) => {
-        set(store.pendingRunEndByConvoId(CONVO_ID), runEnd('completed'));
-        set(store.runEndByIndex(0), runEnd('completed'));
+      const { result } = setupWithQueue({ isSubmitting: false }, () => {
+        getDefaultStore().set(pendingRunEndByConvoId(CONVO_ID), runEnd('completed'));
+        getDefaultStore().set(runEndByIndex(0), runEnd('completed'));
       });
       act(() => {
         result.current.steering.queueReclaimedSteer(reclaimed);
@@ -1931,10 +1948,10 @@ describe('useSteering', () => {
             sendNow,
             stopGenerating: jest.fn(),
           }),
-          parkedHere: useRecoilValue(store.pendingRunEndByConvoId(CONVO_ID)),
+          parkedHere: useAtomValue(pendingRunEndByConvoId(CONVO_ID)),
           queueHere: useQueue(CONVO_ID),
           /** Stands in for the drain CONSUMING a signal it has acted on. */
-          consumeIndexSignal: useSetRecoilState(store.runEndByIndex(0)),
+          consumeIndexSignal: useSetAtom(runEndByIndex(0)),
         }),
         { wrapper, initialProps },
       );
@@ -1946,8 +1963,8 @@ describe('useSteering', () => {
       // they belong to completed, so its queue must still drain on return.
       const { result, rerender, sendNow } = setupNavigable(
         { convoId: CONVO_ID, isSubmitting: false },
-        ({ set }) => {
-          set(store.runEndByIndex(0), runEnd('completed'));
+        () => {
+          getDefaultStore().set(runEndByIndex(0), runEnd('completed'));
         },
       );
       // Captured while still on this chat, resolving after the user left.
@@ -2042,8 +2059,8 @@ describe('useSteering', () => {
       // owns the item, and its own end will drain it.
       const { result, rerender } = setupNavigable(
         { convoId: CONVO_ID, isSubmitting: false },
-        ({ set }) => {
-          set(store.runEndByIndex(0), runEnd('completed'));
+        () => {
+          getDefaultStore().set(runEndByIndex(0), runEnd('completed'));
         },
       );
       act(() => {
@@ -2065,8 +2082,8 @@ describe('useSteering', () => {
       // The index slot is shared. The drain parks a foreign signal under ITS
       // conversation and then only inspects the active one's queue, so treating
       // it as proof of an upcoming drain would strand this item.
-      const { result } = setupWithQueue({ isSubmitting: false }, ({ set }) => {
-        set(store.runEndByIndex(0), runEnd('completed'));
+      const { result } = setupWithQueue({ isSubmitting: false }, () => {
+        getDefaultStore().set(runEndByIndex(0), runEnd('completed'));
       });
       act(() => {
         result.current.consumeIndexSignal(null);
@@ -2098,8 +2115,8 @@ describe('useSteering', () => {
           generationProtocolVersion: 2,
         });
       });
-      const { result } = setupWithQueue({ isSubmitting: false }, ({ set }) => {
-        set(store.runEndByIndex(0), runEnd('completed'));
+      const { result } = setupWithQueue({ isSubmitting: false }, () => {
+        getDefaultStore().set(runEndByIndex(0), runEnd('completed'));
       });
       act(() => {
         result.current.consumeIndexSignal(null);
@@ -2569,7 +2586,7 @@ describe('useSteering', () => {
             ...params,
           }),
           queue: useQueue(CONVO_ID),
-          setQueue: useSetRecoilState(store.queuedMessagesByConvoId(CONVO_ID)),
+          setQueue: useSetAtom(queuedMessagesByConvoId(CONVO_ID)),
           setActiveEpoch: useSetRecoilState(store.activeGenerationCreatedAtByConvoId(CONVO_ID)),
           setActiveProtocol: useSetRecoilState(
             store.activeGenerationProtocolVersionByConvoId(CONVO_ID),
@@ -2578,7 +2595,7 @@ describe('useSteering', () => {
           chips: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
           setChips: useSetRecoilState(store.pendingSteersByConvoId(CONVO_ID)),
           setAppliedIds: useSetRecoilState(store.appliedSteerIdsByConvoId(CONVO_ID)),
-          drainFlag: useRecoilValue(store.drainAfterAbortByIndex(0)),
+          drainFlag: useAtomValue(drainAfterAbortByIndex(0)),
         }),
         { wrapper },
       );
@@ -2846,9 +2863,13 @@ describe('useSteering', () => {
       // A draft queued during the 202 round-trip must not drain ahead of a
       // steer submitted before it, so the ACK'd chip keeps its SUBMIT time,
       // not the (later) ACK time.
-      const now = jest.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValue(9_000);
+      /** Submit-time reads see 1_000 and everything from the ACK on sees 9_000, whatever else
+       *  reads the clock first. */
+      let acknowledged = false;
+      const now = jest.spyOn(Date, 'now').mockImplementation(() => (acknowledged ? 9_000 : 1_000));
       try {
         mockMutate.mockImplementation((_params, { onSuccess }) => {
+          acknowledged = true;
           onSuccess({
             steerId: 'srv-t',
             status: 'queued',
@@ -3216,8 +3237,8 @@ describe('useSteering', () => {
     it('preserves a manual queue order when another message is enqueued', () => {
       const first: QueuedMessage = { id: 'first', text: 'first', createdAt: 1 };
       const second: QueuedMessage = { id: 'second', text: 'second', createdAt: 2 };
-      const { result } = setupWithState({}, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), [first, second]);
+      const { result } = setupWithState({}, () => {
+        getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [first, second]);
       });
 
       act(() => {
@@ -3262,8 +3283,8 @@ describe('useSteering', () => {
         text: 'after',
         createdAt: 2,
       };
-      const { result } = setupWithState({}, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), [before, recovered, after]);
+      const { result } = setupWithState({}, () => {
+        getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [before, recovered, after]);
       });
 
       let discarded = false;
@@ -3319,8 +3340,8 @@ describe('useSteering', () => {
         text: 'after',
         createdAt: 2,
       };
-      const { result } = setupWithState({}, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), [before, recovered, after]);
+      const { result } = setupWithState({}, () => {
+        getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [before, recovered, after]);
       });
 
       let discarded = false;
@@ -3354,8 +3375,8 @@ describe('useSteering', () => {
         recoverySteerId: 'server-leftover',
         recoveryClientSteerId: 'client-leftover',
       };
-      const { result } = setupWithState({}, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), [recovered]);
+      const { result } = setupWithState({}, () => {
+        getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [recovered]);
       });
 
       let discarded = true;
@@ -3378,8 +3399,8 @@ describe('useSteering', () => {
         createdAt: 1,
         recoverySteerId: 'server-leftover',
       };
-      const { result } = setupWithState({}, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), [recovered]);
+      const { result } = setupWithState({}, () => {
+        getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [recovered]);
       });
 
       let discarded = true;
@@ -3400,8 +3421,8 @@ describe('useSteering', () => {
         recoverySteerId: 'source',
       };
       getDefaultStore().set(recoveryDispositionsFamily(CONVO_ID), { source: 'blocked' });
-      const { result, sendNow } = setupWithState({ isSubmitting: false }, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), [item]);
+      const { result, sendNow } = setupWithState({ isSubmitting: false }, () => {
+        getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [item]);
       });
       act(() => result.current.steering.sendQueuedNow(item));
       expect(sendNow).not.toHaveBeenCalled();
@@ -3456,8 +3477,8 @@ describe('useSteering', () => {
       };
       const after = { id: 'q-after', text: 'after', createdAt: 30 };
       const originalQueue = [before, selected, after];
-      const { result } = setupWithState({}, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), originalQueue);
+      const { result } = setupWithState({}, () => {
+        getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), originalQueue);
       });
 
       act(() => {
@@ -3504,8 +3525,8 @@ describe('useSteering', () => {
         text: 'queued during request',
         createdAt: 40,
       };
-      const { result } = setupWithState({}, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), [before, selected, after]);
+      const { result } = setupWithState({}, () => {
+        getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [before, selected, after]);
       });
 
       act(() => {
@@ -3537,8 +3558,8 @@ describe('useSteering', () => {
         text: 'second instruction',
         createdAt: 20,
       };
-      const { result } = setupWithState({}, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), [first, second]);
+      const { result } = setupWithState({}, () => {
+        getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [first, second]);
       });
 
       act(() => {
@@ -3606,8 +3627,8 @@ describe('useSteering', () => {
         text: 'second accepted',
         createdAt: 20,
       };
-      const { result } = setupWithState({}, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), [first, second]);
+      const { result } = setupWithState({}, () => {
+        getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [first, second]);
       });
 
       act(() => {
@@ -3701,7 +3722,7 @@ describe('useSteering', () => {
             ...params,
           }),
           queue: useQueue(CONVO_ID),
-          setQueue: useSetRecoilState(store.queuedMessagesByConvoId(CONVO_ID)),
+          setQueue: useSetAtom(queuedMessagesByConvoId(CONVO_ID)),
         }),
         { wrapper },
       );
@@ -4036,6 +4057,8 @@ describe('useSteering', () => {
   });
 
   describe('composer quotes + manual skill capture', () => {
+    /** The harness renders under its own Jotai store, so queue seeds target that store. */
+    let contextStore = createStore();
     function setupWithContext(
       params: HookParams = {},
       initialize?: (snapshot: MutableSnapshot) => void,
@@ -4044,6 +4067,7 @@ describe('useSteering', () => {
       const sendNow = jest.fn();
       const stopGenerating = jest.fn();
       const reasoningStore = createStore();
+      contextStore = reasoningStore;
       reasoningStore.set(
         pendingReasoningOverrideFamily(getReasoningStateKey(params.conversationId ?? CONVO_ID, 0)),
         initialReasoning,
@@ -4071,7 +4095,7 @@ describe('useSteering', () => {
             ...params,
           }),
           queue: useQueue(CONVO_ID),
-          setQueue: useSetRecoilState(store.queuedMessagesByConvoId(CONVO_ID)),
+          setQueue: useSetAtom(queuedMessagesByConvoId(CONVO_ID)),
           chips: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
           pendingQuotes: useRecoilValue(store.pendingQuotesByConvoId(CONVO_ID)),
           pendingSkills: useRecoilValue(store.pendingManualSkillsByConvoId(CONVO_ID)),
@@ -4222,8 +4246,8 @@ describe('useSteering', () => {
         createdAt: 1_000,
         quotes: ['queued excerpt'],
       };
-      const { result } = setupWithContext({}, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), [item]);
+      const { result } = setupWithContext({}, () => {
+        contextStore.set(queuedMessagesByConvoId(CONVO_ID), [item]);
       });
       act(() => {
         result.current.steering.sendQueuedNow(item);
@@ -4245,8 +4269,8 @@ describe('useSteering', () => {
         reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
         server: { id: 'server-reasoning-live', status: 'queued', revision: 3 },
       };
-      const { result, sendNow } = setupWithContext({}, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), [item]);
+      const { result, sendNow } = setupWithContext({}, () => {
+        contextStore.set(queuedMessagesByConvoId(CONVO_ID), [item]);
       });
 
       act(() => {
@@ -4455,8 +4479,8 @@ describe('useSteering', () => {
         createdAt: 1_000,
         quotes: ['queued excerpt'],
       };
-      const { result } = setupWithContext({}, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), [item]);
+      const { result } = setupWithContext({}, () => {
+        contextStore.set(queuedMessagesByConvoId(CONVO_ID), [item]);
       });
       act(() => {
         result.current.steering.sendQueuedNow(item);
@@ -4581,8 +4605,8 @@ describe('useSteering', () => {
         quotes: ['original quote'],
       };
       const after = { id: 'late-after', text: 'after', createdAt: 30 };
-      const { result, rerender } = setupWithContext(params, ({ set }) => {
-        set(store.queuedMessagesByConvoId(CONVO_ID), [before, selected, after]);
+      const { result, rerender } = setupWithContext(params, () => {
+        contextStore.set(queuedMessagesByConvoId(CONVO_ID), [before, selected, after]);
       });
 
       act(() => {

@@ -41,11 +41,12 @@ import type {
   TContextUsageEvent,
   ChatStreamConnection,
 } from 'librechat-data-provider';
-import type { DrainAfterAbort, QueuedMessageOrigin, PendingSteer } from '~/store/families';
 import type { ActiveJobsResponse, StreamStatusResponse } from '~/data-provider';
+import type { DrainAfterAbort, QueuedMessageOrigin } from '~/hooks/Chat/queue';
 import type { GenerationProtocolVersion } from '~/data-provider';
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData, TFinalResData } from '~/common';
+import type { PendingSteer } from '~/store/families';
 import {
   logger,
   clearComposerDrafts,
@@ -94,6 +95,7 @@ import useEventHandlers, {
   buildCreatedInitialResponse,
   keepLocalCodeApprovalMode,
 } from './useEventHandlers';
+import { drainAfterAbortByIndex, queuedMessagesByConvoId, runEndByIndex } from '~/hooks/Chat/queue';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
@@ -1009,23 +1011,19 @@ export default function useResumableSSE(
    *  id and is therefore shared by every generation within it. */
   const prefixStateGenerationIdRef = useRef<string | null>(null);
 
-  const restoreQueuedSubmission = useRecoilCallback(
-    ({ set }) =>
-      (failedSubmission: TSubmission, expectedPredecessorCreatedAt?: number) => {
-        const conversationId = failedSubmission.conversation?.conversationId;
-        const origin = failedSubmission.queuedMessageOrigin as QueuedMessageOrigin | undefined;
-        if (!conversationId || origin == null) {
-          return;
-        }
-        set(store.queuedMessagesByConvoId(conversationId), (prev) =>
-          canRestoreRecovery(
-            jotaiStore.get(recoveryDispositionsFamily(conversationId)),
-            origin.item,
-          )
-            ? insertQueuedOrigin(prev, origin, expectedPredecessorCreatedAt)
-            : prev,
-        );
-      },
+  const restoreQueuedSubmission = useCallback(
+    (failedSubmission: TSubmission, expectedPredecessorCreatedAt?: number) => {
+      const conversationId = failedSubmission.conversation?.conversationId;
+      const origin = failedSubmission.queuedMessageOrigin as QueuedMessageOrigin | undefined;
+      if (!conversationId || origin == null) {
+        return;
+      }
+      jotaiStore.set(queuedMessagesByConvoId(conversationId), (prev) =>
+        canRestoreRecovery(jotaiStore.get(recoveryDispositionsFamily(conversationId)), origin.item)
+          ? insertQueuedOrigin(prev, origin, expectedPredecessorCreatedAt)
+          : prev,
+      );
+    },
     [jotaiStore],
   );
 
@@ -1080,7 +1078,7 @@ export default function useResumableSSE(
          *  event was waiting for the response placeholder. The applied event
          *  is authoritative, so evict that recovery copy before it can be
          *  drained as a duplicate follow-up. */
-        set(store.queuedMessagesByConvoId(conversationId), (prev) =>
+        jotaiStore.set(queuedMessagesByConvoId(conversationId), (prev) =>
           prev.some(
             (item) =>
               (item.recoverySteerId != null && settledIds.includes(item.recoverySteerId)) ||
@@ -1358,8 +1356,8 @@ export default function useResumableSSE(
     [],
   );
 
-  const setRunEnd = useSetRecoilState(store.runEndByIndex(runIndex));
-  const setDrainAfterAbort = useSetRecoilState(store.drainAfterAbortByIndex(runIndex));
+  const setRunEnd = useSetAtom(runEndByIndex(runIndex));
+  const setDrainAfterAbort = useSetAtom(drainAfterAbortByIndex(runIndex));
   const clearDrainAfterAbort = useCallback(
     (conversationId: string, generationCreatedAt?: number) => {
       if (generationCreatedAt == null) {
