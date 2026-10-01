@@ -21,7 +21,11 @@ export type ThemeCacheEntry = {
   modes: { light: ResolvedThemeStyle; dark: ResolvedThemeStyle };
 };
 
-export type ThemeCacheAction = 'keep' | 'clear' | 'write';
+/**
+ * `disown` removes the stored entry but keeps it in memory, so the identity mismatch it
+ * proves keeps holding until the new identity's own answer arrives.
+ */
+export type ThemeCacheAction = 'keep' | 'clear' | 'disown' | 'write';
 
 /** A config answer; `current` is false while `keepPreviousData` shows another identity's answer. */
 export type ThemeAnswer = { theme: DeploymentThemeValue; current: boolean };
@@ -122,7 +126,8 @@ export function writeThemeCache(entry: ThemeCacheEntry): void {
  * - an answer served to the current identity wins; a signed-in one rewrites the
  *   cache (a removed theme clears it), a signed-out one never touches it;
  * - with no current answer, the cache stands in, unless the signed-in identity is
- *   known and is not the one it was served to, which clears it;
+ *   known and is not the one it was served to: then nothing paints until that
+ *   identity's own answer arrives, since a previous answer may be the other one's;
  * - otherwise the previous answer, if any, keeps painting as before.
  * A theme that turns out invalid is cleared by the caller, which resolves it.
  */
@@ -142,7 +147,7 @@ export function reconcileThemeCache({
     return { theme: answer.theme, cache: answer.theme == null ? 'clear' : 'write' };
   }
   if (cached && owner !== undefined && cached.owner !== owner) {
-    return { theme: answer?.theme, cache: 'clear' };
+    return { theme: undefined, cache: 'disown' };
   }
   if (cached) {
     return { theme: cached.source, cache: 'keep' };

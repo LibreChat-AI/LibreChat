@@ -43,14 +43,14 @@ describe('reconcileThemeCache', () => {
 
   it('never paints or keeps a theme cached for another tenant or user', () => {
     const otherTenant = reconcileThemeCache({ cached, owner: 'tenant-b:user-1' });
-    expect(otherTenant).toEqual({ theme: undefined, cache: 'clear' });
+    expect(otherTenant).toEqual({ theme: undefined, cache: 'disown' });
 
     const otherUser = reconcileThemeCache({
       cached,
       owner: 'tenant-a:user-2',
       answer: { theme: 'librechat', current: false },
     });
-    expect(otherUser).toEqual({ theme: 'librechat', cache: 'clear' });
+    expect(otherUser).toEqual({ theme: undefined, cache: 'disown' });
   });
 
   it('applies a signed-out answer without writing or clearing the cache', () => {

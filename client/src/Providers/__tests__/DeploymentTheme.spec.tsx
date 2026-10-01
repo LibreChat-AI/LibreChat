@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { RecoilRoot } from 'recoil';
+import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { useTheme, clickHouseTheme } from '@librechat/client';
 import { act, render, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -478,6 +478,36 @@ describe('DeploymentTheme cache', () => {
 
     expect(root().dataset.theme).toBeUndefined();
     await waitFor(() => expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull());
+  });
+
+  it('paints no previous answer after a cache from another tenant until its own answer', async () => {
+    cacheTheme('tenant-b:user-1');
+    let signIn: () => void = () => undefined;
+    function SignIn() {
+      const setUser = useSetRecoilState(store.user);
+      signIn = () => setUser(user as TUser);
+      return null;
+    }
+    getStartupConfig.mockResolvedValueOnce(configWith('clickhouse'));
+    render(
+      <RecoilRoot>
+        <QueryClientProvider client={queryClient}>
+          <DeploymentTheme>
+            <SignIn />
+          </DeploymentTheme>
+        </QueryClientProvider>
+      </RecoilRoot>,
+    );
+    await waitFor(() => expect(root().dataset.theme).toBe('clickhouse'));
+
+    let answer: (config: TStartupConfig) => void = () => undefined;
+    getStartupConfig.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    act(() => signIn());
+    await waitFor(() => expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull());
+    expect(root().dataset.theme).toBeUndefined();
+
+    await act(async () => answer(configWith(inlineTheme)));
+    await waitFor(() => expect(root().dataset.theme).toBe('acme'));
   });
 
   it('does not write a signed-out answer over the cache', async () => {
