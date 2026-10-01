@@ -54,9 +54,8 @@ const renderBatch = (actionId: string, batch: Agents.AskUserQuestionBatchItem[] 
     </RecoilRoot>,
   );
 
-/** Every step stays mounted for the swap animation; only the active one is
- *  exposed, the rest sit in a closed, `aria-hidden` collapse. */
-const isShown = (text: string) => screen.getByText(text).closest('[aria-hidden="true"]') == null;
+/** Only the active step renders. */
+const isShown = (text: string) => screen.queryByText(text) != null;
 
 describe('AskUserQuestions', () => {
   beforeEach(() => {

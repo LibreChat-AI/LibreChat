@@ -6,9 +6,6 @@ interface CollapseProps {
   children: ReactNode;
   className?: string;
   overflowVisibleWhenOpen?: boolean;
-  /** When false, the content swaps at once (hidden the moment it closes) and
-   *  only the height tweens, for a slot whose contents should not dissolve. */
-  fade?: boolean;
 }
 
 /**
@@ -30,7 +27,6 @@ export default function Collapse({
   children,
   className,
   overflowVisibleWhenOpen = false,
-  fade = true,
 }: CollapseProps) {
   return (
     <div
@@ -49,9 +45,8 @@ export default function Collapse({
       >
         <div
           className={cn(
-            fade && 'transition-opacity duration-200 ease-out motion-reduce:transition-none',
-            fade && (open ? 'opacity-100' : 'opacity-0'),
-            !fade && !open && 'invisible',
+            'transition-opacity duration-200 ease-out motion-reduce:transition-none',
+            open ? 'opacity-100' : 'opacity-0',
             className,
           )}
         >

@@ -6,7 +6,7 @@ import type { ReactNode } from 'react';
 import useAskQuestionsForm from '~/hooks/Input/useAskQuestionsForm';
 import AskOptions from '~/components/Chat/ask/options';
 import { splitOtherOption } from '~/utils/approval';
-import { Collapse } from '~/components/ui';
+import { AutoHeight } from '~/components/ui';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -35,7 +35,7 @@ export default function AskUserQuestions({
   const { goToStep, selectOption } = form;
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const stepRefs = useRef<(HTMLFieldSetElement | null)[]>([]);
+  const stepRef = useRef<HTMLFieldSetElement>(null);
   /** Set only when a choice click is about to unmount the button that owns
    *  focus, which would otherwise drop focus to <body> mid-batch. */
   const refocusRef = useRef(false);
@@ -77,7 +77,7 @@ export default function AskUserQuestions({
       return;
     }
     refocusRef.current = false;
-    stepRefs.current[activeIndex]?.focus();
+    stepRef.current?.focus();
   }, [activeIndex]);
 
   if (form.status === 'submitted') {
@@ -98,21 +98,15 @@ export default function AskUserQuestions({
     firstUnanswered >= 0 &&
     firstUnanswered !== activeIndex;
 
-  /** Every step stays mounted in its own `Collapse`, with only the active one
-   *  open: the title and the answer area each cross-swap in place, so moving
-   *  between questions tweens the card's height and fades the content instead
-   *  of jumping. Closed steps are `inert`, out of the tab order and a11y tree. */
-  const steps = questions.map((item, index) => {
-    const { choices, otherLabel } = splitOtherOption(item.options);
-    const selected = Object.hasOwn(form.state.selected, item.id)
-      ? form.state.selected[item.id]
-      : [];
-    const selectedIndices = choices.flatMap((option, optionIndex) =>
-      selected.includes(option.value) ? [optionIndex] : [],
-    );
-    const text = Object.hasOwn(form.state.text, item.id) ? form.state.text[item.id] : '';
-    return { item, index, choices, otherLabel, selectedIndices, text };
-  });
+  const question = questions[activeIndex];
+  const { choices, otherLabel } = splitOtherOption(question.options);
+  const selected = Object.hasOwn(form.state.selected, question.id)
+    ? form.state.selected[question.id]
+    : [];
+  const selectedIndices = choices.flatMap((option, optionIndex) =>
+    selected.includes(option.value) ? [optionIndex] : [],
+  );
+  const text = Object.hasOwn(form.state.text, question.id) ? form.state.text[question.id] : '';
 
   return (
     <div className={cn('flex min-h-0 flex-col', className)}>
@@ -123,22 +117,22 @@ export default function AskUserQuestions({
       )}
       <div className="text-text-secondary flex shrink-0 items-start justify-between gap-2 px-3 pt-3">
         <div className="min-w-0 flex-1">
-          {steps.map(({ item, index }) => (
-            <Collapse key={item.id} open={index === activeIndex}>
-              {item.header != null && item.header !== '' && (
-                <p className="mb-1 text-xs font-medium">{item.header}</p>
-              )}
-              <p
-                id={`${promptId}-${index}`}
-                className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]"
-              >
-                {item.question}
-              </p>
-              {item.description != null && item.description.length > 0 && (
-                <p className="mt-0.5 text-sm [overflow-wrap:anywhere]">{item.description}</p>
-              )}
-            </Collapse>
-          ))}
+          {/* Only the active step renders: its content swaps at once and the
+              two `AutoHeight` regions ease the card to the new size. */}
+          <AutoHeight>
+            {question.header != null && question.header !== '' && (
+              <p className="mb-1 text-xs font-medium">{question.header}</p>
+            )}
+            <p
+              id={promptId}
+              className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]"
+            >
+              {question.question}
+            </p>
+            {question.description != null && question.description.length > 0 && (
+              <p className="mt-0.5 text-sm [overflow-wrap:anywhere]">{question.description}</p>
+            )}
+          </AutoHeight>
         </div>
         {(stepped || headerAction != null) && (
           <div className="flex shrink-0 items-center gap-1">
@@ -183,38 +177,37 @@ export default function AskUserQuestions({
         )}
       </div>
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-3">
-        {steps.map(({ item, index, choices, otherLabel, selectedIndices, text }) => (
-          <Collapse key={item.id} open={index === activeIndex} fade={false}>
-            <fieldset
-              ref={(el) => {
-                stepRefs.current[index] = el;
-              }}
-              tabIndex={-1}
-              aria-labelledby={`${promptId}-${index}`}
-              className="flex flex-col gap-2 pt-3 outline-hidden"
-            >
-              {choices.length > 0 && (
-                <AskOptions
-                  options={choices}
-                  multiSelect={item.multiSelect === true}
-                  checked={selectedIndices}
-                  selected={item.multiSelect === true ? null : (selectedIndices[0] ?? null)}
-                  selectedIsAnswer
-                  locked={form.locked || text.trim().length > 0}
-                  onActivate={(optionIndex) => handleSelectOption(item, choices[optionIndex].value)}
-                  className="flex flex-col"
-                />
-              )}
-              <Input
-                value={text}
-                disabled={form.locked}
-                onChange={(event) => form.setText(item, event.target.value)}
-                placeholder={otherLabel ?? localize('com_ui_your_answer')}
-                aria-label={`${item.question} ${localize('com_ui_your_answer')}`}
+        <AutoHeight>
+          <fieldset
+            key={question.id}
+            ref={stepRef}
+            tabIndex={-1}
+            aria-labelledby={promptId}
+            className="flex flex-col gap-2 pt-3 outline-hidden"
+          >
+            {choices.length > 0 && (
+              <AskOptions
+                options={choices}
+                multiSelect={question.multiSelect === true}
+                checked={selectedIndices}
+                selected={question.multiSelect === true ? null : (selectedIndices[0] ?? null)}
+                selectedIsAnswer
+                locked={form.locked || text.trim().length > 0}
+                onActivate={(optionIndex) =>
+                  handleSelectOption(question, choices[optionIndex].value)
+                }
+                className="flex flex-col"
               />
-            </fieldset>
-          </Collapse>
-        ))}
+            )}
+            <Input
+              value={text}
+              disabled={form.locked}
+              onChange={(event) => form.setText(question, event.target.value)}
+              placeholder={otherLabel ?? localize('com_ui_your_answer')}
+              aria-label={`${question.question} ${localize('com_ui_your_answer')}`}
+            />
+          </fieldset>
+        </AutoHeight>
       </div>
       {(form.status === 'error' || form.status === 'expired') && (
         <div className="text-text-warning flex items-center gap-1.5 px-3 pt-2 text-xs">
