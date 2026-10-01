@@ -1,7 +1,7 @@
 import React from 'react';
-import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
-import { QueryKeys } from 'librechat-data-provider';
+import { RecoilRoot, useRecoilValue } from 'recoil';
+import { QueryKeys, request } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type {
@@ -15,6 +15,7 @@ import type { Transport } from '~/hooks/Chat/contract';
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import useResumableSSE from '~/hooks/SSE/useResumableSSE';
 import useChatHelpers from '~/hooks/Chat/useChatHelpers';
+import useSteering from '~/hooks/Chat/useSteering';
 import useSSE from '~/hooks/SSE/useSSE';
 import store from '~/store';
 
@@ -258,6 +259,84 @@ describe('chat transport boundary', () => {
         { token: 'test-token' },
       );
       await waitFor(() => expect(helpers.setIsSubmitting).toHaveBeenLastCalledWith(false));
+    });
+  });
+
+  describe('steer', () => {
+    const seedSteerableRun = ({ set }: SeedState) => {
+      set(store.activeGenerationCreatedAtByConvoId('convo-1'), 1000);
+      set(store.activeGenerationProtocolVersionByConvoId('convo-1'), 2);
+    };
+
+    const renderSteering = (transport: Transport) =>
+      renderHook(
+        () => ({
+          steering: useSteering({
+            consumeDraft: jest.fn(),
+            index: 0,
+            conversationId: 'convo-1',
+            conversation: { conversationId: 'convo-1', endpoint: 'agents' } as TConversation,
+            isSubmitting: true,
+            answerModeActive: false,
+            sendNow: jest.fn(),
+            stopGenerating: jest.fn(),
+          }),
+          queue: useRecoilValue(store.queuedMessagesByConvoId('convo-1')),
+        }),
+        { wrapper: createWrapper(transport, seedSteerableRun) },
+      );
+
+    beforeEach(() => {
+      /** The server queue projection is an HTTP read outside the transport. */
+      jest.spyOn(request, 'get').mockResolvedValue({ queuedTurns: [] });
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('sends a steer to the running generation through the host transport', async () => {
+      const fake = createFakeTransport({
+        steer: jest.fn(async () => ({
+          status: 'queued' as const,
+          steerId: 'steer-1',
+          position: 0,
+          conversationId: 'convo-1',
+          generationProtocolVersion: 2,
+        })),
+      });
+      const { result } = renderSteering(fake.transport);
+
+      act(() => {
+        expect(result.current.steering.steerFromComposer('fold this in')).toBe(true);
+      });
+
+      await waitFor(() => expect(fake.transport.steer).toHaveBeenCalledTimes(1));
+      expect((fake.transport.steer as jest.Mock).mock.calls[0][0]).toEqual(
+        expect.objectContaining({
+          conversationId: 'convo-1',
+          generationCreatedAt: 1000,
+          text: 'fold this in',
+        }),
+      );
+      expect(result.current.queue).toEqual([]);
+    });
+
+    it('keeps a refused steer as a queued turn', async () => {
+      const refusal = Object.assign(new Error('Steering unsupported'), {
+        response: { status: 409, data: { code: 'STEER_UNSUPPORTED' } },
+      });
+      const fake = createFakeTransport({ steer: jest.fn(async () => Promise.reject(refusal)) });
+      const { result } = renderSteering(fake.transport);
+
+      act(() => {
+        result.current.steering.steerFromComposer('do not lose me');
+      });
+
+      await waitFor(() =>
+        expect(result.current.queue).toEqual([expect.objectContaining({ text: 'do not lose me' })]),
+      );
+      expect(fake.transport.steer).toHaveBeenCalledTimes(1);
     });
   });
 });
