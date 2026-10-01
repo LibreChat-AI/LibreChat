@@ -1,4 +1,5 @@
 import React from 'react';
+import { useAtomValue } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { QueryKeys } from 'librechat-data-provider';
@@ -14,6 +15,7 @@ import type {
 import type { MutableSnapshot } from 'recoil';
 import type { Transport } from '~/hooks/Chat/contract';
 import type { PendingSteer } from '~/store/families';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import { useSteerReclaim } from '~/hooks/Chat/useSteerCancel';
 import useSteerEscalate from '~/hooks/Chat/useSteerEscalate';
@@ -172,10 +174,12 @@ const renderSteering = (transport: Transport) =>
         sendNow: jest.fn(),
         stopGenerating: jest.fn(),
       }),
-      queue: useRecoilValue(store.queuedMessagesByConvoId('convo-1')),
+      queue: useAtomValue(queuedMessagesByConvoId('convo-1')),
     }),
     { wrapper: createWrapper(transport, seedSteerableRun, seedLiveBranch) },
   );
+
+beforeEach(() => resetQueueFamilies());
 
 describe('chat transport boundary', () => {
   describe('send (agents)', () => {

@@ -122,6 +122,14 @@ export const defaultTheme: IThemeRGB = {
   'rgb-illustration-subtle': '175 193 255', // #afc1ff
   'rgb-illustration': '121 137 255', // #7989ff
   'rgb-illustration-strong': '60 70 255', // #3c46ff
+  'rgb-file-document': '255 85 136', // #ff5588
+  'rgb-file-sheet': '16 163 127', // #10a37f
+  'rgb-file-code': '255 110 60', // #ff6e3c
+  'rgb-file-artifact': '45 48 92', // #2d305c
+  'rgb-file-audio': '255 107 53', // #ff6b35
+  'rgb-file-video': '139 92 246', // #8b5cf6
+  'rgb-file-generic': '0 0 255', // #0000ff
+  'rgb-file-ink': '255 255 255', // #ffffff
 
   /** Code syntax highlighting, measured against the `surface-code` and `surface-code-body` fills. */
   'rgb-syntax-text': '33 33 33', // #212121 (gray-800)

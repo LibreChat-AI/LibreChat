@@ -301,6 +301,7 @@ function MyComponent() {
 - `bg-surface-code` - Code block chrome: toolbar, output and result switcher
 - `bg-surface-code-body` - Code block pane behind the highlighted code
 - `fill-illustration-subtle`, `fill-illustration`, `fill-illustration-strong` - The three tones of in-app artwork, such as the file drop zone's illustration
+- `fill-file-document`, `fill-file-sheet`, `fill-file-code`, `fill-file-artifact`, `fill-file-audio`, `fill-file-video`, `fill-file-generic` - File-type tile fills; `stroke-file-ink` and `fill-file-ink` draw the glyph on them
 - `bg-surface-qr` - Backdrop behind a QR code, kept light in every mode so it scans
 
 ### Border Colors

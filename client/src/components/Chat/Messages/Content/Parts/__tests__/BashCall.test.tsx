@@ -2,6 +2,8 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import copy from 'copy-to-clipboard';
 import { render, screen, fireEvent } from '@testing-library/react';
+import type { ToolDisclosures } from '../../disclosure';
+import { SoleToolContext, ToolDisclosureContext, ToolDisclosureKeyContext } from '../../disclosure';
 import BashCall from '../BashCall';
 import store from '~/store';
 
@@ -15,7 +17,7 @@ jest.mock('~/hooks', () => ({
         com_ui_command_timed_out: 'timed out',
         com_ui_writing_command: 'Writing command',
         com_ui_running_command: 'Running command',
-        com_ui_command_finished: 'Finished running',
+        com_ui_command_finished: 'Ran command',
         com_ui_cancelled: 'Cancelled',
         com_ui_copy_code: 'Copy code',
         com_ui_background_running: 'Running in background',
@@ -48,13 +50,15 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
     inProgressText,
     finishedText,
     verdict,
+    onClick,
   }: {
     phase: 'running' | 'completed' | 'cancelled' | 'failed';
     inProgressText: string;
     finishedText: string;
     verdict?: string;
+    onClick?: () => void;
   }) => (
-    <div data-testid="progress-text">
+    <div data-testid="progress-text" onClick={onClick}>
       {phase === 'running' ? inProgressText : finishedText}
       {phase === 'failed' ? ' — tool failed' : ''}
       {phase === 'failed' && verdict ? ` · ${verdict}` : ''}
@@ -174,7 +178,7 @@ describe('BashCall intent label', () => {
       </RecoilRoot>,
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Waiting for the task to settle');
-    expect(screen.queryByText('Finished running')).not.toBeInTheDocument();
+    expect(screen.queryByText('Ran command')).not.toBeInTheDocument();
   });
 
   it('falls back to the generic labels when no intent is present', () => {
@@ -317,8 +321,80 @@ describe('BashCall backgrounded calls', () => {
         />
       </RecoilRoot>,
     );
-    expect(screen.getByTestId('progress-text')).toHaveTextContent('Finished running');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran command');
     expect(screen.getByText('hi')).toBeInTheDocument();
+  });
+});
+
+describe('BashCall sole tool disclosure', () => {
+  const renderCall = (soleTool: boolean) =>
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={soleTool}>
+          <BashCall
+            initialProgress={1}
+            isSubmitting={false}
+            args={{ command: 'echo hi' }}
+            output="hi"
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+  const panel = (container: HTMLElement) =>
+    container.querySelector('[style*="grid-template-rows"]') as HTMLElement;
+
+  it('opens the card when it is the only call, with autoExpandTools off', () => {
+    const { container } = renderCall(true);
+    expect(panel(container).style.gridTemplateRows).toBe('1fr');
+  });
+
+  it('keeps the card collapsed when it is one of several calls', () => {
+    const { container } = renderCall(false);
+    expect(panel(container).style.gridTemplateRows).toBe('0fr');
+  });
+
+  it('closes the card again when its group gains a second call', () => {
+    const { container, rerender } = renderCall(true);
+    expect(panel(container).style.gridTemplateRows).toBe('1fr');
+    rerender(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={false}>
+          <BashCall
+            initialProgress={1}
+            isSubmitting={false}
+            args={{ command: 'echo hi' }}
+            output="hi"
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(panel(container).style.gridTemplateRows).toBe('0fr');
+  });
+
+  it('keeps a closed sole card closed when it remounts under a new group', () => {
+    const disclosures: ToolDisclosures = new Map();
+    const tree = () => (
+      <RecoilRoot>
+        <ToolDisclosureContext.Provider value={disclosures}>
+          <ToolDisclosureKeyContext.Provider value="call-1">
+            <SoleToolContext.Provider value>
+              <BashCall
+                initialProgress={1}
+                isSubmitting={false}
+                args={{ command: 'echo hi' }}
+                output="hi"
+              />
+            </SoleToolContext.Provider>
+          </ToolDisclosureKeyContext.Provider>
+        </ToolDisclosureContext.Provider>
+      </RecoilRoot>
+    );
+    const first = render(tree());
+    fireEvent.click(first.getByTestId('progress-text'));
+    expect(panel(first.container).style.gridTemplateRows).toBe('0fr');
+    first.unmount();
+    const second = render(tree());
+    expect(panel(second.container).style.gridTemplateRows).toBe('0fr');
   });
 });
 
@@ -522,7 +598,7 @@ describe('BashCall exit status', () => {
 
   it('does not read a trailer the sandbox command printed itself', () => {
     const { container } = renderSettled('stdout:\n[exit code: 1]', false);
-    expect(screen.getByTestId('progress-text')).toHaveTextContent('Finished running');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran command');
     expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
     expect(container.querySelectorAll('pre')[1]).toHaveTextContent('[exit code: 1]');
   });
@@ -541,7 +617,7 @@ describe('BashCall exit status', () => {
     const { container } = renderSettled(
       'stdout:\nok\n\nstderr:\nError: deprecated flag\n\n[exit code: 0]',
     );
-    expect(screen.getByTestId('progress-text')).toHaveTextContent('Finished running');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran command');
     expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
     const stderr = screen.getByText(/deprecated flag/);
     expect(stderr).toHaveClass('text-text-secondary');

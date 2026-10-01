@@ -2224,19 +2224,9 @@
       "count": 2
     }
   },
-  "packages/client/src/svgs/AudioPaths.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 5
-    }
-  },
   "packages/client/src/svgs/BirthdayIcon.tsx": {
     "shadcn/no-raw-colors": {
       "count": 10
-    }
-  },
-  "packages/client/src/svgs/CodePaths.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 2
     }
   },
   "packages/client/src/svgs/DiscordIcon.tsx": {
@@ -2247,11 +2237,6 @@
   "packages/client/src/svgs/FacebookIcon.tsx": {
     "shadcn/no-raw-colors": {
       "count": 3
-    }
-  },
-  "packages/client/src/svgs/FilePaths.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 2
     }
   },
   "packages/client/src/svgs/GeminiIcon.tsx": {
@@ -2272,21 +2257,6 @@
   "packages/client/src/svgs/SendMessageIcon.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
-    }
-  },
-  "packages/client/src/svgs/SheetPaths.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 1
-    }
-  },
-  "packages/client/src/svgs/TextPaths.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 5
-    }
-  },
-  "packages/client/src/svgs/VideoPaths.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 2
     }
   }
 }

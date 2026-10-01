@@ -29,6 +29,14 @@
   --color-illustration-subtle: rgb(var(--illustration-subtle));
   --color-illustration: rgb(var(--illustration));
   --color-illustration-strong: rgb(var(--illustration-strong));
+  --color-file-document: rgb(var(--file-document));
+  --color-file-sheet: rgb(var(--file-sheet));
+  --color-file-code: rgb(var(--file-code));
+  --color-file-artifact: rgb(var(--file-artifact));
+  --color-file-audio: rgb(var(--file-audio));
+  --color-file-video: rgb(var(--file-video));
+  --color-file-generic: rgb(var(--file-generic));
+  --color-file-ink: rgb(var(--file-ink));
   --color-presentation: rgb(var(--presentation));
   --color-accent-primary: rgb(var(--accent-primary));
   --color-accent-primary-hover: rgb(var(--accent-primary-hover));

@@ -5,8 +5,10 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { TStartupConfig } from 'librechat-data-provider';
 import { MCPAppsPolicyProvider } from '~/Providers/MCPAppsPolicyContext';
 import { ToolAuthWarningContext } from '../auth';
+import { SoleToolContext } from '../disclosure';
 import ToolCall from '../ToolCall';
 import { logger } from '~/utils';
+import store from '~/store';
 
 // Mock dependencies
 jest.mock('~/hooks', () => ({
@@ -981,5 +983,54 @@ describe('ToolCall failure fast path', () => {
       </RecoilRoot>,
     );
     expect(screen.getByTestId('subtitle')).toHaveTextContent('HTTP 429 from github.com');
+  });
+});
+
+describe('ToolCall sole tool disclosure', () => {
+  it('opens the only call of a group when it returned no output but has arguments', () => {
+    const { container } = render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value>
+            <ToolCall
+              args='{"query":"weather"}'
+              name="lookup"
+              output=""
+              initialProgress={1}
+              isSubmitting={false}
+            />
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    const panel = container.querySelector('[style*="grid-template-rows"]') as HTMLElement;
+    expect(panel.style.gridTemplateRows).toBe('1fr');
+    expect(screen.getByTestId('tool-call-info')).toBeInTheDocument();
+  });
+
+  it('keeps the preference opening a call only once it has output', () => {
+    const { container } = render(
+      <RecoilRoot initializeState={({ set }) => set(store.autoExpandTools, true)}>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <ToolCall
+            args='{"query":"weather"}'
+            name="lookup"
+            output=""
+            initialProgress={1}
+            isSubmitting={false}
+          />
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    const panel = container.querySelector('[style*="grid-template-rows"]') as HTMLElement;
+    expect(panel.style.gridTemplateRows).toBe('0fr');
   });
 });

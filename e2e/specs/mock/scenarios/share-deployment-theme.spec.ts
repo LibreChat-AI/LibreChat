@@ -203,4 +203,51 @@ test.describe('deployment theme on a shared link', () => {
     await page.getByTestId('messages-view').waitFor({ timeout: 20000 });
     expect(await page.locator('html').getAttribute('data-theme')).toBe('clickhouse');
   });
+
+  test("an in-app navigation to a shared link never paints the viewer's theme while its config loads @scenario:shared-link-in-app-navigation-skips-viewer-theme", async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await serveThemes(page, VIEWER_THEME, 'clickhouse');
+    const shareId = await createSharedLink(page);
+    await expectViewerTheme(page);
+    await page.route(
+      (url) => url.pathname === `/api/share/${shareId}/config`,
+      async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        await route.fallback();
+      },
+    );
+
+    /** Every frame from here on, sampled before it paints, with the route it showed. */
+    await page.evaluate(() => {
+      const frames: Array<{ path: string; theme: string | null }> = [];
+      (window as Window & { __shareFrames?: typeof frames }).__shareFrames = frames;
+      const sample = () => {
+        frames.push({
+          path: window.location.pathname,
+          theme: document.documentElement.getAttribute('data-theme'),
+        });
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    /** The router navigates in place, as the Shared Links entry does: the app and its
+     *  startup config answer stay mounted, unlike a document load. */
+    await page.evaluate((id) => {
+      window.history.pushState({}, '', `/share/${id}`);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }, shareId);
+    await expect(page.getByTestId('messages-view')).toBeVisible({ timeout: 20000 });
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
+
+    const frames = await page.evaluate(
+      () =>
+        (window as Window & { __shareFrames?: Array<{ path: string; theme: string | null }> })
+          .__shareFrames ?? [],
+    );
+    const onShare = frames.filter((frame) => frame.path.startsWith('/share/'));
+    expect(onShare.length).toBeGreaterThan(0);
+    expect(onShare.filter((frame) => frame.theme === 'viewer')).toEqual([]);
+  });
 });

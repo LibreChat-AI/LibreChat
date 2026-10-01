@@ -3,7 +3,7 @@ import { v4 } from 'uuid';
 import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
 import type { TPendingSteer } from 'librechat-data-provider';
-import type { QueuedMessage, QueuedMessageOrigin } from '~/store/families';
+import type { QueuedMessage, QueuedMessageOrigin } from '~/hooks/Chat/queue';
 import type { GenerationProtocolVersion } from '~/data-provider';
 import type { SteerCarriedContext } from '~/utils';
 import {
@@ -17,6 +17,7 @@ import {
   canRestoreRecovery,
 } from '~/components/Chat/Steering/recovery';
 import { fetchStreamStatus, getGenerationProtocolVersion } from '~/data-provider';
+import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 import { useFileMapContext } from '~/Providers';
 import store from '~/store';
 
@@ -119,7 +120,7 @@ export default function useSteerConvert() {
         set(store.pendingSteersByConvoId(conversationId), (prev) =>
           prev.filter((steer) => !steerIds.has(steer.steerId)),
         );
-        set(store.queuedMessagesByConvoId(conversationId), (prev) => {
+        jotaiStore.set(queuedMessagesByConvoId(conversationId), (prev) => {
           /** A legacy status read is destructive: if a v2 live-final path
            * already created a receipt-bound item before the claim reached an
            * old replica, that source no longer exists. Downgrade the existing

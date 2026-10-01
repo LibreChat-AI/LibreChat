@@ -29,6 +29,8 @@ function hexToRgb(value: string): Rgb {
   ];
 }
 
+/** WCAG 1.4.3 contrast, the floor the file-type tiles hold their glyph to. */
+const WCAG_AA_NORMAL = 4.5;
 /** WCAG 1.4.6 enhanced contrast, the reason these modes exist. */
 const WCAG_AAA_NORMAL = 7;
 /** WCAG 1.4.11 non-text contrast, for borders, rings, marks and fills. */
@@ -272,6 +274,22 @@ describe.each([
   it('keeps solid fills at WCAG AAA against both their label and the page', () => {
     expect(below(theme, WCAG_AAA_NORMAL, ['rgb-text-on-status'], solidFills)).toEqual([]);
     expect(below(theme, WCAG_AAA_NORMAL, solidFills, ['rgb-surface-primary'])).toEqual([]);
+  });
+
+  /** File-type tiles carry a glyph in `file-ink`; the legacy hues let the spreadsheet tile fall
+   *  to 2.95:1 under a white glyph, so each mode steps every hue to the far side of its ink. */
+  it('keeps every file-type tile at WCAG AA against its glyph and the page', () => {
+    const tiles: Array<keyof IThemeRGB> = [
+      'rgb-file-document',
+      'rgb-file-sheet',
+      'rgb-file-code',
+      'rgb-file-artifact',
+      'rgb-file-audio',
+      'rgb-file-video',
+      'rgb-file-generic',
+    ];
+    expect(below(theme, WCAG_AA_NORMAL, ['rgb-file-ink'], tiles)).toEqual([]);
+    expect(below(theme, WCAG_AA_NORMAL, tiles, ['rgb-surface-primary'])).toEqual([]);
   });
 
   it('paints its status labels in the ink of the opposing canvas', () => {
