@@ -902,17 +902,15 @@ const popoverCorner = (mode: ThemeMode) => {
   }
 };
 
-/**
- * The Dropdown menu's shadow, which reads `menuShadow`. The app stylesheet repeats the package rule
- * and adds the dark rule, and the app's rules win, so dark reads that one.
- */
+/** The Dropdown menu's shadow, which reads `menuShadow`: `.popover-ui` in light, and its `.dark`
+ *  rule in dark, each repeated by the app stylesheet. */
 const menuShadow = (mode: ThemeMode) =>
-  mode === 'dark'
-    ? resolveRoleVar(
-        cssValue(APP_STYLESHEET, '.popover-ui:where(.dark, .dark *)', 'box-shadow'),
-        mode,
-      )
-    : appCopyResolved('Dropdown.css', '.popover-ui', 'box-shadow', mode);
+  appCopyResolved(
+    'Dropdown.css',
+    mode === 'dark' ? '.popover-ui:where(.dark, .dark *)' : '.popover-ui',
+    'box-shadow',
+    mode,
+  );
 
 /** The Tooltip's shadow, which reads `tooltipShadow`: `.tooltip` in light, and its `.dark` rule in
  *  dark. Tooltip renders the bare `tooltip` class, so nothing but these rules paints it. */
