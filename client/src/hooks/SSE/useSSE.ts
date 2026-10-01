@@ -20,9 +20,9 @@ import { clearComposerDrafts, applyPendingAction, findPendingActionMessageIndex 
 import { startedAsNewConversation, buildCreatedInitialResponse } from './useEventHandlers';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { useGetStartupConfig, useGetUserBalance } from '~/data-provider';
+import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useAuthContext } from '~/hooks/AuthContext';
 import useEventHandlers from './useEventHandlers';
-import { createSSETransport } from './transport';
 import useUsageHandler from './useUsageHandler';
 import store from '~/store';
 
@@ -47,6 +47,7 @@ export default function useSSE(
   const setActiveRunId = useSetRecoilState(store.activeRunFamily(runIndex));
 
   const { token, isAuthenticated } = useAuthContext();
+  const transport = useChatTransport();
   const [completed, setCompleted] = useState(new Set());
   const setAbortScroll = useSetRecoilState(store.abortScrollFamily(runIndex));
   const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(runIndex));
@@ -308,10 +309,9 @@ export default function useSSE(
 
     const controller = new AbortController();
     setIsSubmitting(true);
-    createSSETransport({ token }).send(
-      { server: payloadData.server, payload },
-      { signal: controller.signal, onEvent },
-    );
+    transport
+      .stream({ token })
+      .send({ server: payloadData.server, payload }, { signal: controller.signal, onEvent });
 
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps

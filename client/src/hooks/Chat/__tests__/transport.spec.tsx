@@ -1,12 +1,18 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { ChatEvent, ChatTransportOptions, TSubmission } from 'librechat-data-provider';
+import type {
+  ChatEvent,
+  TSubmission,
+  ChatTransportOptions,
+  ChatTransportRequest,
+} from 'librechat-data-provider';
 import type { Transport } from '~/hooks/Chat/contract';
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import useResumableSSE from '~/hooks/SSE/useResumableSSE';
+import useSSE from '~/hooks/SSE/useSSE';
 import store from '~/store';
 
 jest.mock('~/hooks/AuthContext', () => ({
@@ -21,11 +27,11 @@ type StreamCall = { url: string; options: ChatTransportOptions };
  */
 function createFakeTransport(overrides: Partial<Transport> = {}) {
   const streams: StreamCall[] = [];
-  const sends: { server: string; options: ChatTransportOptions }[] = [];
+  const sends: (ChatTransportRequest & { options: ChatTransportOptions })[] = [];
   const transport: Transport = {
     stream: jest.fn(() => ({
       send: (request, options) => {
-        sends.push({ server: request.server, options });
+        sends.push({ ...request, options });
       },
       reconnectToStream: (request, options) => {
         streams.push({ url: request.url, options });
@@ -138,6 +144,41 @@ describe('chat transport boundary', () => {
       await waitFor(() => expect(helpers.setIsSubmitting).toHaveBeenCalledWith(false));
       expect(fake.transport.start).toHaveBeenCalledTimes(1);
       expect(fake.streams).toHaveLength(0);
+      const written = helpers.setMessages.mock.calls.flatMap(([messages]) => messages);
+      expect(written.some((message: { error?: boolean }) => message.error === true)).toBe(true);
+    });
+  });
+
+  describe('send (assistants)', () => {
+    it('streams the turn through the host transport and closes it on unmount', () => {
+      const fake = createFakeTransport();
+      const submission = buildSubmission('assistants');
+      const helpers = buildChatHelpers();
+      const { unmount } = renderHook(() => useSSE(submission, helpers), {
+        wrapper: createWrapper(fake.transport),
+      });
+
+      expect(fake.transport.stream).toHaveBeenCalledWith({ token: 'test-token' });
+      expect(fake.sends).toHaveLength(1);
+      expect(fake.sends[0].server).toBe('/api/assistants/v2/chat');
+      expect(fake.sends[0].payload).toEqual(expect.objectContaining({ text: 'Hello' }));
+      expect(helpers.setIsSubmitting).toHaveBeenCalledWith(true);
+
+      const { signal } = fake.sends[0].options;
+      expect(signal.aborted).toBe(false);
+      unmount();
+      expect(signal.aborted).toBe(true);
+    });
+
+    it('writes a stream error from the transport as an error message', () => {
+      const fake = createFakeTransport();
+      const submission = buildSubmission('assistants');
+      const helpers = buildChatHelpers();
+      renderHook(() => useSSE(submission, helpers), { wrapper: createWrapper(fake.transport) });
+
+      act(() => fake.sends[0].options.onEvent({ type: 'error', data: undefined }));
+
+      expect(helpers.setIsSubmitting).toHaveBeenLastCalledWith(false);
       const written = helpers.setMessages.mock.calls.flatMap(([messages]) => messages);
       expect(written.some((message: { error?: boolean }) => message.error === true)).toBe(true);
     });
