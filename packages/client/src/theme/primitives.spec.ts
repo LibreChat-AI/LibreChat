@@ -47,6 +47,37 @@ const suppressions: Record<string, Record<string, { count: number }>> = JSON.par
   readFileSync(join(repoRoot, 'eslint-suppressions.json'), 'utf8'),
 );
 
+/** Every Tailwind palette hue, black and white, under any color utility. */
+const rawPalette = new RegExp(
+  `\\b(?:bg|text|border(?:-[xytblrse])?|ring|outline|fill|stroke|divide|accent|caret|decoration|placeholder|from|via|to|shadow)-(?:${[
+    'black',
+    'white',
+    'slate',
+    'gray',
+    'zinc',
+    'neutral',
+    'stone',
+    'red',
+    'orange',
+    'amber',
+    'yellow',
+    'lime',
+    'green',
+    'emerald',
+    'teal',
+    'cyan',
+    'sky',
+    'blue',
+    'indigo',
+    'violet',
+    'purple',
+    'fuchsia',
+    'pink',
+    'rose',
+  ].join('|')})(?:-[0-9]+)?\\b`,
+  'g',
+);
+
 const isComment = (line: string) => /^\s*(\*|\/\/|\/\*)/.test(line);
 
 /** A stylesheet with every `var(--role, fallback)` reduced to `var(--role)`. */
@@ -91,9 +122,7 @@ function hardCoded(file: string): string[] {
     }
   } else {
     const text = code.join('\n');
-    for (const match of text.matchAll(
-      /\b(?:bg|text|border|ring)-(?:black|white|gray|red|green|blue|yellow|slate|zinc|neutral)(?:-[0-9]+)?\b/g,
-    )) {
+    for (const match of text.matchAll(rawPalette)) {
       found.add(`${file}: raw palette ${match[0]}`);
     }
     for (const match of text.matchAll(
@@ -124,6 +153,12 @@ describe('the ten named primitives', () => {
 
     expect(driven).toEqual(themeDriven);
     expect(driven.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it('reads any raw palette hue under any color utility', () => {
+    const hits = (classes: string) => classes.match(rawPalette) ?? [];
+    expect(hits('bg-orange-500 text-pink-600 border-emerald-500 fill-white')).toHaveLength(4);
+    expect(hits('bg-surface-primary text-text-secondary border-border-light')).toEqual([]);
   });
 
   it('sets aside a role fallback in a stylesheet but keeps a painted literal', () => {
