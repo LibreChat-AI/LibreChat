@@ -236,9 +236,9 @@ export default function DeploymentTheme({ children }: { children: React.ReactNod
       return;
     }
     clearThemeCache();
-    if (cacheAction !== 'disown') {
-      setCached(undefined);
-    }
+    setCached((entry) =>
+      cacheAction === 'disown' && entry ? { ...entry, disowned: true } : undefined,
+    );
   }, [cacheAction, owner, configTheme, themeDefinition, setCached]);
 
   /**

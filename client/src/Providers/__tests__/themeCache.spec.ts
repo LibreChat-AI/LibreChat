@@ -53,6 +53,18 @@ describe('reconcileThemeCache', () => {
     expect(otherUser).toEqual({ theme: undefined, cache: 'disown' });
   });
 
+  it('never paints a disowned entry, even once the identity is unknown again', () => {
+    const disowned = { ...cached, disowned: true as const };
+    expect(reconcileThemeCache({ cached: disowned })).toEqual({ theme: undefined, cache: 'keep' });
+    expect(
+      reconcileThemeCache({
+        cached: disowned,
+        owner: OWNER,
+        answer: { theme: 'librechat', current: true },
+      }),
+    ).toEqual({ theme: 'librechat', cache: 'write' });
+  });
+
   it('applies a signed-out answer without writing or clearing the cache', () => {
     expect(reconcileThemeCache({ cached, answer: { theme: undefined, current: true } })).toEqual({
       theme: undefined,

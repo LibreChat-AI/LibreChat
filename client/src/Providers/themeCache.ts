@@ -19,11 +19,14 @@ export type ThemeCacheEntry = {
   /** The raw `interface.theme`, which the app resolves itself until the config answers. */
   source: NonNullable<DeploymentThemeValue>;
   modes: { light: ResolvedThemeStyle; dark: ResolvedThemeStyle };
+  /** In memory only: an identity mismatch proved this entry is someone else's. */
+  disowned?: true;
 };
 
 /**
- * `disown` removes the stored entry but keeps it in memory, so the identity mismatch it
- * proves keeps holding until the new identity's own answer arrives.
+ * `disown` removes the stored entry and marks the one in memory, so the identity mismatch
+ * it proves keeps holding, even once the identity is unknown again, until a current
+ * answer arrives.
  */
 export type ThemeCacheAction = 'keep' | 'clear' | 'disown' | 'write';
 
@@ -145,6 +148,9 @@ export function reconcileThemeCache({
       return { theme: answer.theme, cache: 'keep' };
     }
     return { theme: answer.theme, cache: answer.theme == null ? 'clear' : 'write' };
+  }
+  if (cached?.disowned) {
+    return { theme: undefined, cache: 'keep' };
   }
   if (cached && owner !== undefined && cached.owner !== owner) {
     return { theme: undefined, cache: 'disown' };
