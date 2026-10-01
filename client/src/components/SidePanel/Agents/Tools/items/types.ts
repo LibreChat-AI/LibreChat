@@ -80,6 +80,13 @@ export interface ActionItem extends ItemBase {
 
 export type AgentItem = BuiltinItem | ToolItem | McpItem | SkillItem | ActionItem;
 
+/** A live state shown beside an item, such as an MCP server's connection. */
+export interface ItemStatus {
+  label: string;
+  /** Semantic `bg-status-*` fill for the dot that accompanies the label. */
+  tone: string;
+}
+
 export type ItemFilter = {
   search?: string;
   kind?: AgentItemKind | 'all';

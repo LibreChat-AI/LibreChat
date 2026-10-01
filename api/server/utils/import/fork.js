@@ -1,5 +1,10 @@
 const { v4: uuidv4 } = require('uuid');
-const { cloneLineage, withoutTraceRefs, getAllMessagesUpToParent } = require('@librechat/api');
+const {
+  cloneLineage,
+  withoutTraceRefs,
+  isTemporaryRecord,
+  getAllMessagesUpToParent,
+} = require('@librechat/api');
 const { logger, tenantStorage } = require('@librechat/data-schemas');
 const { EModelEndpoint, Constants, ForkOptions } = require('librechat-data-provider');
 const { getConvo, getMessages, getSharedMessages } = require('~/models');
@@ -51,6 +56,7 @@ function cloneMessagesWithTimestamps(
  * @param {boolean} [params.records=false] - Optional flag for returning actual database records or resulting conversation and messages.
  * @param {boolean} [params.splitAtTarget=false] - Optional flag for splitting the messages at the target message level.
  * @param {string} [params.latestMessageId] - latestMessageId - Required if splitAtTarget is true.
+ * @param {object} [params.interfaceConfig] - Runtime interface config used to apply retention to cloned records.
  * @param {object} [params.filters] - Source-aware content filters applied before cloned records are persisted.
  * @param {object} [params.legacyPii] - Legacy messageFilter.pii applied before cloned records are persisted.
  * @param {(userId: string, interfaceConfig?: object, filters?: object, legacyPii?: object) => ImportBatchBuilder} [params.builderFactory] - Optional factory function for creating an ImportBatchBuilder instance.
@@ -68,6 +74,7 @@ async function forkConversation({
   filters,
   legacyPii,
   builderFactory = createImportBatchBuilder,
+  interfaceConfig,
 }) {
   try {
     const originalConvo = await getConvo(requestUserId, originalConvoId);
@@ -86,8 +93,9 @@ async function forkConversation({
 
     const importBatchBuilder =
       legacyPii == null
-        ? builderFactory(requestUserId, undefined, filters)
-        : builderFactory(requestUserId, undefined, filters, legacyPii);
+        ? builderFactory(requestUserId, interfaceConfig, filters)
+        : builderFactory(requestUserId, interfaceConfig, filters, legacyPii);
+    importBatchBuilder.sourceIsTemporary = isTemporaryRecord(originalConvo);
     importBatchBuilder.startConversation(originalConvo.endpoint ?? EModelEndpoint.openAI);
 
     let messagesToClone = [];
@@ -479,6 +487,7 @@ async function forkSharedConversation({
  * @param {string} params.userId - The ID of the user duplicating the conversation.
  * @param {string} params.conversationId - The ID of the conversation to duplicate.
  * @param {string} [params.title] - Optional title override for the duplicate.
+ * @param {object} [params.interfaceConfig] - Runtime interface config used to apply retention to cloned records.
  * @param {object} [params.filters] - Source-aware content filters applied before cloned records are persisted.
  * @param {object} [params.legacyPii] - Legacy messageFilter.pii applied before cloned records are persisted.
  * @param {(userId: string, interfaceConfig?: object, filters?: object, legacyPii?: object) => ImportBatchBuilder} [params.builderFactory] - Optional factory function for creating an ImportBatchBuilder instance.
@@ -488,6 +497,7 @@ async function duplicateConversation({
   userId,
   conversationId,
   title,
+  interfaceConfig,
   filters,
   legacyPii,
   builderFactory = createImportBatchBuilder,
@@ -509,8 +519,9 @@ async function duplicateConversation({
 
   const importBatchBuilder =
     legacyPii == null
-      ? builderFactory(userId, undefined, filters)
-      : builderFactory(userId, undefined, filters, legacyPii);
+      ? builderFactory(userId, interfaceConfig, filters)
+      : builderFactory(userId, interfaceConfig, filters, legacyPii);
+  importBatchBuilder.sourceIsTemporary = isTemporaryRecord(originalConvo);
   importBatchBuilder.startConversation(originalConvo.endpoint ?? EModelEndpoint.openAI);
 
   cloneMessagesWithTimestamps(messagesToClone, importBatchBuilder);

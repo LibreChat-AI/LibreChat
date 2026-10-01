@@ -54,6 +54,14 @@ jest.mock('~/data-provider', () => ({ useMessagesInfiniteQuery: jest.fn() }));
 jest.mock('~/Providers', () => ({ useFileMapContext: () => ({}) }));
 jest.mock('@librechat/client', () => ({
   Spinner: () => <div data-testid="spinner" />,
+  /* The shared panel empty state, with the glyph dropped: what this route's tests
+     read is the line it carries. */
+  EmptyState: ({ title, description }: { title?: string; description?: string }) => (
+    <div>
+      {title != null && <p>{title}</p>}
+      {description != null && <p>{description}</p>}
+    </div>
+  ),
   useToastContext: () => ({ showToast: jest.fn() }),
 }));
 jest.mock('~/hooks', () => ({
@@ -108,8 +116,8 @@ describe('Search route', () => {
       'focus-visible:ring-2',
       'focus-visible:ring-ring-primary',
     );
-    expect(container.firstElementChild).toHaveClass('bg-presentation');
-    expect(container.querySelector('.bg-gradient-to-t')).toHaveClass('from-presentation');
+    expect(container.firstElementChild).toHaveClass('bg-surface-primary-alt');
+    expect(container.querySelector('.bg-gradient-to-t')).toHaveClass('from-surface-primary-alt');
   });
 
   it('keeps results mounted while typing (does NOT flash the full spinner)', () => {
@@ -150,11 +158,14 @@ describe('Search route', () => {
     expect(screen.queryByText('com_ui_nothing_found')).not.toBeInTheDocument();
   });
 
-  it('renders nothing when there is no query and the user is idle', () => {
-    mockUseRecoilValue.mockReturnValue(searchState({ debouncedQuery: '' }));
+  /** Standing on the results route with nothing searched for: a blank page reads as
+   *  a failure, so the route says what it is waiting for. */
+  it('invites a query when there is none and the user is idle', () => {
+    mockUseRecoilValue.mockReturnValue(searchState({ query: '', debouncedQuery: '' }));
     mockUseQuery.mockReturnValue(queryResult({ data: undefined }));
-    const { container } = render(<Search />);
-    expect(container).toBeEmptyDOMElement();
+    render(<Search />);
+    expect(screen.getByText('com_ui_search_a_message')).toBeInTheDocument();
+    expect(screen.queryByTestId('spinner')).not.toBeInTheDocument();
   });
 
   it('shows the spinner during the initial debounce (query typed, not yet debounced)', () => {
@@ -164,6 +175,25 @@ describe('Search route', () => {
     mockUseQuery.mockReturnValue(queryResult({ data: undefined }));
     render(<Search />);
     expect(screen.getByTestId('spinner')).toBeInTheDocument();
+  });
+
+  it('states the result count above the list, once', () => {
+    mockUseRecoilValue.mockReturnValue(searchState());
+    mockUseQuery.mockReturnValue(queryResult());
+    render(<Search />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_result_found');
+    /** The visible line IS the live region: a second, off-screen copy would have a
+     *  screen reader announce the count twice. */
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('marks the count as partial while more pages remain', () => {
+    mockUseRecoilValue.mockReturnValue(searchState());
+    mockUseQuery.mockReturnValue(queryResult({ hasNextPage: true }));
+    render(<Search />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_results_found_more');
   });
 
   it('announces empty results through a live region', () => {

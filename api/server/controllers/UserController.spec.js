@@ -22,6 +22,11 @@ const mockRestoreUserSchedules = jest.fn().mockResolvedValue(undefined);
 const mockGetWebSearchInstallEntries = jest.fn();
 const mockInvalidateCodeEnvironmentConfigCache = jest.fn().mockResolvedValue(undefined);
 const mockRevokeUserCodeEnvironmentWorkers = jest.fn().mockResolvedValue(0);
+const mockEmailChangeService = {
+  requestEmailChange: jest.fn(),
+  confirmEmailChange: jest.fn(),
+};
+const mockCreateEmailChangeService = jest.fn(() => mockEmailChangeService);
 
 jest.mock('@librechat/data-schemas', () => {
   const actual = jest.requireActual('@librechat/data-schemas');
@@ -40,6 +45,7 @@ jest.mock('~/models', () => {
   const _mongoose = require('mongoose');
   return {
     deleteAllUserSessions: jest.fn().mockResolvedValue(undefined),
+    deletePasskeysByUser: jest.fn().mockResolvedValue(undefined),
     deleteAllSharedLinks: jest.fn().mockResolvedValue(undefined),
     deleteAllAgentApiKeys: jest.fn().mockResolvedValue(undefined),
     deleteConversationTags: jest.fn().mockResolvedValue(undefined),
@@ -68,6 +74,7 @@ jest.mock('~/models', () => {
     updateUser: jest.fn(),
     acceptTerms: jest.fn(),
     getUserById: jest.fn().mockResolvedValue(null),
+    findUser: jest.fn().mockResolvedValue(null),
     findToken: jest.fn(),
     getFiles: jest.fn().mockResolvedValue([]),
     removeUserFromAllGroups: jest.fn().mockImplementation(async (userId) => {
@@ -97,6 +104,7 @@ jest.mock('sharp', () =>
 
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
+  createEmailChangeService: (...args) => mockCreateEmailChangeService(...args),
   needsRefresh: jest.fn(),
   getNewS3URL: jest.fn(),
   getWebSearchInstallEntries: (...args) => mockGetWebSearchInstallEntries(...args),
@@ -178,8 +186,10 @@ const {
 } = require('./UserController');
 const { Group } = require('~/db/models');
 const {
+  findUser,
   deleteConvos,
   acceptTerms,
+  deletePasskeysByUser,
   deleteUserById,
   deleteUserCodeEnvironments,
   deleteMessages,
@@ -276,6 +286,87 @@ describe('updateUserPluginsController', () => {
 
     expect(deleteUserPluginAuth).toHaveBeenCalledWith('user-id', 'KEENABLE_API_URL');
     expect(updateUserPluginAuth).not.toHaveBeenCalled();
+  });
+});
+
+describe('emailChangeService dependencies', () => {
+  const emailChangeDeps = mockCreateEmailChangeService.mock.calls[0][0];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    findUser.mockResolvedValue(null);
+  });
+
+  it('constrains tenant-less email conflict checks to default-tenant users', async () => {
+    await emailChangeDeps.findUserByEmail('new@example.com');
+
+    expect(findUser).toHaveBeenCalledWith(
+      {
+        email: 'new@example.com',
+        $or: [{ tenantId: { $exists: false } }, { tenantId: null }],
+      },
+      'email _id tenantId',
+    );
+  });
+
+  it('rechecks the domain policy against the full principal config, not the base config', async () => {
+    const { getAppConfig } = require('~/server/services/Config');
+    getAppConfig.mockResolvedValue({ registration: { allowedDomains: ['allowed.com'] } });
+
+    const policy = await emailChangeDeps.resolvePolicy({
+      _id: '507f1f77bcf86cd799439011',
+      role: 'USER',
+      idOnTheSource: 'source-id',
+    });
+
+    expect(policy.allowedDomains).toEqual(['allowed.com']);
+    expect(getAppConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: '507f1f77bcf86cd799439011', role: 'USER' }),
+    );
+    expect(getAppConfig).not.toHaveBeenCalledWith(expect.objectContaining({ baseOnly: true }));
+  });
+
+  it('resolves a tenant-less domain policy outside the cross-tenant system context', async () => {
+    const { getAppConfig } = require('~/server/services/Config');
+    const { getTenantId, SYSTEM_TENANT_ID } = require('@librechat/data-schemas');
+    let observedTenant = 'unset';
+    getAppConfig.mockImplementation(async () => {
+      observedTenant = getTenantId();
+      return { registration: { allowedDomains: ['allowed.com'] } };
+    });
+
+    await emailChangeDeps.resolvePolicy({
+      _id: '507f1f77bcf86cd799439011',
+      role: 'USER',
+    });
+
+    expect(observedTenant).not.toBe(SYSTEM_TENANT_ID);
+    expect(getAppConfig).toHaveBeenCalledWith(expect.objectContaining({ tenantId: undefined }));
+  });
+
+  it('keeps the domain policy of a tenant user scoped to their own tenant', async () => {
+    const { getAppConfig } = require('~/server/services/Config');
+    const { getTenantId } = require('@librechat/data-schemas');
+    let observedTenant = 'unset';
+    getAppConfig.mockImplementation(async () => {
+      observedTenant = getTenantId();
+      return { registration: { allowedDomains: ['tenant.com'] } };
+    });
+
+    await emailChangeDeps.resolvePolicy({
+      _id: '507f1f77bcf86cd799439011',
+      role: 'USER',
+      tenantId: 'tenant-a',
+    });
+
+    expect(observedTenant).toBe('tenant-a');
+    expect(getAppConfig).toHaveBeenCalledWith(expect.objectContaining({ tenantId: 'tenant-a' }));
+  });
+
+  afterEach(() => {
+    const { getAppConfig } = require('~/server/services/Config');
+    getAppConfig.mockReset();
+    getAppConfig.mockResolvedValue({});
   });
 });
 
@@ -480,12 +571,14 @@ describe('deleteUserController', () => {
 
   it('should return 200 on successful deletion', async () => {
     const userId = new mongoose.Types.ObjectId();
-    const req = { user: { id: userId.toString(), _id: userId, email: 'test@test.com' } };
+    const userIdStr = userId.toString();
+    const req = { user: { id: userIdStr, _id: userId, email: 'test@test.com' } };
 
     await deleteUserController(req, mockRes);
 
     expect(mockRes.status).toHaveBeenCalledWith(200);
     expect(mockRes.send).toHaveBeenCalledWith({ message: 'User deleted' });
+    expect(deletePasskeysByUser).toHaveBeenCalledWith(userIdStr);
     expect(beginAgentTriggerUserDeletion).toHaveBeenCalledWith(userId.toString(), expect.any(Date));
     expect(mockPrepareAgentTriggerUserPurge).toHaveBeenCalledWith(
       userId.toString(),

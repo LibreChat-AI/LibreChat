@@ -2,6 +2,8 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Tools, Constants, dataService } from 'librechat-data-provider';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import type { TStartupConfig } from 'librechat-data-provider';
+import { MCPAppsPolicyProvider } from '~/Providers/MCPAppsPolicyContext';
 import { ToolAuthWarningContext } from '../auth';
 import ToolCall from '../ToolCall';
 import { logger } from '~/utils';
@@ -43,6 +45,8 @@ jest.mock('~/hooks/MCP', () => {
   const mcpServerNames: string[] = [];
   return {
     useMCPIconMap: () => new Map(),
+    useAppBridge: jest.fn(),
+    useMCPAppFrame: jest.requireActual('~/hooks/MCP/useMCPAppFrame').useMCPAppFrame,
     useMCPServerNames: () => mcpServerNames,
   };
 });
@@ -87,13 +91,33 @@ jest.mock('../Parts', () => ({
   ),
 }));
 
-jest.mock('@librechat/client', () => ({
-  Button: ({ children, onClick, ...props }: any) => (
-    <button onClick={onClick} {...props}>
-      {children}
-    </button>
-  ),
-}));
+jest.mock('@librechat/client', () => {
+  const DialogPart = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
+  const DialogButton = ({
+    children,
+    onClick,
+  }: {
+    children?: React.ReactNode;
+    onClick?: () => void;
+  }) => <button onClick={onClick}>{children}</button>;
+  return {
+    Button: ({ children, onClick, ...props }: any) => (
+      <button onClick={onClick} {...props}>
+        {children}
+      </button>
+    ),
+    Spinner: (props: React.HTMLAttributes<HTMLSpanElement>) => <span {...props} />,
+    AlertDialog: ({ children, open }: { children?: React.ReactNode; open: boolean }) =>
+      open ? <div>{children}</div> : null,
+    AlertDialogContent: DialogPart,
+    AlertDialogHeader: DialogPart,
+    AlertDialogTitle: DialogPart,
+    AlertDialogDescription: DialogPart,
+    AlertDialogFooter: DialogPart,
+    AlertDialogAction: DialogButton,
+    AlertDialogCancel: DialogButton,
+  };
+});
 
 jest.mock('lucide-react', () => ({
   ChevronDown: () => <span>{'ChevronDown'}</span>,
@@ -124,6 +148,7 @@ jest.mock('librechat-data-provider', () => {
 });
 
 describe('ToolCall', () => {
+  const originalSandboxUrl = process.env.VITE_MCP_SANDBOX_URL;
   const mockProps = {
     args: '{"test": "input"}',
     name: 'testFunction',
@@ -132,12 +157,30 @@ describe('ToolCall', () => {
     isSubmitting: false,
   };
 
-  const renderWithRecoil = (component: React.ReactElement) => {
-    return render(<RecoilRoot>{component}</RecoilRoot>);
+  const renderWithRecoil = (
+    component: React.ReactElement,
+    mcpApps = { enabled: true, legacyHtmlEnabled: true },
+  ) => {
+    return render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider startupConfig={{ mcpApps } as TStartupConfig} ready userId="user-1">
+          {component}
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env.VITE_MCP_SANDBOX_URL = 'http://sandbox.localhost:3081/api/mcp/sandbox';
+  });
+
+  afterAll(() => {
+    if (originalSandboxUrl == null) {
+      delete process.env.VITE_MCP_SANDBOX_URL;
+    } else {
+      process.env.VITE_MCP_SANDBOX_URL = originalSandboxUrl;
+    }
   });
 
   describe('tool preparation feedback', () => {
@@ -225,26 +268,24 @@ describe('ToolCall', () => {
 
       renderWithRecoil(<ToolCall {...mockProps} attachments={attachments as any} />);
 
+      expect(screen.getByTestId('attachment-group')).toBeInTheDocument();
+
       fireEvent.click(screen.getByTestId('progress-text'));
 
-      const toolCallInfo = screen.getByTestId('tool-call-info');
-      expect(toolCallInfo).toBeInTheDocument();
-
-      const attachmentsData = toolCallInfo.getAttribute('data-attachments');
-      expect(attachmentsData).toBe(JSON.stringify(attachments));
+      expect(screen.getByTestId('tool-call-info')).toBeInTheDocument();
     });
 
-    it('should pass empty array when no attachments', () => {
+    it('should render ToolCallInfo without attachment-group when no attachments', () => {
       renderWithRecoil(<ToolCall {...mockProps} />);
 
+      expect(screen.queryByTestId('attachment-group')).not.toBeInTheDocument();
+
       fireEvent.click(screen.getByTestId('progress-text'));
 
-      const toolCallInfo = screen.getByTestId('tool-call-info');
-      const attachmentsData = toolCallInfo.getAttribute('data-attachments');
-      expect(attachmentsData).toBeNull(); // JSON.stringify(undefined) returns undefined, so attribute is not set
+      expect(screen.getByTestId('tool-call-info')).toBeInTheDocument();
     });
 
-    it('should pass multiple attachments of different types', () => {
+    it('should render AttachmentGroup with all attachments of mixed types', () => {
       const attachments = [
         {
           type: Tools.ui_resources,
@@ -268,11 +309,130 @@ describe('ToolCall', () => {
 
       renderWithRecoil(<ToolCall {...mockProps} attachments={attachments as any} />);
 
-      fireEvent.click(screen.getByTestId('progress-text'));
+      const attachmentGroup = screen.getByTestId('attachment-group');
+      expect(JSON.parse(attachmentGroup.textContent!)).toEqual(attachments);
+    });
 
-      const toolCallInfo = screen.getByTestId('tool-call-info');
-      const attachmentsData = toolCallInfo.getAttribute('data-attachments');
-      expect(JSON.parse(attachmentsData!)).toEqual(attachments);
+    it('renders an iframe for an inline ui:// text resource attached to the tool call', () => {
+      const attachments = [
+        {
+          type: Tools.ui_resources,
+          messageId: 'msg1',
+          toolCallId: 'tool1',
+          conversationId: 'conv1',
+          [Tools.ui_resources]: [
+            {
+              uri: 'ui://test-server/inline.html',
+              mimeType: 'text/html;profile=mcp-app',
+              text: '<p>inline resource</p>',
+              resourceId: 'inline-1',
+              toolName: 'test-tool',
+              serverName: 'test-server',
+              toolArgs: { owner: 'resource' },
+              content: [{ type: 'text', text: 'resource result' }],
+              structuredContent: { owner: 'resource' },
+            },
+          ],
+        },
+      ];
+
+      const { container } = renderWithRecoil(
+        <ToolCall
+          {...mockProps}
+          args={{ owner: 'enclosing leaf' }}
+          attachments={attachments as any}
+        />,
+      );
+
+      // Stored results do not run App code until the viewer explicitly opens the App.
+      expect(container.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
+      const iframe = container.querySelector('iframe[data-sandbox-url]');
+      expect(iframe).toBeInTheDocument();
+      const { useAppBridge } = jest.requireMock('~/hooks/MCP') as { useAppBridge: jest.Mock };
+      expect(useAppBridge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolArgs: { owner: 'resource' },
+          toolResult: expect.objectContaining({
+            content: [{ type: 'text', text: 'resource result' }],
+            structuredContent: { owner: 'resource' },
+          }),
+        }),
+      );
+    });
+
+    it('keeps ordinary tool content but does not mount a stored App while disabled', () => {
+      const attachments = [
+        {
+          type: Tools.ui_resources,
+          [Tools.ui_resources]: [
+            {
+              uri: 'ui://test-server/stored.html',
+              mimeType: 'text/html;profile=mcp-app',
+              text: '<p>stored app</p>',
+              resourceId: 'stored-app',
+              toolName: 'test-tool',
+              serverName: 'test-server',
+            },
+          ],
+        },
+      ];
+
+      const { container } = renderWithRecoil(
+        <ToolCall {...mockProps} attachments={attachments as never} />,
+        { enabled: false, legacyHtmlEnabled: false },
+      );
+
+      expect(screen.getAllByText('Completed testFunction').length).toBeGreaterThan(0);
+      expect(container.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
+      const { useAppBridge } = jest.requireMock('~/hooks/MCP') as { useAppBridge: jest.Mock };
+      expect(useAppBridge).not.toHaveBeenCalled();
+    });
+
+    it('removes a mounted App when the observed policy is disabled', () => {
+      const attachments = [
+        {
+          type: Tools.ui_resources,
+          [Tools.ui_resources]: [
+            {
+              uri: 'ui://test-server/live.html',
+              mimeType: 'text/html;profile=mcp-app',
+              text: '<p>live app</p>',
+              resourceId: 'live-app',
+              toolName: 'test-tool',
+              serverName: 'test-server',
+            },
+          ],
+        },
+      ];
+      const enabledConfig = {
+        mcpApps: { enabled: true, legacyHtmlEnabled: true },
+      } as TStartupConfig;
+      const disabledConfig = {
+        mcpApps: { enabled: false, legacyHtmlEnabled: false },
+      } as TStartupConfig;
+      const toolCall = <ToolCall {...mockProps} attachments={attachments as never} />;
+      const { container, rerender } = render(
+        <RecoilRoot>
+          <MCPAppsPolicyProvider startupConfig={enabledConfig} ready userId="user-1">
+            {toolCall}
+          </MCPAppsPolicyProvider>
+        </RecoilRoot>,
+      );
+      expect(container.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
+      expect(container.querySelector('iframe[data-sandbox-url]')).toBeInTheDocument();
+
+      rerender(
+        <RecoilRoot>
+          <MCPAppsPolicyProvider startupConfig={disabledConfig} ready userId="user-1">
+            {toolCall}
+          </MCPAppsPolicyProvider>
+        </RecoilRoot>,
+      );
+
+      expect(container.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
+      expect(screen.getAllByText('Completed testFunction').length).toBeGreaterThan(0);
     });
   });
 
@@ -325,6 +485,32 @@ describe('ToolCall', () => {
       );
 
       expect(screen.queryByTestId('attachment-group')).not.toBeInTheDocument();
+    });
+
+    it('does not mount an App when a parent attachment owner hides the leaf output', () => {
+      const attachments = [
+        {
+          type: Tools.ui_resources,
+          [Tools.ui_resources]: [
+            {
+              resourceId: 'hidden-app',
+              uri: 'ui://demo/hidden',
+              mimeType: 'text/html;profile=mcp-app',
+              toolName: 'show_app',
+              serverName: 'demo',
+              text: '<p>Hidden App</p>',
+            },
+          ],
+        },
+      ];
+
+      const { container } = renderWithRecoil(
+        <ToolCall {...mockProps} attachments={attachments as never} hideAttachments />,
+      );
+
+      expect(container.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
+      const { useAppBridge } = jest.requireMock('~/hooks/MCP') as { useAppBridge: jest.Mock };
+      expect(useAppBridge).not.toHaveBeenCalled();
     });
 
     it('should render AttachmentGroup when hideAttachments is false explicitly', () => {
@@ -560,7 +746,7 @@ describe('ToolCall', () => {
       expect(screen.getByTestId('tool-call-info')).toBeInTheDocument();
     });
 
-    it('should handle complex nested attachments', () => {
+    it('should render AttachmentGroup with complex nested attachments', () => {
       const complexAttachments = [
         {
           type: Tools.ui_resources,
@@ -583,12 +769,6 @@ describe('ToolCall', () => {
       ];
 
       renderWithRecoil(<ToolCall {...mockProps} attachments={complexAttachments as any} />);
-
-      fireEvent.click(screen.getByTestId('progress-text'));
-
-      const toolCallInfo = screen.getByTestId('tool-call-info');
-      const attachmentsData = toolCallInfo.getAttribute('data-attachments');
-      expect(JSON.parse(attachmentsData!)).toEqual(complexAttachments);
 
       const attachmentGroup = screen.getByTestId('attachment-group');
       expect(JSON.parse(attachmentGroup.textContent!)).toEqual(complexAttachments);

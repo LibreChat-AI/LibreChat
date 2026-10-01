@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import type { Db } from 'mongodb';
 
 const DEFAULT_MONGO_URI = 'mongodb://127.0.0.1:27017/LibreChat-e2e';
@@ -93,6 +93,8 @@ export interface SeedMessage {
   /** Why the turn stopped; the hover Continue is offered only for some values. */
   finish_reason?: string;
   model?: string;
+  /** Attachments on the turn, as the client renders them (an image opens the lightbox). */
+  files?: Record<string, unknown>[];
 }
 
 /**
@@ -134,5 +136,68 @@ export async function clearUserConversations(userEmail: string): Promise<void> {
   await withMongo(async (db) => {
     const userId = await resolveUserId(db, userEmail);
     await db.collection('conversations').deleteMany({ user: userId });
+  });
+}
+
+export async function seedPasskey(
+  userEmail: string,
+  credentialId: string,
+  name: string,
+): Promise<void> {
+  await withMongo(async (db) => {
+    const userId = new ObjectId(await resolveUserId(db, userEmail));
+    const now = new Date();
+    await db.collection('passkeys').insertOne({
+      user: userId,
+      credentialId,
+      publicKey: Buffer.from('e2e-passkey-public-key'),
+      counter: 0,
+      transports: ['internal'],
+      deviceType: 'singleDevice',
+      backedUp: false,
+      name,
+      lastUsedAt: null,
+      createdAt: now,
+      updatedAt: now,
+      __v: 0,
+    });
+  });
+}
+
+export async function clearUserPasskeys(userEmail: string): Promise<void> {
+  await withMongo(async (db) => {
+    const userId = new ObjectId(await resolveUserId(db, userEmail));
+    await db.collection('passkeys').deleteMany({ user: userId });
+  });
+}
+
+export async function countUserPasskeys(userId: string): Promise<number> {
+  return withMongo((db) =>
+    db.collection('passkeys').countDocuments({ user: new ObjectId(userId) }),
+  );
+}
+
+export async function enableTwoFactorFlag(userEmail: string): Promise<void> {
+  await withMongo(async (db) => {
+    await db
+      .collection('users')
+      .updateOne({ email: userEmail }, { $set: { twoFactorEnabled: true } });
+  });
+}
+
+/** Removes a throwaway user and the records the passkey scenarios create for it. */
+export async function deleteUserByEmail(userEmail: string): Promise<void> {
+  await withMongo(async (db) => {
+    const user = await db.collection('users').findOne({ email: userEmail });
+    if (!user) {
+      return;
+    }
+    await Promise.all([
+      db.collection('passkeys').deleteMany({ user: user._id }),
+      db.collection('sessions').deleteMany({ user: user._id }),
+      db.collection('balances').deleteMany({ user: user._id }),
+      db.collection('tokens').deleteMany({ userId: user._id }),
+    ]);
+    await db.collection('users').deleteOne({ _id: user._id });
   });
 }

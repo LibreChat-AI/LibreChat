@@ -1,6 +1,5 @@
 import { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
-import { Button } from '@librechat/client';
 import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
 import { ChevronDown, ListChecks, MessageCircleQuestion, Users } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
@@ -28,6 +27,7 @@ import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from './rows';
+import { MCPAppViews } from '~/components/MCPUIResource';
 import { StackedToolIcons } from './ToolOutput';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
@@ -536,13 +536,12 @@ export default function ToolCallGroup({
   }, [hasActiveToolCall, userOverride, suppressAutoExpand]);
 
   return (
-    <div className="mb-2 mt-1" ref={rootRef}>
+    <div className="mt-1 mb-2" ref={rootRef}>
       <div className="flex w-full items-center gap-2">
-        <Button
-          variant="ghost"
+        <button
           type="button"
           className={cn(
-            'inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-text-secondary hover:bg-transparent hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy focus-visible:ring-offset-0',
+            'text-text-secondary hover:text-text-secondary focus-visible:ring-border-heavy inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none',
             /** An open header is the title of the rows under it, so it is the
              *  one line in the fold set in the primary colour. */
             isExpanded && 'text-text-primary hover:text-text-primary',
@@ -558,7 +557,7 @@ export default function ToolCallGroup({
               className={cn(
                 ROW_GLYPH_SLOT,
                 'text-text-secondary',
-                isGroupLive && 'animate-pulse text-text-primary',
+                isGroupLive && 'text-text-primary animate-pulse',
               )}
               aria-hidden="true"
             >
@@ -588,7 +587,7 @@ export default function ToolCallGroup({
           </span>
           {visibleGroupDetail && (
             <span
-              className="min-w-0 max-w-[40%] truncate text-xs font-normal text-text-secondary"
+              className="text-text-secondary max-w-[40%] min-w-0 truncate text-xs font-normal"
               title={visibleGroupDetail}
             >
               · {visibleGroupDetail}
@@ -596,12 +595,12 @@ export default function ToolCallGroup({
           )}
           <ChevronDown
             className={cn(
-              'size-4 shrink-0 text-text-secondary transition-transform duration-200 ease-out',
+              'text-text-secondary size-4 shrink-0 transition-transform duration-200 ease-out',
               isExpanded && 'rotate-180',
             )}
             aria-hidden="true"
           />
-        </Button>
+        </button>
         {!withinActivityPhase && !parentPhaseOwnsFailurePill && (
           <FailedRevealPill
             count={activitySummary.failedCount}
@@ -670,7 +669,7 @@ export default function ToolCallGroup({
                 </div>
               </FailedRevealContext.Provider>
             </ToolAuthWarningContext.Provider>
-            {hasPendingAuthRequest && <ToolAuthWarning className="mb-1 mt-2.5" />}
+            {hasPendingAuthRequest && <ToolAuthWarning className="mt-2.5 mb-1" />}
           </div>
         )}
       </div>
@@ -678,6 +677,7 @@ export default function ToolCallGroup({
         <>
           <SearchVerticals attachments={groupAttachments} />
           <AttachmentGroup attachments={groupAttachments} />
+          <MCPAppViews attachments={groupAttachments} />
         </>
       )}
     </div>

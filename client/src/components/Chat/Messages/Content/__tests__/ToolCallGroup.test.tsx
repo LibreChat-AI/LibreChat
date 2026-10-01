@@ -103,6 +103,19 @@ jest.mock('~/hooks/MCP', () => {
   };
 });
 
+jest.mock('~/components/MCPUIResource', () => ({
+  MCPAppViews: ({ attachments }: { attachments?: TAttachment[] }) => (
+    <>
+      {(attachments ?? [])
+        .filter((item) => item.type === 'ui_resources')
+        .flatMap((item) => item.ui_resources ?? [])
+        .map((resource: { resourceId: string; toolName?: string }, index) => (
+          <iframe key={`${resource.resourceId}:${index}`} title={`MCP App: ${resource.toolName}`} />
+        ))}
+    </>
+  ),
+}));
+
 jest.mock('../ToolOutput', () => ({
   StackedToolIcons: ({ toolNames }: { toolNames: string[] }) => (
     <span data-testid="stacked-icons" data-tool-names={toolNames.join(',')} />
@@ -301,6 +314,32 @@ describe('ToolCallGroup image hoisting', () => {
     const group = screen.getByTestId('attachment-group');
     expect(group).toBeInTheDocument();
     expect(group.getAttribute('data-count')).toBe('2');
+  });
+
+  it('keeps correlated App views outside the collapsed panel across disclosure toggles', () => {
+    const appAttachment = {
+      type: Tools.ui_resources,
+      toolCallId: 'call-0',
+      agentId: 'agent-a',
+      stepId: 'step-a',
+      [Tools.ui_resources]: [
+        { resourceId: 'alpha', toolName: 'alpha' },
+        { resourceId: 'beta', toolName: 'beta' },
+      ],
+    } as unknown as TAttachment;
+    renderGroup({ ...baseProps, groupAttachments: [appAttachment] });
+
+    const frames = screen.getAllByTitle(/MCP App:/);
+    expect(frames).toHaveLength(2);
+    expect(screen.getByTestId('tool-call-group-panel')).not.toContainElement(frames[0]);
+    const firstFrame = frames[0];
+
+    const toggle = screen.getByRole('button');
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+
+    expect(screen.getAllByTitle(/MCP App:/)).toHaveLength(2);
+    expect(screen.getAllByTitle(/MCP App:/)[0]).toBe(firstFrame);
   });
 
   it('hoists non-image attachments so they survive collapse', () => {

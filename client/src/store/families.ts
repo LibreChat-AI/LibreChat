@@ -376,6 +376,8 @@ export type PendingSteer = {
   /** Manual skill picks, carried for restoration only (a skill pick
    *  configures a NEW turn's run, so it never rides the steer POST). */
   manualSkills?: string[];
+  /** Full-generation setting carried for restoration only; it cannot alter a live steer. */
+  reasoningOverride?: TMessage['reasoningOverride'];
   /** Asked the run to seal generation at the next safe boundary rather than
    *  wait for a tool step. Labelling only — the server owns the behaviour and
    *  echoes what it actually armed. */
@@ -430,6 +432,11 @@ export type QueuedMessage = {
     position?: number;
     revision?: number;
   };
+  /** A row the run-end drain must not submit on its own. Set when a steer the
+   * server REJECTED is swept into the queue so its words stay recoverable:
+   * the failure surface offers Retry and "Send as new", and auto-sending here
+   * would start a turn the user never asked for with text that was refused. */
+  needsExplicitSend?: boolean;
   /** Stable identity for server enqueue/retry. Recovered steer rows also use
    * it to dismiss their parked source; a later recovery attempt gets a fresh
    * identity. */
@@ -449,6 +456,8 @@ export type QueuedMessage = {
   /** Manual skill picks consumed from the composer at enqueue time; passed
    *  to `ask` as `overrideManualSkills` on drain. */
   manualSkills?: string[];
+  /** Request-scoped reasoning setting captured when this item was queued. */
+  reasoningOverride?: TMessage['reasoningOverride'];
   /** Front-inserted by "Interrupt & send": stays ahead of chronologically
    *  older items when leftover steers are merged back into the queue. */
   priority?: boolean;
@@ -605,28 +614,6 @@ const drainAfterAbortByIndex = atomFamily<DrainAfterAbort | false, string | numb
 const appliedSteerIdsByConvoId = atomFamily<string[], string>({
   key: 'appliedSteerIdsByConvoId',
   default: [],
-});
-
-/**
- * Steer ids whose applied event landed in THIS session, pending their one-shot
- * receipt draw-in. `SteerPart` consumes its id on mount so the animation plays
- * exactly once, at the live chip→inline hand-off — never on reload, share, or
- * a later revisit. Global rather than per-conversation: steer ids are unique,
- * and the applied part renders in surfaces that don't know their convo id. */
-const liveAppliedSteerIds = atom<string[]>({
-  key: 'liveAppliedSteerIds',
-  default: [],
-});
-
-/** Membership view of `liveAppliedSteerIds` so each `SteerPart` subscribes to
- *  its own id only: stamping/consuming one steer re-renders that part, not
- *  every mounted historical part in a long conversation. */
-const liveAppliedSteerFamily = selectorFamily<boolean, string>({
-  key: 'liveAppliedSteerFamily',
-  get:
-    (steerId) =>
-    ({ get }) =>
-      steerId.length > 0 && get(liveAppliedSteerIds).includes(steerId),
 });
 
 /** Optimistic ids the server has proven accepted via ACK or SYNC. Separate
@@ -827,8 +814,6 @@ export default {
   pendingRunEndByConvoId,
   drainAfterAbortByIndex,
   appliedSteerIdsByConvoId,
-  liveAppliedSteerIds,
-  liveAppliedSteerFamily,
   acceptedSteerClientIdsByConvoId,
   activeGenerationCreatedAtByConvoId,
   activeGenerationProtocolVersionByConvoId,

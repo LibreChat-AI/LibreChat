@@ -7,6 +7,7 @@ import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { useLocalize, useLazyCollapseBody } from '~/hooks';
 import { toolPanelSpacingClassName } from '../disclosure';
 import { ToolIcon, OutputRenderer } from '../ToolOutput';
+import { MCPAppViews } from '~/components/MCPUIResource';
 import BackgroundTaskCard from '../BackgroundTaskCard';
 import { useToolPreparation } from '../preparation';
 import useToolCallState from './useToolCallState';
@@ -15,6 +16,7 @@ import { useToolCallIntent } from './intent';
 import ToolCallInfo from '../ToolCallInfo';
 import { TOOL_ROW_CLASSES } from '../rows';
 import { cn } from '~/utils';
+import './BackgroundTaskCall.css';
 
 export default function BackgroundTaskCall({
   args,
@@ -66,7 +68,7 @@ export default function BackgroundTaskCall({
     () => (display?.kind === 'list' ? backgroundListGuidanceKeys(display) : []),
     [display],
   );
-  const { showCode, toggleCode, expandStyle, expandRef, phase, hasContent } = useToolCallState({
+  const { showCode, toggleCode, expandRef, phase, hasContent } = useToolCallState({
     initialProgress,
     isSubmitting,
     output,
@@ -126,7 +128,8 @@ export default function BackgroundTaskCall({
         />
       </div>
       <div
-        style={expandStyle}
+        data-background-task-fold
+        data-expanded={showCode}
         onTransitionEnd={handleTransitionEnd}
         data-tool-call-output-id={toolCallId}
       >
@@ -135,7 +138,7 @@ export default function BackgroundTaskCall({
             <div
               className={cn(
                 toolPanelSpacingClassName,
-                'overflow-hidden rounded-lg border border-border-light bg-surface-secondary',
+                'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
               )}
             >
               {display?.kind === 'task' && (
@@ -149,9 +152,9 @@ export default function BackgroundTaskCall({
               )}
               {display?.kind === 'list' && (
                 <div className="p-2.5">
-                  <div className="mb-2 flex items-center gap-2 text-xs font-medium text-text-secondary">
+                  <div className="text-text-secondary mb-2 flex items-center gap-2 text-xs font-medium">
                     {localize('com_ui_background_tasks')}
-                    <span className="rounded-full bg-surface-tertiary px-1.5 tabular-nums">
+                    <span className="bg-surface-tertiary rounded-full px-1.5 tabular-nums">
                       {display.tasks.length}
                     </span>
                   </div>
@@ -159,7 +162,7 @@ export default function BackgroundTaskCall({
                     <ul
                       tabIndex={0}
                       aria-label={localize('com_ui_background_tasks')}
-                      className="flex max-h-96 flex-col gap-2 overflow-y-auto pr-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy"
+                      className="focus-visible:ring-border-heavy flex max-h-96 flex-col gap-2 overflow-y-auto pr-1 focus-visible:ring-2 focus-visible:outline-none"
                     >
                       {display.tasks.map((task) => (
                         <li key={task.taskId}>
@@ -172,17 +175,17 @@ export default function BackgroundTaskCall({
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-sm text-text-secondary">
+                    <p className="text-text-secondary text-sm">
                       {localize('com_ui_background_tasks_empty')}
                     </p>
                   )}
                   {(display.partial || display.warning) && (
-                    <p role="alert" className="mt-2 text-xs text-status-warning">
+                    <p role="alert" className="text-status-warning mt-2 text-xs">
                       {localize('com_ui_background_tasks_incomplete')}
                     </p>
                   )}
                   {listGuidance.map((key) => (
-                    <p key={key} className="mt-2 text-xs text-text-secondary">
+                    <p key={key} className="text-text-secondary mt-2 text-xs">
                       {localize(key)}
                     </p>
                   ))}
@@ -201,24 +204,20 @@ export default function BackgroundTaskCall({
                 </p>
               )}
               {(display == null || hasParams) && (
-                <div className={cn(display != null && 'border-t border-border-light')}>
-                  <ToolCallInfo
-                    input={input}
-                    output={display == null ? output : undefined}
-                    attachments={attachments}
-                  />
+                <div className={cn(display != null && 'border-border-light border-t')}>
+                  <ToolCallInfo input={input} output={display == null ? output : undefined} />
                 </div>
               )}
               {display != null && (
                 <details
-                  className="border-t border-border-light px-3 py-2"
+                  className="border-border-light border-t px-3 py-2"
                   onToggle={(event) => setShowRaw(event.currentTarget.open)}
                 >
-                  <summary className="cursor-pointer rounded text-xs text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy">
+                  <summary className="text-text-secondary hover:text-text-primary focus-visible:ring-border-heavy cursor-pointer rounded text-xs focus-visible:ring-2 focus-visible:outline-none">
                     {localize('com_ui_background_tasks_raw_details')}
                   </summary>
                   {showRaw && (
-                    <div className="mt-2 rounded-md bg-surface-primary p-2.5">
+                    <div className="bg-surface-primary mt-2 rounded-md p-2.5">
                       <OutputRenderer text={output} copyText={output} />
                     </div>
                   )}
@@ -229,7 +228,10 @@ export default function BackgroundTaskCall({
         </div>
       </div>
       {!hideAttachments && attachments && attachments.length > 0 && (
-        <AttachmentGroup attachments={attachments} />
+        <>
+          <AttachmentGroup attachments={attachments} />
+          <MCPAppViews attachments={attachments} />
+        </>
       )}
     </>
   );

@@ -80,7 +80,7 @@ export const hoverButtonClasses = ({
     'group-hover:visible group-focus-visible:visible group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:visible group-[.final-completion]:visible',
     !isLast && revealOnRowHoverClasses,
     'group-has-[.hover-button-active]:visible group-has-[.hover-button-active]:opacity-100',
-    'focus-visible:ring-2 focus-visible:ring-text-primary focus-visible:outline-none',
+    'focus-visible:ring-2 focus-visible:ring-text-primary focus-visible:outline-hidden',
     isActive && 'hover-button-active active text-text-primary bg-surface-hover',
     className,
   );

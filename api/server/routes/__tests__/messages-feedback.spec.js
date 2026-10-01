@@ -14,6 +14,7 @@ jest.mock('@librechat/api', () => ({
   CHILD_THREAD_READ_ONLY_ERROR: 'Child thread is view-only.',
   isSubagentThreadWriteBlocked: jest.fn().mockResolvedValue(false),
   requireFeedbackEnabled: jest.fn((req, res, next) => next()),
+  applyForcedRetention: jest.fn(),
 }));
 
 jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () => ({}));

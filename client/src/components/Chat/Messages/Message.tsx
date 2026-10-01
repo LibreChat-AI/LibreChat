@@ -13,7 +13,7 @@ const MessageContainer = React.memo(function MessageContainer({
 }) {
   return (
     <div
-      className="w-full border-0 bg-transparent text-text-primary"
+      className="text-text-primary w-full border-0 bg-transparent"
       onWheel={handleScroll}
       onTouchMove={handleScroll}
     >

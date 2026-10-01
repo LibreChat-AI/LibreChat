@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { FileConfigInput } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
@@ -106,14 +109,16 @@ jest.mock('~/utils', () => ({
   cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
 }));
 
-function getFileInput(container: HTMLElement): HTMLInputElement {
-  /** Prefer the local render container used by the lightweight dialog mock,
-   *  then the active portal. Exiting Headless UI portals can leave older file
-   *  inputs in `document.body`; a document-wide first/last match is unstable. */
+/** Prefer the rendered dialog's current file input, whether the dialog content
+ *  is inline in the test stub or mounted through a portal in the real shell.
+ *  Restricting the selector avoids stale inputs left behind by an exiting
+ *  Headless UI portal. */
+function getFileInput(container?: HTMLElement): HTMLInputElement {
   const selector = 'input[type="file"][accept=".zip,.skill,.md"]';
   const input =
-    container.querySelector<HTMLInputElement>(selector) ??
-    document.querySelector<HTMLInputElement>(`[role="dialog"][data-state="open"] ${selector}`);
+    container?.querySelector<HTMLInputElement>(selector) ??
+    document.querySelector<HTMLInputElement>(`[role="dialog"][data-state="open"] ${selector}`) ??
+    document.querySelector<HTMLInputElement>('input[type="file"]');
   if (input == null) {
     throw new Error('Upload input was not rendered');
   }
@@ -185,15 +190,13 @@ describe('UploadSkillDialog', () => {
   });
 
   it('rejects files above the configured skill import limit before upload', () => {
-    const { container } = render(<UploadSkillDialog isOpen={true} setIsOpen={mockSetIsOpen} />);
+    render(<UploadSkillDialog isOpen={true} setIsOpen={mockSetIsOpen} />);
     const file = new File([new Uint8Array(1024 * 1024 + 1)], 'too-large.skill', {
       type: 'application/zip',
     });
 
-    fireEvent.change(getFileInput(container), {
-      target: {
-        files: [file],
-      },
+    fireEvent.change(getFileInput(), {
+      target: { files: [file] },
     });
 
     expect(mockMutate).not.toHaveBeenCalled();
@@ -205,15 +208,13 @@ describe('UploadSkillDialog', () => {
 
   it('uploads files exactly at the configured skill import limit', () => {
     const appendSpy = jest.spyOn(FormData.prototype, 'append');
-    const { container } = render(<UploadSkillDialog isOpen={true} setIsOpen={mockSetIsOpen} />);
+    render(<UploadSkillDialog isOpen={true} setIsOpen={mockSetIsOpen} />);
     const file = new File([new Uint8Array(1024 * 1024)], 'exact-limit.skill', {
       type: 'application/zip',
     });
 
-    fireEvent.change(getFileInput(container), {
-      target: {
-        files: [file],
-      },
+    fireEvent.change(getFileInput(), {
+      target: { files: [file] },
     });
 
     expect(mockShowToast).not.toHaveBeenCalled();
@@ -383,15 +384,13 @@ describe('UploadSkillDialog', () => {
 
   it('uploads files under the configured skill import limit', () => {
     const appendSpy = jest.spyOn(FormData.prototype, 'append');
-    const { container } = render(<UploadSkillDialog isOpen={true} setIsOpen={mockSetIsOpen} />);
+    render(<UploadSkillDialog isOpen={true} setIsOpen={mockSetIsOpen} />);
     const file = new File([new Uint8Array(1024)], 'small.skill', {
       type: 'application/zip',
     });
 
-    fireEvent.change(getFileInput(container), {
-      target: {
-        files: [file],
-      },
+    fireEvent.change(getFileInput(), {
+      target: { files: [file] },
     });
 
     expect(mockShowToast).not.toHaveBeenCalled();

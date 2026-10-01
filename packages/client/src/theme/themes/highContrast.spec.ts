@@ -73,7 +73,7 @@ const textTokens: Array<keyof IThemeRGB> = [
 
 /** Code blocks share the mode's own high-contrast canvas rather than a bundled
  * fallback that would reintroduce a grey surface. */
-const codeSurfaces: Array<keyof IThemeRGB> = ['rgb-surface-code'];
+const codeSurfaces: Array<keyof IThemeRGB> = ['rgb-surface-code', 'rgb-surface-code-body'];
 
 const syntaxTokens: Array<keyof IThemeRGB> = [
   'rgb-syntax-text',
@@ -117,6 +117,7 @@ const accentTokens: Array<keyof IThemeRGB> = [
   'rgb-link',
   'rgb-link-hover',
   'rgb-link-visited',
+  'rgb-link-prose',
   'rgb-brand-purple',
 ];
 
@@ -288,7 +289,7 @@ describe.each([
         theme,
         WCAG_NON_TEXT,
         ['rgb-switch-unchecked'],
-        ['rgb-surface-primary', 'rgb-surface-inverted'],
+        ['rgb-surface-primary', 'rgb-switch-thumb', 'rgb-surface-inverted'],
       ),
     ).toEqual([]);
   });

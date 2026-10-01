@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { OGDialog, OGDialogContent, OGDialogTitle } from './OriginalDialog';
 import ControlCombobox from './ControlCombobox';
 
@@ -260,6 +261,39 @@ describe('ControlCombobox dropdown caps', () => {
       target: { value: 'Agent 15' },
     });
     expect(screen.getByRole('option', { name: 'Agent 15' })).toBeInTheDocument();
+  });
+
+  it('clears a completed search when the select popover closes, retaining the chosen agent', async () => {
+    function Picker() {
+      const [selected, setSelected] = useState('agent-1');
+      return (
+        <ControlCombobox
+          selectedValue={selected}
+          items={manyItems}
+          setValue={setSelected}
+          ariaLabel="Test combobox"
+          searchPlaceholder="Search agents"
+          isCollapsed={false}
+          unsearchedLimit={10}
+        />
+      );
+    }
+    render(<Picker />);
+    openPopover();
+    fireEvent.change(screen.getByPlaceholderText('Search agents'), {
+      target: { value: 'Agent 15' },
+    });
+    fireEvent.click(screen.getByRole('option', { name: 'Agent 15' }));
+    const trigger = screen.getByRole('combobox', { name: 'Test combobox' });
+    await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
+    expect(trigger).toHaveTextContent('agent-15');
+    fireEvent.click(trigger);
+    await waitFor(() => expect(screen.getByPlaceholderText('Search agents')).toHaveValue(''));
+    expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-setsize', '10');
+    expect(screen.getByRole('option', { name: 'Agent 15' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
   });
 
   it('keeps the selected option in the capped list when it ranks past the cut', () => {

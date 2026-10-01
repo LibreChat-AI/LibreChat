@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Check } from 'lucide-react';
 import * as CheckboxPrimitive from '@radix-ui/react-checkbox';
-import { cn } from '~/utils';
+import { cn, disabledFillClasses } from '~/utils';
 
 type BaseCheckboxProps = Omit<
   React.ComponentPropsWithoutRef<typeof CheckboxPrimitive.Root>,
@@ -27,7 +27,8 @@ const Checkbox: React.ForwardRefExoticComponent<
     <CheckboxPrimitive.Root
       ref={ref}
       className={cn(
-        'peer h-4 w-4 shrink-0 rounded-sm border border-border-xheavy ring-offset-surface-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-surface-inverted data-[state=checked]:text-text-inverted',
+        'peer border-border-xheavy ring-offset-surface-primary focus-visible:ring-focus-control data-[state=checked]:bg-surface-inverted data-[state=checked]:text-text-inverted h-4 w-4 shrink-0 rounded-sm border focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50',
+        disabledFillClasses,
         className,
       )}
       {...props}
@@ -40,4 +41,28 @@ const Checkbox: React.ForwardRefExoticComponent<
 );
 Checkbox.displayName = CheckboxPrimitive.Root.displayName;
 
-export { Checkbox };
+/**
+ * The checkbox's appearance without its behaviour, for a control that already carries
+ * the state itself, e.g. a `Button` with `aria-pressed`. Radix's checkbox is a
+ * `<button>`, so nesting one inside another control puts two interactive elements in
+ * the same place: unreachable by keyboard, and announced twice by a screen reader.
+ * This is a span, so the control around it stays the only thing there.
+ */
+const CheckboxGlyph: React.FC<{ checked: boolean; className?: string }> = ({
+  checked,
+  className = '',
+}) => (
+  <span
+    aria-hidden="true"
+    className={cn(
+      'border-border-xheavy flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border',
+      checked && 'bg-surface-inverted text-text-inverted',
+      className,
+    )}
+  >
+    {checked && <Check className="h-4 w-4" />}
+  </span>
+);
+CheckboxGlyph.displayName = 'CheckboxGlyph';
+
+export { Checkbox, CheckboxGlyph };

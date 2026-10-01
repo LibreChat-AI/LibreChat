@@ -51,29 +51,29 @@ export default function MCPServerMenuItem({
       aria-label={accessibleLabel}
       className={cn(
         'group flex w-full cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2',
-        'outline-none transition-all duration-150',
+        'outline-hidden transition-all duration-150',
         'hover:bg-surface-hover data-[active-item]:bg-surface-hover',
         isSelected && 'bg-surface-active-alt',
       )}
     >
       {/* Server Icon with Status Dot */}
-      <div className="relative flex-shrink-0">
+      <div className="relative shrink-0">
         {server.config?.iconPath ? (
           <CustomIcon
             src={server.config.iconPath}
-            className="h-8 w-8 rounded-lg object-cover text-text-primary"
+            className="text-text-primary h-8 w-8 rounded-lg object-cover"
             alt=""
           />
         ) : (
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-surface-tertiary">
-            <MCPIcon className="h-5 w-5 text-text-secondary" />
+          <div className="bg-surface-tertiary flex h-8 w-8 items-center justify-center rounded-lg">
+            <MCPIcon className="text-text-secondary h-5 w-5" />
           </div>
         )}
         {/* Status dot - decorative, status is announced via aria-label on MenuItem */}
         <div
           aria-hidden="true"
           className={cn(
-            'absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-surface-secondary',
+            'border-surface-secondary absolute -right-0.5 -bottom-0.5 h-3 w-3 rounded-full border-2',
             statusColor,
           )}
         />
@@ -82,16 +82,16 @@ export default function MCPServerMenuItem({
       {/* Server Info */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <span className="truncate text-sm font-medium text-text-primary">{displayName}</span>
+          <span className="text-text-primary truncate text-sm font-medium">{displayName}</span>
         </div>
         {server.config?.description && (
-          <p className="truncate text-xs text-text-secondary">{server.config.description}</p>
+          <p className="text-text-secondary truncate text-xs">{server.config.description}</p>
         )}
       </div>
 
       {/* Action Button - only show when actionable */}
       {showActionButton && statusIconProps && (
-        <div className="flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+        <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
           <MCPServerStatusIcon {...statusIconProps} />
         </div>
       )}
@@ -100,7 +100,7 @@ export default function MCPServerMenuItem({
       <span
         aria-hidden="true"
         className={cn(
-          'flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-sm border',
+          'flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border',
           isSelected
             ? 'border-border-xheavy bg-surface-inverted text-text-inverted'
             : 'border-border-xheavy bg-transparent',

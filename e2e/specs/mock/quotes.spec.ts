@@ -25,7 +25,7 @@ type SelectionTarget = {
  * Resolve a needle — or a pair of them spanning two messages — to a DOM Range
  * inside the most recent `.message-render` containing it, optionally placing it
  * on the document selection, and return the viewport midpoint of its first
- * character.
+ * word.
  *
  * The lookup matches each message's *flattened* text rather than one text node,
  * because a needle is routinely spread over several: while a reply streams, the
@@ -110,11 +110,15 @@ function resolveSelection(page: Page, target: SelectionTarget) {
       }
     }
 
-    const afterFirst = boundaryAt(head.runs, head.index + 1);
-    const firstCharacter = document.createRange();
-    firstCharacter.setStart(start.node, start.offset);
-    firstCharacter.setEnd(afterFirst.node, afterFirst.offset);
-    const box = firstCharacter.getBoundingClientRect();
+    const firstWord = from.match(/^\S+/)?.[0] ?? from;
+    const afterFirst = boundaryAt(head.runs, head.index + firstWord.length);
+    const wordRange = document.createRange();
+    wordRange.setStart(start.node, start.offset);
+    wordRange.setEnd(afterFirst.node, afterFirst.offset);
+    const box = [...wordRange.getClientRects()].find((rect) => rect.width > 0 && rect.height > 0);
+    if (!box) {
+      throw new Error(`No visible text rect contains: ${from}`);
+    }
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   }, target);
 }
@@ -135,11 +139,13 @@ async function selectMessageText(page: Page, needle: string, emitMouseUp = true)
 }
 
 /**
- * Viewport coordinates of the first character of `needle` inside the most
- * recent message containing it. Measuring the `needle` text itself (not the
- * first text node in `.message-render`, which may be a `select-none`
+ * Viewport coordinates of the first word of `needle` inside the most
+ * recent message containing it. Measuring the `needle` text node itself (not
+ * the first text node in `.message-render`, which may be a `select-none`
  * screen-reader/model-label header) keeps the gesture on the actual reply word,
- * not metadata or whitespace.
+ * not metadata or whitespace. The first whole word (not a one-character
+ * caret-edge range) keeps the click inside a glyph across font and layout
+ * differences.
  */
 function measureNeedle(page: Page, needle: string) {
   return resolveSelection(page, { from: needle });
@@ -285,7 +291,7 @@ function scrollSelectionTo(page: Page, needle: string, fraction: number) {
 }
 
 const addToChat = (page: Page) => page.getByTestId('add-to-chat-button');
-const pendingChips = (page: Page) => page.getByTestId('pending-quote-chips');
+const pendingChips = (page: Page) => page.getByTestId('composer-chip-quote');
 const messageQuotes = (page: Page) => messagesView(page).getByTestId('message-quotes');
 
 /** A phone's context options, minus `defaultBrowserType` — Playwright refuses
@@ -334,7 +340,7 @@ async function addQuote(page: Page, needle: string, expectedCount: number) {
     const button = addToChat(page);
     await expect(button).toBeVisible({ timeout: 3000 });
     await button.click();
-    await expect(pendingChips(page)).toHaveAttribute('data-quote-count', String(expectedCount));
+    await expect(pendingChips(page)).toHaveCount(expectedCount);
   }).toPass({ timeout: 30000 });
 }
 
@@ -395,7 +401,7 @@ test.describe('quote references', () => {
       const button = addToChat(page);
       await expect(button).toBeVisible({ timeout: 3000 });
       await button.click();
-      await expect(pendingChips(page)).toHaveAttribute('data-quote-count', '1');
+      await expect(pendingChips(page)).toHaveCount(1);
     }).toPass({ timeout: 30000 });
 
     // The quoted excerpt is a word from the reply, not empty.
@@ -419,7 +425,7 @@ test.describe('quote references', () => {
       const button = addToChat(page);
       await expect(button).toBeVisible({ timeout: 3000 });
       await button.click();
-      await expect(pendingChips(page)).toHaveAttribute('data-quote-count', '1');
+      await expect(pendingChips(page)).toHaveCount(1);
     }).toPass({ timeout: 30000 });
 
     // The excerpt is the closing paragraph itself, not the overhang.
@@ -573,12 +579,9 @@ test.describe('quote references', () => {
     await expect(addToChat(page)).toBeHidden({ timeout: 5000 });
   });
 
-  test('collapses multiple selections into one chip with a hover popup, and removes one', async ({
-    page,
-  }) => {
+  test('stages each selection as its own chip in the tray, and removes one', async ({ page }) => {
     test.setTimeout(120000);
     const firstMessage = 'quote target alpha';
-    const popup = page.getByTestId('quote-selections-popup');
 
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
@@ -591,37 +594,31 @@ test.describe('quote references', () => {
     await addQuote(page, MOCK_REPLY_TEXT, 1);
     await addQuote(page, firstMessage, 2);
 
-    // Composer shows a single collapsed "2 selections" chip, not a row of two.
-    await expect(pendingChips(page)).toContainText('2 selections');
+    // The tray holds one chip per excerpt, each carrying its own text.
+    await expect(
+      pendingChips(page).filter({ hasText: new RegExp(MOCK_REPLY_TEXT, 'i') }),
+    ).toHaveCount(1);
+    await expect(pendingChips(page).filter({ hasText: firstMessage })).toHaveCount(1);
 
-    // Hovering the collapsed chip reveals a popup listing every excerpt.
-    await pendingChips(page).getByRole('listitem').hover();
-    await expect(popup).toBeVisible({ timeout: 5000 });
-    await expect(popup).toContainText(MOCK_REPLY_TEXT);
-    await expect(popup).toContainText(firstMessage);
-
-    // Remove the reply from the popup; one selection remains and collapses back
-    // to its excerpt text.
-    await popup
-      .getByRole('listitem')
-      .filter({ hasText: MOCK_REPLY_TEXT })
+    // Remove the reply's chip; the other excerpt stays staged.
+    await pendingChips(page)
+      .filter({ hasText: new RegExp(MOCK_REPLY_TEXT, 'i') })
       .getByRole('button', { name: /remove quote/i })
       .click();
-    await expect(pendingChips(page)).toHaveAttribute('data-quote-count', '1');
+    await expect(pendingChips(page)).toHaveCount(1);
     await expect(pendingChips(page)).toContainText(firstMessage);
-    await expect(pendingChips(page)).not.toContainText(MOCK_REPLY_TEXT);
+    await expect(pendingChips(page)).not.toContainText(new RegExp(MOCK_REPLY_TEXT, 'i'));
 
     // Send; only the remaining quote pins to the new user message.
     const followUp = await sendMessage(page, 'expand on this');
     expect(followUp.ok()).toBeTruthy();
     await expect(messageQuotes(page)).toContainText(firstMessage);
-    await expect(messageQuotes(page)).not.toContainText(MOCK_REPLY_TEXT);
+    await expect(messageQuotes(page)).not.toContainText(new RegExp(MOCK_REPLY_TEXT, 'i'));
   });
 
-  test('opens the selections popup via keyboard and closes on Escape', async ({ page }) => {
+  test('removes a staged quote via keyboard', async ({ page }) => {
     test.setTimeout(120000);
     const firstMessage = 'quote target beta';
-    const popup = page.getByTestId('quote-selections-popup');
 
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
@@ -632,26 +629,16 @@ test.describe('quote references', () => {
     await addQuote(page, MOCK_REPLY_TEXT, 1);
     await addQuote(page, firstMessage, 2);
 
-    // The collapsed pill is a focusable disclosure: focus + Enter opens it.
-    const trigger = pendingChips(page).getByRole('button', { name: '2 selections' });
-    await trigger.focus();
-    await expect(trigger).toBeFocused();
+    // Each chip's remove control is a real focusable button: focus + Enter
+    // removes just that excerpt without touching the pointer.
+    const removeButton = pendingChips(page)
+      .filter({ hasText: new RegExp(MOCK_REPLY_TEXT, 'i') })
+      .getByRole('button', { name: /remove quote/i });
+    await removeButton.focus();
+    await expect(removeButton).toBeFocused();
     await page.keyboard.press('Enter');
-    await expect(popup).toBeVisible({ timeout: 5000 });
-    await expect(popup).toContainText(MOCK_REPLY_TEXT);
-    await expect(popup).toContainText(firstMessage);
-
-    // Opening via keyboard moves focus into the popup (first excerpt's remove ×).
-    await expect(popup.getByRole('button').first()).toBeFocused();
-
-    // Escape closes it and returns focus to the pill that opened it (NOT the
-    // page top, the bug this guards against). `document.activeElement` must be
-    // a real control.
-    await page.keyboard.press('Escape');
-    await expect(popup).toBeHidden();
-    await expect(trigger).toBeFocused();
-    const focusTag = await page.evaluate(() => document.activeElement?.tagName ?? 'NONE');
-    expect(focusTag).not.toBe('BODY');
+    await expect(pendingChips(page)).toHaveCount(1);
+    await expect(pendingChips(page)).toContainText(firstMessage);
   });
 
   test('re-merges a persisted quote into later-turn history (durable)', async ({ page }) => {
@@ -701,7 +688,11 @@ test.describe('quote references on touch devices', () => {
 
   /** Long-press equivalent: touch the text, then select it without any mouse event. */
   async function touchSelect(page: Page, needle: string) {
-    await messagesView(page).getByText(needle).scrollIntoViewIfNeeded();
+    await messagesView(page)
+      .locator('.message-render')
+      .filter({ hasText: needle })
+      .last()
+      .scrollIntoViewIfNeeded();
     const point = await measureNeedle(page, needle);
     /** Drop any earlier selection *before* the press. Chromium answers a
      *  synthetic tap with compatibility mouse events, and a leftover selection
@@ -737,9 +728,9 @@ test.describe('quote references on touch devices', () => {
     expect(popup!.height).toBeGreaterThanOrEqual(44);
 
     // Tapping has to commit before the tap dismisses the selection out from
-    // under the click — the second reason this was unusable on a phone.
+    // under the click, the second reason this was unusable on a phone.
     await addToChat(page).tap();
-    await expect(pendingChips(page)).toHaveAttribute('data-quote-count', '1');
+    await expect(pendingChips(page)).toHaveCount(1);
     await expect(pendingChips(page)).toContainText(CLOSING_PARAGRAPH);
   });
 
@@ -757,7 +748,7 @@ test.describe('quote references on touch devices', () => {
       const button = addToChat(page);
       await expect(button).toBeVisible({ timeout: 5000 });
       await button.tap();
-      await expect(pendingChips(page)).toHaveAttribute('data-quote-count', '1');
+      await expect(pendingChips(page)).toHaveCount(1);
     }).toPass({ timeout: 30000 });
 
     // End to end from a finger: the mock model confirms the blockquote arrived.

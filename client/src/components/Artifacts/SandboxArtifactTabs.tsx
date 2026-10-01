@@ -58,7 +58,7 @@ export default function SandboxArtifactTabs({
       <Tabs.Content
         value="code"
         id="artifacts-code"
-        className="h-full w-full flex-grow overflow-auto"
+        className="h-full w-full grow overflow-auto"
         tabIndex={-1}
       >
         <ArtifactCodeEditor
@@ -68,11 +68,7 @@ export default function SandboxArtifactTabs({
         />
       </Tabs.Content>
 
-      <Tabs.Content
-        value="preview"
-        className="h-full w-full flex-grow overflow-hidden"
-        tabIndex={-1}
-      >
+      <Tabs.Content value="preview" className="h-full w-full grow overflow-hidden" tabIndex={-1}>
         <ArtifactPreview
           files={previewFiles}
           fileKey={fileKey}

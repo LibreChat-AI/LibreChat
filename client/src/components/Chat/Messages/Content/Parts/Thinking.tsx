@@ -8,15 +8,13 @@ import {
   useId,
   type MouseEvent,
 } from 'react';
-import { useAtomValue } from 'jotai';
 import { Lightbulb, ChevronDown } from 'lucide-react';
 import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import { ChevronUp as ChevronUpNode, ChevronDown as ChevronDownNode } from 'lucide';
 import type { FocusEvent, FC } from 'react';
 import CopyButton from '~/components/Messages/Content/CopyButton';
+import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import { useLocalize, useExpandCollapse } from '~/hooks';
-import { showThinkingAtom } from '~/store/showThinking';
-import { fontSizeAtom } from '~/store/fontSize';
 import { AnimatedText } from '../animate';
 import { ROW_GLYPH_SLOT } from '../rows';
 import { cn } from '~/utils';
@@ -57,13 +55,14 @@ export const ThinkingContent: FC<{
   children: React.ReactNode;
   animate?: boolean;
 }> = memo(({ children, animate = false }) => {
-  const fontSize = useAtomValue(fontSizeAtom);
+  const { useFontSize } = useMessagePartsHost();
+  const fontSize = useFontSize();
   const content =
     animate && typeof children === 'string' ? <AnimatedText text={children} /> : children;
 
   return (
-    <div className="relative rounded-lg border border-border-light bg-surface-secondary p-3 pb-8 text-text-secondary">
-      <p className={cn('whitespace-pre-wrap leading-[26px]', fontSize)}>{content}</p>
+    <div className="border-border-light bg-surface-secondary text-text-secondary relative rounded-lg border p-3 pb-8">
+      <p className={cn('leading-[26px] whitespace-pre-wrap', fontSize)}>{content}</p>
     </div>
   );
 });
@@ -123,12 +122,12 @@ export const ThinkingButton = memo(
         >
           <span className={cn(ROW_GLYPH_SLOT, 'relative mr-2')}>
             <Lightbulb
-              className="icon-sm absolute text-text-secondary opacity-100 transition-opacity group-hover/button:opacity-0"
+              className="icon-sm text-text-secondary absolute opacity-100 transition-opacity group-hover/button:opacity-0"
               aria-hidden="true"
             />
             <ChevronDown
               className={cn(
-                'icon-sm absolute transform-gpu text-text-primary opacity-0 transition-all duration-300 group-hover/button:opacity-100',
+                'icon-sm text-text-primary absolute transform-gpu opacity-0 transition-all duration-300 group-hover/button:opacity-100',
                 isExpanded && 'rotate-180',
               )}
               aria-hidden="true"
@@ -159,7 +158,7 @@ export const ThinkingButton = memo(
               'min-w-0 truncate text-left font-medium',
               shimmerLabel && !animateLabel && 'shimmer',
               animateLabel &&
-                'duration-300 ease-out animate-in fade-in-0 slide-in-from-bottom-1 motion-reduce:animate-none',
+                'animate-in fade-in-0 slide-in-from-bottom-1 duration-300 ease-out motion-reduce:animate-none',
             )}
           >
             {shimmerLabel && animateLabel ? (
@@ -177,7 +176,7 @@ export const ThinkingButton = memo(
             label={localize('com_ui_copy_thoughts_to_clipboard')}
             copiedLabel={localize('com_ui_copied_to_clipboard')}
             className={cn(
-              'absolute right-0 top-1/2 -translate-y-1/2 opacity-0 transition-opacity',
+              'absolute top-1/2 right-0 -translate-y-1/2 opacity-0 transition-opacity',
               'group-focus-within/thinking-container:opacity-100 group-hover/thinking-container:opacity-100',
               'focus-visible:opacity-100',
             )}
@@ -196,12 +195,12 @@ export const ThinkingButton = memo(
  */
 export const ThinkingLabel = memo(({ label, title }: { label: string; title?: string }) => {
   return (
-    <div className="mb-2 pb-2 pt-2">
+    <div className="mb-2 pt-2 pb-2">
       <div className="tool-status-text flex w-full items-center justify-start" title={title}>
         <span className={cn(ROW_GLYPH_SLOT, 'relative mr-2')}>
           <Lightbulb className="icon-sm text-text-secondary" aria-hidden="true" />
         </span>
-        <span className="min-w-0 truncate text-left font-medium text-text-secondary">{label}</span>
+        <span className="text-text-secondary min-w-0 truncate text-left font-medium">{label}</span>
       </div>
     </div>
   );
@@ -244,7 +243,7 @@ export const FloatingThinkingBar = memo(
     return (
       <div
         className={cn(
-          'absolute bottom-3 right-3 flex items-center gap-2 transition-opacity duration-150',
+          'absolute right-3 bottom-3 flex items-center gap-2 transition-opacity duration-150',
           isVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
       >
@@ -300,7 +299,8 @@ export const FloatingThinkingBar = memo(
  */
 const Thinking: React.ElementType = memo(({ children }: { children: React.ReactNode }) => {
   const localize = useLocalize();
-  const showThinking = useAtomValue(showThinkingAtom);
+  const { useShowThinking } = useMessagePartsHost();
+  const showThinking = useShowThinking();
   const [isExpanded, setIsExpanded] = useState(showThinking);
   const [isBarVisible, setIsBarVisible] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -356,7 +356,7 @@ const Thinking: React.ElementType = memo(({ children }: { children: React.ReactN
       onFocus={handleFocus}
       onBlur={handleBlur}
     >
-      <div className="mb-4 pb-2 pt-2" ref={headerRef}>
+      <div className="mb-4 pt-2 pb-2" ref={headerRef}>
         <ThinkingButton
           isExpanded={isExpanded}
           onClick={handleClick}

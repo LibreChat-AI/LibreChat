@@ -40,7 +40,7 @@ export default function AskUserQuestion({
       <AskUserQuestions
         actionId={actionId}
         questions={questions}
-        className="my-2 max-h-[70vh] w-full rounded-lg border border-border-light bg-surface-secondary"
+        className="border-border-light bg-surface-secondary my-2 max-h-[70vh] w-full rounded-lg border"
         onExpand={answerMode.collapsed && isLivePause ? answerMode.expand : undefined}
       />
     );
@@ -169,7 +169,7 @@ function AskUserQuestionSingle({
   const card = (
     <div
       className={cn(
-        'my-2 flex w-full flex-col gap-2.5 rounded-xl border border-border-light bg-surface-secondary p-3',
+        'border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-2.5 rounded-xl border p-3',
         showPlaceholder && 'invisible',
       )}
       aria-hidden={showPlaceholder || undefined}
@@ -177,11 +177,11 @@ function AskUserQuestionSingle({
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-text-primary [overflow-wrap:anywhere]">
+          <p className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]">
             {question.question}
           </p>
           {question.description != null && question.description.length > 0 && (
-            <p className="mt-0.5 text-xs text-text-secondary [overflow-wrap:anywhere]">
+            <p className="text-text-secondary mt-0.5 text-xs [overflow-wrap:anywhere]">
               {question.description}
             </p>
           )}
@@ -195,7 +195,7 @@ function AskUserQuestionSingle({
                 variant="ghost"
                 size="icon"
                 aria-label={localize('com_ui_ask_move_to_composer')}
-                className="size-auto rounded-md p-1 text-text-secondary"
+                className="text-text-secondary size-auto rounded-md p-1"
                 onClick={expand}
               >
                 <ChevronUp className="size-4" aria-hidden="true" />
@@ -216,6 +216,7 @@ function AskUserQuestionSingle({
       )}
 
       <TextareaAutosize
+        focusOutline="hidden"
         value={answerValue}
         disabled={locked}
         onChange={(e) => {
@@ -225,7 +226,7 @@ function AskUserQuestionSingle({
         minRows={2}
         maxRows={12}
         placeholder={otherLabel ?? localize('com_ui_your_answer')}
-        className="w-full resize-none rounded-lg border border-border-light bg-surface-chat px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+        className="border-border-light bg-surface-chat text-text-primary placeholder:text-text-secondary focus-visible:ring-text-primary w-full resize-none rounded-lg border px-3 py-2 text-sm focus-visible:ring-2"
         aria-label={localize('com_ui_your_answer')}
       />
 
@@ -234,7 +235,7 @@ function AskUserQuestionSingle({
           {localize('com_ui_skip')}
         </Button>
         {(status === 'expired' || status === 'error') && (
-          <span className="flex min-w-0 items-center text-xs text-text-warning">
+          <span className="text-text-warning flex min-w-0 items-center text-xs">
             <TriangleAlert className="mr-1.5 size-4 shrink-0" aria-hidden="true" />
             {localize(status === 'expired' ? 'com_ui_approval_expired' : 'com_ui_approval_error')}
           </span>
@@ -263,8 +264,8 @@ function AskUserQuestionSingle({
     <div className="relative">
       {card}
       <div className="absolute inset-x-0 top-0 my-1 flex h-5 items-center gap-2.5">
-        <MessageCircleQuestion className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
-        <span className="tool-status-text shimmer font-medium text-text-secondary">
+        <MessageCircleQuestion className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+        <span className="tool-status-text shimmer text-text-secondary font-medium">
           {localize('com_ui_asking')}
         </span>
       </div>
