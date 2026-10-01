@@ -175,7 +175,9 @@ const Dropdown: React.FC<DropdownProps> = ({
           'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
           disabledFillClasses,
           /** Horizontal padding would squeeze the icon, which flex-shrinks to fit */
-          iconOnly ? 'size-theme-button justify-center px-0' : 'w-fit gap-2 px-3',
+          iconOnly
+            ? 'size-theme-button min-h-theme-target min-w-theme-target justify-center px-0'
+            : 'w-fit gap-2 px-3',
           variant === 'field' && fieldControl,
           variant === 'compact' && 'h-8 px-2.5 py-0 text-xs transition-none',
           triggerClassName,

@@ -129,7 +129,10 @@ export default function ModelPanel({
         <h2 className="text-text-primary text-center text-base font-semibold">
           {localize('com_ui_model_parameters')}
         </h2>
-        <span aria-hidden="true" className="size-theme-button" />
+        <span
+          aria-hidden="true"
+          className="size-theme-button min-h-theme-target min-w-theme-target"
+        />
       </header>
       <div>
         {/* Endpoint aka Provider for Agents */}

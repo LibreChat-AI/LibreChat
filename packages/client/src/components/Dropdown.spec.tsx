@@ -137,3 +137,15 @@ describe('Dropdown ink', () => {
     expect(plain).not.toHaveClass('text-field-text');
   });
 });
+
+describe('Dropdown icon-only trigger', () => {
+  it('holds the square to the target minimum, like the icon Button', () => {
+    render(<Dropdown value="24h" options={OPTIONS} ariaLabel="Clock" iconOnly />);
+
+    expect(screen.getByRole('combobox')).toHaveClass(
+      'size-theme-button',
+      'min-h-theme-target',
+      'min-w-theme-target',
+    );
+  });
+});
