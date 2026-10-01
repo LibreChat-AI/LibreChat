@@ -32,6 +32,7 @@ async function openChat(page: Page, mode: Mode, definition?: { name: string }) {
   await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible({
     timeout: 30000,
   });
+  await expect(page.locator('html')).toHaveClass(mode === 'dark' ? /\bdark\b/ : /\blight\b/);
   if (definition) {
     await expect(page.locator('html')).toHaveAttribute('data-theme', definition.name);
   }
@@ -47,6 +48,7 @@ async function sizes(page: Page): Promise<Record<string, string>> {
     ['size-theme-icon', 'width'],
     ['size-theme-icon-lg', 'width'],
     ['h-theme-field-lg', 'height'],
+    ['h-theme-field', 'height'],
     ['h-theme-target', 'height'],
     ['min-w-theme-target', 'min-width'],
     ['min-w-theme-tab', 'min-width'],
@@ -68,6 +70,7 @@ const DEFAULT_SIZES = {
   'size-theme-icon': '16px',
   'size-theme-icon-lg': '24px',
   'h-theme-field-lg': '48px',
+  'h-theme-field': '40px',
   'h-theme-target': '24px',
   'min-w-theme-target': '24px',
   'min-w-theme-tab': '100px',
@@ -82,7 +85,10 @@ test.describe('primitive size roles', () => {
       const modePage = mode === 'light' ? page : await page.context().newPage();
       await openChat(modePage, mode);
 
-      expect(await sizes(modePage)).toEqual(DEFAULT_SIZES);
+      const drawn = await sizes(modePage);
+      expect(drawn).toEqual(DEFAULT_SIZES);
+      /** A field and the icon buttons beside it (the passkey rename row) stay one height. */
+      expect(drawn['h-theme-field']).toBe(drawn['size-theme-button']);
     }
   });
 
@@ -93,13 +99,16 @@ test.describe('primitive size roles', () => {
       const modePage = mode === 'light' ? page : await page.context().newPage();
       await openChat(modePage, mode, clickHouseTheme);
 
-      expect(await sizes(modePage)).toEqual({
+      const drawn = await sizes(modePage);
+      expect(drawn['h-theme-field']).toBe(drawn['size-theme-button']);
+      expect(drawn).toEqual({
         ...DEFAULT_SIZES,
         'h-theme-button-lg': '32px',
         'size-theme-button': '32px',
         'size-theme-icon-button-sm': '24px',
         'select-item': '4px',
         'min-w-theme-tab': '0px',
+        'h-theme-field': '32px',
       });
     }
   });

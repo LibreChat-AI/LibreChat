@@ -186,7 +186,6 @@ function PasskeyItem({
               onChange={(event) => setDraftName(event.target.value)}
               onKeyDown={onRenameKeyDown}
               aria-label={localize('com_ui_passkey_name')}
-              className="h-10"
             />
             <TooltipAnchor
               description={localize('com_ui_save')}

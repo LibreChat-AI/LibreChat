@@ -53,7 +53,7 @@ describe('PasskeyItem rename controls', () => {
     const saveButton = screen.getByRole('button', { name: 'Save' });
     const cancelButton = screen.getByRole('button', { name: 'Cancel' });
 
-    expect(input).toHaveClass('h-10');
+    expect(input).toHaveClass('h-theme-field');
     expect(input.parentElement?.parentElement).toHaveClass('py-2');
     expect(saveButton).toHaveClass('size-theme-button');
     expect(cancelButton).toHaveClass('size-theme-button');

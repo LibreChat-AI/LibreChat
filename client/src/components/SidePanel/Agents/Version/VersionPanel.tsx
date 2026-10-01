@@ -162,7 +162,7 @@ export default function VersionPanel() {
             </p>
           )}
         </div>
-        <span aria-hidden="true" className="h-10 w-10" />
+        <span aria-hidden="true" className="size-theme-button" />
       </header>
       <div className="flex flex-col px-2 pt-2">
         <VersionContent
