@@ -15,6 +15,17 @@ import {
   X,
 } from 'lucide-react';
 import {
+  Alert,
+  Button,
+  DropdownPopup,
+  EmptyState,
+  FileUpload,
+  OGDialog,
+  Spinner,
+  TooltipAnchor,
+  useToastContext,
+} from '@librechat/client';
+import {
   defaultAgentCapabilities,
   EToolResources,
   FileContext,
@@ -22,22 +33,8 @@ import {
   PermissionTypes,
   Permissions,
 } from 'librechat-data-provider';
-import {
-  Alert,
-  Button,
-  DropdownPopup,
-  EmptyState,
-  FileUpload,
-  Input,
-  OGDialog,
-  OGDialogContent,
-  OGDialogHeader,
-  OGDialogTitle,
-  Spinner,
-  TooltipAnchor,
-  useToastContext,
-} from '@librechat/client';
 import type { TChatProjectFile, TError, TFile, TFileUpload } from 'librechat-data-provider';
+import type { FileView } from '~/components/Chat/Input/Composer/Files';
 import {
   useAddProjectFileMutation,
   useGetStartupConfig,
@@ -47,8 +44,9 @@ import {
   useUploadFileMutation,
 } from '~/data-provider';
 import { useAgentCapabilities, useGetAgentsConfig, useHasAccess, useLocalize } from '~/hooks';
+import FileGrid, { FILE_VIEWS } from '~/components/Chat/Input/Composer/Files';
+import { CatalogContent } from '~/components/Chat/Input/Composer/Catalog';
 import { NotificationSeverity, type LocalizeFunction } from '~/common';
-import { formatFileSize } from '~/utils';
 type ProjectResourcesProps = {
   project: { _id: string; fileCount?: number };
 };
@@ -114,6 +112,11 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState('');
   const deferredPickerSearch = useDeferredValue(pickerSearch);
+  const [pickerView, setPickerView] = useState<FileView>('all');
+  const fileViewOptions = useMemo(
+    () => FILE_VIEWS.map((option) => ({ value: option.value, label: localize(option.labelKey) })),
+    [localize],
+  );
   const [uploading, setUploading] = useState<UploadState[]>([]);
   const pendingUploadIdsRef = useRef(new Set<string>());
   const optimisticAttachedIdsRef = useRef(new Set<string>());
@@ -204,12 +207,14 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
   ]);
   useEffect(() => {
     setPickerSearch('');
+    setPickerView('all');
   }, [project._id]);
 
   const addExistingFile = async (fileId: string) => {
     try {
       await addFile.mutateAsync({ projectId: project._id, file_id: fileId });
       setIsPickerOpen(false);
+      setIsFileMenuOpen(false);
     } catch (error: unknown) {
       showToast({
         message: getAssociationErrorMessage(error, localize, projectFileLimit),
@@ -548,92 +553,57 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
         </>
       )}
 
-      <OGDialog open={isPickerOpen} onOpenChange={setIsPickerOpen} triggerRef={pickerMenuRef}>
-        <OGDialogContent className="w-11/12 max-w-lg" showCloseButton={true}>
-          <OGDialogHeader>
-            <OGDialogTitle>{localize('com_ui_project_choose_file')}</OGDialogTitle>
-          </OGDialogHeader>
-          <label className="sr-only" htmlFor="project-file-search">
-            {localize('com_ui_search_files')}
-          </label>
-          <Input
-            id="project-file-search"
-            value={pickerSearch}
-            onChange={(event) => setPickerSearch(event.target.value)}
-            placeholder={localize('com_ui_search_files')}
-            aria-label={localize('com_ui_search_files')}
-          />
-          <div
-            className="mt-3 max-h-80 space-y-2 overflow-y-auto"
-            role="region"
-            aria-live="polite"
-            aria-label={localize('com_ui_project_choose_file')}
+      <OGDialog
+        open={isPickerOpen}
+        onOpenChange={(open) => {
+          setIsPickerOpen(open);
+          if (!open) {
+            setIsFileMenuOpen(false);
+          }
+        }}
+        triggerRef={pickerMenuRef}
+      >
+        {isPickerOpen ? (
+          <CatalogContent
+            title={localize('com_ui_project_choose_file')}
+            searchLabel={localize('com_ui_search_files')}
+            search={pickerSearch}
+            onSearchChange={setPickerSearch}
+            filterLabel={localize('com_ui_composer_files_filter')}
+            viewOptions={fileViewOptions}
+            view={pickerView}
+            onViewChange={(value) => setPickerView(value as FileView)}
           >
-            {(isFilesLoading || isFetchingNextPage) && (
-              <div role="status" className="text-text-secondary flex justify-center py-6">
-                <Spinner className="size-4" />
-                <span className="sr-only">{localize('com_ui_loading')}</span>
-              </div>
-            )}
-            {isFilesError && (
-              <Alert variant="error" role="alert">
-                {localize('com_ui_project_files_error')}
-                <Button type="button" variant="outline" size="sm" onClick={() => refetchFiles()}>
-                  {localize('com_ui_retry')}
-                </Button>
-              </Alert>
-            )}
-            {!isFilesLoading &&
-              !isFilesError &&
-              !isFetchingNextPage &&
-              !availableFiles.length &&
-              !hasNextPage && (
-                <p className="text-text-secondary py-6 text-center text-sm">
-                  {deferredPickerSearch
-                    ? localize('com_ui_no_search_results')
-                    : localize('com_ui_project_no_eligible_files')}
-                </p>
-              )}
-            {!isFilesLoading && !isFilesError && availableFiles.length > 0 && (
-              <ul className="space-y-2">
-                {availableFiles.map((file) => (
-                  <li key={file.file_id}>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="row"
-                      className="w-full"
-                      onClick={() => void addExistingFile(file.file_id)}
-                      disabled={addFile.isLoading || !hasFileCapacity}
-                    >
-                      <Paperclip
-                        className="text-text-secondary size-4 shrink-0"
-                        aria-hidden="true"
-                      />
-                      <span className="text-text-primary min-w-0 flex-1 truncate text-sm">
-                        {file.filename}
-                      </span>
-                      <span className="text-text-secondary shrink-0 text-xs">
-                        {formatFileSize(file.bytes)}
-                      </span>
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <FileGrid
+              query={deferredPickerSearch.trim().toLowerCase()}
+              view={pickerView}
+              onAttach={(file) => void addExistingFile(file.file_id)}
+              source={{
+                files: availableFiles,
+                isLoading: isFilesLoading,
+                isError: isFilesError,
+                refetch: () => void refetchFiles(),
+              }}
+              disabled={addFile.isLoading || !hasFileCapacity}
+              emptyText={
+                deferredPickerSearch
+                  ? localize('com_ui_no_search_results')
+                  : localize('com_ui_project_no_eligible_files')
+              }
+            />
             {!isFilesLoading && !isFilesError && hasNextPage && (
               <Button
                 type="button"
                 variant="outline"
-                className="w-full"
+                className="mt-3 w-full"
                 onClick={() => void fetchNextPage()}
                 disabled={isFetchingNextPage}
               >
                 {isFetchingNextPage ? localize('com_ui_loading') : localize('com_ui_load_more')}
               </Button>
             )}
-          </div>
-        </OGDialogContent>
+          </CatalogContent>
+        ) : null}
       </OGDialog>
     </section>
   );

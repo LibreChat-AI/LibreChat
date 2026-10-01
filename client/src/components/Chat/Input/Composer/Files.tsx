@@ -23,6 +23,8 @@ export const FILE_VIEWS: Array<{ value: FileView; labelKey: TranslationKeys }> =
   { value: 'documents', labelKey: 'com_ui_composer_files_documents' },
 ];
 
+const NO_FILES: TFile[] = [];
+
 const isImage = (file: TFile) => file.type?.startsWith('image/') === true;
 
 /** Images, audio and video are media; everything else is a document. */
@@ -85,12 +87,13 @@ interface FileCardProps {
   file: TFile;
   onAttach: (file: TFile) => void;
   onPreview: (file: TFile, trigger: HTMLButtonElement) => void;
+  disabled?: boolean;
 }
 
 /** Laid out like the skill and MCP cards: the card is the attach action, and
  *  the corner holds the one secondary action, previewing, where they keep the
  *  favourite star. */
-const FileCard = memo(function FileCard({ file, onAttach, onPreview }: FileCardProps) {
+const FileCard = memo(function FileCard({ file, onAttach, onPreview, disabled }: FileCardProps) {
   const localize = useLocalize();
   const name = file.filename ?? '';
   const details = [
@@ -104,7 +107,8 @@ const FileCard = memo(function FileCard({ file, onAttach, onPreview }: FileCardP
       <button
         type="button"
         onClick={() => onAttach(file)}
-        className="focus-visible:ring-ring-primary flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl p-4 text-left focus:outline-hidden focus-visible:ring-2"
+        disabled={disabled}
+        className="focus-visible:ring-ring-primary flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl p-4 text-left focus:outline-hidden focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50"
       >
         <span className="flex w-full min-w-0 items-start gap-3">
           <Thumbnail file={file} />
@@ -137,10 +141,12 @@ function EmptyState({
   loading,
   failed,
   onRetry,
+  text,
 }: {
   loading: boolean;
   failed: boolean;
   onRetry: () => void;
+  text?: string;
 }) {
   const localize = useLocalize();
   if (loading) {
@@ -168,22 +174,47 @@ function EmptyState({
   return (
     <div role="status" className="flex flex-col items-center justify-center py-16 text-center">
       <Search className="text-text-tertiary size-8 opacity-40" aria-hidden="true" />
-      <p className="text-text-secondary mt-3 text-sm">{localize('com_ui_composer_no_results')}</p>
+      <p className="text-text-secondary mt-3 text-sm">
+        {text ?? localize('com_ui_composer_no_results')}
+      </p>
     </div>
   );
+}
+
+/** Files from somewhere other than the user's whole library, such as a
+ *  server-filtered list of the files a project can take. */
+export interface FileGridSource {
+  files: TFile[];
+  isLoading: boolean;
+  isError: boolean;
+  refetch: () => void;
 }
 
 interface FileGridProps {
   query: string;
   view: FileView;
   onAttach: (file: TFile) => void;
+  source?: FileGridSource;
+  disabled?: boolean;
+  emptyText?: string;
 }
 
 /** The user's files as cards, filtered by name and kind, with a preview for
  *  anything the message viewers can show. */
-export default function FileGrid({ query, view, onAttach }: FileGridProps) {
+export default function FileGrid({
+  query,
+  view,
+  onAttach,
+  source,
+  disabled,
+  emptyText,
+}: FileGridProps) {
   const localize = useLocalize();
-  const { data: files = [], isLoading, isError, refetch } = useGetFiles<TFile[]>();
+  const library = useGetFiles<TFile[]>({ enabled: source == null });
+  const files = source?.files ?? library.data ?? NO_FILES;
+  const isLoading = source?.isLoading ?? library.isLoading;
+  const isError = source?.isError ?? library.isError;
+  const refetch = source?.refetch ?? library.refetch;
   const [previewing, setPreviewing] = useState<TFile | null>(null);
   /** The Preview button that opened the viewer, where focus returns on close. */
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -279,6 +310,7 @@ export default function FileGrid({ query, view, onAttach }: FileGridProps) {
           loading={isLoading}
           failed={isError && files.length === 0}
           onRetry={() => void refetch()}
+          text={emptyText}
         />
       ) : (
         <ul
@@ -287,7 +319,12 @@ export default function FileGrid({ query, view, onAttach }: FileGridProps) {
         >
           {visible.map((file) => (
             <li key={file.file_id}>
-              <FileCard file={file} onAttach={onAttach} onPreview={openPreview} />
+              <FileCard
+                file={file}
+                onAttach={onAttach}
+                onPreview={openPreview}
+                disabled={disabled}
+              />
             </li>
           ))}
         </ul>

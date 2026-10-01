@@ -1,4 +1,7 @@
+import { useState } from 'react';
+import { RecoilRoot } from 'recoil';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TChatProjectFile, TFile, TFileUpload } from 'librechat-data-provider';
 import type * as ClientModule from '@librechat/client';
@@ -34,13 +37,10 @@ jest.mock('@librechat/client', () => {
   const React = jest.requireActual<typeof ReactModule>('react');
   const actual = jest.requireActual<typeof ClientModule>('@librechat/client');
   return {
+    ...actual,
     Spinner: () => React.createElement('span', { 'aria-hidden': true }),
     Alert: ({ children, role }: React.HTMLAttributes<HTMLDivElement>) =>
       React.createElement('div', { role }, children),
-    Button: actual.Button,
-    DropdownPopup: actual.DropdownPopup,
-    EmptyState: actual.EmptyState,
-    Input: actual.Input,
     FileUpload: React.forwardRef<
       HTMLInputElement,
       { children: ReactNode; handleFileChange: React.ChangeEventHandler<HTMLInputElement> }
@@ -65,12 +65,15 @@ jest.mock('@librechat/client', () => {
       React.createElement('div', null, children),
     OGDialogTitle: ({ children }: { children: ReactNode }) =>
       React.createElement('h2', null, children),
+    OGDialogDescription: ({ children }: { children: ReactNode }) =>
+      React.createElement('p', null, children),
     TooltipAnchor: ({ render }: { render: ReactNode }) => render,
     useToastContext: () => ({ showToast: mockShowToast }),
   };
 });
 
 jest.mock('~/data-provider', () => ({
+  ...jest.requireActual('~/data-provider'),
   useProjectFilesQuery: () => mockProjectQueryState,
   useProjectAvailableFilesInfiniteQuery: () => mockAvailableFilesState,
   useUploadFileMutation: () => ({ mutateAsync: mockUploadMutateAsync, isLoading: false }),
@@ -83,6 +86,8 @@ jest.mock('~/hooks', () => ({
   useAgentCapabilities: () => ({ fileSearchEnabled: true }),
   useGetAgentsConfig: () => ({ agentsConfig: { capabilities: ['file_search'] } }),
   useHasAccess: () => mockCanUseFileSearch(),
+  useAuthContext: () => ({ user: { id: 'user-1' } }),
+  useToolFavorites: () => ({ favoriteKeys: new Set(), toggle: jest.fn() }),
   useLocalize: () => (key: string, options?: { count?: number; name?: string }) => {
     const translations: Record<string, string> = {
       com_error_files_upload: 'An error occurred while uploading the file.',
@@ -116,6 +121,15 @@ jest.mock('~/hooks', () => ({
   },
 }));
 
+function Providers({ children }: { children: ReactNode }) {
+  const [client] = useState(() => new QueryClient());
+  return (
+    <QueryClientProvider client={client}>
+      <RecoilRoot>{children}</RecoilRoot>
+    </QueryClientProvider>
+  );
+}
+
 const project = { _id: 'project-1', fileCount: 0 };
 const uploadedFile = {
   file_id: 'canonical-file-id',
@@ -128,7 +142,7 @@ const uploadedFile = {
 } as unknown as TFileUpload;
 
 function renderResources() {
-  return render(<ProjectResources project={project} />);
+  return render(<ProjectResources project={project} />, { wrapper: Providers });
 }
 
 describe('ProjectResources', () => {
@@ -211,7 +225,7 @@ describe('ProjectResources', () => {
         () => new Promise<TFileUpload>((resolve) => (finishFirstUpload = resolve)),
       )
       .mockResolvedValueOnce({ ...uploadedFile, file_id: 'second-canonical-id' });
-    render(<ProjectResources project={{ ...project, fileCount: 48 }} />);
+    render(<ProjectResources project={{ ...project, fileCount: 48 }} />, { wrapper: Providers });
     const input = screen.getByTestId('project-upload-input');
     fireEvent.change(input, {
       target: {
@@ -299,7 +313,7 @@ describe('ProjectResources', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Choose an existing file' }));
     expect(await screen.findByText('No eligible indexed files')).toBeInTheDocument();
 
-    await user.type(screen.getByRole('textbox', { name: 'Search files' }), 'invoice');
+    await user.type(screen.getByRole('searchbox', { name: 'Search files' }), 'invoice');
     expect(await screen.findByText('No results match your search')).toBeInTheDocument();
     expect(screen.queryByText('No eligible indexed files')).not.toBeInTheDocument();
   });
