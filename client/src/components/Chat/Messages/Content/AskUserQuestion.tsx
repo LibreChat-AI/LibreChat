@@ -71,7 +71,7 @@ function AskUserQuestionsCard({
   return (
     <div
       className={cn(
-        'border-border-light bg-surface-secondary my-2 flex max-h-[70vh] w-full flex-col rounded-2xl border',
+        'border-border-light bg-surface-secondary my-2 flex w-full flex-col rounded-2xl border',
         live && '[view-transition-name:ask-question]',
         reserved && 'invisible',
       )}
@@ -81,7 +81,7 @@ function AskUserQuestionsCard({
       <AskUserQuestions
         actionId={actionId}
         questions={questions}
-        className="flex-1"
+        className="max-h-[70vh]"
         headerAction={
           onExpand != null && (
             <TooltipAnchor

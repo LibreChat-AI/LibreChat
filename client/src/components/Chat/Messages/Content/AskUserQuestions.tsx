@@ -109,17 +109,20 @@ export default function AskUserQuestions({
   const text = Object.hasOwn(form.state.text, question.id) ? form.state.text[question.id] : '';
 
   return (
-    <div className={cn('flex min-h-0 flex-col', className)}>
-      {stepped && (
-        <p className="sr-only" aria-live="polite">
-          {localize('com_ui_question_step', { 0: activeIndex + 1, 1: total })}
-        </p>
-      )}
-      <div className="text-text-secondary flex shrink-0 items-start justify-between gap-2 px-3 pt-3">
-        <div className="min-w-0 flex-1">
-          {/* Only the active step renders: its content swaps at once and the
-              two `AutoHeight` regions ease the card to the new size. */}
-          <AutoHeight>
+    /* Only the active step renders and the whole form sits in one
+       `AutoHeight`: switching questions lays the new one out at its final size
+       at once, and only the card's outer height eases to fit. `className`
+       carries the surface's height cap, so the measured height respects it and
+       a long question scrolls inside. */
+    <AutoHeight>
+      <div className={cn('flex min-h-0 flex-col', className)}>
+        {stepped && (
+          <p className="sr-only" aria-live="polite">
+            {localize('com_ui_question_step', { 0: activeIndex + 1, 1: total })}
+          </p>
+        )}
+        <div className="text-text-secondary flex shrink-0 items-start justify-between gap-2 px-3 pt-3">
+          <div className="min-w-0 flex-1">
             {question.header != null && question.header !== '' && (
               <p className="mb-1 text-xs font-medium">{question.header}</p>
             )}
@@ -132,54 +135,52 @@ export default function AskUserQuestions({
             {question.description != null && question.description.length > 0 && (
               <p className="mt-0.5 text-sm [overflow-wrap:anywhere]">{question.description}</p>
             )}
-          </AutoHeight>
-        </div>
-        {(stepped || headerAction != null) && (
-          <div className="flex shrink-0 items-center gap-1">
-            {stepped && (
-              <div
-                role="group"
-                aria-label={localize('com_ui_question_navigation')}
-                className="flex items-center"
-              >
-                {questions.map((item, index) => {
-                  const isAnswered = Object.hasOwn(form.answers, item.id);
-                  const isActive = index === activeIndex;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      disabled={navLocked}
-                      aria-current={isActive ? 'step' : undefined}
-                      aria-label={localize(
-                        isAnswered
-                          ? 'com_ui_question_step_answered'
-                          : 'com_ui_question_step_unanswered',
-                        { 0: index + 1 },
-                      )}
-                      className="flex h-7 items-center justify-center px-1"
-                      onClick={() => goToStep(index)}
-                    >
-                      <span
-                        className={cn(
-                          'h-2 rounded-full transition-all duration-300 ease-out motion-reduce:transition-none',
-                          isActive ? 'w-4' : 'w-2',
-                          isAnswered ? 'bg-surface-submit' : 'bg-border-heavy',
-                        )}
-                      />
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            {headerAction}
           </div>
-        )}
-      </div>
-      {/* `pb-1 -mb-1` holds `AutoHeight`'s 4px focus-ring margin inside the
-          padding box, so it never counts as overflow and draws a scrollbar. */}
-      <div ref={scrollRef} className="-mb-1 min-h-0 flex-1 overflow-y-auto px-3 pb-1">
-        <AutoHeight>
+          {(stepped || headerAction != null) && (
+            <div className="flex shrink-0 items-center gap-1">
+              {stepped && (
+                <div
+                  role="group"
+                  aria-label={localize('com_ui_question_navigation')}
+                  className="flex items-center"
+                >
+                  {questions.map((item, index) => {
+                    const isAnswered = Object.hasOwn(form.answers, item.id);
+                    const isActive = index === activeIndex;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        disabled={navLocked}
+                        aria-current={isActive ? 'step' : undefined}
+                        aria-label={localize(
+                          isAnswered
+                            ? 'com_ui_question_step_answered'
+                            : 'com_ui_question_step_unanswered',
+                          { 0: index + 1 },
+                        )}
+                        className="flex h-7 items-center justify-center px-1"
+                        onClick={() => goToStep(index)}
+                      >
+                        <span
+                          className={cn(
+                            'h-2 rounded-full transition-all duration-300 ease-out motion-reduce:transition-none',
+                            isActive ? 'w-4' : 'w-2',
+                            isAnswered ? 'bg-surface-submit' : 'bg-border-heavy',
+                          )}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {headerAction}
+            </div>
+          )}
+        </div>
+        {/* `pb-1 -mb-1` keeps the answer field's focus ring inside the padding
+          box, so focusing it never counts as overflow and draws a scrollbar. */}
+        <div ref={scrollRef} className="-mb-1 min-h-0 flex-1 overflow-y-auto px-3 pb-1">
           <fieldset
             key={question.id}
             ref={stepRef}
@@ -209,13 +210,8 @@ export default function AskUserQuestions({
               aria-label={`${question.question} ${localize('com_ui_your_answer')}`}
             />
           </fieldset>
-        </AutoHeight>
-      </div>
-      {/* Status lines come and go with the step (the remaining-questions link
-          appears only on the last one), so they ease in with the rest of the
-          card instead of popping its height. */}
-      <div className="shrink-0 px-3">
-        <AutoHeight>
+        </div>
+        <div className="shrink-0 px-3">
           {(form.status === 'error' || form.status === 'expired') && (
             <div className="text-text-warning flex items-center gap-1.5 pt-2 text-xs">
               <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -236,64 +232,64 @@ export default function AskUserQuestions({
               )}
             </button>
           )}
-        </AutoHeight>
-      </div>
-      <div
-        className={cn(
-          'flex shrink-0 items-center gap-2 p-3',
-          stepped ? 'justify-between' : 'justify-end',
-        )}
-      >
-        <Button
-          type="button"
-          className="select-none"
-          size="sm"
-          variant="outline"
-          disabled={form.locked}
-          onClick={form.skip}
+        </div>
+        <div
+          className={cn(
+            'flex shrink-0 items-center gap-2 p-3',
+            stepped ? 'justify-between' : 'justify-end',
+          )}
         >
-          {localize('com_ui_skip')}
-        </Button>
-        <div className="flex items-center gap-2">
-          {stepped && (
-            <Button
-              type="button"
-              className="select-none"
-              size="sm"
-              variant="outline"
-              disabled={navLocked || activeIndex === 0}
-              onClick={() => goToStep(activeIndex - 1)}
-            >
-              {localize('com_ui_back')}
-            </Button>
-          )}
-          {isLastStep ? (
-            <Button
-              type="button"
-              className="select-none"
-              size="sm"
-              variant="submit"
-              disabled={!form.canSubmit}
-              onClick={form.submit}
-            >
-              {form.status === 'submitting'
-                ? localize('com_ui_submitting')
-                : localize('com_ui_submit')}
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              className="select-none"
-              size="sm"
-              variant="submit"
-              disabled={navLocked}
-              onClick={() => goToStep(activeIndex + 1)}
-            >
-              {localize('com_ui_next')}
-            </Button>
-          )}
+          <Button
+            type="button"
+            className="select-none"
+            size="sm"
+            variant="outline"
+            disabled={form.locked}
+            onClick={form.skip}
+          >
+            {localize('com_ui_skip')}
+          </Button>
+          <div className="flex items-center gap-2">
+            {stepped && (
+              <Button
+                type="button"
+                className="select-none"
+                size="sm"
+                variant="outline"
+                disabled={navLocked || activeIndex === 0}
+                onClick={() => goToStep(activeIndex - 1)}
+              >
+                {localize('com_ui_back')}
+              </Button>
+            )}
+            {isLastStep ? (
+              <Button
+                type="button"
+                className="select-none"
+                size="sm"
+                variant="submit"
+                disabled={!form.canSubmit}
+                onClick={form.submit}
+              >
+                {form.status === 'submitting'
+                  ? localize('com_ui_submitting')
+                  : localize('com_ui_submit')}
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                className="select-none"
+                size="sm"
+                variant="submit"
+                disabled={navLocked}
+                onClick={() => goToStep(activeIndex + 1)}
+              >
+                {localize('com_ui_next')}
+              </Button>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </AutoHeight>
   );
 }

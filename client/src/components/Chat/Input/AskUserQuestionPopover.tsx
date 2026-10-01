@@ -54,11 +54,11 @@ function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAn
 
   return (
     <div className="absolute bottom-full z-10 mb-2 w-full">
-      <div className="popover border-border-light bg-surface-secondary flex max-h-[60vh] flex-col rounded-2xl border shadow-lg [view-transition-name:ask-question]">
+      <div className="popover border-border-light bg-surface-secondary flex flex-col rounded-2xl border shadow-lg [view-transition-name:ask-question]">
         <AskUserQuestions
           actionId={liveAsk.actionId}
           questions={questions}
-          className="flex-1"
+          className="max-h-[60vh]"
           headerAction={<MoveToChatButton onClick={collapse} />}
         />
       </div>
