@@ -55,6 +55,8 @@ export interface FetchModelsParams {
   userObject?: Partial<IUser>;
   /** Skip MODEL_QUERIES cache (e.g., for user-provided keys) */
   skipCache?: boolean;
+  /** Display-only labels; model identifiers remain the return value. */
+  onModelLabels?: (labels: Record<string, string>) => void;
 }
 
 function applyUserProvidedBaseURLProtection(
@@ -166,8 +168,10 @@ export async function fetchModels({
   headers,
   userObject,
   skipCache = false,
+  onModelLabels,
 }: FetchModelsParams): Promise<string[]> {
   let models: string[] = [];
+  let modelLabels: Record<string, string> = {};
   const baseURL = direct ? extractBaseURL(_baseURL ?? '') : _baseURL;
 
   if (!baseURL && !azure) {
@@ -196,8 +200,13 @@ export async function fetchModels({
   const cacheKey = shouldCache ? modelsCacheKey(baseURL ?? '', apiKey) : '';
   const modelsCache = shouldCache ? standardCache(CacheKeys.MODEL_QUERIES) : null;
   if (modelsCache && cacheKey) {
-    const cachedModels = await modelsCache.get(cacheKey);
-    if (cachedModels) {
+    const [cachedModels, cachedLabels] = await Promise.all([
+      modelsCache.get(cacheKey),
+      onModelLabels ? modelsCache.get<Record<string, string>>(`${cacheKey}:labels`) : undefined,
+    ]);
+    if (cachedModels && (!onModelLabels || cachedLabels != null)) {
+      modelLabels = cachedLabels ?? {};
+      onModelLabels?.(modelLabels);
       if (createTokenConfig && tokenKey) {
         const tokenConfigBackfilled = await backfillTokenConfigFromModelCache(cacheKey, tokenKey);
         if (!tokenConfigBackfilled && isScopedTokenConfigKey(tokenKey)) {
@@ -228,8 +237,10 @@ export async function fetchModels({
     }
     if (ollamaModels !== null) {
       if (modelsCache && cacheKey && ollamaModels.length > 0) {
+        await modelsCache.set(`${cacheKey}:labels`, {}, Time.TWO_MINUTES);
         await modelsCache.set(cacheKey, ollamaModels, Time.TWO_MINUTES);
       }
+      onModelLabels?.({});
       return ollamaModels;
     }
   }
@@ -299,12 +310,21 @@ export async function fetchModels({
       }
     }
     models = input.data.map((item: { id: string }) => item.id);
+    modelLabels = Object.fromEntries(
+      input.data.map((item: { id: string; name?: string }) => [
+        item.id,
+        item.name?.trim() || item.id,
+      ]),
+    );
+
+    onModelLabels?.(modelLabels);
   } catch (error) {
     const logMessage = `Failed to fetch models from ${azure ? 'Azure ' : ''}${name} API`;
     logAxiosError({ message: logMessage, error: error as Error });
   }
 
   if (modelsCache && cacheKey && models.length > 0) {
+    await modelsCache.set(`${cacheKey}:labels`, modelLabels, Time.TWO_MINUTES);
     await modelsCache.set(cacheKey, models, Time.TWO_MINUTES);
   }
 

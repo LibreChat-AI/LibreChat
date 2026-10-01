@@ -417,6 +417,13 @@ export const getModels = async (): Promise<t.TModelsConfig> => {
   return request.get(endpoints.models());
 };
 
+export const getModelsWithLabels = (): Promise<{
+  models: t.TModelsConfig;
+  modelLabels: Record<string, Record<string, string>>;
+}> => {
+  return request.get(`${endpoints.models()}?includeLabels=true`);
+};
+
 /* Assistants */
 
 export const createAssistant = ({

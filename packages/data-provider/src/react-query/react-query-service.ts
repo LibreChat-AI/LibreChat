@@ -190,15 +190,34 @@ export const useRevokeAllUserKeysMutation = (): UseMutationResult<unknown> => {
 export const useGetModelsQuery = (
   config?: UseQueryOptions<t.TModelsConfig>,
 ): QueryObserverResult<t.TModelsConfig> => {
-  return useQuery<t.TModelsConfig>([QueryKeys.models], () => dataService.getModels(), {
-    initialData: initialModelsConfig,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    refetchOnMount: false,
-    staleTime: Infinity,
-    ...config,
-  });
+  const queryClient = useQueryClient();
+  return useQuery<t.TModelsConfig>(
+    [QueryKeys.models],
+    async () => {
+      const response = await dataService.getModelsWithLabels();
+      queryClient.setQueryData([QueryKeys.modelLabels], response.modelLabels);
+      return response.models;
+    },
+    {
+      initialData: initialModelsConfig,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      refetchOnMount: false,
+      staleTime: Infinity,
+      ...config,
+    },
+  );
 };
+
+type ModelLabels = Awaited<ReturnType<typeof dataService.getModelsWithLabels>>['modelLabels'];
+
+/** Observe labels populated by the models request without another HTTP fetch. */
+export const useGetModelLabelsQuery = (): QueryObserverResult<ModelLabels> =>
+  useQuery<ModelLabels>([QueryKeys.modelLabels], {
+    enabled: false,
+    initialData: {},
+    staleTime: Infinity,
+  });
 
 export const useCreatePresetMutation = (): UseMutationResult<
   s.TPreset,
