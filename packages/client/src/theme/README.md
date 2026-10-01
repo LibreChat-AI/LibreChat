@@ -366,7 +366,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   `size-theme-icon-lg` (`iconSize`, `iconSizeLg`) the icons in menus and selects and
   the dialog's close icon, `h-theme-field-lg` (`fieldHeightLg`) the large `title`
   input, and `h-theme-target` (`minTargetSize`, never under 24px) the switch's hit
-  area. Every default is the size the primitive drew before.
+  area, and `min-w-theme-tab` (`tabMinWidth`, `0` to size a tab by its label) the tab
+  trigger. Every default is the size the primitive drew before.
 - `bg-field-fill` / `text-field-text` - A form field's fill and typed value. The
   ink follows `text-primary` and the fill follows `surface-primary` when a theme
   names those and not these. Fields stay clear unless the theme's

@@ -5,7 +5,8 @@ import { readFileSync } from 'fs';
  * The ten named primitives, read the strict way: a primitive is theme-driven only when its files
  * paint color, radius, border, shadow and size from theme roles alone. Each file is checked for
  * raw palette utilities, hex/rgb/hsl literals, arbitrary corners and shadows, fixed size
- * utilities (`h-4`, `size-10`; a fraction such as `w-11/12` is a proportion, not a size), literal
+ * utilities (`h-4`, `size-10`, `min-w-[8rem]`; a fraction such as `w-11/12`, a viewport unit or a
+ * value read from the component library is relative, not a size), literal
  * corners and shadows in its stylesheet, and design-rule suppressions. Move a primitive into
  * `themeDriven` when a change clears it; the remaining values of the others are pinned so a new
  * literal fails by name.
@@ -31,9 +32,10 @@ const themeDriven = ['Button', 'Input', 'Dialog', 'Tabs', 'Switch', 'Checkbox', 
 
 /** What the two others still hard-code, and why it stays. */
 const remaining: Record<string, string[]> = {
-  /** The content's nested-popover layering is a runtime style; the item indicator box and the
-   *  list's scroll cap have no role. */
+  /** The content's nested-popover layering is a runtime style; the item indicator box, the list's
+   *  scroll cap and its minimum width have no role. */
   Select: [
+    'Select.tsx: arbitrary size min-w-[8rem]',
     'Select.tsx: fixed size h-3.5',
     'Select.tsx: fixed size h-96',
     'Select.tsx: fixed size w-3.5',
@@ -49,7 +51,7 @@ const suppressions: Record<string, Record<string, { count: number }>> = JSON.par
 
 /** Every Tailwind palette hue, black and white, under any color utility. */
 const rawPalette = new RegExp(
-  `\\b(?:bg|text|border(?:-[xytblrse])?|ring|outline|fill|stroke|divide|accent|caret|decoration|placeholder|from|via|to|shadow)-(?:${[
+  `\\b(?:bg|text|border(?:-[xytblrse])?|ring(?:-offset)?|outline|fill|stroke|divide|accent|caret|decoration|placeholder|from|via|to|shadow)-(?:${[
     'black',
     'white',
     'slate',
@@ -77,6 +79,10 @@ const rawPalette = new RegExp(
   ].join('|')})(?:-[0-9]+)?\\b`,
   'g',
 );
+
+/** A 3, 4, 6 or 8 digit hex color, or an rgb/hsl function with literal channels. */
+const hexOrRgb =
+  /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})\b|rgba?\(\s*[0-9]|hsla?\(/g;
 
 const isComment = (line: string) => /^\s*(\*|\/\/|\/\*)/.test(line);
 
@@ -117,9 +123,7 @@ function hardCoded(file: string): string[] {
     for (const match of rules.matchAll(/(border-radius|box-shadow):\s*[0-9][^;]*/g)) {
       found.add(`${file}: literal ${match[0]}`);
     }
-    for (const match of rules.matchAll(
-      /#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?\b|rgba?\(\s*[0-9]|hsla?\(/g,
-    )) {
+    for (const match of rules.matchAll(hexOrRgb)) {
       found.add(`${file}: color literal ${match[0]}`);
     }
   } else {
@@ -127,9 +131,7 @@ function hardCoded(file: string): string[] {
     for (const match of text.matchAll(rawPalette)) {
       found.add(`${file}: raw palette ${match[0]}`);
     }
-    for (const match of text.matchAll(
-      /#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?\b|rgba?\([0-9]|hsla?\(/g,
-    )) {
+    for (const match of text.matchAll(hexOrRgb)) {
       found.add(`${file}: color literal ${match[0]}`);
     }
     for (const match of text.matchAll(/\b(?:rounded|shadow)(?:-[a-z]{1,2})?-\[[^\]]*\]/g)) {
@@ -137,6 +139,11 @@ function hardCoded(file: string): string[] {
     }
     for (const match of text.matchAll(/\b(?:h|w|size|min-h)-[0-9.]+\b(?!\/)/g)) {
       found.add(`${file}: fixed size ${match[0]}`);
+    }
+    for (const match of text.matchAll(
+      /\b(?:h|w|size|min-h|min-w|max-h|max-w)-\[[0-9.]+(?:px|rem|em)\]/g,
+    )) {
+      found.add(`${file}: arbitrary size ${match[0]}`);
     }
   }
   Object.keys(suppressions[`packages/client/src/components/${file}`] ?? {})
@@ -159,7 +166,10 @@ describe('the ten named primitives', () => {
 
   it('reads any raw palette hue under any color utility', () => {
     const hits = (classes: string) => classes.match(rawPalette) ?? [];
-    expect(hits('bg-orange-500 text-pink-600 border-emerald-500 fill-white')).toHaveLength(4);
+    expect(
+      hits('bg-orange-500 text-pink-600 border-emerald-500 fill-white ring-offset-red-500'),
+    ).toHaveLength(5);
+    expect('text-[#00000080] bg-[#fff]'.match(hexOrRgb)).toEqual(['#00000080', '#fff']);
     expect(hits('bg-surface-primary text-text-secondary border-border-light')).toEqual([]);
   });
 

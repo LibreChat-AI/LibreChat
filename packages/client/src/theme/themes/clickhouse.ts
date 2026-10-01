@@ -382,6 +382,8 @@ const clickHouseShape = {
   menuRadius: '0.25rem', // genericMenu.panel.radii.all
   tooltipRadius: '0.25rem', // tooltip.radii.all
   tabRadius: '0.25rem', // tabs.radii.all
+  /** Click UI sizes a tab trigger by its label, in `tabs.space.x` on each side. */
+  tabMinWidth: '0',
   radiusSm: '0.25rem', // border.radii.1
   radiusMd: '0.25rem', // border.radii.1
   radiusLg: '0.25rem', // border.radii.1

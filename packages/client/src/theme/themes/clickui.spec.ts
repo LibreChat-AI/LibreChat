@@ -516,6 +516,11 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     status: 'match',
     reason: '2rem: Click UI draws one button size, so the large step matches the default',
   },
+  tabMinWidth: {
+    value: '0',
+    status: 'match',
+    reason: '0: Click UI sizes tab triggers by their label in tabs.space.x, with no minimum width',
+  },
   iconButtonSizeSm: {
     value: '1.5rem',
     status: 'match',

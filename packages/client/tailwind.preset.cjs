@@ -38,6 +38,8 @@ module.exports = {
       minWidth: {
         /** The smallest pointer target a control's hit area keeps (24px by default). */
         'theme-target': 'var(--theme-min-target-size, 1.5rem)',
+        /** The narrowest a tab trigger draws. */
+        'theme-tab': 'var(--theme-tab-min-width, 100px)',
       },
       width: {
         /** Never narrower than the track is tall, so the knob always has somewhere to travel. */

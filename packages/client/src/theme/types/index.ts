@@ -511,6 +511,8 @@ export interface IThemeAppearance {
   menuRadius: string;
   tooltipRadius: string;
   tabRadius: string;
+  /** The narrowest a tab trigger draws; `0` sizes it by its label. */
+  tabMinWidth: string;
   radiusSm: string;
   radiusMd: string;
   radiusLg: string;

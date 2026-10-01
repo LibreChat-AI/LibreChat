@@ -345,6 +345,7 @@ const appearanceValidators = {
   menuRadius: isLength,
   tooltipRadius: isLength,
   tabRadius: isLength,
+  tabMinWidth: isTableLength,
   radiusSm: isLength,
   radiusMd: isLength,
   radiusLg: isLength,
