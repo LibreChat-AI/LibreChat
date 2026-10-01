@@ -16,6 +16,7 @@ import {
 import { clickHouseTheme } from './themes/clickhouse';
 import { defaultTheme } from './themes/default';
 import { darkTheme } from './themes/dark';
+import * as themeEntry from './index';
 
 const compactTheme: ThemeDefinition = {
   version: 1,
@@ -963,6 +964,11 @@ describe('theme registry', () => {
       version: 1,
       name: 'mode-default-reference',
       modes,
+    });
+
+    it('publishes the per-mode defaults from the theme entry point', () => {
+      expect(themeEntry.defaultAppearanceFor).toBe(defaultAppearanceFor);
+      expect(themeEntry.darkAppearanceDefaults).toBe(darkAppearanceDefaults);
     });
 
     it('keeps the menu and tooltip shadows each mode drew before they had roles', () => {
