@@ -113,11 +113,9 @@ function Panel({ children, className }: { children: React.ReactNode; className?:
   return (
     <section
       className={cn(
-        'border-border-light bg-surface-primary min-w-0 rounded-lg border p-5',
-        /** Dark mode only: Click UI gives dashboard widgets their own surface and
-         *  stroke, a step lighter than the page behind them. Light mode keeps the
-         *  shared surface/border tokens. */
-        'dark:border-chart-widget-stroke dark:bg-chart-widget-surface',
+        /** Click UI gives dashboard widgets their own surface and stroke, a step lighter
+         *  than the page in dark mode; in light they match the page surface and light rule. */
+        'border-chart-widget-stroke bg-chart-widget-surface min-w-0 rounded-lg border p-5',
         className,
       )}
     >

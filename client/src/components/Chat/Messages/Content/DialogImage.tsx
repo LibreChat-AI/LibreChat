@@ -260,7 +260,7 @@ export default function DialogImage({
     <DialogPrimitive.Root open={isOpen} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay
-          className="fixed inset-0 z-[250] bg-black/90"
+          className="bg-surface-media-overlay/90 fixed inset-0 z-[250]"
           onClick={handleBackgroundClick}
         />
         <DialogPrimitive.Content
@@ -287,8 +287,8 @@ export default function DialogImage({
                 <Button
                   ref={closeButtonRef}
                   onClick={() => onOpenChange(false)}
-                  variant="ghost"
-                  className="h-10 w-10 p-0 text-white hover:bg-white/10"
+                  variant="media"
+                  className="h-10 w-10 p-0"
                   aria-label={localize('com_ui_close')}
                 >
                   <X className="size-6" aria-hidden="true" />
@@ -307,8 +307,8 @@ export default function DialogImage({
                 render={
                   <Button
                     onClick={resetZoom}
-                    variant="ghost"
-                    className="h-10 w-10 p-0 text-white hover:bg-white/10"
+                    variant="media"
+                    className="h-10 w-10 p-0"
                     aria-label={localize('com_ui_reset_zoom')}
                   >
                     <RotateCcw className="size-5" aria-hidden="true" />
@@ -321,8 +321,8 @@ export default function DialogImage({
               render={
                 <Button
                   onClick={() => downloadImage()}
-                  variant="ghost"
-                  className="h-10 w-10 p-0 text-white hover:bg-white/10"
+                  variant="media"
+                  className="h-10 w-10 p-0"
                   aria-label={localize('com_ui_download')}
                 >
                   <ArrowDownToLine className="size-5" aria-hidden="true" />
@@ -335,8 +335,8 @@ export default function DialogImage({
                 render={
                   <Button
                     onClick={() => setIsPromptOpen(!isPromptOpen)}
-                    variant="ghost"
-                    className="h-10 w-10 p-0 text-white hover:bg-white/10"
+                    variant="media"
+                    className="h-10 w-10 p-0"
                     aria-label={imageDetailsLabel}
                   >
                     <MorphIcon
@@ -391,7 +391,7 @@ export default function DialogImage({
           {showDetails && (
             <div
               data-side-panel
-              className={`bg-surface-primary fixed top-0 right-0 z-30 h-full w-80 transform border-l border-white/10 shadow-2xl transition-transform duration-300 ${
+              className={`bg-surface-primary border-text-on-media/10 fixed top-0 right-0 z-30 h-full w-80 transform border-l shadow-2xl transition-transform duration-300 ${
                 isPromptOpen ? 'translate-x-0' : 'translate-x-full'
               }`}
               onClick={(e) => e.stopPropagation()}

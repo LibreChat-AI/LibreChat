@@ -40,7 +40,7 @@ export default function MessagesView({
                 </div>
               </>
             )}
-            <div className="group h-0 w-full shrink-0 dark:border-gray-800/50" />
+            <div className="group h-0 w-full shrink-0" />
           </div>
         </div>
       </div>

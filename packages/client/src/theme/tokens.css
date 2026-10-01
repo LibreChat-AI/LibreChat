@@ -51,6 +51,8 @@
   /* Falls back to the ink dialog titles were set in, for a stylesheet that predates it. */
   --color-dialog-title: rgb(var(--dialog-title, var(--text-primary)));
   --color-surface-overlay: rgb(var(--surface-overlay));
+  --color-surface-media-overlay: rgb(var(--surface-media-overlay));
+  --color-text-on-media: rgb(var(--text-on-media));
   /* The dialog scrims: the overlay at the opacity each dialog family's appearance
    * role sets (OGDialog, AlertDialog, Dialog), defaulting to the 80%, 90% and 65%
    * the families have always drawn. */

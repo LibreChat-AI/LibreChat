@@ -9,22 +9,18 @@ const DragDropOverlay = memo(({ isActive }: DragDropOverlayProps) => {
   const localize = useLocalize();
   return (
     <>
-      {/** Modal backdrop overlay */}
+      {/** Modal backdrop overlay: black at 40% in both modes, so the media role, not the page scrim */}
       <div
-        className={`fixed inset-0 z-[9998] transition-opacity duration-200 ease-in-out ${
+        className={`bg-surface-media-overlay/40 fixed inset-0 z-[9998] transition-opacity duration-200 ease-in-out ${
           isActive
             ? 'pointer-events-auto visible opacity-100'
             : 'pointer-events-none invisible opacity-0'
         } `}
-        style={{
-          /** Semi-transparent black overlay that works in both themes */
-          backgroundColor: 'rgba(0, 0, 0, 0.4)',
-          willChange: 'opacity',
-        }}
+        style={{ willChange: 'opacity' }}
       />
       {/** Main content overlay */}
       <div
-        className={`fixed inset-0 z-[9999] flex flex-col items-center justify-center gap-2 text-text-primary transition-all duration-200 ease-in-out ${
+        className={`text-text-primary fixed inset-0 z-[9999] flex flex-col items-center justify-center gap-2 transition-all duration-200 ease-in-out ${
           isActive
             ? 'pointer-events-auto visible opacity-100'
             : 'pointer-events-none invisible opacity-0'
@@ -36,7 +32,7 @@ const DragDropOverlay = memo(({ isActive }: DragDropOverlayProps) => {
         }}
       >
         {/** Content area with subtle background */}
-        <div className="flex flex-col items-center rounded-lg bg-surface-primary p-8 shadow-xl">
+        <div className="bg-surface-primary flex flex-col items-center rounded-lg p-8 shadow-xl">
           <svg
             xmlns="http://www.w3.org/2000/svg"
             viewBox="0 0 132 108"
@@ -90,7 +86,7 @@ const DragDropOverlay = memo(({ isActive }: DragDropOverlayProps) => {
             </defs>
           </svg>
           <h3 className="mt-4 text-lg font-semibold">{localize('com_ui_upload_files')}</h3>
-          <h4 className="text-sm text-text-secondary">{localize('com_ui_drag_drop')}</h4>
+          <h4 className="text-text-secondary text-sm">{localize('com_ui_drag_drop')}</h4>
         </div>
       </div>
     </>

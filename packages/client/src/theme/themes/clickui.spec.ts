@@ -102,6 +102,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-code': 'click.codeblock.lightMode.color.background.default',
     'rgb-surface-code-body': 'click.codeblock.lightMode.color.background.default',
     'rgb-surface-qr': 'palette.neutral.0',
+    'rgb-text-on-media': 'palette.neutral.0',
     'rgb-surface-inverted': 'palette.neutral.900',
     'rgb-surface-inverted-hover': 'palette.neutral.712',
     'rgb-surface-inverted-pressed': 'click.button.basic.color.primary.background.active',
@@ -217,6 +218,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-code': 'click.codeblock.darkMode.color.background.default',
     'rgb-surface-code-body': 'click.codeblock.darkMode.color.background.default',
     'rgb-surface-qr': 'palette.neutral.0',
+    'rgb-text-on-media': 'palette.neutral.0',
     'rgb-surface-inverted': 'click.button.basic.color.primary.background.default',
     'rgb-surface-inverted-hover': 'click.button.basic.color.primary.background.hover',
     'rgb-surface-inverted-pressed': 'click.button.basic.color.primary.background.active',
@@ -286,12 +288,21 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
   },
 };
 
+/** Click UI has no scrim for media; a lightbox or preview frames the user's image in black. */
+const MEDIA_OVERLAY_REASON =
+  'Click UI has no media scrim; the image frame stays black in both modes';
+const MEDIA_SCRIM_DEPARTURE =
+  'the dialog scrim is the nearest Click UI job; a lightbox frames the user image in black instead';
+
 /** Values the theme sets on purpose without a Click UI source, and why. */
 const unsourcedColors: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> = {
-  light: {},
+  light: {
+    'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON,
+  },
   dark: {
     'rgb-surface-overlay':
       'Click UI dark dialog.color.opaqueBackground is a gray that leaves the dialog under 3:1',
+    'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON,
   },
 };
 
@@ -315,6 +326,11 @@ interface Departure {
  */
 const departures: Record<ThemeMode, Partial<Record<keyof IThemeRGB, Departure>>> = {
   light: {
+    'rgb-surface-media-overlay': {
+      counterpart: 'click.dialog.color.opaqueBackground.default',
+      status: 'near',
+      reason: MEDIA_SCRIM_DEPARTURE,
+    },
     'rgb-text-secondary': {
       counterpart: 'global.color.text.muted',
       status: 'mismatch',
@@ -406,6 +422,11 @@ const departures: Record<ThemeMode, Partial<Record<keyof IThemeRGB, Departure>>>
       counterpart: 'click.dialog.color.opaqueBackground.default',
       status: 'mismatch',
       reason: 'the dark scrim is a #606060 gray that lifts the page instead of dimming it',
+    },
+    'rgb-surface-media-overlay': {
+      counterpart: 'click.dialog.color.opaqueBackground.default',
+      status: 'mismatch',
+      reason: MEDIA_SCRIM_DEPARTURE,
     },
   },
 };

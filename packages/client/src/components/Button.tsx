@@ -17,6 +17,7 @@ type ButtonVariantOptions =
         | 'destructive'
         | 'secondary'
         | 'ghost'
+        | 'media'
         | 'row-action'
         | 'row-action-reveal'
         | 'section-header'
@@ -73,6 +74,12 @@ const buttonVariantRecipe = cva(
         secondary:
           'bg-surface-secondary text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed',
         ghost: 'hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+        /**
+         * A control drawn over the user's own media (a lightbox toolbar, an image preview's close):
+         * ghost-shaped, with the media ink and a tint of it on hover, so it stays legible on the
+         * black media scrim whatever the page theme paints.
+         */
+        media: 'text-text-on-media hover:bg-text-on-media/10',
         /**
          * A compact action living inside a list row — a pinned row's unpin
          * badge, a conversation's overflow trigger, a table row's controls. The

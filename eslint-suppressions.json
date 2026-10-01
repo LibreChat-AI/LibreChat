@@ -215,7 +215,7 @@
   },
   "client/src/components/Chat/Input/Files/DragDropOverlay.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 4
+      "count": 3
     },
     "shadcn/no-raw-colors": {
       "count": 5
@@ -237,9 +237,6 @@
   "client/src/components/Chat/Input/Files/ImagePreview.tsx": {
     "shadcn/no-inline-styles": {
       "count": 3
-    },
-    "shadcn/no-restyle": {
-      "count": 2
     }
   },
   "client/src/components/Chat/Input/Files/MyFilesModal.tsx": {
@@ -461,7 +458,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 13
+      "count": 5
     }
   },
   "client/src/components/Chat/Messages/Content/EditContentParts.tsx": {
@@ -804,9 +801,6 @@
   },
   "client/src/components/Chat/Messages/MinimalMessages.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 1
-    },
-    "shadcn/no-raw-colors": {
       "count": 1
     }
   },
@@ -1490,9 +1484,6 @@
   "client/src/components/Share/MessagesView.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
-    },
-    "shadcn/no-raw-colors": {
-      "count": 1
     }
   },
   "client/src/components/Share/ShareArtifacts.tsx": {
@@ -1860,14 +1851,8 @@
     }
   },
   "client/src/components/SidePanel/Builder/Images.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-inline-styles": {
-      "count": 3
-    },
-    "shadcn/no-raw-colors": {
-      "count": 6
+      "count": 1
     }
   },
   "client/src/components/SidePanel/Builder/Knowledge.tsx": {

@@ -79,6 +79,8 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-surface-dialog': '255 255 255', // #ffffff (background.default)
   'rgb-dialog-title': '30 29 31', // #1e1d1f (dialog.color.title.default, lch(11.126 1.374 305.43))
   'rgb-surface-overlay': '21 21 21', // #151515 (dialog.color.opaqueBackground, lch(6.7738 0 none))
+  'rgb-surface-media-overlay': '0 0 0', // #000000 (no Click UI media scrim)
+  'rgb-text-on-media': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-submit': '21 21 21', // #151515 (accent.default)
   'rgb-surface-submit-hover': '50 50 50', // #323232 (palette.neutral.712)
   'rgb-surface-destructive': '193 0 0', // #c10000 (palette.danger.600)
@@ -225,6 +227,8 @@ export const clickHouseDarkTheme: IThemeRGB = {
    *  #606060 gray that lifts the page instead of dimming it. A bundled scrim never lifts the page
    *  (`semanticTokens.spec.ts`), so black keeps the dark scrim; the 0.75 alpha is Click UI's. */
   'rgb-surface-overlay': '0 0 0', // #000000
+  'rgb-surface-media-overlay': '0 0 0', // #000000 (no Click UI media scrim)
+  'rgb-text-on-media': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-submit': '250 255 105', // #faff69 (accent.default)
   'rgb-surface-submit-hover': '253 255 163', // #fdffa3 (palette.brand.200)
   'rgb-surface-destructive': '255 117 117', // #ff7575 (palette.danger.300)

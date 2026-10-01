@@ -1,6 +1,4 @@
-import { useRef } from 'react';
-import * as Popover from '@radix-ui/react-popover';
-import useLocalize from '~/hooks/useLocalize';
+import ProgressCircle from '~/components/Chat/Input/Files/ProgressCircle';
 
 export function NoImage() {
   return (
@@ -52,84 +50,13 @@ export const AssistantAvatar = ({
           style={{ opacity: progress < 1 ? 0.4 : 1 }}
         />
         {progress < 1 && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/5 text-white">
-            <svg width="120" height="120" viewBox="0 0 120 120" className="h-6 w-6">
-              <circle
-                className="origin-[50%_50%] -rotate-90 stroke-gray-400"
-                strokeWidth="10"
-                fill="transparent"
-                r="55"
-                cx="60"
-                cy="60"
-              />
-              <circle
-                className="origin-[50%_50%] -rotate-90 transition-[stroke-dashoffset]"
-                stroke="currentColor"
-                strokeWidth="10"
-                strokeDasharray={`${circumference} ${circumference}`}
-                strokeDashoffset={offset}
-                fill="transparent"
-                r="55"
-                cx="60"
-                cy="60"
-                style={circleCSSProperties}
-              />
-            </svg>
-          </div>
+          <ProgressCircle
+            circumference={circumference}
+            offset={offset}
+            circleCSSProperties={circleCSSProperties}
+          />
         )}
       </div>
     </div>
   );
 };
-
-export function AvatarMenu({
-  handleFileChange,
-}: {
-  handleFileChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
-}) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const localize = useLocalize();
-
-  const onItemClick = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-    fileInputRef.current?.click();
-  };
-
-  return (
-    <Popover.Portal>
-      <Popover.Content
-        className="dark:bg-gray-850 flex max-w-xs min-w-[100px] flex-col rounded-xl border border-gray-400 bg-white shadow-lg dark:border-gray-700 dark:text-white"
-        sideOffset={5}
-      >
-        <div
-          role="menuitem"
-          className="group m-1.5 flex cursor-pointer gap-2 rounded p-2.5 text-sm hover:bg-gray-100 focus:ring-0 data-[disabled]:pointer-events-none data-[disabled]:opacity-50 dark:hover:bg-gray-800 dark:hover:bg-white/5"
-          tabIndex={-1}
-          data-orientation="vertical"
-          onClick={onItemClick}
-        >
-          {localize('com_ui_upload_image')}
-        </div>
-        {/* <Popover.Close
-          role="menuitem"
-          className="group m-1.5 flex cursor-pointer gap-2 rounded p-2.5 text-sm hover:bg-black/5 focus:ring-0 data-[disabled]:pointer-events-none data-[disabled]:opacity-50 dark:hover:bg-white/5"
-          tabIndex={-1}
-          data-orientation="vertical"
-        >
-          Use DALL·E
-        </Popover.Close> */}
-        <input
-          accept="image/png,.png,image/jpeg,.jpg,.jpeg,image/gif,.gif,image/webp,.webp"
-          multiple={false}
-          type="file"
-          style={{ display: 'none' }}
-          onChange={handleFileChange}
-          ref={fileInputRef}
-          tabIndex={-1}
-        />
-      </Popover.Content>
-    </Popover.Portal>
-  );
-}

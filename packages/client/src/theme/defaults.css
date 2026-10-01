@@ -108,8 +108,9 @@ html {
   --surface-pressed: var(--gray-200);
   --surface-composer-hover: var(--gray-200);
   --surface-primary: var(--white);
-  --chart-widget-surface: 255 255 255; /* Click UI dashboards.chartWidget.color.background.default #ffffff */
-  --chart-widget-stroke: 230 231 233; /* Click UI dashboards.chartWidget.color.stroke.default #e6e7e9 */
+  /* Light widgets sit on the page surface and its light rule; dark mode lifts them (below). */
+  --chart-widget-surface: var(--surface-primary);
+  --chart-widget-stroke: var(--border-light);
   --surface-primary-alt: var(--gray-50);
   --surface-primary-contrast: var(--gray-100);
   --surface-secondary: var(--gray-50);
@@ -119,6 +120,8 @@ html {
   --surface-dialog: var(--white);
   --dialog-title: var(--text-primary);
   --surface-overlay: var(--gray-500);
+  --surface-media-overlay: 0 0 0;
+  --text-on-media: var(--white);
   --surface-submit: var(--green-700);
   --surface-submit-hover: var(--green-800);
   --surface-destructive: var(--red-700);
@@ -325,6 +328,8 @@ html {
   --surface-dialog: var(--gray-875);
   --dialog-title: var(--text-primary);
   --surface-overlay: 0 0 0;
+  --surface-media-overlay: 0 0 0;
+  --text-on-media: var(--white);
   --surface-submit: var(--green-700);
   --surface-submit-hover: var(--green-800);
   --surface-destructive: var(--red-800);

@@ -60,6 +60,11 @@ export interface IThemeRGB {
   /** An OGDialog title's ink; follows `rgb-text-primary` when a theme omits it. */
   'rgb-dialog-title'?: string;
   'rgb-surface-overlay'?: string;
+  /** Scrims, chips and progress drawn over the user's own media (a lightbox, an image preview,
+   *  an upload in progress), and the ink and hover tint on them. They frame the image rather
+   *  than the page, so every bundled theme keeps them black and white in both modes. */
+  'rgb-surface-media-overlay'?: string;
+  'rgb-text-on-media'?: string;
   'rgb-surface-submit'?: string;
   'rgb-surface-submit-hover'?: string;
   'rgb-surface-destructive'?: string;
@@ -236,6 +241,8 @@ export interface IThemeVariables {
   '--surface-dialog': string;
   '--dialog-title': string;
   '--surface-overlay': string;
+  '--surface-media-overlay': string;
+  '--text-on-media': string;
   '--surface-submit': string;
   '--surface-submit-hover': string;
   '--surface-destructive': string;
@@ -362,6 +369,8 @@ export interface IThemeColors {
   'surface-dialog'?: string;
   'dialog-title'?: string;
   'surface-overlay'?: string;
+  'surface-media-overlay'?: string;
+  'text-on-media'?: string;
   'surface-submit'?: string;
   'surface-submit-hover'?: string;
   'surface-destructive'?: string;

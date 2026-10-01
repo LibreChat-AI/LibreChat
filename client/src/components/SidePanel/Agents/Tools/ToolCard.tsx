@@ -56,7 +56,7 @@ function ItemIconView({ item, size }: ItemIconProps) {
     return (
       <span
         className={cn(
-          'flex shrink-0 items-center justify-center overflow-hidden bg-white',
+          'bg-surface-fixed flex shrink-0 items-center justify-center overflow-hidden',
           tileClasses,
         )}
         aria-hidden="true"

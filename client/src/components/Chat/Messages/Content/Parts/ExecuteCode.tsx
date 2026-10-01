@@ -200,7 +200,9 @@ export default function ExecuteCode({
             {hasOutput && backgroundHandle == null && (
               <div
                 className={cn(
-                  'bg-surface-primary-alt p-4 text-xs dark:bg-transparent',
+                  /* No fill of its own: the output shows the panel's surface-secondary in both
+                   * modes, which is the surface-primary-alt it was painted in light. */
+                  'p-4 text-xs',
                   code && 'border-border-light border-t',
                 )}
               >

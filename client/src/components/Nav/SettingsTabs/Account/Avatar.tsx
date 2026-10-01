@@ -231,8 +231,8 @@ function Avatar() {
                 />
                 {!isDragging && (
                   <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 transition-opacity hover:opacity-100">
-                    <div className="rounded-full bg-black/50 p-2">
-                      <Move className="h-6 w-6 text-white" aria-hidden="true" />
+                    <div className="bg-surface-media-overlay/50 rounded-full p-2">
+                      <Move className="text-text-on-media h-6 w-6" aria-hidden="true" />
                     </div>
                   </div>
                 )}
