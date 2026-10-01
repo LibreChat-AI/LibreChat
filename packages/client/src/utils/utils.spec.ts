@@ -1,0 +1,15 @@
+import { cn } from './utils';
+
+describe('cn', () => {
+  /** A caller's own size replaces the role a primitive draws, so the two never both survive and
+   *  leave the winner to stylesheet order. */
+  it.each([
+    ['h-theme-control', 'h-9'],
+    ['h-theme-button-xs', 'h-8'],
+    ['size-theme-button', 'size-9'],
+    ['min-w-theme-target', 'min-w-0'],
+    ['min-h-theme-target', 'min-h-0'],
+  ])('lets a caller size replace %s', (role, caller) => {
+    expect(cn(role, caller)).toBe(caller);
+  });
+});

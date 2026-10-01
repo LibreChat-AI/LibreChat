@@ -381,10 +381,10 @@ const appearanceValidators = {
   controlFontWeight: isFontWeight,
   buttonHeight: isLength,
   buttonHeightSm: isLength,
-  /** The Button's `xs` and `lg` heights and the `icon-sm` square. */
-  buttonHeightXs: isSwitchLength,
-  buttonHeightLg: isSwitchLength,
-  iconButtonSizeSm: isSwitchLength,
+  /** The Button's `xs` and `lg` heights and the `icon-sm` square, each a pointer target. */
+  buttonHeightXs: isTargetSize,
+  buttonHeightLg: isTargetSize,
+  iconButtonSizeSm: isTargetSize,
   /** A form field's height and vertical padding, and whether focus draws a ring or swaps the
    *  field's edge color. */
   fieldHeight: isLength,
