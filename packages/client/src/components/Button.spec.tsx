@@ -297,6 +297,14 @@ describe('Button', () => {
 });
 
 describe('Button icon squares', () => {
+  it.each(['default', 'dense', 'compact', 'xs', 'sm', 'lg'] as const)(
+    'keeps the %s text size at least the target minimum tall',
+    (size) => {
+      render(<Button size={size}>Probe</Button>);
+      expect(screen.getByRole('button', { name: 'Probe' })).toHaveClass('min-h-theme-target');
+    },
+  );
+
   it.each(['icon', 'icon-sm', 'icon-xs'] as const)(
     'keeps the %s square at least the target minimum',
     (size) => {

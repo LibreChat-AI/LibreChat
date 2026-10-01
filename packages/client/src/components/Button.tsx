@@ -150,20 +150,21 @@ const buttonVariantRecipe = cva(
          */
         card: 'justify-start whitespace-normal rounded-2xl text-left font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
       },
+      /** Every size keeps at least the target minimum, whatever height a theme gives it. */
       size: {
-        default: 'h-theme-button px-4 py-2',
+        default: 'h-theme-button min-h-theme-target px-4 py-2',
         /** Default-height actions with less horizontal padding, such as Copy link. */
-        dense: 'h-theme-button px-3 py-2',
+        dense: 'h-theme-button min-h-theme-target px-3 py-2',
         /** Compact text controls that share a toolbar row with a compact dropdown. */
-        compact: 'h-theme-button-compact gap-1.5 px-2.5 py-2 text-xs',
+        compact: 'h-theme-button-compact min-h-theme-target gap-1.5 px-2.5 py-2 text-xs',
         /**
          * A chip, the text counterpart of `icon-xs`: the reset beside a list that
          * matched nothing, and anything else that offers a way out without asking
          * to be the thing the eye lands on.
          */
-        xs: 'h-theme-button-xs rounded-md px-2.5 text-xs',
-        sm: 'h-theme-button-sm rounded-lg px-3',
-        lg: 'h-theme-button-lg rounded-lg px-8',
+        xs: 'h-theme-button-xs min-h-theme-target rounded-md px-2.5 text-xs',
+        sm: 'h-theme-button-sm min-h-theme-target rounded-lg px-3',
+        lg: 'h-theme-button-lg min-h-theme-target rounded-lg px-8',
         /** Icon squares follow the button roles but never shrink below the target minimum. */
         icon: 'size-theme-button min-h-theme-target min-w-theme-target',
         'icon-sm': 'size-theme-icon-button-sm min-h-theme-target min-w-theme-target p-0',

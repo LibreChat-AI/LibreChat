@@ -157,6 +157,8 @@ test.describe('primitive size roles', () => {
     });
     expect(explicit).toBe('20px');
     expect(await probeStyle(page, 'min-h-theme-target', 'min-height')).toBe('32px');
+    /** A text button on a role smaller than the target keeps the target height. */
+    expect(await probeStyle(page, 'h-theme-button-xs min-h-theme-target', 'height')).toBe('32px');
     /** An icon square on a button role smaller than the target keeps the target. */
     expect(
       await probeStyle(
