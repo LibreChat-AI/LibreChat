@@ -423,6 +423,113 @@ describe('createGitHubSkillSyncRunner', () => {
     );
   });
 
+  it('mirrors user-invocable and disable-model-invocation into the synced frontmatter', async () => {
+    const deps = createDeps({
+      fetchFn: githubFetch(
+        '---\nname: research\ndescription: Research things\nuser-invocable: false\ndisable-model-invocation: true\n---\nBody',
+      ),
+    });
+    const runner = createGitHubSkillSyncRunner(deps);
+    const result = await runner.runOnce();
+
+    expect(result.status).toBe('completed');
+    expect(deps.createSkill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        frontmatter: { 'user-invocable': false, 'disable-model-invocation': true },
+      }),
+    );
+  });
+
+  it('syncs quoted invocation booleans instead of failing strict frontmatter validation', async () => {
+    const deps = createDeps({
+      fetchFn: githubFetch(
+        '---\nname: research\ndescription: Research things\nuser-invocable: "false"\n---\nBody',
+      ),
+    });
+    const runner = createGitHubSkillSyncRunner(deps);
+    const result = await runner.runOnce();
+
+    expect(result.status).toBe('completed');
+    expect(deps.createSkill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        frontmatter: { 'user-invocable': false },
+      }),
+    );
+  });
+
+  it('drops a mid-edit invocation-flag placeholder rather than failing the source', async () => {
+    const deps = createDeps({
+      fetchFn: githubFetch(
+        '---\nname: research\ndescription: Research things\nuser-invocable:\n---\nBody',
+      ),
+    });
+    const runner = createGitHubSkillSyncRunner(deps);
+    const result = await runner.runOnce();
+
+    expect(result.status).toBe('completed');
+    expect(deps.createSkill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        frontmatter: {},
+      }),
+    );
+  });
+
+  it('keeps a flag whose YAML value continues on the next line', async () => {
+    const deps = createDeps({
+      fetchFn: githubFetch(
+        '---\nname: research\ndescription: Research things\nalways-apply:\n  true\nuser-invocable:\n  false\n---\nBody',
+      ),
+    });
+    const runner = createGitHubSkillSyncRunner(deps);
+    const result = await runner.runOnce();
+
+    expect(result.status).toBe('completed');
+    expect(deps.createSkill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alwaysApply: true,
+        frontmatter: { 'always-apply': true, 'user-invocable': false },
+      }),
+    );
+  });
+
+  it('marks a source failed when an invocation flag carries a non-boolean value', async () => {
+    const deps = createDeps({
+      fetchFn: githubFetch(
+        '---\nname: research\ndescription: Research things\ndisable-model-invocation: yes\n---\nBody',
+      ),
+    });
+    const runner = createGitHubSkillSyncRunner(deps);
+    const result = await runner.runOnce();
+
+    expect(result.status).toBe('failed');
+    expect(deps.createSkill).not.toHaveBeenCalled();
+    expect(deps.upsertStatus).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        errorCode: 'SKILL_PARSE_FAILED',
+      }),
+    );
+  });
+
+  it('marks a source failed when an invocation flag contains a nested value', async () => {
+    const deps = createDeps({
+      fetchFn: githubFetch(
+        '---\nname: research\ndescription: Research things\nuser-invocable:\n  value: false\n---\nBody',
+      ),
+    });
+
+    const result = await createGitHubSkillSyncRunner(deps).runOnce();
+
+    expect(result.status).toBe('failed');
+    expect(deps.createSkill).not.toHaveBeenCalled();
+    expect(deps.upsertStatus).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        errorCode: 'SKILL_PARSE_FAILED',
+      }),
+    );
+  });
+
   it('rejects case-colliding recognized frontmatter keys instead of choosing by order', async () => {
     const deps = createDeps({
       fetchFn: githubFetch(

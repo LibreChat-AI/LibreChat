@@ -1,7 +1,7 @@
 import path from 'path';
 import JSZip from 'jszip';
 import crypto from 'crypto';
-import { logger, validateRelativePath } from '@librechat/data-schemas';
+import { logger, pickValidFrontmatter, validateRelativePath } from '@librechat/data-schemas';
 import {
   ResourceType,
   DEFAULT_SKILL_IMPORT_CLEANUP_CONCURRENCY,
@@ -42,74 +42,110 @@ import {
 } from '~/protection';
 import { deleteSkillWithRetry, mergeDeleteSkillResults } from './cleanup';
 import { contentFilterBlockResponse } from '~/middleware/contentFilter';
+import { parseSkillMarkdown, toCleanFrontmatter } from './parse';
 import { resolveRequestTenantId } from '~/middleware/tenant';
 import { createConcurrencyLimiter } from '~/utils/promise';
 import { DEFAULT_SKILL_IMPORT_LIMITS } from './limits';
-import { parseSkillMarkdown } from './parse';
 import { isBinaryBuffer } from './binary';
 
 const SKILL_MD = 'SKILL.md';
 
 export type { ImportLimits } from './limits';
 
-/**
- * YAML frontmatter parser — extracts the first-class fields LibreChat
- * persists as columns (`name`, `description`, `alwaysApply`) out of a
- * SKILL.md file. Intentionally narrow: the full frontmatter validator in
- * `packages/data-schemas/src/methods/skill.ts` covers the wire contract;
- * this parser only needs to hand `createSkill` the columns it populates.
- *
- * When a known boolean field (currently `always-apply` plus the accepted
- * `alwaysApply` alias) is present
- * with a value that isn't recognizable as `true`/`false`, the parser
- * records it on `invalidBooleans[]` so the import handler can surface
- * a 400 instead of silently dropping the flag. Without this signal,
- * authoring mistakes like `alwaysApply: yes` would be lossy-converted
- * to "not always-applied" and the user would never learn their
- * frontmatter was malformed.
- *
- * Exported for unit testing only — prefer `createImportHandler` at runtime.
- */
-export function parseFrontmatter(raw: string): {
+type ParsedSkillFile = {
   name: string;
   description: string;
   alwaysApply?: boolean;
+  userInvocable?: boolean;
+  disableModelInvocation?: boolean;
+  /**
+   * Frontmatter bag ready for `createSkill`: cleaned of the fields that live
+   * as their own columns, and narrowed to entries strict validation accepts.
+   */
+  frontmatter: Record<string, unknown>;
   /** Keys that carried non-boolean values for fields that must be boolean. */
   invalidBooleans: string[];
   parseError?: string;
+};
+
+/**
+ * YAML frontmatter parser for an uploaded SKILL.md — hands `createSkill` the
+ * first-class columns (`name`, `description`, `alwaysApply`) plus the
+ * frontmatter bag the remaining columns are derived from. Every
+ * invocation-mode flag (`always-apply` with its accepted `alwaysApply` alias,
+ * `user-invocable`, `disable-model-invocation`) reaches the document through
+ * that bag, so an uploaded file governs its own invocation channels the same
+ * way an explicit `frontmatter` payload to `POST /api/skills` does.
+ *
+ * When a boolean field carries a value that isn't recognizable as
+ * `true`/`false`, the parser records it on `invalidBooleans[]` so the import
+ * handler can surface a 400 instead of silently dropping the flag. Without
+ * this signal, authoring mistakes like `user-invocable: yes` would be
+ * lossy-converted to the schema default and the user would never learn their
+ * frontmatter was malformed.
+ *
+ * Entries outside the flags are filtered rather than rejected: an uploaded
+ * file is not something the uploader typed into a form, so a stray
+ * `version: 1.0` or a bespoke key from another skill ecosystem must not fail
+ * the upload. Admin-authored paths (GitHub sync, deployment skills) keep
+ * supported pass-through metadata; known fields with invalid shapes still
+ * fail validation there.
+ *
+ * Exported for unit testing only — prefer `createImportHandler` at runtime.
+ */
+function parseFrontmatterForImport(raw: string): {
+  parsed: ParsedSkillFile;
+  inspectionFrontmatter: Record<string, unknown>;
 } {
-  const parsed = parseSkillMarkdown(raw);
-  const result: {
-    name: string;
-    description: string;
-    alwaysApply?: boolean;
-    invalidBooleans: string[];
-    parseError?: string;
-  } = {
-    name: parsed.name,
-    description: parsed.description,
-    invalidBooleans: parsed.invalidBooleans,
+  const markdown = parseSkillMarkdown(raw);
+  const result: ParsedSkillFile = {
+    name: markdown.name,
+    description: markdown.description,
+    alwaysApply: markdown.alwaysApply,
+    userInvocable: markdown.userInvocable,
+    disableModelInvocation: markdown.disableModelInvocation,
+    frontmatter: pickValidFrontmatter(toCleanFrontmatter(markdown)),
+    invalidBooleans: markdown.invalidBooleans,
   };
-  if (parsed.parseError) {
-    result.parseError = parsed.parseError;
+  if (markdown.parseError) {
+    result.parseError = markdown.parseError;
   }
-  if ('alwaysApply' in parsed) {
-    result.alwaysApply = parsed.alwaysApply;
-  }
-  return result;
+  return { parsed: result, inspectionFrontmatter: markdown.frontmatter ?? {} };
 }
 
-function sendFrontmatterParseError(res: Response, parseError: string) {
-  return res.status(400).json({
-    error: 'Validation failed',
-    issues: [
-      {
-        field: 'frontmatter',
-        code: 'INVALID_YAML',
-        message: `Invalid YAML frontmatter: ${parseError}`,
-      },
-    ],
-  });
+export function parseFrontmatter(raw: string): ParsedSkillFile {
+  return parseFrontmatterForImport(raw).parsed;
+}
+
+/**
+ * Reject a SKILL.md whose frontmatter can't be trusted — unparseable YAML, or
+ * a boolean invocation-mode flag with a value that is neither `true` nor
+ * `false`. Returns the sent response, or `null` when the parse is clean.
+ */
+function sendFrontmatterIssues(res: Response, parsed: ParsedSkillFile): Response | null {
+  if (parsed.parseError) {
+    return res.status(400).json({
+      error: 'Validation failed',
+      issues: [
+        {
+          field: 'frontmatter',
+          code: 'INVALID_YAML',
+          message: `Invalid YAML frontmatter: ${parsed.parseError}`,
+        },
+      ],
+    });
+  }
+  if (parsed.invalidBooleans.length > 0) {
+    return res.status(400).json({
+      error: 'Validation failed',
+      issues: parsed.invalidBooleans.map((key) => ({
+        field: `frontmatter.${key}`,
+        code: 'INVALID_TYPE',
+        message: `"${key}" must be a boolean (true or false)`,
+      })),
+    });
+  }
+  return null;
 }
 
 /** Type guard for validation errors thrown by data-schemas. */
@@ -409,21 +445,12 @@ async function handleMarkdown(
   }
   const content = file.buffer.toString('utf-8');
 
-  const parsedSkill = parseSkillMarkdown(content);
-  const { name, description, alwaysApply, frontmatter, invalidBooleans, parseError } = parsedSkill;
-  if (parseError) {
-    return sendFrontmatterParseError(res, parseError);
+  const { parsed, inspectionFrontmatter } = parseFrontmatterForImport(content);
+  const frontmatterError = sendFrontmatterIssues(res, parsed);
+  if (frontmatterError) {
+    return frontmatterError;
   }
-  if (invalidBooleans.length > 0) {
-    return res.status(400).json({
-      error: 'Validation failed',
-      issues: invalidBooleans.map((key) => ({
-        field: `frontmatter.${key}`,
-        code: 'INVALID_TYPE',
-        message: `"${key}" must be a boolean (true or false)`,
-      })),
-    });
-  }
+  const { name, description, alwaysApply, frontmatter } = parsed;
   const inferredName =
     name ||
     file.originalname
@@ -447,7 +474,7 @@ async function handleMarkdown(
         description: description || inferredName,
         body: content,
         importedText: content,
-        frontmatter,
+        frontmatter: inspectionFrontmatter,
       },
       [{ filename: file.originalname, text: content }],
     )
@@ -459,6 +486,7 @@ async function handleMarkdown(
     name: inferredName,
     description: description || inferredName,
     body: content,
+    frontmatter,
     author: authorId,
     authorName,
     alwaysApply,
@@ -1070,21 +1098,12 @@ async function handleZip(
     return res.status(400).json({ error: 'Could not read SKILL.md from archive' });
   }
 
-  const parsedSkill = parseSkillMarkdown(skillMdContent);
-  const { name, description, alwaysApply, frontmatter, invalidBooleans, parseError } = parsedSkill;
-  if (parseError) {
-    return sendFrontmatterParseError(res, parseError);
+  const { parsed, inspectionFrontmatter } = parseFrontmatterForImport(skillMdContent);
+  const frontmatterError = sendFrontmatterIssues(res, parsed);
+  if (frontmatterError) {
+    return frontmatterError;
   }
-  if (invalidBooleans.length > 0) {
-    return res.status(400).json({
-      error: 'Validation failed',
-      issues: invalidBooleans.map((key) => ({
-        field: `frontmatter.${key}`,
-        code: 'INVALID_TYPE',
-        message: `"${key}" must be a boolean (true or false)`,
-      })),
-    });
-  }
+  const { name, description, alwaysApply, frontmatter } = parsed;
   const inferredName =
     name ||
     file.originalname
@@ -1127,7 +1146,7 @@ async function handleZip(
           description: description || inferredName,
           body: skillMdContent,
           importedText: skillMdContent,
-          frontmatter,
+          frontmatter: inspectionFrontmatter,
         },
         [{ filename: file.originalname }, { filename: skillMdPath, text: skillMdContent }],
       )
@@ -1182,6 +1201,7 @@ async function handleZip(
     name: inferredName,
     description: description || inferredName,
     body: skillMdContent,
+    frontmatter,
     author: authorId,
     authorName,
     alwaysApply,

@@ -449,7 +449,17 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
         });
       } catch (error) {
         if (isValidationError(error)) {
-          return res.status(400).json({ error: 'Validation failed', issues: error.issues });
+          return res.status(400).json({
+            error: 'Validation failed',
+            issues: error.issues,
+            /* The client shows `message` when present and an unhelpful generic
+               string otherwise, so name the offending field — a rejected
+               invocation-mode flag is a line in the SKILL.md the author can
+               only find if we say which one. Mirrors the import handler. */
+            message: (error.issues as Array<{ message?: string }>)
+              ?.map((issue) => issue.message)
+              .join('; '),
+          });
         }
         if (isDuplicateKeyError(error)) {
           return res.status(409).json({ error: 'A skill with this name already exists' });
@@ -566,7 +576,17 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
         result = await updateSkill({ id, expectedVersion, update });
       } catch (error) {
         if (isValidationError(error)) {
-          return res.status(400).json({ error: 'Validation failed', issues: error.issues });
+          return res.status(400).json({
+            error: 'Validation failed',
+            issues: error.issues,
+            /* The client shows `message` when present and an unhelpful generic
+               string otherwise, so name the offending field — a rejected
+               invocation-mode flag is a line in the SKILL.md the author can
+               only find if we say which one. Mirrors the import handler. */
+            message: (error.issues as Array<{ message?: string }>)
+              ?.map((issue) => issue.message)
+              .join('; '),
+          });
         }
         if (isDuplicateKeyError(error)) {
           return res.status(409).json({ error: 'A skill with this name already exists' });

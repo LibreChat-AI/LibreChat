@@ -204,6 +204,18 @@ function forgeSkillMarkdownDeclaredSize(buffer: Buffer, declaredSize: number): B
   return forged;
 }
 
+/** The reporter's repro from #14208: all three invocation-mode flags off-default. */
+const INVOCATION_MODE_SKILL_MD = [
+  '---',
+  'name: test-skill',
+  'description: A skill that restricts its invocation channels.',
+  'always-apply: true',
+  'user-invocable: false',
+  'disable-model-invocation: true',
+  '---',
+  'Test body.',
+].join('\n');
+
 describe('parseFrontmatter', () => {
   it('extracts name + description from a minimal frontmatter block', () => {
     const raw = `---\nname: demo\ndescription: A demo skill.\n---\n\n# Body`;
@@ -211,6 +223,7 @@ describe('parseFrontmatter', () => {
       name: 'demo',
       description: 'A demo skill.',
       alwaysApply: undefined,
+      frontmatter: {},
       invalidBooleans: [],
     });
   });
@@ -221,6 +234,7 @@ describe('parseFrontmatter', () => {
       name: '123',
       description: '2024',
       alwaysApply: undefined,
+      frontmatter: {},
       invalidBooleans: [],
     });
   });
@@ -231,6 +245,7 @@ describe('parseFrontmatter', () => {
       name: 'legal',
       description: 'Legal rules.',
       alwaysApply: true,
+      frontmatter: { 'always-apply': true },
       invalidBooleans: [],
     });
   });
@@ -241,16 +256,18 @@ describe('parseFrontmatter', () => {
       name: 'optional',
       description: 'Optional rules.',
       alwaysApply: false,
+      frontmatter: { 'always-apply': false },
       invalidBooleans: [],
     });
   });
 
-  it('extracts alwaysApply: true', () => {
+  it('extracts alwaysApply: true and canonicalizes the alias in the bag', () => {
     const raw = `---\nname: legal\ndescription: Legal rules.\nalwaysApply: true\n---\n\n# Legal body`;
     expect(parseFrontmatter(raw)).toEqual({
       name: 'legal',
       description: 'Legal rules.',
       alwaysApply: true,
+      frontmatter: { 'always-apply': true },
       invalidBooleans: [],
     });
   });
@@ -304,6 +321,13 @@ describe('parseFrontmatter', () => {
     expect(result.invalidBooleans).toEqual(['always-apply']);
   });
 
+  it.each(['null', '~'])('flags indented always-apply: %s as invalid', (value) => {
+    const raw = `---\n  name: n\n  description: d\n  always-apply: ${value}\n---\n\nbody`;
+    const result = parseFrontmatter(raw);
+    expect(result.alwaysApply).toBeUndefined();
+    expect(result.invalidBooleans).toEqual(['always-apply']);
+  });
+
   it('does not flag always-apply when the key is absent', () => {
     const raw = `---\nname: n\ndescription: d\n---\n\nbody`;
     expect(parseFrontmatter(raw).invalidBooleans).toEqual([]);
@@ -327,6 +351,7 @@ describe('parseFrontmatter', () => {
       name: 'quoted-name',
       description: 'quoted desc',
       alwaysApply: true,
+      frontmatter: { 'always-apply': true },
       invalidBooleans: [],
     });
   });
@@ -336,6 +361,7 @@ describe('parseFrontmatter', () => {
     expect(parseFrontmatter(raw)).toEqual({
       name: '',
       description: '',
+      frontmatter: {},
       invalidBooleans: [],
     });
   });
@@ -346,6 +372,7 @@ describe('parseFrontmatter', () => {
       name: 'prologue',
       description: 'Has leading whitespace.',
       alwaysApply: undefined,
+      frontmatter: {},
       invalidBooleans: [],
     });
   });
@@ -356,6 +383,7 @@ describe('parseFrontmatter', () => {
       name: 'marker',
       description: 'first ---not a closing fence last',
       alwaysApply: false,
+      frontmatter: { 'always-apply': false },
       invalidBooleans: [],
     });
   });
@@ -365,6 +393,7 @@ describe('parseFrontmatter', () => {
     expect(parseFrontmatter(raw)).toEqual({
       name: '',
       description: '',
+      frontmatter: {},
       invalidBooleans: [],
     });
   });
@@ -436,6 +465,260 @@ describe('parseFrontmatter', () => {
     const result = parseFrontmatter(raw);
     expect(result.alwaysApply).toBe(false);
     expect(result.invalidBooleans).toEqual([]);
+  });
+
+  it('extracts user-invocable and disable-model-invocation alongside always-apply', () => {
+    const raw = [
+      '---',
+      'name: test-skill',
+      'description: test',
+      'always-apply: true',
+      'user-invocable: false',
+      'disable-model-invocation: true',
+      '---',
+      'Test body.',
+    ].join('\n');
+
+    expect(parseFrontmatter(raw)).toEqual({
+      name: 'test-skill',
+      description: 'test',
+      alwaysApply: true,
+      userInvocable: false,
+      disableModelInvocation: true,
+      frontmatter: {
+        'always-apply': true,
+        'user-invocable': false,
+        'disable-model-invocation': true,
+      },
+      invalidBooleans: [],
+    });
+  });
+
+  it.each([
+    ['user-invocable', 'userInvocable'],
+    ['disable-model-invocation', 'disableModelInvocation'],
+  ] as const)('extracts %s: false', (key, field) => {
+    const raw = `---\nname: n\ndescription: d\n${key}: false\n---\n\nbody`;
+    const result = parseFrontmatter(raw);
+    expect(result[field]).toBe(false);
+    expect(result.frontmatter).toEqual({ [key]: false });
+    expect(result.invalidBooleans).toEqual([]);
+  });
+
+  it.each(['user-invocable', 'disable-model-invocation'])(
+    'flags a non-boolean %s value instead of silently defaulting it',
+    (key) => {
+      const raw = `---\nname: n\ndescription: d\n${key}: yes\n---\n\nbody`;
+      const result = parseFrontmatter(raw);
+      expect(result.invalidBooleans).toEqual([key]);
+      expect(result.frontmatter).toEqual({});
+    },
+  );
+
+  it.each(['user-invocable', 'disable-model-invocation'])(
+    'treats an empty %s value as absent (mid-edit placeholder)',
+    (key) => {
+      const raw = `---\nname: n\ndescription: d\n${key}:\n---\n\nbody`;
+      const result = parseFrontmatter(raw);
+      expect(result.invalidBooleans).toEqual([]);
+      expect(result.frontmatter).toEqual({});
+    },
+  );
+
+  it.each([
+    ['mapping', '  value: false'],
+    ['sequence', '  - false'],
+    ['multi-line scalar', '  false\n  extra'],
+  ])('rejects a %s value for an invocation flag', (_shape, value) => {
+    const raw = `---\nname: n\ndescription: d\nuser-invocable:\n${value}\n---\n\nbody`;
+    const result = parseFrontmatter(raw);
+
+    expect(result.userInvocable).toBeUndefined();
+    expect(result.invalidBooleans).toEqual(['user-invocable']);
+    expect(result.frontmatter).toEqual({});
+  });
+
+  it('normalizes quoted and comment-trailed invocation booleans', () => {
+    const raw = [
+      '---',
+      'name: n',
+      'description: d',
+      'user-invocable: "false" # manual off',
+      "disable-model-invocation: 'true'",
+      '---',
+      'body',
+    ].join('\n');
+    const result = parseFrontmatter(raw);
+
+    expect(result.userInvocable).toBe(false);
+    expect(result.disableModelInvocation).toBe(true);
+    expect(result.frontmatter).toEqual({
+      'user-invocable': false,
+      'disable-model-invocation': true,
+    });
+  });
+
+  it('accepts a YAML alias that resolves to a boolean', () => {
+    const raw = `---\nname: n\ndescription: d\ndefault: &off false\nuser-invocable: *off\n---\n\nbody`;
+
+    expect(parseFrontmatter(raw)).toMatchObject({
+      userInvocable: false,
+      invalidBooleans: [],
+      frontmatter: { 'user-invocable': false },
+    });
+  });
+
+  it('is case-insensitive on the new flag keys', () => {
+    const raw = `---\nname: n\ndescription: d\nUser-Invocable: FALSE\nDISABLE-MODEL-INVOCATION: True\n---\n\nbody`;
+    const result = parseFrontmatter(raw);
+
+    expect(result.userInvocable).toBe(false);
+    expect(result.disableModelInvocation).toBe(true);
+  });
+
+  it('reports every malformed flag at once', () => {
+    const raw = [
+      '---',
+      'name: n',
+      'description: d',
+      'always-apply: tru',
+      'user-invocable: nope',
+      'disable-model-invocation: 1',
+      '---',
+      'body',
+    ].join('\n');
+
+    expect(parseFrontmatter(raw).invalidBooleans).toEqual([
+      'always-apply',
+      'user-invocable',
+      'disable-model-invocation',
+    ]);
+  });
+
+  it('keeps recognized non-flag frontmatter in the bag', () => {
+    const raw = [
+      '---',
+      'name: n',
+      'description: d',
+      'when-to-use: When demoing.',
+      'allowed-tools:',
+      '  - web_search',
+      'license: MIT',
+      '---',
+      'body',
+    ].join('\n');
+
+    expect(parseFrontmatter(raw).frontmatter).toEqual({
+      'when-to-use': 'When demoing.',
+      'allowed-tools': ['web_search'],
+      license: 'MIT',
+    });
+  });
+
+  it('drops unrecognized and malformed non-flag keys rather than failing the parse', () => {
+    const raw = [
+      '---',
+      'name: n',
+      'description: d',
+      'icon: rocket',
+      'version: 1.0',
+      'user-invocable: false',
+      '---',
+      'body',
+    ].join('\n');
+    const result = parseFrontmatter(raw);
+
+    expect(result.frontmatter).toEqual({ 'user-invocable': false });
+    expect(result.invalidBooleans).toEqual([]);
+    expect(result.parseError).toBeUndefined();
+  });
+
+  it.each([
+    ['always-apply', 'true', 'alwaysApply', true],
+    ['user-invocable', 'false', 'userInvocable', false],
+    ['disable-model-invocation', 'true', 'disableModelInvocation', true],
+  ] as const)(
+    'resolves %s when YAML continues the value on the next line',
+    (key, text, field, expected) => {
+      const raw = `---\nname: n\ndescription: d\n${key}:\n  ${text}\n---\n\nbody`;
+      const result = parseFrontmatter(raw);
+
+      expect(result[field]).toBe(expected);
+      expect(result.invalidBooleans).toEqual([]);
+      expect(result.frontmatter).toEqual({ [key]: expected });
+    },
+  );
+
+  it('treats an empty flag value as a placeholder even when the mapping is indented', () => {
+    /* The line scan is anchored at column zero, so an indented key yields no raw
+       text to inspect. Judging by the parsed shape keeps a mid-edit placeholder
+       from being reported as a malformed value. */
+    const raw = `---\n  name: n\n  description: d\n  user-invocable:\n---\n\nbody`;
+    const result = parseFrontmatter(raw);
+
+    expect(result.userInvocable).toBeUndefined();
+    expect(result.invalidBooleans).toEqual([]);
+  });
+
+  it('still flags a malformed value when the mapping is indented', () => {
+    const raw = `---\n  name: n\n  description: d\n  user-invocable: tru\n---\n\nbody`;
+
+    expect(parseFrontmatter(raw).invalidBooleans).toEqual(['user-invocable']);
+  });
+
+  it.each(['"user-invocable"', "'user-invocable'"])('reads a %s quoted key', (key) => {
+    const raw = `---\nname: n\ndescription: d\n${key}: false\n---\n\nbody`;
+    const result = parseFrontmatter(raw);
+
+    expect(result.userInvocable).toBe(false);
+    expect(result.frontmatter).toEqual({ 'user-invocable': false });
+  });
+
+  it('resolves flags when the whole frontmatter mapping is indented', () => {
+    const raw = `---\n  name: n\n  description: d\n  user-invocable: false\n---\n\nbody`;
+    const result = parseFrontmatter(raw);
+
+    expect(result.userInvocable).toBe(false);
+    expect(result.invalidBooleans).toEqual([]);
+  });
+
+  it('ignores a nested mapping key that reuses a flag name', () => {
+    const raw = [
+      '---',
+      'name: n',
+      'description: d',
+      'metadata:',
+      '  user-invocable: nonsense',
+      'user-invocable: false',
+      '---',
+      'body',
+    ].join('\n');
+    const result = parseFrontmatter(raw);
+
+    expect(result.userInvocable).toBe(false);
+    expect(result.invalidBooleans).toEqual([]);
+  });
+
+  it('does not read a flag from a nested mapping when the top level omits it', () => {
+    const raw = `---\nname: n\ndescription: d\nmetadata:\n  user-invocable: nonsense\n---\n\nbody`;
+    const result = parseFrontmatter(raw);
+
+    expect(result.userInvocable).toBeUndefined();
+    expect(result.invalidBooleans).toEqual([]);
+  });
+
+  it('preserves frontmatter key order when rewriting flags', () => {
+    const raw = [
+      '---',
+      'name: n',
+      'description: d',
+      'user-invocable: "false"',
+      'license: MIT',
+      '---',
+      'body',
+    ].join('\n');
+
+    expect(Object.keys(parseFrontmatter(raw).frontmatter)).toEqual(['user-invocable', 'license']);
   });
 });
 
@@ -1525,5 +1808,140 @@ describe('createImportHandler', () => {
     expect(deps.createSkill).not.toHaveBeenCalled();
     expect(deps.saveBuffer).not.toHaveBeenCalled();
     expect(deps.upsertSkillFile).not.toHaveBeenCalled();
+  });
+
+  it('forwards every invocation-mode flag from a markdown import', async () => {
+    const deps = mockImportDeps();
+    const handler = createImportHandler(deps);
+    const res = mockResponse();
+
+    await handler(mockMarkdownRequest(INVOCATION_MODE_SKILL_MD, 'test-skill.md'), res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(deps.createSkill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'test-skill',
+        alwaysApply: true,
+        frontmatter: {
+          'always-apply': true,
+          'user-invocable': false,
+          'disable-model-invocation': true,
+        },
+      }),
+    );
+  });
+
+  it('forwards every invocation-mode flag from an archive import', async () => {
+    const deps = mockImportDeps();
+    const handler = createImportHandler(deps);
+    const res = mockResponse();
+    const buffer = await zipWithSkillMarkdown(INVOCATION_MODE_SKILL_MD);
+
+    await handler(mockZipRequest(buffer), res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(deps.createSkill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alwaysApply: true,
+        frontmatter: {
+          'always-apply': true,
+          'user-invocable': false,
+          'disable-model-invocation': true,
+        },
+      }),
+    );
+  });
+
+  it('forwards allowed-tools so the derived column is populated on import', async () => {
+    const deps = mockImportDeps();
+    const handler = createImportHandler(deps);
+    const res = mockResponse();
+    const markdown = [
+      '---',
+      'name: tooled-skill',
+      'description: A skill that declares extra tools.',
+      'allowed-tools:',
+      '  - web_search',
+      '  - file_search',
+      '---',
+      'body',
+    ].join('\n');
+
+    await handler(mockMarkdownRequest(markdown, 'tooled-skill.md'), res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(deps.createSkill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        frontmatter: { 'allowed-tools': ['web_search', 'file_search'] },
+      }),
+    );
+  });
+
+  it.each(['user-invocable', 'disable-model-invocation'])(
+    'rejects a malformed %s value instead of importing it at the schema default',
+    async (key) => {
+      const deps = mockImportDeps();
+      const handler = createImportHandler(deps);
+      const res = mockResponse();
+      const markdown = `---\nname: broken-skill\ndescription: A skill with a bad flag.\n${key}: yes\n---\n\nbody`;
+
+      await handler(mockMarkdownRequest(markdown, 'broken-skill.md'), res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.body).toEqual(
+        expect.objectContaining({
+          error: 'Validation failed',
+          issues: [
+            {
+              field: `frontmatter.${key}`,
+              code: 'INVALID_TYPE',
+              message: `"${key}" must be a boolean (true or false)`,
+            },
+          ],
+        }),
+      );
+      expect(deps.createSkill).not.toHaveBeenCalled();
+    },
+  );
+
+  it('imports a file carrying unknown frontmatter keys, dropping only those keys', async () => {
+    const deps = mockImportDeps();
+    const handler = createImportHandler(deps);
+    const res = mockResponse();
+    const markdown = [
+      '---',
+      'name: ecosystem-skill',
+      'description: Authored for another skill ecosystem.',
+      'icon: rocket',
+      'version: 1.0',
+      'user-invocable: false',
+      '---',
+      'body',
+    ].join('\n');
+
+    await handler(mockMarkdownRequest(markdown, 'ecosystem-skill.md'), res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(deps.createSkill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        frontmatter: { 'user-invocable': false },
+      }),
+    );
+  });
+
+  it('sends an empty frontmatter bag when the file has no frontmatter block', async () => {
+    const deps = mockImportDeps();
+    const handler = createImportHandler(deps);
+    const res = mockResponse();
+
+    await handler(mockMarkdownRequest('# Just a body', 'bodyless-skill.md'), res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(deps.createSkill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'bodyless-skill',
+        frontmatter: {},
+      }),
+    );
   });
 });
