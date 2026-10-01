@@ -46,9 +46,14 @@ jest.mock('~/hooks/Chat/useSteerCancel', () => ({
   useSteerRehome: () => mockRehome,
 }));
 
-jest.mock('../SteerPart', () => ({
+jest.mock('~/Providers', () => ({
+  useShareContext: () => ({}),
+  useFileMapContext: () => ({}),
+}));
+
+jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
   __esModule: true,
-  default: ({ steer }: { steer: string }) => <div data-testid="steer-part">{steer}</div>,
+  default: ({ content }: { content: string }) => <span>{content}</span>,
 }));
 
 const CONVO_ID = 'convo-1';
@@ -126,10 +131,44 @@ describe('PendingSteers', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('renders a dimmed steer part with sending status', () => {
-    renderPending([pending()]);
+  it.each([
+    ['sending', { status: 'sending' as const }, 'com_ui_steer_sending'],
+    ['delivered', { status: 'pending' as const }, 'com_ui_steer_delivered'],
+    [
+      'interrupting',
+      { status: 'pending' as const, preempt: true },
+      'com_ui_steer_in_flight_preempt',
+    ],
+  ])('renders one %s status beneath the bubble', (receiptState, over, label) => {
+    renderPending([pending(over)]);
+
     expect(screen.getByTestId('steer-part')).toHaveTextContent('change of plan');
-    expect(screen.getByText('com_ui_sending')).toBeInTheDocument();
+    expect(screen.getByRole('listitem')).toHaveClass('opacity-60');
+    expect(screen.getByTestId('steer-receipt')).toHaveAttribute('data-receipt-state', receiptState);
+    expect(screen.getAllByText(label)).toHaveLength(1);
+    expect(screen.queryByText('com_ui_sending')).not.toBeInTheDocument();
+    if (receiptState !== 'sending') {
+      expect(screen.queryByText('com_ui_steer_sending')).not.toBeInTheDocument();
+    }
+  });
+
+  it('keeps delivered controls available and aligned with the bubble', () => {
+    renderPending([pending({ status: 'pending' })]);
+
+    expect(screen.getByTestId('steer-escalate-now')).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'com_ui_convert_to_queue' })).toBeEnabled();
+    const cancel = screen.getByRole('button', { name: 'com_ui_cancel' });
+    expect(cancel).toBeEnabled();
+    expect(cancel.parentElement).toHaveClass('flex-wrap', 'justify-end');
+    expect(cancel.parentElement).not.toHaveClass('pl-9');
+  });
+
+  it('aligns failed-steer recovery actions with the bubble and allows wrapping', () => {
+    renderPending([pending({ status: 'failed' })]);
+
+    const retry = screen.getByRole('button', { name: 'com_ui_retry' });
+    expect(retry.parentElement).toHaveClass('flex-wrap', 'justify-end');
+    expect(retry.parentElement).not.toHaveClass('pl-9');
   });
 
   it('offers retry and send-as-new on failure', () => {

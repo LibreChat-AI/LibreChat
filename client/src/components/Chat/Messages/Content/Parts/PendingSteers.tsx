@@ -156,7 +156,7 @@ function PendingSteers({ conversationId, index = 0 }: PendingSteersProps) {
               receiptState={receiptState}
             />
             {steer.status === 'failed' ? (
-              <div className="-mt-2 mb-2 flex items-center gap-3 pl-9 text-xs">
+              <div className="-mt-2 mb-2 flex flex-wrap items-center justify-end gap-3 text-xs">
                 {quoteCount > 0 && (
                   <span className="text-text-secondary flex items-center gap-0.5">
                     <TextQuote className="h-3.5 w-3.5" aria-hidden="true" />
@@ -202,12 +202,7 @@ function PendingSteers({ conversationId, index = 0 }: PendingSteersProps) {
                 )}
               </div>
             ) : (
-              <div className="text-text-secondary -mt-2 mb-2 flex items-center gap-2 pl-9 text-xs">
-                <span>
-                  {localize(
-                    steer.preempt === true ? 'com_ui_steer_in_flight_preempt' : 'com_ui_sending',
-                  )}
-                </span>
+              <div className="text-text-secondary -mt-2 mb-2 flex flex-wrap items-center justify-end gap-2 text-xs">
                 {/* Only a `pending` steer can be armed: `sending` has no server id
                     yet, and one already interrupting has nothing left to escalate. */}
                 {steer.status === 'pending' && steer.preempt !== true && (

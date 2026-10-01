@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { mkdirSync } from 'node:fs';
+import path from 'node:path';
 import type { Page, Response } from '@playwright/test';
 import {
   MOCK_ENDPOINTS,
@@ -167,6 +169,40 @@ test.describe('escalating waiting messages to an interrupt', () => {
     expect(((await steerResponse.json()) as { preempt?: boolean }).preempt).toBeFalsy();
     const bubble = inFlightSteers(page).filter({ hasText: steerText });
     await expect(bubble).toBeVisible({ timeout: 10000 });
+    await expect(bubble.getByTestId('steer-receipt')).toHaveAttribute(
+      'data-receipt-state',
+      'delivered',
+    );
+
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      const captureDir = process.env.E2E_CAPTURE_DIR;
+      if (captureDir) {
+        mkdirSync(captureDir, { recursive: true });
+        await page.screenshot({
+          path: path.join(captureDir, `pending-steer-${width}.png`),
+          animations: 'disabled',
+        });
+      }
+      await expect(bubble.getByText(/^Sending/)).toHaveCount(0);
+      await expect(
+        bubble.getByRole('button', { name: 'Queue for after the response' }),
+      ).toBeEnabled();
+      const cancel = bubble.getByRole('button', { name: 'Cancel', exact: true });
+      const bubbleBox = await bubble.locator('.user-turn').boundingBox();
+      const cancelBox = await cancel.boundingBox();
+      if (bubbleBox == null || cancelBox == null) {
+        throw new Error('The pending steer bubble and its controls must have measurable bounds.');
+      }
+      expect(Math.abs(cancelBox.x + cancelBox.width - bubbleBox.x - bubbleBox.width)).toBeLessThan(
+        2,
+      );
+      expect(cancelBox.y).toBeGreaterThanOrEqual(bubbleBox.y + bubbleBox.height);
+      expect(await cancel.locator('..').evaluate((row) => getComputedStyle(row).flexWrap)).toBe(
+        'wrap',
+      );
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
 
     // Escalate via the bubble's always-visible arrow control: ONE atomic
     // in-place arm.
