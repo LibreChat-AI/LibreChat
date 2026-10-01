@@ -103,6 +103,18 @@ export function shouldSyncSavedStarters(
 }
 
 /**
+ * Whether a finished save may be merged into the selected agent option. The
+ * option is the baseline for untouched fields such as starters, so a save that
+ * finishes after another agent was selected must not overwrite it.
+ */
+export function isSavedAgentOption(
+  option: AgentForm['agent'],
+  savedId: string,
+): option is NonNullable<AgentForm['agent']> {
+  return option != null && typeof option !== 'string' && option.id === savedId;
+}
+
+/**
  * Normalizes the payload sent to the agent update/create endpoints.
  * Handles avatar reset requests for persistent agents independently of avatar uploads.
  * @param {AgentForm} data - Form data from the agent configuration form.
@@ -460,7 +472,7 @@ export default function AgentPanel() {
       setValue('avatar_action', null, { shouldDirty: false });
 
       const agentOption = getValues('agent');
-      if (agentOption && typeof agentOption !== 'string') {
+      if (isSavedAgentOption(agentOption, updatedAgent.id)) {
         setValue('agent', { ...agentOption, ...updatedAgent }, { shouldDirty: false });
       }
     },
@@ -603,7 +615,7 @@ export default function AgentPanel() {
       syncSavedStarters(data);
 
       const agentOption = getValues('agent');
-      if (agentOption && typeof agentOption !== 'string') {
+      if (isSavedAgentOption(agentOption, data.id)) {
         setValue('agent', { ...agentOption, ...data }, { shouldDirty: false });
       }
 

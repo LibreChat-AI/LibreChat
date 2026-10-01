@@ -332,4 +332,61 @@ test.describe('agent conversation starters', () => {
       await cleanupAgent(page, agentId);
     }
   });
+
+  test('switching agents while a save is in flight keeps the other agent starters @scenario:save-finishing-after-switch-keeps-other-agent-starters', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const firstName = uniqueAgentName('E2E Starters Switch A');
+    const secondName = uniqueAgentName('E2E Starters Switch B');
+    /** Padded, so a rewrite through the builder would be visible in storage. */
+    const secondStored = [' Padded B starter ', 'B two'];
+    let firstId: string | undefined;
+    let secondId: string | undefined;
+
+    try {
+      await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+      firstId = (await createAgentViaApi(page, firstName, ['A starter'])).id;
+      secondId = (await createAgentViaApi(page, secondName, secondStored)).id;
+      const id = firstId;
+
+      let releaseSave: () => void = () => undefined;
+      const saveHeld = new Promise<void>((resolve) => {
+        releaseSave = resolve;
+      });
+      await page.route(`**/api/agents/${id}`, async (route) => {
+        if (route.request().method() !== 'PATCH') {
+          return route.fallback();
+        }
+        await saveHeld;
+        return route.fallback();
+      });
+
+      let form = await selectAgentInBuilder(page, firstName);
+      await form.getByLabel('Agent description').fill('First agent saved slowly.');
+      const saved = page.waitForResponse(
+        (candidate) =>
+          candidate.request().method() === 'PATCH' &&
+          new URL(candidate.url()).pathname === `/api/agents/${id}` &&
+          candidate.ok(),
+        { timeout: 30000 },
+      );
+      await form.getByRole('button', { name: 'Save', exact: true }).click();
+
+      form = await selectAgentInBuilder(page, secondName);
+      releaseSave();
+      await saved;
+      await page.unroute(`**/api/agents/${id}`);
+      await expect(form.getByLabel('Agent name')).toHaveValue(secondName);
+
+      await form.getByLabel('Agent description').fill('Second agent, unrelated edit.');
+      const response = await saveAgent(form, secondId);
+
+      expect(response.request().postDataJSON()).not.toHaveProperty('conversation_starters');
+      expect(await fetchStarters(page, secondId)).toEqual(secondStored);
+    } finally {
+      await cleanupAgent(page, firstId);
+      await cleanupAgent(page, secondId);
+    }
+  });
 });

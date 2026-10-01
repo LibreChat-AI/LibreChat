@@ -16,6 +16,7 @@ import {
   hasPersistedDirtyFields,
   mayHavePersistedChange,
   shouldSyncSavedStarters,
+  isSavedAgentOption,
 } from '../AgentPanel';
 
 test('the create identity contract excludes the update-only clear sentinel', () => {
@@ -548,5 +549,21 @@ describe('shouldSyncSavedStarters', () => {
     expect(shouldSyncSavedStarters(null, { agentId: 'agent_a', starters: [] }, 'agent_a')).toBe(
       false,
     );
+  });
+});
+
+describe('isSavedAgentOption', () => {
+  const option = { id: 'agent_b', conversation_starters: ['  B  '] } as AgentForm['agent'];
+
+  it('merges a save into the option of the agent it was for', () => {
+    expect(isSavedAgentOption(option, 'agent_b')).toBe(true);
+  });
+
+  it('keeps another agent selected while the save was in flight as its own baseline', () => {
+    expect(isSavedAgentOption(option, 'agent_a')).toBe(false);
+  });
+
+  it('ignores a missing option', () => {
+    expect(isSavedAgentOption(undefined, 'agent_a')).toBe(false);
   });
 });
