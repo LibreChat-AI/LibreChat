@@ -49,14 +49,46 @@ const suppressions: Record<string, Record<string, { count: number }>> = JSON.par
 
 const isComment = (line: string) => /^\s*(\*|\/\/|\/\*)/.test(line);
 
+/** A stylesheet with every `var(--role, fallback)` reduced to `var(--role)`. */
+function withoutVarFallbacks(css: string): string {
+  let result = '';
+  let index = 0;
+  for (let start = css.indexOf('var(', index); start !== -1; start = css.indexOf('var(', index)) {
+    let depth = 0;
+    let end = start + 3;
+    for (; end < css.length; end++) {
+      if (css[end] === '(') {
+        depth += 1;
+      } else if (css[end] === ')') {
+        depth -= 1;
+      }
+      if (depth === 0) {
+        break;
+      }
+    }
+    const name = /^var\(\s*(--[\w-]+)/.exec(css.slice(start, end + 1))?.[1] ?? '';
+    result += `${css.slice(index, start)}var(${name})`;
+    index = end + 1;
+  }
+  return result + css.slice(index);
+}
+
 function hardCoded(file: string): string[] {
   const source = readFileSync(join(components, file), 'utf8');
   const code = source.split('\n').filter((line) => !isComment(line));
   const found = new Set<string>();
   if (file.endsWith('.css')) {
-    code
-      .filter((line) => /(border-radius|box-shadow):\s*[0-9]/.test(line))
-      .forEach((line) => found.add(`${file}: literal ${line.trim()}`));
+    /** A role's `var()` fallback restates the default for a host without the stock stylesheet;
+     *  it is not a value the rule paints while the role is set, so it is set aside first. */
+    const rules = withoutVarFallbacks(source.replace(/\/\*[\s\S]*?\*\//g, ''));
+    for (const match of rules.matchAll(/(border-radius|box-shadow):\s*[0-9][^;]*/g)) {
+      found.add(`${file}: literal ${match[0]}`);
+    }
+    for (const match of rules.matchAll(
+      /#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?\b|rgba?\(\s*[0-9]|hsla?\(/g,
+    )) {
+      found.add(`${file}: color literal ${match[0]}`);
+    }
   } else {
     const text = code.join('\n');
     for (const match of text.matchAll(
@@ -92,6 +124,14 @@ describe('the ten named primitives', () => {
 
     expect(driven).toEqual(themeDriven);
     expect(driven.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it('sets aside a role fallback in a stylesheet but keeps a painted literal', () => {
+    expect(
+      withoutVarFallbacks(
+        '.a { box-shadow: var(--theme-menu-shadow, 0 1px rgb(0 0 0 / 0.1)); color: #fff; }',
+      ),
+    ).toBe('.a { box-shadow: var(--theme-menu-shadow); color: #fff; }');
   });
 
   it.each(Object.keys(remaining))('pins what %s still hard-codes', (name) => {

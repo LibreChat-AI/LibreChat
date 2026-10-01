@@ -48,6 +48,7 @@ async function sizes(page: Page): Promise<Record<string, string>> {
     ['size-theme-icon-lg', 'width'],
     ['h-theme-field-lg', 'height'],
     ['h-theme-target', 'height'],
+    ['min-w-theme-target', 'min-width'],
     ['select-item', 'border-top-left-radius'],
   ];
   const result: Record<string, string> = {};
@@ -67,6 +68,7 @@ const DEFAULT_SIZES = {
   'size-theme-icon-lg': '24px',
   'h-theme-field-lg': '48px',
   'h-theme-target': '24px',
+  'min-w-theme-target': '24px',
   'select-item': '8px',
 };
 
