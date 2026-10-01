@@ -116,9 +116,10 @@ for (const definition of ['stock', 'clickhouse'] as const) {
         const header = toggle.locator('..').locator('..');
         const table = page.locator('.markdown table');
         await expect(table).toBeVisible();
-        const screenshot = await page.screenshot();
+        const screenshot = test.info().outputPath(`messages-${definition}-${mode}.png`);
+        await page.screenshot({ path: screenshot, animations: 'disabled' });
         await test.info().attach(`messages-${definition}-${mode}`, {
-          body: screenshot,
+          path: screenshot,
           contentType: 'image/png',
         });
 
@@ -157,8 +158,10 @@ for (const definition of ['stock', 'clickhouse'] as const) {
         await expect(stop).toBeVisible();
         await expect(stop).toBeEnabled();
         await page.mouse.move(0, 0);
+        const stopScreenshot = test.info().outputPath(`stop-${definition}-${mode}.png`);
+        await page.screenshot({ path: stopScreenshot, animations: 'disabled' });
         await test.info().attach(`stop-${definition}-${mode}`, {
-          body: await page.screenshot(),
+          path: stopScreenshot,
           contentType: 'image/png',
         });
         const colors = await computedStyles(stop, ['color', 'backgroundColor']);

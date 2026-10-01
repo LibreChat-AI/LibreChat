@@ -2,6 +2,7 @@ import { ContentTypes, Tools } from 'librechat-data-provider';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
+import { MessageSurfaceContext } from '../../ui/surface';
 import ActivityPhaseGroup from '../ActivityPhaseGroup';
 import { useFailedReveal } from '../reveal';
 
@@ -660,6 +661,24 @@ describe('ActivityPhaseGroup open header', () => {
     fireEvent.click(screen.getByRole('button'));
     expect(screen.getByRole('button')).toHaveTextContent('Checking the rollback path');
   });
+
+  test.each(['bg-surface-dialog', 'bg-surface-secondary'] as const)(
+    'paints the sticky header from its hosting %s canvas',
+    (surface) => {
+      render(
+        <MessageSurfaceContext.Provider value={surface}>
+          <ActivityPhaseGroup labelPart={labelPart} hasContent>
+            <div data-testid="phase-content" />
+          </ActivityPhaseGroup>
+        </MessageSurfaceContext.Provider>,
+      );
+      const header = screen.getByRole('button', { name: LABEL });
+      fireEvent.click(header);
+      const pinned = header.parentElement?.parentElement;
+      expect(pinned).toHaveClass('sticky', surface);
+      expect(pinned).not.toHaveClass('bg-surface-primary-alt', 'bg-presentation');
+    },
+  );
 
   test('pins the open header and rails the rows under it', () => {
     render(

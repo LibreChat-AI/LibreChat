@@ -1,4 +1,4 @@
-import { memo, useId, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { ContentTypes } from 'librechat-data-provider';
@@ -29,6 +29,7 @@ import { getActivityLabelText } from '~/utils/activityLabels';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { sandboxStartingByToolCallId } from '~/store';
+import { MessageSurfaceContext } from '../ui/surface';
 import useClockFormat from '~/hooks/useClockFormat';
 import { cn, getMessageTimestamp } from '~/utils';
 import { StackedToolIcons } from './ToolOutput';
@@ -548,6 +549,7 @@ export default function ActivityPhaseGroup({
   spanParts?: ReadonlyArray<TMessageContentParts | undefined>;
   onExpansionChange?: (expanded: boolean) => void;
 }) {
+  const messageSurface = useContext(MessageSurfaceContext);
   const isLive = liveParts != null;
   const label = getActivityLabelText(labelPart);
   const hasFailure = labelPart.status === 'failed' || labelPart.status === 'partial';
@@ -799,7 +801,7 @@ export default function ActivityPhaseGroup({
         /** Pinned while open, so a run long enough to scroll keeps its name
          *  at the top of the viewport. The containing block is this card, so
          *  the header stops pinning where its own rows end. */
-        className={cn(isExpanded && 'bg-surface-primary-alt sticky top-0 z-[1]')}
+        className={cn(isExpanded && 'sticky top-0 z-[1]', isExpanded && messageSurface)}
       >
         <div className="flex items-center gap-2 overflow-hidden">
           <button
