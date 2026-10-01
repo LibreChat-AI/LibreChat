@@ -90,7 +90,9 @@ describe('index.html deployment theme boot script', () => {
       expect(root().hasAttribute('data-theme-boot')).toBe(true);
       expect(root().classList.contains(mode)).toBe(true);
       const surface = acme.modes[mode]?.colors?.['rgb-surface-primary-alt'];
-      expect(document.head.textContent).toContain(`background-color: rgb(${surface})`);
+      expect(document.head.textContent).toContain(
+        `background-color: rgb(${surface?.split(' ').join(', ')})`,
+      );
     },
   );
 
@@ -141,6 +143,17 @@ describe('index.html deployment theme boot script', () => {
     boot();
     expect(document.head.textContent).toContain('background-color: #0d0d0d');
     expect(document.head.textContent).not.toContain('</style>');
+  });
+
+  it('accepts any whitespace between the cached surface channels', () => {
+    localStorage.setItem('color-theme', 'dark');
+    const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
+    entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
+      name === '--surface-primary-alt' ? [name, ' 8  10\t24 '] : [name, value],
+    );
+    writeThemeCache(entry);
+    boot();
+    expect(document.head.textContent).toContain('background-color: rgb(8, 10, 24)');
   });
 
   it('paints the stock shell for a corrupt entry', () => {
