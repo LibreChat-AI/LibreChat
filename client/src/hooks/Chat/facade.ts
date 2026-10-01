@@ -359,7 +359,11 @@ const toAskProps = (message: TAskProps | SendMessageInput): TAskProps => {
   return {
     text: message.parts.map((part) => part.text).join(''),
     ...(conversationId !== undefined && { conversationId }),
-    ...(parentMessageId !== undefined && { parentMessageId }),
+    /** A root message's view carries a `null` parent, which `ask` would read as "append to the
+     *  branch tail"; the turn asked to attach at the root. */
+    ...(parentMessageId !== undefined && {
+      parentMessageId: parentMessageId ?? Constants.NO_PARENT,
+    }),
   };
 };
 

@@ -1,7 +1,7 @@
 import React from 'react';
 import { getDefaultStore } from 'jotai';
 import { act, render, renderHook } from '@testing-library/react';
-import { QueryKeys, ContentTypes } from 'librechat-data-provider';
+import { QueryKeys, Constants, ContentTypes } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import type { TConversation, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
@@ -657,6 +657,21 @@ describe('useChat', () => {
     expect(contract.ask).toHaveBeenCalledWith(
       { text: 'Hello', parentMessageId: 'user-1' },
       { isRegenerate: false },
+    );
+  });
+
+  it('attaches an AI SDK message with a null parent at the root', () => {
+    const contract = createContract();
+    const { result } = renderChat(contract);
+
+    result.current.sendMessage({
+      parts: [{ type: 'text', text: 'From the top' }],
+      metadata: { parentMessageId: null },
+    });
+
+    expect(contract.ask).toHaveBeenCalledWith(
+      { text: 'From the top', parentMessageId: Constants.NO_PARENT },
+      undefined,
     );
   });
 
