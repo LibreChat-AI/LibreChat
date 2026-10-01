@@ -46,7 +46,11 @@ export default function AskOptions({
   return (
     <div ref={listRef} className={className}>
       {options.map((option, index) => {
-        const isChecked = multiSelect && checked.includes(index);
+        /** A recorded single-select answer wears the same check as a ticked
+         *  multi-select row; a keyboard highlight keeps its number. */
+        const isChecked = multiSelect
+          ? checked.includes(index)
+          : selectedIsAnswer && selected === index;
         return (
           <Button
             key={option.value}

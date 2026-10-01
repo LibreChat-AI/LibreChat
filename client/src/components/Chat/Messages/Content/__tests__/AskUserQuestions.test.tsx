@@ -113,6 +113,26 @@ describe('AskUserQuestions', () => {
     expect(screen.getByText('Question 1 of 2')).toBeInTheDocument();
   });
 
+  test('marks the chosen single-select answer with a check', () => {
+    renderBatch('ask-check', [
+      {
+        id: 'tests',
+        question: 'Should I add tests?',
+        options: [
+          { label: 'Yes', value: 'yes' },
+          { label: 'No', value: 'no' },
+        ],
+      },
+    ]);
+
+    const yes = screen.getByRole('button', { name: /Yes/ });
+    expect(yes).toHaveTextContent('1');
+    fireEvent.click(yes);
+    expect(yes).toHaveAttribute('aria-pressed', 'true');
+    expect(yes).not.toHaveTextContent('1');
+    expect(yes.querySelector('svg')).not.toBeNull();
+  });
+
   test('clears and locks the choices once an answer is typed', () => {
     renderBatch('ask-typed', [
       {
