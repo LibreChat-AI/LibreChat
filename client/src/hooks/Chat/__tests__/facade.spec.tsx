@@ -1,12 +1,13 @@
 import React from 'react';
-import { getDefaultStore } from 'jotai';
 import { act, render, renderHook } from '@testing-library/react';
 import { QueryKeys, Constants, ContentTypes } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import type { TConversation, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
+import type { JotaiStore } from 'test/harness';
 import { ChatContext } from '~/Providers/ChatContext';
 import { useChat, useChatActions } from '../facade';
+import { IsolatedAtomStore } from 'test/harness';
 import { resumeRequestsAtom } from '../resume';
 
 const userMessage: TMessage = {
@@ -693,21 +694,39 @@ describe('useChat', () => {
     await expect(result.current.stop()).rejects.toBe(failure);
   });
 
+  /** Renders `useChat` under its own atom store, seeded with another pane's pending request. */
+  const renderChatWithRequests = (contract: ChatContract) => {
+    let atoms: JotaiStore | undefined;
+    const queryClient = new QueryClient();
+    const view = renderHook(() => useChat(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>
+          <IsolatedAtomStore
+            seed={(store) => {
+              atoms = store;
+              store.set(resumeRequestsAtom, new Set(['convo-2']));
+            }}
+          >
+            <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+          </IsolatedAtomStore>
+        </QueryClientProvider>
+      ),
+    });
+    const pending = () => [...(atoms?.get(resumeRequestsAtom) ?? [])];
+    return { ...view, pending };
+  };
+
   it('requests a resume of the chat it reads', async () => {
-    const store = getDefaultStore();
-    store.set(resumeRequestsAtom, new Set(['convo-2']));
-    const { result } = renderChat(createContract());
+    const { result, pending } = renderChatWithRequests(createContract());
 
     await result.current.resumeStream();
     await result.current.resumeStream();
 
-    expect([...store.get(resumeRequestsAtom)]).toEqual(['convo-2', 'convo-1']);
+    expect(pending()).toEqual(['convo-2', 'convo-1']);
   });
 
   it('requests no resume for a chat that has no conversation yet', async () => {
-    const store = getDefaultStore();
-    const before = store.get(resumeRequestsAtom);
-    const { result } = renderChat(
+    const { result, pending } = renderChatWithRequests(
       createContract({
         messagesKey: 'new',
         conversation: { conversationId: 'new' } as TConversation,
@@ -716,7 +735,7 @@ describe('useChat', () => {
 
     await expect(result.current.resumeStream()).resolves.toBeUndefined();
     expect(result.current.id).toBe('new');
-    expect(store.get(resumeRequestsAtom)).toBe(before);
+    expect(pending()).toEqual(['convo-2']);
   });
 
   it('writes UI messages back onto the stored messages', () => {
