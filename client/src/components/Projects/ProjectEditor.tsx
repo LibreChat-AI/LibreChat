@@ -16,7 +16,7 @@ import { cn } from '~/utils';
 export type ProjectEditorProps = {
   project: TChatProject;
   onDone: () => void;
-  layout?: 'workspace' | 'card';
+  layout?: 'workspace' | 'dialog';
   inputRef?: RefObject<HTMLInputElement>;
   initialField?: 'name' | 'description';
 };
@@ -73,6 +73,8 @@ export default function ProjectEditor({
   });
   const isBusy = updateProject.isLoading;
   const isWorkspace = layout === 'workspace';
+  const labelClassName = isWorkspace ? 'sr-only' : undefined;
+  const buttonSize = isWorkspace ? 'sm' : 'default';
   const nameId = `project-editor-${project._id}-name`;
   const descriptionId = `project-editor-${project._id}-description`;
   const nameErrorId = `${nameId}-error`;
@@ -170,22 +172,19 @@ export default function ProjectEditor({
           'min-w-0',
           isWorkspace
             ? 'grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-3'
-            : 'flex flex-col gap-3',
+            : 'flex flex-col gap-4',
         )}
       >
-        <span
-          className={cn(
-            'text-text-secondary flex shrink-0 items-center justify-center',
-            isWorkspace
-              ? 'bg-surface-secondary size-12 rounded-2xl'
-              : 'bg-surface-tertiary h-11 w-11 rounded-xl',
-          )}
-          aria-hidden="true"
-        >
-          <Folder className={isWorkspace ? 'size-6' : 'size-5'} aria-hidden="true" />
-        </span>
-        <div className="w-full min-w-0">
-          <Label htmlFor={nameId} className="sr-only">
+        {isWorkspace ? (
+          <span
+            className="bg-surface-secondary text-text-secondary flex size-12 shrink-0 items-center justify-center rounded-2xl"
+            aria-hidden="true"
+          >
+            <Folder className="size-6" aria-hidden="true" />
+          </span>
+        ) : null}
+        <div className={cn('w-full min-w-0', !isWorkspace && 'space-y-2')}>
+          <Label htmlFor={nameId} className={labelClassName}>
             {localize('com_ui_project_name')}
           </Label>
           <Input
@@ -197,7 +196,7 @@ export default function ProjectEditor({
             maxLength={MAX_CHAT_PROJECT_NAME_LENGTH}
             aria-invalid={errors.name ? 'true' : 'false'}
             aria-describedby={errors.name ? nameErrorId : undefined}
-            variant={isWorkspace ? 'title' : 'title-sm'}
+            variant={isWorkspace ? 'title' : undefined}
             className="w-full max-w-full min-w-0 overflow-hidden wrap-anywhere"
           />
           {errors.name ? (
@@ -206,9 +205,12 @@ export default function ProjectEditor({
             </p>
           ) : null}
         </div>
-        <div className={cn('w-full min-w-0', isWorkspace && 'col-span-2')}>
-          <Label htmlFor={descriptionId} className="sr-only">
-            {localize('com_ui_description')} {localize('com_ui_optional')}
+        <div className={cn('w-full min-w-0', isWorkspace ? 'col-span-2' : 'space-y-2')}>
+          <Label htmlFor={descriptionId} className={labelClassName}>
+            {localize('com_ui_description')}{' '}
+            <span className={cn(!isWorkspace && 'text-text-secondary font-normal')}>
+              {localize('com_ui_optional')}
+            </span>
           </Label>
           <Textarea
             {...descriptionRegistration}
@@ -218,10 +220,10 @@ export default function ProjectEditor({
             maxLength={descriptionLimit}
             aria-invalid={errors.description ? 'true' : 'false'}
             aria-describedby={errors.description ? descriptionErrorId : undefined}
-            variant="transparent"
+            variant={isWorkspace ? 'transparent' : undefined}
             className={cn(
               'w-full max-w-full min-w-0 resize-none overflow-y-auto wrap-anywhere',
-              isWorkspace ? 'h-24 max-h-32' : 'h-20 max-h-24',
+              isWorkspace ? 'h-24 max-h-32' : 'h-24 max-h-40',
             )}
           />
           {errors.description ? (
@@ -231,14 +233,20 @@ export default function ProjectEditor({
           ) : null}
         </div>
       </div>
-      <div className="flex min-w-0 justify-end gap-2">
-        <Button type="button" variant="outline" size="sm" onClick={onDone} disabled={isBusy}>
+      <div className={cn('flex min-w-0 justify-end', isWorkspace ? 'gap-2' : 'gap-4 pt-2')}>
+        <Button
+          type="button"
+          variant="outline"
+          size={buttonSize}
+          onClick={onDone}
+          disabled={isBusy}
+        >
           {localize('com_ui_cancel')}
         </Button>
         <Button
           type="submit"
           variant="submit"
-          size="sm"
+          size={buttonSize}
           disabled={isBusy}
           aria-label={localize('com_ui_save')}
         >
