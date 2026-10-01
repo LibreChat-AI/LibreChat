@@ -1,14 +1,11 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import type { TMessage } from 'librechat-data-provider';
 import {
   selectMockEndpoint,
-  getAccessToken,
   messagesView,
   sendMessage,
   replyPrompt,
   replyText,
-  fetchJson,
   MOCK_REPLY_TEXT,
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
@@ -16,12 +13,12 @@ import {
 
 /**
  * The follow-up queue, its run-end signals and the interrupt-drain flag are chat-owned Jotai
- * state. These scenarios drive the paths that read and write each of them end to end.
+ * state. Queueing and draining are covered by the composer-queue scenarios; this one drives the
+ * interrupt-drain flag through a real stopped run.
  */
 
 const messageInput = (page: Page) => page.getByRole('textbox', { name: 'Message input' });
 const duringRunSendButton = (page: Page) => page.getByTestId('during-run-send-button');
-const queuedRows = (page: Page) => page.getByTestId('queued-message-row');
 const messageTurns = (page: Page) => messagesView(page).locator('.message-render');
 const uniqueLabel = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -71,59 +68,5 @@ test.describe('chat-owned queue state', () => {
     await expect(messageTurns(page).nth(4)).toContainText(followUp);
     await expect(messageTurns(page).nth(5)).toContainText(MOCK_REPLY_TEXT, { timeout: 30000 });
     await expect(messagesView(page).getByText('chunk-159')).toHaveCount(0);
-  });
-
-  test('a follow-up queued in a chat the user left sends on return @scenario:parked-run-end-drains-on-return', async ({
-    page,
-  }) => {
-    test.setTimeout(150000);
-    const label = uniqueLabel('parked');
-    const followUp = `Parked follow-up ${label}`;
-
-    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
-    const conversationId = await establishConversation(page, `parked-setup-${label}`);
-
-    const run = await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
-    expect(run.ok()).toBeTruthy();
-    await typeDuringRun(page, followUp);
-    await messageInput(page).press('ControlOrMeta+Enter');
-    await expect(queuedRows(page).filter({ hasText: followUp })).toBeVisible({ timeout: 10000 });
-
-    /** Leave through the router, not a reload, so the in-memory queue survives the visit. */
-    await page.evaluate((path) => {
-      window.history.pushState({}, '', path);
-      window.dispatchEvent(new PopStateEvent('popstate'));
-    }, NEW_CHAT_PATH);
-    await expect(page).toHaveURL(/\/c\/new$/);
-
-    /** The run finishes while its chat is not on screen. */
-    const token = await getAccessToken(page);
-    await expect
-      .poll(
-        async () => {
-          const messages = await fetchJson<TMessage[]>(
-            page,
-            `/api/messages/${encodeURIComponent(conversationId)}`,
-            token,
-          );
-          return messages.some(
-            (message) =>
-              !message.isCreatedByUser &&
-              message.unfinished !== true &&
-              JSON.stringify(message.content ?? message.text ?? '').includes('chunk-159'),
-          );
-        },
-        { timeout: 60000 },
-      )
-      .toBe(true);
-    await expect(messagesView(page).getByText(followUp)).toHaveCount(0);
-
-    await page.goBack();
-    await expect(page).toHaveURL(new RegExp(`/c/${conversationId}(\\?.*)?$`));
-    await expect(
-      messagesView(page).locator('.user-turn').filter({ hasText: followUp }),
-    ).toBeVisible({ timeout: 30000 });
-    await expect(queuedRows(page).filter({ hasText: followUp })).toHaveCount(0);
   });
 });
