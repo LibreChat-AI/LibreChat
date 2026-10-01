@@ -1,12 +1,15 @@
 import { useState } from 'react';
 import { RecoilRoot } from 'recoil';
-import { useTheme } from '@librechat/client';
+import { useTheme, clickHouseTheme } from '@librechat/client';
 import { act, render, waitFor } from '@testing-library/react';
-import { QueryKeys, dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { TStartupConfig } from 'librechat-data-provider';
+import { QueryKeys, MutationKeys, dataService } from 'librechat-data-provider';
+import type { TStartupConfig, TUser } from 'librechat-data-provider';
+import type { ThemeDefinition } from '@librechat/client';
+import { buildThemeCache, writeThemeCache, THEME_CACHE_KEY } from '../themeCache';
 import DeploymentTheme, { useDeploymentThemeOverride } from '../DeploymentTheme';
 import { useGetStartupConfig } from '~/data-provider';
+import store from '~/store';
 
 const mockGetThemeFromEnv = jest.fn();
 
@@ -86,9 +89,9 @@ function SharedThemeSource({ theme }: { theme: ConfigTheme }) {
   return null;
 }
 
-function renderTheme(queryClient: QueryClient) {
+function renderTheme(queryClient: QueryClient, user?: Pick<TUser, 'id' | 'tenantId'>) {
   return render(
-    <RecoilRoot>
+    <RecoilRoot initializeState={({ set }) => user && set(store.user, user as TUser)}>
       <QueryClientProvider client={queryClient}>
         <DeploymentTheme>
           <LateRoute />
@@ -382,5 +385,125 @@ describe('DeploymentTheme', () => {
     await waitFor(() => expect(root().dataset.theme).toBe('clickhouse'));
     expect(getStartupConfig).toHaveBeenCalledTimes(2);
     expect(snapshotStorage()).toEqual(before);
+  });
+});
+
+describe('DeploymentTheme cache', () => {
+  const user = { id: 'user-1', tenantId: 'tenant-a' };
+  let queryClient: QueryClient;
+  let getStartupConfig: jest.SpyInstance;
+  let warn: jest.SpyInstance;
+
+  const cacheTheme = (owner = 'tenant-a:user-1', theme: ConfigTheme = 'clickhouse') => {
+    const definition = theme === 'clickhouse' ? clickHouseTheme : (theme as ThemeDefinition);
+    writeThemeCache(buildThemeCache(owner, theme as NonNullable<ConfigTheme>, definition));
+  };
+  const cachedEntry = () => JSON.parse(localStorage.getItem(THEME_CACHE_KEY) ?? 'null');
+  const pending = () => getStartupConfig.mockReturnValue(new Promise(() => undefined));
+
+  beforeEach(() => {
+    localStorage.clear();
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    getStartupConfig = jest.spyOn(dataService, 'getStartupConfig');
+    mockGetThemeFromEnv.mockReturnValue(undefined);
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+    getStartupConfig.mockRestore();
+    warn.mockRestore();
+  });
+
+  it('paints the cached theme in the first commit, before the config answers', () => {
+    cacheTheme();
+    pending();
+    renderTheme(queryClient);
+
+    expect(root().dataset.theme).toBe('clickhouse');
+    expect(localStorage.getItem('theme-definition')).toBeNull();
+  });
+
+  it('caches the theme served to the signed-in identity', async () => {
+    getStartupConfig.mockResolvedValue(configWith(inlineTheme));
+    renderTheme(queryClient, user);
+
+    await waitFor(() => expect(cachedEntry()?.source).toEqual(inlineTheme));
+    expect(cachedEntry().owner).toBe('tenant-a:user-1');
+    expect(cachedEntry().modes.light.properties).toContainEqual(['--surface-primary', '10 20 30']);
+    expect(localStorage.getItem('theme-definition')).toBeNull();
+  });
+
+  it('lets a changed deployment theme win over the cache', async () => {
+    cacheTheme();
+    getStartupConfig.mockResolvedValue(configWith(inlineTheme));
+    renderTheme(queryClient, user);
+
+    await waitFor(() => expect(root().dataset.theme).toBe('acme'));
+    await waitFor(() => expect(cachedEntry()?.source).toEqual(inlineTheme));
+  });
+
+  it('lets a removed deployment theme win and clears the cache', async () => {
+    cacheTheme();
+    getStartupConfig.mockResolvedValue(configWith());
+    renderTheme(queryClient, user);
+
+    await waitFor(() => expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull());
+    expect(root().dataset.theme).toBeUndefined();
+  });
+
+  it('clears the cache when the served theme is invalid', async () => {
+    cacheTheme();
+    getStartupConfig.mockResolvedValue(configWith('not-a-theme' as ConfigTheme));
+    renderTheme(queryClient, user);
+
+    await waitFor(() => expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull());
+    expect(root().dataset.theme).toBeUndefined();
+  });
+
+  it('never paints a theme cached for another tenant', async () => {
+    cacheTheme('tenant-b:user-1');
+    pending();
+    renderTheme(queryClient, user);
+
+    expect(root().dataset.theme).toBeUndefined();
+    await waitFor(() => expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull());
+  });
+
+  it('does not write a signed-out answer over the cache', async () => {
+    cacheTheme();
+    getStartupConfig.mockResolvedValue(configWith());
+    renderTheme(queryClient);
+
+    await waitFor(() => expect(getStartupConfig).toHaveBeenCalled());
+    await waitFor(() => expect(root().dataset.theme).toBeUndefined());
+    expect(cachedEntry()?.source).toBe('clickhouse');
+  });
+
+  it('neither reads nor writes the cache for a route override', async () => {
+    getStartupConfig.mockResolvedValue(configWith('clickhouse'));
+    renderTheme(queryClient, user);
+    await waitFor(() => expect(cachedEntry()?.source).toBe('clickhouse'));
+
+    act(() => showSharedRoute(inlineTheme));
+    await waitFor(() => expect(root().dataset.theme).toBe('acme'));
+    expect(cachedEntry()?.source).toBe('clickhouse');
+  });
+
+  it('clears the cache when the user signs out', async () => {
+    cacheTheme();
+    pending();
+    renderTheme(queryClient, user);
+
+    await act(() =>
+      queryClient
+        .getMutationCache()
+        .build(queryClient, {
+          mutationKey: [MutationKeys.logoutUser],
+          mutationFn: () => Promise.resolve(undefined),
+        })
+        .execute(),
+    );
+    expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
   });
 });

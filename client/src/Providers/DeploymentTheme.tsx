@@ -8,8 +8,9 @@ import {
   createContext,
   useLayoutEffect,
 } from 'react';
+import { useRecoilValue } from 'recoil';
 import { notifyManager, useQueryClient } from '@tanstack/react-query';
-import { QueryKeys, isBundledThemeName } from 'librechat-data-provider';
+import { QueryKeys, MutationKeys, isBundledThemeName } from 'librechat-data-provider';
 import {
   ThemeProvider,
   clickHouseTheme,
@@ -20,8 +21,17 @@ import {
 import type { TInterfaceConfig, BundledThemeName } from 'librechat-data-provider';
 import type { IThemeRGB, ThemeDefinition } from '@librechat/client';
 import type { ComponentProps } from 'react';
+import {
+  themeOwner,
+  readThemeCache,
+  clearThemeCache,
+  buildThemeCache,
+  writeThemeCache,
+  reconcileThemeCache,
+} from './themeCache';
 import { getThemeFromEnv } from '~/utils/getThemeFromEnv';
 import { useGetStartupConfig } from '~/data-provider';
+import store from '~/store';
 
 type DeploymentThemeValue = TInterfaceConfig['theme'];
 
@@ -125,6 +135,35 @@ function useRebindOnStartupConfigRebuild() {
   );
 }
 
+const SIGN_OUT_MUTATIONS: readonly string[] = [MutationKeys.logoutUser, MutationKeys.deleteUser];
+
+/**
+ * The cached deployment theme, as last read or written. Signing out or deleting the
+ * account drops it, so the next person on this browser does not get the previous
+ * identity's theme painted before their own config answers.
+ */
+function useThemeCache() {
+  const queryClient = useQueryClient();
+  const [cached, setCached] = useState(readThemeCache);
+  useEffect(
+    () =>
+      queryClient.getMutationCache().subscribe((event) => {
+        const key = event?.mutation?.options.mutationKey?.[0];
+        if (
+          event?.type === 'updated' &&
+          event.mutation.state.status === 'success' &&
+          typeof key === 'string' &&
+          SIGN_OUT_MUTATIONS.includes(key)
+        ) {
+          clearThemeCache();
+          setCached(undefined);
+        }
+      }),
+    [queryClient],
+  );
+  return [cached, setCached] as const;
+}
+
 /** A route's own deployment theme source; `undefined` defers to the startup config. */
 type ThemeOverride = { theme: DeploymentThemeValue } | undefined;
 
@@ -155,15 +194,46 @@ export function useDeploymentThemeOverride(ready: boolean, theme: DeploymentThem
  * Supplies the deployment theme from the startup config to `ThemeProvider`.
  * Precedence: high-contrast modes (inside the provider), then `interface.theme`,
  * then the `REACT_APP_THEME_*` build colors, then the user's stored theme. The
- * deployment theme is never persisted, so the stored theme survives its removal.
+ * deployment theme is never persisted to the user's theme keys, so the stored theme
+ * survives its removal; a separate cache (`./themeCache`) paints it before the
+ * config answers on a reload.
  */
 export default function DeploymentTheme({ children }: { children: React.ReactNode }) {
   const envTheme = useMemo(() => getThemeFromEnv(), []);
   useRebindOnStartupConfigRebuild();
-  const { data: startupConfig } = useGetStartupConfig({ keepPreviousData: true });
+  const { data: startupConfig, isPreviousData } = useGetStartupConfig({ keepPreviousData: true });
+  const owner = themeOwner(useRecoilValue(store.user));
+  const [cached, setCached] = useThemeCache();
   const [override, setOverride] = useState<ThemeOverride>(undefined);
-  const configTheme = override ? override.theme : startupConfig?.interface?.theme;
+  /** A route override is another tenant's theme: it neither reads nor writes the cache. */
+  const decision = override
+    ? { theme: override.theme, cache: 'keep' as const }
+    : reconcileThemeCache({
+        cached,
+        owner,
+        answer: startupConfig && {
+          theme: startupConfig.interface?.theme,
+          current: !isPreviousData,
+        },
+      });
+  const configTheme = decision.theme;
   const themeDefinition = useMemo(() => resolveDeploymentTheme(configTheme), [configTheme]);
+
+  /** Storage is an external system, so the cache follows the decision after the commit. */
+  const cacheAction = decision.cache;
+  useEffect(() => {
+    if (cacheAction === 'keep') {
+      return;
+    }
+    if (cacheAction === 'write' && owner && configTheme != null && themeDefinition) {
+      const entry = buildThemeCache(owner, configTheme, themeDefinition);
+      writeThemeCache(entry);
+      setCached(entry);
+      return;
+    }
+    clearThemeCache();
+    setCached(undefined);
+  }, [cacheAction, owner, configTheme, themeDefinition, setCached]);
 
   /**
    * Persistence stays off while a deployment theme is applied and for the render

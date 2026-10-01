@@ -12,7 +12,9 @@ import { JSX } from 'react/jsx-runtime';
 import type { IThemeRGB, ThemeDefinition, ThemeMode } from '../types';
 import applyTheme, {
   applyResolvedTheme,
+  clearAppliedTheme,
   themeOwnedProperties,
+  THEME_BOOT_ATTRIBUTE,
   THEME_DISABLED_ATTRIBUTE,
   THEME_FIELD_FOCUS_ATTRIBUTE,
 } from '../utils/applyTheme';
@@ -730,6 +732,12 @@ export function ThemeProvider({
        *  `system`, where `theme` itself never changes. */
       setResolvedMode(mode);
       setHighContrast(highContrast);
+
+      /** The boot script's pre-paint copy is not the host's own state: drop it before the
+       *  snapshot below, in the same pre-paint pass that applies the provider's theme. */
+      if (root.hasAttribute(THEME_BOOT_ATTRIBUTE)) {
+        clearAppliedTheme(root);
+      }
 
       if (!themeClassSnapshot.current) {
         themeClassSnapshot.current = {

@@ -187,38 +187,56 @@ export const THEME_SCOPE_ATTRIBUTE = 'data-theme-scope';
  */
 export const THEME_FIELD_FOCUS_ATTRIBUTE = 'data-theme-field-focus';
 
+/**
+ * Marks a root that `client/index.html` painted from the cached deployment theme before the
+ * bundle ran. The provider drops that copy before it snapshots the root, so a later restore
+ * returns to the stylesheet rather than to a theme the server may since have withdrawn.
+ */
+export const THEME_BOOT_ATTRIBUTE = 'data-theme-boot';
+
 export function clearAppliedTheme(root: HTMLElement = document.documentElement): void {
   themeOwnedProperties.forEach((property) => root.style.removeProperty(property));
   root.removeAttribute('data-theme');
   root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
   root.removeAttribute(THEME_SCOPE_ATTRIBUTE);
   root.removeAttribute(THEME_FIELD_FOCUS_ATTRIBUTE);
+  root.removeAttribute(THEME_BOOT_ATTRIBUTE);
+}
+
+/** What `applyResolvedTheme` writes on the root, as plain data a boot script can replay. */
+export type ResolvedThemeStyle = {
+  properties: Array<[string, string]>;
+  attributes: Record<string, string>;
+};
+
+export function describeResolvedTheme(theme: ResolvedThemeDefinition): ResolvedThemeStyle {
+  return {
+    properties: [
+      ...mapColors(theme.colors),
+      ...mapAppearance(theme.appearance),
+      ...themeBrandTokens.map(
+        (token) => [brandProperty(token), theme.brands[token]] as [string, string],
+      ),
+    ],
+    attributes: {
+      'data-theme': theme.name,
+      ...(theme.appearance.disabledStyle === 'fill' && { [THEME_DISABLED_ATTRIBUTE]: 'fill' }),
+      ...(theme.appearance.fieldFocusStyle === 'border' && {
+        [THEME_FIELD_FOCUS_ATTRIBUTE]: 'border',
+      }),
+    },
+  };
 }
 
 export function applyResolvedTheme(
   theme: ResolvedThemeDefinition,
   root: HTMLElement = document.documentElement,
 ): void {
-  const variables = [
-    ...mapColors(theme.colors),
-    ...mapAppearance(theme.appearance),
-    ...themeBrandTokens.map(
-      (token) => [brandProperty(token), theme.brands[token]] as [string, string],
-    ),
-  ];
-
-  variables.forEach(([property, value]) => root.style.setProperty(property, value));
-  root.dataset.theme = theme.name;
-  if (theme.appearance.disabledStyle === 'fill') {
-    root.setAttribute(THEME_DISABLED_ATTRIBUTE, 'fill');
-  } else {
-    root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
-  }
-  if (theme.appearance.fieldFocusStyle === 'border') {
-    root.setAttribute(THEME_FIELD_FOCUS_ATTRIBUTE, 'border');
-  } else {
-    root.removeAttribute(THEME_FIELD_FOCUS_ATTRIBUTE);
-  }
+  const { properties, attributes } = describeResolvedTheme(theme);
+  properties.forEach(([property, value]) => root.style.setProperty(property, value));
+  root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
+  root.removeAttribute(THEME_FIELD_FOCUS_ATTRIBUTE);
+  Object.entries(attributes).forEach(([name, value]) => root.setAttribute(name, value));
 }
 
 /**

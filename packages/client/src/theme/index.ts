@@ -16,8 +16,11 @@ export {
   default as applyTheme,
   applyResolvedTheme,
   clearAppliedTheme,
+  describeResolvedTheme,
   themeOwnedProperties,
+  THEME_BOOT_ATTRIBUTE,
 } from './utils/applyTheme';
+export type { ResolvedThemeStyle } from './utils/applyTheme';
 
 export {
   HIGH_CONTRAST_THEME_NAME,
