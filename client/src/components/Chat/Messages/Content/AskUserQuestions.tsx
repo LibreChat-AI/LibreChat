@@ -176,7 +176,9 @@ export default function AskUserQuestions({
           </div>
         )}
       </div>
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-3">
+      {/* `pb-1 -mb-1` holds `AutoHeight`'s 4px focus-ring margin inside the
+          padding box, so it never counts as overflow and draws a scrollbar. */}
+      <div ref={scrollRef} className="-mb-1 min-h-0 flex-1 overflow-y-auto px-3 pb-1">
         <AutoHeight>
           <fieldset
             key={question.id}
