@@ -144,6 +144,41 @@ DB-enforced — documented, loud, but not fixable in application code.
 - TLS with the AWS CA bundle; clusters are VPC-only (tunnel/bastion for
   external access).
 
+### Run LibreChat locally against Amazon DocumentDB
+
+Amazon DocumentDB is managed and VPC-only; there is no faithful local container
+that exercises its engine. The Compose override therefore connects the local API
+container to a real cluster and keeps MongoDB behind the `mongodb-compat` profile
+as a baseline only.
+
+1. Establish VPN/VPC connectivity, or an SSH tunnel from local port `27017` to
+   the cluster endpoint. A tunnel must listen on an address reachable from Docker.
+2. Download AWS's current `global-bundle.pem` into
+   `certs/documentdb/global-bundle.pem`.
+3. Set `MONGO_URI` in `.env`. For a direct VPC connection, use the cluster
+   hostname. For a host-side tunnel used by Docker, use `host.docker.internal`.
+   Always include `tls=true`, `retryWrites=false`, `authSource=admin`, and
+   `authMechanism=SCRAM-SHA-1`. A direct VPC connection should also use
+   `replicaSet=rs0&readPreference=secondaryPreferred`. For an SSH tunnel, omit
+   replica-set discovery and instead use
+   `directConnection=true&tlsAllowInvalidHostnames=true`; never use the latter
+   for a direct production connection.
+4. Start the normal stack with `docker compose up -d`. The override removes the
+   API's dependency on the local `mongodb` service and passes the URI and CA path
+   to Mongoose.
+5. Run the live compatibility suites from `packages/data-schemas` against a
+   dedicated test database using `DOCUMENTDB_URI` and
+   `DOCUMENTDB_TLS_CA_FILE`. These tests create and delete collections and must
+   not target production data.
+
+For a MongoDB-only baseline, start `docker compose --profile mongodb-compat up
+-d mongodb`. The override initializes that opt-in service as a single-node
+replica set so the harness can exercise transactions. From another container on
+the Compose network, use
+`mongodb://mongodb:27017/librechat_compat?replicaSet=rs0&retryWrites=false`.
+Passing against MongoDB is useful regression evidence but is not evidence of
+Amazon DocumentDB compatibility.
+
 ## Document as unsupported — elastic clusters
 
 [Elastic cluster limitations](https://docs.aws.amazon.com/documentdb/latest/developerguide/docdb-using-elastic-clusters.html):
