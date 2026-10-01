@@ -157,12 +157,13 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-illustration-subtle': '175 193 255', // #afc1ff
   'rgb-illustration': '121 137 255', // #7989ff
   'rgb-illustration-strong': '60 70 255', // #3c46ff
-  'rgb-file-document': '255 85 136', // #ff5588
-  'rgb-file-sheet': '16 163 127', // #10a37f
-  'rgb-file-code': '255 110 60', // #ff6e3c
+  /** File-type tiles: each hue stepped so the glyph clears 6.5:1 on it (white glyph). */
+  'rgb-file-document': '176 0 78', // #b0004e
+  'rgb-file-sheet': '0 107 79', // #006b4f
+  'rgb-file-code': '163 60 0', // #a33c00
   'rgb-file-artifact': '45 48 92', // #2d305c
-  'rgb-file-audio': '255 107 53', // #ff6b35
-  'rgb-file-video': '139 92 246', // #8b5cf6
+  'rgb-file-audio': '138 69 0', // #8a4500
+  'rgb-file-video': '109 40 217', // #6d28d9
   'rgb-file-generic': '0 0 255', // #0000ff
   'rgb-file-ink': '255 255 255', // #ffffff
 
@@ -333,14 +334,15 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-illustration-subtle': '175 193 255', // #afc1ff
   'rgb-illustration': '121 137 255', // #7989ff
   'rgb-illustration-strong': '60 70 255', // #3c46ff
-  'rgb-file-document': '255 85 136', // #ff5588
-  'rgb-file-sheet': '16 163 127', // #10a37f
-  'rgb-file-code': '255 110 60', // #ff6e3c
-  'rgb-file-artifact': '45 48 92', // #2d305c
-  'rgb-file-audio': '255 107 53', // #ff6b35
-  'rgb-file-video': '139 92 246', // #8b5cf6
-  'rgb-file-generic': '0 0 255', // #0000ff
-  'rgb-file-ink': '255 255 255', // #ffffff
+  /** File-type tiles: each hue stepped so the glyph clears 6.5:1 on it (black glyph, light tiles on the black canvas). */
+  'rgb-file-document': '255 158 194', // #ff9ec2
+  'rgb-file-sheet': '95 224 184', // #5fe0b8
+  'rgb-file-code': '255 164 126', // #ffa47e
+  'rgb-file-artifact': '184 187 232', // #b8bbe8
+  'rgb-file-audio': '255 179 138', // #ffb38a
+  'rgb-file-video': '201 179 255', // #c9b3ff
+  'rgb-file-generic': '159 180 255', // #9fb4ff
+  'rgb-file-ink': '0 0 0', // #000000
 
   /** Code syntax highlighting at AAA on the black code surface. */
   'rgb-syntax-text': '255 255 255', // #ffffff
