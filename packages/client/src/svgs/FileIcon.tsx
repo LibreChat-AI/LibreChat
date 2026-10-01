@@ -7,6 +7,7 @@ export default function FileIcon({
 }: {
   file?: Partial<TFile> & { progress?: number };
   fileType: {
+    /** The tile's fill utility, such as `fill-file-document`. */
     fill: string;
     paths: React.FC;
     title: string;
@@ -22,7 +23,7 @@ export default function FileIcon({
       height="36"
       aria-hidden="true"
     >
-      <rect width="36" height="36" rx="6" fill={fileType.fill} />
+      <rect width="36" height="36" rx="6" className={fileType.fill} />
       {(file?.['progress'] ?? 1) >= 1 && <>{<fileType.paths />}</>}
     </svg>
   );
