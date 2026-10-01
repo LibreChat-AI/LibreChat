@@ -1,11 +1,12 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { RecoilRoot, useRecoilValue } from 'recoil';
-import { QueryKeys, request } from 'librechat-data-provider';
+import { QueryKeys } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type {
   ChatEvent,
+  TEnqueueAgentQueuedTurnRequest,
   TSubmission,
   TConversation,
   ChatTransportOptions,
@@ -70,12 +71,17 @@ type SeedState = Parameters<
   NonNullable<React.ComponentProps<typeof RecoilRoot>['initializeState']>
 >[0];
 
-function createWrapper(transport: Transport, seed?: (state: SeedState) => void) {
+function createWrapper(
+  transport: Transport,
+  seed?: (state: SeedState) => void,
+  seedCache?: (queryClient: QueryClient) => void,
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   /** The composer's user-key check is not gated by `queriesEnabled`; answer it from cache. */
   queryClient.setQueryData([QueryKeys.name, 'agents'], { expiresAt: '' });
+  seedCache?.(queryClient);
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <MemoryRouter>
@@ -127,6 +133,50 @@ const buildChatHelpers = () => ({
   setIsSubmitting: jest.fn(),
   newConversation: jest.fn(),
 });
+
+const seedSteerableRun = ({ set }: SeedState) => {
+  set(store.conversationByIndex(0), {
+    conversationId: 'convo-1',
+    endpoint: 'agents',
+  } as TConversation);
+  set(store.activeGenerationCreatedAtByConvoId('convo-1'), 1000);
+  set(store.activeGenerationProtocolVersionByConvoId('convo-1'), 2);
+};
+
+/** The running turn: queued follow-ups chain off its in-flight response. */
+const seedLiveBranch = (queryClient: QueryClient) =>
+  queryClient.setQueryData(
+    [QueryKeys.messages, 'convo-1'],
+    [
+      { ...buildSubmission().userMessage },
+      {
+        messageId: 'resp-1',
+        conversationId: 'convo-1',
+        parentMessageId: 'msg-1',
+        text: '',
+        isCreatedByUser: false,
+        sender: 'Assistant',
+      },
+    ],
+  );
+
+const renderSteering = (transport: Transport) =>
+  renderHook(
+    () => ({
+      steering: useSteering({
+        consumeDraft: jest.fn(),
+        index: 0,
+        conversationId: 'convo-1',
+        conversation: { conversationId: 'convo-1', endpoint: 'agents' } as TConversation,
+        isSubmitting: true,
+        answerModeActive: false,
+        sendNow: jest.fn(),
+        stopGenerating: jest.fn(),
+      }),
+      queue: useRecoilValue(store.queuedMessagesByConvoId('convo-1')),
+    }),
+    { wrapper: createWrapper(transport, seedSteerableRun, seedLiveBranch) },
+  );
 
 describe('chat transport boundary', () => {
   describe('send (agents)', () => {
@@ -263,38 +313,6 @@ describe('chat transport boundary', () => {
   });
 
   describe('steer', () => {
-    const seedSteerableRun = ({ set }: SeedState) => {
-      set(store.activeGenerationCreatedAtByConvoId('convo-1'), 1000);
-      set(store.activeGenerationProtocolVersionByConvoId('convo-1'), 2);
-    };
-
-    const renderSteering = (transport: Transport) =>
-      renderHook(
-        () => ({
-          steering: useSteering({
-            consumeDraft: jest.fn(),
-            index: 0,
-            conversationId: 'convo-1',
-            conversation: { conversationId: 'convo-1', endpoint: 'agents' } as TConversation,
-            isSubmitting: true,
-            answerModeActive: false,
-            sendNow: jest.fn(),
-            stopGenerating: jest.fn(),
-          }),
-          queue: useRecoilValue(store.queuedMessagesByConvoId('convo-1')),
-        }),
-        { wrapper: createWrapper(transport, seedSteerableRun) },
-      );
-
-    beforeEach(() => {
-      /** The server queue projection is an HTTP read outside the transport. */
-      jest.spyOn(request, 'get').mockResolvedValue({ queuedTurns: [] });
-    });
-
-    afterEach(() => {
-      jest.restoreAllMocks();
-    });
-
     it('sends a steer to the running generation through the host transport', async () => {
       const fake = createFakeTransport({
         steer: jest.fn(async () => ({
@@ -337,6 +355,71 @@ describe('chat transport boundary', () => {
         expect(result.current.queue).toEqual([expect.objectContaining({ text: 'do not lose me' })]),
       );
       expect(fake.transport.steer).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('queue', () => {
+    const receiptFor = (input: TEnqueueAgentQueuedTurnRequest, status = 'queued' as const) => ({
+      ...input,
+      queuedTurnId: 'queued-turn-1',
+      status,
+      revision: 0,
+      createdAt: '2026-10-01T00:00:00.000Z',
+      updatedAt: '2026-10-01T00:00:00.000Z',
+    });
+
+    it('reads, adds and withdraws server queued turns through the host transport', async () => {
+      const fake = createFakeTransport({
+        enqueue: jest.fn(async (input: TEnqueueAgentQueuedTurnRequest) => receiptFor(input)),
+        cancelQueued: jest.fn(async () => ({
+          ...receiptFor({} as TEnqueueAgentQueuedTurnRequest),
+          status: 'cancelled' as const,
+        })),
+      });
+      const { result } = renderSteering(fake.transport);
+
+      await waitFor(() => expect(fake.transport.listQueued).toHaveBeenCalled());
+      expect((fake.transport.listQueued as jest.Mock).mock.calls[0][0]).toBe('convo-1');
+
+      await act(async () => {
+        expect(result.current.steering.queueFromComposer('after this run')).toBe(true);
+      });
+
+      await waitFor(() => expect(fake.transport.enqueue).toHaveBeenCalledTimes(1));
+      expect((fake.transport.enqueue as jest.Mock).mock.calls[0][0]).toEqual(
+        expect.objectContaining({ conversationId: 'convo-1', text: 'after this run' }),
+      );
+      await waitFor(() =>
+        expect(result.current.queue[0].server).toEqual(
+          expect.objectContaining({ id: 'queued-turn-1' }),
+        ),
+      );
+
+      let discarded = false;
+      await act(async () => {
+        discarded = await result.current.steering.discardQueued(result.current.queue[0]);
+      });
+      expect(discarded).toBe(true);
+      expect(fake.transport.cancelQueued).toHaveBeenCalledWith({
+        conversationId: 'convo-1',
+        queuedTurnId: 'queued-turn-1',
+      });
+    });
+
+    it('keeps a turn queued locally when the server has no queue', async () => {
+      const unsupported = Object.assign(new Error('Not found'), { response: { status: 404 } });
+      const fake = createFakeTransport({
+        enqueue: jest.fn(async () => Promise.reject(unsupported)),
+      });
+      const { result } = renderSteering(fake.transport);
+
+      await act(async () => {
+        result.current.steering.queueFromComposer('hold me here');
+      });
+
+      await waitFor(() => expect(fake.transport.enqueue).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(result.current.queue[0]?.server).toBeUndefined());
+      expect(result.current.queue).toEqual([expect.objectContaining({ text: 'hold me here' })]);
     });
   });
 });
