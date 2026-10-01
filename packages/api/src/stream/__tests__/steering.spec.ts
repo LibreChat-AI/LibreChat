@@ -983,10 +983,11 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
           userSubmittedPaths: ['/content/0/steer'],
           providerExecutionStartedId: 'exec-before-pause',
         });
-        manager.setContentParts(streamId, [
+        const content: Array<Record<string, unknown>> = [
           { type: 'text', text: 'Before the pause' },
           { type: 'tool_call', tool_call: { id: 'call-1', args: '{"q":"model"}' } },
-        ] as unknown as Agents.MessageContentComplex[]);
+        ];
+        manager.setContentParts(streamId, content as unknown as Agents.MessageContentComplex[]);
         const action = {
           actionId: `action-${streamId}`,
           type: 'tool_approval',
@@ -1006,7 +1007,7 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
           job.createdAt,
         );
         expect(claimed).toBe(true);
-        return job;
+        return { job, content };
       }
 
       test('publishes the pre-claim provenance when the provider never started', async () => {
@@ -1021,9 +1022,9 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
         expect(responseMessage).not.toHaveProperty('userSubmittedMessageFieldPaths');
       });
 
-      test('publishes the claimed provenance once the provider has started', async () => {
-        const streamId = 'steer-abort-applied-provenance';
-        const job = await claimResume(streamId);
+      test('publishes the pre-claim provenance while the provider has started without applying the decision', async () => {
+        const streamId = 'steer-abort-started-unapplied-provenance';
+        const { job } = await claimResume(streamId);
         await expect(
           manager.beginProviderExecution(streamId, job.createdAt, `exec-${streamId}`),
         ).resolves.toBe(true);
@@ -1031,10 +1032,75 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
         const result = await manager.abortJob(streamId);
 
         expect(result.success).toBe(true);
-        expect(responseMessageOf(result.finalEvent)).toMatchObject({
+        const responseMessage = responseMessageOf(result.finalEvent);
+        expect(responseMessage?.userSubmittedPaths).toEqual(['/content/0/steer']);
+        expect(responseMessage).not.toHaveProperty('userSubmittedMessageFieldPaths');
+      });
+
+      test('publishes and persists the claimed provenance once the resumed tool completed', async () => {
+        const streamId = 'steer-abort-applied-provenance';
+        const { job, content } = await claimResume(streamId);
+        await expect(
+          manager.beginProviderExecution(streamId, job.createdAt, `exec-${streamId}`),
+        ).resolves.toBe(true);
+        content[1] = {
+          type: 'tool_call',
+          tool_call: { id: 'call-1', args: '{"q":"user"}', output: 'User response' },
+        };
+        const persisted: unknown[] = [];
+
+        const result = await manager.abortJob(streamId, {
+          beforePublish: async (pending) => {
+            persisted.push(pending.jobData);
+          },
+        });
+
+        expect(result.success).toBe(true);
+        const claimedProvenance = {
           userSubmittedPaths: ['/content/0/steer', '/content/1/tool_call/args'],
           userSubmittedMessageFieldPaths: claimedMessageFieldPaths,
+        };
+        expect(responseMessageOf(result.finalEvent)).toMatchObject(claimedProvenance);
+        expect(persisted).toEqual([expect.objectContaining(claimedProvenance)]);
+      });
+
+      test('labels a decision output that the abort transform stamped before the provider started', async () => {
+        const streamId = 'steer-abort-stamped-provenance';
+        await claimResume(streamId);
+
+        const result = await manager.abortJob(streamId, {
+          transformAbortContent: (parts) =>
+            parts.map((part, index) =>
+              index === 1 && part.type === 'tool_call'
+                ? { ...part, tool_call: { ...part.tool_call, output: 'Stamped answer' } }
+                : part,
+            ) as typeof parts,
         });
+
+        expect(result.success).toBe(true);
+        expect(responseMessageOf(result.finalEvent)?.userSubmittedMessageFieldPaths).toEqual(
+          claimedMessageFieldPaths,
+        );
+      });
+
+      test('persists the same pre-claim provenance that the final event publishes', async () => {
+        const streamId = 'steer-abort-unapplied-persisted-provenance';
+        await claimResume(streamId);
+        const persisted: unknown[] = [];
+
+        const result = await manager.abortJob(streamId, {
+          beforePublish: async (pending) => {
+            persisted.push(pending.jobData);
+          },
+        });
+
+        expect(result.success).toBe(true);
+        expect(persisted).toEqual([
+          expect.objectContaining({
+            userSubmittedPaths: ['/content/0/steer'],
+            userSubmittedMessageFieldPaths: [],
+          }),
+        ]);
       });
     });
   });

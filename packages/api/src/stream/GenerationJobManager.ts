@@ -369,6 +369,44 @@ function getSteerUserSubmittedPaths(content: readonly TMessageContentParts[]): s
   return paths;
 }
 
+/** A path the latest approval claim added is user-authored only once the
+ * resumed tool call completed in this content: until then the part still holds
+ * the model's arguments and no decision output. An `ask_user_question` answer
+ * stamped onto the content counts as completed, since the stamp is its output. */
+function getPublishedProvenance(
+  jobData: SerializableJobData,
+  content: readonly TMessageContentParts[],
+): Pick<SerializableJobData, 'userSubmittedPaths' | 'userSubmittedMessageFieldPaths'> {
+  const claimedPaths = jobData.userSubmittedPaths ?? [];
+  const claimedFieldPaths = jobData.userSubmittedMessageFieldPaths ?? [];
+  const preResume = jobData.preResumeProvenance;
+  if (preResume == null) {
+    return {
+      userSubmittedPaths: claimedPaths,
+      userSubmittedMessageFieldPaths: claimedFieldPaths,
+    };
+  }
+  const isCompletedToolCallPath = (path: string): boolean => {
+    const match = /^\/content\/(\d+)\/tool_call\//.exec(path);
+    const part = match == null ? undefined : content[Number(match[1])];
+    const output =
+      part?.type === 'tool_call' ? (part.tool_call as { output?: unknown })?.output : undefined;
+    return typeof output === 'string' && output.length > 0;
+  };
+  const prePaths = new Set(preResume.userSubmittedPaths ?? []);
+  const preFieldPaths = new Set(
+    (preResume.userSubmittedMessageFieldPaths ?? []).map(({ path, field }) => `${field}:${path}`),
+  );
+  return {
+    userSubmittedPaths: claimedPaths.filter(
+      (path) => prePaths.has(path) || isCompletedToolCallPath(path),
+    ),
+    userSubmittedMessageFieldPaths: claimedFieldPaths.filter(
+      ({ path, field }) => preFieldPaths.has(`${field}:${path}`) || isCompletedToolCallPath(path),
+    ),
+  };
+}
+
 function getToolCallName(toolCall: unknown): unknown {
   return toolCall != null && typeof toolCall === 'object' && 'name' in toolCall
     ? toolCall.name
@@ -4782,16 +4820,10 @@ class GenerationJobManagerClass {
        * describes the call whose partial output the snapshot above carries.
        * Read it back from the same epoch so the stopped response persists the
        * tier that produced its bytes, not the one seen before the claim. */
-      /** The terminal CAS above closed the provider start fence, so this read is
-       * the final word on whether the claimed resume's decision was ever applied. */
-      let providerStarted = jobData.providerExecutionStartedId != null;
       try {
         const refreshed = await this.jobStore.getJob(streamId);
-        if (refreshed?.createdAt === jobData.createdAt) {
-          providerStarted = refreshed.providerExecutionStartedId != null;
-          if (refreshed.contextMeta != null) {
-            jobData = { ...jobData, contextMeta: refreshed.contextMeta };
-          }
+        if (refreshed?.createdAt === jobData.createdAt && refreshed.contextMeta != null) {
+          jobData = { ...jobData, contextMeta: refreshed.contextMeta };
         }
       } catch (metadataError) {
         logger.warn(
@@ -4822,17 +4854,19 @@ class GenerationJobManagerClass {
 
       /** Final event for abort */
       const userMessageId = jobData.userMessage?.messageId;
-      const provenance =
-        !providerStarted && jobData.preResumeProvenance != null
-          ? jobData.preResumeProvenance
-          : jobData;
+      /** The final event and the persisted row (`beforePublish` reads
+       * `jobData`) must label the same content, so both take this selection. */
+      jobData = {
+        ...jobData,
+        ...getPublishedProvenance(jobData, abortContent as TMessageContentParts[]),
+      };
       const userSubmittedPaths = [
         ...new Set([
-          ...(provenance.userSubmittedPaths ?? []),
+          ...(jobData.userSubmittedPaths ?? []),
           ...getSteerUserSubmittedPaths(abortContent as TMessageContentParts[]),
         ]),
       ];
-      const userSubmittedMessageFieldPaths = provenance.userSubmittedMessageFieldPaths ?? [];
+      const userSubmittedMessageFieldPaths = jobData.userSubmittedMessageFieldPaths ?? [];
 
       const abortFinalEvent: t.ServerSentEvent = {
         final: true,
