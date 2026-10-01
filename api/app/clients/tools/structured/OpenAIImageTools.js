@@ -54,6 +54,7 @@ function createAbortHandler() {
  * @param {ServerRequest} fields.req - Whether the tool is being used in an agent context
  * @param {boolean} fields.isAgent - Whether the tool is being used in an agent context
  * @param {string} fields.IMAGE_GEN_OAI_API_KEY - The OpenAI API key
+ * @param {string} [fields.IMAGE_GEN_OAI_MODEL] - The image model to use (e.g. 'gpt-image-1', 'gpt-image-2'). Falls back to IMAGE_GEN_OAI_MODEL env var, then 'gpt-image-1'.
  * @param {boolean} [fields.override] - Whether to override the API key check, necessary for app initialization
  * @param {MongoFile[]} [fields.imageFiles] - The images to be used for editing
  * @param {string} [fields.imageOutputType] - The image output type configuration
@@ -82,7 +83,7 @@ function createOpenAIImageTools(fields = {}) {
   let apiKey = fields.IMAGE_GEN_OAI_API_KEY ?? getApiKey();
   const closureConfig = { apiKey };
 
-  const imageModel = process.env.IMAGE_GEN_OAI_MODEL || 'gpt-image-1';
+  const imageModel = fields.IMAGE_GEN_OAI_MODEL || process.env.IMAGE_GEN_OAI_MODEL || 'gpt-image-1';
 
   let baseURL = 'https://api.openai.com/v1/';
   if (!override && process.env.IMAGE_GEN_OAI_BASEURL) {

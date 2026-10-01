@@ -41,6 +41,11 @@
         "authField": "IMAGE_GEN_OAI_API_KEY",
         "label": "OpenAI Image Tools API Key",
         "description": "Your OpenAI API Key for Image Generation and Editing"
+      },
+      {
+        "authField": "IMAGE_GEN_OAI_MODEL",
+        "label": "OpenAI Image Model",
+        "description": "The image model to use (e.g. gpt-image-1, gpt-image-2). Defaults to gpt-image-1."
       }
     ]
   },
