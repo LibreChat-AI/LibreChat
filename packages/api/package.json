@@ -1,6 +1,6 @@
 {
   "name": "@librechat/api",
-  "version": "1.7.51",
+  "version": "1.7.52",
   "type": "commonjs",
   "description": "MCP services for LibreChat",
   "main": "dist/index.cjs",
