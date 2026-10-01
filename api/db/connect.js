@@ -22,6 +22,8 @@ const maxIdleTimeMS = parseInt(process.env.MONGO_MAX_IDLE_TIME_MS) || undefined;
 const waitQueueTimeoutMS = parseInt(process.env.MONGO_WAIT_QUEUE_TIMEOUT_MS) || undefined;
 /** Set to false to disable automatic index creation for all models associated with this connection. */
 const autoIndex = optionalEnabled(process.env.MONGO_AUTO_INDEX);
+/** CA bundle path for TLS connections such as Amazon DocumentDB. */
+const tlsCAFile = process.env.MONGO_TLS_CA_FILE || undefined;
 
 /** Set to `false` to disable Mongoose automatically calling `createCollection()` on every model created on this connection. */
 const autoCreate = optionalEnabled(process.env.MONGO_AUTO_CREATE);
@@ -55,6 +57,7 @@ async function connectDb() {
       ...(maxIdleTimeMS ? { maxIdleTimeMS } : {}),
       ...(waitQueueTimeoutMS ? { waitQueueTimeoutMS } : {}),
       ...(autoIndex != undefined ? { autoIndex } : {}),
+      ...(tlsCAFile ? { tlsCAFile } : {}),
       ...(autoCreate != undefined ? { autoCreate } : {}),
       // useNewUrlParser: true,
       // useUnifiedTopology: true,
