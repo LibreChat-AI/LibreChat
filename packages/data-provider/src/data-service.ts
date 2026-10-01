@@ -1138,14 +1138,17 @@ export const branchMessage = async (
   return request.post(endpoints.messagesBranch(), payload);
 };
 
-export function getMessagesByConvoId(conversationId: string): Promise<s.TMessage[]> {
+export function getMessagesByConvoId(
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<s.TMessage[]> {
   if (
     conversationId === config.Constants.NEW_CONVO ||
     conversationId === config.Constants.PENDING_CONVO
   ) {
     return Promise.resolve([]);
   }
-  return request.get(endpoints.messages({ conversationId }));
+  return request.get(endpoints.messages({ conversationId }), signal ? { signal } : undefined);
 }
 
 export function getMessageById(conversationId: string, messageId: string): Promise<s.TMessage[]> {

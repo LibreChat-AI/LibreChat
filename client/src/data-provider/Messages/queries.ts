@@ -104,7 +104,7 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
 
   return useQuery<t.TMessage[], unknown, TData>(
     [QueryKeys.messages, id],
-    async () => {
+    async ({ signal }) => {
       const queryKey = [QueryKeys.messages, id];
       const messagesAtRequestStart = queryClient.getQueryData<t.TMessage[]>(queryKey);
 
@@ -119,7 +119,7 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
       );
       let result: t.TMessage[];
       try {
-        result = await dataService.getMessagesByConvoId(id);
+        result = await dataService.getMessagesByConvoId(id, signal);
       } catch (error) {
         const currentMessages = queryClient.getQueryData<t.TMessage[]>(queryKey);
         if (

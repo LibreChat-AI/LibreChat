@@ -68,7 +68,7 @@ function deferred<T>() {
 }
 
 afterEach(() => {
-  jest.clearAllMocks();
+  jest.resetAllMocks();
 });
 
 describe('getStableMessages', () => {
@@ -317,6 +317,34 @@ describe('shouldPreserveMessagesOnNotFound', () => {
 });
 
 describe('useGetMessagesByConvoId', () => {
+  it('aborts the message request when the query is no longer observed', async () => {
+    const conversationId = 'convo-id';
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    let requestSignal: AbortSignal | undefined;
+    const mockGetMessagesByConvoId = dataService.getMessagesByConvoId as jest.MockedFunction<
+      typeof dataService.getMessagesByConvoId
+    >;
+    mockGetMessagesByConvoId.mockImplementation((_conversationId, signal) => {
+      requestSignal = signal;
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      });
+    });
+
+    const { unmount } = renderHook(() => useGetMessagesByConvoId(conversationId), {
+      wrapper: createWrapper(queryClient, `/c/${conversationId}`),
+    });
+
+    await waitFor(() => {
+      expect(requestSignal).toBeInstanceOf(AbortSignal);
+    });
+    unmount();
+
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
   it('observes optimistic new-chat messages without requesting them from the API', async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -372,7 +400,7 @@ describe('useGetMessagesByConvoId', () => {
       expect(result.current.data).toEqual(serverMessages);
     });
     expect(mockGetMessagesByConvoId).toHaveBeenCalledTimes(1);
-    expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(conversationId);
+    expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(conversationId, expect.any(AbortSignal));
 
     unmount();
   });
@@ -397,7 +425,10 @@ describe('useGetMessagesByConvoId', () => {
     });
 
     await waitFor(() => {
-      expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(conversationId);
+      expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(
+        conversationId,
+        expect.any(AbortSignal),
+      );
     });
 
     act(() => {
@@ -443,7 +474,10 @@ describe('useGetMessagesByConvoId', () => {
     const refetchPromise = result.current.refetch();
 
     await waitFor(() => {
-      expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(conversationId);
+      expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(
+        conversationId,
+        expect.any(AbortSignal),
+      );
     });
 
     act(() => {
@@ -520,7 +554,10 @@ describe('useGetMessagesByConvoId', () => {
     const refetchPromise = result.current.refetch();
 
     await waitFor(() => {
-      expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(conversationId);
+      expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(
+        conversationId,
+        expect.any(AbortSignal),
+      );
     });
 
     act(() => {
@@ -579,7 +616,10 @@ describe('useGetMessagesByConvoId', () => {
     await waitFor(() => {
       expect(result.current.data).toBe(currentMessages);
     });
-    expect(dataService.getMessagesByConvoId).toHaveBeenCalledWith(conversationId);
+    expect(dataService.getMessagesByConvoId).toHaveBeenCalledWith(
+      conversationId,
+      expect.any(AbortSignal),
+    );
     expect(queryClient.getQueryData([QueryKeys.messages, conversationId])).toBe(currentMessages);
 
     unmount();
@@ -623,7 +663,10 @@ describe('useGetMessagesByConvoId', () => {
     await waitFor(() => {
       expect(result.current.data).toBe(currentMessages);
     });
-    expect(dataService.getMessagesByConvoId).toHaveBeenCalledWith(conversationId);
+    expect(dataService.getMessagesByConvoId).toHaveBeenCalledWith(
+      conversationId,
+      expect.any(AbortSignal),
+    );
     expect(queryClient.getQueryData([QueryKeys.messages, conversationId])).toBe(currentMessages);
     expect(logger.warn).toHaveBeenCalledWith(
       'messages',
