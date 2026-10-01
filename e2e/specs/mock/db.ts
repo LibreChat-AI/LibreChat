@@ -93,6 +93,8 @@ export interface SeedMessage {
   /** Why the turn stopped; the hover Continue is offered only for some values. */
   finish_reason?: string;
   model?: string;
+  /** Attachments on the turn, as the client renders them (an image opens the lightbox). */
+  files?: Record<string, unknown>[];
 }
 
 /**
