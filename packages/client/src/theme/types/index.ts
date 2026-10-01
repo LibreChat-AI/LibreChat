@@ -430,6 +430,8 @@ export interface IThemeColors {
   'border-destructive'?: string;
   'border-control'?: string;
   'border-field-focus'?: string;
+  'field-fill'?: string;
+  'field-text'?: string;
   'surface-disabled'?: string;
   'text-disabled'?: string;
   'border-disabled'?: string;

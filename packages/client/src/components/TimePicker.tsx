@@ -172,7 +172,7 @@ function PickerShell({
           aria-labelledby={labelledBy == null ? valueId : `${labelledBy} ${valueId}`}
           className={cn(
             fieldControl,
-            'text-text-primary items-center justify-between gap-2',
+            'items-center justify-between gap-2',
             'hover:bg-surface-hover data-[state=open]:bg-surface-hover',
             className,
           )}
