@@ -82,7 +82,7 @@ export default function ComboboxComponent({
           className={cn(
             '[&_svg]:size-theme-icon flex items-center gap-2 [&_svg]:shrink-0 [&>span]:line-clamp-1 [&>span]:flex [&>span]:w-full [&>span]:items-center [&>span]:gap-1 [&>span]:truncate',
             isCollapsed
-              ? 'flex h-9 w-9 shrink-0 items-center justify-center p-0 [&>span]:w-auto [&>svg]:hidden'
+              ? 'size-theme-control flex shrink-0 items-center justify-center p-0 [&>span]:w-auto [&>svg]:hidden'
               : '',
             'bg-surface-secondary text-text-primary hover:bg-surface-hover focus-visible:ring-focus-control focus-visible:ring-2',
           )}

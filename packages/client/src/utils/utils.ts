@@ -42,6 +42,7 @@ const twMerge = extendTailwindMerge({
       size: [
         {
           size: [
+            'theme-control',
             'theme-button',
             'theme-button-xs',
             'theme-icon-button-sm',

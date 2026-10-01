@@ -7,6 +7,7 @@ describe('cn', () => {
     ['h-theme-control', 'h-9'],
     ['h-theme-button-xs', 'h-8'],
     ['size-theme-button', 'size-9'],
+    ['h-theme-control', 'size-theme-control'],
     ['min-w-theme-target', 'min-w-0'],
     ['min-h-theme-target', 'min-h-0'],
   ])('lets a caller size replace %s', (role, caller) => {
