@@ -1153,6 +1153,8 @@ describe('theme registry', () => {
       { buttonHeightLg: '-2rem' },
       { buttonHeightXs: '1px' },
       { minTargetSize: '3rem' },
+      { minTargetSize: '2rem' },
+      { minTargetSize: '28px', buttonHeightLg: '24px' },
       { minTargetSize: '2rem', fieldHeight: '1.75rem' },
       { iconSizeMd: '1rem' },
       { iconButtonSizeSm: '20px' },

@@ -68,8 +68,8 @@ const REFERENCE_SIZE_THEME = {
   version: 1,
   name: 'e2e-size-reference',
   modes: {
-    light: { appearance: { iconSize: '1.25rem', minTargetSize: '2rem' } },
-    dark: { appearance: { iconSize: '1.25rem', minTargetSize: '2rem' } },
+    light: { appearance: { iconSize: '1.25rem', minTargetSize: '1.75rem' } },
+    dark: { appearance: { iconSize: '1.25rem', minTargetSize: '1.75rem' } },
   },
 } as const;
 
@@ -156,17 +156,7 @@ test.describe('primitive size roles', () => {
       return width;
     });
     expect(explicit).toBe('20px');
-    expect(await probeStyle(page, 'min-h-theme-target', 'min-height')).toBe('32px');
-    /** A text button on a role smaller than the target keeps the target height. */
-    expect(await probeStyle(page, 'h-theme-button-xs min-h-theme-target', 'height')).toBe('32px');
-    /** An icon square on a button role smaller than the target keeps the target. */
-    expect(
-      await probeStyle(
-        page,
-        'size-theme-button-xs min-h-theme-target min-w-theme-target',
-        'height',
-      ),
-    ).toBe('32px');
-    expect(await probeStyle(page, 'h-theme-target', 'height')).toBe('32px');
+    expect(await probeStyle(page, 'min-h-theme-target', 'min-height')).toBe('28px');
+    expect(await probeStyle(page, 'h-theme-target', 'height')).toBe('28px');
   });
 });

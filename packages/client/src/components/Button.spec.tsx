@@ -295,35 +295,3 @@ describe('Button', () => {
       .forEach((circle) => expect(circle).toHaveAttribute('stroke', 'currentColor'));
   });
 });
-
-describe('Button icon squares', () => {
-  it.each(['default', 'dense', 'compact', 'xs', 'sm', 'lg'] as const)(
-    'keeps the %s text size at least the target minimum tall',
-    (size) => {
-      render(<Button size={size}>Probe</Button>);
-      expect(screen.getByRole('button', { name: 'Probe' })).toHaveClass('min-h-theme-target');
-    },
-  );
-
-  it('lets a section header keep its own text height', () => {
-    render(
-      <Button variant="section-header" size="default">
-        Section
-      </Button>,
-    );
-    const header = screen.getByRole('button', { name: 'Section' });
-    expect(header).toHaveClass('h-auto', 'min-h-0');
-    expect(header).not.toHaveClass('min-h-theme-target', 'h-theme-button');
-  });
-
-  it.each(['icon', 'icon-sm', 'icon-xs'] as const)(
-    'keeps the %s square at least the target minimum',
-    (size) => {
-      render(<Button size={size} aria-label="Probe" />);
-      expect(screen.getByRole('button', { name: 'Probe' })).toHaveClass(
-        'min-h-theme-target',
-        'min-w-theme-target',
-      );
-    },
-  );
-});

@@ -370,8 +370,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   trigger. Every default is the size the primitive drew before. The icon and checkbox roles
   are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeMd` (the
   exported Dialog's close glyph) 1.25 to 1.5rem, `iconSizeLg` 1 to 2rem, `checkboxSize` 1 to
-  1.5rem. `minTargetSize` may not exceed `buttonHeight` or `fieldHeight`, so the floor never
-  pulls an icon button out of line with the field beside it.
+  1.5rem. A theme that sets `minTargetSize` may not size any button or field below it, so every
+  control it draws is at least that target.
 - `bg-field-fill` / `text-field-text` - A form field's fill and typed value. The
   ink follows `text-primary` and the fill follows `surface-primary` when a theme
   names those and not these. Fields stay clear unless the theme's

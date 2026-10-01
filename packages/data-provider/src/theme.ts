@@ -514,17 +514,30 @@ function plainPx(value: unknown): number | undefined {
   return parseFloat(value) * (value.endsWith('rem') ? 16 : 1);
 }
 
+/** The button and field sizes the target floor is checked against, with the defaults a theme
+ *  that leaves one out draws. */
+const defaultControlHeights = {
+  buttonHeight: '2.5rem',
+  buttonHeightSm: '2.25rem',
+  buttonHeightXs: '1.75rem',
+  buttonHeightLg: '2.75rem',
+  buttonHeightCompact: '2rem',
+  iconButtonSizeSm: '2rem',
+  fieldHeight: '2.5rem',
+} as const;
+type ControlHeightRole = keyof typeof defaultControlHeights;
+
 /**
- * The target floor holds icon buttons up to it; a floor above the button or field height would
- * pull them out of line with the fields and buttons drawn beside them, so it may not exceed
- * either. Roles a theme leaves out read their defaults.
+ * A theme that sets the target floor may not draw any button or field below it, so every control
+ * it sizes stays a target of at least that size and lines up with the fields beside it. Roles a
+ * theme leaves out read their defaults; a theme that leaves the floor out is not checked.
  */
 function collectTargetIssues(appearance: Record<string, unknown>, base: string[]): ThemeIssue[] {
   if (appearance.minTargetSize === undefined) {
     return [];
   }
   const target = plainPx(appearance.minTargetSize);
-  const [role, value, height] = (['buttonHeight', 'fieldHeight'] as const)
+  const [role, value, height] = (Object.keys(defaultControlHeights) as ControlHeightRole[])
     .map((name) => {
       const raw = appearance[name] ?? defaultControlHeights[name];
       return [name, raw, plainPx(raw)] as const;
@@ -542,9 +555,6 @@ function collectTargetIssues(appearance: Record<string, unknown>, base: string[]
     ),
   ];
 }
-
-/** The control heights the target floor is checked against when a theme leaves them out. */
-const defaultControlHeights = { buttonHeight: '2.5rem', fieldHeight: '2.5rem' } as const;
 
 function collectSwitchIssues(appearance: Record<string, unknown>, base: string[]): ThemeIssue[] {
   if (appearance.switchWidth === undefined && appearance.switchHeight === undefined) {
