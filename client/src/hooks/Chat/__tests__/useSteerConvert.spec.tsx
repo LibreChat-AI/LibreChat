@@ -3,7 +3,7 @@ import { act, renderHook } from '@testing-library/react';
 import { getDefaultStore, useAtomValue, useSetAtom } from 'jotai';
 import { RecoilRoot, useRecoilValue, type MutableSnapshot } from 'recoil';
 import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
-import { queuedMessagesByConvoId, resetQueueFamilies } from '~/store/queue';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import useSteerConvert from '../useSteerConvert';
 import store from '~/store';
 

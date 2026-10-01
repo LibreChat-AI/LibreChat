@@ -188,7 +188,7 @@ jest.mock('jotai', () => {
   return {
     ...actual,
     useSetAtom: (atom: unknown) => {
-      const queue = jest.requireActual('~/store/queue');
+      const queue = jest.requireActual('~/hooks/Chat/queue');
       if (atom === queue.runEndByIndex(0)) {
         return mockSetRunEnd;
       }
@@ -320,7 +320,7 @@ import useResumableSSE, {
   ABORT_SWEEP_STATUSES,
 } from '~/hooks/SSE/useResumableSSE';
 import useSSE from '~/hooks/SSE/useSSE';
-import { queuedMessagesByConvoId, resetQueueFamilies } from '~/store/queue';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 
 const CONV_ID = 'conv-abc-123';
 

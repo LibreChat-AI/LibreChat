@@ -48,7 +48,7 @@ import {
   queuedMessagesByConvoId,
   drainAfterAbortByIndex,
   runEndByIndex,
-} from '~/store/queue';
+} from '~/hooks/Chat/queue';
 import {
   appendAppliedSteerIds,
   carriedSteerContext,

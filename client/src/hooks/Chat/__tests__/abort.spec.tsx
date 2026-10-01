@@ -6,7 +6,7 @@ import { RecoilRoot, useSetRecoilState, useRecoilValue } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TSubmission, TConversation } from 'librechat-data-provider';
 import type { DrainAfterAbort, RunEnd } from '~/store/families';
-import { drainAfterAbortByIndex, runEndByIndex, resetQueueFamilies } from '~/store/queue';
+import { drainAfterAbortByIndex, runEndByIndex, resetQueueFamilies } from '~/hooks/Chat/queue';
 import useChatHelpers from '../useChatHelpers';
 import { useAbortCleanup } from '../abort';
 import store from '~/store';

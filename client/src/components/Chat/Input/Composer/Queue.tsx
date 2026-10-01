@@ -13,12 +13,12 @@ import {
 } from '@librechat/client';
 import type { RestoreToComposer } from '~/Providers/ComposerRestoreContext';
 import type { SteeringControls } from '~/hooks/Chat/useSteering';
-import type { QueuedMessage } from '~/store/families';
+import type { QueuedMessage } from '~/hooks/Chat/queue';
 import { claimQueuedIntent, releaseQueuedIntent, hasQueuedIntent } from '~/utils/queueIntent';
 import { useQueuedTurnPortal } from '~/components/Chat/Steering/QueuedTurnPortal';
 import { escalatingSteerFamily, revealedQueuedTurnFamily } from '~/store/steer';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
-import { queuedMessagesByConvoId } from '~/store/queue';
+import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';

@@ -17,7 +17,7 @@ import {
   canRestoreRecovery,
 } from '~/components/Chat/Steering/recovery';
 import { fetchStreamStatus, getGenerationProtocolVersion } from '~/data-provider';
-import { queuedMessagesByConvoId } from '~/store/queue';
+import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 import { useFileMapContext } from '~/Providers';
 import store from '~/store';
 

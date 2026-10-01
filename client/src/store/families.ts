@@ -20,6 +20,7 @@ import type {
 } from 'librechat-data-provider';
 import type { GenerationProtocolVersion } from '~/data-provider/SSE/protocol';
 import type { TOptionSettings, ExtendedFile } from '~/common';
+import type { QueuedMessageOrigin } from '~/hooks/Chat/queue';
 import {
   clearModelForNonEphemeralAgent,
   createChatSearchParams,
@@ -27,6 +28,14 @@ import {
   logger,
 } from '~/utils';
 import { useSetConvoContext } from '~/Providers/SetConvoContext';
+
+export type {
+  SettledQueuedTurnReceipt,
+  QueuedMessageOrigin,
+  DrainAfterAbort,
+  QueuedMessage,
+  RunEnd,
+} from '~/hooks/Chat/queue';
 
 const submissionKeysAtom = atom<(string | number)[]>({
   key: 'submissionKeys',
@@ -403,108 +412,6 @@ const pendingSteersByConvoId = atomFamily<PendingSteer[], string>({
   key: 'pendingSteersByConvoId',
   default: [],
 });
-
-/** A message composed during a run, queued to send after it finishes.
- *  Attachments ride the queued item (already uploaded at attach time) and are
- *  passed to `ask` as `overrideFiles` on drain — steering itself is text-only,
- *  so any during-run submit with media routes here as one unit. */
-export type QueuedMessage = {
-  id: string;
-  text: string;
-  createdAt: number;
-  /** Server authority for an Agent queued turn. Absence means the row remains
-   * on the legacy mounted-client drain path (including a definite old-server
-   * fallback). `uncertain` is deliberately still server-owned: falling back
-   * after an ambiguous POST could submit the same words twice. */
-  server?: {
-    id?: string;
-    status: 'sending' | 'uncertain' | 'indeterminate' | 'rejected' | 'queued' | 'claimed';
-    errorCode?: string;
-    errorMessage?: string;
-    /** Observation time for a transport-ambiguous enqueue. The logical item
-     * may be much older than the request that just became uncertain. */
-    uncertainSince?: number;
-    /** The bounded reconciliation window elapsed without authoritative
-     * evidence. The outcome remains ambiguous and must never become resendable. */
-    reconciliationExpired?: boolean;
-    /** Current one-based projection; server sequence remains the stable
-     * fallback when predecessors settle and positions close up. */
-    position?: number;
-    revision?: number;
-  };
-  /** A row the run-end drain must not submit on its own. Set when a steer the
-   * server REJECTED is swept into the queue so its words stay recoverable:
-   * the failure surface offers Retry and "Send as new", and auto-sending here
-   * would start a turn the user never asked for with text that was refused. */
-  needsExplicitSend?: boolean;
-  /** Stable identity for server enqueue/retry. Recovered steer rows also use
-   * it to dismiss their parked source; a later recovery attempt gets a fresh
-   * identity. */
-  clientRequestId?: string;
-  /** Exact visible branch leaf captured when this turn entered the server
-   * queue. The server revalidates it before admitting the fresh successor. */
-  parentMessageId?: string;
-  /** Correlation used only to durably dismiss/reclaim the parked source. */
-  recoveryClientSteerId?: string;
-  recoverySteerId?: string;
-  /** Generation observed before this queued follow-up became eligible. */
-  expectedPredecessorCreatedAt?: number;
-  files?: TMessage['files'];
-  /** Quote chips consumed from the composer at enqueue time; passed to `ask`
-   *  as `overrideQuotes` on drain so they pair with THIS message. */
-  quotes?: string[];
-  /** Manual skill picks consumed from the composer at enqueue time; passed
-   *  to `ask` as `overrideManualSkills` on drain. */
-  manualSkills?: string[];
-  /** Request-scoped reasoning setting captured when this item was queued. */
-  reasoningOverride?: TMessage['reasoningOverride'];
-  /** Front-inserted by "Interrupt & send": stays ahead of chronologically
-   *  older items when leftover steers are merged back into the queue. */
-  priority?: boolean;
-};
-
-/** Snapshot of a queued item's logical position while it is temporarily sent
- * into a live run. Neighbour ids make restoration resilient to concurrent
- * drains and sends without minting a replacement item. */
-export type QueuedMessageOrigin = {
-  item: QueuedMessage;
-  beforeIds: string[];
-  afterIds: string[];
-};
-
-export type SettledQueuedTurnReceipt = {
-  clientRequestId: string;
-  status: 'admitted' | 'admitted_pending_boundary' | 'indeterminate' | 'cancelled' | 'dead';
-  effectivePredecessorCreatedAt?: number;
-  rootPredecessor?: true;
-  boundaryConsumed?: boolean;
-};
-
-/**
- * One-shot run-termination signal written by the SSE final/error handlers and
- * consumed (reset to null) by `useQueueDrain`. Keyed by chat index like
- * `isSubmittingFamily`. Carrying the outcome lets the drain skip auto-send on
- * user aborts/errors while `startedAsNewConvo` migrates a queue keyed under
- * `Constants.NEW_CONVO` to the real conversation id.
- */
-export type RunEnd = {
-  conversationId: string | null;
-  outcome: 'completed' | 'aborted' | 'error';
-  startedAsNewConvo?: boolean;
-  endedAt: number;
-  /** Exact terminal epoch whose idle transition may release one queued start. */
-  generationCreatedAt?: number;
-  /** The completed run's response, which a revealed queued follow-up parents to. */
-  responseMessageId?: string;
-  /** Armed "Interrupt & send" flag traveling with a PARKED signal, so
-   *  another run on the same pane can neither consume nor clear it. */
-  interruptArmed?: boolean;
-};
-
-export type DrainAfterAbort = {
-  conversationId: string;
-  generationCreatedAt: number;
-};
 
 /**
  * Server steer ids whose `on_steer_applied` event already landed. The 202 ACK

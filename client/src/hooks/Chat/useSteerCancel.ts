@@ -5,9 +5,9 @@ import type { PendingSteer } from '~/store/families';
 import { useComposerRestoreHost } from '~/Providers/ComposerRestoreContext';
 import { appendAppliedSteerIds, carriedSteerContext } from '~/utils';
 import { pendingSteerCancelClientIdsFamily } from '~/store/steer';
+import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { useCancelSteerMutation } from '~/data-provider';
-import { queuedMessagesByConvoId } from '~/store/queue';
 import store from '~/store';
 
 export type SteerCancelOutcome = 'reclaimed' | 'applied' | 'failed';

@@ -2,7 +2,7 @@ import { useRef, useEffect, useMemo, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useAtomValue, useStore } from 'jotai';
 import { Constants, DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS } from 'librechat-data-provider';
-import type { DrainAfterAbort, QueuedMessage, QueuedMessageOrigin, RunEnd } from '~/store/families';
+import type { DrainAfterAbort, QueuedMessage, QueuedMessageOrigin, RunEnd } from './queue';
 import type { QueueSendLock } from '~/utils/queueIntent';
 import type { TAskFunction } from '~/common';
 import {
@@ -12,7 +12,7 @@ import {
   queuedMessagesByConvoId,
   drainAfterAbortByIndex,
   runEndByIndex,
-} from '~/store/queue';
+} from '~/hooks/Chat/queue';
 import {
   recoveryDispositionsFamily,
   recoveryDisposition,

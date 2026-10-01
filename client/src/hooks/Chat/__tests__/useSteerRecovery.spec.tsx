@@ -7,7 +7,7 @@ import {
   ComposerRestoreProvider,
   useComposerRestoreHost,
 } from '~/Providers/ComposerRestoreContext';
-import { queuedMessagesByConvoId, resetQueueFamilies } from '~/store/queue';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import { pendingSteerCancelClientIdsFamily } from '~/store/steer';
 import useSteerRecovery from '../useSteerRecovery';
 import store from '~/store';

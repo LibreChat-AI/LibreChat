@@ -26,7 +26,7 @@ import {
   drainAfterAbortByIndex,
   runEndByIndex,
   resetQueueFamilies,
-} from '~/store/queue';
+} from '~/hooks/Chat/queue';
 import {
   getReasoningStateKey,
   pendingReasoningOverrideFamily,

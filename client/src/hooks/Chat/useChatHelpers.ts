@@ -12,7 +12,7 @@ import {
 } from '~/data-provider';
 import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
-import { drainAfterAbortByIndex, runEndByIndex } from '~/store/queue';
+import { drainAfterAbortByIndex, runEndByIndex } from '~/hooks/Chat/queue';
 import useChatFunctions from '~/hooks/Chat/useChatFunctions';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { resolveAbortSteerTarget } from '~/utils';
