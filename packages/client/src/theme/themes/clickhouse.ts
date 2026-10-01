@@ -358,8 +358,8 @@ export const clickHouseDarkTheme: IThemeRGB = {
  * `radii.1`, which LibreChat's `sm` also renders at on a 16px root; every larger step tightens.
  *
  * Click UI's mono family is Inconsolata, which the component library ships in `theme/fonts.css`
- * (latin 400 and 700). The tail is the same metric-matched stack the default theme uses (Click
- * UI's own tail names `"SFMono Regular"`, which no platform installs).
+ * (latin 400 and 700), and the stack is Click UI's verbatim. Its `"SFMono Regular"` matches no
+ * installed face, so where Inconsolata has no glyph a browser falls to Consolas or `monospace`.
  *
  * Click UI's display family leads with Basier Square, a commercial face ClickHouse licenses for
  * its own sites. It is named here but not self-hosted: a browser that has it installed renders
@@ -390,8 +390,7 @@ const clickHouseShape = {
   radius3xl: '0.75rem', // border.radii.3
   fontFamily:
     '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif',
-  monoFontFamily:
-    '"Inconsolata", ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", "Liberation Mono", Consolas, monospace',
+  monoFontFamily: '"Inconsolata", Consolas, "SFMono Regular", monospace', // typography.font.families.mono
   displayFontFamily:
     '\'Basier Square\', "Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif', // typography.font.families.display
   textXs: '0.75rem', // typography.font.sizes.1
@@ -453,6 +452,10 @@ const clickHouseShape = {
   switchHeight: '1rem', // switch.size.height
   /** Click UI's own sizes halve like LibreChat's: `md` is this full space, and the compact tables
    *  every in-repo consumer draws land on `sm` (0.5rem), the size Click UI tables default to. */
+  /** The shared spacing takes two steps of Click UI's `spaces` scale: its 0.5rem gap step, the
+   *  one its buttons and fields space icon and label by, and 0.75rem, which already matched. */
+  spaceCompact: '0.5rem', // spaces.2
+  spaceNormal: '0.75rem', // spaces.3
   tableCellSpaceY: '1rem', // table.body.cell.space.md.y
   tableRowStroke: '1px', // table.cell.stroke
   motionFast: '100ms', // transition.duration.medium, the step transition.default runs at

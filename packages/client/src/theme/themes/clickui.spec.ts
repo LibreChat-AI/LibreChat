@@ -560,6 +560,8 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   largeSurfaceRadius: 'border.radii.3',
   radius3xl: 'border.radii.3',
   roundControlRadius: 'border.radii.full',
+  spaceCompact: 'spaces.2',
+  spaceNormal: 'spaces.3',
   menuRadius: 'click.genericMenu.panel.radii.all',
   tooltipRadius: 'click.tooltip.radii.all',
   tabRadius: 'click.tabs.radii.all',
@@ -612,6 +614,26 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   motionFast: 'transition.duration.medium',
   motionNormal: 'transition.duration.smooth',
 };
+
+/**
+ * Click UI's spacing scale, each step with the LibreChat surface that draws it: a spacing role
+ * the theme sets, or the fixed Tailwind step of the same size (0.25rem per unit), which every
+ * theme shares.
+ */
+const clickSpaces: Record<string, keyof IThemeAppearance | number> = {
+  'spaces.0': 0,
+  'spaces.1': 1,
+  'spaces.2': 'spaceCompact',
+  'spaces.3': 'spaceNormal',
+  'spaces.4': 4,
+  'spaces.5': 6,
+  'spaces.6': 8,
+  'spaces.7': 10,
+  'spaces.8': 16,
+};
+
+/** A length in rem, for a value written in rem or as a bare `0`. */
+const remOf = (value: string) => (value.trim() === '0' ? 0 : parseFloat(value));
 
 /** Click UI's gray `lch()` stops, converted through CIE L* to an sRGB channel. Chroma must be zero. */
 function lchGray(lightness: number): number {
@@ -756,8 +778,6 @@ const normalizeShadow = (value: string) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-const firstFamily = (value: string) => value.split(',')[0].trim();
-
 /** How a Click UI appearance token compares with the theme value that cites it. */
 const scrimKeys: ReadonlySet<keyof IThemeAppearance> = new Set([
   'scrimOpacity',
@@ -786,11 +806,6 @@ function comparable(key: keyof IThemeAppearance, raw: string | number): string {
   }
   if (/shadow/i.test(key) || key === 'elevationSurface' || key === 'elevationDrag') {
     return normalizeShadow(value);
-  }
-  /** Click UI's mono tail names `"SFMono Regular"`, which no platform installs; the theme keeps
-   *  the default theme's metric-matched tail, so only the face it leads with is Click UI's. */
-  if (key === 'monoFontFamily') {
-    return firstFamily(value);
   }
   /** Click UI writes the label as a `font` shorthand; the role is its leading weight. */
   if (key === 'controlFontWeight') {
@@ -1559,9 +1574,7 @@ function appearanceStatuses(mode: ThemeMode): Array<[keyof IThemeAppearance, Rol
     if (comparable(key, theme) !== comparable(key, source)) {
       return [key, 'mismatch', token];
     }
-    /** The mono stack leads with Click UI's face and keeps the default theme's tail. */
-    const verbatim = theme.replace(/;$/, '').trim() === source.replace(/;$/, '').trim();
-    return [key, verbatim || key !== 'monoFontFamily' ? 'match' : 'near', token];
+    return [key, 'match', token];
   });
 }
 
@@ -1628,11 +1641,25 @@ describe('ClickHouse theme drift against Click UI', () => {
     expect({ unsourced, drift }).toEqual({ unsourced: [], drift: [] });
   });
 
+  it.each(modes)('draws every %s Click UI space with a role or an equal Tailwind step', (mode) => {
+    const appearance = resolveTheme(clickHouseTheme, mode).appearance;
+    const drift = Object.entries(clickSpaces).flatMap(([token, counterpart]) => {
+      const theme =
+        typeof counterpart === 'number' ? counterpart / 4 : remOf(appearance[counterpart]);
+      const source = remOf(clickToken(mode, token));
+      const name = typeof counterpart === 'number' ? `spacing step ${counterpart}` : counterpart;
+      return theme === source ? [] : [`${token} ${source}rem: ${name} draws ${theme}rem`];
+    });
+
+    expect(drift).toEqual([]);
+  });
+
   it.each(modes)('keeps only the %s tokens the theme cites in the snapshot', (mode) => {
     const cited = new Set([
       ...Object.values(colorSources[mode]),
       ...Object.values(departures[mode]).map((departure) => departure.counterpart),
       ...Object.values(appearanceSources),
+      ...Object.keys(clickSpaces),
       ...Object.values(appearanceDecisions).flatMap(({ token }) => (token ? [token] : [])),
       ...Object.values(parityProbes).flatMap((probe) => (probe.token ? [probe.token] : [])),
     ]);
@@ -1749,8 +1776,6 @@ describe('ClickHouse primitive parity against Click UI components', () => {
     expect(statuses.filter(([, status]) => status === 'mismatch').map(([key]) => key)).toEqual([
       'text2xl',
     ]);
-    expect(statuses.filter(([, status]) => status === 'near').map(([key]) => key)).toEqual([
-      'monoFontFamily',
-    ]);
+    expect(statuses.filter(([, status]) => status === 'near').map(([key]) => key)).toEqual([]);
   });
 });
