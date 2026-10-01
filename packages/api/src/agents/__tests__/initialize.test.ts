@@ -1915,6 +1915,144 @@ describe('initializeAgent — maxContextTokens', () => {
     expect(result.maxContextTokens).toBe(userValue);
   });
 
+  it('uses endpoint-level maxContextTokens when initial model_parameters omit it', async () => {
+    const endpointValue = 64000;
+    const { agent, req, res, loadTools, db } = createMocks({
+      maxContextTokens: undefined,
+      modelDefault: 200000,
+      maxOutputTokens: 4096,
+    });
+    mockExtractLibreChatParams.mockImplementation(realUtils.extractLibreChatParams);
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: {
+          endpoint: EModelEndpoint.agents,
+          maxContextTokens: endpointValue,
+          model_parameters: { model: 'custom-long-context-model' },
+        },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(mockExtractLibreChatParams).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'custom-long-context-model',
+        maxContextTokens: endpointValue,
+      }),
+    );
+    expect(result.maxContextTokens).toBe(endpointValue);
+  });
+
+  it('keeps model_parameters maxContextTokens ahead of endpoint-level fallback', async () => {
+    const endpointValue = 128000;
+    const modelParameterValue = 64000;
+    const { agent, req, res, loadTools, db } = createMocks({
+      maxContextTokens: undefined,
+      modelDefault: 200000,
+      maxOutputTokens: 4096,
+    });
+    mockExtractLibreChatParams.mockImplementation(realUtils.extractLibreChatParams);
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: {
+          endpoint: EModelEndpoint.agents,
+          maxContextTokens: endpointValue,
+          model_parameters: {
+            model: 'custom-long-context-model',
+            maxContextTokens: modelParameterValue,
+          },
+        },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(mockExtractLibreChatParams).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'custom-long-context-model',
+        maxContextTokens: modelParameterValue,
+      }),
+    );
+    expect(result.maxContextTokens).toBe(modelParameterValue);
+  });
+
+  it('ignores nullish model_parameters maxContextTokens when endpoint-level fallback is set', async () => {
+    const endpointValue = 64000;
+    const { agent, req, res, loadTools, db } = createMocks({
+      maxContextTokens: undefined,
+      modelDefault: 200000,
+      maxOutputTokens: 4096,
+    });
+    mockExtractLibreChatParams.mockImplementation(realUtils.extractLibreChatParams);
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: {
+          endpoint: EModelEndpoint.agents,
+          maxContextTokens: endpointValue,
+          model_parameters: {
+            model: 'custom-long-context-model',
+            maxContextTokens: undefined,
+          },
+        },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.maxContextTokens).toBe(endpointValue);
+  });
+
+  it('does not apply endpoint-level maxContextTokens to non-initial agents', async () => {
+    const endpointValue = 64000;
+    const modelDefault = 200000;
+    const maxOutputTokens = 4096;
+    const { agent, req, res, loadTools, db } = createMocks({
+      maxContextTokens: undefined,
+      modelDefault,
+      maxOutputTokens,
+    });
+    mockExtractLibreChatParams.mockImplementation(realUtils.extractLibreChatParams);
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: {
+          endpoint: EModelEndpoint.agents,
+          maxContextTokens: endpointValue,
+          model_parameters: { model: 'custom-long-context-model' },
+        },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: false,
+      },
+      db,
+    );
+
+    const expected = Math.round((modelDefault - maxOutputTokens) * 0.95);
+    expect(result.maxContextTokens).toBe(expected);
+  });
+
   it('falls back to formula when maxContextTokens is NOT provided', async () => {
     const modelDefault = 200000;
     const maxOutputTokens = 4096;
