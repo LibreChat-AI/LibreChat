@@ -659,3 +659,177 @@ describe('replay prefix projection reconciliation', () => {
     expect(progress?.contentParts.at(-1)).toMatchObject({ tool_call: { id: 'tool-99' } });
   });
 });
+
+describe('disjoint replay coverage', () => {
+  const event = (sequence: number) =>
+    update({
+      activityEventId: `coverage:${sequence}`,
+      activitySequence: sequence,
+      data: { delta: { content: [{ type: 'text', text: `${sequence},` }] } },
+    });
+  it.each(['live', 'replay'])(
+    'keeps an uncovered prefix boundary recoverable through %s',
+    (source) => {
+      const suffix = reduceSubagentProgress(
+        null,
+        [event(2), event(3), event(4)],
+        'detached',
+        false,
+      );
+      let progress = reduceSubagentReplay(suffix, [event(0)], false);
+      expect(progress?.contentParts).toEqual([{ type: 'text', text: '0,2,3,4,' }]);
+      expect(progress?.coverage).toBe('suffix');
+      expect(progress?.replaySegments?.map((segment) => [segment.from, segment.through])).toEqual([
+        [0, 0],
+        [2, 4],
+      ]);
+      const before = JSON.stringify(progress);
+      const next =
+        source === 'live'
+          ? reduceSubagentProgress(progress, [event(1)], 'detached', false)
+          : reduceSubagentReplay(
+              progress,
+              [event(0), event(1), event(2), event(3), event(4)],
+              false,
+            );
+      expect(JSON.stringify(progress)).toBe(before);
+      progress = next;
+      expect(progress?.contentParts).toEqual([{ type: 'text', text: '0,1,2,3,4,' }]);
+      expect(progress?.coverage).toBe('complete');
+      expect(progress?.replaySegments).toBeUndefined();
+      progress = reduceSubagentProgress(progress, [event(5)], 'detached', false);
+      expect(progress?.contentParts).toEqual([{ type: 'text', text: '0,1,2,3,4,5,' }]);
+    },
+  );
+  it('tracks multiple disjoint prefix ranges rather than inferring coverage from endpoints', () => {
+    let progress = reduceSubagentProgress(null, [event(6), event(7)], 'detached', false);
+    progress = reduceSubagentReplay(progress, [event(0), event(2), event(4)], false);
+    expect(progress?.coverage).toBe('suffix');
+    progress = reduceSubagentReplay(
+      progress,
+      Array.from({ length: 8 }, (_, i) => event(i)),
+      false,
+    );
+    expect(progress?.contentParts).toEqual([{ type: 'text', text: '0,1,2,3,4,5,6,7,' }]);
+    expect(progress?.coverage).toBe('complete');
+    expect(progress?.replaySegments).toBeUndefined();
+  });
+  it('clears an overflow fence once live frames fill the rejected interval', () => {
+    let progress = reduceSubagentProgress(
+      null,
+      Array.from({ length: 100 }, (_, i) => event(i + 2)),
+      'detached',
+      true,
+    );
+    progress = reduceSubagentProgress(progress, [event(102), event(103)], 'detached', true);
+    progress = reduceSubagentProgress(progress, [event(0), event(1)], 'parent', true);
+    progress = reduceSubagentReplay(progress, [event(100), event(101)], false);
+    expect(progress?.activityReplayFrom).toBe(102);
+    progress = reduceSubagentProgress(progress, [event(102)], 'detached', true);
+    expect(progress?.activityReplayFrom).toBe(102);
+    progress = reduceSubagentProgress(progress, [event(103)], 'detached', true);
+    expect(progress?.activityReplayFrom).toBeUndefined();
+    progress = reduceSubagentProgress(progress, [event(104), event(105)], 'detached', false);
+    progress = reduceSubagentProgress(
+      progress,
+      [{ ...event(108), data: undefined, activityDroppedCount: 3 }],
+      'detached',
+      progress?.activityReplayFrom != null,
+    );
+    expect(progress?.lastActivitySequence).toBe(108);
+    expect(progress?.droppedCount).toBe(3);
+    expect(progress?.pendingSequencedEvents).toBeUndefined();
+  });
+});
+
+describe('legacy event-child invocation coverage', () => {
+  const event = (sequence: number, invocation = 'generation-a') =>
+    update({
+      subagentRunId: 'event-task',
+      activityEventId: `event-task:${invocation}:${sequence}`,
+      activitySequence: undefined,
+      data: { delta: { content: [{ type: 'text', text: `${invocation}:${sequence},` }] } },
+    });
+  it.each([0, 3])('backfills an unsequenced rollout suffix when replay ends at %s', (end) => {
+    let progress = reduceSubagentProgress(null, [event(2), event(3)], 'detached', false);
+    progress = reduceSubagentReplay(
+      progress,
+      Array.from({ length: end + 1 }, (_, i) => event(i)),
+      false,
+    );
+    expect(progress?.contentParts).toEqual([
+      {
+        type: 'text',
+        text: `generation-a:0,${end === 0 ? '' : 'generation-a:1,'}generation-a:2,generation-a:3,`,
+      },
+    ]);
+    progress = reduceSubagentReplay(progress, [event(0), event(1), event(2), event(3)], false);
+    expect(progress?.contentParts).toEqual([
+      { type: 'text', text: 'generation-a:0,generation-a:1,generation-a:2,generation-a:3,' },
+    ]);
+    progress = reduceSubagentProgress(progress, [event(4)], 'detached', false);
+    expect(progress?.contentParts).toEqual([
+      {
+        type: 'text',
+        text: 'generation-a:0,generation-a:1,generation-a:2,generation-a:3,generation-a:4,',
+      },
+    ]);
+    expect(progress?.lastActivitySequence).toBeUndefined();
+  });
+  it('keeps prior and resumed invocations separate while restoring earlier frames within each', () => {
+    let progress = reduceSubagentProgress(
+      null,
+      [event(0), event(1), event(2, 'generation-b'), event(3, 'generation-b')],
+      'detached',
+      false,
+    );
+    progress = reduceSubagentReplay(
+      progress,
+      [event(0, 'generation-b'), event(1, 'generation-b')],
+      false,
+    );
+    progress = reduceSubagentProgress(progress, [event(0, 'generation-c')], 'detached', false);
+    expect(progress?.contentParts).toEqual([
+      {
+        type: 'text',
+        text: 'generation-a:0,generation-a:1,generation-b:0,generation-b:1,generation-b:2,generation-b:3,generation-c:0,',
+      },
+    ]);
+    progress = reduceSubagentReplay(
+      progress,
+      [event(0), event(1), event(0, 'generation-c')],
+      false,
+    );
+    expect(progress?.contentParts).toEqual([
+      {
+        type: 'text',
+        text: 'generation-a:0,generation-a:1,generation-b:0,generation-b:1,generation-b:2,generation-b:3,generation-c:0,',
+      },
+    ]);
+  });
+});
+
+it('preserves compatibility updates while a numeric coverage gap is open', () => {
+  const event = (sequence: number) =>
+    update({
+      activityEventId: `mixed:${sequence}`,
+      activitySequence: sequence,
+      data: { delta: { content: [{ type: 'text', text: `${sequence},` }] } },
+    });
+  let progress = reduceSubagentProgress(null, [event(2), event(3)], 'detached', false);
+  progress = reduceSubagentReplay(progress, [event(0)], false);
+  progress = reduceSubagentProgress(
+    progress,
+    [
+      update({
+        activityEventId: 'older-provider',
+        activitySequence: undefined,
+        data: { delta: { content: [{ type: 'text', text: 'compat,' }] } },
+      }),
+    ],
+    'detached',
+    false,
+  );
+  progress = reduceSubagentProgress(progress, [event(1)], 'detached', false);
+  expect(progress?.contentParts).toEqual([{ type: 'text', text: '0,1,2,3,compat,' }]);
+});

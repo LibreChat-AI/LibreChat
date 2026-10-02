@@ -65,6 +65,13 @@ export interface SubagentProgress {
   lastActivitySequence?: number;
   /** Earliest folded host sequence, used to distinguish backfill from a newer capped snapshot. */
   firstActivitySequence?: number;
+  firstActivityEventId?: string;
+  /** Disjoint folded ranges, never raw history. Adjacent ranges collapse into one. */
+  replaySegments?: SubagentReplaySegment[];
+  legacyReplayInvocations?: Array<{
+    invocation: string;
+    progress: Omit<SubagentProgress, 'legacyReplayInvocations'>;
+  }>;
   /** Bounded future frames waiting for an earlier sequence at the parent/detached handoff. */
   pendingSequencedEvents?: SubagentUpdateEvent[];
   /** Earliest rejected host sequence. A detached reader requests replay after parent close. */
@@ -74,6 +81,15 @@ export interface SubagentProgress {
    *  forward-only suffix observed after opening a detached task stream. */
   coverage?: 'complete' | 'suffix';
 }
+
+type SubagentReplaySegment = {
+  from: number;
+  through: number;
+  progress: Omit<
+    SubagentProgress,
+    'replaySegments' | 'legacyReplayInvocations' | 'pendingSequencedEvents'
+  >;
+};
 
 const MAX_RECENT_EVENT_KEYS = 256;
 const MAX_PENDING_SEQUENCE_EVENTS = 100;
@@ -540,6 +556,7 @@ const foldAcceptedSubagentEvents = (
   events: SubagentUpdateEvent[],
   source: 'parent' | 'detached',
   pendingSequencedEvents: SubagentUpdateEvent[],
+  projectingLegacy = false,
 ): SubagentProgress | null => {
   if (events.length === 0) {
     if (previous == null) {
@@ -573,6 +590,26 @@ const foldAcceptedSubagentEvents = (
       ...(pendingSequencedEvents.length === 0 ? {} : { pendingSequencedEvents }),
     };
   }
+  if (
+    !projectingLegacy &&
+    events.every((event) => event.activitySequence == null && eventLegacyOrdinal(event) != null)
+  )
+    return foldLegacyInvocations(previous, events, pendingSequencedEvents);
+  const firstSequence = events[0].activitySequence;
+  const priorSequence = previous?.lastActivitySequence;
+  const hasGap =
+    validActivitySequence(firstSequence) &&
+    validActivitySequence(priorSequence) &&
+    firstSequence > priorSequence + 1;
+  const batchGap = events.some(
+    (event, index) =>
+      index > 0 &&
+      validActivitySequence(event.activitySequence) &&
+      validActivitySequence(events[index - 1].activitySequence) &&
+      event.activitySequence !== events[index - 1].activitySequence! + 1,
+  );
+  if (previous?.replaySegments != null || hasGap || batchGap)
+    return foldReplaySegments(previous, events, pendingSequencedEvents);
   const recentEventKeys = [...(previous?.recentEventKeys ?? [])];
   for (const event of events) {
     const key = eventKey(event);
@@ -630,6 +667,8 @@ const foldAcceptedSubagentEvents = (
     tickerState,
     activityReplayFrom: previous?.activityReplayFrom,
     activityReplayThrough: previous?.activityReplayThrough,
+    legacyReplayInvocations: previous?.legacyReplayInvocations,
+    firstActivityEventId: previous?.firstActivityEventId ?? events[0].activityEventId,
     firstActivitySequence:
       previous?.subagentRunId === last.subagentRunId
         ? (previous.firstActivitySequence ??
@@ -678,6 +717,26 @@ export function reduceSubagentProgress(
   waitForEarlierSequences = source === 'parent',
 ): SubagentProgress | null {
   if (events.length === 0) return previous;
+  const repair =
+    previous?.replaySegments != null
+      ? events.filter(
+          (event) =>
+            validActivitySequence(event.activitySequence) &&
+            event.activitySequence <= (previous.lastActivitySequence ?? -1) &&
+            !previous.replaySegments!.some(
+              (segment) =>
+                event.activitySequence! >= segment.from &&
+                event.activitySequence! <= segment.through,
+            ),
+        )
+      : [];
+  if (repair.length > 0) {
+    const repaired = foldReplaySegments(previous, repair, previous!.pendingSequencedEvents ?? []);
+    const remaining = events.filter((event) => !repair.includes(event));
+    return remaining.length === 0
+      ? releaseRecoveredActivity(repaired)
+      : reduceSubagentProgress(repaired, remaining, source, waitForEarlierSequences);
+  }
   const recentEventKeys = [...(previous?.recentEventKeys ?? [])];
   const seen = new Set(recentEventKeys);
   const sequenced = events.every(
@@ -759,31 +818,37 @@ export function reduceSubagentProgress(
     drainPending();
   }
   const progress = foldAcceptedSubagentEvents(previous, directEvents, source, pending);
+  if (progress == null) return progress;
   if (
-    progress == null ||
-    (replayFrom === progress.activityReplayFrom && replayThrough === progress.activityReplayThrough)
+    progress.activityReplayFrom === replayFrom &&
+    progress.activityReplayThrough === replayThrough
   )
-    return progress;
-  return { ...progress, activityReplayFrom: replayFrom, activityReplayThrough: replayThrough };
+    return releaseRecoveredActivity(progress);
+  return releaseRecoveredActivity({
+    ...progress,
+    activityReplayFrom: replayFrom,
+    activityReplayThrough: replayThrough,
+  });
 }
 
 /** Prefix events are new coverage, not a replacement for newer foreground parts.
  * Reconcile bounded projections instead of retaining another raw event history. */
 function prependSubagentReplay(
   previous: SubagentProgress,
-  events: SubagentUpdateEvent[],
+  prefix: SubagentProgress,
 ): SubagentProgress {
-  const prefix = foldAcceptedSubagentEvents(null, events, 'detached', []);
-  if (prefix == null) return previous;
   let parts = prefix.contentParts;
   let state = prefix.aggregatorState;
   const indices = new Map<number, number>();
   for (let index = 0; index < previous.contentParts.length; index++) {
     const part = previous.contentParts[index];
     const event: SubagentUpdateEvent = {
-      ...events[events.length - 1],
-      data: undefined,
-      label: undefined,
+      runId: '',
+      subagentRunId: previous.subagentRunId,
+      subagentType: previous.subagentType,
+      subagentAgentId: previous.subagentAgentId ?? '',
+      phase: 'message_delta',
+      timestamp: '',
     };
     if (part.type === ContentTypes.TEXT) {
       event.phase = 'message_delta';
@@ -816,6 +881,10 @@ function prependSubagentReplay(
   }
   const bounded = boundContentParts(parts, {
     ...previous.aggregatorState,
+    messagePhaseByStepId: {
+      ...prefix.aggregatorState.messagePhaseByStepId,
+      ...previous.aggregatorState.messagePhaseByStepId,
+    },
     openTextIdx:
       previous.aggregatorState.openTextIdx == null
         ? null
@@ -840,12 +909,220 @@ function prependSubagentReplay(
           ? null
           : previous.tickerState.thinkLineIdx + offset,
     }),
-    firstActivitySequence: events[0].activitySequence,
+    firstActivitySequence: prefix.firstActivitySequence,
+    firstActivityEventId: prefix.firstActivityEventId,
     recentEventKeys: [...(prefix.recentEventKeys ?? []), ...(previous.recentEventKeys ?? [])].slice(
       -MAX_RECENT_EVENT_KEYS,
     ),
     droppedCount: (prefix.droppedCount ?? 0) + (previous.droppedCount ?? 0),
-    coverage: prefix.coverage === 'complete' ? 'complete' : previous.coverage,
+    coverage: previous.coverage,
+  };
+}
+
+function releaseRecoveredActivity(progress: SubagentProgress): SubagentProgress {
+  const from = progress.activityReplayFrom;
+  const through = progress.activityReplayThrough;
+  if (from == null || through == null) return progress;
+  const ranges = progress.replaySegments ?? [
+    { from: progress.firstActivitySequence ?? 0, through: progress.lastActivitySequence ?? -1 },
+  ];
+  if (!ranges.some((range) => range.from <= from && range.through >= through)) return progress;
+  return { ...progress, activityReplayFrom: undefined, activityReplayThrough: undefined };
+}
+
+function foldReplaySegments(
+  previous: SubagentProgress | null,
+  events: SubagentUpdateEvent[],
+  pending: SubagentUpdateEvent[],
+): SubagentProgress {
+  const segments = (previous?.replaySegments ?? []).map((segment) => ({ ...segment }));
+  if (
+    segments.length === 0 &&
+    previous != null &&
+    previous.firstActivitySequence != null &&
+    previous.lastActivitySequence != null
+  ) {
+    const {
+      replaySegments: _segments,
+      legacyReplayInvocations: _legacy,
+      pendingSequencedEvents: _pending,
+      ...progress
+    } = previous;
+    segments.push({
+      from: previous.firstActivitySequence,
+      through: previous.lastActivitySequence,
+      progress,
+    });
+  }
+  const ordered = [...events].sort(
+    (left, right) => (left.activitySequence ?? 0) - (right.activitySequence ?? 0),
+  );
+  for (const event of ordered) {
+    const sequence = event.activitySequence;
+    if (!validActivitySequence(sequence)) {
+      const latest = segments[segments.length - 1];
+      if (latest != null)
+        latest.progress = foldAcceptedSubagentEvents(latest.progress, [event], 'detached', [])!;
+      continue;
+    }
+    if (segments.some((segment) => sequence >= segment.from && sequence <= segment.through))
+      continue;
+    const preceding = segments.find((segment) => segment.through === sequence - 1);
+    if (preceding != null) {
+      preceding.progress = foldAcceptedSubagentEvents(preceding.progress, [event], 'detached', [])!;
+      preceding.through = sequence;
+    } else {
+      const progress = foldAcceptedSubagentEvents(null, [event], 'detached', [])!;
+      segments.push({ from: sequence, through: sequence, progress });
+    }
+    segments.sort((left, right) => left.from - right.from);
+    for (let index = 1; index < segments.length; ) {
+      const left = segments[index - 1];
+      const right = segments[index];
+      if (left.through + 1 !== right.from) {
+        index++;
+        continue;
+      }
+      left.progress = prependSubagentReplay(right.progress, left.progress);
+      left.through = right.through;
+      segments.splice(index, 1);
+    }
+  }
+  /** Sum projection budgets before retaining ranges. Trimming old ranges cannot erase
+   * newer displayed content; dropped coverage is not treated as a continuous prefix. */
+  let items = 0;
+  let bytes = 0;
+  let keepFrom = segments.length;
+  for (let index = segments.length - 1; index >= 0; index--) {
+    const progress = segments[index].progress;
+    const addedBytes = encodedBytes(progress.contentParts) + encodedBytes(progress.tickerState);
+    if (
+      items + progress.contentParts.length > MAX_LIVE_ACTIVITY_ITEMS ||
+      bytes + addedBytes > 2 * MAX_LIVE_ACTIVITY_BYTES
+    )
+      break;
+    items += progress.contentParts.length;
+    bytes += addedBytes;
+    keepFrom = index;
+  }
+  if (keepFrom > 0) segments.splice(0, Math.min(keepFrom, segments.length - 1));
+  while (segments.length > MAX_LIVE_ACTIVITY_ITEMS) segments.shift();
+  const latest = segments[segments.length - 1];
+  let projection: SubagentProgress = latest.progress;
+  for (let index = segments.length - 2; index >= 0; index--)
+    projection = prependSubagentReplay(projection, segments[index].progress);
+  return {
+    ...projection,
+    pendingSequencedEvents: pending.length === 0 ? undefined : pending,
+    activityReplayFrom: previous?.activityReplayFrom,
+    activityReplayThrough: previous?.activityReplayThrough,
+    coverage: segments.length === 1 && segments[0].from === 0 ? 'complete' : 'suffix',
+    replaySegments: segments.length === 1 ? undefined : segments,
+  };
+}
+
+/** Event-child IDs include a generation invocation and ordinal, deliberately without
+ * a task-wide sequence. Use observed identity anchors, not a synthetic resume counter. */
+function legacyOrdinal(
+  id: string | undefined,
+): { invocation: string; ordinal: number } | undefined {
+  if (id == null) return undefined;
+  const split = id.lastIndexOf(':');
+  const ordinal = Number(id.slice(split + 1));
+  if (split < 0 || !/^\d+$/.test(id.slice(split + 1)) || !Number.isSafeInteger(ordinal))
+    return undefined;
+  return { invocation: id.slice(0, split), ordinal };
+}
+
+function eventLegacyOrdinal(
+  event: SubagentUpdateEvent,
+): { invocation: string; ordinal: number } | undefined {
+  const order = legacyOrdinal(event.activityEventId);
+  return order != null && order.invocation.startsWith(`${event.subagentRunId}:`)
+    ? order
+    : undefined;
+}
+
+function foldLegacyInvocations(
+  previous: SubagentProgress | null,
+  events: SubagentUpdateEvent[],
+  pending: SubagentUpdateEvent[],
+  replay = false,
+): SubagentProgress {
+  const invocations = (previous?.legacyReplayInvocations ?? []).map((entry) => ({ ...entry }));
+  const order = Array.from(new Set(events.map((event) => eventLegacyOrdinal(event)!.invocation)));
+  for (const event of events) {
+    const cursor = eventLegacyOrdinal(event)!;
+    let entry = invocations.find((item) => item.invocation === cursor.invocation);
+    const normalized = { ...event, activitySequence: cursor.ordinal };
+    if (entry == null) {
+      const progress = foldAcceptedSubagentEvents(null, [normalized], 'detached', [], true)!;
+      entry = { invocation: cursor.invocation, progress };
+      invocations.push(entry);
+    } else {
+      const ranges = entry.progress.replaySegments ?? [
+        {
+          from: entry.progress.firstActivitySequence ?? 0,
+          through: entry.progress.lastActivitySequence ?? -1,
+        },
+      ];
+      if (ranges.some((range) => cursor.ordinal >= range.from && cursor.ordinal <= range.through))
+        continue;
+      if (cursor.ordinal <= (entry.progress.lastActivitySequence ?? -1))
+        entry.progress = foldReplaySegments(entry.progress, [normalized], []);
+      else
+        entry.progress = foldAcceptedSubagentEvents(
+          entry.progress,
+          [normalized],
+          'detached',
+          [],
+          true,
+        )!;
+    }
+  }
+  if (replay) {
+    const anchored = (previous?.legacyReplayInvocations ?? []).map((entry) => entry.invocation);
+    for (let index = 0; index < order.length; index++) {
+      const invocation = order[index];
+      if (anchored.includes(invocation)) continue;
+      const nextKnown = order.slice(index + 1).find((next) => anchored.includes(next));
+      const position = nextKnown == null ? anchored.length : anchored.indexOf(nextKnown);
+      anchored.splice(position, 0, invocation);
+    }
+    invocations.sort(
+      (left, right) => anchored.indexOf(left.invocation) - anchored.indexOf(right.invocation),
+    );
+  }
+  let items = 0;
+  let bytes = 0;
+  let keepFrom = invocations.length;
+  for (let index = invocations.length - 1; index >= 0; index--) {
+    const progress = invocations[index].progress;
+    const added = encodedBytes(progress.contentParts) + encodedBytes(progress.tickerState);
+    if (
+      items + progress.contentParts.length > MAX_LIVE_ACTIVITY_ITEMS ||
+      bytes + added > 2 * MAX_LIVE_ACTIVITY_BYTES
+    )
+      break;
+    items += progress.contentParts.length;
+    bytes += added;
+    keepFrom = index;
+  }
+  if (keepFrom > 0) invocations.splice(0, Math.min(keepFrom, invocations.length - 1));
+  while (invocations.length > MAX_LIVE_ACTIVITY_ITEMS) invocations.shift();
+  let projection: SubagentProgress = invocations[invocations.length - 1].progress;
+  for (let index = invocations.length - 2; index >= 0; index--)
+    projection = prependSubagentReplay(projection, invocations[index].progress);
+  return {
+    ...projection,
+    firstActivitySequence: undefined,
+    lastActivitySequence: undefined,
+    replaySegments: undefined,
+    pendingSequencedEvents: pending.length === 0 ? undefined : pending,
+    legacyReplayInvocations: invocations,
+    coverage: invocations.every((entry) => entry.progress.coverage === 'complete')
+      ? 'complete'
+      : 'suffix',
   };
 }
 
@@ -897,20 +1174,26 @@ export function reduceSubagentReplay(
   }
   const firstSequence = events[0].activitySequence;
   const sameRun = previous?.subagentRunId === events[0].subagentRunId;
-  const addsEarlierActivity =
-    previous?.firstActivitySequence != null &&
-    firstSequence != null &&
-    firstSequence < previous.firstActivitySequence;
-  const earlier =
-    addsEarlierActivity && sameRun && previous?.firstActivitySequence != null
-      ? events.filter(
-          (event) =>
-            validActivitySequence(event.activitySequence) &&
-            event.activitySequence < previous.firstActivitySequence!,
-        )
-      : [];
   let base: SubagentProgress | null = sameRun ? previous : null;
-  if (base != null && earlier.length > 0) base = prependSubagentReplay(base, earlier);
+  if (base != null) {
+    if (events.every((event) => validActivitySequence(event.activitySequence))) {
+      const backfill = events.filter(
+        (event) =>
+          event.activitySequence! <= (base!.lastActivitySequence ?? -1) &&
+          !(
+            base!.replaySegments ?? [
+              { from: base!.firstActivitySequence ?? 0, through: base!.lastActivitySequence ?? -1 },
+            ]
+          ).some(
+            (range) =>
+              event.activitySequence! >= range.from && event.activitySequence! <= range.through,
+          ),
+      );
+      if (backfill.length > 0)
+        base = foldReplaySegments(base, backfill, base.pendingSequencedEvents ?? []);
+    } else if (events.every((event) => eventLegacyOrdinal(event) != null))
+      return foldLegacyInvocations(base, events, base.pendingSequencedEvents ?? [], true);
+  }
   const progress = reduceSubagentProgress(base, events, 'detached', parentOpen);
   if (progress == null) return previous;
   const missing = sameRun ? previous?.activityReplayFrom : undefined;

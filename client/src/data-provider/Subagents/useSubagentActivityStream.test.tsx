@@ -648,6 +648,84 @@ describe('useSubagentActivityStream', () => {
     },
   );
 
+  it('releases strict recovery ordering when healthy live frames fill the rejected interval', () => {
+    jest.useFakeTimers();
+    const active = { ...selection, isSubmitting: true };
+    const { result, unmount } = renderHook(
+      () => {
+        const key = subagentProgressKey(
+          active.parentMessageId,
+          active.toolCallId,
+          active.partIndex,
+        );
+        useSubagentActivityStream(active);
+        return {
+          progress: useAtomValue(subagentProgressByToolCallId(key)),
+          setProgress: useSetAtom(subagentProgressByToolCallId(key)),
+          closeParent: useSetAtom(subagentParentStreamOpenByToolCallId(key)),
+        };
+      },
+      { wrapper },
+    );
+    const event = (sequence: number) => ({
+      event: StepEvents.ON_SUBAGENT_UPDATE,
+      data: {
+        runId: 'parent',
+        subagentRunId: 'child',
+        subagentType: 'researcher',
+        subagentAgentId: 'agent-1',
+        parentToolCallId: active.toolCallId,
+        activityEventId: `recover-live:${sequence}`,
+        activitySequence: sequence,
+        phase: 'message_delta' as const,
+        timestamp: '2026-09-29T00:00:00.000Z',
+        data: { delta: { content: [{ type: 'text', text: `${sequence},` }] } },
+      },
+    });
+    act(() =>
+      streams[0].emit('message', {
+        event: 'subagent_activity_replay',
+        data: Array.from({ length: 100 }, (_, i) => event(i + 2)),
+      }),
+    );
+    act(() => {
+      streams[0].emit('message', event(102));
+      streams[0].emit('message', event(103));
+    });
+    act(() =>
+      result.current.setProgress((previous) =>
+        reduceSubagentProgress(previous, [event(0).data, event(1).data], 'parent', true),
+      ),
+    );
+    act(() => result.current.closeParent(false));
+    act(() => jest.advanceTimersByTime(500));
+    act(() =>
+      streams[1].emit('message', {
+        event: 'subagent_activity_replay',
+        data: [event(100), event(101)],
+      }),
+    );
+    expect(result.current.progress?.activityReplayFrom).toBe(102);
+    act(() => {
+      for (let sequence = 102; sequence <= 105; sequence++)
+        streams[1].emit('message', event(sequence));
+    });
+    expect(result.current.progress?.activityReplayFrom).toBeUndefined();
+    act(() =>
+      streams[1].emit('message', {
+        ...event(108),
+        droppedCount: 3,
+        data: { ...event(108).data, data: undefined },
+      }),
+    );
+    expect(result.current.progress?.lastActivitySequence).toBe(108);
+    expect(result.current.progress?.droppedCount).toBe(3);
+    expect(result.current.progress?.pendingSequencedEvents).toBeUndefined();
+    expect(streams).toHaveLength(2);
+    unmount();
+    jest.useRealTimers();
+  });
+
   it('reconnects with bounded backoff after a transient stream error', () => {
     jest.useFakeTimers();
     const { unmount } = renderHook(() => useSubagentActivityStream(selection), { wrapper });
