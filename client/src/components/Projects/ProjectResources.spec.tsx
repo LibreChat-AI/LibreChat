@@ -364,6 +364,43 @@ describe('ProjectResources', () => {
     expect(mockRefetch).not.toHaveBeenCalled();
   });
 
+  it('forgets a page failure once the query recovers', async () => {
+    const fetchNextPage = jest.fn(async () => {
+      mockAvailableFilesState = { ...mockAvailableFilesState, isError: true };
+      return { isError: true };
+    });
+    mockAvailableFilesState = {
+      ...mockAvailableFilesState,
+      data: {
+        pages: [
+          {
+            files: [{ ...uploadedFile, file_id: 'first-id', filename: 'first.txt' }] as TFile[],
+            nextCursor: null,
+          },
+        ],
+      },
+      hasNextPage: true,
+      fetchNextPage,
+    };
+    const view = renderResources();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add files' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Choose an existing file' }));
+    await user.click(await screen.findByRole('button', { name: 'Load more' }));
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+
+    /* The query recovers, then a refresh of the listed files fails. */
+    mockAvailableFilesState = { ...mockAvailableFilesState, isError: false };
+    view.rerender(<ProjectResources project={project} />);
+    await screen.findByRole('button', { name: 'Load more' });
+    mockAvailableFilesState = { ...mockAvailableFilesState, isError: true };
+    view.rerender(<ProjectResources project={project} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Retry' }));
+    expect(mockRefetch).toHaveBeenCalled();
+    expect(fetchNextPage).toHaveBeenCalledTimes(1);
+  });
+
   it('refetches the listed files when a refresh of them fails', async () => {
     const fetchNextPage = jest.fn();
     mockAvailableFilesState = {

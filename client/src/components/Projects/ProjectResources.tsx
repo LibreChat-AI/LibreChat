@@ -153,11 +153,17 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
     fetchNextPage,
     refetch: refetchFiles,
   } = availableFilesQuery;
-  /** Whether the last error came from loading a further page, so Retry fetches that
-   *  page again rather than refetching what is already listed. */
-  const [nextPageFailed, setNextPageFailed] = useState(false);
+  /** The project and search whose last error came from loading a further page, so Retry
+   *  fetches that page again rather than refetching what is already listed. It lapses
+   *  once the query recovers, and never carries over to another project or search. */
+  const pageQueryKey = `${project._id}\u0000${deferredPickerSearch}`;
+  const [failedPageKey, setFailedPageKey] = useState<string | null>(null);
+  if (failedPageKey != null && !isFilesError) {
+    setFailedPageKey(null);
+  }
+  const nextPageFailed = failedPageKey === pageQueryKey;
   const loadNextPage = () =>
-    void fetchNextPage().then((result) => setNextPageFailed(result.isError));
+    void fetchNextPage().then((result) => setFailedPageKey(result.isError ? pageQueryKey : null));
   const uploadFile = useUploadFileMutation();
   const addFile = useAddProjectFileMutation();
   const removeFile = useRemoveProjectFileMutation();
