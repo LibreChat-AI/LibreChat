@@ -24,6 +24,8 @@ const mockGenerationJobManager = {
 };
 
 const mockSaveMessage = jest.fn();
+const mockHasPersistedPrivateText = jest.fn();
+const mockGetPrivateMessageTexts = jest.fn();
 const mockSaveConvo = jest.fn();
 
 const mockRecordScheduleOutcome = jest.fn();
@@ -49,6 +51,9 @@ jest.mock('@librechat/api', () => ({
 jest.mock('~/models', () => ({
   initializeMessageBudget: jest.fn(),
   saveMessage: (...args) => mockSaveMessage(...args),
+  getPersistedPrivateTextId: async (...args) =>
+    (await mockHasPersistedPrivateText(...args)) ? 'protected-row-id' : null,
+  getPrivateMessageTexts: (...args) => mockGetPrivateMessageTexts(...args),
   saveConvo: (...args) => mockSaveConvo(...args),
 }));
 
@@ -102,6 +107,10 @@ describe('Agent Abort Endpoint', () => {
     mockGenerationJobManager.getActiveJobIdsForUser.mockReset();
     mockSaveMessage.mockReset();
     mockSaveMessage.mockImplementation(async (_context, message) => message);
+    mockHasPersistedPrivateText.mockReset();
+    mockHasPersistedPrivateText.mockResolvedValue(true);
+    mockGetPrivateMessageTexts.mockReset();
+    mockGetPrivateMessageTexts.mockResolvedValue([]);
     mockSaveConvo.mockReset();
     mockSaveConvo.mockResolvedValue({});
     mockRecordScheduleOutcome.mockReset();
@@ -374,6 +383,100 @@ describe('Agent Abort Endpoint', () => {
     });
 
     describe('Partial Response Saving', () => {
+      it('does not overwrite a persisted protected user sidecar while stopping a run', async () => {
+        const conversationId = 'test-stream-123';
+        const userMessageId = 'protected-user-msg';
+        const privacyRevision = 'protected-revision';
+        const text = 'Email [EMAIL_1_protected]';
+        const abortResult = {
+          success: true,
+          jobData: {
+            userMessage: { messageId: userMessageId, privacyRevision, text },
+            responseMessageId: 'protected-response',
+            conversationId,
+            endpoint: 'agents',
+          },
+          content: [{ type: 'text', text: 'Partial answer' }],
+          text: 'Partial answer',
+        };
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'test-user-123' },
+        });
+        mockGenerationJobManager.abortJob.mockImplementation(async (_streamId, options) => {
+          await options.beforePublish(abortResult);
+          return abortResult;
+        });
+
+        const response = await request(app).post('/api/agents/chat/abort').send({ conversationId });
+
+        expect(response.status).toBe(200);
+        expect(mockHasPersistedPrivateText).toHaveBeenCalledWith(
+          expect.objectContaining({
+            userId: 'test-user-123',
+            messageId: userMessageId,
+            conversationId,
+            privacyRevision,
+            text,
+          }),
+        );
+        expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+        expect(mockSaveMessage).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ messageId: 'protected-response', isCreatedByUser: false }),
+          expect.anything(),
+        );
+      });
+
+      it('recovers an older revisionless job from its exact protected row without unsetting it', async () => {
+        const conversationId = 'test-stream-revisionless';
+        const userMessageId = 'protected-user';
+        const text = `Email [EMAIL_1_${'a'.repeat(32)}]`;
+        const abortResult = {
+          success: true,
+          jobData: {
+            createdEventEmitted: true,
+            userMessage: { messageId: userMessageId, text },
+            responseMessageId: 'protected-response',
+            conversationId,
+            endpoint: 'agents',
+          },
+          finalEvent: { requestMessage: { messageId: userMessageId, text } },
+          content: [],
+          text: '',
+        };
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'test-user-123' },
+        });
+        mockGenerationJobManager.abortJob.mockImplementation(async (_id, options) => {
+          await options.beforePublish(abortResult);
+          return abortResult;
+        });
+        mockSaveMessage.mockImplementationOnce(async (_ctx, message, metadata) => {
+          expect(metadata.insertOnly).toBe(true);
+          return { ...message, _id: 'protected-parent', privacyRevision: 'recovered-revision' };
+        });
+
+        const response = await request(app).post('/api/agents/chat/abort').send({ conversationId });
+        expect(response.status).toBe(200);
+        expect(mockGetPrivateMessageTexts).not.toHaveBeenCalled();
+        expect(mockHasPersistedPrivateText).toHaveBeenCalledWith(
+          expect.objectContaining({
+            userId: 'test-user-123',
+            conversationId,
+            messageId: userMessageId,
+            privacyRevision: 'recovered-revision',
+            text,
+          }),
+        );
+        expect(abortResult.finalEvent.requestMessage.privacyRevision).toBe('recovered-revision');
+        expect(mockSaveMessage).toHaveBeenCalledTimes(2);
+        expect(mockSaveMessage).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ messageId: 'protected-response' }),
+          expect.anything(),
+        );
+      });
+
       it('should save partial response when both userMessage and responseMessageId exist', async () => {
         const jobStreamId = 'test-stream-123';
         const userMessageId = 'user-msg-123';

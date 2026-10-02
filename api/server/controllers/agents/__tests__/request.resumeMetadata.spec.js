@@ -256,6 +256,10 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  savePrivateTextMessage: (save, _req, ...args) => save(...args),
+  savePrivateTextErrorTurn: (...args) =>
+    jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
+  stampPreliminaryPrivateTextMessage: (_req, message) => message,
   getSteerRecoveryFailure: jest.requireActual(
     '../../../../../packages/api/src/stream/SteerRecovery',
   ).getSteerRecoveryFailure,
@@ -3684,6 +3688,71 @@ describe('ResumableAgentController resume metadata', () => {
         await nextTick();
       }
     }
+
+    it.each(['history', 'exact-model'])(
+      'does not persist a protected turn rejected by %s policy during terminal recovery',
+      async (boundary) => {
+        const api = jest.requireActual('@librechat/api');
+        const req = createFailedRequest({
+          text: 'alice@example.com',
+          clientRequestId: `private-error-${boundary}`,
+        });
+        req.path = '/';
+        const filters = {
+          messages: {
+            pii: {
+              action: 'redact',
+              fields: ['text'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+              ],
+            },
+          },
+        };
+        const next = jest.fn();
+        api.createPrivateTextIngress({
+          getFilters: () => filters,
+          getLegacyPii: () => undefined,
+          getKey: () => 'ab'.repeat(32),
+        })(req, { status: jest.fn().mockReturnThis(), json: jest.fn() }, next);
+        expect(next).toHaveBeenCalledTimes(1);
+        const rejection = new api.ContentFilterError({
+          detectorId: 'pii-pattern',
+          ruleId: 'secret',
+          label: 'secret',
+          source: 'message',
+          field: 'text',
+          provenance: 'user',
+          fragmentId: boundary,
+          fragmentPath: '/text',
+        });
+        const client = {
+          options: {},
+          sendMessage: jest.fn(async () => {
+            throw rejection;
+          }),
+        };
+        await AgentController(
+          req,
+          createResumableResponse(),
+          jest.fn(),
+          jest.fn().mockResolvedValue({ client }),
+          null,
+        );
+        await flushBackgroundGeneration();
+        expect(client.sendMessage).toHaveBeenCalledTimes(1);
+        expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
+          conversationId,
+          rejection.message,
+          1000,
+          expect.objectContaining({ beforeErrorPublication: expect.any(Function) }),
+        );
+        expect(mockSaveMessage).not.toHaveBeenCalled();
+        expect(mockSaveConvo).not.toHaveBeenCalled();
+        expect(mockStampConvoLastResponse).not.toHaveBeenCalled();
+      },
+    );
 
     it('persists an initialization failure before terminal error publication', async () => {
       const events = [];

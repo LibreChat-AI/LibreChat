@@ -1531,8 +1531,12 @@ endpoints:
 #   messages:
 #     unattributedAssistantContent: model_output # `model_output` (default) or `inspect`
 #     pii:
-#       action: audit # `block` (default), `audit`, or `redact` (reserved for transformation-aware ingress; current routes still block)
-#       # `redact` requires the later encrypted owner-view and canonical-message integration.
+#       action: audit # `block` (default), `audit`, or opt-in `redact`
+#       # `redact` transforms fresh, text-only interactive Agent chat submissions with a clientRequestId.
+#       # Edits, resumes, files, quotes, other endpoints, and other fields still use blocking checks.
+#       # Requires a valid CREDS_KEY. Preserve that key for owner-original recovery; changing it
+#       # makes existing originals unavailable. Text remains canonical/filtered in ordinary exports.
+#       # Originals are an encrypted, unindexed sidecar field, deleted/expired with the message.
 #       # maxCharacters: 65536 # bounded total inspected text per transformation session
 #       # maxMatches: 256 # bounded matches per transformation session
 #       # Custom patterns may set category: email, phone, name, credential, or custom.

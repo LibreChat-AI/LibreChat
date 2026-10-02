@@ -3956,6 +3956,65 @@ describe('AgentClient - titleConvo', () => {
       expect(mockRun.generateTitle).toHaveBeenCalled();
     });
 
+    it.each(['success', 'write-failure', 'policy-rejection', 'abort'])(
+      'waits for protected persistence before an immediate title model call: %s',
+      async (outcome) => {
+        const api = jest.requireActual('@librechat/api');
+        const filters = {
+          messages: {
+            pii: {
+              action: 'redact',
+              fields: ['text'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+              ],
+            },
+          },
+        };
+        mockReq.path = '/';
+        mockReq.body.text = 'alice@example.com';
+        mockReq.body.clientRequestId = 'protected-title';
+        const next = jest.fn();
+        api.createPrivateTextIngress({
+          getFilters: () => filters,
+          getLegacyPii: () => undefined,
+          getKey: () => 'ab'.repeat(32),
+        })(mockReq, { status: jest.fn().mockReturnThis(), json: jest.fn() }, next);
+        expect(next).toHaveBeenCalledTimes(1);
+        const message = api.stampPrivateTextMessage(mockReq, {
+          messageId: 'title-user',
+          conversationId: 'title-conversation',
+          text: mockReq.body.text,
+          isCreatedByUser: true,
+        });
+        const abortController = new AbortController();
+        const title = client.titleConvo({ text: message.text, abortController, immediate: true });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(mockRun.generateTitle).not.toHaveBeenCalled();
+        expect(client.recordCollectedUsage).not.toHaveBeenCalled();
+        if (outcome === 'abort') {
+          abortController.abort();
+        } else if (outcome === 'policy-rejection') {
+          api.rejectPrivateTextAdmission(mockReq);
+        } else if (outcome === 'write-failure') {
+          await expect(
+            api.requirePrivateTextPersistence(mockReq, async () => ({})),
+          ).rejects.toThrow();
+        } else {
+          const write = deferred();
+          const admission = api.requirePrivateTextPersistence(mockReq, () => write.promise);
+          await Promise.resolve();
+          expect(mockRun.generateTitle).not.toHaveBeenCalled();
+          write.resolve({ message });
+          await admission;
+        }
+        await title;
+        expect(mockRun.generateTitle).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+        expect(client.recordCollectedUsage).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+      },
+    );
+
     it('passes empty contentParts in immediate mode (title from the user input only)', async () => {
       client.contentParts = [{ type: 'text', text: 'Streaming response so far' }];
       const abortController = new AbortController();
@@ -7336,6 +7395,47 @@ describe('AgentClient - titleConvo', () => {
     });
 
     it.each([Providers.GOOGLE, Providers.VERTEXAI])(
+      'allows protected text through the late %s urlContext preflight without exempting raw content',
+      async (provider) => {
+        const filters = {
+          messages: {
+            pii: {
+              action: 'redact',
+              fields: ['text', 'content_part'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+                { id: 'hex', label: 'Credential', regex: '[a-f0-9]{32}', category: 'credential' },
+              ],
+            },
+          },
+        };
+        const { client, invokeModel } = createClient({ provider, filters });
+        const req = client.options.req;
+        req.body.text = 'Email alice@example.com';
+        req.body.clientRequestId = 'google-private-text';
+        require('@librechat/api').createPrivateTextIngress({
+          getFilters: () => filters,
+          getLegacyPii: () => undefined,
+          getKey: () => 'ab'.repeat(32),
+        })(req, { status: jest.fn().mockReturnThis(), json: jest.fn() }, jest.fn());
+        client.skipSaveUserMessage = false;
+        client.saveMessageToDatabase.mockImplementation(async (message) => ({
+          message: { ...message },
+        }));
+        await expect(
+          client.sendMessage(req.body.text, {
+            conversationId: 'protected-google',
+            parentMessageId: Constants.NO_PARENT,
+            user: 'user-123',
+          }),
+        ).resolves.toBeDefined();
+        expect(invokeModel).toHaveBeenCalledTimes(1);
+        expect(req.body.text).not.toContain('alice@example.com');
+      },
+    );
+
+    it.each([Providers.GOOGLE, Providers.VERTEXAI])(
       'blocks a late %s fileUri before model invocation under strict content policy',
       async (provider) => {
         const { client, invokeModel } = createClient({
@@ -7467,6 +7567,61 @@ describe('AgentClient - titleConvo', () => {
       client.conversationId = 'convo-123';
       client.responseMessageId = 'response-123';
     });
+
+    it.each(['failure', 'reject', 'abort', 'success'])(
+      'gates automatic extraction on protected admission: %s',
+      async (outcome) => {
+        const { HumanMessage } = require('@librechat/agents/langchain/messages');
+        const api = require('@librechat/api');
+        const filters = {
+          messages: {
+            pii: {
+              action: 'redact',
+              fields: ['text'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+              ],
+            },
+          },
+        };
+        mockReq.body = { text: 'Remember alice@example.com', clientRequestId: 'memory-private' };
+        mockReq.path = '/';
+        api.createPrivateTextIngress({
+          getFilters: () => filters,
+          getLegacyPii: () => undefined,
+          getKey: () => 'ab'.repeat(32),
+        })(mockReq, { status: jest.fn().mockReturnThis(), json: jest.fn() }, jest.fn());
+        const message = api.stampPrivateTextMessage(mockReq, {
+          text: mockReq.body.text,
+          isCreatedByUser: true,
+          conversationId: 'conversation',
+          messageId: 'user-message',
+        });
+        client.setModelBoundStoredMessages([message]);
+        client.abortController = new AbortController();
+        const extraction = client.runMemory([new HumanMessage(message.text)]);
+        await Promise.resolve();
+        expect(mockProcessMemory).not.toHaveBeenCalled();
+        if (outcome === 'abort') {
+          client.abortController.abort();
+        } else if (outcome === 'reject') {
+          api.rejectPrivateTextAdmission(mockReq);
+        } else if (outcome === 'failure') {
+          await expect(api.getPrivateTextAdmission(mockReq, async () => ({}))()).rejects.toThrow();
+        } else {
+          await api.getPrivateTextAdmission(mockReq, async () => ({ message }))();
+        }
+        await extraction;
+        expect(mockProcessMemory).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+        if (outcome === 'success') {
+          expect(mockProcessMemory.mock.calls[0][2]).toEqual(
+            api.getPrivateTextInspectionTokens([message]),
+          );
+          expect(mockProcessMemory.mock.calls[0][3]).toBe(client.abortController.signal);
+        }
+      },
+    );
 
     it('should filter out image URLs from message content', async () => {
       const { HumanMessage, AIMessage } = require('@librechat/agents/langchain/messages');

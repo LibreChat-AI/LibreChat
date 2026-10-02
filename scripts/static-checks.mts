@@ -877,20 +877,16 @@ function workflowSelectsWhatItFilters(): string[] {
   } catch {
     return [`${path} could not be read; the lane it defines is what this check runs in`];
   }
-  /** A block ends at its first sibling, which sits at the same indent: a
-   *  terminator that only fires on shallower lines runs on through the next
-   *  filter and reads its patterns as this one's. */
-  const list = (section: RegExp, indent: number): string[] =>
-    (workflow.split(section)[1] ?? '')
-      .split(new RegExp(`^ {0,${indent}}\\S`, 'm'))[0]
-      .split('\n')
-      .map((line) => new RegExp(`^ {${indent + 2}}- '([^']+)'$`).exec(line)?.[1])
-      .filter((pattern): pattern is string => Boolean(pattern) && !pattern.startsWith('!'));
-
-  const trigger = list(/^ {4}paths:$/m, 4);
-  const lane = list(/^ {12}suppressions:$/m, 12);
+  const { trigger, lane } = workflowFilters(workflow);
   if (trigger.length === 0 || lane.length === 0) {
     return [`${path}: the trigger or the suppressions filter could not be read`];
+  }
+  /** CI checks out LF, so a parser that only reads LF passes there and fails
+   *  every commit on a Windows checkout with `core.autocrlf`, where the file
+   *  arrives as CRLF. Reading the CRLF rendering here lets CI see that too. */
+  const crlf = workflowFilters(workflow.replace(/\r?\n/g, '\r\n'));
+  if (crlf.trigger.join('\n') !== trigger.join('\n') || crlf.lane.join('\n') !== lane.join('\n')) {
+    return [`${path}: its filters read differently with CRLF line endings`];
   }
   /** GitHub's filter syntax, in the shapes both lists use: an exact path, a
    *  subtree, and a basename at any depth. */
@@ -909,6 +905,24 @@ function workflowSelectsWhatItFilters(): string[] {
       (file) =>
         `${path}: the suppressions filter selects ${file}, which no \`on.pull_request.paths\` pattern starts the workflow for`,
     );
+}
+
+/** The `on.pull_request.paths` and `suppressions` pattern lists, exclusions
+ *  dropped. Line endings are normalized first: every pattern below is anchored
+ *  per line, and a `\r` left before the end of a line matches none of them. */
+function workflowFilters(text: string): { trigger: string[]; lane: string[] } {
+  const workflow = text.replace(/\r\n?/g, '\n');
+  /** A block ends at its first sibling, which sits at the same indent: a
+   *  terminator that only fires on shallower lines runs on through the next
+   *  filter and reads its patterns as this one's. */
+  const list = (section: RegExp, indent: number): string[] =>
+    (workflow.split(section)[1] ?? '')
+      .split(new RegExp(`^ {0,${indent}}\\S`, 'm'))[0]
+      .split('\n')
+      .map((line) => new RegExp(`^ {${indent + 2}}- '([^']+)'$`).exec(line)?.[1])
+      .filter((pattern): pattern is string => Boolean(pattern) && !pattern.startsWith('!'));
+
+  return { trigger: list(/^ {4}paths:$/m, 4), lane: list(/^ {12}suppressions:$/m, 12) };
 }
 
 /**
