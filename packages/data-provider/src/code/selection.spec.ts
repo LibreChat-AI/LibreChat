@@ -1,8 +1,65 @@
 import { resolveCodeEnvironmentSelection } from './workspace';
+import { appendAgentIdSuffix } from '../agents/identity';
 
 describe('chat machine selection', () => {
   const defaultId = 'application-vm';
   const selections = [{ environmentId: 'runtime-vm', workspaceId: 'primary' }];
+
+  it.each([0, 1, 2])('matches stable ownership for parallel runtime index %s', (index) => {
+    expect(
+      resolveCodeEnvironmentSelection({
+        agentId: appendAgentIdSuffix('primary', index),
+        environmentId: defaultId,
+        environmentIds: ['runtime-vm'],
+        allowSelection: true,
+        selections: [
+          { environmentId: defaultId, workspaceId: 'primary' },
+          { ...selections[0], agentIds: ['primary'] },
+        ],
+      }),
+    ).toEqual({ valid: true, environmentId: 'runtime-vm' });
+  });
+
+  it.each([
+    { allowSelection: false, environmentIds: ['runtime-vm'] },
+    { allowSelection: true, environmentIds: [] },
+    { allowSelection: false, environmentIds: [] },
+  ])('refuses a revoked owned alternative instead of falling back: %j', (gate) => {
+    expect(
+      resolveCodeEnvironmentSelection({
+        ...gate,
+        agentId: 'primary',
+        environmentId: defaultId,
+        selections: [
+          { environmentId: defaultId, workspaceId: 'primary' },
+          { ...selections[0], agentIds: ['primary'] },
+        ],
+      }),
+    ).toEqual({ valid: false });
+  });
+
+  it("does not inherit another agent's explicitly owned alternative", () => {
+    expect(
+      resolveCodeEnvironmentSelection({
+        agentId: 'primary',
+        environmentId: defaultId,
+        environmentIds: ['runtime-vm'],
+        allowSelection: true,
+        selections: [{ ...selections[0], agentIds: ['other'] }],
+      }),
+    ).toEqual({ valid: false });
+  });
+
+  it('keeps an explicitly owned default after machine selection is disabled', () => {
+    expect(
+      resolveCodeEnvironmentSelection({
+        agentId: appendAgentIdSuffix('primary', 1),
+        environmentId: defaultId,
+        allowSelection: false,
+        selections: [{ environmentId: defaultId, workspaceId: 'primary', agentIds: ['primary'] }],
+      }),
+    ).toEqual({ valid: true, environmentId: defaultId });
+  });
 
   it('routes the selectable primary to B while its fixed reviewer keeps A', () => {
     const graph = [

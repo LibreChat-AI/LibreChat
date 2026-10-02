@@ -1,3 +1,5 @@
+import { stripAgentIdSuffix } from '../agents/identity';
+
 export const CODE_WORKSPACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 /** Protocol-v1 ceiling enforced by the worker and Code API. */
 export const CODE_WORKSPACE_MAX_COUNT = 32;
@@ -210,25 +212,31 @@ export function resolveCodeEnvironmentSelection({
   allowSelection?: boolean;
   selections?: unknown;
 }): { valid: true; environmentId?: string | null } | { valid: false } {
-  if (!allowSelection || selections == null) return { valid: true, environmentId };
+  if (selections == null) return { valid: true, environmentId };
   if (!isCodeWorkspaceSelections(selections)) return { valid: false };
   if (selections.length === 0) return { valid: true, environmentId };
-  const allowed = new Set(environmentIds ?? []);
-  if (environmentId) allowed.add(environmentId);
-  const matches = selections.filter((selection) => allowed.has(selection.environmentId));
+  /** Ownership is persisted under the saved agent ID, not the parallel actor's runtime ID.
+   * Check it before feature gates so revoked routes cannot silently revert to the default. */
+  const stableAgentId = agentId == null ? undefined : stripAgentIdSuffix(agentId);
   const owned =
-    agentId == null
+    stableAgentId == null
       ? undefined
-      : selections.find((selection) => selection.agentIds?.includes(agentId));
+      : selections.find((selection) => selection.agentIds?.includes(stableAgentId));
   if (owned != null) {
-    return allowed.has(owned.environmentId)
+    if (owned.environmentId === environmentId) return { valid: true, environmentId };
+    return allowSelection === true && environmentIds?.includes(owned.environmentId)
       ? { valid: true, environmentId: owned.environmentId }
       : { valid: false };
   }
+  if (!allowSelection) return { valid: true, environmentId };
+  const allowed = new Set(environmentIds ?? []);
+  if (environmentId) allowed.add(environmentId);
+  const matches = selections.filter((selection) => allowed.has(selection.environmentId));
   /** A graph may need an alternative for a different agent. Preserve this agent's explicit
    * default when present; without it, require exactly one allowed target rather than guessing. */
   const selectedDefault = matches.find((selection) => selection.environmentId === environmentId);
   if (selectedDefault != null) return { valid: true, environmentId };
-  if (matches.length !== 1) return { valid: false };
-  return { valid: true, environmentId: matches[0].environmentId };
+  const legacy = matches.filter((selection) => selection.agentIds == null);
+  if (legacy.length !== 1) return { valid: false };
+  return { valid: true, environmentId: legacy[0].environmentId };
 }

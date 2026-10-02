@@ -243,6 +243,10 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
         { timeout: 45_000 },
       )
       .toBe(true);
+    /** Persistence can finish before the browser leaves /c/new. Starting another turn then
+     * would snapshot no old message IDs and mistake the preceding result for the new one. */
+    await expect(page).toHaveURL(new RegExp(`/c/${conversationId}$`));
+    await expect(page.getByTestId('stop-generation-button')).toBeHidden();
     /** Never count echoed tool arguments or the deterministic model's final text as proof. */
     const outputs =
       result!.content?.flatMap((part) =>

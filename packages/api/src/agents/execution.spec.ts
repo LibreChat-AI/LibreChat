@@ -1,6 +1,7 @@
 import winston from 'winston';
 import { Writable } from 'node:stream';
 import { logger } from '@librechat/data-schemas';
+import type { Agent, TConversation } from 'librechat-data-provider';
 import type { CodeExecutionContext } from './execution';
 import {
   assertCodeExecutionApprovalBinding,
@@ -12,8 +13,10 @@ import {
   resolveCodeExecutionWorkspaceSelections,
 } from './execution';
 import { CodeWorkspaceSelectionError } from '~/code/errors';
+import { loadAddedAgent } from './added';
 
 jest.mock('@librechat/agents', () => ({
+  ...jest.requireActual('@librechat/agents'),
   Constants: { EXECUTE_CODE: 'execute_code' },
   getCodeBaseURL: jest.fn(() => 'http://code-default.test/v1///'),
 }));
@@ -72,6 +75,41 @@ describe('resolveCodeExecutionContext', () => {
       environmentIds: ['runtime-vm'],
       workspaceSelections: [{ environmentId: 'runtime-vm', workspaceId: 'primary' }],
     };
+
+    it('keeps the owned route after the real added-agent loader assigns its runtime suffix', async () => {
+      const added = await loadAddedAgent(
+        { req: {}, conversation: { agent_id: 'agent_lia' } as TConversation },
+        {
+          getAgent: async () => ({ id: 'agent_lia' }) as Agent,
+          getMCPServerTools: jest.fn(),
+        },
+      );
+      expect(added?.id).toBe('agent_lia____1');
+      expect(
+        resolveCodeExecutionContext({
+          ...params,
+          agentId: added?.id,
+          workspaceSelections: [
+            { environmentId: 'application-vm', workspaceId: 'primary' },
+            { environmentId: 'runtime-vm', workspaceId: 'primary', agentIds: ['agent_lia'] },
+          ],
+        }).environmentId,
+      ).toBe('runtime-vm');
+    });
+
+    it.each([false, true])('rejects revoked owned routes when allowSelection=%s', (enabled) => {
+      expect(() =>
+        resolveCodeExecutionContext({
+          ...params,
+          allowEnvironmentSelection: enabled,
+          environmentIds: [],
+          workspaceSelections: [
+            { environmentId: 'application-vm', workspaceId: 'primary' },
+            { environmentId: 'runtime-vm', workspaceId: 'primary', agentIds: ['lia'] },
+          ],
+        }),
+      ).toThrow(CodeWorkspaceSelectionError);
+    });
 
     it('uses explicit ownership for a primary alternative without moving its fixed reviewer', () => {
       const choices = [

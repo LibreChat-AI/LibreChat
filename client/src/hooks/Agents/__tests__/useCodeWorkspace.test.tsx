@@ -276,6 +276,38 @@ describe('useCodeWorkspace', () => {
       },
     );
 
+    it.each(['deployment', 'agent'])(
+      'requires explicit recovery when the %s opt-in revokes a saved owned route',
+      (gate) => {
+        const config = enableChoices();
+        mockStartupConfig.mockReturnValue({
+          codeEnvironmentDecisionVersion: 1,
+          codeEnvironmentMoveVersion: 1,
+        });
+        mockStatus.mockImplementation((ids: string[]) =>
+          ids.map((id) => ({
+            data: { environmentId: id, status: 'ready', workspaces: [{ id: 'project-a' }] },
+          })),
+        );
+        if (gate === 'deployment') config.statefulCodeSessions.allowEnvironmentSelection = false;
+        else mockAgentPermissions().agent.code_environment_ids = [];
+        const selected = [
+          { environmentId: 'personal-vm', workspaceId: 'project-a' },
+          { environmentId: 'runtime-vm', workspaceId: 'project-a', agentIds: ['agent_primary'] },
+        ];
+        const { result } = renderHook(() =>
+          useCodeWorkspace({
+            ...conversation(selected),
+            conversationId: 'saved',
+            codeEnvironmentMode: 'attached',
+          }),
+        );
+        expect(result.current.canSubmit).toBe(false);
+        expect(result.current.resolveSubmission(selected)).toBeUndefined();
+        expect(result.current.transition?.kind).toBe('move');
+      },
+    );
+
     it('fails closed on inaccessible, unused or ambiguous non-default machines', () => {
       const config = enableChoices();
       mockAgentPermissions().agent.code_environment_ids.push('third-vm');
