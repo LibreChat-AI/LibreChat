@@ -691,7 +691,7 @@ describe('CodeWorkspaceMenu', () => {
       jest.restoreAllMocks();
     });
 
-    test.each(['offline', 'no-longer-used'])(
+    test.each(['offline', 'no-longer-used', 'healthy'])(
       'continues without the %s workspace',
       async (scenario) => {
         const moveSpy = jest
@@ -706,20 +706,34 @@ describe('CodeWorkspaceMenu', () => {
             setConversation={setConversation}
             workspace={workspace({
               locked: true,
-              required: scenario === 'offline',
+              required: scenario !== 'no-longer-used',
               canSubmit: scenario !== 'offline',
-              state: scenario === 'offline' ? 'unavailable' : 'not_required',
+              state:
+                scenario === 'offline'
+                  ? 'unavailable'
+                  : scenario === 'healthy'
+                    ? 'ready'
+                    : 'not_required',
               selections: undefined,
               environments:
                 scenario === 'offline'
                   ? [{ environment, state: 'unavailable', workspaces: [], selected: undefined }]
-                  : [],
+                  : scenario === 'healthy'
+                    ? [
+                        {
+                          environment: { ...environment, id: 'mac' },
+                          state: 'ready',
+                          workspaces: [{ id: 'primary' }],
+                          selected: mac,
+                        },
+                      ]
+                    : [],
               transition: {
-                kind: 'move',
+                kind: scenario === 'healthy' ? 'detach' : 'move',
                 conversationId: 'existing',
                 from: [mac],
-                previous: scenario === 'offline' ? [] : [{ id: 'mac', name: 'Danny Mac' }],
-                retained: [],
+                previous: scenario === 'no-longer-used' ? [{ id: 'mac', name: 'Danny Mac' }] : [],
+                retained: scenario === 'healthy' ? [mac] : [],
                 targets: [],
                 detachable: true,
               },
