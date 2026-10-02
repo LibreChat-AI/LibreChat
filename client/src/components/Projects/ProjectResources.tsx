@@ -591,7 +591,8 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
               onAttach={(file) => void addExistingFile(file.file_id)}
               source={{
                 files: availableFiles,
-                isLoading: isFilesLoading,
+                /* A further page can still hold a match for the current search or view. */
+                isLoading: isFilesLoading || isFetchingNextPage,
                 isError: isFilesError,
                 refetch: () => void refetchFiles(),
               }}
