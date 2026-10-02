@@ -454,7 +454,7 @@ export default function Stage({
       <div
         ref={bubbleRef}
         data-testid="lia-bubble"
-        className="absolute top-0 left-0 z-20 max-w-48 whitespace-nowrap"
+        className="absolute top-0 left-0 z-20 w-max max-w-48"
         hidden={bubbleText == null}
       >
         <span className="border-border-medium bg-surface-primary text-text-primary block rounded-lg border px-2 py-1 text-xs font-medium shadow-sm">
