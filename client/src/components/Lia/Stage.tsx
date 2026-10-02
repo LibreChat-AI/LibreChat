@@ -202,11 +202,14 @@ export default function Stage({
         now - (cooldowns.get(id) ?? -Infinity) < ms ||
         now - (cooldowns.get('*') ?? -Infinity) < 1500
       ) {
-        return;
+        return false;
+      }
+      if (!engine.play(id, 2, now)) {
+        return false;
       }
       cooldowns.set(id, now);
       cooldowns.set('*', now);
-      engine.play(id, 2, now);
+      return true;
     };
 
     const mirror = document.createElement('div');
@@ -250,9 +253,9 @@ export default function Stage({
       if (keyTimes.length >= 9 && engine.current == null) {
         react('r-type-fast', 12000);
       }
+      /* Only a reaction that actually played uses up the long message; a busy Lia tries again. */
       if (!longShown && target.value.length > 280) {
-        longShown = true;
-        react('r-long', 1000);
+        longShown = react('r-long', 1000);
       }
       const ch = input.data;
       if (ch === '?') {

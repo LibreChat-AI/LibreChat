@@ -10,8 +10,13 @@ test.describe.configure({ timeout: 120_000 });
 
 const lia = (page: Page) => page.getByTestId('lia');
 
+/* The greeting rotates with the clock and some lines span the whole composer, leaving Lia no
+ * room by design; this morning shows the short "Good morning" line on every run. */
+const MORNING = new Date(2026, 0, 14, 10, 0);
+
 /** Opens the welcome screen; `optedIn` stores the preference before the app boots. */
 async function open(page: Page, { optedIn }: { optedIn: boolean }) {
+  await page.clock.setFixedTime(MORNING);
   if (optedIn) {
     await page.addInitScript(() => localStorage.setItem('showLia', 'true'));
   }
