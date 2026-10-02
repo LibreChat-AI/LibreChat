@@ -540,7 +540,11 @@ const ChatForm = memo(function ChatForm({
   const { submitText: submitAnswerText } = answerMode;
   const dictationAnswerModeActive = answerMode.composerAnswers;
   const speechDisabled =
-    !speechSettingsInitialized || disableInputs || isNotAppendable || answerMode.composerLocked;
+    !speechSettingsInitialized ||
+    disableInputs ||
+    isNotAppendable ||
+    answerMode.composerLocked ||
+    isPreparingFromUrl;
   /** The same gate `onSubmit` applies: while a question pause is live the
    * composer IS the answer box, so a dictated turn has to answer it rather
    * than start a turn the paused run would drop. */

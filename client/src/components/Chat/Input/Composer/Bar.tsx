@@ -524,7 +524,7 @@ function Bar({
               primary
               label={localize('com_nav_send_message')}
               onClick={dictation.stopAndSend}
-              disabled={dictation.transcribing}
+              disabled={speechDisabled || dictation.transcribing}
             >
               <SendIcon size={18} />
             </RoundButton>

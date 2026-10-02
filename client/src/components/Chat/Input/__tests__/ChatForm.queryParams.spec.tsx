@@ -32,10 +32,12 @@ function Harness({
   conversation,
   routePending = false,
   onAsk = ask,
+  speechSettingsInitialized = false,
 }: {
   conversation: TConversation;
   routePending?: boolean;
   onAsk?: typeof ask;
+  speechSettingsInitialized?: boolean;
 }) {
   const [files, setFiles] = useRecoilState(store.filesByIndex(0));
   const [isSubmitting] = useRecoilState(store.isSubmittingFamily(0));
@@ -87,7 +89,7 @@ function Harness({
           showComposerTips={false}
           enterToSend
           autoSendText={-1}
-          speechSettingsInitialized={false}
+          speechSettingsInitialized={speechSettingsInitialized}
           footerBelow={false}
           centerFormOnLanding={false}
         />
@@ -102,6 +104,7 @@ function mountComposer(
     pathname = `/c/${conversation.conversationId}`,
     query = 'agent_id=agent_test&q=hi&submit=true',
     routePending = false,
+    speechSettingsInitialized = false,
   } = {},
 ) {
   const queryClient = new QueryClient({
@@ -149,7 +152,14 @@ function mountComposer(
   }
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
-      <RecoilRoot>
+      <RecoilRoot
+        initializeState={({ set }) => {
+          if (speechSettingsInitialized) {
+            set(store.engineSTT, 'external');
+            set(store.autoTranscribeAudio, false);
+          }
+        }}
+      >
         <MemoryRouter initialEntries={[`${pathname}?${query}`]}>
           <NavigationBridge />
           <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
@@ -161,9 +171,16 @@ function mountComposer(
       </RecoilRoot>
     </QueryClientProvider>
   );
-  const view = render(<Harness conversation={conversation} routePending={routePending} />, {
-    wrapper,
-  });
+  const view = render(
+    <Harness
+      conversation={conversation}
+      routePending={routePending}
+      speechSettingsInitialized={speechSettingsInitialized}
+    />,
+    {
+      wrapper,
+    },
+  );
   return { ...view, navigate: (to: string) => navigate(to), getLocation: () => location };
 }
 
@@ -274,6 +291,95 @@ describe('ChatForm URL submission', () => {
       expect(ask).toHaveBeenCalledTimes(outcome === 'refusal' ? 1 : 0);
     },
   );
+
+  it('disables the microphone while URL settings are preparing and re-enables it on timeout', async () => {
+    mountComposer(initialConversation, { speechSettingsInitialized: true });
+    expect(screen.getByRole('button', { name: 'Use microphone' })).not.toBeDisabled();
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(screen.getByRole('button', { name: 'Use microphone' })).toBeDisabled();
+    expect(screen.getByText('Sending...')).toBeInTheDocument();
+    await act(async () => jest.advanceTimersByTime(3000));
+    expect(screen.getByRole('button', { name: 'Use microphone' })).not.toBeDisabled();
+    expect(screen.getByTestId('text-input')).toHaveValue('hi');
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('disables recording send during URL preparation without disabling stop', async () => {
+    const recorderDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'MediaRecorder');
+    const devicesDescriptor = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
+    const audioContextDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'AudioContext');
+    const tracks: jest.Mock[] = [];
+    class TestRecorder extends EventTarget {
+      static isTypeSupported = () => true;
+
+      state: RecordingState = 'inactive';
+
+      start() {
+        this.state = 'recording';
+      }
+
+      stop() {
+        this.state = 'inactive';
+        this.dispatchEvent(new Event('stop'));
+      }
+    }
+    class TestAudioContext {
+      state: AudioContextState = 'running';
+
+      close() {
+        this.state = 'closed';
+        return Promise.resolve();
+      }
+
+      createMediaStreamSource() {
+        return { connect: () => undefined };
+      }
+
+      createAnalyser() {
+        return { fftSize: 1024, getByteTimeDomainData: (buffer: Uint8Array) => buffer.fill(128) };
+      }
+    }
+    Object.defineProperty(globalThis, 'MediaRecorder', { configurable: true, value: TestRecorder });
+    Object.defineProperty(globalThis, 'AudioContext', {
+      configurable: true,
+      value: TestAudioContext,
+    });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: async () => {
+          const stop = jest.fn();
+          tracks.push(stop);
+          return { getTracks: () => [{ stop }] };
+        },
+      },
+    });
+    setDraft({ id: getNewConversationDraftId(), value: 'unsent draft' });
+    const view = mountComposer(initialConversation, { speechSettingsInitialized: true });
+    try {
+      await act(async () =>
+        fireEvent.click(screen.getByRole('button', { name: 'Use microphone' })),
+      );
+      expect(screen.getByRole('button', { name: 'Stop' })).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Send message' })).not.toBeDisabled();
+      await act(async () => jest.advanceTimersByTime(100));
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Stop' })).not.toBeDisabled();
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Stop' })));
+      expect(tracks[0]).toHaveBeenCalledTimes(1);
+      expect(ask).not.toHaveBeenCalled();
+    } finally {
+      view.unmount();
+      if (recorderDescriptor)
+        Object.defineProperty(globalThis, 'MediaRecorder', recorderDescriptor);
+      else Reflect.deleteProperty(globalThis, 'MediaRecorder');
+      if (devicesDescriptor) Object.defineProperty(navigator, 'mediaDevices', devicesDescriptor);
+      else Reflect.deleteProperty(navigator, 'mediaDevices');
+      if (audioContextDescriptor)
+        Object.defineProperty(globalThis, 'AudioContext', audioContextDescriptor);
+      else Reflect.deleteProperty(globalThis, 'AudioContext');
+    }
+  });
 
   it('shows the prompt and Sending status while blocking duplicate manual sends', async () => {
     mountComposer();
