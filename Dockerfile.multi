@@ -1,5 +1,5 @@
 # Dockerfile.multi
-# v0.8.8-rc3
+# v0.8.8
 
 # Set configurable max-old-space-size with default
 ARG NODE_MAX_OLD_SPACE_SIZE=6144

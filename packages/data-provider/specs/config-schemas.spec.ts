@@ -8,6 +8,7 @@ import {
   interfaceSchema,
   fileStorageSchema,
   fileStrategiesSchema,
+  normalizeAgentSelectorLimit,
   SKILL_SYNC_MAX_INTERVAL_MINUTES,
   summarizationTriggerSchema,
   summarizationConfigSchema,
@@ -1930,5 +1931,26 @@ describe('interface.traceViewer', () => {
       requestsPerMinute: traceViewerDefaults.requestsPerMinute,
       requestTimeoutMs: traceViewerDefaults.requestTimeoutMs,
     });
+  });
+});
+
+describe('interfaceSchema agentSelectorLimit', () => {
+  it('defaults the unsearched agents selector list to ten entries', () => {
+    const result = interfaceSchema.parse({});
+    expect(result.agentSelectorLimit).toBe(10);
+  });
+
+  it('honors a deployment override and rejects out-of-bounds values', () => {
+    expect(interfaceSchema.parse({ agentSelectorLimit: 25 }).agentSelectorLimit).toBe(25);
+    expect(interfaceSchema.safeParse({ agentSelectorLimit: 0 }).success).toBe(false);
+    expect(interfaceSchema.safeParse({ agentSelectorLimit: 101 }).success).toBe(false);
+  });
+
+  it('normalizes runtime values that bypassed the schema back into bounds', () => {
+    expect(normalizeAgentSelectorLimit(25)).toBe(25);
+    expect(normalizeAgentSelectorLimit(undefined)).toBe(10);
+    expect(normalizeAgentSelectorLimit(0)).toBe(10);
+    expect(normalizeAgentSelectorLimit(101)).toBe(10);
+    expect(normalizeAgentSelectorLimit('10')).toBe(10);
   });
 });

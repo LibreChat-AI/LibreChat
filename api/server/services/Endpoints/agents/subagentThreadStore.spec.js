@@ -45,6 +45,7 @@ jest.mock('~/models', () => ({
 
 jest.mock('../../Agents/triggers', () => ({
   enqueueAgentTrigger: jest.fn(),
+  expediteCompletionWakeups: jest.fn(),
 }));
 
 const {
@@ -78,6 +79,16 @@ describe('subagent thread Redis lifecycle', () => {
     await taskStoreOptions.onTaskPrepared({ taskId: 'task-1' });
 
     expect(mockCompletionWakeupHandler).toHaveBeenCalledWith({ taskId: 'task-1' });
+  });
+
+  it('expedites only the settled task identities in their parent conversation', () => {
+    const { expediteCompletionWakeups } = require('../../Agents/triggers');
+    taskStoreOptions.onTaskSettled('user-1', 'parent-1', ['task-1', 'recovered-task']);
+    expect(expediteCompletionWakeups).toHaveBeenCalledWith({
+      user: 'user-1',
+      conversationId: 'parent-1',
+      taskIds: ['task-1', 'recovered-task'],
+    });
   });
 
   it('registers local task-store quiescence independently of optional Redis setup', () => {

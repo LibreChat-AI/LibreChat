@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { memo, useState, useCallback, useMemo, useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { TFeedback, TFeedbackTag, getTagsForRating } from 'librechat-data-provider';
 import {
@@ -222,11 +222,7 @@ function FeedbackButtons({
 const buttonClasses = (isActive: boolean, isLast: boolean) =>
   hoverButtonClasses({ isActive, isLast });
 
-export default function Feedback({
-  isLast = false,
-  handleFeedback,
-  feedback: initialFeedback,
-}: FeedbackProps) {
+function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }: FeedbackProps) {
   const localize = useLocalize();
   const [openDialog, setOpenDialog] = useState(false);
   const [feedback, setFeedback] = useState<TFeedback | undefined>(initialFeedback);
@@ -342,3 +338,6 @@ export default function Feedback({
     </>
   );
 }
+
+/** Memoized: a send re-renders every row's toolbar, and nothing here depends on it. */
+export default memo(Feedback);

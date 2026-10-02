@@ -1,8 +1,10 @@
 import { AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2 } from '@librechat/data-schemas';
 import type { AgentTriggerProducerLeaseStatus } from '@librechat/data-schemas';
+import type { CodeApprovalMode } from 'librechat-data-provider';
 import type { EnqueueBackgroundToolCompletion } from './backgroundCompletionWakeup';
 import {
   BACKGROUND_TOOL_WAKEUP_INPUT_MAX_CHARS,
+  createPendingBackgroundCompletions,
   createBackgroundToolCompletionWakeupHandler,
   createBackgroundToolCompletionWakeupResolver,
   createBackgroundToolDeadClaimRecovery,
@@ -45,12 +47,15 @@ function envelope(registrationOverrides = {}) {
   });
 }
 
-function resolverMethods() {
+function resolverMethods(codeApprovalMode?: CodeApprovalMode) {
   const releaseBackgroundToolResultClaims = jest.fn(async () => true);
   return {
     releaseBackgroundToolResultClaims,
     methods: {
-      getConvo: jest.fn(async () => ({ tenantId: 'tenant-1' })),
+      getConvo: jest.fn(async () => ({
+        tenantId: 'tenant-1',
+        ...(codeApprovalMode != null && { codeApprovalMode }),
+      })),
       getMessages: jest.fn(async () => [
         {
           messageId: 'response-1',
@@ -106,6 +111,25 @@ describe('background tool completion wakeups', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('expedites its own delivery when a result it can consume appears', async () => {
+    const expedite = jest.fn();
+    const notify = createBackgroundToolCompletionWakeupHandler(
+      async () => ({ deliveryKey: 'delivery-key-1' }),
+      async () => true,
+      async () => true,
+      undefined,
+      expedite,
+    );
+
+    const admission = await notify(registration());
+    if (admission === false) {
+      throw new Error('Expected an admission');
+    }
+    admission.expedite?.();
+
+    expect(expedite).toHaveBeenCalledWith('delivery-key-1');
   });
 
   it('pre-registers the exact task on the invoking response branch', async () => {
@@ -440,6 +464,72 @@ describe('background tool completion wakeups', () => {
     expect(retire).not.toHaveBeenCalled();
   });
 
+  describe.each(['projection', 'receipt', 'legacy receipt'] as const)(
+    '%s approval context',
+    (source) => {
+      it.each([undefined, 'ask', 'acceptEdits', 'fullAccess'] as const)(
+        'inherits the parent mode %s without granting broader access',
+        async (mode) => {
+          const { methods } = resolverMethods(mode);
+          if (source !== 'projection') {
+            methods.claimBackgroundToolResults.mockResolvedValue({
+              status: 'not_ready',
+              results: [],
+            });
+          }
+          if (source === 'receipt') {
+            methods.claimAgentBackgroundToolResults.mockResolvedValue({
+              status: 'acquired',
+              results: [
+                {
+                  taskId: 'task-1',
+                  toolCallId: 'call-1',
+                  toolName: 'slow_tool',
+                  status: 'completed',
+                  output: 'done',
+                },
+              ],
+            } as never);
+          }
+          if (source === 'legacy receipt') {
+            Reflect.deleteProperty(methods, 'claimAgentBackgroundToolResults');
+            methods.getAgentBackgroundToolResult.mockResolvedValue({
+              status: 'completed',
+              output: 'done',
+              settledAt: new Date(NOW),
+            } as never);
+          }
+          const resolve = createBackgroundToolCompletionWakeupResolver({
+            methods: methods as never,
+            getGenerationJob: async () => null,
+          });
+
+          const prepared = await resolve(await envelope(), { idempotencyKey: 'delivery-1' });
+
+          expect(prepared?.status).toBe('ready');
+          expect(prepared?.status === 'ready' && prepared.codeApprovalMode).toBe(mode);
+          expect(methods.getConvo).toHaveBeenCalledTimes(1);
+          expect(methods.getConvo).toHaveBeenCalledWith('user-1', 'conversation-1');
+        },
+      );
+    },
+  );
+
+  it('rereads the parent approval mode on a delivery retry', async () => {
+    const { methods } = resolverMethods('fullAccess');
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => null,
+    });
+    const delivery = await envelope();
+    const first = await resolve(delivery, { idempotencyKey: 'delivery-1' });
+    expect(first?.status === 'ready' && first.codeApprovalMode).toBe('fullAccess');
+
+    methods.getConvo.mockResolvedValue({ tenantId: 'tenant-1', codeApprovalMode: 'ask' });
+    const retry = await resolve(delivery, { idempotencyKey: 'delivery-1' });
+    expect(retry?.status === 'ready' && retry.codeApprovalMode).toBe('ask');
+  });
+
   it('claims a bounded sibling batch and continues from the latest branch leaf', async () => {
     const { methods } = resolverMethods();
     const resolve = createBackgroundToolCompletionWakeupResolver({
@@ -686,6 +776,88 @@ describe('background tool completion wakeups', () => {
     expect(methods.claimBackgroundToolResults).not.toHaveBeenCalled();
   });
 
+  it('backs off by waiting age while the invoking generation keeps running', async () => {
+    const { methods } = resolverMethods();
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => ({ status: 'running' }),
+    });
+    const deliveryEnvelope = await envelope();
+
+    jest.setSystemTime(NOW + 120_000);
+    await expect(resolve(deliveryEnvelope, { idempotencyKey: 'delivery-1' })).rejects.toMatchObject(
+      { code: 'PARENT_NOT_READY', retryAfter: '12', deferWithoutAttempt: true },
+    );
+    jest.setSystemTime(NOW + 6 * 60 * 60_000);
+    await expect(resolve(deliveryEnvelope, { idempotencyKey: 'delivery-1' })).rejects.toMatchObject(
+      { code: 'PARENT_NOT_READY', retryAfter: '60' },
+    );
+  });
+
+  it('caps the waiting backoff at the configured interval', async () => {
+    const { methods } = resolverMethods();
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => ({ status: 'running' }),
+      getWaitMaxIntervalMs: () => 20_000,
+    });
+    const deliveryEnvelope = await envelope();
+
+    jest.setSystemTime(NOW + 6 * 60 * 60_000);
+    await expect(resolve(deliveryEnvelope, { idempotencyKey: 'delivery-1' })).rejects.toMatchObject(
+      { code: 'PARENT_NOT_READY', retryAfter: '20' },
+    );
+  });
+
+  it('keeps backing off while the parent is paused for approval', async () => {
+    const { methods } = resolverMethods();
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => ({ status: 'requires_action' }),
+    });
+    const deliveryEnvelope = await envelope();
+
+    jest.setSystemTime(NOW + 60 * 60_000);
+    await expect(resolve(deliveryEnvelope, { idempotencyKey: 'delivery-1' })).rejects.toMatchObject(
+      { code: 'PARENT_NOT_READY', retryAfter: '60' },
+    );
+  });
+
+  it('re-checks within a second once the parent has settled and only persistence remains', async () => {
+    const { methods } = resolverMethods();
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => ({
+        status: 'complete',
+        metadata: { terminalPersistencePending: true },
+      }),
+    });
+    const deliveryEnvelope = await envelope();
+
+    jest.setSystemTime(NOW + 10 * 60_000);
+    await expect(resolve(deliveryEnvelope, { idempotencyKey: 'delivery-1' })).rejects.toMatchObject(
+      { code: 'PARENT_NOT_READY', retryAfter: '1' },
+    );
+  });
+
+  it('backs off by waiting age while the tool result is not durable yet', async () => {
+    const { methods } = resolverMethods();
+    methods.claimBackgroundToolResults.mockResolvedValue({ status: 'missing', results: [] });
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => null,
+    });
+    const deliveryEnvelope = await envelope();
+
+    await expect(resolve(deliveryEnvelope, { idempotencyKey: 'delivery-1' })).rejects.toMatchObject(
+      { code: 'BACKGROUND_TOOL_RESULT_NOT_READY', retryAfter: '5' },
+    );
+    jest.setSystemTime(NOW + 5 * 60_000);
+    await expect(resolve(deliveryEnvelope, { idempotencyKey: 'delivery-1' })).rejects.toMatchObject(
+      { code: 'BACKGROUND_TOOL_RESULT_NOT_READY', retryAfter: '30' },
+    );
+  });
+
   it('does not manufacture terminal evidence from wall-clock age', async () => {
     const { methods } = resolverMethods();
     methods.claimBackgroundToolResults.mockResolvedValue({ status: 'missing', results: [] });
@@ -718,5 +890,147 @@ describe('background tool completion wakeups', () => {
         retryable: false,
       },
     );
+  });
+});
+
+describe('pending background completions', () => {
+  const dispatchedAt = new Date(NOW - 60_000);
+  const settled = { status: 'completed' as const, settledAt: new Date(NOW) };
+  const row = (overrides = {}) => ({
+    deliveryKey: 'delivery-key-1',
+    taskId: 'task-1',
+    toolCallId: 'call-1',
+    toolName: 'slow_tool',
+    dispatchedAt,
+    claimedByWakeup: false,
+    ...overrides,
+  });
+  const listing = (completions: Array<ReturnType<typeof row>>, truncated = false) =>
+    jest.fn(async () => ({ completions, dead: [row({ taskId: 'task-dead' })], truncated }));
+  const listTaskIds = jest.fn(async () => ({ taskIds: ['child-1'], truncated: false }));
+
+  it('lists the durable view for the owner without delivery internals', async () => {
+    const list = listing([row({ result: settled })], true);
+    const pending = createPendingBackgroundCompletions({ list, listTaskIds, retire: jest.fn() });
+
+    await expect(
+      pending.list({ userId: 'user-1', conversationId: 'conversation-1' }),
+    ).resolves.toEqual({
+      dead: [
+        {
+          taskId: 'task-dead',
+          toolCallId: 'call-1',
+          toolName: 'slow_tool',
+          dispatchedAt,
+          claimedByWakeup: false,
+        },
+      ],
+      completions: [
+        {
+          taskId: 'task-1',
+          toolCallId: 'call-1',
+          toolName: 'slow_tool',
+          dispatchedAt,
+          result: settled,
+          claimedByWakeup: false,
+        },
+      ],
+      complete: false,
+    });
+    expect(list).toHaveBeenCalledWith({
+      user: 'user-1',
+      conversationId: 'conversation-1',
+      sourceId: 'background-tool-completion',
+    });
+  });
+
+  it('discards a settled, unclaimed result by looking up that task and retiring it exactly', async () => {
+    const retire = jest.fn(async () => true);
+    const list = listing([row({ result: settled })]);
+    const pending = createPendingBackgroundCompletions({ list, listTaskIds, retire });
+
+    await expect(
+      pending.discard({ userId: 'user-1', conversationId: 'conversation-1', taskId: 'task-1' }),
+    ).resolves.toBe('discarded');
+    expect(list).toHaveBeenCalledWith({
+      user: 'user-1',
+      conversationId: 'conversation-1',
+      sourceId: 'background-tool-completion',
+      taskId: 'task-1',
+    });
+    expect(retire).toHaveBeenCalledWith(
+      'delivery-key-1',
+      'background-tool-completion',
+      'background result discarded by its owner',
+      { onlyIfUnclaimed: true, requireTransition: true },
+    );
+  });
+
+  it("retires a manually claimed task's delivery only while no wake-up holds it", async () => {
+    const retire = jest.fn(async () => true);
+    const pending = createPendingBackgroundCompletions({
+      list: listing([row({ result: settled })]),
+      listTaskIds,
+      retire,
+    });
+
+    await expect(
+      pending.settleClaimed({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        taskId: 'task-1',
+      }),
+    ).resolves.toBe(true);
+    expect(retire).toHaveBeenCalledWith(
+      'delivery-key-1',
+      'background-tool-completion',
+      'completion claimed by manual poll',
+      { onlyIfUnclaimed: true },
+    );
+    await expect(
+      createPendingBackgroundCompletions({ list: listing([]), listTaskIds, retire }).settleClaimed({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        taskId: 'task-1',
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it('lists undelivered subagent wake-ups from their own source', async () => {
+    const pending = createPendingBackgroundCompletions({
+      list: listing([]),
+      listTaskIds,
+      retire: jest.fn(),
+    });
+
+    await expect(
+      pending.listSubagentWakeups({ userId: 'user-1', conversationId: 'conversation-1' }),
+    ).resolves.toEqual({ taskIds: ['child-1'], complete: true });
+    expect(listTaskIds).toHaveBeenCalledWith({
+      user: 'user-1',
+      conversationId: 'conversation-1',
+      sourceId: 'subagent-completion',
+    });
+  });
+
+  it.each([
+    ['not_pending', [], true],
+    ['running', [row()], true],
+    ['delivering', [row({ result: settled, claimedByWakeup: true })], true],
+    ['delivering', [row({ result: settled })], false],
+  ])('reports %s without discarding what it cannot', async (outcome, rows, retired) => {
+    const retire = jest.fn(async () => retired);
+    const pending = createPendingBackgroundCompletions({
+      list: listing(rows),
+      listTaskIds,
+      retire,
+    });
+
+    await expect(
+      pending.discard({ userId: 'user-1', conversationId: 'conversation-1', taskId: 'task-1' }),
+    ).resolves.toBe(outcome);
+    if (outcome !== 'delivering' || rows[0]?.claimedByWakeup === true) {
+      expect(retire).not.toHaveBeenCalled();
+    }
   });
 });

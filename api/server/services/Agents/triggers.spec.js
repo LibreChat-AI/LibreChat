@@ -80,6 +80,23 @@ describe('agent trigger service composition', () => {
     expect(supportsDetachedActionCompletion()).toBe(false);
   });
 
+  it('passes the recovery policy to both delivery and queued-turn workers', async () => {
+    const { initializeAgentTriggerService } = require('./triggers');
+    const options = {
+      address: 'local',
+      idlePolling: {
+        queuedTurnMaxIntervalMs: 60_000,
+        maintenanceMaxIntervalMs: 90_000,
+        deliveryMaxIntervalMs: 5_000,
+      },
+    };
+    await initializeAgentTriggerService(options);
+    expect(mockCreateAgentTriggerService.mock.results[0].value.initialize).toHaveBeenCalledWith(
+      options,
+    );
+    expect(mockQueuedTurnLifecycle.initialize).toHaveBeenCalledWith({ maxIdleIntervalMs: 60_000 });
+  });
+
   it('injects the configured background completion batch size', async () => {
     const { initializeAgentTriggerService } = require('./triggers');
     await initializeAgentTriggerService({ address: 'local', completionResultBatchSize: 12 });

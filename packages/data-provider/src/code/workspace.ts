@@ -5,6 +5,16 @@ export const CODE_WORKSPACE_MAX_COUNT = 32;
 export const CODE_ENVIRONMENT_DECISION_VERSION = 1 as const;
 /** API/client protocol for an owner's explicit move of a sealed environment decision. */
 export const CODE_ENVIRONMENT_MOVE_VERSION = 1 as const;
+/**
+ * API/client protocol for the other two replacements of a sealed decision: attaching an
+ * environment to a chat that recorded running without one, and leaving attached execution behind.
+ * Advertised beside the move version rather than replacing it, so a client that predates this
+ * capability keeps the move it already had while a deployment rolls out, and a client that has it
+ * never offers an attach a replica would refuse as `locked` or a detach it would call `invalid`.
+ */
+export const CODE_ENVIRONMENT_TRANSITION_VERSION = 2 as const;
+/** Additive capability for replacing a missing workspace without disabling moves in V1 clients. */
+export const CODE_WORKSPACE_RECOVERY_VERSION = 1 as const;
 export const CODE_WORKSPACE_OPERATIONS = [
   'read_file',
   'search_text',
@@ -15,6 +25,8 @@ export const CODE_WORKSPACE_OPERATIONS = [
   'execute_command',
 ] as const;
 export const CODE_WORKSPACE_INSTANCE_TYPES = ['git_worktree'] as const;
+/** Scheduling scopes a worker can admit beneath one registered root. */
+export const CODE_WORKSPACE_SCOPES = ['git_linked_worktree'] as const;
 export const CODE_WORKSPACE_SELECTION_ERROR_REASONS = [
   'required',
   'invalid',
@@ -27,6 +39,7 @@ export const CODE_ENVIRONMENT_MODES = ['attached', 'without_attached'] as const;
 
 export type CodeWorkspaceOperation = (typeof CODE_WORKSPACE_OPERATIONS)[number];
 export type CodeWorkspaceInstanceType = (typeof CODE_WORKSPACE_INSTANCE_TYPES)[number];
+export type CodeWorkspaceScope = (typeof CODE_WORKSPACE_SCOPES)[number];
 export type CodeWorkspaceSelectionErrorReason =
   (typeof CODE_WORKSPACE_SELECTION_ERROR_REASONS)[number];
 export type CodeEnvironmentMode = (typeof CODE_ENVIRONMENT_MODES)[number];
@@ -40,6 +53,8 @@ export interface CodeWorkspaceDescriptor {
   operations?: CodeWorkspaceOperation[];
   /** Optional worker-managed isolation modes available beneath this root. */
   workspaceInstances?: CodeWorkspaceInstanceType[];
+  /** `git_linked_worktree`: each `.worktrees/<name>` runs in its own scheduling lane. */
+  workspaceScopes?: CodeWorkspaceScope[];
   environment?: {
     fingerprint: string;
     repo?: string;

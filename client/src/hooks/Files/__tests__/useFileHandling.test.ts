@@ -1145,6 +1145,69 @@ describe('useFileHandling', () => {
       );
     });
 
+    it.each([true, false])(
+      'sends server-effective Responses %s rather than guessing from the Azure model',
+      async (effective) => {
+        mockConversation = { conversationId: 'convo-1', endpoint: 'agents', agent_id: 'agent_a1' };
+        mockAgentsMap = {
+          agent_a1: {
+            provider: EModelEndpoint.azureOpenAI,
+            model: 'gpt-6-sol',
+            model_parameters: {},
+          },
+        };
+        mockEndpointsConfig = {
+          [EModelEndpoint.azureOpenAI]: {
+            order: 0,
+            responsesApiRouting: {
+              'gpt-6-sol': { default: effective, on: effective, off: false },
+            },
+          },
+        };
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+        await act(async () => {
+          await result.current.handleFiles([new File(['hi'], 'a.txt', { type: 'text/plain' })]);
+        });
+        const formData: FormData = mockMutate.mock.calls[0][0];
+        expect(formData.get('useResponsesApi')).toBe(effective ? 'true' : null);
+      },
+    );
+
+    it.each([false, true])(
+      'uploads a snapshot with server policy and provider web search=%s',
+      async (webSearch) => {
+        mockConversation = { conversationId: 'convo-1', endpoint: 'agents', agent_id: 'agent_a1' };
+        mockAgentsMap = {
+          agent_a1: {
+            provider: EModelEndpoint.azureOpenAI,
+            model: 'gpt-6-sol-2026-09-22',
+            model_parameters: { web_search: webSearch },
+          },
+        };
+        mockEndpointsConfig = {
+          [EModelEndpoint.azureOpenAI]: {
+            order: 0,
+            responsesApiRouting: {
+              'gpt-6-sol-*': {
+                default: false,
+                on: true,
+                off: false,
+                withWebSearch: { default: true, on: true, off: true },
+              },
+            },
+          },
+        };
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+        await act(async () => {
+          await result.current.handleFiles([new File(['hi'], 'a.txt', { type: 'text/plain' })]);
+        });
+        const formData: FormData = mockMutate.mock.calls[0][0];
+        expect(formData.get('useResponsesApi')).toBe(webSearch ? 'true' : null);
+      },
+    );
+
     it('sends the Responses flag a saved agent holds on its own record', async () => {
       /* A saved Azure agent keeps the setting in model_parameters, and without it the
        * server routes a natively supported PDF to extracted text. */

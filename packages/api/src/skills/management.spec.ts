@@ -342,6 +342,17 @@ it('classifies content-policy blocks as invalid input and never writes the file'
   expect(result.body).toMatchObject({ error: { code: 'invalid_request' } });
   expect(saveFile).not.toHaveBeenCalled();
 });
+it('returns a documented 409 when another writer changes the skill file during the save', async () => {
+  saveFile.mockRejectedValueOnce(
+    Object.assign(new Error('private file storage revision'), { code: 'SKILL_FILE_CONFLICT' }),
+  );
+  const result = await request(app)
+    .put(`/skills/${skillId}/files/notes.md`)
+    .send({ content: 'Notes' })
+    .expect(409);
+  expect(result.body).toEqual({ error: { code: 'conflict', message: 'Resource conflict' } });
+});
+
 it('returns safe errors for storage failures', async () => {
   saveFile.mockRejectedValueOnce(new Error('secret-storage-path'));
   const result = await request(app)

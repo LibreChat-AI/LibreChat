@@ -36,6 +36,30 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.codeHighlightThrottleMs).toBe(100);
   });
 
+  it('uses the schema default for the agent selector list cap when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.agentSelectorLimit).toBe(10);
+  });
+
+  it('forwards a configured agent selector list cap to the served interface', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        agentSelectorLimit: 4,
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.agentSelectorLimit).toBe(4);
+  });
+
   it('preserves disabled URL auto-submit config', async () => {
     const config: Partial<TCustomConfig> = {
       interface: {

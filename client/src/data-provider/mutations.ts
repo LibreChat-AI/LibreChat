@@ -701,9 +701,7 @@ export const useDeleteConversationMutation = (
         await queryClient.cancelQueries([QueryKeys.pinnedConversations]);
         // could store old state if needed for rollback
       },
-      onError: () => {
-        // TODO: CHECK THIS, no-op; restore if needed
-      },
+      onError: options?.onError,
       onSuccess: (data, vars, context) => {
         const deletedConversation = vars.conversationId
           ? queryClient.getQueryData<t.TConversation>([QueryKeys.conversation, vars.conversationId])

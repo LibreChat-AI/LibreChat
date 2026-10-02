@@ -126,7 +126,7 @@ const SteerPart = memo(function SteerPart({
         <div className="flex max-w-full flex-col items-start gap-2 rounded-theme-surface rounded-br-theme-control bg-surface-tertiary px-theme-normal py-2.5">
           <MessageQuotes quotes={quotes} />
           {(imageFiles.length > 0 || otherFiles.length > 0) && (
-            <div className="flex flex-wrap gap-2">
+            <div className="flex w-full flex-wrap gap-2">
               {otherFiles.map((file) => (
                 <FileContainer
                   key={file.file_id}
@@ -134,15 +134,19 @@ const SteerPart = memo(function SteerPart({
                   onClick={() => setSelectedFile(file)}
                 />
               ))}
-              {imageFiles.map((file) => (
-                <Image
-                  key={file.file_id}
-                  imagePath={file.preview ?? file.filepath ?? ''}
-                  height={file.height ?? 1920}
-                  width={file.width ?? 1080}
-                  altText={file.filename ?? localize('com_ui_attached_image')}
-                />
-              ))}
+              {imageFiles.length > 0 && (
+                <div className="ml-auto flex max-w-full flex-wrap justify-end gap-2">
+                  {imageFiles.map((file) => (
+                    <Image
+                      key={file.file_id}
+                      imagePath={file.preview ?? file.filepath ?? ''}
+                      height={file.height ?? 1920}
+                      width={file.width ?? 1080}
+                      altText={file.filename ?? localize('com_ui_attached_image')}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           )}
           <CollapsibleText enabled={collapseLongUserMessages}>

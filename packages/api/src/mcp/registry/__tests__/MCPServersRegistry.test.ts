@@ -7,6 +7,7 @@ import {
   MCPConfigInitializationCanceledError,
 } from '~/mcp/registry/MCPServersRegistry';
 import { ServerConfigsCacheInMemory } from '~/mcp/registry/cache/ServerConfigsCacheInMemory';
+import { getMCPAppToolsPublicationGeneration } from '~/mcp/toolsChanged';
 import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
 import { MCPInspectionFailedError } from '~/mcp/errors';
 import { processMCPEnv } from '~/utils/env';
@@ -1547,6 +1548,77 @@ describe('MCPServersRegistry', () => {
         // Call with different userId - should hit repository
         await registry.getAllServerConfigs('user456');
         expect(cacheRepoGetAllSpy).toHaveBeenCalledTimes(3);
+      });
+    });
+
+    /** A replica running older code fills these stores from its own DB reads, so a
+     *  cache hit has to carry the same normalization the repository applies. */
+    describe('configs stored by an older replica', () => {
+      const storedByOlderReplica = {
+        type: 'streamable-http',
+        url: 'https://example.com/mcp',
+        source: 'user',
+        dbId: 'db-legacy-1',
+        requiresOAuth: true,
+        headers: null,
+        requestHeaders: null,
+      } as unknown as t.ParsedServerConfig;
+
+      it('normalizes null header maps served from a per-server cache hit', async () => {
+        const dbGet = jest
+          .spyOn(registry['dbConfigsRepo'], 'get')
+          .mockResolvedValue(storedByOlderReplica);
+
+        await registry.getServerConfig('legacy_server', 'user-1');
+        expect(dbGet).toHaveBeenCalledTimes(1);
+
+        const cached = await registry.getServerConfig('legacy_server', 'user-1');
+        expect(dbGet).toHaveBeenCalledTimes(1);
+        expect(cached).toMatchObject({ dbId: 'db-legacy-1', source: 'user' });
+        expect(cached).not.toHaveProperty('headers');
+        expect(cached).not.toHaveProperty('requestHeaders');
+        expect(() => getMCPAppToolsPublicationGeneration(cached!)).not.toThrow();
+      });
+
+      it('normalizes null header maps served from an all-servers cache hit', async () => {
+        const dbGetAll = jest
+          .spyOn(registry['dbConfigsRepo'], 'getAll')
+          .mockResolvedValue({ legacy_server: storedByOlderReplica });
+
+        await registry.getAllServerConfigs('user-1');
+        expect(dbGetAll).toHaveBeenCalledTimes(1);
+
+        /** Drop this replica's process memo only; the shared entry stays as the
+         *  older replica encoded it, which is what another pod would read. */
+        registry['readThroughCacheAll']['memo'].clear();
+
+        const cached = (await registry.getAllServerConfigs('user-1')).legacy_server;
+        expect(dbGetAll).toHaveBeenCalledTimes(1);
+        expect(cached).toMatchObject({ dbId: 'db-legacy-1', source: 'user' });
+        expect(cached).not.toHaveProperty('headers');
+        expect(cached).not.toHaveProperty('requestHeaders');
+        expect(() => getMCPAppToolsPublicationGeneration(cached)).not.toThrow();
+      });
+
+      it('preserves populated header maps across both cache hits', async () => {
+        const headers = { 'X-Shared': 'value' };
+        const requestHeaders = { 'X-Request': 'value' };
+        const config = { ...storedByOlderReplica, headers, requestHeaders };
+        jest.spyOn(registry['dbConfigsRepo'], 'get').mockResolvedValue(config);
+        jest
+          .spyOn(registry['dbConfigsRepo'], 'getAll')
+          .mockResolvedValue({ header_server: config });
+
+        await registry.getServerConfig('header_server', 'user-1');
+        await registry.getAllServerConfigs('user-1');
+        registry['readThroughCacheAll']['memo'].clear();
+
+        const single = await registry.getServerConfig('header_server', 'user-1');
+        const all = (await registry.getAllServerConfigs('user-1')).header_server;
+        for (const cached of [single, all]) {
+          expect(cached).toMatchObject({ headers, requestHeaders });
+          expect(() => getMCPAppToolsPublicationGeneration(cached!)).not.toThrow();
+        }
       });
     });
   });

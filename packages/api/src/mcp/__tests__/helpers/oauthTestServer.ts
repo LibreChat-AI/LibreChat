@@ -81,6 +81,8 @@ export interface OAuthTestServerOptions {
   refreshGate?: () => Promise<void> | undefined;
   /** Optional test hook for controlling echo-tool completion. */
   echoHandler?: (message: string) => string | Promise<string>;
+  /** Observes MCP resource requests, including unauthenticated and cancellation POSTs. */
+  onResourceRequest?: (request: http.IncomingMessage) => void;
 }
 
 export interface OAuthTokenRequestRecord {
@@ -149,6 +151,7 @@ export async function createOAuthMCPServer(
     requireResourceParameter = false,
     rejectRefreshTokens = 0,
     echoHandler,
+    onResourceRequest,
     refreshFailure,
     refreshGate,
   } = options;
@@ -466,6 +469,7 @@ export async function createOAuthMCPServer(
     }
 
     // All other paths require Bearer token auth
+    onResourceRequest?.(req);
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       writeBearerChallenge(res, 401, 'invalid_token', 'Missing Authorization header');

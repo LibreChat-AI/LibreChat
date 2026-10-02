@@ -96,6 +96,45 @@ export function findCheckpointSummaryPart(content: unknown): SummaryContentPart 
   return checkpoint;
 }
 
+/** The fields a history row offers when it may be a summary checkpoint. */
+export interface CheckpointCandidate {
+  content?: unknown;
+  summary?: string | null;
+  summaryTokenCount?: number | null;
+  tokenCount?: number | null;
+}
+
+/**
+ * The row a history read stops at, as it enters the prompt, or null when the
+ * row is no checkpoint and the read continues past it. A content-block summary
+ * keeps the row from that summary on: a response that summarized mid-run keeps
+ * producing after it, and the SDK formatter (`applySummaryBoundary`) promotes
+ * the summary and keeps the parts that follow, exactly as it does when the full
+ * history is sent. A sliced row drops its stored token count, which still covers
+ * the parts before the summary, so the prompt is charged for what it sends. A
+ * legacy `summary` field replaces the whole row.
+ */
+export function resolveCheckpointMessage<T extends CheckpointCandidate>(
+  message: T,
+): (T & { role?: 'system' }) | null {
+  const summaryPart = findCheckpointSummaryPart(message.content);
+  if (summaryPart != null && Array.isArray(message.content)) {
+    const summaryIndex = message.content.lastIndexOf(summaryPart);
+    return summaryIndex === 0
+      ? message
+      : { ...message, content: message.content.slice(summaryIndex), tokenCount: undefined };
+  }
+  if (!message.summary) {
+    return null;
+  }
+  return {
+    ...message,
+    role: 'system',
+    content: [{ type: ContentTypes.TEXT, text: message.summary }],
+    tokenCount: message.summaryTokenCount ?? message.tokenCount,
+  };
+}
+
 /**
  * The summary a warm event-actor continuation carries forward: the last usable
  * one in the run's content parts, stamped as actor state. A failed or

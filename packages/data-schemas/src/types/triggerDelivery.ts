@@ -18,6 +18,7 @@ export const AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1 =
 export const AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2 =
   'background_tool_completion_receipt_v2';
 export const AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1 = 'agent_queued_turn_v1';
+export const AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2 = 'agent_queued_turn_v2';
 export const AGENT_BACKGROUND_TOOL_RESULT_STORAGE_MAX_CHARS: number = 64 * 1024;
 export type AgentTriggerDeliveryOutcome = 'succeeded' | 'retry' | 'dead';
 
@@ -171,6 +172,8 @@ export interface IAgentTriggerDelivery {
   stagingRecoveryAt?: Date;
   /** Durable proof that successful settlement still owes lane cleanup publication. */
   laneCleanupPendingAt?: Date;
+  /** Readiness changed while a worker held this delivery; its next deferral re-checks at once. */
+  wakeRequestedAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;
 }

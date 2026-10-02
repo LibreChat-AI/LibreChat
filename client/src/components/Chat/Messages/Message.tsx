@@ -27,7 +27,8 @@ function Message(props: TMessageProps) {
     message: props.message,
   });
   const { message } = props;
-  const { chatContext, effectiveIsSubmitting } = useMemoizedChatContext(message, isSubmitting);
+  const { chatContext, effectiveIsSubmitting, latestMessageId, latestMessageDepth } =
+    useMemoizedChatContext(message, isSubmitting);
 
   if (!message || typeof message !== 'object') {
     return null;
@@ -36,7 +37,13 @@ function Message(props: TMessageProps) {
   return (
     <MessageContainer handleScroll={handleScroll}>
       <div className="m-auto justify-center px-4 py-3 sm:px-0">
-        <MessageRender {...props} isSubmitting={effectiveIsSubmitting} chatContext={chatContext} />
+        <MessageRender
+          {...props}
+          chatContext={chatContext}
+          isSubmitting={effectiveIsSubmitting}
+          latestMessageId={latestMessageId}
+          latestMessageDepth={latestMessageDepth}
+        />
       </div>
     </MessageContainer>
   );

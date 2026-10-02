@@ -1079,6 +1079,79 @@ describe('Conversation Operations', () => {
     });
   });
 
+  describe('code approval persistence', () => {
+    it.each(['ask', 'acceptEdits', 'fullAccess', null, undefined] as const)(
+      'bulkSaveConvos ignores imported approval mode %s on insert',
+      async (codeApprovalMode) => {
+        const imported = {
+          ...mockConversationData,
+          user: mockCtx.userId,
+          endpoint: EModelEndpoint.agents,
+          agent_id: 'imported-agent',
+          codeApprovalMode,
+        };
+
+        await methods.bulkSaveConvos([imported]);
+
+        const stored = await getConvo(mockCtx.userId, imported.conversationId);
+        expect(stored).not.toBeNull();
+        expect(stored).not.toHaveProperty('codeApprovalMode');
+        expect(stored).toMatchObject({
+          title: imported.title,
+          endpoint: EModelEndpoint.agents,
+          agent_id: imported.agent_id,
+        });
+        expect(imported.codeApprovalMode).toBe(codeApprovalMode);
+      },
+    );
+
+    it.each(['ask', 'acceptEdits', 'fullAccess', undefined] as const)(
+      'bulkSaveConvos preserves existing approval mode %s on update',
+      async (codeApprovalMode) => {
+        const conversationId = uuidv4();
+        await saveConvo(mockCtx, {
+          conversationId,
+          endpoint: EModelEndpoint.agents,
+          ...(codeApprovalMode != null && { codeApprovalMode }),
+        });
+
+        await methods.bulkSaveConvos([
+          {
+            conversationId,
+            user: mockCtx.userId,
+            title: 'Imported update',
+            codeApprovalMode: 'fullAccess',
+          },
+        ]);
+
+        const stored = await getConvo(mockCtx.userId, conversationId);
+        expect(stored).not.toBeNull();
+        expect(stored?.codeApprovalMode).toBe(codeApprovalMode);
+        expect(stored?.title).toBe('Imported update');
+      },
+    );
+
+    it('persists explicit user choices through ordinary saves after an import', async () => {
+      const conversationId = uuidv4();
+      await methods.bulkSaveConvos([
+        {
+          conversationId,
+          user: mockCtx.userId,
+          endpoint: EModelEndpoint.agents,
+          codeApprovalMode: 'fullAccess',
+        },
+      ]);
+
+      for (const codeApprovalMode of ['ask', 'acceptEdits', 'fullAccess'] as const) {
+        await saveConvo(mockCtx, { conversationId, codeApprovalMode });
+        await saveConvo(mockCtx, { conversationId, title: 'Ordinary save' });
+        expect((await getConvo(mockCtx.userId, conversationId))?.codeApprovalMode).toBe(
+          codeApprovalMode,
+        );
+      }
+    });
+  });
+
   describe('code environment persistence during ordinary saves', () => {
     const mac = { environmentId: 'code-mac', workspaceId: 'primary' };
     const vm = { environmentId: 'code-vm', workspaceId: 'primary' };
@@ -1112,6 +1185,7 @@ describe('Conversation Operations', () => {
         user: userId,
         conversationId,
         expected: decision,
+        codeEnvironmentMode: 'attached',
         codeWorkspaces: [vm],
       });
 
@@ -1136,6 +1210,7 @@ describe('Conversation Operations', () => {
         user: userId,
         conversationId,
         expected: decision,
+        codeEnvironmentMode: 'attached',
         codeWorkspaces: [vm],
       });
       await methods.bulkSaveConvos([imported]);
@@ -1237,14 +1312,16 @@ describe('Conversation Operations', () => {
       codeWorkspaces: NonNullable<IConversation['codeWorkspaces']>,
       user = 'user123',
     ) => {
-      const stored = await getConvo('user123', conversationId);
+      const stored = await methods.getConvoCodeEnvironmentDecision('user123', conversationId);
       return methods.replaceConvoCodeEnvironmentDecision({
         user,
         conversationId,
         expected: {
           codeEnvironmentMode: stored?.codeEnvironmentMode,
           codeWorkspaces: stored?.codeWorkspaces,
+          codeEnvironmentRevision: stored?.codeEnvironmentRevision,
         },
+        codeEnvironmentMode: 'attached',
         codeWorkspaces,
       });
     };
@@ -1289,6 +1366,154 @@ describe('Conversation Operations', () => {
       expect(result?.codeWorkspaces).toEqual([vm]);
     });
 
+    it('advances the revision and returns the snapshot in one database round trip', async () => {
+      const conversationId = await seedDecision({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [mac],
+      });
+      const update = jest.spyOn(Conversation.collection, 'findOneAndUpdate');
+      const read = jest.spyOn(Conversation.collection, 'findOne');
+      try {
+        const result = await methods.readAdmittedConvoCodeEnvironmentDecision(
+          'user123',
+          conversationId,
+        );
+        expect(result?.codeWorkspaces).toEqual([mac]);
+        expect(update).toHaveBeenCalledTimes(1);
+        expect(read).not.toHaveBeenCalled();
+      } finally {
+        update.mockRestore();
+        read.mockRestore();
+      }
+    });
+
+    it('rejects a transition when an admitted run reads after the idle check', async () => {
+      const conversationId = await seedDecision({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [mac],
+      });
+      const snapshot = await methods.getConvoCodeEnvironmentDecision('user123', conversationId);
+      const admitted = await methods.readAdmittedConvoCodeEnvironmentDecision(
+        'user123',
+        conversationId,
+      );
+      expect(admitted?.codeWorkspaces).toEqual([mac]);
+      expect(
+        await methods.replaceConvoCodeEnvironmentDecision({
+          user: 'user123',
+          conversationId,
+          expected: snapshot!,
+          codeEnvironmentMode: 'attached',
+          codeWorkspaces: [vm],
+        }),
+      ).toBeNull();
+      expect((await getConvo('user123', conversationId))?.codeWorkspaces).toEqual([mac]);
+    });
+
+    it('gives an admitted run the new decision when the transition wins first', async () => {
+      const conversationId = await seedDecision({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [mac],
+      });
+      const snapshot = await methods.getConvoCodeEnvironmentDecision('user123', conversationId);
+      expect(
+        await methods.replaceConvoCodeEnvironmentDecision({
+          user: 'user123',
+          conversationId,
+          expected: snapshot!,
+          codeEnvironmentMode: 'attached',
+          codeWorkspaces: [vm],
+        }),
+      ).not.toBeNull();
+      const admitted = await methods.readAdmittedConvoCodeEnvironmentDecision(
+        'user123',
+        conversationId,
+      );
+      expect(admitted?.codeWorkspaces).toEqual([vm]);
+      expect(admitted).not.toHaveProperty('codeEnvironmentRevision');
+      const current = await getConvo('user123', conversationId);
+      expect(current).not.toHaveProperty('codeEnvironmentRevision');
+      expect(new Date(current?.updatedAt ?? 0).toISOString()).toBe(anchor.toISOString());
+    });
+
+    it("does not advance another tenant's decision revision", async () => {
+      const conversationId = await seedDecision({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [mac],
+        tenantId: 'tenant-a',
+      });
+      const other = await tenantStorage.run({ tenantId: 'tenant-b' }, () =>
+        methods.readAdmittedConvoCodeEnvironmentDecision('user123', conversationId),
+      );
+      expect(other).toBeNull();
+      const own = await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        methods.readAdmittedConvoCodeEnvironmentDecision('user123', conversationId),
+      );
+      expect(own?.codeWorkspaces).toEqual([mac]);
+      const raw = await Conversation.collection.findOne({ conversationId });
+      expect(raw?.codeEnvironmentRevision).toBe(1);
+    });
+
+    it('protects the revision from ordinary saves, imports and other users', async () => {
+      const conversationId = await seedDecision({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [mac],
+      });
+      await methods.readAdmittedConvoCodeEnvironmentDecision('user123', conversationId);
+      const before = await methods.getConvoCodeEnvironmentDecision('user123', conversationId);
+      await saveConvo(
+        { userId: 'user123' },
+        { conversationId, codeEnvironmentRevision: 999 },
+        { unsetFields: { codeEnvironmentRevision: 1 } },
+      );
+      await methods.bulkSaveConvos([
+        { conversationId, user: 'user123', codeEnvironmentRevision: 0 },
+      ]);
+      expect(
+        (await methods.getConvoCodeEnvironmentDecision('user123', conversationId))
+          ?.codeEnvironmentRevision,
+      ).toBe(before?.codeEnvironmentRevision);
+      expect(
+        await methods.readAdmittedConvoCodeEnvironmentDecision('someone-else', conversationId),
+      ).toBeNull();
+    });
+
+    it('attaches an environment to a chat stored without one', async () => {
+      const conversationId = await seedDecision({ codeEnvironmentMode: 'without_attached' });
+
+      const result = await methods.replaceConvoCodeEnvironmentDecision({
+        user: 'user123',
+        conversationId,
+        expected: { codeEnvironmentMode: 'without_attached' },
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [vm],
+      });
+
+      expect(result?.codeEnvironmentMode).toBe('attached');
+      expect(result?.codeWorkspaces).toEqual([vm]);
+    });
+
+    it('clears the selections when a chat leaves attached execution', async () => {
+      const conversationId = await seedDecision({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [mac, team],
+      });
+
+      const result = await methods.replaceConvoCodeEnvironmentDecision({
+        user: 'user123',
+        conversationId,
+        expected: { codeEnvironmentMode: 'attached', codeWorkspaces: [mac, team] },
+        codeEnvironmentMode: 'without_attached',
+      });
+
+      expect(result?.codeEnvironmentMode).toBe('without_attached');
+      /** Keeping them would read as an attached decision again on the next turn. */
+      expect(result?.codeWorkspaces).toBeUndefined();
+      const stored = await getConvo('user123', conversationId);
+      expect(stored?.codeWorkspaces).toBeUndefined();
+      expect(new Date(stored?.updatedAt ?? 0).toISOString()).toBe(anchor.toISOString());
+    });
+
     it('leaves a decision that changed after it was read untouched', async () => {
       const conversationId = await seedDecision({
         codeEnvironmentMode: 'attached',
@@ -1306,7 +1531,9 @@ describe('Conversation Operations', () => {
         expected: {
           codeEnvironmentMode: stored?.codeEnvironmentMode,
           codeWorkspaces: stored?.codeWorkspaces,
+          codeEnvironmentRevision: stored?.codeEnvironmentRevision,
         },
+        codeEnvironmentMode: 'attached',
         codeWorkspaces: [vm],
       });
 
@@ -1325,6 +1552,7 @@ describe('Conversation Operations', () => {
         user: 'user123',
         conversationId,
         expected: { codeEnvironmentMode: 'attached', codeWorkspaces: [team, mac] },
+        codeEnvironmentMode: 'attached',
         codeWorkspaces: [vm],
       });
 
@@ -1341,6 +1569,7 @@ describe('Conversation Operations', () => {
         user: 'user123',
         conversationId,
         expected: { codeEnvironmentMode: 'attached', codeWorkspaces: [mac] },
+        codeEnvironmentMode: 'attached',
         codeWorkspaces: [vm],
       });
 
@@ -6449,7 +6678,9 @@ describe('Conversation Operations', () => {
         },
       ]);
 
-      await expect(methods.expireLegacyAgentEventActorReceipts(now, 1)).resolves.toBe(1);
+      const activity = { found: false };
+      await expect(methods.expireLegacyAgentEventActorReceipts(now, 1, activity)).resolves.toBe(1);
+      expect(activity.found).toBe(true);
       await expect(
         Conversation.findOne({ conversationId: oldConversationId })
           .select('+agentEventActorReconciliations')
@@ -6625,9 +6856,20 @@ describe('Conversation Operations', () => {
         awaitTerminalHandling: true,
       });
 
-      /** The first raw page contains no expired receipt. The second contains
-       * a protected receipt, and only the third reaches removable work. */
-      await expect(methods.expireLegacyAgentEventActorReceipts(now, 1)).resolves.toBe(0);
+      /** The first raw page contains no expired receipt. It must still keep
+       * discovery active, without querying delivery protection for an empty ID set.
+       * The second is protected, and only the third reaches removable work. */
+      const activity = { found: false };
+      const protection = jest.spyOn(Delivery, 'find');
+      try {
+        await expect(methods.expireLegacyAgentEventActorReceipts(now, 1, activity)).resolves.toBe(
+          0,
+        );
+        expect(activity.found).toBe(true);
+        expect(protection).not.toHaveBeenCalled();
+      } finally {
+        protection.mockRestore();
+      }
       await expect(methods.expireLegacyAgentEventActorReceipts(now, 1)).resolves.toBe(0);
       await expect(methods.expireLegacyAgentEventActorReceipts(now, 1)).resolves.toBe(1);
       await expect(

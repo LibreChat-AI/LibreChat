@@ -356,7 +356,8 @@ export default function CodeSettings() {
                   validate: validateGitIdentity,
                   deps: ['git_identity.name'],
                 })}
-                type="email"
+                type="text"
+                inputMode="email"
                 maxLength={254}
                 placeholder={localize('com_ui_agent_git_email')}
                 aria-label={localize('com_ui_agent_git_email')}

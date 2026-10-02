@@ -200,6 +200,95 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     jest.clearAllMocks();
   });
 
+  it('tries unauthenticated public tool listing only once when an OAuth server has no token', async () => {
+    const postHeaders: Array<string | undefined> = [];
+    server = await createOAuthMCPServer({
+      onResourceRequest: (request) => {
+        if (request.method === 'POST') postHeaders.push(request.headers.authorization);
+      },
+    });
+    const result = await MCPConnectionFactory.discoverTools(
+      {
+        serverName: SERVER_NAME,
+        serverConfig: { type: 'streamable-http', url: server.url, requiresOAuth: true },
+      },
+      {
+        useOAuth: true,
+        user: { id: USER_ID } as IUser,
+        flowManager: createFlowManager(),
+        tokenMethods: {
+          findToken: tokenStore.findToken,
+          createToken: tokenStore.createToken,
+          updateToken: tokenStore.updateToken,
+          deleteTokens: tokenStore.deleteTokens,
+        },
+      },
+    );
+
+    expect(result).toMatchObject({ tools: null, connection: null, oauthRequired: true });
+    expect(postHeaders).toEqual([undefined]);
+  });
+
+  it('does not cancel finished SDK requests when a shared run signal is aborted', async () => {
+    let resourcePosts = 0;
+    server = await createOAuthMCPServer({
+      onResourceRequest: (request) => {
+        if (request.method === 'POST') resourcePosts += 1;
+      },
+    });
+    const tokens = await issueTokens(server);
+    await storeTokens(tokenStore, server, tokens);
+    const flowManager = createFlowManager();
+    const tokenMethods = {
+      findToken: tokenStore.findToken,
+      createToken: tokenStore.createToken,
+      updateToken: tokenStore.updateToken,
+      deleteTokens: tokenStore.deleteTokens,
+    };
+    const serverConfig = {
+      type: 'streamable-http' as const,
+      url: server.url,
+      requiresOAuth: true,
+    };
+    connection = await MCPConnectionFactory.create(
+      { serverName: SERVER_NAME, serverConfig },
+      { useOAuth: true, user: { id: USER_ID } as IUser, flowManager, tokenMethods },
+    );
+    const manager = new MCPManager();
+    jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
+    const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+      resolveAllowlists: jest.fn().mockResolvedValue({
+        allowedDomains: null,
+        allowedAddresses: null,
+        useSSRFProtection: false,
+      }),
+    } as unknown as MCPServersRegistry);
+    const controller = new AbortController();
+    try {
+      for (let index = 0; index < 3; index += 1) {
+        await expect(
+          manager.callTool({
+            user: { id: USER_ID } as IUser,
+            serverName: SERVER_NAME,
+            serverConfig,
+            toolName: 'echo',
+            toolArguments: { message: `call ${index}` },
+            provider: 'openai',
+            flowManager,
+            tokenMethods,
+            options: { signal: controller.signal },
+          }),
+        ).resolves.toBeDefined();
+      }
+      const completedPosts = resourcePosts;
+      controller.abort(new Error('Run ended'));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(resourcePosts).toBe(completedPosts);
+    } finally {
+      registrySpy.mockRestore();
+    }
+  });
+
   it('refreshes an expired callback for the active connection and token waiter after publication settles', async () => {
     server = await createOAuthMCPServer({
       issueRefreshTokens: true,

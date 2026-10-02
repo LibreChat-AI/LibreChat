@@ -120,36 +120,60 @@ describe('subagent thread refresh policy', () => {
     expect(refetch).not.toHaveBeenCalled();
   });
 
-  it('refreshes active parent children quickly and discovers idle actors at a bounded cadence', () => {
-    expect(
-      parentSubagentsRefetchInterval({
+  it('retains fast live refresh but sparsifies quiet parent discovery', () => {
+    const parent = (status?: ParentSubagentIndex['children'][number]['status']) =>
+      ({
         parentConversationId: 'parent-conversation',
         childrenTruncated: false,
-        children: [{ status: 'running' }],
-      } as ParentSubagentIndex),
-    ).toBe(2_000);
-    expect(
-      parentSubagentsRefetchInterval({
-        parentConversationId: 'parent-conversation',
-        childrenTruncated: false,
-        children: [{ status: 'dispatched' }],
-      } as ParentSubagentIndex),
-    ).toBe(10_000);
-    expect(parentSubagentsRefetchInterval(undefined)).toBe(10_000);
+        children: status == null ? [] : [{ status }],
+      }) as ParentSubagentIndex;
 
+    expect(parentSubagentsRefetchInterval(parent('running'))).toBe(2_000);
+    expect(parentSubagentsRefetchInterval(parent('dispatched'))).toBe(10_000);
+    expect(parentSubagentsRefetchInterval(parent(), false, null, 1)).toBe(10_000);
+    expect(parentSubagentsRefetchInterval(parent(), false, null, 2)).toBe(60_000);
+    expect(parentSubagentsRefetchInterval(parent('completed'), false, null, 3)).toBe(60_000);
+    expect(parentSubagentsRefetchInterval(parent(), true, null, 20)).toBe(10_000);
+    expect(parentSubagentsRefetchInterval(undefined)).toBe(10_000);
+  });
+
+  it('stops idle 404 polling and gives a running first turn bounded readiness retries', () => {
+    const missing = { response: { status: 404 } };
+    expect(parentSubagentsRefetchInterval(undefined, false, missing, 0, Date.now() + 60_000)).toBe(
+      false,
+    );
+    expect(parentSubagentsRefetchInterval(undefined, true, missing, 0, Date.now() + 60_000)).toBe(
+      10_000,
+    );
+    expect(parentSubagentsRefetchInterval(undefined, true, missing, 0, Date.now())).toBe(false);
+    expect(parentSubagentsRefetchInterval(undefined, false, { response: { status: 503 } })).toBe(
+      60_000,
+    );
+  });
+
+  it('keeps idle fallback and suppresses automatic 404 retries in the live query', () => {
     mockUseQuery.mockReturnValue({ data: undefined, error: null, refetch: jest.fn() });
 
     renderHook(() => useParentSubagentsQuery('parent-conversation'));
 
     expect(mockUseQuery.mock.calls.at(-1)?.[0]).toEqual(['parentSubagents', 'parent-conversation']);
-    expect(mockUseQuery.mock.calls.at(-1)?.[2]).toEqual(
+    const options = mockUseQuery.mock.calls.at(-1)?.[2];
+    expect(options).toEqual(
       expect.objectContaining({
         enabled: true,
         refetchOnWindowFocus: true,
-        refetchInterval: parentSubagentsRefetchInterval,
         refetchIntervalInBackground: false,
         staleTime: 5_000,
       }),
     );
+    expect(options.retry(0, { response: { status: 404 } })).toBe(false);
+    expect(options.retry(0, { response: { status: 500 } })).toBe(true);
+    expect(options.retry(3, { response: { status: 500 } })).toBe(false);
+    expect(
+      options.refetchInterval(undefined, { state: { dataUpdateCount: 0, error: { status: 404 } } }),
+    ).toBe(false);
+    expect(
+      options.refetchInterval({ children: [] }, { state: { dataUpdateCount: 2, error: null } }),
+    ).toBe(60_000);
   });
 });

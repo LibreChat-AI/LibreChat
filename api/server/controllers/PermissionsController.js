@@ -173,6 +173,7 @@ const updateResourcePermissions = async (req, res) => {
     const results = await bulkUpdateResourcePermissions({
       resourceType,
       resourceId,
+      maxWriteAttempts: req.config?.config?.permissions?.maxWriteAttempts,
       updatedPrincipals: validatedPrincipals,
       revokedPrincipals,
       grantedBy: userId,

@@ -15,6 +15,11 @@ const {
   collectEdgeAgentIds,
   replaceEdgeSourceId,
   mergeDeploymentSkillIds,
+  getAgentListAccess,
+  isFullAgentListAvatarCacheEntry,
+  getAgentListAvatarRefreshKey,
+  refreshAgentListAvatarsBeforePage,
+  refreshManagedAgentListPageAvatars,
   mergeAgentOcrConversion,
   sanitizeModelParameters,
   MAX_AVATAR_REFRESH_AGENTS,
@@ -84,6 +89,7 @@ const {
   resolveConfigServers,
   userCanUseMCPServers,
 } = require('~/server/services/MCP');
+const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { attachOwnerContacts } = require('~/server/services/Agents/ownerContact');
 const { getMCPServersRegistry } = require('~/config');
 const { getLogStores } = require('~/cache');
@@ -1706,7 +1712,7 @@ const deleteAgentHandler = async (req, res) => {
 };
 
 /**
- * Lists agents using ACL-aware permissions (ownership + explicit shares).
+ * Lists agents using ACL permissions or the manage:agents capability.
  * @route GET /Agents
  * @param {object} req - Express Request
  * @param {object} req.query - Request query
@@ -1727,12 +1733,6 @@ const getListAgentsHandler = async (req, res) => {
       requiredPermission = PermissionBits.VIEW;
     }
     const canReturnSkillConfig = hasEditBit(requiredPermission);
-    /**
-     * Derived from the same bit as `canReturnSkillConfig` but answering a different question:
-     * skill-config exposure versus edit-permission reporting. An EDIT-scoped request matches
-     * only editable agents, so it needs no second lookup to know which ones those are.
-     */
-    const needsEditableLookup = !hasEditBit(requiredPermission);
     // Base filter
     const filter = {};
 
@@ -1756,7 +1756,7 @@ const getListAgentsHandler = async (req, res) => {
     }
 
     const cache = getLogStores(CacheKeys.S3_EXPIRY_INTERVAL);
-    const refreshKey = `${userId}:agents_avatar_refresh`;
+    const refreshKey = getAgentListAvatarRefreshKey(req.user);
 
     /**
      * These reads share no inputs, so they resolve together rather than chaining round
@@ -1766,8 +1766,8 @@ const getListAgentsHandler = async (req, res) => {
      *
      * `editableIds` lets a VIEW-scoped response mark which agents the caller may also edit,
      * so consumers wanting just the editable subset can filter one shared VIEW fetch rather
-     * than issuing a second full paginated walk under an EDIT-scoped cache key. Requests
-     * that already ask for EDIT get it for free: everything they match is editable.
+     * than issuing a second full paginated walk under an EDIT-scoped cache key. Managers and
+     * EDIT-scoped requests need no separate edit lookup: everything they match is editable.
      *
      * `idOnTheSource` is forwarded so `getUserPrincipals` resolves identity without reading
      * the user document; the auth strategies already normalize it to a value or null. Each
@@ -1775,19 +1775,12 @@ const getListAgentsHandler = async (req, res) => {
      */
     const { idOnTheSource } = req.user;
     const [
-      accessibleIds,
+      { accessibleIds, editableIds },
       publiclyAccessibleIds,
       cachedRefreshEntry,
       accessibleSkillIds,
-      editableIds,
     ] = await Promise.all([
-      findAccessibleResources({
-        userId,
-        role: req.user.role,
-        idOnTheSource,
-        resourceType: ResourceType.AGENT,
-        requiredPermissions: requiredPermission,
-      }),
+      getAgentListAccess(req.user, requiredPermission, { hasCapability, findAccessibleResources }),
       findPubliclyAccessibleResources({
         resourceType: ResourceType.AGENT,
         requiredPermissions: PermissionBits.VIEW,
@@ -1802,21 +1795,9 @@ const getListAgentsHandler = async (req, res) => {
             resourceType: ResourceType.SKILL,
             requiredPermissions: PermissionBits.VIEW,
           }),
-      needsEditableLookup
-        ? findAccessibleResources({
-            userId,
-            role: req.user.role,
-            idOnTheSource,
-            resourceType: ResourceType.AGENT,
-            requiredPermissions: PermissionBits.EDIT,
-          })
-        : null,
     ]);
 
-    const isValidCachedRefresh =
-      cachedRefreshEntry != null &&
-      typeof cachedRefreshEntry === 'object' &&
-      cachedRefreshEntry.urlCache != null;
+    const isValidCachedRefresh = isFullAgentListAvatarCacheEntry(cachedRefreshEntry);
 
     /**
      * Refresh all S3 avatars for this user's accessible agent set (not only the current page)
@@ -1866,11 +1847,16 @@ const getListAgentsHandler = async (req, res) => {
       }
     };
 
-    const cachedRefresh = await resolveAvatarRefresh();
+    const cachedRefreshBeforePage = await refreshAgentListAvatarsBeforePage(
+      accessibleIds,
+      cachedRefreshEntry,
+      resolveAvatarRefresh,
+    );
 
-    // Use the new ACL-aware function
+    // Use the ACL-scoped or explicitly tenant-scoped list query.
     const data = await db.getListAgentsByAccess({
       accessibleIds,
+      tenantId: req.user.tenantId ?? null,
       otherParams: filter,
       limit,
       after: cursor,
@@ -1883,13 +1869,23 @@ const getListAgentsHandler = async (req, res) => {
       return res.json(data);
     }
 
+    const cachedRefresh = await refreshManagedAgentListPageAvatars({
+      accessibleIds,
+      agents,
+      cachedEntry: cachedRefreshBeforePage,
+      refreshS3Url,
+      cacheSet: cache.set.bind(cache),
+      cacheKey: refreshKey,
+      ttl: Time.THIRTY_MINUTES,
+    });
+
     const accessibleSkillSet = canReturnSkillConfig
       ? null
       : new Set(mergeDeploymentSkillIds(accessibleSkillIds).map((oid) => oid.toString()));
 
     const publicSet = new Set(publiclyAccessibleIds.map((oid) => oid.toString()));
     /** Null for EDIT-scoped requests, where every matched agent is editable by definition. */
-    const editableSet = editableIds ? new Set(editableIds.map((oid) => oid.toString())) : null;
+    const editableSet = editableIds ? new Set(editableIds) : null;
     const agentsWithContacts = await attachOwnerContacts(agents);
 
     const urlCache = cachedRefresh?.urlCache;
@@ -2016,7 +2012,7 @@ const uploadAgentAvatarHandler = async (req, res) => {
 
     try {
       const avatarCache = getLogStores(CacheKeys.S3_EXPIRY_INTERVAL);
-      await avatarCache.delete(`${req.user.id}:agents_avatar_refresh`);
+      await avatarCache.delete(getAgentListAvatarRefreshKey(req.user));
     } catch (cacheErr) {
       logger.error('[/:agent_id/avatar] Error invalidating avatar refresh cache', cacheErr);
     }

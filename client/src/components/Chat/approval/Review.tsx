@@ -1,6 +1,5 @@
 import { memo, useEffect, useMemo } from 'react';
-import { atomFamily } from 'jotai/utils';
-import { atom, useAtom, useAtomValue } from 'jotai';
+import { useAtom, useAtomValue } from 'jotai';
 import { Button, TooltipAnchor } from '@librechat/client';
 import { ChevronDown, ChevronUp, ShieldQuestion, TriangleAlert } from 'lucide-react';
 import type { Agents } from 'librechat-data-provider';
@@ -9,13 +8,14 @@ import {
   useApprovalContext,
   useResumeSubmit,
 } from '~/components/Chat/Messages/Content/ApprovalContext';
+import {
+  approvalPanelOpenFamily,
+  pendingApprovalActionFamily,
+} from '~/components/Chat/approval/state';
 import { buildApprovalPreview, buildApprovalPreviews } from '~/components/Chat/approval/preview';
-import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import ToolApproval from '~/components/Chat/Messages/Content/ToolApproval';
 import { useComposerOverlay } from '~/components/Chat/Input/overlay';
 import { useLocalize } from '~/hooks';
-
-const approvalPanelOpenFamily = atomFamily((_conversationId: string) => atom(false));
 
 function usePendingToolApproval(conversationId: string) {
   const pendingAction = useAtomValue(pendingApprovalActionFamily(conversationId));
@@ -158,7 +158,7 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
                   }}
                   toolCallId={request.tool_call_id}
                   args={request.arguments}
-                  showSubmit={false}
+                  surface="composer"
                 />
               ) : (
                 <p className="mt-2 flex items-center text-xs text-text-warning" role="alert">

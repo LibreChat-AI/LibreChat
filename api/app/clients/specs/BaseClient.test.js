@@ -548,9 +548,10 @@ describe('BaseClient', () => {
         summary: true,
       });
       expect(result).toHaveLength(2);
-      expect(result[0].role).toBe('system');
-      expect(result[0].content).toEqual([{ type: 'text', text: 'Content block summary' }]);
-      expect(result[0].tokenCount).toBe(42);
+      expect(result[0].role).toBeUndefined();
+      expect(result[0].content).toEqual([
+        { type: 'summary', text: 'Content block summary', tokenCount: 42 },
+      ]);
     });
 
     it('should prefer content block summary over legacy summary field', () => {
@@ -571,8 +572,9 @@ describe('BaseClient', () => {
         summary: true,
       });
       expect(result).toHaveLength(2);
-      expect(result[0].content).toEqual([{ type: 'text', text: 'Content block summary' }]);
-      expect(result[0].tokenCount).toBe(20);
+      expect(result[0].content).toEqual([
+        { type: 'summary', text: 'Content block summary', tokenCount: 20 },
+      ]);
     });
 
     it('should fallback to legacy summary when no content block exists', () => {
@@ -594,6 +596,34 @@ describe('BaseClient', () => {
       expect(result).toHaveLength(2);
       expect(result[0].content).toEqual([{ type: 'text', text: 'Legacy summary only' }]);
       expect(result[0].tokenCount).toBe(15);
+    });
+
+    it('keeps the parts a response produced after its summary (summary mode)', () => {
+      const trailingText = { type: 'text', text: 'Answer after summarizing' };
+      const messagesWithTrailingParts = [
+        { id: '1', parentMessageId: null, text: 'Message 1' },
+        {
+          id: '2',
+          parentMessageId: '1',
+          text: 'Before summarizing',
+          content: [
+            { type: 'text', text: 'Before summarizing' },
+            { type: 'summary', text: 'Earlier context', tokenCount: 6 },
+            trailingText,
+          ],
+        },
+        { id: '3', parentMessageId: '2', text: 'Message 3' },
+      ];
+      const result = TestClient.constructor.getMessagesForConversation({
+        messages: messagesWithTrailingParts,
+        parentMessageId: '3',
+        summary: true,
+      });
+      expect(result.map((message) => message.id)).toEqual(['2', '3']);
+      expect(result[0].content).toEqual([
+        { type: 'summary', text: 'Earlier context', tokenCount: 6 },
+        trailingText,
+      ]);
     });
 
     it('should not stop traversal at a failed summary, keeping the prior history', () => {

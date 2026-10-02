@@ -3,7 +3,7 @@ const express = require('express');
 const request = require('supertest');
 const { nanoid } = require('nanoid');
 const { v4: uuidv4 } = require('uuid');
-const { createModels, tenantStorage } = require('@librechat/data-schemas');
+const { createModels, tenantStorage, SystemCapabilities } = require('@librechat/data-schemas');
 const {
   Tools,
   SkillsScope,
@@ -111,6 +111,7 @@ const {
   refreshS3Url,
 } = require('@librechat/api');
 const { grantPermission } = require('~/server/services/PermissionService');
+const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const db = require('~/models');
 
 /**
@@ -3391,6 +3392,81 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       });
     });
 
+    test('lets a manage:agents role discover unshared agents by search', async () => {
+      await db.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'LIST_MANAGER_TEST',
+        capability: SystemCapabilities.MANAGE_AGENTS,
+      });
+      mockReq.user = {
+        id: userB.toString(),
+        role: 'LIST_MANAGER_TEST',
+        idOnTheSource: null,
+      };
+      mockReq.query.search = 'A2';
+      findAccessibleResources.mockResolvedValue([]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+
+      expect(await hasCapability(mockReq.user, SystemCapabilities.MANAGE_AGENTS)).toBe(true);
+      await getListAgentsHandler(mockReq, mockRes);
+
+      const response = mockRes.json.mock.calls[0][0];
+      expect(response.data.map((agent) => agent.id)).toEqual([agentA2.id]);
+      expect(response.data[0].isEditable).toBe(true);
+      expect(findAccessibleResources).toHaveBeenCalledWith(
+        expect.objectContaining({ resourceType: ResourceType.AGENT }),
+      );
+    });
+
+    test('restricts a manager to the authenticated tenant even without ambient tenant context', async () => {
+      const tenantA = `tenant-a-${uuidv4()}`;
+      const tenantB = `tenant-b-${uuidv4()}`;
+      const name = 'Tenant-Scoped Discovery';
+      const agentInA = await tenantStorage.run({ tenantId: tenantA }, () =>
+        Agent.create({
+          id: `agent_${nanoid(12)}`,
+          name,
+          provider: 'openai',
+          model: 'gpt-4',
+          author: userA,
+        }),
+      );
+      await tenantStorage.run({ tenantId: tenantB }, () =>
+        Agent.create({
+          id: `agent_${nanoid(12)}`,
+          name,
+          provider: 'openai',
+          model: 'gpt-4',
+          author: userB,
+        }),
+      );
+      await db.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'LIST_TENANT_MANAGER',
+        capability: SystemCapabilities.MANAGE_AGENTS,
+      });
+      mockReq.user = {
+        id: userB.toString(),
+        role: 'LIST_TENANT_MANAGER',
+        idOnTheSource: null,
+        tenantId: tenantA,
+      };
+      mockReq.query.search = name;
+      findAccessibleResources.mockResolvedValue([]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+
+      await getListAgentsHandler(mockReq, mockRes);
+      expect(mockCache.get).toHaveBeenCalledWith(
+        `${userB.toString()}:${tenantA}:agents_avatar_refresh`,
+      );
+      expect(mockRes.json.mock.calls[0][0].data.map((agent) => agent.id)).toEqual([agentInA.id]);
+
+      mockRes.json.mockClear();
+      mockReq.user.tenantId = undefined;
+      await getListAgentsHandler(mockReq, mockRes);
+      expect(mockRes.json.mock.calls[0][0].data).toHaveLength(0);
+    });
+
     test('should return empty list when user has no accessible agents', async () => {
       // User B has no permissions and no owned agents
       mockReq.user.id = userB.toString();
@@ -4111,6 +4187,68 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       });
     });
 
+    test('refreshes only manager search results without writing or losing later cursor pages', async () => {
+      const db = require('~/models');
+      const name = 'Paged Manager Avatar';
+      const firstAgent = await Agent.create({
+        id: `agent_${nanoid(12)}`,
+        name,
+        provider: 'openai',
+        model: 'gpt-4',
+        author: userA,
+        avatar: { source: FileSources.s3, filepath: 'first.jpg' },
+      });
+      const secondAgent = await Agent.create({
+        id: `agent_${nanoid(12)}`,
+        name,
+        provider: 'openai',
+        model: 'gpt-4',
+        author: userA,
+        avatar: { source: FileSources.s3, filepath: 'second.jpg' },
+      });
+      await db.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'LIST_AVATAR_MANAGER',
+        capability: SystemCapabilities.MANAGE_AGENTS,
+      });
+      const mockReq = {
+        user: { id: userB.toString(), role: 'LIST_AVATAR_MANAGER', idOnTheSource: null },
+        query: { search: name, limit: '1' },
+      };
+      const mockRes = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
+      const listSpy = jest.spyOn(db, 'getListAgentsByAccess');
+      const updateSpy = jest.spyOn(db, 'updateAgent');
+      findAccessibleResources.mockResolvedValue([]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+      refreshS3Url.mockImplementation(async ({ filepath }) => `signed:${filepath}`);
+
+      try {
+        await getListAgentsHandler(mockReq, mockRes);
+        const pageOne = mockRes.json.mock.calls[0][0];
+        expect(pageOne.data).toHaveLength(1);
+        expect(pageOne.after).toBeTruthy();
+        expect(pageOne.data[0].avatar.filepath).toMatch(/^signed:/);
+        expect(listSpy).toHaveBeenCalledTimes(1);
+        expect(refreshS3Url).toHaveBeenCalledTimes(1);
+        expect(updateSpy).not.toHaveBeenCalled();
+
+        mockRes.json.mockClear();
+        mockReq.query.cursor = pageOne.after;
+        await getListAgentsHandler(mockReq, mockRes);
+        const pageTwo = mockRes.json.mock.calls[0][0];
+        expect(pageTwo.data).toHaveLength(1);
+        expect([pageOne.data[0].id, pageTwo.data[0].id].sort()).toEqual(
+          [firstAgent.id, secondAgent.id].sort(),
+        );
+        expect(pageTwo.data[0].avatar.filepath).toMatch(/^signed:/);
+        expect(refreshS3Url).toHaveBeenCalledTimes(2);
+        expect(updateSpy).not.toHaveBeenCalled();
+      } finally {
+        listSpy.mockRestore();
+        updateSpy.mockRestore();
+      }
+    });
+
     test('should skip avatar refresh if cache hit', async () => {
       mockCache.get.mockResolvedValue({ urlCache: {} });
       findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
@@ -4129,6 +4267,22 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       // Should not call refreshS3Url when cache hit
       expect(refreshS3Url).not.toHaveBeenCalled();
+    });
+
+    test('does not treat a manager page cache as an ACL-wide refresh after role downgrade', async () => {
+      mockCache.get.mockResolvedValue({ urlCache: {}, scope: 'page' });
+      findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+      refreshS3Url.mockResolvedValue('refreshed-after-downgrade.jpg');
+      const mockReq = { user: { id: userA.toString(), role: 'USER' }, query: {} };
+      const mockRes = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
+
+      await getListAgentsHandler(mockReq, mockRes);
+
+      expect(refreshS3Url).toHaveBeenCalledTimes(1);
+      expect(mockRes.json.mock.calls[0][0].data[0].avatar.filepath).toBe(
+        'refreshed-after-downgrade.jpg',
+      );
     });
 
     test('should refresh and persist S3 avatars on cache miss', async () => {

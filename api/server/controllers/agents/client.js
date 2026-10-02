@@ -17,7 +17,7 @@ const {
   getBalanceConfig,
   omitTitleOptions,
   getProviderConfig,
-  memoryInstructions,
+  formatMemoryContext,
   createCachedTokenCounter,
   applyContextToAgent,
   isMemoryAgentEnabled,
@@ -173,6 +173,7 @@ const {
   restoreCompactionSemanticIndexSnapshot,
   MAX_AGENT_CONTEXT_SKILLS,
   isAgentFadingTier,
+  isCurrentAgentFadingTier,
   isAgentFadingTierEntries,
   resolveRunContextMeta,
   resolveRunFadingTiers,
@@ -297,7 +298,7 @@ function resolveRunSeeds(client) {
   const encodingMatch = prevMeta.encoding === currentEncoding;
   const calibrationRatio =
     encodingMatch && prevMeta.calibrationRatio > 0 ? prevMeta.calibrationRatio : undefined;
-  const fadingTier = isAgentFadingTier(prevMeta.fading) ? prevMeta.fading : undefined;
+  const fadingTier = isCurrentAgentFadingTier(prevMeta.fading) ? prevMeta.fading : undefined;
   const fadingTiers = resolveRunFadingTiers(prevMeta.fadingTiers);
   logger.debug(
     `[AgentClient] contextMeta from parent: ratio=${prevMeta.calibrationRatio}, encoding=${prevMeta.encoding}, current=${currentEncoding}, seeded=${calibrationRatio ?? 'none'}, fading=${fadingTier ? `${fadingTier.budgetTokens}/${fadingTier.masked}` : 'none'}, agents=${fadingTiers ? Object.keys(fadingTiers).length : 0}`,
@@ -2872,8 +2873,6 @@ class AgentClient extends BaseClient {
      *  `delete_memory`; everyone else gets the unkeyed values only. */
     /** Partition the loaded memories belong to (the primary agent's). */
     const loadedMemoryAgentId = getMemoryAgentId(this.options.agent);
-    const buildMemoryContext = (text) =>
-      text ? `${memoryInstructions}\n\n# Existing memory about the user:\n${text}` : undefined;
     /** Resolves formatted memories for an agent's own partition. A defined
      *  `memories` means the run-level gates (permission, opt-out, config)
      *  passed; agents on other partitions fetch through the request-scoped
@@ -3014,7 +3013,7 @@ class AgentClient extends BaseClient {
           modelBoundMemoryContexts.add(partitionMemories.withoutKeys);
           agentMemoryContexts.push(partitionMemories.withoutKeys);
         }
-        const agentMemoryContext = buildMemoryContext(
+        const agentMemoryContext = formatMemoryContext(
           agentHasMemory ? partitionMemories?.withKeys : partitionMemories?.withoutKeys,
         );
         if (agentMemoryContext) {
@@ -3380,6 +3379,7 @@ class AgentClient extends BaseClient {
         getUserMemories: db.getUserMemories,
         getFormattedMemories: db.getFormattedMemories,
       },
+      req: this.options.req,
       res: this.options.res,
       user: createSafeUser(this.options.req.user),
       tenantId: resolveRequestTenantId(this.options.req),

@@ -2154,7 +2154,6 @@
               },
               "email": {
                 "type": "string",
-                "format": "email",
                 "maxLength": 254
               }
             },
@@ -2594,7 +2593,6 @@
               },
               "email": {
                 "type": "string",
-                "format": "email",
                 "maxLength": 254
               }
             },
@@ -3058,7 +3056,6 @@
               },
               "email": {
                 "type": "string",
-                "format": "email",
                 "maxLength": 254
               }
             },

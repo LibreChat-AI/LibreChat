@@ -1,4 +1,11 @@
-import { AnthropicEffort, ThinkingDisplay } from 'librechat-data-provider';
+import { Providers, getChatModelClass } from '@librechat/agents';
+import {
+  AuthKeys,
+  AnthropicEffort,
+  ThinkingDisplay,
+  bindsThinkingBlocks,
+  THINKING_BINDING_BETA,
+} from 'librechat-data-provider';
 import type * as t from '~/types';
 import { FINE_GRAINED_TOOL_STREAMING_BETA } from './helpers';
 import { getLLMConfig } from './llm';
@@ -1274,6 +1281,246 @@ describe('getLLMConfig', () => {
         expect((result.llmConfig.thinking as unknown as { type: string }).type).toBe('disabled');
       });
 
+      it('should keep adaptive thinking enabled and bind prior blocks for Opus 5.5', () => {
+        const result = getLLMConfig('test-key', {
+          modelOptions: {
+            model: 'claude-opus-5-5',
+            thinking: false,
+            temperature: 0.7,
+            topP: 0.9,
+            topK: 40,
+          },
+        });
+
+        expect(result.llmConfig.thinking).toMatchObject({
+          type: 'adaptive',
+          block_binding: { prefix_mismatch_behavior: 'drop_block' },
+        });
+        expect(result.llmConfig).not.toHaveProperty('temperature');
+        expect(result.llmConfig).not.toHaveProperty('topP');
+        expect(result.llmConfig).not.toHaveProperty('topK');
+        expect(
+          (result.llmConfig.clientOptions?.defaultHeaders as Record<string, string>)[
+            'anthropic-beta'
+          ],
+        ).toContain('thinking-binding-controls-2026-08-01');
+      });
+
+      it.each([
+        ['claude-opus-5-5', false, AnthropicEffort.max],
+        ['claude-opus-5-5', true, AnthropicEffort.low],
+        ['claude-opus-5', false, AnthropicEffort.high],
+        ['claude-opus-4-6', true, AnthropicEffort.medium],
+      ] as const)('serializes effort for %s with thinking %s', (model, thinking, effort) => {
+        const { llmConfig } = getLLMConfig('test-key', {
+          modelOptions: { model, thinking, effort },
+        });
+        const Anthropic = getChatModelClass(Providers.ANTHROPIC);
+        const payload = new Anthropic(llmConfig).invocationParams();
+
+        expect(payload.output_config).toEqual({ effort });
+        expect(payload.thinking).toEqual(llmConfig.thinking);
+        expect(payload).not.toHaveProperty('outputConfig');
+      });
+
+      it('uses the resolved Vertex deployment for the Opus 5.5 contract', () => {
+        const { llmConfig } = getLLMConfig(
+          {
+            [AuthKeys.GOOGLE_SERVICE_KEY]: {
+              project_id: 'test-project',
+              client_email: 'test@test-project.iam.gserviceaccount.com',
+              private_key: 'test-private-key',
+            },
+          },
+          {
+            modelOptions: {
+              model: 'team-model',
+              thinking: false,
+              effort: AnthropicEffort.max,
+              temperature: 0.7,
+            },
+            vertexConfig: {
+              region: 'global',
+              models: { 'team-model': { deploymentName: 'claude-opus-5-5' } },
+            },
+            vertexOptions: { region: 'global' },
+          },
+        );
+        const Anthropic = getChatModelClass(Providers.ANTHROPIC);
+        const payload = new Anthropic(llmConfig).invocationParams();
+
+        expect(payload.model).toBe('claude-opus-5-5');
+        expect(payload.thinking).toMatchObject({
+          type: 'adaptive',
+          display: 'summarized',
+          block_binding: { prefix_mismatch_behavior: 'drop_block' },
+        });
+        expect(payload.output_config).toEqual({ effort: AnthropicEffort.max });
+        expect(payload.temperature).toBeUndefined();
+        expect(llmConfig.clientOptions?.defaultHeaders).toMatchObject({
+          'anthropic-beta': 'thinking-binding-controls-2026-08-01',
+        });
+        expect(llmConfig.createClient?.({})).toMatchObject({ region: 'global' });
+      });
+
+      it('does not send beta-only block binding when client options are dropped', () => {
+        const result = getLLMConfig('test-key', {
+          modelOptions: { model: 'claude-opus-5-5', thinking: false },
+          dropParams: ['clientOptions'],
+        });
+
+        expect(result.llmConfig).not.toHaveProperty('clientOptions');
+        expect(result.llmConfig.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+      });
+
+      describe('Sonnet 5.5', () => {
+        const SONNET_55_IDS = ['claude-sonnet-5-5', 'claude-sonnet-5.5'];
+
+        it.each(SONNET_55_IDS)(
+          'binds adaptive thinking blocks, omits sampling and caches prompts for %s',
+          (model) => {
+            const result = getLLMConfig('test-key', {
+              modelOptions: {
+                model,
+                thinking: true,
+                effort: AnthropicEffort.max,
+                temperature: 0.7,
+                topP: 0.9,
+                topK: 40,
+              },
+            });
+
+            expect(result.llmConfig.model).toBe(model);
+            expect(result.llmConfig.thinking).toEqual({
+              type: 'adaptive',
+              display: 'summarized',
+              block_binding: { prefix_mismatch_behavior: 'drop_block' },
+            });
+            expect(result.llmConfig.outputConfig).toEqual({ effort: AnthropicEffort.max });
+            expect(result.llmConfig).not.toHaveProperty('temperature');
+            expect(result.llmConfig).not.toHaveProperty('topP');
+            expect(result.llmConfig).not.toHaveProperty('topK');
+            expect(result.llmConfig.maxTokens).toBe(128000);
+            expect(result.llmConfig).toHaveProperty('promptCache', true);
+            const beta = (result.llmConfig.clientOptions?.defaultHeaders as Record<string, string>)[
+              'anthropic-beta'
+            ];
+            expect(beta).toContain('thinking-binding-controls-2026-08-01');
+            expect(beta).not.toContain('fine-grained-tool-streaming-2025-05-14');
+          },
+        );
+
+        it.each(SONNET_55_IDS)(
+          'maps thinking off to between_tools without display, binding or budget for %s',
+          (model) => {
+            const result = getLLMConfig('test-key', {
+              modelOptions: {
+                model,
+                thinking: false,
+                thinkingBudget: 5000,
+                thinkingDisplay: ThinkingDisplay.summarized,
+                effort: AnthropicEffort.high,
+              },
+            });
+
+            expect(result.llmConfig.thinking).toEqual({ type: 'between_tools' });
+            expect(result.llmConfig.outputConfig).toEqual({ effort: AnthropicEffort.high });
+          },
+        );
+
+        it.each([AnthropicEffort.xhigh, AnthropicEffort.max])(
+          'clamps effort %s to high under between_tools',
+          (effort) => {
+            const { llmConfig } = getLLMConfig('test-key', {
+              modelOptions: { model: 'claude-sonnet-5-5', thinking: false, effort },
+            });
+            const Anthropic = getChatModelClass(Providers.ANTHROPIC);
+            const payload = new Anthropic(llmConfig).invocationParams();
+
+            expect(payload.thinking).toEqual({ type: 'between_tools' });
+            expect(payload.output_config).toEqual({ effort: AnthropicEffort.high });
+            expect(payload).not.toHaveProperty('temperature');
+          },
+        );
+
+        it('keeps low and medium effort under between_tools', () => {
+          for (const effort of [AnthropicEffort.low, AnthropicEffort.medium]) {
+            const { llmConfig } = getLLMConfig('test-key', {
+              modelOptions: { model: 'claude-sonnet-5-5', thinking: false, effort },
+            });
+            expect(llmConfig.outputConfig).toEqual({ effort });
+          }
+        });
+
+        it('treats a persisted between_tools config as thinking off', () => {
+          const result = getLLMConfig('test-key', {
+            modelOptions: {
+              model: 'claude-sonnet-5-5',
+              thinking: { type: 'between_tools' } as unknown as boolean,
+            },
+          });
+
+          expect(result.llmConfig.thinking).toEqual({ type: 'between_tools' });
+        });
+
+        it('never sends disabled thinking for Sonnet 5.5', () => {
+          const result = getLLMConfig('test-key', {
+            modelOptions: {
+              model: 'claude-sonnet-5-5',
+              thinking: { type: 'disabled' } as unknown as boolean,
+            },
+          });
+
+          expect(result.llmConfig.thinking).toEqual({ type: 'between_tools' });
+        });
+
+        it('requests display updates with its beta header', () => {
+          const result = getLLMConfig('test-key', {
+            modelOptions: {
+              model: 'claude-sonnet-5-5',
+              thinking: true,
+              thinkingDisplay: ThinkingDisplay.updates,
+            },
+          });
+
+          expect(result.llmConfig.thinking).toMatchObject({
+            type: 'adaptive',
+            display: 'updates',
+          });
+          const beta = (result.llmConfig.clientOptions?.defaultHeaders as Record<string, string>)[
+            'anthropic-beta'
+          ];
+          expect(beta.split(',')).toEqual(
+            expect.arrayContaining([
+              'thinking-binding-controls-2026-08-01',
+              'thinking-display-updates-2026-08-18',
+            ]),
+          );
+        });
+
+        it('demotes display updates to summarized when client options are dropped', () => {
+          const result = getLLMConfig('test-key', {
+            modelOptions: {
+              model: 'claude-sonnet-5-5',
+              thinking: true,
+              thinkingDisplay: ThinkingDisplay.updates,
+            },
+            dropParams: ['clientOptions'],
+          });
+
+          expect(result.llmConfig).not.toHaveProperty('clientOptions');
+          expect(result.llmConfig.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+        });
+
+        it('leaves Sonnet 5 on explicit disabled thinking', () => {
+          const result = getLLMConfig('test-key', {
+            modelOptions: { model: 'claude-sonnet-5', thinking: false },
+          });
+
+          expect(result.llmConfig.thinking).toEqual({ type: 'disabled' });
+        });
+      });
+
       it('should omit sampling parameters for Opus 5', () => {
         const result = getLLMConfig('test-key', {
           modelOptions: {
@@ -1907,12 +2154,16 @@ describe('getLLMConfig', () => {
           const headers = result.llmConfig.clientOptions?.defaultHeaders;
           expect(headers).toBeDefined();
           const betaHeader = (headers as Record<string, string>)['anthropic-beta'];
-          expect(betaHeader).toContain(FINE_GRAINED_TOOL_STREAMING_BETA);
+          /** Sonnet 5.5+ (here `claude-sonnet-6`) swaps the streaming beta for the binding beta. */
+          const baseBeta = bindsThinkingBlocks(model)
+            ? THINKING_BINDING_BETA
+            : FINE_GRAINED_TOOL_STREAMING_BETA;
+          expect(betaHeader).toContain(baseBeta);
 
           if (shouldHaveHeaders) {
-            expect(betaHeader).not.toBe(FINE_GRAINED_TOOL_STREAMING_BETA);
+            expect(betaHeader).not.toBe(baseBeta);
           } else {
-            expect(betaHeader).toBe(FINE_GRAINED_TOOL_STREAMING_BETA);
+            expect(betaHeader).toBe(baseBeta);
           }
 
           if (shouldHavePromptCache) {

@@ -8,11 +8,19 @@ type TestServer = {
   close: () => Promise<void>;
 };
 
-async function createLocalServer(): Promise<TestServer> {
+async function createLocalServer(
+  hostname = 'localhost',
+  redirect?: { status: 302 | 307; target: string },
+): Promise<TestServer> {
   let requestCount = 0;
   const sockets = new Set<Socket>();
   const server = http.createServer((_req, res) => {
     requestCount += 1;
+    if (redirect) {
+      res.writeHead(redirect.status, { Location: redirect.target });
+      res.end();
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
   });
@@ -22,7 +30,7 @@ async function createLocalServer(): Promise<TestServer> {
     socket.once('close', () => sockets.delete(socket));
   });
 
-  await new Promise<void>((resolve) => server.listen(0, 'localhost', resolve));
+  await new Promise<void>((resolve) => server.listen(0, hostname, resolve));
   const address = server.address() as AddressInfo;
 
   return {
@@ -63,6 +71,31 @@ describe('createHardenedOAuthFetch request policy', () => {
     expect(server.requestCount()).toBe(0);
   });
 
+  it('blocks private IP literals even when the DNS lookup is bypassed', async () => {
+    const target = await createLocalServer('127.0.0.1');
+    try {
+      await expect(
+        createHardenedOAuthFetch()(`http://127.0.0.1:${target.port}/token`),
+      ).rejects.toThrow('OAuth endpoint targets a blocked address');
+      expect(target.requestCount()).toBe(0);
+    } finally {
+      await target.close();
+    }
+  });
+
+  it('permits an explicitly exempted private IP and port', async () => {
+    const target = await createLocalServer('127.0.0.1');
+    try {
+      const response = await createHardenedOAuthFetch({
+        allowedAddresses: [`127.0.0.1:${target.port}`],
+      })(`http://127.0.0.1:${target.port}/token`);
+      await expect(response.json()).resolves.toEqual({ ok: true });
+      expect(target.requestCount()).toBe(1);
+    } finally {
+      await target.close();
+    }
+  });
+
   it('allows explicitly trusted local OAuth endpoints', async () => {
     const oauthFetch = createHardenedOAuthFetch({ allowedDomains: ['localhost'] });
 
@@ -73,6 +106,30 @@ describe('createHardenedOAuthFetch request policy', () => {
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(server.requestCount()).toBe(1);
   });
+
+  it.each([302, 307] as const)(
+    'does not follow a %i from an allowlisted OAuth endpoint to a private IP',
+    async (status) => {
+      const target = await createLocalServer('127.0.0.1');
+      const redirector = await createLocalServer('localhost', {
+        status,
+        target: `http://127.0.0.1:${target.port}/internal`,
+      });
+      try {
+        await expect(
+          createHardenedOAuthFetch({ allowedDomains: ['localhost'] })(
+            `http://localhost:${redirector.port}/token`,
+            { method: 'POST', body: 'grant_type=refresh_token', redirect: 'follow' },
+          ),
+        ).rejects.toThrow();
+        expect(redirector.requestCount()).toBe(1);
+        expect(target.requestCount()).toBe(0);
+      } finally {
+        await redirector.close();
+        await target.close();
+      }
+    },
+  );
 
   it('does not use address exemptions when domain policy is active but unmatched', async () => {
     const oauthFetch = createHardenedOAuthFetch({

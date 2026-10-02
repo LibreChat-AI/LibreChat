@@ -165,3 +165,26 @@ node e2e/setup/record.js --output=e2e/recordings/settings-draft.spec.ts
 7. Run the finished spec with `npm run e2e:mock -- <spec name>`.
 
 Generated recordings are a draft, not the final test. The committed version should use the shared helpers in `e2e/specs/mock/helpers.ts` where possible, wait on network or visible UI state instead of fixed sleeps, and keep test data deterministic.
+
+## PR screenshot pilot
+
+`e2e/screenshots/playwright.config.ts` is an opt-in evidence capture lane, not a pixel-baseline suite. It runs the real app with the mock profile and a private ephemeral MongoDB, then captures welcome screens at desktop/mobile sizes in both themes. Desktop captures also include temporary chat and the settings dialog. No model request is made. Motion is reduced, so these stills do not prove transitions or streaming behavior.
+
+Build and run each revision in its own clean worktree with its own locked install:
+
+```sh
+npm ci
+npm run frontend
+npx playwright install chromium
+E2E_CAPTURE_SHA=$(git rev-parse HEAD) \
+E2E_CAPTURE_DIR="$PWD/e2e/.generated/evidence-before" \
+E2E_USE_MEMORY_MONGO=true \
+E2E_BASE_URL=http://127.0.0.1:3333 \
+npx playwright test --config=e2e/screenshots/playwright.config.ts
+```
+
+For a historical revision without this lane, copy the two `e2e/screenshots/*.ts` files into its worktree, leaving its application code and lockfile unchanged. Run the same scenario source on both revisions. Use a new output directory for every attempt: existing images are never overwritten. Run revisions sequentially, or give every fixture service its own port using the mock profile's `E2E_*_PORT` settings. Do not reuse a running development server or a real user's database.
+
+Each PNG has a JSON sidecar containing the revision, browser version, viewport, theme, scenario hash, lockfile hash, built HTML hash, and image hash. Visible images must decode, fonts must finish loading, greeting springs must settle, and consecutive captures must match. A passing run and human inspection are both required before treating the pair as reviewed evidence; sidecars from a failed run are not complete evidence. Compare matching filenames between revisions. Pin the browser and font environment as well as the app revisions.
+
+Keep storage state, traces, logs, and session data private. Check that the PNGs contain only intended synthetic test data before uploading with the attachment-capable `gh` described in the PR template, then read back the PR body to verify real asset URLs. Mark any pending visual review explicitly. Do not commit the images. A new surface has no before state; label it accordingly rather than substituting another screen.

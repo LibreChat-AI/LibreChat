@@ -24,11 +24,29 @@ interface MessagesViewContextValue {
   setMessages: ReturnType<typeof useChatContext>['setMessages'];
 }
 
+type MessagesOperations = Pick<
+  MessagesViewContextValue,
+  'ask' | 'regenerate' | 'handleContinue' | 'getMessages' | 'setMessages'
+>;
+
 const MessagesViewContext = createContext<MessagesViewContextValue | undefined>(undefined);
 
-// Export the context so it can be provided by other providers (e.g., ShareMessagesProvider)
-export { MessagesViewContext };
-export type { MessagesViewContextValue };
+/**
+ * The view's operations alone. They are referentially stable, so components that
+ * only call them (every message row's hover actions) are not re-rendered by the
+ * submission and tail changes the combined context carries on each send.
+ */
+const MessagesOperationsContext = createContext<MessagesOperations | undefined>(undefined);
+
+/**
+ * Whether the view is generating, alone. A boolean context re-renders its consumers
+ * only when a send starts or settles, which is when every row's rerun controls flip.
+ */
+const MessagesSubmittingContext = createContext(false);
+
+// Export the contexts so they can be provided by other providers (e.g., ShareMessagesProvider)
+export { MessagesViewContext, MessagesOperationsContext, MessagesSubmittingContext };
+export type { MessagesViewContextValue, MessagesOperations };
 
 export function MessagesViewProvider({ children }: { children: React.ReactNode }) {
   const chatContext = useChatContext();
@@ -101,8 +119,17 @@ export function MessagesViewProvider({ children }: { children: React.ReactNode }
   );
 
   return (
-    <MessagesViewContext.Provider value={contextValue}>{children}</MessagesViewContext.Provider>
+    <MessagesOperationsContext.Provider value={messageOperations}>
+      <MessagesSubmittingContext.Provider value={isSubmitting}>
+        <MessagesViewContext.Provider value={contextValue}>{children}</MessagesViewContext.Provider>
+      </MessagesSubmittingContext.Provider>
+    </MessagesOperationsContext.Provider>
   );
+}
+
+/** Whether the view is generating; false outside a live messages view. */
+export function useMessagesIsSubmitting(): boolean {
+  return useContext(MessagesSubmittingContext);
 }
 
 export function useMessagesViewContext() {
@@ -129,20 +156,15 @@ export function useMessagesSubmission() {
 }
 
 /** Hook for components that only need message operations */
-export function useMessagesOperations() {
-  const { ask, regenerate, handleContinue, getMessages, setMessages } = useMessagesViewContext();
-  return useMemo(
-    () => ({ ask, regenerate, handleContinue, getMessages, setMessages }),
-    [ask, regenerate, handleContinue, getMessages, setMessages],
-  );
+export function useMessagesOperations(): MessagesOperations {
+  const context = useContext(MessagesOperationsContext);
+  if (!context) {
+    throw new Error('useMessagesOperations must be used within MessagesViewProvider');
+  }
+  return context;
 }
 
-type OptionalMessagesOps = Pick<
-  MessagesViewContextValue,
-  'ask' | 'regenerate' | 'handleContinue' | 'getMessages' | 'setMessages'
->;
-
-const NOOP_OPS: OptionalMessagesOps = {
+const NOOP_OPS: MessagesOperations = {
   ask: () => {},
   regenerate: () => {},
   handleContinue: () => {},
@@ -156,23 +178,8 @@ const NOOP_OPS: OptionalMessagesOps = {
  * be silently discarded rather than crashing. Callers must use optional chaining on
  * `getMessages()` results, as it returns `undefined` outside the provider.
  */
-export function useOptionalMessagesOperations(): OptionalMessagesOps {
-  const context = useContext(MessagesViewContext);
-  const ask = context?.ask;
-  const regenerate = context?.regenerate;
-  const handleContinue = context?.handleContinue;
-  const getMessages = context?.getMessages;
-  const setMessages = context?.setMessages;
-  return useMemo(
-    () => ({
-      ask: ask ?? NOOP_OPS.ask,
-      regenerate: regenerate ?? NOOP_OPS.regenerate,
-      handleContinue: handleContinue ?? NOOP_OPS.handleContinue,
-      getMessages: getMessages ?? NOOP_OPS.getMessages,
-      setMessages: setMessages ?? NOOP_OPS.setMessages,
-    }),
-    [ask, regenerate, handleContinue, getMessages, setMessages],
-  );
+export function useOptionalMessagesOperations(): MessagesOperations {
+  return useContext(MessagesOperationsContext) ?? NOOP_OPS;
 }
 
 /**

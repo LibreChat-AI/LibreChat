@@ -1,4 +1,5 @@
 import { Schema } from 'mongoose';
+import { CODE_APPROVAL_MODES } from 'librechat-data-provider';
 import type { IAgentQueuedTurnDocument } from '~/types/queuedTurn';
 
 const fileRefSchema = new Schema(
@@ -73,6 +74,7 @@ const queuedTurnSchema: Schema<IAgentQueuedTurnDocument> = new Schema(
     files: { type: [fileRefSchema], default: undefined },
     quotes: { type: [String], default: undefined },
     manualSkills: { type: [String], default: undefined },
+    codeApprovalMode: { type: String, enum: [...CODE_APPROVAL_MODES] },
     expectedPredecessorCreatedAt: { type: Number, min: 0 },
     attempts: { type: Number, required: true, default: 0, min: 0 },
     availableAt: { type: Date, required: true },

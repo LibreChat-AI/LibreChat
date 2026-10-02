@@ -22,6 +22,18 @@ describe('agent queued turn schemas', () => {
     expect(enqueueAgentQueuedTurnSchema.parse(request)).toEqual(request);
   });
 
+  it('accepts allowed modes without requiring them on legacy turns', () => {
+    for (const mode of ['ask', 'acceptEdits', 'fullAccess'] as const) {
+      expect(
+        enqueueAgentQueuedTurnSchema.parse({ ...request, codeApprovalMode: mode }).codeApprovalMode,
+      ).toBe(mode);
+    }
+    expect(enqueueAgentQueuedTurnSchema.parse(request).codeApprovalMode).toBeUndefined();
+    expect(() =>
+      enqueueAgentQueuedTurnSchema.parse({ ...request, codeApprovalMode: 'unrestricted' }),
+    ).toThrow();
+  });
+
   it('allows attachment-only queued turns', () => {
     expect(
       enqueueAgentQueuedTurnSchema.parse({

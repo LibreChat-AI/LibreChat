@@ -1595,6 +1595,123 @@ describe('initializeAgent — attachment scoping', () => {
     ).resolves.toBeDefined();
   });
 
+  it.each([
+    ['no conversation file IDs', [], true, true],
+    ['only a sibling-branch file ID', ['sibling-file'], true, true],
+    ['no file references on the active branch', ['sibling-file'], false, true],
+    ['an unanchored continuation', ['embedded-message-file'], true, false],
+  ])(
+    'restores search files with %s',
+    async (_case, conversationFiles, hasBranchFile, hasAnchor) => {
+      const { primeResources } = jest.requireMock('../resources') as { primeResources: jest.Mock };
+      const { filterFilesByEndpointRuntimeConfig } = jest.requireMock('~/files') as {
+        filterFilesByEndpointRuntimeConfig: jest.Mock;
+      };
+      const file = {
+        file_id: 'embedded-message-file',
+        user: 'user-1',
+        filename: 'report.pdf',
+        filepath: '/uploads/report.pdf',
+        object: 'file',
+        source: FileSources.local,
+        type: 'application/pdf',
+        bytes: 1024,
+        usage: 0,
+        context: FileContext.message_attachment,
+        embedded: true,
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: false, embeddedEntities: ['user-1'] },
+      };
+      const { agent, req, res, loadTools, db } = createMocks({
+        loadedToolDefinitions: [{ name: Tools.file_search }],
+      });
+      agent.tools = [Tools.file_search];
+      req.resolvedConversation = { conversationId: 'conv-1', files: conversationFiles };
+      mockExtractLibreChatParams.mockReturnValueOnce({
+        resendFiles: true,
+        maxContextTokens: undefined,
+        modelOptions: { model: agent.model },
+      });
+      if (hasAnchor) {
+        mockGetThreadData.mockImplementationOnce(realUtils.getThreadData);
+      }
+      filterFilesByEndpointRuntimeConfig.mockImplementation(
+        (_config: ServerRequest['config'], { files }: { files: IMongoFile[] }) => files,
+      );
+      primeResources.mockImplementationOnce(
+        jest.requireActual<typeof import('../resources')>('../resources').primeResources,
+      );
+      const getMessages = jest.fn().mockResolvedValue([
+        {
+          messageId: 'uploaded-message',
+          parentMessageId: Constants.NO_PARENT,
+          files: hasBranchFile ? [{ file_id: file.file_id }] : [],
+        },
+        { messageId: 'first-reply', parentMessageId: 'uploaded-message' },
+        {
+          messageId: 'sibling-message',
+          parentMessageId: Constants.NO_PARENT,
+          files: [{ file_id: 'sibling-file' }],
+        },
+      ]);
+      const allFiles = new Map([
+        [file.file_id, file],
+        ['sibling-file', { ...file, file_id: 'sibling-file', filename: 'sibling.pdf' }],
+      ]);
+      const getToolFilesByIds = jest
+        .fn()
+        .mockImplementation(async (ids: string[]) =>
+          ids.map((id) => allFiles.get(id)).filter((entry) => entry != null),
+        );
+      const getFiles = jest
+        .fn()
+        .mockImplementation(async (filter: { file_id: { $in: string[] } }) =>
+          filter.file_id.$in.map((id) => allFiles.get(id)).filter((entry) => entry != null),
+        );
+
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          conversationId: 'conv-1',
+          parentMessageId: hasAnchor ? 'first-reply' : undefined,
+          allowedProviders: new Set([Providers.OPENAI]),
+          isInitialAgent: true,
+          fileSearchAvailable: true,
+        },
+        {
+          ...db,
+          getMessages,
+          getToolFilesByIds,
+          getFiles,
+          getDeferredProvisionFiles: jest.fn().mockResolvedValue([]),
+        },
+      );
+
+      const expectedFileIds = hasBranchFile ? [file.file_id] : [];
+      expect(getToolFilesByIds).toHaveBeenCalledWith(
+        expectedFileIds,
+        new Set([EToolResources.file_search]),
+        {
+          userId: 'user-1',
+          tenantId: undefined,
+        },
+      );
+      expect(
+        result.tool_resources?.[EToolResources.file_search]?.files?.map((entry) => entry.file_id) ??
+          [],
+      ).toEqual(expectedFileIds);
+      expect(result.provisionState?.vectorDBFiles ?? []).toEqual([]);
+      expect(db.getConvoFiles).not.toHaveBeenCalled();
+      if (!hasAnchor) {
+        expect(getMessages).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it('owner-scopes request file usage updates while preserving trusted tool files', async () => {
     const { primeResources } = jest.requireMock('../resources') as {
       primeResources: jest.Mock;
@@ -1741,6 +1858,35 @@ describe('initializeAgent — maxContextTokens', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
+
+  it.each(['us.openai.gpt-6-sol', 'global.openai.gpt-6-astra', 'us.openai.gpt-5.6-terra'])(
+    'budgets %s using the Bedrock context window',
+    async (model) => {
+      const { agent, req, res, loadTools, db } = createMocks({
+        provider: Providers.BEDROCK,
+        model,
+        maxOutputTokens: 4096,
+        useRealTokenLookup: true,
+      });
+
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.BEDROCK]),
+          isInitialAgent: true,
+        },
+        db,
+      );
+
+      expect(mockGetModelMaxTokens).toHaveBeenCalledWith(model, EModelEndpoint.bedrock, undefined);
+      expect(result.maxContextTokens).toBe(Math.round((950000 - 4096) * 0.95));
+      expect(result.maxContextTokens).toBeGreaterThan(38079);
+    },
+  );
 
   it('uses user-configured maxContextTokens when provided via model_parameters', async () => {
     const userValue = 50000;
@@ -2991,6 +3137,7 @@ describe('initializeAgent — execute_code capability expansion', () => {
           workspaceId: 'project-a',
           operations: ['read_file', 'list_files', 'execute_command'],
           environment: { fingerprint: 'a'.repeat(64), repo: 'owner/project', actions: ['check'] },
+          linkedWorktrees: true,
         },
       };
       if (protectedEdit) codeExecutionContext.codeWorkspace!.operations.push('edit_file');
@@ -3034,6 +3181,10 @@ describe('initializeAgent — execute_code capability expansion', () => {
         (bashTool?.parameters as { properties?: { timeoutMs?: { maximum?: number } } })?.properties
           ?.timeoutMs?.maximum,
       ).toBe(120_000);
+      expect(
+        (bashTool?.parameters as { properties?: { cwd?: { description?: string } } })?.properties
+          ?.cwd?.description,
+      ).toContain('.worktrees/<name>');
     },
   );
 

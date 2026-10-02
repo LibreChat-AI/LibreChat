@@ -2,6 +2,9 @@ const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, formatAgentMessages } = require('@librechat/agents');
 const {
+  createOpenAIToolCallStream: createAcceptedToolCallStream,
+} = require('@librechat/agents/openai');
+const {
   EModelEndpoint,
   ResourceType,
   PermissionBits,
@@ -55,10 +58,12 @@ const {
   isContentFilterError,
   getSafeErrorMetadata,
   getUserFacingProviderError,
+  getAgentErrorMetadata,
   getRemoteAgentPermissions,
   createToolExecuteHandler,
   createOwnedToolEndHandler,
   buildNonStreamingResponse,
+  completeOpenAIToolCalls,
   createOpenAIStreamTracker,
   resolveAgentScopedSkillIds,
   createOpenAIContentAggregator,
@@ -67,7 +72,7 @@ const {
   executeAgentRun,
   waitForAgentExecutionWrites,
   resolveToolRoleGrants,
-  resolveConversationCodeEnvironmentDecision,
+  resolveAdmittedCodeEnvironmentDecision,
   createTerminalRunErrorObserver,
 } = require('@librechat/api');
 const {
@@ -256,13 +261,11 @@ function handleExecutionError({ error, res, context, appConfig }) {
       error.body.error,
     );
   }
-  const statusCode =
-    typeof error?.status === 'number' && error.status >= 400 && error.status < 600
-      ? error.status
-      : 500;
+  const errorMetadata = getAgentErrorMetadata(error);
+  const statusCode = errorMetadata?.status ?? 500;
   const errorType =
     statusCode >= 400 && statusCode < 500 ? 'invalid_request_error' : 'server_error';
-  const errorCode = !protectionEnabled && typeof error?.code === 'string' ? error.code : null;
+  const errorCode = !protectionEnabled ? (errorMetadata?.code ?? null) : null;
   sendErrorResponse(res, statusCode, errorMessage, errorType, errorCode);
 }
 
@@ -462,12 +465,16 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         req.resolvedConversation = conversation;
       }
 
-      const codeEnvironmentDecision = resolveConversationCodeEnvironmentDecision({
-        conversationId,
-        requestedMode: request.code_environment_mode,
-        requestedSelections: request.code_workspaces,
-        conversation: req.resolvedConversation,
-      });
+      const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
+        await resolveAdmittedCodeEnvironmentDecision({
+          appConfig,
+          conversation: req.resolvedConversation,
+          conversationId,
+          requestedMode: request.code_environment_mode,
+          requestedSelections: request.code_workspaces,
+          readDecision: (id) => db.readAdmittedConvoCodeEnvironmentDecision(principal.userId, id),
+        });
+      req.resolvedConversation = admittedConversation;
       const parentMessageId = request.parent_message_id ?? null;
       let mcpParentMessageId;
       if (
@@ -817,7 +824,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       // Create handler config for OpenAI streaming (only used when streaming)
       const handlerConfig = isStreaming
         ? {
-            res,
+            writer: res,
             context,
             tracker,
           }
@@ -974,8 +981,17 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         }
       };
 
+      const toolCallStream = createAcceptedToolCallStream({
+        signal: execution.signal,
+        toolCalls: isStreaming ? tracker.toolCalls : aggregator.toolCalls,
+        ...(isStreaming && {
+          emit: (delta) => writeSSE(res, createChunk(context, delta)),
+        }),
+      });
+
       // Event handlers for OpenAI-compatible streaming
       const handlers = {
+        ...toolCallStream.handlers,
         // Text content streaming
         on_message_delta: createHandler((data) => {
           const content = data?.delta?.content;
@@ -1001,78 +1017,6 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           }
         }),
 
-        // Tool call initiation - streams id and name (from on_run_step)
-        on_run_step: createHandler((data) => {
-          const stepDetails = data?.stepDetails;
-          if (stepDetails?.type === 'tool_calls' && stepDetails.tool_calls) {
-            for (const tc of stepDetails.tool_calls) {
-              const toolIndex = data.index ?? 0;
-              const toolId = tc.id ?? '';
-              const toolName = tc.name ?? '';
-              const toolCall = {
-                id: toolId,
-                type: 'function',
-                function: { name: toolName, arguments: '' },
-              };
-
-              // Track tool call in tracker or aggregator
-              if (isStreaming) {
-                if (!tracker.toolCalls.has(toolIndex)) {
-                  tracker.toolCalls.set(toolIndex, toolCall);
-                }
-                // Stream initial tool call chunk (like OpenAI does)
-                writeSSE(
-                  res,
-                  createChunk(context, {
-                    tool_calls: [{ index: toolIndex, ...toolCall }],
-                  }),
-                );
-              } else {
-                if (!aggregator.toolCalls.has(toolIndex)) {
-                  aggregator.toolCalls.set(toolIndex, toolCall);
-                }
-              }
-            }
-          }
-        }),
-
-        // Tool call argument streaming (from on_run_step_delta)
-        on_run_step_delta: createHandler((data) => {
-          const delta = data?.delta;
-          if (delta?.type === 'tool_calls' && delta.tool_calls) {
-            for (const tc of delta.tool_calls) {
-              const args = tc.args ?? '';
-              if (!args) {
-                continue;
-              }
-
-              const toolIndex = tc.index ?? 0;
-
-              // Update tool call arguments
-              const targetMap = isStreaming ? tracker.toolCalls : aggregator.toolCalls;
-              const tracked = targetMap.get(toolIndex);
-              if (tracked) {
-                tracked.function.arguments += args;
-              }
-
-              // Stream argument delta (only for streaming)
-              if (isStreaming) {
-                writeSSE(
-                  res,
-                  createChunk(context, {
-                    tool_calls: [
-                      {
-                        index: toolIndex,
-                        function: { arguments: args },
-                      },
-                    ],
-                  }),
-                );
-              }
-            }
-          }
-        }),
-
         // Usage tracking
         on_chat_model_end: {
           handle: (_event, data, metadata, graph) => {
@@ -1084,7 +1028,6 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
             }
           },
         },
-        on_run_step_completed: createHandler(),
         // Use proper ToolEndHandler for processing artifacts (images, file citations, code output)
         on_tool_end: createOwnedToolEndHandler(toolEndCallback, logger),
         on_chain_stream: createHandler(),
@@ -1188,54 +1131,56 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         version: 'v2',
       };
 
-      await run.processStream({ messages: formattedMessages }, config, {
-        callbacks: {
-          [Callback.TOOL_ERROR]: (graph, error, toolId) => {
-            logger.error(`[OpenAI API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
+      await completeOpenAIToolCalls(toolCallStream, async () => {
+        await run.processStream({ messages: formattedMessages }, config, {
+          callbacks: {
+            [Callback.TOOL_ERROR]: (graph, error, toolId) => {
+              logger.error(`[OpenAI API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
+            },
           },
-        },
-      });
+        });
 
-      // Record token usage against balance
-      const balanceConfig = getBalanceConfig(appConfig);
-      const transactionsConfig = getTransactionsConfig(appConfig);
-      execution.track(
-        recordCollectedUsage(
-          {
-            spendTokens: db.spendTokens,
-            spendStructuredTokens: db.spendStructuredTokens,
-            pricing: {
-              getMultiplier: db.getMultiplier,
-              getCacheMultiplier: db.getCacheMultiplier,
+        // Record token usage against balance
+        const balanceConfig = getBalanceConfig(appConfig);
+        const transactionsConfig = getTransactionsConfig(appConfig);
+        execution.track(
+          recordCollectedUsage(
+            {
+              spendTokens: db.spendTokens,
+              spendStructuredTokens: db.spendStructuredTokens,
+              pricing: {
+                getMultiplier: db.getMultiplier,
+                getCacheMultiplier: db.getCacheMultiplier,
+              },
+              bulkWriteOps: {
+                insertMany: db.bulkInsertTransactions,
+                updateBalance: db.updateBalance,
+              },
             },
-            bulkWriteOps: {
-              insertMany: db.bulkInsertTransactions,
-              updateBalance: db.updateBalance,
+            {
+              user: userId,
+              conversationId,
+              collectedUsage,
+              context: 'message',
+              messageId: responseId,
+              balance: balanceConfig,
+              transactions: transactionsConfig,
+              model: primaryConfig.model || agent.model_parameters?.model,
+              endpointTokenConfig: primaryConfig.endpointTokenConfig,
+              resolveEndpointTokenConfig,
             },
-          },
-          {
-            user: userId,
-            conversationId,
-            collectedUsage,
-            context: 'message',
-            messageId: responseId,
-            balance: balanceConfig,
-            transactions: transactionsConfig,
-            model: primaryConfig.model || agent.model_parameters?.model,
-            endpointTokenConfig: primaryConfig.endpointTokenConfig,
-            resolveEndpointTokenConfig,
-          },
-        ).catch((err) => {
-          logger.error('[OpenAI API] Error recording usage:', getSafeErrorMetadata(err));
-        }),
-      );
+          ).catch((err) => {
+            logger.error('[OpenAI API] Error recording usage:', getSafeErrorMetadata(err));
+          }),
+        );
+      });
 
       const usage = buildCompletionUsage(collectedUsage);
 
       // Finalize response
       const duration = Date.now() - requestStartTime;
       if (isStreaming) {
-        sendFinalChunk(handlerConfig, 'stop', usage);
+        sendFinalChunk(handlerConfig, 'stop', usage, true);
         res.end();
         logger.debug(`[OpenAI API] Response ${responseId} completed in ${duration}ms (streaming)`);
 
@@ -1271,6 +1216,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           aggregator.getReasoning(),
           aggregator.toolCalls,
           usage,
+          true,
         );
         res.json(response);
         logger.debug(

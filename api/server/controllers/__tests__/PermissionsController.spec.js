@@ -339,8 +339,12 @@ describe('PermissionsController', () => {
       });
       const res = createMockRes();
 
+      req.config = { config: { permissions: { maxWriteAttempts: 7 } } };
       await updateResourcePermissions(req, res);
 
+      expect(mockBulkUpdateResourcePermissions).toHaveBeenCalledWith(
+        expect.objectContaining({ maxWriteAttempts: 7 }),
+      );
       expect(mockRecordAuditEntry).toHaveBeenCalledWith(
         expect.objectContaining({
           action: 'permission.insights_assigned',

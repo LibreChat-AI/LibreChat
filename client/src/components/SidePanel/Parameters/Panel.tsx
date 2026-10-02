@@ -46,7 +46,7 @@ export default function Parameters() {
     [conversation?.endpoint, endpointsConfig],
   );
 
-  const parameters = useMemo((): SettingDefinition[] => {
+  const { parameters, visibleParameters } = useMemo(() => {
     const customParams = endpointsConfig[provider]?.customParams ?? {};
     const [combinedKey, endpointKey] = getSettingsKeys(endpointType ?? provider, model);
     const overriddenEndpointKey = customParams.defaultParamsEndpoint ?? endpointKey;
@@ -63,14 +63,18 @@ export default function Parameters() {
     const defaultParams = paramSettings[combinedKey] ?? paramSettings[overriddenEndpointKey] ?? [];
     const overriddenParams = endpointsConfig[provider]?.customParams?.paramDefinitions ?? [];
     const overriddenParamsMap = keyBy(overriddenParams, 'key');
-    const modelAwareParams = applyModelAwareDefaults(
-      defaultParams.filter((param) => param != null && !dropParamsSet.has(param.key)),
+    /** Model visibility must not determine which stored settings survive pruning.
+     * Explicit administrator drops still remove a key from both sets. */
+    const parameters = defaultParams.filter(
+      (param) => param != null && !dropParamsSet.has(param.key),
+    );
+    const visibleParameters = applyModelAwareDefaults(
+      parameters,
       overriddenEndpointKey,
       model,
-    );
-    return modelAwareParams.map(
-      (param) => (overriddenParamsMap[param.key] as SettingDefinition) ?? param,
-    );
+      endpointsConfig?.[provider ?? '']?.responsesApiRouting,
+    ).map((param) => (overriddenParamsMap[param.key] as SettingDefinition) ?? param);
+    return { parameters, visibleParameters };
   }, [endpointType, endpointsConfig, model, provider, startupConfig]);
 
   useEffect(() => {
@@ -178,7 +182,7 @@ export default function Parameters() {
         {' '}
         {/* This is the parent element containing all settings */}
         {/* Below is an example of an applied dynamic setting, each be contained by a div with the column span specified */}
-        {parameters.map((setting) => {
+        {visibleParameters.map((setting) => {
           const Component = componentMapping[setting.component];
           if (!Component) {
             return null;

@@ -33,6 +33,13 @@ interface ControlComboboxProps {
   placement?: Ariakit.SelectStoreProps['placement'];
   popoverClassName?: string;
   matchTriggerWidth?: boolean;
+  /** Caps the entire popover, search field included, at this pixel height;
+   * the option list becomes the scrolling region. Unset keeps the default
+   * fixed 300px list height. */
+  popoverMaxHeight?: number;
+  /** Renders at most this many options while the search field is empty.
+   * Typing lifts the cap so search reaches every option. */
+  unsearchedLimit?: number;
   /** `field` matches the `Input` primitive so this can sit in a form row. */
   variant?: 'default' | 'field';
   gutter?: number;
@@ -74,6 +81,8 @@ function ControlCombobox({
   placement,
   popoverClassName,
   matchTriggerWidth = true,
+  popoverMaxHeight,
+  unsearchedLimit,
   variant = 'default',
   gutter = 4,
   portal = true,
@@ -112,8 +121,22 @@ function ControlCombobox({
       keys: ['value', 'label'],
       baseSort: (a, b) => (a.index < b.index ? -1 : 1),
     });
-    return filteredItems.map(getItem);
-  }, [searchValue, items]);
+    const mapped = filteredItems.map(getItem);
+    if (unsearchedLimit != null && searchValue.trim() === '') {
+      const capped = mapped.slice(0, unsearchedLimit);
+      /** The open list keeps offering the current selection: an option that
+       * ranks past the cut takes the last slot instead of vanishing until the
+       * user knows to search for it. */
+      if (selectedValue != null && !capped.some((item) => item.value === selectedValue)) {
+        const selected = mapped.find((item) => item.value === selectedValue);
+        if (selected != null) {
+          capped[capped.length - 1] = selected;
+        }
+      }
+      return capped;
+    }
+    return mapped;
+  }, [searchValue, items, unsearchedLimit, selectedValue]);
 
   useEffect(() => {
     const button = buttonRef.current;
@@ -205,16 +228,26 @@ function ControlCombobox({
         portal={portal}
         className={cn(
           'overflow-hidden rounded-xl border border-border-light bg-surface-secondary shadow-lg',
+          popoverMaxHeight != null && 'flex flex-col',
           popoverClassName ?? 'animate-popover',
         )}
         style={{
           zIndex: popoverZIndex,
+          /** `--popover-available-height` is the space Ariakit measured for this
+           * placement, so a short viewport shrinks the cap instead of pushing
+           * lower options offscreen; the fallback keeps the cap when the
+           * variable is absent. */
+          ...(popoverMaxHeight != null
+            ? {
+                maxHeight: `min(${popoverMaxHeight}px, var(--popover-available-height, ${popoverMaxHeight}px))`,
+              }
+            : null),
           ...(matchTriggerWidth
             ? { width: isCollapsed ? '300px' : (buttonWidth ?? '300px') }
             : { minWidth: '16rem' }),
         }}
       >
-        <div className="py-1.5">
+        <div className="shrink-0 py-1.5">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-primary" />
             <Ariakit.Combobox
@@ -225,7 +258,13 @@ function ControlCombobox({
             />
           </div>
         </div>
-        <div className="max-h-[300px] overflow-auto">
+        <div
+          className={cn(
+            popoverMaxHeight != null
+              ? 'min-h-0 flex-1 overflow-auto'
+              : 'max-h-[300px] overflow-auto',
+          )}
+        >
           <Ariakit.ComboboxList store={combobox}>
             <SelectRenderer store={select} items={matches} itemSize={ROW_HEIGHT} overscan={5}>
               {({ value, icon, label, ...item }) => (

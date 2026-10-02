@@ -751,6 +751,17 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                     missingOwners.size > 0 ? missingOwners : undefined,
                   );
                 } catch (error) {
+                  if (
+                    error instanceof OboTokenResolutionError &&
+                    error.reason === 'missing_upstream_provider'
+                  ) {
+                    return outcomesForOwners(server, 'mcp_configuration_missing').map(
+                      (outcome) => ({
+                        ...outcome,
+                        detail: 'unattended_auth_required' as const,
+                      }),
+                    );
+                  }
                   return outcomesForOwners(
                     server,
                     reauth ||

@@ -42,6 +42,13 @@ import {
   hydrateFileDeliveryMetadata,
   mergeRestagedQuotes,
 } from '~/utils';
+import {
+  recoveryDispositionsFamily,
+  recoveryDisposition,
+  canRestoreRecovery,
+  blockRecovery,
+} from '~/components/Chat/Steering/recovery';
+import useCodeApprovalMode from '../Agents/useCodeApprovalMode';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import { useLatestMessage } from '~/hooks/Messages';
@@ -377,6 +384,7 @@ export interface UseSteeringParams {
   index: number;
   conversationId: string;
   conversation: TConversation | null;
+  addedConversation?: TConversation | null;
   isSubmitting: boolean;
   answerModeActive: boolean;
   /** Composer attachments — consumed into queued items (steering is text-only). */
@@ -411,6 +419,7 @@ export default function useSteering({
   index,
   conversationId,
   conversation,
+  addedConversation,
   isSubmitting,
   answerModeActive,
   files,
@@ -436,6 +445,7 @@ export default function useSteering({
   const setDefaultAction = useSetRecoilState(store.duringRunDefaultAction);
   const steerInterruptsByDefault = useRecoilValue(store.steerInterruptsByDefault);
 
+  const { selected: codeApprovalMode } = useCodeApprovalMode(conversation, addedConversation);
   const endpoint = conversation?.endpointType ?? conversation?.endpoint;
   const steerable = !isAssistantsEndpoint(endpoint);
   const hasRealConvoId =
@@ -1051,6 +1061,7 @@ export default function useSteering({
                 item.manualSkills.length > 0 && {
                   manualSkills: item.manualSkills,
                 }),
+              ...(codeApprovalMode != null && { codeApprovalMode }),
               ...(item.priority === true && { priority: true }),
               ...(item.expectedPredecessorCreatedAt != null && {
                 expectedPredecessorCreatedAt: item.expectedPredecessorCreatedAt,
@@ -1108,6 +1119,7 @@ export default function useSteering({
       queueKey,
       conversationId,
       serverQueueEnabled,
+      codeApprovalMode,
       liveMessageState?.parentMessageId,
       pendingReveal,
       markQueuedFilesUsage,
@@ -1266,36 +1278,6 @@ export default function useSteering({
     [queueKey],
   );
 
-  /** Once a parked source is discarded it must never be retried as a recovery
-   * attempt. Downgrade the row in place so a guarded Edit that finds a newer
-   * draft can leave the same words, context, identity, and queue position as
-   * an ordinary local follow-up. */
-  const downgradeQueuedRecovery = useRecoilCallback(
-    ({ snapshot, set }) =>
-      (id: string): boolean => {
-        const queue = snapshot.getLoadable(store.queuedMessagesByConvoId(queueKey)).getValue();
-        let found = false;
-        const next = queue.map((item) => {
-          if (item.id !== id) {
-            return item;
-          }
-          found = true;
-          const {
-            clientRequestId: _clientRequestId,
-            recoverySteerId: _recoverySteerId,
-            recoveryClientSteerId: _recoveryClientSteerId,
-            ...ordinary
-          } = item;
-          return ordinary;
-        });
-        if (found) {
-          set(store.queuedMessagesByConvoId(queueKey), next);
-        }
-        return found;
-      },
-    [queueKey],
-  );
-
   /** Settle a queued row's terminal recovery source before an Edit/Remove.
    * Ordinary rows have no server copy. A v2 leftover first uses its durable
    * receipt to atomically discard the parked copy, then becomes an ordinary
@@ -1347,16 +1329,32 @@ export default function useSteering({
         return true;
       }
       if (item.recoveryClientSteerId == null || !hasRealConvoId) {
+        jotaiStore.set(recoveryDispositionsFamily(queueKey), (previous) =>
+          blockRecovery(previous, item.recoverySteerId!),
+        );
         showToast({
           message: localize('com_ui_steer_cancel_failed'),
           status: 'error',
         });
         return false;
       }
+      const dispositions = recoveryDispositionsFamily(queueKey);
+      const disposition = recoveryDisposition(jotaiStore.get(dispositions), item);
+      if (disposition === 'cancelled') {
+        return true;
+      }
+      if (disposition === 'cancelling') {
+        return false;
+      }
+      if (!canRestoreRecovery(jotaiStore.get(dispositions), item)) {
+        return false;
+      }
+      const steerId = item.recoverySteerId;
+      jotaiStore.set(dispositions, (previous) => ({ ...previous, [steerId]: 'cancelling' }));
       try {
         const { removed } = await cancelSteer({
           conversationId,
-          steerId: item.recoverySteerId,
+          steerId,
           clientSteerId: item.recoveryClientSteerId,
         });
         if (removed !== true) {
@@ -1366,13 +1364,20 @@ export default function useSteering({
           });
           return false;
         }
-        return downgradeQueuedRecovery(item.id);
+        jotaiStore.set(dispositions, (previous) => ({ ...previous, [steerId]: 'cancelled' }));
+        // Keep the binding held until the caller's guarded Edit/Remove succeeds.
+        // A newer composer draft must not turn cancelled words into an auto-send.
+        return true;
       } catch {
         showToast({
           message: localize('com_ui_steer_cancel_failed'),
           status: 'error',
         });
         return false;
+      } finally {
+        jotaiStore.set(dispositions, (previous) =>
+          previous[steerId] === 'cancelling' ? { ...previous, [steerId]: 'blocked' } : previous,
+        );
       }
     },
     [
@@ -1380,7 +1385,6 @@ export default function useSteering({
       cancelAgentQueuedTurn,
       applyQueuedTurnReceipts,
       conversationId,
-      downgradeQueuedRecovery,
       downgradeServerQueuedTurn,
       hasRealConvoId,
       localize,
@@ -1388,6 +1392,24 @@ export default function useSteering({
       jotaiStore,
       queueKey,
     ],
+  );
+
+  const dismissRecovery = useCallback(
+    (item: QueuedMessage) => {
+      const dispositions = recoveryDispositionsFamily(queueKey);
+      if (
+        item.recoverySteerId == null ||
+        !['blocked', 'cancelled'].includes(
+          recoveryDisposition(jotaiStore.get(dispositions), item) ?? '',
+        )
+      ) {
+        return;
+      }
+      const steerId = item.recoverySteerId;
+      jotaiStore.set(dispositions, (previous) => ({ ...previous, [steerId]: 'dismissed' }));
+      removeQueued(item.id);
+    },
+    [jotaiStore, queueKey, removeQueued],
   );
 
   /** Capture-then-remove, including the item's neighbours, so any refused send
@@ -1456,9 +1478,13 @@ export default function useSteering({
     ({ set }) =>
       (origin: QueuedMessageOrigin) => {
         releaseQueuedOrigin(origin);
-        set(store.queuedMessagesByConvoId(queueKey), (prev) => insertQueuedOrigin(prev, origin));
+        set(store.queuedMessagesByConvoId(queueKey), (prev) =>
+          canRestoreRecovery(jotaiStore.get(recoveryDispositionsFamily(queueKey)), origin.item)
+            ? insertQueuedOrigin(prev, origin)
+            : prev,
+        );
       },
-    [queueKey, releaseQueuedOrigin],
+    [queueKey, releaseQueuedOrigin, jotaiStore],
   );
 
   /**
@@ -2003,6 +2029,9 @@ export default function useSteering({
    *  boundary; it only means something on the live-run path. */
   const sendLocalQueuedNow = useCallback(
     (item: QueuedMessage, opts?: { preempt?: boolean }) => {
+      if (recoveryDisposition(jotaiStore.get(recoveryDispositionsFamily(queueKey)), item) != null) {
+        return;
+      }
       /** In answer mode (and any other submission-owned non-steerable state)
        * there is no immediate path. Refuse before touching queue state so a
        * stale/direct caller cannot perform the old remove-and-restore no-op. */
@@ -2071,6 +2100,8 @@ export default function useSteering({
     },
     [
       takeQueued,
+      jotaiStore,
+      queueKey,
       duringRunActive,
       canSteer,
       submitSteer,
@@ -2231,6 +2262,7 @@ export default function useSteering({
       enqueue,
       removeQueued,
       discardQueued,
+      dismissRecovery,
       sendQueuedNow,
       interruptAndSend,
       interruptSteer,
@@ -2257,6 +2289,7 @@ export default function useSteering({
       enqueue,
       removeQueued,
       discardQueued,
+      dismissRecovery,
       sendQueuedNow,
       interruptAndSend,
       interruptSteer,

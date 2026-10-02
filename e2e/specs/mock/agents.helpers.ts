@@ -136,6 +136,20 @@ export async function openAgentBuilder(page: Page) {
   return form;
 }
 
+/** Closes the narrow-layout drawer `openAgentBuilder` opened, so it cannot
+ *  cover the composer. A no-op on the desktop layout, where the builder is a rail. */
+export async function closeMobileDrawer(page: Page) {
+  if ((page.viewportSize()?.width ?? DESKTOP_WIDTH) > NARROW_MAX_WIDTH) {
+    return;
+  }
+  const drawer = page.locator(`#${MOBILE_DRAWER_ID}`);
+  if (await drawer.evaluate((element) => element.hasAttribute('inert'))) {
+    return;
+  }
+  await page.getByRole('button', { name: 'Close sidebar', exact: true }).click();
+  await expect(drawer).toHaveAttribute('inert', /.*/);
+}
+
 export async function selectMockModel(page: Page, clickBackToBuilder = false) {
   const form = page.getByRole('form', { name: 'Agent configuration form' });
 

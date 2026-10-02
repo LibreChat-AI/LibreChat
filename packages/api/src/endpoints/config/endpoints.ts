@@ -12,6 +12,7 @@ import type { ServerRequest, TCustomEndpointsConfig } from '~/types';
 import type { GetAppConfigOptions } from '~/app/service';
 import { loadCustomEndpointsConfig as defaultLoadCustomEndpoints } from '~/endpoints/custom';
 import { getAppConfigOptionsFromUser } from '~/app/service';
+import { getResponsesApiRouting } from './responses';
 
 type PartialEndpointEntry = Partial<TConfig> & Record<string, unknown>;
 type DefaultEndpointsResult = Record<string, PartialEndpointEntry | false | null>;
@@ -45,6 +46,15 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
 
     if (appConfig.endpoints?.[EModelEndpoint.azureOpenAI]) {
       mergedConfig[EModelEndpoint.azureOpenAI] = { userProvide: false };
+    }
+
+    for (const endpoint of [EModelEndpoint.openAI, EModelEndpoint.azureOpenAI] as const) {
+      const entry = mergedConfig[endpoint];
+      if (entry)
+        mergedConfig[endpoint] = {
+          ...entry,
+          responsesApiRouting: getResponsesApiRouting(appConfig, endpoint),
+        };
     }
 
     if (appConfig.endpoints?.[EModelEndpoint.anthropic]?.vertexConfig?.enabled) {

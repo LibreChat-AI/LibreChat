@@ -320,7 +320,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
           existingJob.userId !== userId ||
           (existingJob.tenantId != null && existingJob.tenantId !== tenantId))
       ) {
-        throw new Error('Generation job owner mismatch');
+        throw recoveredSteerId != null
+          ? new RecoveredSteerPayloadMismatchError('owner_mismatch')
+          : new Error('Generation job owner mismatch');
       }
 
       const parked = this.parkedSteers.get(streamId);
@@ -351,7 +353,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
         throw new Error('Generation recovery state is corrupt');
       }
       if (parsed.userId !== userId || (parsed.tenantId != null && parsed.tenantId !== tenantId)) {
-        throw new Error('Generation job owner mismatch');
+        throw recoveredSteerId != null
+          ? new RecoveredSteerPayloadMismatchError('owner_mismatch')
+          : new Error('Generation job owner mismatch');
       }
     };
 
@@ -398,15 +402,15 @@ export class InMemoryJobStore implements IJobStoreV2 {
     const assertRecoveryCompatible = (): void => {
       if (recoveredSteerId == null) {
         if (recoveredSteerPayload != null) {
-          throw new RecoveredSteerPayloadMismatchError();
+          throw new RecoveredSteerPayloadMismatchError('invalid_payload');
         }
         return;
       }
       if (!isRecoveredSteerPayload(recoveredSteerPayload)) {
-        throw new RecoveredSteerPayloadMismatchError();
+        throw new RecoveredSteerPayloadMismatchError('invalid_payload');
       }
       if (initialMetadata.generationProtocolVersion === 1) {
-        throw new RecoveredSteerPayloadMismatchError();
+        throw new RecoveredSteerPayloadMismatchError('protocol_mismatch');
       }
 
       let candidate: ReturnType<typeof toPendingSteer> | undefined;
@@ -437,11 +441,13 @@ export class InMemoryJobStore implements IJobStoreV2 {
         candidate = item == null ? undefined : toPendingSteer(item);
       }
 
-      if (
-        sourceProtocol !== 2 ||
-        candidate == null ||
-        !recoveredSteerPayloadMatches(candidate, recoveredSteerPayload)
-      ) {
+      if (candidate == null) {
+        throw new RecoveredSteerPayloadMismatchError('source_missing');
+      }
+      if (sourceProtocol !== 2) {
+        throw new RecoveredSteerPayloadMismatchError('protocol_mismatch');
+      }
+      if (!recoveredSteerPayloadMatches(candidate, recoveredSteerPayload)) {
         throw new RecoveredSteerPayloadMismatchError();
       }
     };

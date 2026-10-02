@@ -35,6 +35,7 @@ import { reserveMCPToolsChangedRevision } from './toolsChanged';
 import { runOutsideTracing } from '~/utils/tracing';
 import { mediaTypeEssence } from '~/utils/headers';
 import { isAddressAllowed } from '~/auth/domain';
+import { withMCPRequestSignal } from './signal';
 import { withTimeout } from '~/utils/promise';
 import { isOAuthServer } from './utils';
 import { mcpConfig } from './mcpConfig';
@@ -2740,11 +2741,13 @@ export class MCPConnection extends EventEmitter {
     signal?: AbortSignal,
   ): Promise<MCPListToolsResult> {
     try {
-      return await this.client.listTools(cursor != null ? { cursor } : undefined, {
-        timeout: timeoutMs,
-        maxTotalTimeout: timeoutMs,
-        signal,
-      });
+      return await withMCPRequestSignal(signal, (requestSignal) =>
+        this.client.listTools(cursor != null ? { cursor } : undefined, {
+          timeout: timeoutMs,
+          maxTotalTimeout: timeoutMs,
+          signal: requestSignal,
+        }),
+      );
     } catch (error) {
       this.emitError(error, 'Failed to fetch tools');
       throw error;
@@ -2793,7 +2796,9 @@ export class MCPConnection extends EventEmitter {
 
     try {
       // Try ping first as it's the lightest check
-      await this.client.ping({ signal });
+      await withMCPRequestSignal(signal, (requestSignal) =>
+        this.client.ping({ signal: requestSignal }),
+      );
       return this.connectionState === 'connected';
     } catch (error) {
       if (probeAborted()) {
@@ -2827,13 +2832,19 @@ export class MCPConnection extends EventEmitter {
 
         // If we have capabilities, try calling a supported method to verify connection
         if (capabilities?.tools) {
-          await this.client.listTools(undefined, { signal });
+          await withMCPRequestSignal(signal, (requestSignal) =>
+            this.client.listTools(undefined, { signal: requestSignal }),
+          );
           return this.connectionState === 'connected';
         } else if (capabilities?.resources) {
-          await this.client.listResources(undefined, { signal });
+          await withMCPRequestSignal(signal, (requestSignal) =>
+            this.client.listResources(undefined, { signal: requestSignal }),
+          );
           return this.connectionState === 'connected';
         } else if (capabilities?.prompts) {
-          await this.client.listPrompts(undefined, { signal });
+          await withMCPRequestSignal(signal, (requestSignal) =>
+            this.client.listPrompts(undefined, { signal: requestSignal }),
+          );
           return this.connectionState === 'connected';
         } else {
           // No capabilities to test, but we're in connected state and initialization succeeded

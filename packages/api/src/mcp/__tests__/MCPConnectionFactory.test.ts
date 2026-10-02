@@ -4873,6 +4873,42 @@ describe('MCPConnectionFactory', () => {
       { name: 'tool2', description: 'Second tool', inputSchema: { type: 'object' } },
     ];
 
+    it('preserves public tool listing without a redundant OAuth connect when tokens are absent', async () => {
+      const serverConfig = {
+        type: 'streamable-http' as const,
+        url: 'https://mcp.example.com',
+        requiresOAuth: true,
+      };
+      mockProcessMCPEnv.mockImplementation(({ options }) => options);
+      mockFlowManager.createFlowWithHandler.mockResolvedValue(null);
+      mockConnectionInstance.connect.mockResolvedValue(undefined);
+      mockConnectionInstance.isConnected.mockResolvedValue(true);
+      mockConnectionInstance.fetchOrderedToolsSnapshot = jest.fn().mockResolvedValue({
+        tools: mockTools,
+        complete: true,
+      });
+
+      const result = await MCPConnectionFactory.discoverTools(
+        { serverName: 'public-oauth', serverConfig },
+        {
+          useOAuth: true,
+          user: mockUser!,
+          flowManager: mockFlowManager,
+          tokenMethods: {
+            findToken: jest.fn(),
+            createToken: jest.fn(),
+            updateToken: jest.fn(),
+            deleteTokens: jest.fn(),
+          },
+        },
+      );
+
+      expect(result.tools).toEqual(mockTools);
+      expect(result.oauthRequired).toBe(true);
+      expect(mockMCPConnection).toHaveBeenCalledTimes(1);
+      expect(mockConnectionInstance.connect).toHaveBeenCalledTimes(1);
+    });
+
     it('should discover tools from a successfully connected server', async () => {
       const basicOptions = {
         serverName: 'test-server',
@@ -6165,7 +6201,7 @@ describe('MCPConnectionFactory', () => {
       );
 
       expect(result.tools).toEqual(mockTools);
-      expect(result.oauthRequired).toBe(false);
+      expect(result.oauthRequired).toBe(true);
       expect(oauthOptions.oauthStart).not.toHaveBeenCalled();
       expect(mockMCPOAuthHandler.initiateOAuthFlow).not.toHaveBeenCalled();
     });
@@ -6390,11 +6426,22 @@ describe('MCPConnectionFactory', () => {
       expect(upstreamTokenProviderResolver).not.toHaveBeenCalled();
     });
 
-    it('throws an internal error when upstreamTokenProvider is omitted on an OBO connection', async () => {
+    it('identifies missing upstream credentials before exchanging an OBO token', async () => {
       const { resolveOboToken } = jest.requireMock('~/mcp/oauth') as {
         resolveOboToken: jest.Mock;
       };
       resolveOboToken.mockClear();
+      const OboError = OboTokenResolutionError as unknown as jest.Mock;
+      OboError.mockImplementation((reason: string, userMessage: string, retryable = false) => {
+        const error = new Error(userMessage);
+        Object.setPrototypeOf(error, OboError.prototype);
+        return Object.assign(error, {
+          name: 'OboTokenResolutionError',
+          reason,
+          retryable,
+          userMessage,
+        });
+      });
       const oboTokenResolver = jest.fn();
 
       await expect(
@@ -6414,7 +6461,11 @@ describe('MCPConnectionFactory', () => {
             /** upstreamTokenProvider intentionally omitted */
           },
         ),
-      ).rejects.toThrow(/upstreamTokenProvider not plumbed/);
+      ).rejects.toMatchObject({
+        name: 'OboTokenResolutionError',
+        reason: 'missing_upstream_provider',
+        retryable: false,
+      });
       expect(resolveOboToken).not.toHaveBeenCalled();
     });
 

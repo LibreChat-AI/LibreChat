@@ -403,6 +403,10 @@ export class MCPConnectionFactory {
         return { tools: null, connection: null, oauthRequired: false, oauthUrl: null };
       }
       oauthTokens = loaded.value;
+      if (!oauthTokens && !this.usesObo && isOAuthServer(this.serverConfig)) {
+        oauthRequired = true;
+        shouldAttemptAuthenticatedDiscovery = false;
+      }
     }
 
     let connection: MCPConnection | null = null;
@@ -678,10 +682,9 @@ export class MCPConnectionFactory {
       );
     }
     if (!this.upstreamTokenProvider) {
-      throw new Error(
-        `${this.logPrefix} Internal: upstreamTokenProvider not plumbed for OBO connection. ` +
-          'OBO requires a live upstream-token closure; the caller must construct one via ' +
-          'createOpenIDSessionTokenProvider() and forward it through the MCP connection options.',
+      throw new OboTokenResolutionError(
+        'missing_upstream_provider',
+        'No upstream credential provider is configured for this OBO MCP connection.',
       );
     }
 
@@ -729,6 +732,8 @@ export class MCPConnectionFactory {
       recoveryHint = 'Please retry.';
     } else if (error.reason === 'exchange_failed') {
       recoveryHint = 'Re-authenticate the user or verify the configured OBO scopes and retry.';
+    } else if (error.reason === 'missing_upstream_provider') {
+      recoveryHint = 'Configure a renewable upstream credential provider before retrying.';
     }
 
     return new OboTokenResolutionError(

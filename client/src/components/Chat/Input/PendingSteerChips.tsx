@@ -1,6 +1,7 @@
 import { memo, useMemo, useRef, useState, useCallback } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
+import { createPortal } from 'react-dom';
 import { TooltipAnchor, useToastContext } from '@librechat/client';
 import {
   X,
@@ -15,6 +16,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import type { TMessage } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
 import type { SteeringControls, QueuedMessageContext } from '~/hooks/Chat/useSteering';
 import type { PendingSteer, QueuedMessage } from '~/store/families';
 import type { RestoreToComposer } from './InFlightSteers';
@@ -27,6 +29,11 @@ import {
   useDefaultToggleEntry,
   useInterruptToggleEntry,
 } from './SteerMenu';
+import {
+  recoveryDispositionsFamily,
+  recoveryDisposition,
+} from '~/components/Chat/Steering/recovery';
+import { useQueuedTurnPortal } from '~/components/Chat/Steering/QueuedTurnPortal';
 import { escalatingSteerFamily, revealedQueuedTurnFamily } from '~/store/steer';
 import { QUEUE_ICON, STEER_ICON } from '~/components/Chat/Steering/identity';
 import { useLocalize } from '~/hooks';
@@ -109,7 +116,10 @@ function QueuedRow({
   steering,
   conversationId,
   interruptPending,
-  revealed,
+  inTurn = false,
+  starting = false,
+  actionPending,
+  afterDiscard,
   onEditToComposer,
   onRestoreToComposer,
 }: {
@@ -117,8 +127,11 @@ function QueuedRow({
   steering: SteeringControls;
   conversationId: string;
   interruptPending: boolean;
-  /** Shown as the next user turn already; only removal remains meaningful. */
-  revealed?: boolean;
+  /** A visible pending turn takes the place of this queue row. */
+  inTurn?: boolean;
+  starting?: boolean;
+  actionPending: boolean;
+  afterDiscard: (message: QueuedMessage, action: () => boolean) => void;
   onEditToComposer: (
     text: string,
     files?: TMessage['files'],
@@ -132,6 +145,12 @@ function QueuedRow({
   const interruptToggle = useInterruptToggleEntry();
   const fileCount = message.files?.length ?? 0;
   const quoteCount = message.quotes?.length ?? 0;
+  const dispositions = useAtomValue(recoveryDispositionsFamily(steering.queueKey));
+  const disposition = recoveryDisposition(dispositions, message);
+  const recoveryHeld = disposition != null;
+  const recoveryBlocked = disposition === 'blocked' || disposition === 'cancelled';
+  const recoveryPending = disposition === 'cancelling';
+  actionPending = actionPending || recoveryPending;
   const isRecovered = message.recoverySteerId != null;
   const isRejected = message.server?.status === 'rejected';
   const isIndeterminate = message.server?.status === 'indeterminate';
@@ -140,8 +159,11 @@ function QueuedRow({
   let statusLabel:
     | 'com_ui_queued_turn_reconciliation_required'
     | 'com_ui_steer_delivery_unconfirmed'
-    | 'com_ui_queued_turn_failed' = 'com_ui_queued_turn_failed';
-  if (isIndeterminate) {
+    | 'com_ui_queued_turn_failed'
+    | 'com_ui_steer_recovery_held' = 'com_ui_queued_turn_failed';
+  if (recoveryHeld) {
+    statusLabel = 'com_ui_steer_recovery_held';
+  } else if (isIndeterminate) {
     statusLabel = 'com_ui_queued_turn_reconciliation_required';
   } else if (isUnconfirmed) {
     statusLabel = 'com_ui_steer_delivery_unconfirmed';
@@ -151,54 +173,95 @@ function QueuedRow({
     message.server == null ||
     message.server.status === 'rejected' ||
     (message.server.id != null && message.server.status === 'queued');
-  const actionPendingRef = useRef(false);
-  const [actionPending, setActionPending] = useState(false);
-  /** A recovered item has a replayable parked source. Edit/remove must first
-   * cancel that source by receipt; local-only rows settle synchronously through
-   * the same control. The ref closes the pre-render double-click window. */
-  const afterDiscard = useCallback(
-    (action: () => boolean) => {
-      if (actionPendingRef.current) {
-        return;
-      }
-      actionPendingRef.current = true;
-      setActionPending(true);
-      void (async () => {
-        let discarded = false;
-        try {
-          discarded = await steering.discardQueued(message);
-        } catch {
-          // The steering hook reports request failures and leaves the row in
-          // place. Keep this guard for test/custom control implementations.
-        }
-        if (!discarded) {
-          actionPendingRef.current = false;
-          setActionPending(false);
-          return;
-        }
-        if (!action()) {
-          actionPendingRef.current = false;
-          setActionPending(false);
-        }
-      })();
-    },
-    [message, steering],
-  );
   // A recovered item is consumed atomically only when it starts a normal
   // generation. Re-steering it would leave or duplicate the parked source;
   // Edit/remove are safe because `afterDiscard` tombstones that source first.
   const canSteerNow = steering.duringRunActive && steering.canSteer && !isRecovered;
   const showPrimary =
-    revealed !== true &&
+    !starting &&
+    !recoveryHeld &&
     serverActionable &&
     (canSteerNow || (!steering.duringRunActive && steering.canSendQueuedNow));
   /** `canSteer` is defined as false while paused on approval, but the
    *  escalation control must stay visible-and-disabled there — hiding it
    *  during the pause is exactly the discoverability gap this button fixes. */
   const showEscalate =
-    revealed !== true &&
+    !starting &&
     !isRecovered &&
     (steering.pausedOnApproval || (steering.duringRunActive && steering.canSteer));
+
+  const edit = () => {
+    const context = { quotes: message.quotes, manualSkills: message.manualSkills };
+    if (!requiresDiscard) {
+      steering.removeQueued(message.id);
+      onEditToComposer(message.text, message.files, context);
+      return;
+    }
+    afterDiscard(message, () => {
+      const restored = onRestoreToComposer(message.text, message.files, context, conversationId);
+      if (!restored) {
+        showToast({ message: localize('com_ui_steer_edit_queued'), status: 'info' });
+        return false;
+      }
+      steering.removeQueued(message.id);
+      return true;
+    });
+  };
+  const remove = () => {
+    if (isUnconfirmed) {
+      steering.removeQueued(message.id);
+      return;
+    }
+    const finish = () => {
+      onRestoreToComposer(
+        message.text,
+        message.files,
+        { quotes: message.quotes, manualSkills: message.manualSkills },
+        conversationId,
+      );
+      steering.removeQueued(message.id);
+      return true;
+    };
+    if (!requiresDiscard) {
+      finish();
+      return;
+    }
+    afterDiscard(message, finish);
+  };
+  const removeDisabled =
+    actionPending ||
+    (!serverActionable &&
+      !isUnconfirmed &&
+      !(message.server?.id != null && message.server.status === 'claimed'));
+  if (inTurn) {
+    const actionClass = cn(ICON_BTN_CLASS, 'disabled:cursor-not-allowed disabled:opacity-50');
+    return (
+      <>
+        {message.server?.status === 'queued' && (
+          <button
+            type="button"
+            className={actionClass}
+            aria-label={localize('com_ui_edit_message')}
+            disabled={actionPending}
+            onClick={edit}
+          >
+            <Pencil className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
+        {!removeDisabled || actionPending ? (
+          <button
+            type="button"
+            className={actionClass}
+            aria-label={localize('com_ui_remove_queued')}
+            disabled={removeDisabled}
+            onClick={remove}
+          >
+            <Trash2 className="h-4 w-4" aria-hidden="true" />
+          </button>
+        ) : null}
+      </>
+    );
+  }
 
   const entries: MenuEntry[] = [
     {
@@ -206,45 +269,48 @@ function QueuedRow({
       label: localize('com_ui_edit_message'),
       icon: <Pencil className="h-4 w-4" aria-hidden="true" />,
       disabled: actionPending || !serverActionable,
-      onClick: () => {
-        const context = {
-          quotes: message.quotes,
-          manualSkills: message.manualSkills,
-        };
-        if (!requiresDiscard) {
-          steering.removeQueued(message.id);
-          onEditToComposer(message.text, message.files, {
-            quotes: message.quotes,
-            manualSkills: message.manualSkills,
-          });
-          return;
-        }
-        afterDiscard(() => {
-          const restored = onRestoreToComposer(
-            message.text,
-            message.files,
-            context,
-            conversationId,
-          );
-          if (!restored) {
-            showToast({
-              message: localize('com_ui_steer_edit_queued'),
-              status: 'info',
-            });
-            return false;
-          }
-          steering.removeQueued(message.id);
-          return true;
-        });
-      },
+      onClick: edit,
     },
   ];
+  if (recoveryBlocked) {
+    entries.push(
+      {
+        key: 'copy-recovery',
+        label: localize('com_ui_steer_copy_to_composer'),
+        icon: <Pencil className="h-4 w-4" aria-hidden="true" />,
+        disabled: actionPending,
+        onClick: () => {
+          const copied = onRestoreToComposer(
+            message.text,
+            message.files,
+            {
+              quotes: message.quotes,
+              manualSkills: message.manualSkills,
+            },
+            conversationId,
+          );
+          showToast(
+            copied
+              ? { message: localize('com_ui_steer_recovery_review'), status: 'info' }
+              : { message: localize('com_ui_steer_recovery_copy_refused'), status: 'error' },
+          );
+        },
+      },
+      {
+        key: 'dismiss-recovery',
+        label: localize('com_ui_steer_dismiss_recovery'),
+        icon: <X className="h-4 w-4" aria-hidden="true" />,
+        disabled: actionPending,
+        onClick: () => steering.dismissRecovery(message),
+      },
+    );
+  }
   const preferences: MenuEntry[] = [toggleEntry, interruptToggle];
 
   return (
     <div role="listitem" className={ROW_CLASS} data-testid="queued-message-row">
       <QueuedIcon
-        warning={isRejected || isUnconfirmed || isIndeterminate}
+        warning={recoveryHeld || isRejected || isUnconfirmed || isIndeterminate}
         hint={steering.duringRunActive ? localize('com_ui_steer_queued_info') : undefined}
       />
       <span className="min-w-0 flex-1 truncate" title={message.text}>
@@ -260,12 +326,12 @@ function QueuedRow({
           0: String(fileCount),
         })}
       />
-      {(isRejected || isUnconfirmed || isIndeterminate) && (
-        <span className="shrink-0 text-xs text-text-warning">{localize(statusLabel)}</span>
-      )}
-      {revealed === true && (
-        <span className="shrink-0 text-xs text-text-secondary">
-          {localize('com_ui_queued_turn_starting')}
+      {(recoveryHeld || isRejected || isUnconfirmed || isIndeterminate) && (
+        <span
+          className="shrink-0 text-xs text-text-warning"
+          title={recoveryHeld ? localize('com_ui_steer_recovery_review') : undefined}
+        >
+          {localize(statusLabel)}
         </span>
       )}
       {showPrimary && (
@@ -303,47 +369,17 @@ function QueuedRow({
         aria-label={localize(
           isUnconfirmed ? 'com_ui_dismiss_unconfirmed_delivery' : 'com_ui_remove_queued',
         )}
-        disabled={
-          actionPending ||
-          (!serverActionable &&
-            !isUnconfirmed &&
-            !(message.server?.id != null && message.server.status === 'claimed'))
-        }
-        onClick={() => {
-          if (isUnconfirmed) {
-            steering.removeQueued(message.id);
-            return;
-          }
-          const remove = () => {
-            /* Same safety net as the in-flight cancel: once removal is safely
-             * settled, return the words to the composer when it is free (the
-             * gated restore refuses rather than clobber a draft). */
-            onRestoreToComposer(
-              message.text,
-              message.files,
-              { quotes: message.quotes, manualSkills: message.manualSkills },
-              conversationId,
-            );
-            steering.removeQueued(message.id);
-            return true;
-          };
-          if (!requiresDiscard) {
-            remove();
-            return;
-          }
-          afterDiscard(remove);
-        }}
+        disabled={removeDisabled}
+        onClick={remove}
         className={ICON_BTN_CLASS}
       >
         <Trash2 className="h-4 w-4" aria-hidden="true" />
       </button>
-      {revealed !== true && (
-        <RowMenu
-          label={localize('com_ui_more_options')}
-          entries={entries}
-          preferences={preferences}
-        />
-      )}
+      <RowMenu
+        label={localize('com_ui_more_options')}
+        entries={entries}
+        preferences={preferences}
+      />
     </div>
   );
 }
@@ -491,9 +527,31 @@ function PendingSteerChips({
   const localize = useLocalize();
   const steers = useRecoilValue(store.pendingSteersByConvoId(conversationId));
   const queued = useRecoilValue(store.queuedMessagesByConvoId(steering.queueKey));
-  /** A row already shown as the next user turn keeps only its remove action
-   *  here: the turn can still be retracted until the server admits it. */
   const revealed = useAtomValue(revealedQueuedTurnFamily(steering.queueKey));
+  const portal = useQueuedTurnPortal();
+  const actionLocks = useRef(new Set<string>());
+  const [pendingActions, setPendingActions] = useState<ReadonlySet<string>>(new Set());
+  /** The lock lives with the composer, not the row: reparenting an action
+   * during a cancellation cannot open a second request window. */
+  const afterDiscard = useCallback(
+    (message: QueuedMessage, action: () => boolean) => {
+      const key = `${steering.queueKey}\u0000${message.id}`;
+      if (actionLocks.current.has(key)) return;
+      actionLocks.current.add(key);
+      setPendingActions(new Set(actionLocks.current));
+      void (async () => {
+        try {
+          if (await steering.discardQueued(message)) action();
+        } catch {
+          // The steering hook reports failures; leave the row available for retry.
+        } finally {
+          actionLocks.current.delete(key);
+          setPendingActions(new Set(actionLocks.current));
+        }
+      })();
+    },
+    [steering],
+  );
   const failedSteers = useMemo(() => steers.filter((steer) => steer.status === 'failed'), [steers]);
   /** Only one interrupt can be in flight: a second preempt while one is
    *  unresolved would arm a second seal, so escalation buttons disable. The
@@ -505,43 +563,68 @@ function PendingSteerChips({
     [escalating, steers],
   );
 
-  if (failedSteers.length === 0 && queued.length === 0) {
+  const queuedRows: ReactNode[] = [];
+  const portaledActions: ReactNode[] = [];
+  const target = portal?.target;
+  for (const message of queued) {
+    const starting =
+      revealed != null &&
+      message.clientRequestId != null &&
+      revealed.clientRequestId === message.clientRequestId;
+    const inTurn =
+      starting &&
+      target != null &&
+      target.conversationId === conversationId &&
+      target.clientRequestId === message.clientRequestId;
+    const actionKey = `${steering.queueKey}\u0000${message.id}`;
+    const row = (
+      <QueuedRow
+        key={message.id}
+        message={message}
+        steering={steering}
+        conversationId={conversationId}
+        interruptPending={interruptPending}
+        starting={starting}
+        inTurn={inTurn}
+        actionPending={pendingActions.has(actionKey)}
+        afterDiscard={afterDiscard}
+        onEditToComposer={onEditToComposer}
+        onRestoreToComposer={onRestoreToComposer}
+      />
+    );
+    if (inTurn && target != null) {
+      portaledActions.push(createPortal(row, target.element, message.id));
+    } else {
+      queuedRows.push(row);
+    }
+  }
+  if (failedSteers.length === 0 && queuedRows.length === 0 && portaledActions.length === 0) {
     return null;
   }
 
   return (
-    <div className="flex flex-col gap-1.5 px-2 pt-2" data-testid="pending-steer-chips">
-      <div
-        className="flex flex-col gap-1.5"
-        role="list"
-        aria-label={localize('com_ui_queued_messages')}
-      >
-        {failedSteers.map((steer) => (
-          <FailedSteerRow
-            key={steer.steerId}
-            steer={steer}
-            steering={steering}
-            onEditToComposer={onEditToComposer}
-          />
-        ))}
-        {queued.map((message) => (
-          <QueuedRow
-            key={message.id}
-            message={message}
-            steering={steering}
-            conversationId={conversationId}
-            interruptPending={interruptPending}
-            revealed={
-              revealed != null &&
-              message.clientRequestId != null &&
-              revealed.clientRequestId === message.clientRequestId
-            }
-            onEditToComposer={onEditToComposer}
-            onRestoreToComposer={onRestoreToComposer}
-          />
-        ))}
-      </div>
-    </div>
+    <>
+      {(failedSteers.length > 0 || queuedRows.length > 0) && (
+        <div className="flex flex-col gap-1.5 px-2 pt-2" data-testid="pending-steer-chips">
+          <div
+            className="flex flex-col gap-1.5"
+            role="list"
+            aria-label={localize('com_ui_queued_messages')}
+          >
+            {failedSteers.map((steer) => (
+              <FailedSteerRow
+                key={steer.steerId}
+                steer={steer}
+                steering={steering}
+                onEditToComposer={onEditToComposer}
+              />
+            ))}
+            {queuedRows}
+          </div>
+        </div>
+      )}
+      {portaledActions}
+    </>
   );
 }
 

@@ -97,6 +97,7 @@ describe('getCodeBridgeWorkerStatus', () => {
                   id: 'project-a',
                   name: 'Project A',
                   workspaceInstances: ['git_worktree'],
+                  workspaceScopes: ['git_linked_worktree'],
                 },
                 { id: 'docs', operations: ['read_file'] },
               ],
@@ -128,6 +129,7 @@ describe('getCodeBridgeWorkerStatus', () => {
           id: 'project-a',
           name: 'Project A',
           workspaceInstances: ['git_worktree'],
+          workspaceScopes: ['git_linked_worktree'],
         },
         { id: 'docs', operations: ['read_file'] },
       ],
@@ -139,6 +141,40 @@ describe('getCodeBridgeWorkerStatus', () => {
         redirect: 'error',
       }),
     );
+  });
+
+  test('carries negotiated edit features and drops names it does not know', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          workerId: 'personal-vm',
+          online: true,
+          ready: true,
+          leaseExpiresInMs: 45_000,
+          capabilities: {
+            statefulWorkspace: true,
+            sandboxProfile: 'native-srt',
+            runtimes: ['bash'],
+            workspaceTools: {
+              protocolVersion: 1,
+              operations: ['read_file', 'edit_file'],
+              workspaces: [{ id: 'project-a' }],
+              editFileFeatures: ['replace_all', 'future_feature', 'tolerant_match'],
+            },
+          },
+        }),
+      ),
+    );
+
+    const status = await getCodeBridgeWorkerStatus({
+      baseURL: 'https://code.example.com/v1/',
+      token: 'administrator-token',
+      workerId: 'personal-vm',
+      fetchImpl,
+    });
+
+    expect(status.editFileFeatures).toEqual(['tolerant_match', 'replace_all']);
   });
 
   test('keeps legacy worker status readable without inventing a primary workspace', async () => {
@@ -249,6 +285,53 @@ describe('getCodeBridgeWorkerStatus', () => {
         },
       },
     },
+    {
+      online: true,
+      ready: true,
+      leaseExpiresInMs: 5_000,
+      capabilities: {
+        statefulWorkspace: true,
+        sandboxProfile: 'native-srt',
+        runtimes: ['bash'],
+        workspaceTools: {
+          protocolVersion: 1,
+          operations: ['read_file'],
+          workspaces: [{ id: 'project-a', workspaceScopes: ['subdirectory'] }],
+        },
+      },
+    },
+    {
+      online: true,
+      ready: true,
+      leaseExpiresInMs: 5_000,
+      capabilities: {
+        statefulWorkspace: true,
+        sandboxProfile: 'native-srt',
+        runtimes: ['bash'],
+        workspaceTools: {
+          protocolVersion: 1,
+          operations: ['read_file'],
+          workspaces: [{ id: 'project-a', workspaceScopes: 'git_linked_worktree' }],
+        },
+      },
+    },
+    {
+      online: true,
+      ready: true,
+      leaseExpiresInMs: 5_000,
+      capabilities: {
+        statefulWorkspace: true,
+        sandboxProfile: 'native-srt',
+        runtimes: ['bash'],
+        workspaceTools: {
+          protocolVersion: 1,
+          operations: ['read_file'],
+          workspaces: [
+            { id: 'project-a', workspaceScopes: ['git_linked_worktree', 'git_linked_worktree'] },
+          ],
+        },
+      },
+    },
   ])('rejects an invalid upstream status response: %p', async (invalid) => {
     const fetchImpl = jest
       .fn()
@@ -317,6 +400,97 @@ describe('getCodeBridgeWorkerStatus', () => {
     );
     await expect(first).resolves.toEqual({ status: 'offline' });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('bypasses cached status without falling back on failure or changing normal polling', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    const offline = () =>
+      new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          workerId: 'personal-vm',
+          online: false,
+          ready: false,
+        }),
+      );
+    const fetchImpl = jest
+      .fn()
+      .mockImplementationOnce(async () => offline())
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementation(async () => offline());
+    const poll = createCodeBridgeStatusPoller({ fetchImpl, maxConcurrent: 1 });
+    const params = {
+      baseURL: 'https://code.example.com/v1',
+      token: 'administrator-token',
+      workerId: 'personal-vm',
+    };
+    await expect(poll(params)).resolves.toEqual({ status: 'offline' });
+    await expect(poll({ ...params, bypassCache: true })).rejects.toEqual(
+      expect.objectContaining({ reason: 'failed' }),
+    );
+    await expect(poll({ ...params, bypassCache: true })).resolves.toEqual({ status: 'offline' });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    await expect(poll(params)).resolves.toEqual({ status: 'offline' });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  test('never joins an older in-flight poll and shares its upstream concurrency limit', async () => {
+    const responses: Array<(response: Response) => void> = [];
+    const fetchImpl = jest.fn(() => new Promise<Response>((resolve) => responses.push(resolve)));
+    const poll = createCodeBridgeStatusPoller({ fetchImpl, maxConcurrent: 2 });
+    const params = {
+      baseURL: 'https://code.example.com/v1',
+      token: 'administrator-token',
+      workerId: 'personal-vm',
+    };
+    const previous = poll(params);
+    const current = poll({ ...params, bypassCache: true });
+    expect(current).not.toBe(previous);
+    expect(poll(params)).toBe(previous);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    await expect(poll({ ...params, bypassCache: true })).rejects.toEqual(
+      expect.objectContaining({ reason: 'busy' }),
+    );
+    await expect(poll({ ...params, workerId: 'second-vm' })).rejects.toEqual(
+      expect.objectContaining({ reason: 'busy' }),
+    );
+    responses[1](
+      new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          workerId: 'personal-vm',
+          online: true,
+          ready: true,
+          leaseExpiresInMs: 50_000,
+          capabilities: { sandboxProfile: 'native-srt', runtimes: ['bash'] },
+        }),
+      ),
+    );
+    await expect(current).resolves.toEqual(expect.objectContaining({ status: 'ready' }));
+    responses[0](
+      new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          workerId: 'personal-vm',
+          online: false,
+          ready: false,
+        }),
+      ),
+    );
+    await expect(previous).resolves.toEqual({ status: 'offline' });
+    const next = poll({ ...params, bypassCache: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    responses[2](
+      new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          workerId: 'personal-vm',
+          online: false,
+          ready: false,
+        }),
+      ),
+    );
+    await next;
   });
 
   test('does not coalesce status requests across credential rotations', async () => {
@@ -391,7 +565,7 @@ describe('getCodeBridgeWorkerStatus', () => {
     });
     const fetchImpl = jest
       .fn()
-      .mockResolvedValueOnce(new Response(rejectedBody, { status: 503 }))
+      .mockResolvedValueOnce(new Response(rejectedBody, { status: 403 }))
       .mockResolvedValue(
         new Response(
           JSON.stringify({
@@ -421,5 +595,172 @@ describe('getCodeBridgeWorkerStatus', () => {
     await expect(poll({ ...params, workerId: 'second-vm' })).resolves.toEqual({
       status: 'offline',
     });
+  });
+});
+
+describe('createCodeBridgeStatusPoller transient failures', () => {
+  const params = {
+    baseURL: 'https://code.example.com/v1',
+    token: 'administrator-token',
+    workerId: 'personal-vm',
+  };
+
+  const statusResponse = (online: boolean, ready: boolean, leaseExpiresInMs = 60_000) =>
+    new Response(
+      JSON.stringify({
+        protocolVersion: 1,
+        workerId: 'personal-vm',
+        online,
+        ready,
+        ...(online
+          ? { leaseExpiresInMs, capabilities: { sandboxProfile: 'native-srt', runtimes: ['bash'] } }
+          : {}),
+      }),
+    );
+  const networkFailure = () => Promise.reject(new TypeError('fetch failed'));
+
+  let now = 10_000;
+  beforeEach(() => {
+    now = 10_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test('answers a failed poll with the last ready status while its lease runs', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(statusResponse(true, true, 60_000))
+      .mockImplementationOnce(networkFailure);
+    const poll = createCodeBridgeStatusPoller({ fetchImpl, cacheTtlMs: 0 });
+
+    await expect(poll(params)).resolves.toMatchObject({ status: 'ready' });
+    now += 15_000;
+    await expect(poll(params)).resolves.toMatchObject({
+      status: 'ready',
+      leaseExpiresInMs: 45_000,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('treats a 5xx from the proxy in front of the Code API as transient', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(statusResponse(true, true))
+      .mockResolvedValueOnce(new Response('<html>Bad gateway</html>', { status: 502 }));
+    const poll = createCodeBridgeStatusPoller({ fetchImpl, cacheTtlMs: 0 });
+
+    await poll(params);
+    now += 1_000;
+    await expect(poll(params)).resolves.toMatchObject({ status: 'ready' });
+  });
+
+  test('retries once when no ready status is remembered', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockImplementationOnce(networkFailure)
+      .mockResolvedValueOnce(statusResponse(true, true));
+    const poll = createCodeBridgeStatusPoller({ fetchImpl, cacheTtlMs: 0 });
+
+    await expect(poll(params)).resolves.toMatchObject({ status: 'ready' });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('fails after one retry once the remembered lease has run out', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(statusResponse(true, true, 5_000))
+      .mockImplementation(networkFailure);
+    const poll = createCodeBridgeStatusPoller({ fetchImpl, cacheTtlMs: 0 });
+
+    await poll(params);
+    now += 5_000;
+    await expect(poll(params)).rejects.toEqual(
+      expect.objectContaining<Partial<CodeBridgeStatusError>>({ reason: 'failed' }),
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  test('never covers a rejection, and forgets the remembered status after one', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(statusResponse(true, true))
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      .mockImplementation(networkFailure);
+    const poll = createCodeBridgeStatusPoller({ fetchImpl, cacheTtlMs: 0 });
+
+    await poll(params);
+    await expect(poll(params)).rejects.toEqual(
+      expect.objectContaining<Partial<CodeBridgeStatusError>>({ reason: 'rejected' }),
+    );
+    await expect(poll(params)).rejects.toEqual(
+      expect.objectContaining<Partial<CodeBridgeStatusError>>({ reason: 'failed' }),
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
+  test('forgets a ready status once the worker reports it is no longer ready', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(statusResponse(true, true))
+      .mockResolvedValueOnce(statusResponse(false, false))
+      .mockImplementation(networkFailure);
+    const poll = createCodeBridgeStatusPoller({ fetchImpl, cacheTtlMs: 0 });
+
+    await poll(params);
+    await expect(poll(params)).resolves.toMatchObject({ status: 'offline' });
+    await expect(poll(params)).rejects.toEqual(
+      expect.objectContaining<Partial<CodeBridgeStatusError>>({ reason: 'failed' }),
+    );
+  });
+
+  test('gives bypassCache callers one fresh observation, never the remembered status', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(statusResponse(true, true))
+      .mockImplementationOnce(networkFailure)
+      .mockResolvedValueOnce(statusResponse(true, false));
+    const poll = createCodeBridgeStatusPoller({ fetchImpl, cacheTtlMs: 0 });
+
+    await poll(params);
+    await expect(poll({ ...params, bypassCache: true })).rejects.toEqual(
+      expect.objectContaining<Partial<CodeBridgeStatusError>>({ reason: 'failed' }),
+    );
+    await expect(poll({ ...params, bypassCache: true })).resolves.toMatchObject({
+      status: 'starting',
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  test('forgets the remembered status when a selection check is rejected', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(statusResponse(true, true))
+      .mockResolvedValueOnce(new Response('{}', { status: 404 }))
+      .mockImplementation(networkFailure);
+    const poll = createCodeBridgeStatusPoller({ fetchImpl, cacheTtlMs: 0 });
+
+    await poll(params);
+    await expect(poll({ ...params, bypassCache: true })).rejects.toEqual(
+      expect.objectContaining<Partial<CodeBridgeStatusError>>({ reason: 'rejected' }),
+    );
+    await expect(poll(params)).rejects.toEqual(
+      expect.objectContaining<Partial<CodeBridgeStatusError>>({ reason: 'failed' }),
+    );
+  });
+
+  test('keeps remembered statuses separate per credential', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(statusResponse(true, true))
+      .mockImplementation(networkFailure);
+    const poll = createCodeBridgeStatusPoller({ fetchImpl, cacheTtlMs: 0 });
+
+    await poll(params);
+    await expect(poll({ ...params, token: 'rotated-administrator-token' })).rejects.toEqual(
+      expect.objectContaining<Partial<CodeBridgeStatusError>>({ reason: 'failed' }),
+    );
   });
 });

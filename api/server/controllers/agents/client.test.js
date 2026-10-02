@@ -3172,6 +3172,102 @@ describe('AgentClient - startup telemetry', () => {
     errorSpy.mockRestore();
   });
 
+  it.each([
+    [
+      'closed',
+      'SocketError',
+      ErrorTypes.MODEL_STREAM_CLOSED,
+      'stream_closed',
+      'The model provider closed the connection before the response finished. Try again.',
+    ],
+    [
+      'stalled',
+      'BodyTimeoutError',
+      ErrorTypes.MODEL_STREAM_STALLED,
+      'stream_stalled',
+      'The model provider stopped sending the response, and the request timed out. Try again.',
+    ],
+  ])(
+    'keeps partial content and a safe %s model error in the agent turn',
+    async (kind, causeName, type, errorType, prose) => {
+      jest.clearAllMocks();
+      const { logger } = require('@librechat/data-schemas');
+      const { errors: undiciErrors } = require('undici');
+      const privateValue = 'PRIVATE-TRANSPORT-DIAGNOSTIC';
+      const cause = new undiciErrors[causeName](privateValue);
+      const providerError = new TypeError('terminated', { cause });
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+      mockCreateRun.mockImplementation(async (options) => {
+        const tracker = options.modelCallbacks.find(
+          (callback) => callback.name === 'librechat-upstream-model-error-tracker',
+        );
+        return {
+          Graph: null,
+          processStream: jest.fn(async () => {
+            tracker.handleLLMError(providerError);
+            throw new Error('graph failed', { cause: providerError });
+          }),
+          getCalibrationRatio: jest.fn(() => 0),
+        };
+      });
+      mockIsHITLEnabled.mockReturnValue(false);
+      const partial = { type: ContentTypes.TEXT, [ContentTypes.TEXT]: 'Partial findings' };
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: {},
+          config: {
+            endpoints: { [EModelEndpoint.agents]: {} },
+            filters: { messages: { pii: {} } },
+          },
+          _resumableStreamId: `conversation-stream-${kind}`,
+        },
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          model_parameters: { model: 'gpt-4' },
+          hide_sequential_outputs: false,
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts: [partial],
+        collectedUsage: [],
+        artifactPromises: [],
+      });
+      client.conversationId = `conversation-stream-${kind}`;
+      client.responseMessageId = `response-stream-${kind}`;
+      client.parentMessageId = `parent-stream-${kind}`;
+      client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+      try {
+        await client.chatCompletion({ payload: [] });
+
+        expect(client.contentParts).toEqual(
+          expect.arrayContaining([
+            partial,
+            {
+              type: ContentTypes.ERROR,
+              [ContentTypes.ERROR]: `${prose}\n${JSON.stringify({ type })}`,
+            },
+          ]),
+        );
+        expect(JSON.stringify(client.contentParts)).not.toContain(privateValue);
+        expect(client.recordCollectedUsage).toHaveBeenCalledWith(
+          expect.objectContaining({ context: 'message' }),
+        );
+        expect(errorSpy).toHaveBeenCalledWith(
+          '[api/server/controllers/agents/client.js #sendCompletion] Upstream model error',
+          expect.objectContaining({ errorType }),
+        );
+        expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateValue);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    },
+  );
+
   /** A compaction's only record of having been one is the marker on the part it
    *  produced, and Compact runs on whatever leaf the branch ends with. Without
    *  the marker on the failure, a compaction that failed on a user leaf keeps a
@@ -3547,9 +3643,9 @@ describe('AgentClient - startup telemetry', () => {
     client.contextMeta = {
       calibrationRatio: 1.25,
       encoding: client.getEncoding(),
-      fading: { v: 1, budgetTokens: 20_000, masked: true },
+      fading: { v: 2, budgetTokens: 20_000, masked: true },
       fadingTiers: [
-        { agentId: 'agent-123', v: 1, budgetTokens: 20_000, masked: true },
+        { agentId: 'agent-123', v: 2, budgetTokens: 20_000, masked: true },
         { agentId: 'agent-worker', v: 1, budgetTokens: 8_000, masked: false },
       ],
     };
@@ -3571,10 +3667,9 @@ describe('AgentClient - startup telemetry', () => {
         indexTokenCountMap: {},
         initialSummary: { text: 'summary of earlier turns', tokenCount: 40 },
         calibrationRatio: 1.25,
-        fadingTier: { v: 1, budgetTokens: 20_000, masked: true },
+        fadingTier: { v: 2, budgetTokens: 20_000, masked: true },
         fadingTiers: {
-          'agent-123': { v: 1, budgetTokens: 20_000, masked: true },
-          'agent-worker': { v: 1, budgetTokens: 8_000, masked: false },
+          'agent-123': { v: 2, budgetTokens: 20_000, masked: true },
         },
         compactionSemanticIndex: evolvedCompactionSemanticIndexSnapshot.entries,
       }),
@@ -7936,6 +8031,88 @@ describe('AgentClient - titleConvo', () => {
       expect(parallelAgent2.additional_instructions ?? '').not.toContain(memoryContent);
     });
 
+    it('tells the primary read-only agent about persistent memory when the store is empty', async () => {
+      const { memoryInstructions } = require('@librechat/api');
+      client.useMemory = jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' });
+      const parallelAgent = {
+        id: 'parallel-agent-1',
+        instructions: 'Parallel instructions',
+        provider: EModelEndpoint.openAI,
+      };
+      client.agentConfigs = new Map([['parallel-agent-1', parallelAgent]]);
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Remember that I like tea',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        { instructions: 'Base instructions', additional_instructions: null },
+      );
+
+      expect(client.options.agent.additional_instructions).toContain(memoryInstructions);
+      expect(client.options.agent.additional_instructions).not.toContain('# Existing memory');
+      expect(client.options.agent.additional_instructions).not.toContain('set_memory');
+      expect(parallelAgent.additional_instructions ?? '').not.toContain(memoryInstructions);
+    });
+
+    it('keeps memory guidance out of agents when memory was unavailable', async () => {
+      const { memoryInstructions } = require('@librechat/api');
+      client.useMemory = jest.fn().mockResolvedValue(undefined);
+      client.agentConfigs = new Map();
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Hello',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        { instructions: 'Base instructions', additional_instructions: null },
+      );
+
+      expect(client.options.agent.additional_instructions ?? '').not.toContain(memoryInstructions);
+    });
+
+    it('provides empty-state memory guidance to parallel agents when automatic extraction is on', async () => {
+      const { memoryInstructions } = require('@librechat/api');
+      client.useMemory = jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' });
+      mockReq.config.memory.agent = { enabled: true, id: 'memory-agent' };
+      const parallelAgent = {
+        id: 'parallel-agent-1',
+        instructions: 'Parallel instructions',
+        provider: EModelEndpoint.openAI,
+      };
+      client.agentConfigs = new Map([['parallel-agent-1', parallelAgent]]);
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Remember that I like tea',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        { instructions: 'Base instructions', additional_instructions: null },
+      );
+
+      expect(client.options.agent.additional_instructions).toContain(memoryInstructions);
+      expect(parallelAgent.additional_instructions).toContain(memoryInstructions);
+      expect(parallelAgent.additional_instructions).not.toContain('# Existing memory');
+    });
+
     it('applies scoped context to graph-only members without promoting them', async () => {
       client.useMemory = jest.fn().mockResolvedValue(undefined);
       const graphMember = {
@@ -8388,6 +8565,21 @@ describe('AgentClient - titleConvo', () => {
       );
     });
 
+    it('retains automatic memory extraction when the first conversation has no memories', async () => {
+      const processMemory = jest.fn();
+      mockCheckAccess.mockResolvedValue(true);
+      mockInitializeAgent.mockResolvedValue({ ...mockAgent });
+      mockCreateMemoryProcessor.mockResolvedValue(['', processMemory]);
+
+      client = new AgentClient(mockOptions);
+      client.conversationId = 'convo-123';
+      client.responseMessageId = 'response-123';
+
+      await expect(client.useMemory()).resolves.toEqual({ withKeys: '', withoutKeys: '' });
+      expect(mockCreateMemoryProcessor).toHaveBeenCalledTimes(1);
+      expect(client.processMemory).toBe(processMemory);
+    });
+
     it('should return existing memories without auto-processing when memory agent is not enabled', async () => {
       mockReq.config.memory = {
         personalize: true,
@@ -8436,6 +8628,29 @@ describe('AgentClient - titleConvo', () => {
       expect(mockInitializeAgent).not.toHaveBeenCalled();
       expect(mockCreateMemoryProcessor).not.toHaveBeenCalled();
       expect(client.processMemory).toBeUndefined();
+    });
+
+    it('does not interpret a failed memory read as an eligible empty store', async () => {
+      mockReq.config.memory = { personalize: true };
+      mockCheckAccess.mockResolvedValue(true);
+      mockGetFormattedMemories.mockResolvedValue({
+        readFailed: true,
+        withKeys: undefined,
+        withoutKeys: undefined,
+        totalTokens: 0,
+      });
+
+      client = new AgentClient(mockOptions);
+      client.conversationId = 'convo-123';
+      client.responseMessageId = 'response-123';
+
+      const result = await client.useMemory();
+
+      expect(result).toEqual({ withKeys: undefined, withoutKeys: undefined });
+      expect(mockCreateMemoryProcessor).not.toHaveBeenCalled();
+      expect(client.processMemory).toBeUndefined();
+      const { formatMemoryContext } = require('@librechat/api');
+      expect(formatMemoryContext(result.withoutKeys)).toBeUndefined();
     });
 
     it('should return existing memories without auto-processing when memory agent config lacks explicit enablement', async () => {

@@ -106,7 +106,7 @@ export const standardCache = (namespace: string, ttl?: number, fallbackStore?: o
 
       // Override clear() to handle namespace-aware deletion
       // The default Keyv clear() doesn't respect namespace due to the workaround above
-      // Workaround for issue #10487 https://github.com/danny-avila/LibreChat/issues/10487
+      // Workaround for issue #10487 https://github.com/LibreChat-AI/LibreChat/issues/10487
       cache.clear = () => clearRedisNamespace(namespace);
 
       const instrumented = instrumentRedisCache(cache, namespace);

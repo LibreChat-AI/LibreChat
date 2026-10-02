@@ -24,11 +24,13 @@ const getGenerationAdmissionEvidence = (userId, clientRequestId, streamId, conve
 const subagentCompletionAdapter = createSubagentCompletionWakeupResolver({
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
+  getWaitMaxIntervalMs: () => service.getCompletionWaitMaxIntervalMs(),
 });
 const backgroundToolCompletionAdapter = createBackgroundToolCompletionWakeupResolver({
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
   getResultBatchSize: () => service.getBackgroundCompletionResultBatchSize(),
+  getWaitMaxIntervalMs: () => service.getCompletionWaitMaxIntervalMs(),
 });
 const eventActorAdapter = createAgentEventContinueResolver({
   methods,
@@ -51,6 +53,7 @@ service = createAgentTriggerService({
   ),
   isPrincipalActive: methods.isAgentTriggerPrincipalActive,
   supportsDetachedActionCompletion: () => GenerationJobManager.supportsDetachedAgentEventActions,
+  subscribeGenerationSettled: (listener) => GenerationJobManager.onGenerationSettled(listener),
   settleSourceBeforeDeadLetter: queuedTurnLifecycle.settleBeforeDeadLetter,
   prepareContinue: createAgentContinuationResolver({
     eventActor: eventActorAdapter,
@@ -64,7 +67,9 @@ service = createAgentTriggerService({
 
 const initializeAgentTriggerService = async (options) => {
   await service.initialize(options);
-  await queuedTurnLifecycle.initialize();
+  await queuedTurnLifecycle.initialize({
+    maxIdleIntervalMs: options?.idlePolling?.queuedTurnMaxIntervalMs,
+  });
 };
 
 const stopAgentTriggerService = async () => {
@@ -88,6 +93,7 @@ module.exports = {
   retireAgentTrigger: service.retire,
   renewAgentTriggerProducerLease: service.renewProducerLease,
   persistAgentBackgroundToolResult: service.persistBackgroundToolResult,
+  expediteCompletionWakeups: service.expediteCompletionWakeups,
   getAgentBackgroundToolResultClaim: service.getBackgroundToolResultClaim,
   releaseAgentBackgroundToolResultClaims: service.releaseBackgroundToolResultClaims,
   drainAgentTriggerDeliveriesForUser: service.drainUser,

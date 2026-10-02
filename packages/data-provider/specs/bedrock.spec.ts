@@ -12,11 +12,19 @@ import {
   requiresExplicitThinkingDisabled,
   capsEffortWhenThinkingDisabled,
   clampEffortForDisabledThinking,
+  requestsThinkingDisplayUpdates,
+  resolveThinkingOffConfig,
   resolveThinkingDisplay,
+  isThinkingOffConfig,
+  bindsThinkingBlocks,
   bedrockOutputParser,
   bedrockInputParser,
   bedrockInputSchema,
+  supportsPromptCache,
   supportsContext1m,
+  hasAlwaysOnThinking,
+  hasBetweenToolsThinkingFloor,
+  supportsOutput128k,
   BEDROCK_FINE_GRAINED_TOOL_STREAMING_BETA,
 } from '../src/bedrock';
 
@@ -406,7 +414,6 @@ describe('requiresExplicitThinkingDisabled', () => {
     expect(requiresExplicitThinkingDisabled('claude-sonnet-5')).toBe(true);
     expect(requiresExplicitThinkingDisabled('claude-sonnet-5-20260101')).toBe(true);
     expect(requiresExplicitThinkingDisabled('anthropic.claude-sonnet-5')).toBe(true);
-    expect(requiresExplicitThinkingDisabled('claude-sonnet-9')).toBe(true);
   });
 
   test('returns true for Opus 5+ (omitted thinking runs adaptive by default)', () => {
@@ -414,7 +421,11 @@ describe('requiresExplicitThinkingDisabled', () => {
     expect(requiresExplicitThinkingDisabled('claude-opus-5-20260701')).toBe(true);
     expect(requiresExplicitThinkingDisabled('anthropic.claude-opus-5')).toBe(true);
     expect(requiresExplicitThinkingDisabled('us.anthropic.claude-opus-5')).toBe(true);
-    expect(requiresExplicitThinkingDisabled('claude-opus-9')).toBe(true);
+  });
+
+  test('later releases inherit the 5.5 contract, which rejects an explicit disabled', () => {
+    expect(requiresExplicitThinkingDisabled('claude-sonnet-9')).toBe(false);
+    expect(requiresExplicitThinkingDisabled('claude-opus-9')).toBe(false);
   });
 
   test('returns false for pre-5 Sonnet, pre-5 Opus, and Mythos-class models', () => {
@@ -429,10 +440,16 @@ describe('requiresExplicitThinkingDisabled', () => {
 });
 
 describe('capsEffortWhenThinkingDisabled', () => {
-  test('returns true for Opus 5+', () => {
+  test('returns true for Opus 5 and Sonnet 5.5+', () => {
     expect(capsEffortWhenThinkingDisabled('claude-opus-5')).toBe(true);
     expect(capsEffortWhenThinkingDisabled('anthropic.claude-opus-5')).toBe(true);
-    expect(capsEffortWhenThinkingDisabled('claude-opus-9')).toBe(true);
+    expect(capsEffortWhenThinkingDisabled('claude-sonnet-5-5')).toBe(true);
+    expect(capsEffortWhenThinkingDisabled('claude-sonnet-9')).toBe(true);
+  });
+
+  test('never applies to always-on models, whose thinking cannot be turned off', () => {
+    expect(capsEffortWhenThinkingDisabled('claude-opus-5-5')).toBe(false);
+    expect(capsEffortWhenThinkingDisabled('claude-opus-9')).toBe(false);
   });
 
   test('returns false for models that accept every effort with thinking off', () => {
@@ -499,7 +516,220 @@ describe('resolveThinkingDisplay', () => {
   });
 });
 
+describe('Sonnet 5.5 model gates', () => {
+  const ids = ['claude-sonnet-5-5', 'claude-sonnet-5.5', 'anthropic/claude-sonnet-5-5'];
+
+  test.each(ids)('%s is detected across every family gate', (model) => {
+    expect(hasBetweenToolsThinkingFloor(model)).toBe(true);
+    expect(hasAlwaysOnThinking(model)).toBe(false);
+    expect(bindsThinkingBlocks(model)).toBe(true);
+    expect(supportsOutput128k(model)).toBe(true);
+    expect(supportsAdaptiveThinking(model)).toBe(true);
+    expect(omitsSamplingParameters(model)).toBe(true);
+    expect(supportsPromptCache(model)).toBe(true);
+    expect(supportsContext1m(model)).toBe(true);
+    expect(requiresExplicitThinkingDisabled(model)).toBe(false);
+    expect(capsEffortWhenThinkingDisabled(model)).toBe(true);
+    expect(resolveThinkingOffConfig(model)).toEqual({ type: 'between_tools' });
+    expect(resolveThinkingDisplay(model)).toBe('summarized');
+  });
+
+  test('is not confused with Sonnet 5, Opus 5.5 or date-suffixed ids', () => {
+    expect(hasBetweenToolsThinkingFloor('claude-sonnet-5')).toBe(false);
+    expect(hasBetweenToolsThinkingFloor('claude-sonnet-5-20260501')).toBe(false);
+    expect(hasBetweenToolsThinkingFloor('claude-opus-5-5')).toBe(false);
+    expect(hasBetweenToolsThinkingFloor('claude-sonnet-4-5')).toBe(false);
+    expect(resolveThinkingOffConfig('claude-sonnet-5')).toEqual({ type: 'disabled' });
+    expect(resolveThinkingOffConfig('claude-opus-4-8')).toBeUndefined();
+  });
+
+  test.each(['claude-sonnet-5-6', 'claude-sonnet-6', 'claude-6-sonnet', 'claude-sonnet-5.10'])(
+    'later Sonnet release %s inherits the 5.5 contract instead of the Sonnet 5 path',
+    (model) => {
+      expect(hasBetweenToolsThinkingFloor(model)).toBe(true);
+      expect(bindsThinkingBlocks(model)).toBe(true);
+      expect(supportsOutput128k(model)).toBe(true);
+      expect(requiresExplicitThinkingDisabled(model)).toBe(false);
+      expect(resolveThinkingOffConfig(model)).toEqual({ type: 'between_tools' });
+    },
+  );
+
+  test('isThinkingOffConfig recognizes both floors', () => {
+    expect(isThinkingOffConfig({ type: 'disabled' })).toBe(true);
+    expect(isThinkingOffConfig({ type: 'between_tools' })).toBe(true);
+    expect(isThinkingOffConfig({ type: 'adaptive' })).toBe(false);
+    expect(isThinkingOffConfig(false)).toBe(false);
+  });
+
+  test('display updates passes through for adaptive models', () => {
+    expect(resolveThinkingDisplay('claude-sonnet-5-5', 'updates')).toBe('updates');
+    expect(resolveThinkingDisplay('claude-opus-4-6', 'updates')).toBe('updates');
+    expect(requestsThinkingDisplayUpdates({ type: 'adaptive', display: 'updates' })).toBe(true);
+    expect(requestsThinkingDisplayUpdates({ type: 'between_tools' })).toBe(false);
+  });
+});
+
+describe('always-on thinking gates', () => {
+  test.each([
+    'claude-opus-5-5',
+    'claude-opus-5.5',
+    'claude-opus-5-6',
+    'claude-opus-6',
+    'claude-6-opus',
+  ])('%s is always-on, bound and uncapped', (model) => {
+    expect(hasAlwaysOnThinking(model)).toBe(true);
+    expect(hasBetweenToolsThinkingFloor(model)).toBe(false);
+    expect(bindsThinkingBlocks(model)).toBe(true);
+    expect(supportsOutput128k(model)).toBe(true);
+    expect(requiresExplicitThinkingDisabled(model)).toBe(false);
+    expect(capsEffortWhenThinkingDisabled(model)).toBe(false);
+    expect(resolveThinkingOffConfig(model)).toBeUndefined();
+  });
+
+  test.each(['claude-fable-5-1', 'claude-mythos-5', 'anthropic/claude-fable-5-1'])(
+    'Mythos-class %s shares the always-on contract',
+    (model) => {
+      expect(hasAlwaysOnThinking(model)).toBe(true);
+      expect(bindsThinkingBlocks(model)).toBe(true);
+      expect(supportsOutput128k(model)).toBe(true);
+      expect(requiresExplicitThinkingDisabled(model)).toBe(false);
+      expect(capsEffortWhenThinkingDisabled(model)).toBe(false);
+      expect(resolveThinkingOffConfig(model)).toBeUndefined();
+    },
+  );
+
+  test('Opus 5 and Opus 4.x keep their own thinking-off paths', () => {
+    expect(hasAlwaysOnThinking('claude-opus-5')).toBe(false);
+    expect(hasAlwaysOnThinking('claude-opus-5-20260301')).toBe(false);
+    expect(hasAlwaysOnThinking('claude-opus-4-8')).toBe(false);
+    expect(bindsThinkingBlocks('claude-opus-5')).toBe(false);
+    expect(supportsOutput128k('claude-opus-5')).toBe(false);
+    expect(requiresExplicitThinkingDisabled('claude-opus-5')).toBe(true);
+    expect(capsEffortWhenThinkingDisabled('claude-opus-5')).toBe(true);
+  });
+});
+
 describe('bedrockInputParser', () => {
+  test('maps Sonnet 5.5 thinking off to between_tools and caps effort', () => {
+    const result = bedrockInputParser.parse({
+      model: 'global.anthropic.claude-sonnet-5-5',
+      thinking: false,
+      thinkingDisplay: 'summarized',
+      thinkingBudget: 4000,
+      effort: 'max',
+    }) as Record<string, unknown>;
+    const additionalFields = result.additionalModelRequestFields as Record<string, unknown>;
+
+    expect(additionalFields.thinking).toEqual({ type: 'between_tools' });
+    expect(additionalFields.output_config).toEqual({ effort: 'high' });
+    expect(additionalFields).not.toHaveProperty('thinkingBudget');
+    expect(additionalFields).not.toHaveProperty('thinkingDisplay');
+    expect(additionalFields.anthropic_beta).toEqual(['thinking-binding-controls-2026-08-01']);
+  });
+
+  test('binds Sonnet 5.5 adaptive thinking and adds the display-updates beta on request', () => {
+    const result = bedrockInputParser.parse({
+      model: 'global.anthropic.claude-sonnet-5-5',
+      thinking: true,
+      thinkingDisplay: 'updates',
+    }) as Record<string, unknown>;
+    const additionalFields = result.additionalModelRequestFields as Record<string, unknown>;
+
+    expect(additionalFields.thinking).toEqual({
+      type: 'adaptive',
+      display: 'updates',
+      block_binding: { prefix_mismatch_behavior: 'drop_block' },
+    });
+    expect(additionalFields.anthropic_beta).toEqual([
+      'thinking-binding-controls-2026-08-01',
+      'thinking-display-updates-2026-08-18',
+    ]);
+  });
+
+  test('round-trips a persisted Sonnet 5.5 between_tools config as thinking off', () => {
+    const first = bedrockOutputParser(
+      bedrockInputParser.parse({
+        model: 'global.anthropic.claude-sonnet-5-5',
+        thinking: false,
+      }),
+    );
+    expect(first.additionalModelRequestFields).toMatchObject({
+      thinking: { type: 'between_tools' },
+    });
+    expect(bedrockOutputParser(bedrockInputParser.parse(first))).toEqual(first);
+
+    const persisted = bedrockInputParser.parse({
+      model: 'global.anthropic.claude-sonnet-5-5',
+      additionalModelRequestFields: { thinking: { type: 'between_tools' } },
+    }) as Record<string, unknown>;
+    expect(persisted.additionalModelRequestFields).toMatchObject({
+      thinking: { type: 'between_tools' },
+    });
+    expect(
+      bedrockInputSchema.parse({
+        model: 'global.anthropic.claude-sonnet-5-5',
+        additionalModelRequestFields: { thinking: { type: 'between_tools' } },
+      }),
+    ).toMatchObject({ thinking: false });
+  });
+
+  test('keeps Opus 5.5 adaptive thinking enabled and binds prior blocks', () => {
+    const result = bedrockInputParser.parse({
+      model: 'anthropic.claude-opus-5-5',
+      thinking: false,
+    }) as Record<string, unknown>;
+    const additionalFields = result.additionalModelRequestFields as Record<string, unknown>;
+
+    expect(additionalFields.thinking).toEqual({
+      type: 'adaptive',
+      display: 'summarized',
+      block_binding: { prefix_mismatch_behavior: 'drop_block' },
+    });
+    expect(additionalFields.anthropic_beta).toEqual(['thinking-binding-controls-2026-08-01']);
+  });
+
+  test('restores Opus 5.5 settings and removes its generated binding on a model switch', () => {
+    const first = bedrockOutputParser(
+      bedrockInputParser.parse({
+        model: 'global.anthropic.claude-opus-5-5',
+        additionalModelRequestFields: {
+          thinking: { type: 'disabled', display: 'omitted' },
+          output_config: { effort: 'max' },
+          top_k: 40,
+          anthropic_beta: ['custom-beta', BEDROCK_OUTPUT_128K_BETA],
+        },
+      }),
+    );
+    const fields = structuredClone(first.additionalModelRequestFields);
+    expect(fields).toMatchObject({
+      thinking: {
+        type: 'adaptive',
+        display: 'omitted',
+        block_binding: { prefix_mismatch_behavior: 'drop_block' },
+      },
+      output_config: { effort: 'max' },
+      anthropic_beta: ['custom-beta', 'thinking-binding-controls-2026-08-01'],
+    });
+    expect(fields).not.toHaveProperty('top_k');
+    expect(first.maxTokens).toBe(128000);
+    expect(bedrockOutputParser(bedrockInputParser.parse(first))).toEqual(first);
+
+    const switched = bedrockOutputParser(
+      bedrockInputParser.parse({
+        ...first,
+        model: 'global.anthropic.claude-opus-5',
+        thinking: false,
+      }),
+    );
+    expect(switched.additionalModelRequestFields).toMatchObject({
+      thinking: { type: 'disabled' },
+      output_config: { effort: 'high' },
+      anthropic_beta: ['custom-beta', ...BEDROCK_CLAUDE_4_BETAS],
+    });
+    expect(switched.additionalModelRequestFields).not.toHaveProperty('thinking.block_binding');
+    expect(first.additionalModelRequestFields).toEqual(fields);
+  });
+
   describe('Model Matching for Reasoning Configuration', () => {
     test('should match anthropic.claude-3-7-sonnet model', () => {
       const input = {
@@ -1034,10 +1264,14 @@ describe('bedrockInputParser', () => {
       expect(additionalFields.top_p).toBeUndefined();
       expect(additionalFields.top_k).toBeUndefined();
       expect(additionalFields.custom_flag).toBe(true);
-      expect(additionalFields.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+      expect(additionalFields.thinking).toEqual({
+        type: 'adaptive',
+        display: 'summarized',
+        block_binding: { prefix_mismatch_behavior: 'drop_block' },
+      });
       expect(additionalFields.output_config).toEqual({ effort: 'high' });
-      /** Mythos-class models do not receive the legacy output-128k / fine-grained-tool-streaming betas. */
-      expect(additionalFields.anthropic_beta).toBeUndefined();
+      /** Mythos-class models bind thinking blocks and skip the legacy output-128k / fine-grained-tool-streaming betas. */
+      expect(additionalFields.anthropic_beta).toEqual(['thinking-binding-controls-2026-08-01']);
     });
 
     test('should set thinking.display to "summarized" so Opus 4.7 returns reasoning blocks', () => {

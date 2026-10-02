@@ -47,7 +47,12 @@ import {
   startupConfigKey,
   queueTitleGeneration,
   markTitleGenerationProcessed,
+  useReconcileConversationCodeEnvironmentMutation,
 } from '~/data-provider';
+import {
+  getFailedCodeDecisionRequest,
+  withSubmittedCodeDecision,
+} from '~/hooks/Agents/codeDecision';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import { shouldResetSubagentAtomsOnConversationChange } from './cleanup';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
@@ -86,22 +91,48 @@ const SKILL_QUERY_KEYS = [
   QueryKeys.skillNodeContent,
 ] as const;
 
+/** A regenerated response is parented to the saved turn, never its unsaved replay copy. */
+const responseParentMessageId = (
+  initialResponse: TMessage,
+  userMessage: TMessage,
+  isRegenerate?: boolean,
+) =>
+  isRegenerate && initialResponse.parentMessageId
+    ? initialResponse.parentMessageId
+    : userMessage.messageId;
+
 export const buildCreatedInitialResponse = ({
   initialResponse,
   userMessage,
   isRegenerate = false,
 }: Pick<EventSubmission, 'initialResponse' | 'userMessage' | 'isRegenerate'>): TMessage => ({
   ...initialResponse,
-  parentMessageId:
-    isRegenerate && initialResponse.parentMessageId
-      ? initialResponse.parentMessageId
-      : userMessage.messageId,
+  parentMessageId: responseParentMessageId(initialResponse, userMessage, isRegenerate),
   messageId:
     isRegenerate && initialResponse.messageId
       ? initialResponse.messageId
       : `${userMessage.messageId}_`,
   conversationId: userMessage.conversationId ?? initialResponse.conversationId,
 });
+
+/** Apply the resolved request choice only after acknowledgement. A saved decision may have
+ *  moved since this event was emitted, so replay must never replace it. */
+function acknowledgedCodeEnvironment(
+  current: TConversation | null,
+  submission: EventSubmission,
+): Pick<TConversation, 'codeEnvironmentMode' | 'codeWorkspaces'> {
+  const { codeEnvironmentMode, codeWorkspaces } = submission;
+  if (codeEnvironmentMode == null && !codeWorkspaces?.length) return {};
+  const saved =
+    current?.conversationId != null &&
+    current.conversationId !== Constants.NEW_CONVO &&
+    current.conversationId !== Constants.PENDING_CONVO;
+  if (saved && (current.codeEnvironmentMode != null || current.codeWorkspaces?.length)) return {};
+  return {
+    codeEnvironmentMode,
+    codeWorkspaces: codeEnvironmentMode === 'without_attached' ? undefined : codeWorkspaces,
+  };
+}
 
 export const isInitialNewConversationSubmission = ({
   userMessage,
@@ -308,11 +339,13 @@ const createErrorMessage = ({
       text: '',
       content: appendErrorPart(streamedContent, errorText),
     };
-    if (
-      submission.userMessage.messageId &&
-      submission.userMessage.messageId !== errorMessage.parentMessageId
-    ) {
-      errorMessage.parentMessageId = submission.userMessage.messageId;
+    const parentMessageId = responseParentMessageId(
+      submission.initialResponse,
+      submission.userMessage,
+      submission.isRegenerate,
+    );
+    if (parentMessageId && parentMessageId !== errorMessage.parentMessageId) {
+      errorMessage.parentMessageId = parentMessageId;
     }
     return errorMessage;
   }
@@ -349,6 +382,11 @@ export const resolveErrorTurn = ({
   isNewConversationRoute: boolean;
 }): ErrorTurn => {
   const { userMessage, initialResponse } = submission;
+  const parentMessageId = responseParentMessageId(
+    initialResponse,
+    userMessage,
+    submission.isRegenerate,
+  );
   const conversationId =
     userMessage.conversationId ?? submission.conversation?.conversationId ?? '';
 
@@ -358,7 +396,7 @@ export const resolveErrorTurn = ({
       ...initialResponse,
       ...metadata,
       error: true,
-      parentMessageId: userMessage.messageId,
+      parentMessageId,
     };
 
     if (errorMessage.messageId === undefined || errorMessage.messageId === '') {
@@ -399,7 +437,7 @@ export const resolveErrorTurn = ({
       tMessageSchema.parse({
         ...data,
         error: true,
-        parentMessageId: userMessage.messageId,
+        parentMessageId,
       }) as TMessage,
     ),
   };
@@ -434,8 +472,17 @@ export const buildRecoveryPreset = (
   submissionConvo: Partial<TConversation>,
   cachedConvo: TConversation | null | undefined,
   conversationId: string,
+  submittedDecision?: Pick<EventSubmission, 'codeEnvironmentMode' | 'codeWorkspaces'>,
 ): TPreset =>
-  tPresetSchema.parse(keepLocalCodeApprovalMode(submissionConvo, cachedConvo, conversationId));
+  tPresetSchema.parse(
+    keepLocalCodeApprovalMode(
+      submittedDecision == null
+        ? submissionConvo
+        : withSubmittedCodeDecision(submissionConvo as TConversation, submittedDecision)!,
+      cachedConvo,
+      conversationId,
+    ),
+  );
 
 export const getConvoTitle = ({
   parentId,
@@ -488,6 +535,17 @@ export default function useEventHandlers({
    *  would inherit a stale baseline. Navigation teardown deliberately does not
    *  clear it — a reattach to a still-live run keeps its original start. */
   const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(runIndex));
+  const { mutate: reconcileCodeDecision } =
+    useReconcileConversationCodeEnvironmentMutation(setConversation);
+  const reconcileFailedCodeDecision = useCallback(
+    (submission: EventSubmission, conversationId?: string) => {
+      if (isAddedRequest) return;
+      const request = getFailedCodeDecisionRequest(submission, conversationId);
+      if (request != null) reconcileCodeDecision(request);
+    },
+    [isAddedRequest, reconcileCodeDecision],
+  );
+
   const recoverConversation = useCallback(
     (conversationId: string, submission: EventSubmission) => {
       if (!newConversation) {
@@ -497,9 +555,21 @@ export default function useEventHandlers({
         QueryKeys.conversation,
         conversationId,
       ]);
+      const preset = buildRecoveryPreset(
+        submission.conversation,
+        cachedConvo,
+        conversationId,
+        submission,
+      );
       newConversation({
-        template: { conversationId },
-        preset: buildRecoveryPreset(submission.conversation, cachedConvo, conversationId),
+        // Endpoint preset parsing omits code decisions. Carry them on the conversation template
+        // too, so rebuilding after a first-turn stream failure cannot discard the implicit pick.
+        template: {
+          conversationId,
+          codeEnvironmentMode: preset.codeEnvironmentMode,
+          codeWorkspaces: preset.codeWorkspaces,
+        },
+        preset,
       });
     },
     [newConversation, queryClient],
@@ -533,6 +603,12 @@ export default function useEventHandlers({
       queryClient.invalidateQueries({ queryKey: [key], refetchType: 'all' });
     }
   }, [queryClient]);
+  const onSubagentIndexChange = useCallback(
+    (conversationId: string) => {
+      void queryClient.invalidateQueries([QueryKeys.parentSubagents, conversationId]);
+    },
+    [queryClient],
+  );
   const {
     stepHandler,
     clearStepMaps,
@@ -549,6 +625,7 @@ export default function useEventHandlers({
     setIsSubmitting,
     lastAnnouncementTimeRef,
     onSkillAuthoringComplete,
+    onSubagentIndexChange,
   });
   const attachmentHandler = useAttachmentHandler(queryClient);
 
@@ -718,6 +795,7 @@ export default function useEventHandlers({
           });
           update = tConvoUpdateSchema.parse({
             ...prevState,
+            ...acknowledgedCodeEnvironment(prevState, submission),
             conversationId,
             thread_id,
             title,
@@ -742,6 +820,7 @@ export default function useEventHandlers({
         setConversation((prevState) => {
           update = tConvoUpdateSchema.parse({
             ...prevState,
+            ...acknowledgedCodeEnvironment(prevState, submission),
             conversationId,
             thread_id,
             messages: [requestMessage.messageId, responseMessage.messageId],
@@ -801,6 +880,7 @@ export default function useEventHandlers({
           });
           update = tConvoUpdateSchema.parse({
             ...prevState,
+            ...acknowledgedCodeEnvironment(prevState, submission),
             conversationId,
             title,
           }) as TConversation;
@@ -823,6 +903,7 @@ export default function useEventHandlers({
         setConversation((prevState) => {
           update = tConvoUpdateSchema.parse({
             ...prevState,
+            ...acknowledgedCodeEnvironment(prevState, submission),
             conversationId,
           }) as TConversation;
           return update;
@@ -913,6 +994,7 @@ export default function useEventHandlers({
           const isExistingConvo =
             currentConvoId && currentConvoId !== Constants.NEW_CONVO && !isInitialNewConvo;
           if (isExistingConvo) {
+            reconcileFailedCodeDecision(submission, currentConvoId);
             const abortMessages = getExistingConversationAbortMessages({
               messages,
               isRegenerate,
@@ -1157,6 +1239,7 @@ export default function useEventHandlers({
       attachmentHandler,
       setSubmissionStart,
       restorePendingQuotes,
+      reconcileFailedCodeDecision,
     ],
   );
 
@@ -1177,6 +1260,7 @@ export default function useEventHandlers({
       if (recover) {
         recoverConversation(conversationId, submission);
       }
+      reconcileFailedCodeDecision(submission, conversationId);
       setIsSubmitting(false);
     },
     [
@@ -1188,6 +1272,7 @@ export default function useEventHandlers({
       getMessages,
       queryClient,
       recoverConversation,
+      reconcileFailedCodeDecision,
     ],
   );
 

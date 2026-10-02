@@ -1,4 +1,5 @@
 import {
+  applyPendingOAuthState,
   applyMCPDiscoveryAuthorizationState,
   getMCPOAuthTimeout,
   getMCPOAuthPollingOutcome,
@@ -121,6 +122,64 @@ describe('applyMCPDiscoveryAuthorizationState', () => {
     });
 
     expect(result).toBe(currentStatus);
+  });
+});
+
+describe('applyPendingOAuthState', () => {
+  const durableStatus = {
+    oauth: {
+      requiresOAuth: true,
+      connectionState: 'connected' as const,
+      authorizationState: 'authorized' as const,
+      authorizationGeneration: 'generation-1',
+    },
+  };
+
+  it('reports a server this browser is authorizing as connecting over a cached connection', () => {
+    const result = applyPendingOAuthState(durableStatus, {
+      oauth: { oauthUrl: 'https://auth.example.test/authorize' },
+    });
+
+    expect(result?.oauth).toEqual({
+      requiresOAuth: true,
+      connectionState: 'connecting',
+      authorizationState: 'authorizing',
+      authorizationGeneration: 'generation-1',
+    });
+    expect(durableStatus.oauth.connectionState).toBe('connected');
+  });
+
+  it('adds a connecting entry before the status query has loaded', () => {
+    const result = applyPendingOAuthState(undefined, {
+      oauth: { oauthUrl: 'https://auth.example.test/authorize' },
+    });
+
+    expect(result).toEqual({
+      oauth: {
+        requiresOAuth: true,
+        connectionState: 'connecting',
+        authorizationState: 'authorizing',
+      },
+    });
+  });
+
+  it('leaves status untouched once the flow ends or when it already reports the flow', () => {
+    const connecting = {
+      oauth: {
+        requiresOAuth: true,
+        connectionState: 'connecting' as const,
+        authorizationState: 'authorizing' as const,
+      },
+    };
+
+    expect(applyPendingOAuthState(durableStatus, { oauth: { oauthUrl: null } })).toBe(
+      durableStatus,
+    );
+    expect(
+      applyPendingOAuthState(connecting, {
+        oauth: { oauthUrl: 'https://auth.example.test/authorize' },
+      }),
+    ).toBe(connecting);
   });
 });
 

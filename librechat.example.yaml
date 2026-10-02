@@ -2,7 +2,7 @@
 # https://www.librechat.ai/docs/configuration/librechat_yaml
 
 # Configuration version (required)
-version: 1.3.16
+version: 1.3.17
 
 # Cache settings: Set to true to enable caching
 cache: true
@@ -426,6 +426,11 @@ registration:
 #     - '127.0.0.1:8080'
 
 # rateLimits:
+#   # Shared account budget for all authenticated 2FA management operations.
+#   # Always active; successful and failed requests count. Uses Redis when enabled.
+#   # Minimum 3, so enable -> verify -> confirm can complete within one window.
+#   twoFactorManagement:
+#     requestsPerFiveMinutes: 7
 #   # Authenticated agent-event admission has its own API-key-principal bucket.
 #   agentEvents:
 #     userMax: 40
@@ -587,6 +592,11 @@ endpoints:
   #   # (optional) Assistant Capabilities available to all users. Omit the ones you wish to exclude. Defaults to list below.
   #   capabilities: ["code_interpreter", "retrieval", "actions", "tools", "image_vision"]
   # agents:
+  #   # Maximum provider response-body inactivity for Agent model calls. Defaults to 15 minutes;
+  #   # each received chunk resets the timer. Set to 0 to disable the idle timeout.
+  #   modelResponseBodyTimeoutMs: 900000
+  #   # Maximum wait for provider response headers. Defaults to 5 minutes; 0 disables.
+  #   modelResponseHeadersTimeoutMs: 300000
   #   # (optional) Default recursion depth for agents, defaults to 25
   #   recursionLimit: 50
   #   # Maximum provider error characters retained without content protection (0 hides detail).
@@ -669,6 +679,12 @@ endpoints:
   #   # "stateful_code_sessions" is highly experimental and may change substantially.
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
+  #     # Keep move-only behavior unless attach/detach is explicitly enabled.
+  #     # Enable only after ALL API replicas run this build and advertise decision protocol 1
+  #     # (CODE_ENVIRONMENT_DECISION_VERSION=1), then refresh clients.
+  #     conversationMoves:
+  #       enabled: true
+  #       allowAttachDetach: false
   #     allowedEnvironments: ["user", "agent-user", "conversation"]
   #     # Personal BYOM enrollment. Requires allowPrincipalWorkers on a control plane.
   #     # Omitted values default to enabled and five registered environments per user.
@@ -709,6 +725,24 @@ endpoints:
   #             # Maximum Bash execution budget the model may request per call.
   #             # Omit to preserve the historical 30-second limit. Hard cap: 300000.
   #             maxCommandTimeoutMs: 120000
+  #             # Optional total HTTP budget per workspace tool call, including
+  #             # admission, retries, worst-case execution, settlement, and delivery.
+  #             # Do NOT enable until every LibreChat API replica recognizes this
+  #             # strict config field, Code API honors X-LibreChat-Workspace-Queue-Wait-Ms,
+  #             # and a non-mutating timed canary verifies the live CDN, load balancer,
+  #             # ingress, and caller can all outlast this value. The Nginx example
+  #             # (120s) cannot establish the live limit. Omission keeps 30s admission.
+  #             # With 125s total, a read can queue <=90s, a default command <=85s,
+  #             # a 90s command <=25s. With the default 10s admission reserve,
+  #             # commands >105s cannot fit; the 120s command ceiling above requires
+  #             # a VERIFIED total budget of at least 140s to be usable.
+  #             # maxRequestTimeoutMs: 125000
+  #             # Optional command admission allowance before local dispatch overhead.
+  #             # Omission reserves 10s; valid range: 1000–300000 ms. The HTTP budget
+  #             # must exceed this allowance plus 10s settlement/delivery grace;
+  #             # with the 10s default, a budget of 20s or less is rejected.
+  #             # Smaller allowances give a busy worker less time to accept the call.
+  #             # minCommandAdmissionMs: 10000
   #           permissions:
   #             fileWrite:
   #               allowed: [allow, ask, deny]
@@ -763,6 +797,10 @@ endpoints:
   #         issuer: 'https://identity.example.com/'
   #         audience: 'https://librechat.example.com/agents'
   #         # jwksUri: 'https://identity.example.com/.well-known/jwks.json'
+  #         # Cognito M2M access tokens use client_id instead of aud. For that
+  #         # profile, omit audience and require the access-token type and scope:
+  #         # tokenUse: access
+  #         # requiredScopes: ['agents-api/manage']
   #       clients:
   #         - clientId: 'machine-client-id'
   #           # subject: 'provider-specific-service-principal-subject'
@@ -869,6 +907,21 @@ endpoints:
   #     #     deploymentName: claude-3-5-haiku@20241022  # Override for this model
 
   custom:
+    # xAI: Grok 4.7 uses the existing OpenAI-compatible chat and agent paths.
+    # https://docs.x.ai/developers/grok-4-7
+    # Set XAI_API_KEY in your environment. No separate SpaceXAI provider is needed.
+    - name: 'xai'
+      # Optional: expose this endpoint only to users in the named tenant.
+      # tenantId: 'your-tenant-id'
+      apiKey: '${XAI_API_KEY}'
+      baseURL: 'https://api.x.ai/v1'
+      models:
+        default: ['grok-4.7']
+        fetch: true
+      titleConvo: true
+      titleModel: 'grok-4.7'
+      modelDisplayLabel: 'xAI'
+
     # Anthropic-compatible Example (native `/v1/messages` API)
     # Set `provider: anthropic` to use the native Anthropic client instead of the
     # default OpenAI-compatible one — for Anthropic itself or Anthropic-compatible
@@ -1368,7 +1421,11 @@ endpoints:
 #   messages:
 #     unattributedAssistantContent: model_output # `model_output` (default) or `inspect`
 #     pii:
-#       action: audit # `block` (default) or `audit`
+#       action: audit # `block` (default), `audit`, or `redact` (reserved for transformation-aware ingress; current routes still block)
+#       # `redact` requires the later encrypted owner-view and canonical-message integration.
+#       # maxCharacters: 65536 # bounded total inspected text per transformation session
+#       # maxMatches: 256 # bounded matches per transformation session
+#       # Custom patterns may set category: email, phone, name, credential, or custom.
 #       fields: [name, text, summary, quote, answer, decision_response, decision_reason, content_part, attachment_reference, assembled_context]
 #       starterPatterns: [sk_prefix, bearer_header, api_key_header]
 #       customPatterns:
@@ -1431,3 +1488,7 @@ endpoints:
 #       - id: anthropic_api_key
 #         label: Anthropic API key
 #         regex: "sk-ant-[A-Za-z0-9_-]{20,}"
+
+# ACL writes retry only conflicts on an individual document.
+# permissions:
+#   maxWriteAttempts: 3 # Integer 1-100, including the first attempt.

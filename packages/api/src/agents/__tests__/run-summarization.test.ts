@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import { encryptV3, logger } from '@librechat/data-schemas';
+import { DynamicStructuredTool } from '@langchain/core/tools';
 import { HumanMessage, AIMessage } from '@langchain/core/messages';
 import { CallbackManager } from '@langchain/core/callbacks/manager';
 import {
@@ -14,6 +16,7 @@ import type { BaseMessage } from '@langchain/core/messages';
 import type { OpenAI } from 'openai';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
 import type { OpenAIConfiguration, AzureOptions } from '~/types';
+import { clearToolApprovalHooks, registerToolApprovalHook } from '~/agents/hitl/hooks';
 import { createRun, isAskUserQuestionAdminDisabled } from '~/agents/run';
 import { initializeOpenAI } from '~/endpoints/openai/initialize';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
@@ -93,7 +96,15 @@ jest.mock('~/agents/checkpointer', () => ({
 
 import { ChatOpenAI } from '@librechat/agents/llm/openai';
 import { ChatOpenRouter } from '@librechat/agents/llm/openrouter';
-import { Run, Providers, buildChildInputs, InMemorySubagentTaskStore } from '@librechat/agents';
+import {
+  Run,
+  Providers,
+  HookRegistry,
+  ToolNode,
+  buildChildInputs,
+  InMemorySubagentTaskStore,
+  executeHooks,
+} from '@librechat/agents';
 
 /** Minimal RunAgent factory */
 function makeAgent(
@@ -2583,10 +2594,11 @@ describe('built-in provider request shaping', () => {
   const summarizeWith = async (
     parameters?: Record<string, unknown>,
     model = 'gpt-6-astra',
+    appConfig = makeAppConfig([]),
   ): Promise<Record<string, unknown>> => {
     const agents = await callAndCapture({
       agents: [anthropicAgent()],
-      appConfig: makeAppConfig([]),
+      appConfig,
       summarizationConfig: {
         provider: 'openAI',
         model,
@@ -2621,24 +2633,50 @@ describe('built-in provider request shaping', () => {
   });
 
   it('does not claim a first-party endpoint behind a user configuration.baseURL', async () => {
-    expect(
-      await summarizeWith({ configuration: { baseURL: 'https://gateway.internal/v1' } }),
-    ).toEqual({ configuration: { baseURL: 'https://gateway.internal/v1' } });
+    const parameters = await summarizeWith({
+      configuration: { baseURL: 'https://gateway.internal/v1' },
+    });
+    expect(parameters.firstPartyEndpoint).toBeUndefined();
+    expect(parameters.configuration).toMatchObject({
+      baseURL: 'https://gateway.internal/v1',
+      fetchOptions: { dispatcher: expect.any(Object) },
+    });
   });
 
   it('does not claim a first-party endpoint behind a user baseURL', async () => {
     expect(await summarizeWith({ baseURL: 'https://gateway.internal/v1' })).toEqual({
       baseURL: 'https://gateway.internal/v1',
+      configuration: { fetchOptions: { dispatcher: expect.any(Object) } },
     });
   });
 
-  it('leaves credentials and transport to the client', async () => {
+  it('adds only transport policy while leaving credentials and model selection to the client', async () => {
     const parameters = await summarizeWith();
     expect(parameters.apiKey).toBeUndefined();
     expect(parameters.model).toBeUndefined();
     expect(parameters.modelName).toBeUndefined();
     expect(parameters.streaming).toBeUndefined();
-    expect(parameters.configuration).toBeUndefined();
+    expect(parameters.configuration).toEqual({
+      fetchOptions: { dispatcher: expect.any(Object) },
+    });
+  });
+
+  it.each([
+    { bodyTimeout: 900_000, headersTimeout: 300_000 },
+    { bodyTimeout: 1_800_000, headersTimeout: 120_000 },
+    { bodyTimeout: 0, headersTimeout: 0 },
+  ])('forwards the cross-provider timeout policy %j', async (transportTimeouts) => {
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints!.agents = {
+      modelResponseBodyTimeoutMs: transportTimeouts.bodyTimeout,
+      modelResponseHeadersTimeoutMs: transportTimeouts.headersTimeout,
+    };
+    const parameters = await summarizeWith(undefined, 'gpt-4o', appConfig);
+    const expected = getOpenAIConfig('unused', { transportTimeouts });
+    const configuration = parameters.configuration as NonNullable<OpenAIConfiguration>;
+    expect(configuration.fetchOptions?.dispatcher).toBe(
+      expected.configOptions?.fetchOptions?.dispatcher,
+    );
   });
 
   it('leaves a same-endpoint summarizer on the agent client options', async () => {
@@ -2663,7 +2701,9 @@ describe('built-in provider request shaping', () => {
   it('withholds the declaration when a reverse proxy serves the built-in endpoint', async () => {
     process.env.OPENAI_REVERSE_PROXY = 'https://gateway.internal/v1';
     try {
-      expect(await summarizeWith()).toBeUndefined();
+      expect(await summarizeWith()).toEqual({
+        configuration: { fetchOptions: { dispatcher: expect.any(Object) } },
+      });
     } finally {
       delete process.env.OPENAI_REVERSE_PROXY;
     }
@@ -2672,7 +2712,9 @@ describe('built-in provider request shaping', () => {
   it('withholds the declaration when the base URL is user-provided', async () => {
     process.env.OPENAI_REVERSE_PROXY = 'user_provided';
     try {
-      expect(await summarizeWith()).toBeUndefined();
+      expect(await summarizeWith()).toEqual({
+        configuration: { fetchOptions: { dispatcher: expect.any(Object) } },
+      });
     } finally {
       delete process.env.OPENAI_REVERSE_PROXY;
     }
@@ -4376,10 +4418,8 @@ describe('createRun deferred-tool replay (HITL resume)', () => {
 // ---------------------------------------------------------------------------
 // Suite: HITL wiring gated to resumable callers (Codex J3)
 //
-// The tool-approval wiring (humanInTheLoop switch + PreToolUse hook) must engage ONLY for
-// callers that implement the pause/resume lifecycle. AgentClient passes hitlCapable: true;
-// the OpenAI-compatible + Responses controllers don't, so an approval-gated tool can't
-// pause on a route with no approval surface or resume endpoint.
+// Tool-approval policy must apply to every caller, while only an interactive
+// caller may pause for an 'ask' decision. API-key endpoints have no resume surface.
 // ---------------------------------------------------------------------------
 describe('HITL wiring is gated on hitlCapable', () => {
   const hitlAppConfig = {
@@ -4410,15 +4450,119 @@ describe('HITL wiring is gated on hitlCapable', () => {
     expect(config.hooks).toBeDefined();
   });
 
-  it('does NOT attach HITL for a non-resumable caller even when approval is enabled', async () => {
-    const config = await runAndGetConfig({ hitlCapable: false });
+  it.each([
+    [
+      { enabled: true, mode: 'bypass', deny: ['delete_*'], allow: ['delete_file'] },
+      'delete_file',
+      'deny',
+    ],
+    [{ enabled: true, mode: 'dontAsk', allow: ['read_*'] }, 'read_file', 'allow'],
+    [{ enabled: true, mode: 'dontAsk', allow: ['read_*'] }, 'write_file', 'deny'],
+    [{ enabled: true, mode: 'default' }, 'write_file', 'ask'],
+  ] as const)('evaluates headless tool policy for %s on %s', async (policy, toolName, decision) => {
+    const appConfig = {
+      ...hitlAppConfig,
+      endpoints: { [EModelEndpoint.agents]: { toolApproval: policy } },
+    } as unknown as AppConfig;
+    const config = await runAndGetConfig({ hitlCapable: false, appConfig });
     expect(config).not.toHaveProperty('humanInTheLoop');
-    expect(config.graphConfig).toBeDefined();
-    // No checkpointer either — the run is identical to the no-HITL path.
     expect(
       (config.graphConfig as { compileOptions?: { checkpointer?: unknown } }).compileOptions
         ?.checkpointer,
     ).toBeUndefined();
+    const result = await executeHooks({
+      registry: config.hooks as HookRegistry,
+      input: {
+        hook_event_name: 'PreToolUse',
+        runId: 'headless-test',
+        toolName,
+        toolInput: {},
+        toolUseId: 'call-1',
+      },
+      matchQuery: toolName,
+    });
+    expect(result.decision).toBe(decision);
+  });
+
+  it.each([
+    { policy: { enabled: true, mode: 'bypass', deny: ['delete_record'] }, name: 'delete_record' },
+    { policy: { enabled: true, mode: 'default' }, name: 'read_record' },
+  ] as const)(
+    'blocks a real SDK direct tool before execution for $name',
+    async ({ policy, name }) => {
+      const config = await runAndGetConfig({
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: { [EModelEndpoint.agents]: { toolApproval: policy } },
+        } as unknown as AppConfig,
+      });
+      const body = jest.fn(async () => 'executed');
+      const tool = new DynamicStructuredTool({
+        name,
+        description: 'A test-only tool',
+        schema: z.object({}),
+        func: body,
+      });
+      const node = new ToolNode({
+        tools: [tool],
+        agentId: 'agent_1',
+        hookRegistry: config.hooks as HookRegistry,
+      });
+      const result = await node.invoke(
+        {
+          messages: [
+            new AIMessage({ content: '', tool_calls: [{ id: 'call-1', name, args: {} }] }),
+          ],
+        },
+        { configurable: { run_id: 'headless-test', thread_id: 'thread-1' } },
+      );
+      expect(body).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).toContain('Blocked:');
+    },
+  );
+
+  it('registers trusted per-run hooks on headless calls without prompting', async () => {
+    const factory = jest.fn(() => async () => ({ decision: 'deny' as const }));
+    const unregister = registerToolApprovalHook(factory, { matcher: '^write_file$' });
+    try {
+      const config = await runAndGetConfig({
+        user: { id: 'user-1' },
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: {
+            [EModelEndpoint.agents]: { toolApproval: { enabled: true, mode: 'bypass' } },
+          },
+        } as AppConfig,
+      });
+      expect(factory).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1' }));
+      expect(config).not.toHaveProperty('humanInTheLoop');
+      const result = await executeHooks({
+        registry: config.hooks as HookRegistry,
+        input: {
+          hook_event_name: 'PreToolUse',
+          runId: 'headless-test',
+          toolName: 'write_file',
+          toolInput: {},
+          toolUseId: 'call-1',
+        },
+        matchQuery: 'write_file',
+      });
+      expect(result.decision).toBe('deny');
+    } finally {
+      unregister();
+      clearToolApprovalHooks();
+    }
+  });
+
+  it('keeps approval fully off when the endpoint disables it', async () => {
+    const config = await runAndGetConfig({
+      appConfig: {
+        ...hitlAppConfig,
+        endpoints: { [EModelEndpoint.agents]: { toolApproval: { enabled: false, deny: ['*'] } } },
+      } as AppConfig,
+    });
+    expect((config.hooks as HookRegistry).hasHookFor('PreToolUse')).toBe(false);
+    expect(config).not.toHaveProperty('humanInTheLoop');
   });
 
   it('defaults to non-HITL when hitlCapable is omitted', async () => {
@@ -4426,48 +4570,67 @@ describe('HITL wiring is gated on hitlCapable', () => {
     expect(config).not.toHaveProperty('humanInTheLoop');
   });
 
-  it('heals aliases discovered when a lazy subagent resolves', async () => {
-    const alias = { name: 'delete_mcp_acme', aliasName: 'acme_delete_mcp_acme' };
-    const resolvedChild = makeAgent({ id: 'lazy-child', mcpToolAliases: [alias] });
-    const lazyChild = {
-      ...makeAgent({ id: 'lazy-child' }),
-      configId: 'lazy-child:v1',
-      resolve: jest.fn().mockResolvedValue(resolvedChild),
-    };
-    const parent = makeAgent({
-      subagents: { enabled: true, allowSelf: false },
-      lazySubagentConfigs: [lazyChild],
-    });
-    const appConfig = {
-      ...hitlAppConfig,
-      endpoints: {
-        [EModelEndpoint.agents]: {
-          toolApproval: { enabled: true, mode: 'bypass', deny: [alias.aliasName] },
+  it.each([true, false])(
+    'heals aliases discovered in lazy subagents (HITL=%s)',
+    async (hitlCapable) => {
+      const alias = { name: 'delete_mcp_acme', aliasName: 'acme_delete_mcp_acme' };
+      const resolvedChild = makeAgent({ id: 'lazy-child', mcpToolAliases: [alias] });
+      const lazyChild = {
+        ...makeAgent({ id: 'lazy-child' }),
+        configId: 'lazy-child:v1',
+        resolve: jest.fn().mockResolvedValue(resolvedChild),
+      };
+      const parent = makeAgent({
+        subagents: { enabled: true, allowSelf: false },
+        lazySubagentConfigs: [lazyChild],
+      });
+      const appConfig = {
+        ...hitlAppConfig,
+        endpoints: {
+          [EModelEndpoint.agents]: {
+            toolApproval: { enabled: true, mode: 'bypass', deny: [alias.aliasName] },
+          },
         },
-      },
-    } as unknown as AppConfig;
+      } as unknown as AppConfig;
 
-    await createRun({
-      agents: [parent] as never,
-      signal: new AbortController().signal,
-      appConfig,
-      streaming: true,
-      streamUsage: true,
-      hitlCapable: true,
-    });
-    const config = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
-    const hooks = config.hooks as { getMatchers: (event: string) => unknown[] };
-    const lazyConfig = (
-      (config.graphConfig as { agents: Array<Record<string, unknown>> }).agents[0]
-        .subagentConfigs as Array<Record<string, unknown>>
-    ).find((entry) => entry.configId === lazyChild.configId);
+      await createRun({
+        agents: [parent] as never,
+        signal: new AbortController().signal,
+        appConfig,
+        streaming: true,
+        streamUsage: true,
+        hitlCapable,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+      const hooks = config.hooks as { getMatchers: (event: string) => unknown[] };
+      const lazyConfig = (
+        (config.graphConfig as { agents: Array<Record<string, unknown>> }).agents[0]
+          .subagentConfigs as Array<Record<string, unknown>>
+      ).find((entry) => entry.configId === lazyChild.configId);
 
-    expect(hooks.getMatchers('PreToolUse')).toHaveLength(1);
-    await (lazyConfig?.resolveAgentInputs as (context: never) => Promise<unknown>)({
-      signal: new AbortController().signal,
-    } as never);
-    expect(hooks.getMatchers('PreToolUse')).toHaveLength(1);
-  });
+      const decisionForAlias = async () =>
+        (
+          await executeHooks({
+            registry: config.hooks as HookRegistry,
+            input: {
+              hook_event_name: 'PreToolUse',
+              runId: 'alias-test',
+              toolName: alias.name,
+              toolInput: {},
+              toolUseId: 'call-1',
+            },
+            matchQuery: alias.name,
+          })
+        ).decision;
+      expect(hooks.getMatchers('PreToolUse')).toHaveLength(1);
+      expect(await decisionForAlias()).toBe('allow');
+      await (lazyConfig?.resolveAgentInputs as (context: never) => Promise<unknown>)({
+        signal: new AbortController().signal,
+      } as never);
+      expect(hooks.getMatchers('PreToolUse')).toHaveLength(1);
+      expect(await decisionForAlias()).toBe('deny');
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

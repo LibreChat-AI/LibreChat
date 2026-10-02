@@ -12,6 +12,7 @@ import { createLifecycle } from './lifecycle.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const require = createRequire(path.join(root, 'api/package.json'));
 const codeRoot = process.env.BYOM_CODE_REPO;
+const workspaceTransitions = process.env.BYOM_WORKSPACE_TRANSITIONS === 'true';
 if (!codeRoot)
   throw new Error('Set BYOM_CODE_REPO to a built LibreChat-AI/code-interpreter checkout.');
 if (!['darwin', 'linux'].includes(process.platform)) {
@@ -163,6 +164,9 @@ try {
         toolApproval: { enabled: true, mode: 'bypass' },
         statefulCodeSessions: {
           allowedEnvironments: ['conversation'],
+          ...(workspaceTransitions && {
+            conversationMoves: { enabled: true, allowAttachDetach: true },
+          }),
           principalWorkers: { enabled: true, maxPerUser: 2 },
           environments: [
             {
@@ -212,6 +216,7 @@ try {
     CODEAPI_JWT_KID: 'acceptance',
     CODEAPI_JWT_SINGLE_TENANT_ID: 'acceptance',
     BYOM_ENROLLMENT_TOKEN: adminToken,
+    ...(workspaceTransitions && { CODE_ENVIRONMENT_DECISION_VERSION: '1' }),
     /** Deliberately unusable: accidental default routing must fail, never hit production. */
     LIBRECHAT_CODE_BASEURL: `${appURL}/forbidden-default-codeapi`,
     LIBRECHAT_CODE_BASEURL_STATEFUL: codeURL,
@@ -267,7 +272,10 @@ try {
             E2E_BASE_URL: appURL,
             BYOM_ACCEPTANCE_DIR: runDir,
             BYOM_CODE_CLI: cli,
+            BYOM_WORKSPACE_TRANSITIONS: String(workspaceTransitions),
             E2E_CHROMIUM_CHANNEL: process.env.E2E_CHROMIUM_CHANNEL ?? '',
+            PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH ?? '',
+            ...(process.env.LD_LIBRARY_PATH && { LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH }),
           },
         },
       ),

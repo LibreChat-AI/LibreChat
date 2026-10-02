@@ -23,6 +23,7 @@ import {
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
 } from '~/types/triggerDelivery';
 import { createIndexesWithRetry } from '~/utils/retry';
 import logger from '~/config/winston';
@@ -44,6 +45,20 @@ export const CLAIM_CAS_MAX_ATTEMPTS = 16;
 /** Candidates fetched per claim read; losing claimers advance through the
  * batch instead of re-reading the same head-of-queue row. */
 const CLAIM_CANDIDATE_BATCH = 8;
+/** Matches the per-conversation background task limit, so a listing is complete
+ * unless durable rows outlived that limit across restarts; it then says so. */
+const MAX_PENDING_BACKGROUND_COMPLETIONS = 200;
+/** Every status before a delivery settles, i.e. whose result has not reached its conversation. */
+const DEAD_STATUSES: IAgentTriggerDelivery['status'][] = ['dead', 'capability_dead'];
+const UNDELIVERED_STATUSES: IAgentTriggerDelivery['status'][] = [
+  'staging',
+  'capability_staging',
+  'batched',
+  'pending',
+  'capability_pending',
+  'leased',
+  'capability_leased',
+];
 /** Capability work is inert to legacy claimers while preserving their lane
  * behavior: publishing is `staging`; queued work is `leased` without a lease
  * owner/deadline; execution adds a private lease; dead work is terminal. */
@@ -246,6 +261,53 @@ export interface AgentEventActorReceiptStorageMetrics {
   deadDeliveries: number;
 }
 
+/** A background tool completion that has not reached its conversation yet. */
+export interface PendingAgentBackgroundToolCompletion {
+  deliveryKey: string;
+  taskId: string;
+  toolCallId: string;
+  toolName: string;
+  dispatchedAt: Date;
+  /** The tool's terminal outcome once it settled; absent while it still runs. */
+  result?: { status: AgentBackgroundToolResultReceipt['status']; settledAt: Date };
+  /** An automatic delivery holds the result and is starting its turn. */
+  claimedByWakeup: boolean;
+}
+
+export interface PendingAgentBackgroundToolCompletions {
+  completions: PendingAgentBackgroundToolCompletion[];
+  /** Completions whose delivery dead-lettered: never delivered, recoverable only by a poll. */
+  dead: PendingAgentBackgroundToolCompletion[];
+  /** The first page overflowed; separate reads may not cover one complete snapshot. */
+  truncated: boolean;
+}
+
+export interface UndeliveredAgentTriggerTaskIds {
+  taskIds: string[];
+  truncated: boolean;
+}
+
+/** Selects deferred internal deliveries whose readiness condition just changed. */
+export interface ExpediteAgentTriggerDeliveriesInput {
+  sourceIds: readonly string[];
+  /** Exact deliveries, e.g. the one whose result just became durable. */
+  deliveryKeys?: readonly string[];
+  /** Every matching delivery of one principal, e.g. after one of its generations settled. */
+  user?: string | Types.ObjectId;
+  /** Narrows a principal's selection to deliveries that resume this conversation. */
+  conversationId?: string;
+  /** Exact tasks within a principal's conversation, including a repaired attempt's predecessor. */
+  taskIds?: readonly string[];
+  now: Date;
+}
+
+export interface ExpediteAgentTriggerDeliveriesResult {
+  /** Deferred, unheld deliveries moved to `now`. */
+  expedited: number;
+  /** Deliveries a worker held, marked so their next deferral re-checks at once. */
+  held: number;
+}
+
 export interface AgentTriggerDeliveryMethods {
   ensureAgentTriggerDeliveryIndexes: () => Promise<void>;
   enqueueAgentTriggerDelivery: (
@@ -270,9 +332,10 @@ export interface AgentTriggerDeliveryMethods {
   beginAgentTriggerDeliveryAttempt: (
     input: AgentTriggerDeliveryFence & { now: Date },
   ) => Promise<number | null>;
+  /** `expedited` when readiness changed while the delivery was held: it is due now instead. */
   deferAgentTriggerDeliveryAttempt: (
     input: AgentTriggerDeliveryFence & { attempt: number; availableAt: Date },
-  ) => Promise<boolean>;
+  ) => Promise<boolean | 'expedited'>;
   completeAgentTriggerDelivery: (
     input: AgentTriggerDeliveryFence & {
       attempt: number;
@@ -281,15 +344,25 @@ export interface AgentTriggerDeliveryMethods {
       handling?: AgentTriggerHandlingState;
       awaitTerminalHandling?: true;
     },
+    recovery?: { required: boolean },
   ) => Promise<boolean>;
-  retireAgentTriggerDelivery: (input: {
-    deliveryKey: string;
-    sourceId: string;
-    settledAt: Date;
-    reason: string;
-    onlyIfUnclaimed?: boolean;
-    onlyIfDead?: boolean;
-  }) => Promise<boolean>;
+  retireAgentTriggerDelivery: (
+    input: {
+      deliveryKey: string;
+      sourceId: string;
+      settledAt: Date;
+      reason: string;
+      onlyIfUnclaimed?: boolean;
+      onlyIfDead?: boolean;
+      /** Accept transport success without a terminal handling receipt, unless the
+       * delivery explicitly keeps its lane open for terminal handling. */
+      allowSucceeded?: boolean;
+      /** True only when this call retired the delivery, not when it had already
+       * succeeded, e.g. delivered by a resolver that won the race. */
+      requireTransition?: boolean;
+    },
+    recovery?: { required: boolean },
+  ) => Promise<boolean>;
   renewAgentTriggerDeliveryProducerLease: (input: {
     deliveryKey: string;
     sourceId: string;
@@ -300,6 +373,23 @@ export interface AgentTriggerDeliveryMethods {
     sourceId: string;
     now: Date;
   }) => Promise<AgentTriggerProducerLeaseStatus>;
+  listPendingAgentBackgroundToolCompletions: (input: {
+    user: string | Types.ObjectId;
+    conversationId: string;
+    sourceId: string;
+    /** One task's completion, e.g. to discard it. */
+    taskId?: string;
+    limit?: number;
+  }) => Promise<PendingAgentBackgroundToolCompletions>;
+  /** Task ids of one conversation's undelivered internal deliveries from one source. */
+  listUndeliveredAgentTriggerTaskIds: (input: {
+    user: string | Types.ObjectId;
+    conversationId: string;
+    sourceId: string;
+  }) => Promise<UndeliveredAgentTriggerTaskIds>;
+  expediteAgentTriggerDeliveries: (
+    input: ExpediteAgentTriggerDeliveriesInput,
+  ) => Promise<ExpediteAgentTriggerDeliveriesResult>;
   persistAgentBackgroundToolResult: (
     input: PersistAgentBackgroundToolResultInput,
   ) => Promise<boolean>;
@@ -382,6 +472,7 @@ export interface AgentTriggerDeliveryMethods {
       settledAt: Date;
       receiptRetryAt?: Date;
     },
+    recovery?: { required: boolean },
   ) => Promise<boolean>;
   getAgentTriggerDelivery: (deliveryKey: string) => Promise<AgentTriggerDeliveryRecord | null>;
   getAgentTriggerDeliveryStatus: (
@@ -399,9 +490,18 @@ export interface AgentTriggerDeliveryMethods {
     user: string | Types.ObjectId,
     now: Date,
   ) => Promise<number>;
-  recoverAgentTriggerLanePublications: (limit?: number) => Promise<number>;
-  recoverAgentTriggerBatchReceipts: (limit?: number) => Promise<number>;
-  reclaimInactiveAgentTriggerLanes: (limit?: number) => Promise<number>;
+  recoverAgentTriggerLanePublications: (
+    limit?: number,
+    activity?: { found: boolean },
+  ) => Promise<number>;
+  recoverAgentTriggerBatchReceipts: (
+    limit?: number,
+    activity?: { found: boolean },
+  ) => Promise<number>;
+  reclaimInactiveAgentTriggerLanes: (
+    limit?: number,
+    activity?: { found: boolean },
+  ) => Promise<number>;
   prepareAgentTriggerUserPurge: (
     user: string | Types.ObjectId,
     fenceStartedAt: Date,
@@ -411,7 +511,7 @@ export interface AgentTriggerDeliveryMethods {
     user: string | Types.ObjectId,
     fenceStartedAt: Date,
   ) => Promise<boolean>;
-  recoverAgentTriggerUserPurges: (limit?: number) => Promise<number>;
+  recoverAgentTriggerUserPurges: (limit?: number, activity?: { found: boolean }) => Promise<number>;
   deleteAgentTriggerDeliveriesByUser: (user: string | Types.ObjectId) => Promise<void>;
   eraseAgentTriggerDeliveryConversationResults: (
     user: string | Types.ObjectId,
@@ -1026,7 +1126,8 @@ export function createAgentTriggerDeliveryMethods(
       input.requiredWorkerCapability !==
         AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2 &&
       input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1 &&
-      input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1
+      input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1 &&
+      input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2
     ) {
       throw new TypeError('Agent trigger delivery requires an unsupported worker capability');
     }
@@ -1089,6 +1190,7 @@ export function createAgentTriggerDeliveryMethods(
   /** Repairs abandoned reservations and staging rows left by crashed writers. */
   async function recoverAgentTriggerLanePublications(
     limit = DEFAULT_PURGE_RECOVERY_LIMIT,
+    activity?: { found: boolean },
   ): Promise<number> {
     if (!Number.isSafeInteger(limit) || limit <= 0) {
       throw new TypeError('Agent trigger lane recovery limit must be a positive integer');
@@ -1102,6 +1204,7 @@ export function createAgentTriggerDeliveryMethods(
       .sort({ publisherStartedAt: 1, _id: 1 })
       .limit(boundedLimit)
       .lean<IAgentTriggerLaneSequence[]>();
+    if (activity != null && lanes.length > 0) activity.found = true;
     let recovered = 0;
     const recoveryCursor = new Date();
     for (const lane of lanes) {
@@ -1172,6 +1275,9 @@ export function createAgentTriggerDeliveryMethods(
             .limit(remaining)
             .lean<IAgentTriggerDelivery[]>()
         : [];
+    if (activity != null && (legacyStaged.length > 0 || indexedStaged.length > 0)) {
+      activity.found = true;
+    }
     const staged = [
       ...legacyStaged.map((delivery) => ({
         ...delivery,
@@ -1290,6 +1396,7 @@ export function createAgentTriggerDeliveryMethods(
   /** Bounds high-cardinality ordering metadata after the final retained job settles. */
   async function reclaimInactiveAgentTriggerLanes(
     limit = DEFAULT_PURGE_RECOVERY_LIMIT,
+    activity?: { found: boolean },
   ): Promise<number> {
     if (!Number.isSafeInteger(limit) || limit <= 0) {
       throw new TypeError('Agent trigger lane reclamation limit must be a positive integer');
@@ -1301,6 +1408,7 @@ export function createAgentTriggerDeliveryMethods(
       .limit(boundedLimit)
       .select('_id orderingKey laneCleanupPendingAt')
       .lean<Array<Pick<IAgentTriggerDelivery, '_id' | 'orderingKey' | 'laneCleanupPendingAt'>>>();
+    if (activity != null && pendingCleanup.length > 0) activity.found = true;
     let reclaimed = 0;
     for (const delivery of pendingCleanup) {
       if (await fulfillLaneCleanupRequest(delivery)) {
@@ -1318,6 +1426,7 @@ export function createAgentTriggerDeliveryMethods(
       .limit(remaining)
       .select('_id')
       .lean<Array<Pick<IAgentTriggerLaneSequence, '_id'>>>();
+    if (activity != null && lanes.length > 0) activity.found = true;
     for (const lane of lanes) {
       if (await reclaimLaneIfInactive(lane._id)) {
         reclaimed += 1;
@@ -1757,6 +1866,7 @@ export function createAgentTriggerDeliveryMethods(
 
   async function recoverAgentTriggerBatchReceipts(
     limit = DEFAULT_PURGE_RECOVERY_LIMIT,
+    activity?: { found: boolean },
   ): Promise<number> {
     if (!Number.isSafeInteger(limit) || limit <= 0) {
       throw new TypeError('Agent trigger batch recovery limit must be a positive integer');
@@ -1770,6 +1880,7 @@ export function createAgentTriggerDeliveryMethods(
       .sort({ settledAt: 1, _id: 1 })
       .limit(Math.min(limit, MAX_PURGE_RECOVERY_LIMIT))
       .lean<IAgentTriggerDelivery[]>();
+    if (activity != null && roots.length > 0) activity.found = true;
     let recovered = 0;
     for (const root of roots) {
       if (root.settledAt == null || (root.status !== 'succeeded' && root.status !== 'dead')) {
@@ -1819,57 +1930,61 @@ export function createAgentTriggerDeliveryMethods(
     $or: [ordinaryFence(input), legacyCapabilityFence(input), shieldCapabilityFence(input)],
   });
 
+  /** Readiness signals and the lease release must meet in one fenced write. Try
+   * the unmarked state first, then the marked state: a concurrent expedite can
+   * only add a marker while this lease is held. After release, expedite's second
+   * update sees an unheld row. No pipeline updates or unfenced follow-up needed. */
+  async function releaseWaitingDelivery(
+    input: AgentTriggerDeliveryFence & { availableAt: Date; attempt?: number },
+  ): Promise<boolean | 'expedited'> {
+    const attemptFence = input.attempt == null ? {} : { attempts: input.attempt };
+    const attemptChange = input.attempt == null ? {} : { $inc: { attempts: -1 } };
+    const profiles = [
+      { filter: shieldCapabilityFence(input), status: 'leased', capabilityStatus: 'pending' },
+      { filter: legacyCapabilityFence(input), status: 'capability_pending' },
+      { filter: ordinaryFence(input), status: 'pending' },
+    ] as const;
+    for (const marked of [false, true]) {
+      for (const profile of profiles) {
+        const availableAt = marked ? new Date() : input.availableAt;
+        const result = await Delivery().updateOne(
+          {
+            _id: input.id,
+            ...profile.filter,
+            ...attemptFence,
+            wakeRequestedAt: { $exists: marked },
+          },
+          {
+            ...attemptChange,
+            $set: {
+              status: profile.status,
+              ...('capabilityStatus' in profile && { capabilityStatus: profile.capabilityStatus }),
+              availableAt,
+              claimAvailableAt: availableAt,
+            },
+            $unset: {
+              leaseBy: 1,
+              leaseUntil: 1,
+              claimToken: 1,
+              capabilityLeaseBy: 1,
+              capabilityLeaseUntil: 1,
+              capabilityClaimToken: 1,
+              wakeRequestedAt: 1,
+            },
+          },
+        );
+        if (result.modifiedCount === 1) {
+          return marked ? 'expedited' : true;
+        }
+      }
+    }
+    return false;
+  }
+
   async function releaseAgentTriggerDelivery(
     input: AgentTriggerDeliveryFence & { availableAt: Date },
   ): Promise<boolean> {
-    const shieldResult = await Delivery().updateOne(
-      { _id: input.id, ...shieldCapabilityFence(input) },
-      {
-        $set: {
-          status: 'leased',
-          availableAt: input.availableAt,
-          capabilityStatus: 'pending',
-          claimAvailableAt: input.availableAt,
-        },
-        $unset: {
-          leaseBy: 1,
-          leaseUntil: 1,
-          claimToken: 1,
-          capabilityLeaseBy: 1,
-          capabilityLeaseUntil: 1,
-          capabilityClaimToken: 1,
-        },
-      },
-    );
-    if (shieldResult.modifiedCount === 1) {
-      return true;
-    }
-    const capabilityResult = await Delivery().updateOne(
-      { _id: input.id, ...legacyCapabilityFence(input) },
-      {
-        $set: {
-          status: 'capability_pending',
-          availableAt: input.availableAt,
-          claimAvailableAt: input.availableAt,
-        },
-        $unset: { leaseBy: 1, leaseUntil: 1, claimToken: 1 },
-      },
-    );
-    if (capabilityResult.modifiedCount === 1) {
-      return true;
-    }
-    const result = await Delivery().updateOne(
-      { _id: input.id, ...ordinaryFence(input) },
-      {
-        $set: {
-          status: 'pending',
-          availableAt: input.availableAt,
-          claimAvailableAt: input.availableAt,
-        },
-        $unset: { leaseBy: 1, leaseUntil: 1, claimToken: 1 },
-      },
-    );
-    return result.modifiedCount === 1;
+    return (await releaseWaitingDelivery(input)) !== false;
   }
 
   async function beginAgentTriggerDeliveryAttempt(
@@ -1899,64 +2014,11 @@ export function createAgentTriggerDeliveryMethods(
   /** Releases a pre-dispatch deferral and restores the attempt consumed by beginAttempt. */
   async function deferAgentTriggerDeliveryAttempt(
     input: AgentTriggerDeliveryFence & { attempt: number; availableAt: Date },
-  ): Promise<boolean> {
+  ): Promise<boolean | 'expedited'> {
     if (!Number.isSafeInteger(input.attempt) || input.attempt <= 0) {
       throw new TypeError('attempt must be a positive integer');
     }
-    const update = {
-      $inc: { attempts: -1 },
-      $set: {
-        availableAt: input.availableAt,
-        claimAvailableAt: input.availableAt,
-      },
-      $unset: { leaseBy: 1, leaseUntil: 1, claimToken: 1 },
-    };
-    const shieldResult = await Delivery().updateOne(
-      {
-        _id: input.id,
-        ...shieldCapabilityFence(input),
-        attempts: input.attempt,
-      },
-      {
-        $inc: update.$inc,
-        $set: {
-          status: 'leased',
-          availableAt: input.availableAt,
-          capabilityStatus: 'pending',
-          claimAvailableAt: input.availableAt,
-        },
-        $unset: {
-          leaseBy: 1,
-          leaseUntil: 1,
-          claimToken: 1,
-          capabilityLeaseBy: 1,
-          capabilityLeaseUntil: 1,
-          capabilityClaimToken: 1,
-        },
-      },
-    );
-    if (shieldResult.modifiedCount === 1) {
-      return true;
-    }
-    const capabilityResult = await Delivery().updateOne(
-      {
-        _id: input.id,
-        ...legacyCapabilityFence(input),
-        attempts: input.attempt,
-      },
-      {
-        ...update,
-        $set: { ...update.$set, status: 'capability_pending' },
-      },
-    );
-    if (capabilityResult.modifiedCount === 1) {
-      return true;
-    }
-    const result = await Delivery().updateOne(
-      { _id: input.id, ...ordinaryFence(input), attempts: input.attempt },
-      { ...update, $set: { ...update.$set, status: 'pending' } },
-    );
-    return result.modifiedCount === 1;
+    return releaseWaitingDelivery(input);
   }
 
   async function completeAgentTriggerDelivery(
@@ -1967,6 +2029,7 @@ export function createAgentTriggerDeliveryMethods(
       handling?: AgentTriggerHandlingState;
       awaitTerminalHandling?: true;
     },
+    recovery?: { required: boolean },
   ): Promise<boolean> {
     const awaitsTerminalHandling =
       input.awaitTerminalHandling === true && input.handling?.status === 'started';
@@ -2047,6 +2110,7 @@ export function createAgentTriggerDeliveryMethods(
       });
       await fulfillLaneCleanupRequest(completed);
     } catch (error) {
+      if (recovery != null) recovery.required = true;
       // Root success is authoritative. Maintenance retries both constituent
       // receipt settlement and the existing durable lane-cleanup marker.
       logger.warn('[agent-triggers] failed to finalize a completed trigger batch', {
@@ -2061,14 +2125,23 @@ export function createAgentTriggerDeliveryMethods(
    * that the result will never become dispatchable. This transition is keyed
    * by the immutable delivery identity rather than a worker lease so the
    * producer can unblock the lane even while a resolver is deferring it. */
-  async function retireAgentTriggerDelivery(input: {
-    deliveryKey: string;
-    sourceId: string;
-    settledAt: Date;
-    reason: string;
-    onlyIfUnclaimed?: boolean;
-    onlyIfDead?: boolean;
-  }): Promise<boolean> {
+  async function retireAgentTriggerDelivery(
+    input: {
+      deliveryKey: string;
+      sourceId: string;
+      settledAt: Date;
+      reason: string;
+      onlyIfUnclaimed?: boolean;
+      onlyIfDead?: boolean;
+      /** Accept transport success without a terminal handling receipt, unless the
+       * delivery explicitly keeps its lane open for terminal handling. */
+      allowSucceeded?: boolean;
+      /** True only when this call retired the delivery, not when it had already
+       * succeeded, e.g. delivered by a resolver that won the race. */
+      requireTransition?: boolean;
+    },
+    recovery?: { required: boolean },
+  ): Promise<boolean> {
     if (
       input.deliveryKey.length === 0 ||
       input.deliveryKey.length > 256 ||
@@ -2145,12 +2218,16 @@ export function createAgentTriggerDeliveryMethods(
       try {
         await fulfillLaneCleanupRequest(retired);
       } catch (error) {
+        if (recovery != null) recovery.required = true;
         logger.warn('[agent-triggers] failed to finalize a retired internal delivery', {
           deliveryKey: input.deliveryKey,
           error: error instanceof Error ? error.message : String(error),
         });
       }
       return true;
+    }
+    if (input.requireTransition === true) {
+      return false;
     }
     return (
       (await Delivery().exists({
@@ -2161,6 +2238,7 @@ export function createAgentTriggerDeliveryMethods(
         $or: [
           { handling: { $exists: false } },
           { 'handling.status': { $in: ['applied', 'completed_no_action', 'failed', 'cancelled'] } },
+          ...(input.allowSucceeded === true ? [{ awaitTerminalHandling: { $ne: true } }] : []),
         ],
       })) != null
     );
@@ -2248,6 +2326,225 @@ export function createAgentTriggerDeliveryMethods(
     return delivery.producerLeaseUntil.getTime() > input.now.getTime()
       ? { status: 'live', leaseUntil: delivery.producerLeaseUntil }
       : { status: 'expired', leaseUntil: delivery.producerLeaseUntil };
+  }
+
+  /** Every background completion of one conversation that has not been
+   * delivered yet: still running, or settled and waiting for a wake-up. The
+   * durable delivery row outlives the process-local task registry (another
+   * replica, a restart, or the registry's retention), so it is the record of
+   * what is still going to arrive. Result content is never returned here. */
+  async function listPendingAgentBackgroundToolCompletions(input: {
+    user: string | Types.ObjectId;
+    conversationId: string;
+    sourceId: string;
+    taskId?: string;
+    limit?: number;
+  }): Promise<PendingAgentBackgroundToolCompletions> {
+    const limit = Math.min(
+      input.limit ?? MAX_PENDING_BACKGROUND_COMPLETIONS,
+      MAX_PENDING_BACKGROUND_COMPLETIONS,
+    );
+    if (
+      input.conversationId.length === 0 ||
+      input.conversationId.length > 256 ||
+      input.sourceId.length === 0 ||
+      input.sourceId.length > 256 ||
+      (input.taskId != null && (input.taskId.length === 0 || input.taskId.length > 256)) ||
+      !Number.isSafeInteger(limit) ||
+      limit <= 0
+    ) {
+      throw new TypeError('Invalid pending background completion lookup');
+    }
+    type CompletionRow = Pick<
+      IAgentTriggerDelivery,
+      'deliveryKey' | 'createdAt' | 'backgroundToolResult' | 'status' | 'capabilityStatus'
+    > & { envelope?: { event?: { payload?: Record<string, unknown> } } };
+    const scope = {
+      user: input.user,
+      'envelope.event.source.type': 'internal',
+      'envelope.event.source.id': input.sourceId,
+      'envelope.target.conversationId': input.conversationId,
+      ...(input.taskId != null && { 'envelope.event.payload.taskId': input.taskId }),
+      /** Legacy rows keep results only on the parent message. */
+      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+    };
+    const read = (filter: FilterQuery<IAgentTriggerDelivery>) =>
+      Delivery()
+        .find({ ...scope, ...filter })
+        .select(
+          'deliveryKey createdAt status capabilityStatus envelope.event.payload ' +
+            'backgroundToolResult.status backgroundToolResult.settledAt backgroundToolResult.resultClaim',
+        )
+        .sort({ updatedAt: -1, _id: -1 })
+        .limit(limit + 1)
+        .lean<CompletionRow[]>();
+    const project = (row: CompletionRow): PendingAgentBackgroundToolCompletion | undefined => {
+      const payload = row.envelope?.event?.payload;
+      const taskId = payload?.taskId;
+      const toolCallId = payload?.toolCallId;
+      const toolName = payload?.toolName;
+      if (
+        row.createdAt == null ||
+        typeof taskId !== 'string' ||
+        typeof toolCallId !== 'string' ||
+        typeof toolName !== 'string'
+      ) {
+        return undefined;
+      }
+      const receipt = row.backgroundToolResult;
+      return {
+        deliveryKey: row.deliveryKey,
+        taskId,
+        toolCallId,
+        toolName,
+        dispatchedAt: row.createdAt,
+        ...(receipt != null && {
+          result: { status: receipt.status, settledAt: receipt.settledAt },
+        }),
+        claimedByWakeup: receipt?.resultClaim != null,
+      };
+    };
+    const classify = (rows: CompletionRow[]): PendingAgentBackgroundToolCompletions => {
+      const completions: PendingAgentBackgroundToolCompletion[] = [];
+      const dead: PendingAgentBackgroundToolCompletion[] = [];
+      for (const row of rows.slice(0, limit)) {
+        const completion = project(row);
+        if (completion == null) continue;
+        if (DEAD_STATUSES.includes(row.status) || row.capabilityStatus === 'dead') {
+          dead.push(completion);
+        } else {
+          completions.push(completion);
+        }
+      }
+      return { completions: completions.reverse(), dead, truncated: rows.length > limit };
+    };
+    const first = classify(
+      await read({ status: { $in: [...UNDELIVERED_STATUSES, ...DEAD_STATUSES] } }),
+    );
+    if (!first.truncated) return first;
+
+    /** Overfull conversations need separate bounded reads so old dead letters
+     * cannot hide pending work. Separate reads can straddle a transition, so
+     * absence is not evidence of delivery until a later single read fits. */
+    const [waitingRows, deadRows] = await Promise.all([
+      read({ status: { $in: UNDELIVERED_STATUSES }, capabilityStatus: { $ne: 'dead' } }),
+      read({
+        $or: [
+          { status: { $in: DEAD_STATUSES } },
+          { status: { $in: UNDELIVERED_STATUSES }, capabilityStatus: 'dead' },
+        ],
+      }),
+    ]);
+    const waiting = classify(waitingRows);
+    const dead = classify(deadRows);
+    const failedIds = new Set(dead.dead.map(({ taskId }) => taskId));
+    return {
+      completions: waiting.completions.filter(({ taskId }) => !failedIds.has(taskId)),
+      dead: dead.dead,
+      truncated: true,
+    };
+  }
+
+  async function listUndeliveredAgentTriggerTaskIds(input: {
+    user: string | Types.ObjectId;
+    conversationId: string;
+    sourceId: string;
+  }): Promise<UndeliveredAgentTriggerTaskIds> {
+    if (
+      input.conversationId.length === 0 ||
+      input.conversationId.length > 256 ||
+      input.sourceId.length === 0 ||
+      input.sourceId.length > 256
+    ) {
+      throw new TypeError('Invalid undelivered task lookup');
+    }
+    const rows = await Delivery()
+      .find({
+        user: input.user,
+        'envelope.event.source.type': 'internal',
+        'envelope.event.source.id': input.sourceId,
+        'envelope.target.conversationId': input.conversationId,
+        status: { $in: UNDELIVERED_STATUSES },
+        capabilityStatus: { $ne: 'dead' },
+      })
+      .select('envelope.event.payload.taskId')
+      .sort({ createdAt: 1, _id: 1 })
+      .limit(MAX_PENDING_BACKGROUND_COMPLETIONS + 1)
+      .lean<Array<{ envelope?: { event?: { payload?: { taskId?: unknown } } } }>>();
+    const taskIds = rows
+      .slice(0, MAX_PENDING_BACKGROUND_COMPLETIONS)
+      .map((row) => row.envelope?.event?.payload?.taskId)
+      .filter((taskId): taskId is string => typeof taskId === 'string');
+    return { taskIds, truncated: rows.length > MAX_PENDING_BACKGROUND_COMPLETIONS };
+  }
+
+  /** Pulls deferred deliveries back to `now` when the condition they were
+   * waiting on has changed, so a waiting delivery can back off without delaying
+   * the moment it becomes deliverable. Unclaimed rows move now; held rows retain
+   * a signal consumed atomically by readiness deferral or ordering release. */
+  async function expediteAgentTriggerDeliveries(
+    input: ExpediteAgentTriggerDeliveriesInput,
+  ): Promise<ExpediteAgentTriggerDeliveriesResult> {
+    const deliveryKeys = input.deliveryKeys ?? [];
+    if (
+      (input.taskIds != null &&
+        (input.user == null ||
+          input.conversationId == null ||
+          input.taskIds.length === 0 ||
+          input.taskIds.some((id) => id.length === 0 || id.length > 256))) ||
+      input.sourceIds.length === 0 ||
+      input.sourceIds.some((id) => id.length === 0 || id.length > 256) ||
+      deliveryKeys.some((key) => key.length === 0 || key.length > 256) ||
+      (deliveryKeys.length === 0 && input.user == null) ||
+      (input.conversationId != null &&
+        (input.conversationId.length === 0 || input.conversationId.length > 256)) ||
+      !(input.now instanceof Date) ||
+      !Number.isFinite(input.now.getTime())
+    ) {
+      throw new TypeError('Invalid agent trigger delivery expedite');
+    }
+    const selection = {
+      'envelope.event.source.type': 'internal',
+      'envelope.event.source.id': { $in: [...input.sourceIds] },
+      ...(deliveryKeys.length > 0 && { deliveryKey: { $in: [...deliveryKeys] } }),
+      ...(input.taskIds != null && {
+        'envelope.event.payload.taskId': { $in: [...input.taskIds] },
+      }),
+      ...(input.user != null && { user: input.user }),
+      ...(input.conversationId != null && {
+        'envelope.target.conversationId': input.conversationId,
+      }),
+    };
+    /** Classic operators only: aggregation-pipeline updates are not portable. A
+     * held row may be deferred on readiness its worker read before the change,
+     * so it keeps a marker that its deferral honors instead of moving now. The
+     * marker is written first: a row released after it was read as held is then
+     * seen unheld by the move, so no release between the two escapes both. */
+    const held = await Delivery().updateMany(
+      {
+        ...selection,
+        status: { $in: ['leased', 'capability_leased'] },
+        $or: [{ leaseBy: { $exists: true } }, { capabilityLeaseBy: { $exists: true } }],
+      },
+      { $set: { wakeRequestedAt: input.now } },
+    );
+    const moved = await Delivery().updateMany(
+      {
+        ...selection,
+        availableAt: { $gt: input.now },
+        leaseBy: { $exists: false },
+        $or: [
+          { status: { $in: ['pending', 'capability_pending'] } },
+          {
+            status: 'leased',
+            capabilityStatus: 'pending',
+            capabilityLeaseBy: { $exists: false },
+          },
+        ],
+      },
+      { $set: { availableAt: input.now, claimAvailableAt: input.now } },
+    );
+    return { expedited: moved.modifiedCount, held: held.matchedCount };
   }
 
   /** Stores terminal output on the pre-admitted delivery before attempting the
@@ -3502,6 +3799,7 @@ export function createAgentTriggerDeliveryMethods(
       settledAt: Date;
       receiptRetryAt?: Date;
     },
+    recovery?: { required: boolean },
   ): Promise<boolean> {
     const error = normalizeFailure(input.error);
     if (
@@ -3596,6 +3894,7 @@ export function createAgentTriggerDeliveryMethods(
         error,
       });
     } catch (settlementError) {
+      if (recovery != null) recovery.required = true;
       logger.warn('[agent-triggers] failed to settle batch dead-letter receipts', {
         deliveryId: String(dead._id),
         error: settlementError instanceof Error ? settlementError.message : String(settlementError),
@@ -3874,6 +4173,7 @@ export function createAgentTriggerDeliveryMethods(
   /** Recovers cleanup markers whose users are gone; active-user markers are never destructive. */
   async function recoverAgentTriggerUserPurges(
     limit = DEFAULT_PURGE_RECOVERY_LIMIT,
+    activity?: { found: boolean },
   ): Promise<number> {
     if (!Number.isSafeInteger(limit) || limit <= 0) {
       throw new TypeError('Agent trigger purge recovery limit must be a positive integer');
@@ -3886,6 +4186,7 @@ export function createAgentTriggerDeliveryMethods(
       .sort({ backgroundToolResultDeletionPendingAt: 1, _id: 1 })
       .limit(Math.min(limit, MAX_PURGE_RECOVERY_LIMIT))
       .lean<IAgentTriggerDelivery[]>();
+    if (activity != null && pending.length > 0) activity.found = true;
     for (const row of pending) {
       const conversationId = (row.envelope as { target?: { conversationId?: string } }).target
         ?.conversationId;
@@ -3908,6 +4209,7 @@ export function createAgentTriggerDeliveryMethods(
       .sort({ updatedAt: 1, _id: 1 })
       .limit(Math.min(limit, MAX_PURGE_RECOVERY_LIMIT))
       .lean<IAgentTriggerUserPurge[]>();
+    if (activity != null && markers.length > 0) activity.found = true;
     let recovered = 0;
     for (const marker of markers) {
       const user = await mongoose.models.User.findById(marker._id)
@@ -4007,6 +4309,9 @@ export function createAgentTriggerDeliveryMethods(
     retireAgentTriggerDelivery,
     renewAgentTriggerDeliveryProducerLease,
     getAgentTriggerDeliveryProducerLease,
+    listPendingAgentBackgroundToolCompletions,
+    listUndeliveredAgentTriggerTaskIds,
+    expediteAgentTriggerDeliveries,
     persistAgentBackgroundToolResult,
     getAgentBackgroundToolResult,
     getAgentBackgroundToolResultClaim,

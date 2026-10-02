@@ -36,6 +36,10 @@ const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
 const REPLY_MARKER = 'E2E_REPLY:';
 const THINK_REPLY_MARKER = 'E2E_THINK_REPLY:';
+/** A reasoning part long enough that its settled prefix dwarfs the words still fading in. */
+const LONG_THINK_REPLY_MARKER = 'E2E_LONG_THINK_REPLY:';
+const LONG_THINK_WORDS = 400;
+const SLOW_THINK_REPLY_MARKER = 'E2E_SLOW_THINK_REPLY:';
 const COUNTED_REPLY_MARKER = 'E2E_COUNTED_REPLY:';
 const ORDERED_REPLY_MARKER = 'E2E_ORDERED_REPLY:';
 const SLOW_REPLY_MARKER = 'E2E_SLOW_REPLY:';
@@ -49,6 +53,8 @@ const STEER_SPLIT_REPLY_MARKER = 'E2E_STEER_SPLIT_REPLY:';
 const STEER_LATE_REPLY_MARKER = 'E2E_STEER_LATE_REPLY:';
 const ACTIVITY_REPLY_MARKER = 'E2E_ACTIVITY_REPLY:';
 const ACTIVITY_PHASE_REPLY_MARKER = 'E2E_ACTIVITY_PHASE_REPLY:';
+const ACTIVITY_FAILED_REPLY_MARKER = 'E2E_ACTIVITY_FAILED_REPLY:';
+const ACTIVITY_PROSE_REPLY_MARKER = 'E2E_ACTIVITY_PROSE_REPLY:';
 const ASK_USER_QUESTION_MARKER = 'E2E_ASK_USER_QUESTION:';
 const RESUME_ICON_REPLY_MARKER = 'E2E_RESUME_ICON_REPLY:';
 const FORCED_ERROR_MARKER = 'E2E_FORCED_ERROR:';
@@ -100,6 +106,8 @@ const STEER_LATE_FINAL_TEXT = 'E2E steer late reply done';
 const SLOW_REPLY_CONTINUATION_TEXT = 'E2E slow reply continued';
 const ACTIVITY_FINAL_TEXT = 'E2E activity reply done';
 const ACTIVITY_PHASE_FINAL_TEXT = 'E2E activity phase reply done';
+const ACTIVITY_FAILED_FINAL_TEXT = 'E2E activity failed reply done';
+const SLOW_ECHO_TOOL_NAME_PREFIX = 'slow_echo';
 const STEER_TOOL_NAME_PREFIX = 'remember_fact';
 const ASK_USER_QUESTION_TOOL_NAME = 'ask_user_question';
 const SLOW_CHUNK_DELAY_MS = Number(process.env.MOCK_LLM_SLOW_CHUNK_DELAY_MS) || 35;
@@ -615,12 +623,38 @@ function replyResponses(text) {
     };
   }
 
+  const slowThinkName = getMarkerValue(text, SLOW_THINK_REPLY_MARKER);
+  if (slowThinkName) {
+    /** Three sentences of reasoning, word by word at a readable pace, so a
+     *  spec can watch the live header and the thought peek while it streams. */
+    return {
+      responses: [
+        '<think>First I read the request slowly. Then I gather the evidence with some care. ' +
+          `Finally I decide how to answer it.</think>\n\nE2E slow think reply done ${slowThinkName}`,
+      ],
+      sleep: 120,
+    };
+  }
+
   const thinkName = getMarkerValue(text, THINK_REPLY_MARKER);
   if (thinkName) {
     /** The `<think>` tags are parsed downstream by the agents stream pipeline, so this
      *  yields a reasoning part followed by a text part: two separately editable parts. */
     return {
       responses: [`<think>E2E reasoning ${thinkName}</think>\n\nE2E reply ${thinkName}`],
+    };
+  }
+
+  const longThinkName = getMarkerValue(text, LONG_THINK_REPLY_MARKER);
+  if (longThinkName) {
+    const words = Array.from(
+      { length: LONG_THINK_WORDS },
+      (_, index) => `r${String(index).padStart(3, '0')}`,
+    );
+    return {
+      responses: [
+        `<think>E2E long reasoning ${longThinkName} ${words.join(' ')} end</think>\n\nE2E reply ${longThinkName}`,
+      ],
     };
   }
 
@@ -698,16 +732,25 @@ function replyResponses(text) {
 /**
  * Attaches synthetic usage_metadata on a final empty chunk (the OpenAI
  * streaming pattern) so token-usage SSE events flow end to end in mock runs.
+ * Input is counted over the complete prompt a real provider bills — system
+ * instructions included — since the context snapshot calibrates against it.
  */
 class UsageEmittingFakeChatModel extends FakeChatModel {
-  constructor({ resolveInvocation, resolveOnStream, sleep, ...options }) {
+  constructor({ graph, resolveInvocation, resolveOnStream, sleep, ...options }) {
     super({ ...options, sleep });
+    this.graph = graph;
     this.resolveInvocation = resolveInvocation;
     this.resolveOnStream = resolveOnStream;
     this.streamSleep = sleep ?? CHUNK_DELAY_MS;
   }
 
-  async *streamScriptedResponseChunks({ response, toolCalls, textDeltaBlocks, runManager }) {
+  async *streamScriptedResponseChunks({
+    response,
+    toolCalls,
+    textDeltaBlocks,
+    beforeToolsDelayMs,
+    runManager,
+  }) {
     if (this.emitCustomEvent) {
       await runManager?.handleCustomEvent('some_test_event', {
         someval: true,
@@ -730,7 +773,7 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
     }
 
     if (toolCalls?.length) {
-      await new Promise((resolve) => setTimeout(resolve, this.streamSleep));
+      await new Promise((resolve) => setTimeout(resolve, beforeToolsDelayMs ?? this.streamSleep));
       if (!toolCalls.some((toolCall) => toolCall.streamArgs)) {
         const toolCallChunks = toolCalls.map((toolCall, index) => ({
           name: toolCall.name,
@@ -802,6 +845,7 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
         response: scriptedResponse.response ?? '',
         toolCalls: scriptedResponse.toolCalls,
         textDeltaBlocks: scriptedResponse.textDeltaBlocks === true,
+        beforeToolsDelayMs: scriptedResponse.beforeToolsDelayMs,
         runManager,
       });
     } else if (dynamicResponse) {
@@ -818,7 +862,13 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
       outputChars += typeof chunk.text === 'string' ? chunk.text.length : 0;
       yield chunk;
     }
-    const inputChars = (messages ?? []).reduce(
+    const { messages: promptMessages } = await getStreamAgentView({
+      graph: this.graph,
+      messages: messages ?? [],
+      options,
+      runManager,
+    });
+    const inputChars = promptMessages.reduce(
       (sum, message) => sum + getContentText(message?.content).length,
       0,
     );
@@ -869,6 +919,7 @@ function overrideModel({
 
   if (!thrownError) {
     const model = new UsageEmittingFakeChatModel({
+      graph,
       responses,
       sleep: sleep ?? CHUNK_DELAY_MS,
       emitCustomEvent: true,
@@ -1454,6 +1505,118 @@ function activityPhaseReplyResponses(label, toolNames) {
         };
       }
       return { response: `${ACTIVITY_PHASE_FINAL_TEXT} ${label}` };
+    },
+  };
+}
+
+/** Short prose remains visible while the real tool/label pipeline forms and
+ * dissolves folds. The pause before calls lets the browser finish the initial
+ * word fade and install its identity/animation observer before that transition. */
+function activityProseReplyResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    throw new Error('Activity prose fixture requires the memory MCP tool');
+  }
+  const prose = [
+    "Let me establish today's date and gather independent signals in parallel.",
+    'Today is **2026-09-29 23:20 UTC**. Two things stand out immediately: a config-structure PR landed yesterday, and an image bump went in today. Let me dig into both.',
+    "Important finding: PR #4079 ships the config **disabled by default**. Let me check today's actual runtime state and the image bump.",
+  ];
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      const batch = invocation++;
+      if (batch < prose.length) {
+        return {
+          response: prose[batch],
+          beforeToolsDelayMs: 2000,
+          toolCalls: [
+            {
+              id: `call_e2e_activity_prose_${label}_${batch}`,
+              name: toolName,
+              args: { fact: `activity prose ${label} ${batch}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `E2E activity prose complete ${label}` };
+    },
+  };
+}
+
+/**
+ * A phase whose middle batch holds a failed call beside a slow one: `slow_echo`
+ * called without its required `text` fails schema validation before the tool
+ * runs, and a second `slow_echo` keeps the batch live for `delay` ms so a spec
+ * can watch the fold while it streams.
+ */
+function activityFailedReplyResponses(label, toolNames) {
+  const rememberTool = Array.from(toolNames).find((name) =>
+    name.startsWith(STEER_TOOL_NAME_PREFIX),
+  );
+  const slowTool = Array.from(toolNames).find((name) =>
+    name.startsWith(SLOW_ECHO_TOOL_NAME_PREFIX),
+  );
+  if (!rememberTool || !slowTool) {
+    return {
+      responses: [
+        `E2E activity failed reply unavailable: ${STEER_TOOL_NAME_PREFIX} and ${SLOW_ECHO_TOOL_NAME_PREFIX} tools required.`,
+      ],
+    };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_activity_failed_alpha_${label}`,
+              name: rememberTool,
+              args: { fact: `activity failed alpha ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      if (invocation === 2) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_activity_failed_broken_${label}`,
+              name: slowTool,
+              args: { delay_ms: 10 },
+              type: 'tool_call',
+            },
+            {
+              id: `call_e2e_activity_failed_slow_${label}`,
+              name: slowTool,
+              args: { text: `activity failed slow ${label}`, delay_ms: 4000 },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      if (invocation === 3) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_activity_failed_beta_${label}`,
+              name: rememberTool,
+              args: { fact: `activity failed beta ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `${ACTIVITY_FAILED_FINAL_TEXT} ${label}` };
     },
   };
 }
@@ -2792,12 +2955,12 @@ function provisioningToolResponses({ text, toolNames }) {
     const command = Array.from({ length: 120 }, (_, index) => `printf 'line-${index}-☃\\n'`).join(
       '\n',
     );
-    const args =
-      codeTool.name === 'bash_tool'
-        ? { command }
-        : codeTool.name === 'execute_code'
-          ? { lang: 'bash', code: command }
-          : codeTool.args;
+    let args = codeTool.args;
+    if (codeTool.name === 'bash_tool') {
+      args = { command };
+    } else if (codeTool.name === 'execute_code') {
+      args = { lang: 'bash', code: command };
+    }
     return {
       responses: ['', `E2E highlighted code complete: ${highlightLabel}`],
       sleep: highlightLabel === 'cancel' ? HIGHLIGHT_CANCEL_CHUNK_DELAY_MS : SLOW_CHUNK_DELAY_MS,
@@ -2969,6 +3132,16 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   const activityPhaseLabel = getMarkerValue(text, ACTIVITY_PHASE_REPLY_MARKER);
   if (activityPhaseLabel) {
     return activityPhaseReplyResponses(activityPhaseLabel, toolNames);
+  }
+
+  const activityProseLabel = getMarkerValue(text, ACTIVITY_PROSE_REPLY_MARKER);
+  if (activityProseLabel) {
+    return activityProseReplyResponses(activityProseLabel, toolNames);
+  }
+
+  const activityFailedLabel = getMarkerValue(text, ACTIVITY_FAILED_REPLY_MARKER);
+  if (activityFailedLabel) {
+    return activityFailedReplyResponses(activityFailedLabel, toolNames);
   }
 
   const askUserQuestionLabel = getMarkerValue(text, ASK_USER_QUESTION_MARKER);

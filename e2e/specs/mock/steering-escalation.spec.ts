@@ -206,14 +206,14 @@ test.describe('escalating waiting messages to an interrupt', () => {
     // The toggle lives in the row menu's separated Preferences section.
     await row.getByRole('button', { name: 'More options' }).click();
     await expect(page.getByText('Preferences', { exact: true })).toBeVisible({ timeout: 5000 });
-    await page.getByRole('menuitem', { name: 'Always interrupt instead', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Steer sooner by default', exact: true }).click();
 
     // Verify the preference flips while this row is guaranteed to remain
     // parked. After the interrupt is submitted the run may seal and auto-drain
     // the row before another locator action can observe it.
     await row.getByRole('button', { name: 'More options' }).click();
     await expect(
-      page.getByRole('menuitem', { name: 'Wait for tool steps instead', exact: true }),
+      page.getByRole('menuitem', { name: 'Wait for the next step instead', exact: true }),
     ).toBeVisible({ timeout: 5000 });
     await page.keyboard.press('Escape');
 

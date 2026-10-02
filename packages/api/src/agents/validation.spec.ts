@@ -27,10 +27,20 @@ describe('agent Git identity validation', () => {
     ).toEqual({ name: 'Coding Agent', email: 'agent@example.com' });
   });
 
+  it('accepts a GitHub App bot noreply address for commit attribution', () => {
+    const git_identity = {
+      name: 'Lia',
+      email: '328778573+lia-by-librechat[bot]@users.noreply.github.com',
+    };
+    expect(agentCreateSchema.parse({ ...base, git_identity }).git_identity).toEqual(git_identity);
+  });
+
   it.each([
     { name: '', email: 'agent@example.com' },
     { name: 'Coding Agent\nInjected', email: 'agent@example.com' },
     { name: 'Coding Agent', email: 'not-an-email' },
+    { name: 'Coding Agent', email: 'lia-by-librechat[bot]@users.noreply.github.com' },
+    { name: 'Coding Agent', email: '328778573+lia-by-librechat[bot]@example.com' },
   ])('rejects an unsafe or incomplete identity: %j', (git_identity) => {
     expect(agentCreateSchema.safeParse({ ...base, git_identity }).success).toBe(false);
   });

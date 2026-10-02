@@ -170,7 +170,6 @@ export default function VirtualizedModelList({
             overscanRowCount={OVERSCAN}
             rowRenderer={rowRenderer}
             className="outline-none!"
-            style={{ width: '100%' }}
             /**
              * `List` spreads its props onto the underlying `Grid`, whose defaults are
              * `role="grid"`, `containerRole="row"` and `tabIndex={0}`. Left alone, that puts a
