@@ -54,6 +54,23 @@ describe('Agent Management contract', () => {
     ).toBe(false);
   });
   describe('inputs', () => {
+    it('round-trips the explicit machine allowlist through management create, update and response', () => {
+      const code_environment_ids = ['machine-a', 'machine-b'];
+      expect(
+        agentManagementCreateSchema.parse({
+          provider: 'openAI',
+          model: 'gpt-5',
+          code_environment_ids,
+        }),
+      ).toMatchObject({ code_environment_ids });
+      expect(agentManagementUpdateSchema.parse({ code_environment_ids: [] })).toEqual({
+        code_environment_ids: [],
+      });
+      expect(
+        projectAgentManagementResponse({ ...persistedAgent, code_environment_ids })
+          .code_environment_ids,
+      ).toEqual(code_environment_ids);
+    });
     it('keeps create and update fields aligned with the browser Agent validators', () => {
       expect(
         agentManagementCreateSchema.parse({

@@ -1109,6 +1109,54 @@ describe('theme registry', () => {
     expect(appearance).toMatchObject({ focusRingWidth: '0.25rem', focusRingOffset: '-1px' });
   });
 
+  it('keeps every control and icon size on the size it drew before it had a role', () => {
+    expect(defaultAppearance).toMatchObject({
+      iconSize: '1rem',
+      iconSizeLg: '1.5rem',
+      buttonHeightXs: '1.75rem',
+      buttonHeightLg: '2.75rem',
+      iconButtonSizeSm: '2rem',
+      fieldHeightLg: '3rem',
+      checkboxSize: '1rem',
+    });
+  });
+
+  it('rejects a pointer target under 24px and a size that is not a positive length', () => {
+    const issues = (appearance: Record<string, string>) =>
+      validateThemeDefinition({
+        version: 1,
+        name: 'size-values',
+        modes: { light: { appearance } },
+      });
+
+    expect(
+      issues({
+        fieldHeightLg: '24px',
+        checkboxSize: '1.5rem',
+        iconSize: '20px',
+        iconSizeLg: '2rem',
+      }),
+    ).toEqual([]);
+    [
+      { fieldHeightLg: '20px' },
+      { fieldHeightLg: '1rem' },
+      { fieldHeightLg: '1.5em' },
+      { iconSize: '0' },
+      { iconSize: '1.5rem' },
+      { iconSize: '10px' },
+      { iconSizeLg: '0.75rem' },
+      { iconSizeLg: '40px' },
+      { checkboxSize: '8px' },
+      { checkboxSize: '2rem' },
+      { checkboxSize: 'auto' },
+      { buttonHeightLg: '-2rem' },
+      { buttonHeightXs: '1px' },
+      { iconSizeMd: '1rem' },
+      { iconButtonSizeSm: '20px' },
+      { iconButtonSizeSm: 'calc(2rem + 2px)' },
+    ].forEach((appearance) => expect(issues(appearance)).toHaveLength(1));
+  });
+
   it('rejects a focus outline that would vanish or is not a fixed length', () => {
     const issues = (appearance: Record<string, string>) =>
       validateThemeDefinition({

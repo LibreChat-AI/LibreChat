@@ -1,47 +1,17 @@
-import type { ScheduleMCPOutcome } from 'librechat-data-provider';
-import type { ScheduledTokenContext } from '../context';
-
-export type ScheduledMCPCredentialMode =
-  | 'stored_oauth'
-  | 'browser_bearer'
-  | 'renewable_obo'
-  | 'resource_bearer'
-  | 'static'
-  | 'anonymous';
-
-/** agentId remains the enrolled root, including during child execution. */
-export interface ScheduledMCPIdentity extends Omit<ScheduledTokenContext, 'tenantId'> {
-  readonly tenantId: string | null;
-}
-
-/** Resolved by trusted configuration, never by model arguments or token scopes. */
-export interface ScheduledMCPResource {
-  readonly serverName: string;
-  readonly url: string;
-  readonly configurationRevision: string;
-  readonly credentialMode: ScheduledMCPCredentialMode;
-  readonly issuer: string | null;
-  readonly audience: string | null;
-  readonly scopes: readonly string[];
-}
-
-export interface ScheduledMCPToolSelection {
-  readonly agentId: string;
-  readonly tools: readonly string[];
-}
-
-export interface ScheduledMCPConsent {
-  readonly id: string;
-  readonly revision: string;
-  readonly identity: ScheduledMCPIdentity;
-  readonly resource: ScheduledMCPResource;
-  readonly permittedTools: readonly ScheduledMCPToolSelection[];
-  readonly policyRevision: string;
-  readonly grantedAtMs: number;
-  /** Fixed consent deadline; credential renewal cannot extend it. */
-  readonly absoluteExpiresAtMs: number;
-  readonly revokedAtMs: number | null;
-}
+import type {
+  ScheduleMCPOutcome,
+  ScheduledMCPIdentity,
+  ScheduledMCPResource,
+  ScheduledMCPConsent,
+  ScheduledMCPToolSelection,
+} from 'librechat-data-provider';
+export type {
+  ScheduledMCPCredentialMode,
+  ScheduledMCPIdentity,
+  ScheduledMCPResource,
+  ScheduledMCPConsent,
+  ScheduledMCPToolSelection,
+} from 'librechat-data-provider';
 
 export type ScheduledMCPFailureReason =
   | 'consent_missing'

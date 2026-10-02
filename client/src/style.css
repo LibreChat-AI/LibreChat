@@ -2109,7 +2109,7 @@ html[data-input-modality='keyboard']
   scroll-margin: 0.5rem;
   align-items: center;
   gap: 0.5rem;
-  border-radius: 0.5rem;
+  border-radius: var(--theme-radius-lg, 0.5rem);
   padding: 0.5rem;
   outline: none !important;
 }

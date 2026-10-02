@@ -158,6 +158,25 @@ describe('LibreChat Tailwind preset', () => {
         defaultAppearance.largeSurfaceRadius,
       ],
       ['rounded-theme-tab', '--theme-tab-radius', defaultAppearance.tabRadius],
+      ['min-w-theme-tab', '--theme-tab-min-width', defaultAppearance.tabMinWidth],
+      ['h-theme-button-xs', '--theme-button-height-xs', defaultAppearance.buttonHeightXs],
+      ['h-theme-button-lg', '--theme-button-height-lg', defaultAppearance.buttonHeightLg],
+      [
+        'h-theme-button-compact',
+        '--theme-button-height-compact',
+        defaultAppearance.buttonHeightCompact,
+      ],
+      ['h-theme-field-lg', '--theme-field-height-lg', defaultAppearance.fieldHeightLg],
+      ['size-theme-button', '--theme-button-height', defaultAppearance.buttonHeight],
+      [
+        'size-theme-icon-button-sm',
+        '--theme-icon-button-size-sm',
+        defaultAppearance.iconButtonSizeSm,
+      ],
+      ['size-theme-checkbox', '--theme-checkbox-size', defaultAppearance.checkboxSize],
+      ['size-theme-icon', '--theme-icon-size', defaultAppearance.iconSize],
+      ['size-theme-icon-md', '--theme-icon-size-md', defaultAppearance.iconSizeMd],
+      ['size-theme-icon-lg', '--theme-icon-size-lg', defaultAppearance.iconSizeLg],
       ['shadow-theme-surface', '--theme-elevation-surface', defaultAppearance.elevationSurface],
       ['duration-theme-fast', '--theme-motion-fast', defaultAppearance.motionFast],
       ['duration-theme-normal', '--theme-motion-normal', defaultAppearance.motionNormal],
@@ -183,6 +202,13 @@ describe('LibreChat Tailwind preset', () => {
     expect(css).toContain(
       `max(var(--theme-control-height, ${defaultAppearance.controlHeight}), 2.75rem)`,
     );
+
+    /** The target floor is WCAG 2.5.8's 24px, not a role a theme could lower. */
+    const target = await generate(['h-theme-target', 'min-h-theme-target', 'min-w-theme-target']);
+    ['height', 'min-height', 'min-width'].forEach((property) =>
+      expect(target).toContain(`${property}: 24px`),
+    );
+    expect(target).not.toContain('--theme-min-target-size');
 
     /** A stylesheet that predates the control spacing roles pads controls with the shared
      *  spacing they read before. */

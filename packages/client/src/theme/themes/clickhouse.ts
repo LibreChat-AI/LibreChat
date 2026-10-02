@@ -382,6 +382,8 @@ const clickHouseShape = {
   menuRadius: '0.25rem', // genericMenu.panel.radii.all
   tooltipRadius: '0.25rem', // tooltip.radii.all
   tabRadius: '0.25rem', // tabs.radii.all
+  /** Click UI sizes a tab trigger by its label, in `tabs.space.x` on each side. */
+  tabMinWidth: '0',
   radiusSm: '0.25rem', // border.radii.1
   radiusMd: '0.25rem', // border.radii.1
   radiusLg: '0.25rem', // border.radii.1
@@ -416,6 +418,15 @@ const clickHouseShape = {
    *  0.875rem/1.5 label and a 1px stroke, 32px in all. */
   buttonHeight: '2rem',
   buttonHeightSm: '2rem',
+  /** Click UI draws one button size, so the `lg` step matches the default too. Its icon button is
+   *  a 1rem icon in 0.25rem of `iconButton.sm` space on each side, 1.5rem in all, which still meets
+   *  the 24px target minimum; its `xs` (no space) would not, so `icon-xs` keeps LibreChat's. */
+  buttonHeightLg: '2rem',
+  buttonHeightCompact: '2rem',
+  iconButtonSizeSm: '1.5rem',
+  iconSize: '1rem', // image.sm.size.width
+  iconSizeMd: '1.25rem', // image.md.size.width
+  iconSizeLg: '1.5rem', // image.lg.size.width, the dialog close icon
   /** Click UI's field is sized by its content, like its button: 0.2813rem of space.y on both
    *  sides of a 0.875rem/1.5 value and a 1px stroke, 32px in all. On focus it swaps its stroke to
    *  `field.color.stroke.active` and draws no ring (InputWrapper); LibreChat adds a 1px ring in
@@ -450,6 +461,7 @@ const clickHouseShape = {
   disabledStyle: 'fill' as const,
   switchWidth: '2rem', // switch.size.width
   switchHeight: '1rem', // switch.size.height
+  checkboxSize: '1rem', // checkbox.size.all
   /** Click UI's own sizes halve like LibreChat's: `md` is this full space, and the compact tables
    *  every in-repo consumer draws land on `sm` (0.5rem), the size Click UI tables default to. */
   /** The shared spacing takes two steps of Click UI's `spaces` scale: its 0.5rem gap step, the

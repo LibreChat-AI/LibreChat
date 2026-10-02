@@ -358,6 +358,22 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - Keyboard focus outline - The global `:focus-visible` outline is drawn in
   `focus-outline`, `focusRingWidth` wide and `focusRingOffset` off the edge (2px
   each by default). The contrast modes keep their own 3px outline.
+- Control and icon sizes - `h-theme-button-xs` / `h-theme-button-lg`
+  (`buttonHeightXs`, `buttonHeightLg`) size the Button's `xs` and `lg` steps;
+  its `icon`, `icon-sm` and `icon-xs` squares are `size-theme-button`,
+  `size-theme-icon-button-sm` (`iconButtonSizeSm`) and `size-theme-button-xs`.
+  `size-theme-checkbox` (`checkboxSize`) sizes the checkbox, `size-theme-icon` and
+  `size-theme-icon-lg` (`iconSize`, `iconSizeLg`) the icons in menus and selects and
+  the dialog's close icon, `h-theme-field-lg` (`fieldHeightLg`) the large `title`
+  input, and `h-theme-target` the switch's hit area, and `min-w-theme-tab` (`tabMinWidth`, `0` to size a tab by its label) the tab
+  trigger. Every default is the size the primitive drew before. The icon and checkbox roles
+  are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeMd` (the
+  exported Dialog's close glyph) 1.25 to 1.5rem, `iconSizeLg` 1 to 2rem, `checkboxSize` 1 to
+  1.5rem. The target floor (`h-theme-target`, `min-h-theme-target`, `min-w-theme-target`) is
+  a fixed 24px, WCAG 2.5.8's minimum, not a role, so a theme cannot lower it. The Button's
+  `xs`, `lg`, `compact` and `icon-sm` heights and `fieldHeightLg` reject a value under 24px;
+  `controlHeight`, `buttonHeight`, `buttonHeightSm` and `fieldHeight` predate the floor and
+  keep their earlier validation.
 - `bg-field-fill` / `text-field-text` - A form field's fill and typed value. The
   ink follows `text-primary` and the fill follows `surface-primary` when a theme
   names those and not these. Fields stay clear unless the theme's
