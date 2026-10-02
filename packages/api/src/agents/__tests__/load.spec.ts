@@ -1250,6 +1250,48 @@ describe('loadAgent', () => {
 
       expect(result?.model_parameters).toMatchObject({ thinking: true, thinkingBudget: 4000 });
     });
+
+    describe('model spec rules', () => {
+      const lunaSpec = {
+        name: 'luna',
+        label: 'Luna',
+        preset: { endpoint: 'anthropic', model: 'claude-sonnet' },
+        executeCode: true,
+        mcpServers: ['spec-server'],
+        subagents: { enabled: true, allowSelf: true, agent_ids: [] },
+      };
+      const loadWithSpecs = (enforce: boolean, spec?: string) =>
+        loadAddedAgent(
+          {
+            req: {
+              user: { id: 'user123' },
+              config: { ...appConfig, modelSpecs: { enforce, list: [lunaSpec] } },
+            },
+            conversation: { ...responsesConvo, spec } as unknown as TConversation,
+          },
+          deps,
+        );
+
+      test.each([
+        ['an enforced config without a spec', true, undefined],
+        ['an enforced config with an unknown spec', true, 'unknown'],
+        ['an enforced spec for another endpoint', true, 'luna'],
+        ['a non-enforced spec for another endpoint', false, 'luna'],
+      ])('refuses %s', async (_case, enforce, spec) => {
+        const result = await loadWithSpecs(enforce, spec);
+
+        expect(result).toBeNull();
+        expect(mockGetMCPServerTools).not.toHaveBeenCalled();
+      });
+
+      test('ignores an unknown spec when specs are not enforced', async () => {
+        const result = await loadWithSpecs(false, 'unknown');
+
+        expect(result?.tools).toEqual([]);
+        expect(result?.subagents).toBeUndefined();
+        expect(result?.model_parameters).toMatchObject({ useResponsesApi: true });
+      });
+    });
   });
 
   test('should handle ephemeral agent with undefined ephemeralAgent in body', async () => {

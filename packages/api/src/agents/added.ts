@@ -13,24 +13,62 @@ import type {
   TEphemeralAgent,
   TEndpointsConfig,
 } from 'librechat-data-provider';
-import type { AppConfig } from '@librechat/data-schemas';
 import type { LoadAgentDeps, LoadAgentParams } from '~/agents/load';
 import { applyModelSpecPreset, resolveModelSpecForEndpoint } from '~/modelSpecs';
 import { loadEphemeralAgent } from '~/agents/load';
 
 export const ADDED_AGENT_ID = 'added_agent';
 
+type ModelSpecsConfig = { list?: TModelSpec[]; enforce?: boolean };
+
+type AddedModelSpecResult =
+  | { ok: true; modelSpec?: TModelSpec }
+  | { ok: false; error: 'model-spec-required' | 'invalid-model-spec' | 'model-spec-mismatch' };
+
+/**
+ * Applies the primary request's spec rules (`buildEndpointOption`) to the added
+ * conversation: an enforced config requires a spec that serves the endpoint, and
+ * a spec for another endpoint is refused either way. Only an accepted spec may
+ * contribute its preset, tools, MCP servers, skills or subagents.
+ */
+function resolveAddedModelSpec(
+  spec: string | null | undefined,
+  endpoint: string,
+  modelSpecs: ModelSpecsConfig | undefined,
+): AddedModelSpecResult {
+  const list = modelSpecs?.list;
+  const enforce = modelSpecs?.enforce === true && list != null && list.length > 0;
+  if (!spec || !list) {
+    return enforce ? { ok: false, error: 'model-spec-required' } : { ok: true };
+  }
+
+  const resolution = resolveModelSpecForEndpoint({ modelSpecs: { list }, spec, endpoint });
+  if ('modelSpec' in resolution) {
+    return { ok: true, modelSpec: resolution.modelSpec };
+  }
+  if (enforce || resolution.error === 'model-spec-mismatch') {
+    return { ok: false, error: resolution.error };
+  }
+  return { ok: true };
+}
+
 /**
  * Parses the added conversation as `buildEndpointOption` parses the primary
  * request: the endpoint's schema, then its model spec's preset. This keeps
  * provider settings such as `useResponsesApi` and reasoning options.
  */
-function parseAddedConversation(
-  conversation: TConversation & { endpoint: string },
-  appConfig: AppConfig | undefined,
-  endpointsConfig: TEndpointsConfig | undefined,
-): Record<string, unknown> | null {
-  const { endpoint, endpointType, spec } = conversation;
+function parseAddedConversation({
+  conversation,
+  modelSpec,
+  enforce,
+  endpointsConfig,
+}: {
+  conversation: TConversation & { endpoint: string };
+  modelSpec?: TModelSpec;
+  enforce: boolean;
+  endpointsConfig?: TEndpointsConfig;
+}): Record<string, unknown> | null {
+  const { endpoint, endpointType } = conversation;
   const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
   const parsedBody = parseCompactConvo({
     endpoint: endpoint as EModelEndpoint,
@@ -38,28 +76,16 @@ function parseAddedConversation(
     conversation,
     defaultParamsEndpoint,
   });
-  const modelSpecs = appConfig?.modelSpecs as
-    | { list?: TModelSpec[]; enforce?: boolean }
-    | undefined;
-  if (!parsedBody || !spec || !modelSpecs?.list) {
-    return parsedBody;
-  }
-
-  const resolution = resolveModelSpecForEndpoint({
-    modelSpecs: { list: modelSpecs.list },
-    spec,
-    endpoint,
-  });
-  if (!('modelSpec' in resolution)) {
+  if (!parsedBody || !modelSpec) {
     return parsedBody;
   }
   return applyModelSpecPreset({
-    modelSpec: resolution.modelSpec,
+    modelSpec,
     parsedBody,
     endpoint,
     endpointType,
     defaultParamsEndpoint,
-    includePresetDefaults: modelSpecs.enforce === true,
+    includePresetDefaults: enforce,
   }).parsedBody;
 }
 
@@ -115,11 +141,19 @@ export async function loadAddedAgent(
   }
 
   const agentReq = req as LoadAgentParams['req'];
-  const parsedBody = parseAddedConversation(
-    { ...conversation, endpoint },
-    agentReq.config,
-    req.endpointsConfig,
-  );
+  const modelSpecs = agentReq.config?.modelSpecs as ModelSpecsConfig | undefined;
+  const specResult = resolveAddedModelSpec(spec, endpoint, modelSpecs);
+  if (!specResult.ok) {
+    logger.warn(`[loadAddedAgent] Added conversation refused: ${specResult.error}`);
+    return null;
+  }
+  const { modelSpec } = specResult;
+  const parsedBody = parseAddedConversation({
+    conversation: { ...conversation, endpoint },
+    modelSpec,
+    enforce: modelSpecs?.enforce === true,
+    endpointsConfig: req.endpointsConfig,
+  });
   /** Same request-only fields `buildOptions` keeps out of the primary's parameters. */
   const {
     spec: _spec,
@@ -137,7 +171,7 @@ export async function loadAddedAgent(
   return loadEphemeralAgent(
     {
       req: agentReq,
-      spec: spec ?? undefined,
+      spec: modelSpec?.name,
       endpoint,
       model_parameters: { model, ...model_parameters } as LoadAgentParams['model_parameters'],
       body: { promptPrefix: promptPrefix ?? undefined, ephemeralAgent },
