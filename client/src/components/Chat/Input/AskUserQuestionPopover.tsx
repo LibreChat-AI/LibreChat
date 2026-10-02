@@ -54,7 +54,9 @@ function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAn
 
   return (
     <div className="absolute bottom-full z-10 mb-2 w-full">
-      <div className="popover border-border-light bg-surface-secondary flex flex-col rounded-2xl border shadow-lg [view-transition-name:ask-question]">
+      {/* The prompt and answers each scroll within their own caps; this outer cap keeps
+          the whole card on screen when both are at their limit on a short viewport. */}
+      <div className="popover border-border-light bg-surface-secondary flex max-h-[70vh] flex-col overflow-y-auto rounded-2xl border shadow-lg [view-transition-name:ask-question]">
         <AskUserQuestions
           actionId={liveAsk.actionId}
           questions={questions}

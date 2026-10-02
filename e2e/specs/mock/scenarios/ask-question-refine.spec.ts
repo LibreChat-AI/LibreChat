@@ -203,6 +203,7 @@ test.describe('ask question batch refinements', () => {
       const box = await popover.boundingBox();
       expect(box).not.toBeNull();
       expect(box!.y).toBeGreaterThanOrEqual(0);
+      expect(box!.height).toBeLessThanOrEqual(Math.ceil(metrics.viewportHeight * 0.7) + 1);
     } finally {
       await cleanupAgent(page, agentId);
     }
