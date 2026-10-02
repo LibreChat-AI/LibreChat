@@ -335,7 +335,36 @@ describe('ProjectResources', () => {
     expect(screen.queryByText('No eligible indexed files')).not.toBeInTheDocument();
   });
 
-  it('keeps loaded files and offers a retry when a later page fails', async () => {
+  it('retries the page that failed, keeping the files already loaded', async () => {
+    const firstPage = {
+      files: [{ ...uploadedFile, file_id: 'first-id', filename: 'first.txt' }] as TFile[],
+      nextCursor: null,
+    };
+    /* The next page fails: the query reports its error from then on. */
+    const fetchNextPage = jest.fn(async () => {
+      mockAvailableFilesState = { ...mockAvailableFilesState, isError: true };
+      return { isError: true };
+    });
+    mockAvailableFilesState = {
+      ...mockAvailableFilesState,
+      data: { pages: [firstPage] },
+      hasNextPage: true,
+      fetchNextPage,
+    };
+    renderResources();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add files' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Choose an existing file' }));
+    await user.click(await screen.findByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load project files');
+    expect(screen.getByRole('button', { name: /first.txt/ })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(fetchNextPage).toHaveBeenCalledTimes(2);
+    expect(mockRefetch).not.toHaveBeenCalled();
+  });
+
+  it('refetches the listed files when a refresh of them fails', async () => {
     const fetchNextPage = jest.fn();
     mockAvailableFilesState = {
       ...mockAvailableFilesState,
@@ -356,10 +385,9 @@ describe('ProjectResources', () => {
     await user.click(screen.getByRole('button', { name: 'Add files' }));
     await user.click(screen.getByRole('menuitem', { name: 'Choose an existing file' }));
 
-    expect(await screen.findByRole('button', { name: /first.txt/ })).toBeInTheDocument();
-    expect(screen.getByRole('alert')).toHaveTextContent('Could not load project files');
-    await user.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(fetchNextPage).toHaveBeenCalled();
+    await user.click(await screen.findByRole('button', { name: 'Retry' }));
+    expect(mockRefetch).toHaveBeenCalled();
+    expect(fetchNextPage).not.toHaveBeenCalled();
   });
 
   it('names the file limit when attaching an existing file to a full project', async () => {

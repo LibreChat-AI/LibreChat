@@ -153,6 +153,11 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
     fetchNextPage,
     refetch: refetchFiles,
   } = availableFilesQuery;
+  /** Whether the last error came from loading a further page, so Retry fetches that
+   *  page again rather than refetching what is already listed. */
+  const [nextPageFailed, setNextPageFailed] = useState(false);
+  const loadNextPage = () =>
+    void fetchNextPage().then((result) => setNextPageFailed(result.isError));
   const uploadFile = useUploadFileMutation();
   const addFile = useAddProjectFileMutation();
   const removeFile = useRemoveProjectFileMutation();
@@ -606,7 +611,7 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
                   variant="outline"
                   size="sm"
                   disabled={isFetchingNextPage}
-                  onClick={() => void (hasNextPage ? fetchNextPage() : refetchFiles())}
+                  onClick={() => (nextPageFailed ? loadNextPage() : void refetchFiles())}
                 >
                   {localize('com_ui_retry')}
                 </Button>
@@ -617,7 +622,7 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
                 type="button"
                 variant="outline"
                 className="mt-3 w-full"
-                onClick={() => void fetchNextPage()}
+                onClick={loadNextPage}
                 disabled={isFetchingNextPage}
               >
                 {isFetchingNextPage ? localize('com_ui_loading') : localize('com_ui_load_more')}
