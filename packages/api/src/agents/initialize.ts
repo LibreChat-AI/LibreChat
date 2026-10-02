@@ -2001,6 +2001,7 @@ export async function initializeAgent(
     provisionState,
     warnings: provisionWarnings,
   } = await primeResources({
+    req: params.req,
     principal: user,
     getFiles: db.getFiles as never,
     filterFiles: db.filterFilesByAgentAccess,
@@ -2017,6 +2018,8 @@ export async function initializeAgent(
     provisionCandidates: deferredProvisionFiles as unknown as TFile[],
     codeRouteKey: codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
     codeBaseUrl: codeExecutionContext.baseUrl,
+    codeExecutionProfile: codeExecutionContext.executionProfile,
+    codeBridgeWorkerId: codeExecutionContext.bridgeWorkerId,
     screenPersistentFiles: (files) => {
       /* Persistent agent files are read inside primeResources, so they miss both checks
        * the caller already applied to this turn's other files. They face the same

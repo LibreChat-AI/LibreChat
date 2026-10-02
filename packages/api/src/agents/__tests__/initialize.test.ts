@@ -3674,6 +3674,16 @@ describe('initializeAgent — execute_code capability expansion', () => {
     );
     expect(result.codeExecutionContext?.environmentId).toBe('runtime-vm');
     expect(agent.code_environment_id).toBe('application-vm');
+    /* The liveness probe inside priming authenticates to this route the way its uploads
+     * do, which needs the request to mint from and the route's worker to bind to. */
+    expect(primeResources).toHaveBeenCalledWith(
+      expect.objectContaining({
+        req,
+        codeBaseUrl: 'https://runtime-vm.example.com/v1',
+        codeExecutionProfile: 'stateful',
+        codeBridgeWorkerId: 'worker-runtime-vm',
+      }),
+    );
   });
 
   it.each([false, true])(
