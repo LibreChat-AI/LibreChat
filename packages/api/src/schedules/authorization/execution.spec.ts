@@ -292,15 +292,14 @@ it('refuses a consent deadline crossed while the final database admission is in 
     f.expire();
     return true;
   });
-  await expect(
-    f
-      .invocation()
-      .authorize({
-        user: f.user,
-        serverName: 'warehouse',
-        serverConfig: f.config,
-        toolName: 'query',
-        loadTools: async () => catalog(),
-      }),
-  ).rejects.toMatchObject({ failure: { reason: 'consent_expired', automaticReplay: false } });
+  const call = f.invocation().authorize({
+    user: f.user,
+    serverName: 'warehouse',
+    serverConfig: f.config,
+    toolName: 'query',
+    loadTools: async () => catalog(),
+  });
+  await expect(call).rejects.toMatchObject({
+    failure: { reason: 'consent_expired', automaticReplay: false },
+  });
 });

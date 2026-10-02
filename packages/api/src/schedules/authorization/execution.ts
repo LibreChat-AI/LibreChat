@@ -1,6 +1,6 @@
 import { normalizeServerName, stripServerNamePrefix } from 'librechat-data-provider';
 import type { ScheduledMCPIdentity, ScheduledMCPReadOnlyPolicy } from 'librechat-data-provider';
-import type { IUser, ScheduleMCPConsentStorage } from '@librechat/data-schemas';
+import type { ScheduleMCPConsentStorage } from '@librechat/data-schemas';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ParsedServerConfig, RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { MCPToolsSnapshot } from '~/mcp/connection';

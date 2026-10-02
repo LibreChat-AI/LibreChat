@@ -90,7 +90,7 @@ export function createScheduleMCPRuntimeHost(
       const row = await deps.methods.getScheduleById(scheduleId, req.user.id);
       if (!row || (row.tenantId ?? null) !== (req.user.tenantId ?? null))
         throw new ScheduledMCPPolicyError('binding_mismatch', '');
-      if (!row.mcpConsent) return;
+      if (row.mcpConsent === undefined) return;
       const rootId = restoredContext?.agentId ?? (fire ? req.body?.agent_id : undefined);
       if (typeof rootId !== 'string' || rootId !== row.agent_id)
         throw new ScheduledMCPPolicyError('binding_mismatch', '');

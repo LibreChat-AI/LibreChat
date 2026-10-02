@@ -291,3 +291,17 @@ it('does not downgrade if enrollment disappears during run preparation', async (
     failure: { reason: 'consent_missing' },
   });
 });
+
+it.each([null, false, 0, ''])(
+  'does not downgrade malformed stored consent %s to legacy execution',
+  async (value) => {
+    const f = await setup();
+    Reflect.set(f.row, 'mcpConsent', value);
+    f.snapshot.enrollment = null;
+    f.snapshot.compatible = false;
+    await expect(f.host.prepare({ req: f.req, context: f.context })).rejects.toMatchObject({
+      failure: { reason: 'binding_mismatch' },
+    });
+    expect(getScheduleMCPExecution(f.context)).toBeUndefined();
+  },
+);
