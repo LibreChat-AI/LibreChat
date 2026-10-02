@@ -1140,6 +1140,22 @@ describe('resolveAbortedTurnPersistence', () => {
     expect(plan.persistenceErrors[1].message).toContain('anchor unavailable');
   });
 
+  it('reads no anchor and reports nothing when the abort writes no row', async () => {
+    const getMessages = jest.fn(async () => {
+      throw new Error('mongo unavailable');
+    });
+
+    const plan = await resolveAbortedTurnPersistence(jobData, false, { getMessages });
+
+    expect(getMessages).not.toHaveBeenCalled();
+    expect(plan).toMatchObject({
+      writeUserRow: false,
+      writeResponseRow: false,
+      withholdFinal: false,
+      persistenceErrors: [],
+    });
+  });
+
   it('keeps an ordinary stopped reply unfinished without reading its anchor', async () => {
     const getMessages = jest.fn(async () => []);
 

@@ -390,6 +390,11 @@ export async function resolveAbortedTurnPersistence(
     ) => Promise<unknown[]>;
   },
 ): Promise<AbortedTurnPersistencePlan & { persistenceErrors: Error[] }> {
+  /** No row to write means no anchor to verify: the read is skipped, so an
+   *  outage cannot turn an early abort's own FINAL into a reconciliation. */
+  if (!shouldPersistAbortedTurn) {
+    return { ...planAbortedTurnPersistence('persist', false), persistenceErrors: [] };
+  }
   /** A failed read still resolves to skip-turn, so cleanup runs; the failure
    *  itself is reported beside the withheld turn, keeping an outage
    *  distinguishable from an absent anchor at the caller's error boundary. */
