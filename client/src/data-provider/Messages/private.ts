@@ -139,14 +139,15 @@ export function useOwnerMessageTexts({
       return result();
     },
   });
+  const { data, isFetching, refetch } = query;
   useEffect(() => {
-    if (!isSubmitting && query.data?.provisional && !query.isFetching) {
-      void query.refetch();
+    if (!isSubmitting && data?.provisional && !isFetching) {
+      void refetch();
     }
-  }, [isSubmitting, query.data?.provisional, query.isFetching, query.refetch]);
+  }, [isSubmitting, data?.provisional, isFetching, refetch]);
   const originals = useMemo(
-    () => new Map((query.data?.messages ?? []).map((message) => [message.messageId, message])),
-    [query.data],
+    () => new Map((data?.messages ?? []).map((message) => [message.messageId, message])),
+    [data],
   );
-  return { messages: originals, loading: query.isFetching, retry: () => void query.refetch() };
+  return { messages: originals, loading: isFetching, retry: () => void refetch() };
 }
