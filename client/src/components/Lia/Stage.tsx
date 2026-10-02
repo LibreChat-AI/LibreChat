@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { Bubble, LabelKey, Platform } from './engine/types';
 import type { TranslationKeys } from '~/hooks';
@@ -83,6 +83,8 @@ export default function Stage({
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bubbleRef = useRef<HTMLDivElement>(null);
+  /* Measured when the text changes, so placing the bubble each frame reads no layout. */
+  const bubbleWidthRef = useRef(0);
   const [bubble, setBubble] = useState<Bubble | null>(null);
   const [activity, setActivity] = useState<LabelKey | null>(null);
   const engineRef = useRef<LiaEngine | null>(null);
@@ -126,6 +128,8 @@ export default function Stage({
       return obstacles;
     };
     let placed: LiaEngine | null = null;
+    /* Where Lia's canvas may reach, so the bubble can stay inside the same room. */
+    let room: readonly [number, number] = [0, Infinity];
     /* The bubble belongs to Lia: whenever she has nowhere to stand, it goes with her. */
     const setVisible = (visible: boolean) => {
       const value = visible ? 'visible' : 'hidden';
@@ -156,6 +160,9 @@ export default function Stage({
         EDGE,
       );
       setVisible(span != null);
+      if (span) {
+        room = [Math.max(0, span[0] - REACH_X), Math.min(root.clientWidth, span[1] + REACH_X)];
+      }
       return span ? { y: top + 1, x0: span[0], x1: span[1] } : null;
     };
     const engine = new LiaEngine(canvas, {
@@ -163,9 +170,20 @@ export default function Stage({
       onBubble: setBubble,
       onAction: setActivity,
       onFrame: (head) => {
-        if (bubbleRef.current) {
-          bubbleRef.current.style.transform = `translate(${Math.round(head.x + 10 * SCALE)}px, ${Math.round(head.y - 6 * SCALE)}px) translateY(-100%)`;
+        const bubbleEl = bubbleRef.current;
+        if (!bubbleEl) {
+          return;
         }
+        /* The bubble sits to Lia's right, flips left when that side has no room, and never
+         * leaves the stage or the span she stands in. */
+        const width = bubbleWidthRef.current;
+        const [left, right] = room;
+        let x = head.x + 10 * SCALE;
+        if (x + width > right) {
+          x = head.x - 10 * SCALE - width;
+        }
+        x = Math.max(left, Math.min(x, right - width));
+        bubbleEl.style.transform = `translate(${Math.round(x)}px, ${Math.round(head.y - 6 * SCALE)}px) translateY(-100%)`;
       },
     });
     placed = engine;
@@ -410,6 +428,10 @@ export default function Stage({
     bubbleText = 'say' in bubble ? localize(SAY[bubble.say]) : bubble.symbol;
   }
 
+  useLayoutEffect(() => {
+    bubbleWidthRef.current = bubbleRef.current?.offsetWidth ?? 0;
+  }, [bubbleText]);
+
   return (
     <div
       ref={rootRef}
@@ -431,6 +453,7 @@ export default function Stage({
       />
       <div
         ref={bubbleRef}
+        data-testid="lia-bubble"
         className="absolute top-0 left-0 z-20 max-w-48 whitespace-nowrap"
         hidden={bubbleText == null}
       >

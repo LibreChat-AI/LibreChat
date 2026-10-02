@@ -142,6 +142,31 @@ test.describe('Lia mascot', () => {
     await expect(lia(page)).toHaveAttribute('title', /^Lia: \S/, { timeout: 5000 });
   });
 
+  test('what Lia says stays inside her stage @scenario:lia-bubble-in-stage', async ({ page }) => {
+    await open(page, { optedIn: true });
+    await expect(lia(page)).toBeVisible({ timeout: 10000 });
+    await page.waitForTimeout(3500);
+    const input = page.getByRole('textbox', { name: 'Message input' });
+    await input.click();
+    await input.pressSequentially('hello ', { delay: 50 });
+    const bubble = page.getByTestId('lia-bubble');
+    await expect(bubble).toHaveText('Hi!', { timeout: 5000 });
+    const stage = await lia(page).evaluate((canvas) => {
+      const { x, width } = (canvas.parentElement as HTMLElement).getBoundingClientRect();
+      return { x, width };
+    });
+    /* Sampled while she waves, since the bubble follows her across frames. */
+    for (let i = 0; i < 5; i++) {
+      const box = await bubble.boundingBox();
+      if (!box) {
+        break;
+      }
+      expect(box.x).toBeGreaterThanOrEqual(stage.x - 1);
+      expect(box.x + box.width).toBeLessThanOrEqual(stage.x + stage.width + 1);
+      await page.waitForTimeout(200);
+    }
+  });
+
   test('Lia waves the first message off, then leaves the conversation @scenario:lia-farewell-on-send', async ({
     page,
   }) => {
