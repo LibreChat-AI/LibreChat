@@ -87,6 +87,15 @@ const samples: Record<ContentTypes, MappableContentPart> = {
   },
   [ContentTypes.STEER]: { type: ContentTypes.STEER, steer: 'Focus on cats', steerId: 's-1' },
   [ContentTypes.ERROR]: { type: ContentTypes.ERROR, error: 'Rate limited' },
+  [ContentTypes.ELICITATION]: {
+    type: ContentTypes.ELICITATION,
+    elicitation: {
+      flowId: 'flow-1',
+      mode: 'url',
+      message: 'Authorize',
+      url: 'https://example.com',
+    },
+  },
 };
 
 const expectedUITypes: Record<ContentTypes, string> = {
@@ -103,6 +112,7 @@ const expectedUITypes: Record<ContentTypes, string> = {
   [ContentTypes.ACTIVITY_LABEL]: 'data-activity-label',
   [ContentTypes.STEER]: 'data-steer',
   [ContentTypes.ERROR]: 'data-error',
+  [ContentTypes.ELICITATION]: 'data-elicitation',
 };
 
 const lossless = Object.values(ContentTypes).filter((type) => type !== ContentTypes.TEXT_DELTA);

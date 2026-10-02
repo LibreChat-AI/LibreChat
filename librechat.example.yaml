@@ -620,6 +620,8 @@ actions:
 #     url: http://localhost:3001/sse
 #     # proxy: "${MCP_PROXY_URL}"  # optional outbound proxy (http/https/socks/socks5)
 #     timeout: 60000  # 1 minute timeout for this server, this is the default timeout for MCP servers.
+#     # elicitation: false  # Opt this server out of interactive MCP URL-authorization elicitation cards.
+#     #                     # Enabled by default; set to false to skip elicitation handling for this server.
 #   coordinated-oauth:
 #     type: streamable-http
 #     url: https://mcp.example.com/mcp

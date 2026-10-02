@@ -2597,6 +2597,75 @@ describe('AgentClient - startup telemetry', () => {
     expect(processStream.mock.calls[0][1]).not.toHaveProperty('callbacks');
   });
 
+  it('strips elicitation cards from the model payload but keeps other content parts', async () => {
+    // Elicitation cards are rendered and persisted for replay but carry no
+    // meaning for a completion request, so they must never reach the model.
+    jest.clearAllMocks();
+    mockIsHITLEnabled.mockReturnValue(false);
+    const payload = [
+      {
+        messageId: 'assistant-history',
+        content: [
+          { type: ContentTypes.TEXT, text: 'Details' },
+          {
+            type: ContentTypes.ELICITATION,
+            elicitation: {
+              flowId: 'user-1:jira:create_issue:nonce',
+              mode: 'url',
+              message: 'Authorize',
+              url: 'https://auth.example.com',
+            },
+          },
+        ],
+      },
+    ];
+    mockFormatAgentMessages.mockReturnValueOnce({
+      messages: [],
+      indexTokenCountMap: {},
+      summary: undefined,
+      boundaryTokenAdjustment: undefined,
+    });
+    const processStream = jest.fn().mockResolvedValue();
+    mockCreateRun.mockResolvedValueOnce({
+      Graph: null,
+      processStream,
+      getCalibrationRatio: jest.fn(() => 0),
+      getInterrupt: jest.fn(() => undefined),
+    });
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: {},
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+      },
+      res: {},
+      agent: {
+        id: 'agent-primary',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        hide_sequential_outputs: false,
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = 'elicitation-strip-conversation';
+    client.responseMessageId = 'elicitation-strip-response';
+    client.parentMessageId = 'elicitation-strip-parent';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client.chatCompletion({ payload });
+
+    expect(mockFormatAgentMessages).toHaveBeenCalledTimes(1);
+    const [formattedPayload] = mockFormatAgentMessages.mock.calls[0];
+    expect(formattedPayload[0].content).toEqual([{ type: ContentTypes.TEXT, text: 'Details' }]);
+    // The caller's own array keeps the card: only the model payload is filtered.
+    expect(payload[0].content).toHaveLength(2);
+  });
+
   it('derives and forwards compaction guidance without stripping activity labels', async () => {
     jest.clearAllMocks();
     mockIsHITLEnabled.mockReturnValue(false);

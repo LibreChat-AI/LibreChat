@@ -1804,3 +1804,20 @@ export interface ActiveJobsResponse {
 export const getActiveJobs = (): Promise<ActiveJobsResponse> => {
   return request.get(endpoints.activeJobs());
 };
+
+/**
+ * Resolves a pending MCP URL-mode elicitation flow (a `mode: 'url'`
+ * `elicitation/create` acknowledgement, or a -32042 URL-exception authorization
+ * continuation). `action: 'complete'` is the URL-exception "I've authorized —
+ * continue" signal; both resume the same waiting `MCPManager.callTool`. URL mode
+ * carries no `content`.
+ */
+export const respondToElicitation = (
+  flowId: string,
+  body: {
+    action: ag.Agents.ElicitationAction;
+    content?: Record<string, ag.Agents.ElicitationValue>;
+  },
+): Promise<{ ok: boolean }> => {
+  return request.post(endpoints.mcpElicitationRespond(flowId), body);
+};

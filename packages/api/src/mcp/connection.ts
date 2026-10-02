@@ -43,6 +43,7 @@ import { MCP_APPS_CAPABILITY_PROFILE, STANDARD_MCP_CAPABILITY_PROFILE } from './
 import { createSSRFSafeUndiciConnect, isSSRFTarget, resolveHostnameSSRF } from '~/auth';
 import { projectMCPAppRuntimeTarget, type MCPAppRuntimeTarget } from './apps/binding';
 import { reserveMCPToolsChangedRevision } from './toolsChanged';
+import { extractUrlElicitation } from './elicitation';
 import { runOutsideTracing } from '~/utils/tracing';
 import { mediaTypeEssence } from '~/utils/headers';
 import { isAddressAllowed } from '~/auth/domain';
@@ -1276,10 +1277,16 @@ export class MCPConnection extends EventEmitter {
     if (params.oauthTokens) {
       this.oauthTokens = params.oauthTokens;
     }
-    const capabilities: ClientCapabilities =
-      this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE
+    /** `elicitation.url` declares support for the `url` elicitation wire mode (spec
+     *  2025-11-25): the target gateway (AWS Bedrock AgentCore) returns the -32042
+     *  `UrlElicitationRequired` error on `tools/call` ONLY to clients that declare it.
+     *  Gated on the per-server `elicitation` flag: `elicitation: false` opts out. */
+    const capabilities: ClientCapabilities = {
+      ...(this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE
         ? { extensions: { [MCP_UI_EXTENSION_ID]: { mimeTypes: [RESOURCE_MIME_TYPE] } } }
-        : {};
+        : {}),
+      ...(params.serverConfig.elicitation === false ? {} : { elicitation: { url: {} } }),
+    };
     this.client = new Client(
       {
         name: '@librechat/api-client',
@@ -2403,6 +2410,26 @@ export class MCPConnection extends EventEmitter {
       if (this.reportedStandaloneSseConflict && rawMessage.startsWith(SDK_SSE_RETRIES_EXHAUSTED)) {
         logger.debug(
           `${this.getLogPrefix()} SDK reconnection budget exhausted; session rebuild already underway`,
+        );
+        return;
+      }
+
+      /**
+       * A -32042 `UrlElicitationRequired` (the gateway's per-tool authorization
+       * signal, delivered HTTP-wrapped so `.code` is the 401 status) is NOT a
+       * transport/session failure: the gateway responded and the session is
+       * alive. `MCPManager.callTool` handles it in-band — surface the link, await
+       * consent, then retry the SAME session. Classifying it as an OAuth error
+       * here (`isOAuthError` matches the 401) would emit `oauthError` and
+       * `connectionChange: 'error'`, triggering a spurious background
+       * reconnection that races with — and can invalidate — that retry. In
+       * production that reconnection abandons on `-32002 insufficient_scope`,
+       * leaving a stale session whose retry then fails with `-32600 Session not
+       * initialized`. Leave the live session untouched.
+       */
+      if (extractUrlElicitation(error)) {
+        logger.debug(
+          `${this.getLogPrefix()} tools/call URL elicitation (-32042); handled in-band by callTool, not reconnecting`,
         );
         return;
       }

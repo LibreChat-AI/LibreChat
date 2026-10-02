@@ -41,6 +41,7 @@ jest.mock('@librechat/data-schemas', () => ({
     error: jest.fn(),
     debug: jest.fn(),
   },
+  getTenantId: jest.fn(() => undefined),
 }));
 
 jest.mock('~/utils/graph', () => ({
@@ -1952,6 +1953,78 @@ describe('MCPManager', () => {
     beforeEach(() => {
       (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(serverConfig);
       mockProcessMCPEnv.mockReturnValue(serverConfig);
+    });
+
+    it('keeps the configured timeout on tool calls even with elicitation enabled', async () => {
+      /** elicitationStart is supplied for every server that has not opted out, so
+       *  stretching the transport timeout to cover the user wait would let any
+       *  hung non-eliciting tool hold the connection far past its configured
+       *  limit. The wait happens between requests and the flow manager bounds it. */
+      const request = jest.fn().mockResolvedValue(toolResult);
+      const connection = createConnection(request);
+      const manager = await createManager(connection);
+
+      await manager.callTool({
+        user: mockUser,
+        serverName,
+        toolName: 'oauth_tool',
+        provider: 'openai',
+        oauthStart: jest.fn(),
+        flowManager: mockFlowManager,
+        elicitationStart: jest.fn().mockResolvedValue(undefined),
+      });
+
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request.mock.calls[0][2]).toMatchObject({ timeout: connection.timeout });
+    });
+
+    it('routes a 401-wrapped -32042 to elicitation instead of OAuth recovery', async () => {
+      /** A gateway may return the URL-elicitation body under HTTP 401. The
+       *  connection's OAuth check matches on status alone, so without an
+       *  elicitation pre-check the user gets a re-auth prompt (or a recovery
+       *  failure) instead of the authorization card the server asked for. */
+      const wrapped = new Error(
+        'Non-200 status code (401) ' +
+          JSON.stringify({
+            error: {
+              code: -32042,
+              data: {
+                elicitations: [
+                  { message: 'Authorize Jira', url: 'https://auth.example.com/authorize' },
+                ],
+              },
+            },
+          }),
+      );
+      const request = jest.fn().mockRejectedValueOnce(wrapped).mockResolvedValueOnce(toolResult);
+      const connection = createConnection(request);
+      attachOAuthHandler();
+      const manager = await createManager(connection);
+      const elicitationStart = jest.fn().mockResolvedValue(undefined);
+      const flowManager = {
+        createFlow: jest.fn().mockResolvedValue({ action: 'complete' }),
+      } as unknown as Parameters<MCPManager['callTool']>[0]['flowManager'];
+
+      await expect(
+        manager.callTool({
+          user: mockUser,
+          serverName,
+          toolName: 'oauth_tool',
+          provider: 'openai',
+          oauthStart: jest.fn(),
+          flowManager,
+          elicitationStart,
+        }),
+      ).resolves.toBeDefined();
+
+      expect(elicitationStart).toHaveBeenCalledTimes(1);
+      expect(elicitationStart.mock.calls[0][0]).toMatchObject({
+        mode: 'url',
+        url: 'https://auth.example.com/authorize',
+      });
+      // The tool call is retried after authorization, and OAuth recovery never ran.
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(connection.connect).not.toHaveBeenCalled();
     });
 
     it('refreshes, rebuilds, and retries a rejected tool request once', async () => {

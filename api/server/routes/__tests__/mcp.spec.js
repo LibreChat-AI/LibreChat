@@ -156,12 +156,14 @@ jest.mock('~/server/services/Config/mcp', () => ({
 
 const mockResolveAllMcpConfigs = jest.fn().mockResolvedValue({});
 const mockResolveMcpConfigNames = jest.fn().mockResolvedValue([]);
+const mockResolveElicitationFlow = jest.fn().mockResolvedValue(true);
 jest.mock('~/server/services/MCP', () => ({
   getMCPSetupData: jest.fn(),
   resolveConfigServers: jest.fn().mockResolvedValue({}),
   resolveMcpConfigNames: (...args) => mockResolveMcpConfigNames(...args),
   resolveAllMcpConfigs: (...args) => mockResolveAllMcpConfigs(...args),
   getServerConnectionStatus: jest.fn(),
+  resolveElicitationFlow: (...args) => mockResolveElicitationFlow(...args),
 }));
 
 jest.mock('~/server/services/PluginService', () => ({
@@ -4731,6 +4733,173 @@ describe('MCP Routes', () => {
 
       expect(response.status).toBe(500);
       expect(response.body).toEqual({ message: 'Deletion failed' });
+    });
+  });
+  describe('POST /elicitation/:flowId', () => {
+    const { getLogStores } = require('~/cache');
+
+    /** Real `parseElicitationFlowId` (via requireActual) parses `user:server:tool:nonce`. */
+    const ownedFlowId = 'test-user-id:jira:create_issue:nonce-1';
+    const otherUserFlowId = 'other-user-id:jira:create_issue:nonce-2';
+
+    const mockFlowManager = () => ({
+      getFlowState: jest.fn().mockResolvedValue({ status: 'PENDING', metadata: {} }),
+      completeFlowIfPending: jest.fn().mockResolvedValue(true),
+    });
+
+    beforeEach(() => {
+      mockResolveElicitationFlow.mockReset().mockResolvedValue(true);
+      getLogStores.mockReturnValue({});
+    });
+
+    it('should return 401 when user is not authenticated', async () => {
+      currentUser = { role: 'user' };
+      const response = await request(app)
+        .post(`/api/mcp/elicitation/${encodeURIComponent(ownedFlowId)}`)
+        .send({ action: 'complete' });
+
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual({ error: 'User not authenticated' });
+    });
+
+    it('should return 400 for an unknown action', async () => {
+      const response = await request(app)
+        .post(`/api/mcp/elicitation/${encodeURIComponent(ownedFlowId)}`)
+        .send({ action: 'bogus' });
+
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({ error: 'Invalid action' });
+    });
+
+    it('should return 403 when the flowId is owned by a different user', async () => {
+      const flowManager = mockFlowManager();
+      require('~/config').getFlowStateManager.mockReturnValue(flowManager);
+
+      const response = await request(app)
+        .post(`/api/mcp/elicitation/${encodeURIComponent(otherUserFlowId)}`)
+        .send({ action: 'complete' });
+
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ error: 'Forbidden' });
+      expect(flowManager.getFlowState).not.toHaveBeenCalled();
+    });
+
+    it('should return 404 when the flow state is not found', async () => {
+      const flowManager = mockFlowManager();
+      flowManager.getFlowState.mockResolvedValue(null);
+      require('~/config').getFlowStateManager.mockReturnValue(flowManager);
+
+      const response = await request(app)
+        .post(`/api/mcp/elicitation/${encodeURIComponent(ownedFlowId)}`)
+        .send({ action: 'complete' });
+
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({ error: 'Flow not found' });
+      expect(flowManager.completeFlowIfPending).not.toHaveBeenCalled();
+    });
+
+    it('should return 404 when completeFlowIfPending reports the flow is gone', async () => {
+      const flowManager = mockFlowManager();
+      // Initial check passes (PENDING); the loser re-read finds nothing stored.
+      flowManager.getFlowState
+        .mockReset()
+        .mockResolvedValueOnce({ status: 'PENDING', metadata: {} })
+        .mockResolvedValue(null);
+      flowManager.completeFlowIfPending.mockResolvedValue(false);
+      require('~/config').getFlowStateManager.mockReturnValue(flowManager);
+
+      const response = await request(app)
+        .post(`/api/mcp/elicitation/${encodeURIComponent(ownedFlowId)}`)
+        .send({ action: 'complete' });
+
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({ error: 'Flow not found' });
+      expect(mockResolveElicitationFlow).not.toHaveBeenCalled();
+    });
+
+    it('should accept a URL-mode complete with no schema and emit resolution', async () => {
+      const flowManager = mockFlowManager();
+      flowManager.getFlowState.mockResolvedValue({ status: 'PENDING', metadata: {} });
+      require('~/config').getFlowStateManager.mockReturnValue(flowManager);
+
+      const response = await request(app)
+        .post(`/api/mcp/elicitation/${encodeURIComponent(ownedFlowId)}`)
+        .send({ action: 'complete' });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ ok: true });
+      expect(flowManager.completeFlowIfPending).toHaveBeenCalledWith(ownedFlowId, 'mcp_elicit', {
+        action: 'complete',
+        content: undefined,
+      });
+      expect(mockResolveElicitationFlow).toHaveBeenCalledWith({
+        flowId: ownedFlowId,
+        action: 'complete',
+        content: undefined,
+        fallbackStreamId: null,
+        fallbackStepId: undefined,
+      });
+    });
+
+    it('passes the flow metadata through as the resolution fallback', async () => {
+      const flowManager = mockFlowManager();
+      flowManager.getFlowState.mockResolvedValue({
+        status: 'PENDING',
+        metadata: { streamId: 's1', stepId: 'st1' },
+      });
+      require('~/config').getFlowStateManager.mockReturnValue(flowManager);
+
+      const response = await request(app)
+        .post(`/api/mcp/elicitation/${encodeURIComponent(ownedFlowId)}`)
+        .send({ action: 'complete' });
+
+      expect(response.status).toBe(200);
+      expect(mockResolveElicitationFlow).toHaveBeenCalledWith({
+        flowId: ownedFlowId,
+        action: 'complete',
+        content: undefined,
+        fallbackStreamId: 's1',
+        fallbackStepId: 'st1',
+      });
+    });
+
+    it('rejects the loser of a concurrent submit that lost the race', async () => {
+      const flowManager = mockFlowManager();
+      // Initial check passes (PENDING); completeFlowIfPending loses to a concurrent
+      // submit, and the re-read finds the winner's settled result.
+      flowManager.getFlowState
+        .mockReset()
+        .mockResolvedValueOnce({ status: 'PENDING', metadata: {} })
+        .mockResolvedValue({ status: 'COMPLETED', metadata: {}, result: { action: 'cancel' } });
+      flowManager.completeFlowIfPending.mockResolvedValue(false);
+      require('~/config').getFlowStateManager.mockReturnValue(flowManager);
+
+      const response = await request(app)
+        .post(`/api/mcp/elicitation/${encodeURIComponent(ownedFlowId)}`)
+        .send({ action: 'complete' });
+
+      expect(response.status).toBe(409);
+      // The loser must be told what actually won ('cancel'), not echoed its own
+      // attempted 'complete' — otherwise its card renders the wrong outcome.
+      expect(response.body).toEqual({
+        error: 'Elicitation already resolved',
+        action: 'cancel',
+        content: undefined,
+      });
+      expect(mockResolveElicitationFlow).not.toHaveBeenCalled();
+    });
+
+    it('should return 500 when completeFlowIfPending throws', async () => {
+      const flowManager = mockFlowManager();
+      flowManager.completeFlowIfPending.mockRejectedValue(new Error('keyv down'));
+      require('~/config').getFlowStateManager.mockReturnValue(flowManager);
+
+      const response = await request(app)
+        .post(`/api/mcp/elicitation/${encodeURIComponent(ownedFlowId)}`)
+        .send({ action: 'complete' });
+
+      expect(response.status).toBe(500);
+      expect(response.body).toEqual({ error: 'Failed to complete elicitation flow' });
     });
   });
 });

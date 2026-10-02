@@ -1,5 +1,5 @@
 import pick from 'lodash/pick';
-import { logger } from '@librechat/data-schemas';
+import { logger, getTenantId } from '@librechat/data-schemas';
 import { CallToolResultSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { Permissions, PermissionTypes, DEFAULT_MCP_APPS_POLICY } from 'librechat-data-provider';
 import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
@@ -14,6 +14,7 @@ import type {
 import type { MCPAppOperationContext, MCPAppValidationContext } from './apps';
 import type { MCPClientCapabilityProfile } from './capabilities';
 import type { AuthIdentityContext } from '~/utils/identity';
+import type { ElicitationFlowResult } from './elicitation';
 import type { GraphTokenResolver } from '~/utils/graph';
 import type { FlowStateManager } from '~/flow/manager';
 import type { MCPOAuthTokens } from './oauth';
@@ -45,6 +46,12 @@ import {
   type MCPAppBindingSubject,
   type MCPAppRuntimeTarget,
 } from './apps/binding';
+import {
+  asElicitationFlowManager,
+  extractUrlElicitation,
+  generateElicitationFlowId,
+  isElicitationSuccess,
+} from './elicitation';
 import { getMCPAppToolsPublicationGeneration, getMCPToolsChangedGeneration } from './toolsChanged';
 import { mcpOptionsContainGraphTokenPlaceholder, preProcessGraphTokens } from '~/utils/graph';
 import { MCPAuthenticationRejectedError, isMCPTransportAuthenticationError } from './errors';
@@ -67,6 +74,18 @@ import { isOwnedAbortError } from '~/utils/errors';
 import { withMCPRequestSignal } from './signal';
 import { MCPConnection } from './connection';
 import { mcpConfig } from './mcpConfig';
+
+/** Max elicitation flows a single (userId, serverName) may keep pending at once.
+ *  A misbehaving or hostile server can emit `elicitation/create` in a loop; each
+ *  one spawns a flow-store entry and an SSE card, so the count is capped to stop
+ *  a memory/resource DoS. Further requests past the cap are declined outright. */
+const MAX_PENDING_ELICITATIONS = 3;
+
+/** Max sequential authorizations resolved for a single tool call. A server may
+ *  legitimately need more than one (several `data.elicitations` entries, or a
+ *  fresh -32042 after the first is satisfied), but an unbounded chain would let
+ *  a misbehaving server keep a run alive indefinitely. */
+const MAX_ELICITATION_ROUNDS = 3;
 
 function createOboToolCallErrorMessage(
   logPrefix: string,
@@ -121,6 +140,36 @@ function getDiscoveryAuthenticationKind(
  */
 export class MCPManager extends UserConnectionManager {
   private static instance: MCPManager | null;
+
+  /** Live count of elicitation flows awaiting user input, keyed by
+   *  `${userId}:${serverName}`. Bounds concurrent `elicitation/create` cards per
+   *  (user, server) — see {@link MAX_PENDING_ELICITATIONS}. */
+  private readonly pendingElicitations = new Map<string, number>();
+
+  /** Reserves an elicitation slot for `(userId, serverName)`, returning `false`
+   *  when the cap is already reached so the caller can decline without spawning a
+   *  flow. A successful reservation must be paired with {@link releaseElicitation}. */
+  private reserveElicitation(userId: string, serverName: string): boolean {
+    const key = `${userId}:${serverName}`;
+    const pending = this.pendingElicitations.get(key) ?? 0;
+    if (pending >= MAX_PENDING_ELICITATIONS) {
+      return false;
+    }
+    this.pendingElicitations.set(key, pending + 1);
+    return true;
+  }
+
+  /** Releases a slot reserved by {@link reserveElicitation}. */
+  private releaseElicitation(userId: string, serverName: string): void {
+    const key = `${userId}:${serverName}`;
+    const next = (this.pendingElicitations.get(key) ?? 1) - 1;
+    if (next <= 0) {
+      this.pendingElicitations.delete(key);
+      return;
+    }
+    this.pendingElicitations.set(key, next);
+  }
+
   private readonly catalogRecoveryTracker: MCPServerCatalogRecoveryTracker;
   private readonly recoveryCancellation = new WeakMap<
     Promise<void>,
@@ -1423,6 +1472,10 @@ Please follow these instructions when using tools from the respective MCP server
     upstreamTokenProvider,
     upstreamTokenProviderResolver,
     oboIdentityContext,
+    elicitationStart,
+    elicitationEnd,
+    elicitationStreamId,
+    elicitationStepId,
     onOAuthCredentialsChanged,
     onOAuthCredentialsChanging,
     mcpApps,
@@ -1448,6 +1501,40 @@ Please follow these instructions when using tools from the respective MCP server
     upstreamTokenProvider?: UpstreamTokenProvider;
     upstreamTokenProviderResolver?: UpstreamTokenProviderResolver;
     oboIdentityContext?: AuthIdentityContext;
+    /**
+     * When provided: (1) declares support for MCP elicitation; and (2) catches
+     * the -32042
+     * `UrlElicitationRequired` exception on the initial `tools/call` response
+     * and retries once after the user authorizes. Called once per elicitation
+     * with enough context to render an in-chat card; resolution arrives via
+     * `flowManager` (same pattern as `oauthStart`/OAuth).
+     */
+    elicitationStart?: (params: {
+      flowId: string;
+      mode: 'url';
+      message: string;
+      serverName?: string;
+      toolName?: string;
+      url?: string;
+      /** The server-supplied id from `elicitation/create` or the -32042
+       *  `data.elicitations[]` entry, retained for future
+       *  `notifications/elicitation/complete` correlation. */
+      elicitationId?: string;
+    }) => Promise<void>;
+    /** Settles an already-rendered card when the wait ends without the user
+     *  submitting an action (a Stop, or the flow TTL expiring). Only the
+     *  completion route emits `on_elicitation_resolved`, so without this the card
+     *  stays interactive and every later Continue/Cancel gets a 404. */
+    elicitationEnd?: (params: { flowId: string; action: 'cancel' }) => Promise<void>;
+    /** Resumable-stream id capturing the elicitation's SSE context, so the
+     *  out-of-band completion route (a different process/request) can resolve
+     *  it via {@link FlowStateManager.completeFlowIfPending} even when the
+     *  originating stream's in-memory context is gone. `null`/undefined when
+     *  the run isn't resumable. */
+    elicitationStreamId?: string | null;
+    /** Run-step id paired with {@link elicitationStreamId}, needed to emit
+     *  `on_elicitation_resolved` onto the right step from the completion route. */
+    elicitationStepId?: string;
     onOAuthCredentialsChanged?: t.UserConnectionContext['onOAuthCredentialsChanged'];
     onOAuthCredentialsChanging?: t.UserConnectionContext['onOAuthCredentialsChanging'];
     mcpApps?: TMCPAppsPolicy;
@@ -1846,6 +1933,7 @@ Please follow these instructions when using tools from the respective MCP server
           }
         }
 
+        const elicitationFlowManager = asElicitationFlowManager(flowManager);
         const requestTool = () =>
           withMCPRequestSignal(options?.signal, (signal) =>
             connection!.client.request(
@@ -1858,6 +1946,12 @@ Please follow these instructions when using tools from the respective MCP server
               },
               CallToolResultSchema,
               {
+                /** Each SDK request keeps the server's configured timeout. The user
+                 *  wait happens BETWEEN requests (the first has already failed with
+                 *  -32042; the retry is a separate request), and is bounded by the
+                 *  flow manager's own TTL, so stretching the transport timeout would
+                 *  only let a hung non-eliciting tool hold the connection for
+                 *  minutes past its configured limit. */
                 timeout: connection!.timeout,
                 resetTimeoutOnProgress: true,
                 ...options,
@@ -1869,11 +1963,84 @@ Please follow these instructions when using tools from the respective MCP server
         // Deliberately use `request`: the typed wrapper also enforces the tool's output schema and
         // rejects task-required tools, which would turn a server response into a host-side failure.
         const requestedCredentialSetId = connection.getOAuthCredentialSetId?.();
-        let result: Awaited<ReturnType<typeof requestTool>>;
+        /** Definite assignment: every path out of the elicitation loop below
+         *  either assigns `result` or throws. */
+        let result!: Awaited<ReturnType<typeof requestTool>>;
         try {
-          result = await requestTool();
+          try {
+            result = await requestTool();
+          } catch (error) {
+            /** A gateway may return the -32042 body under HTTP 401/403, and
+             *  `isOAuthAuthenticationError` matches on status alone. Let the
+             *  elicitation layer below claim the error before either recovery path
+             *  treats it as a bad token and retries or re-exchanges for nothing. */
+            if (elicitationStart && extractUrlElicitation(error)) {
+              throw error;
+            }
+            /**
+             * An OBO server rejecting the bearer mid-session is recoverable here and
+             * nowhere else: the downstream token is minted from the upstream session
+             * this request still holds, and `attachSharedOAuthHandler` is never set for
+             * an OBO-only config, so the OAuth recovery below would rethrow untouched.
+             * Without this the rejected token is re-served from cache on every later
+             * call until it expires.
+             */
+            if (usesObo && connection.isOAuthAuthenticationError(error)) {
+              logger.info(
+                `${logPrefix}[${toolName}] OBO token rejected by server; re-exchanging and retrying once`,
+              );
+              await applyOboAuthorization(true);
+              connection.setRequestHeaders(resolvedHeaders);
+              result = await requestTool();
+            } else {
+              const requestOAuthHandler = attachSharedOAuthHandler;
+              if (!requestOAuthHandler || !userId) {
+                throw error;
+              }
+
+              if (!connection.isOAuthAuthenticationError(error)) {
+                throw error;
+              }
+
+              try {
+                await waitForRecoveryWithoutLease(() =>
+                  this.recoverOAuthConnection(
+                    connection!,
+                    error,
+                    serverName,
+                    userId,
+                    requestOAuthHandler,
+                    oauthStart,
+                    oauthEnd,
+                    flowManager,
+                    options?.signal,
+                    !recoveryTakeoverConsumed,
+                    requestedCredentialSetId,
+                  ),
+                );
+              } catch (recoveryError) {
+                if (recoveryError instanceof OAuthRecoveryTakeoverRequired) {
+                  throw recoveryError;
+                }
+                if (options?.signal?.aborted) {
+                  throw recoveryError;
+                }
+                logger.warn(
+                  `${logPrefix}[${toolName}] Runtime OAuth recovery failed`,
+                  recoveryError,
+                );
+                throw error;
+              }
+              result = await requestTool();
+            }
+          }
         } catch (error) {
-          if (directBearerRecovery && user && isMCPTransportAuthenticationError(error)) {
+          if (
+            directBearerRecovery &&
+            user &&
+            isMCPTransportAuthenticationError(error) &&
+            !(elicitationStart && extractUrlElicitation(error))
+          ) {
             if (directBearerRecoveryState.attempted) {
               throw new MCPAuthenticationRejectedError(serverName, false, error);
             }
@@ -1904,57 +2071,137 @@ Please follow these instructions when using tools from the respective MCP server
             throw new MCPAuthenticationRejectedError(serverName, true, error);
           }
           /**
-           * An OBO server rejecting the bearer mid-session is recoverable here and
-           * nowhere else: the downstream token is minted from the upstream session
-           * this request still holds, and `attachSharedOAuthHandler` is never set for
-           * an OBO-only config, so the OAuth recovery below would rethrow untouched.
-           * Without this the rejected token is re-served from cache on every later
-           * call until it expires.
+           * URL-exception mode (spec 2025-11-25): the server rejected `tools/call`
+           * with JSON-RPC code -32042 instead of issuing a normal `elicitation/create`
+           * request (possibly wrapped in an HTTP-level transport error by the gateway
+           * — see `extractUrlElicitation`). Surface the authorization link, wait for
+           * the user to complete (or cancel) it via `flowManager`, then retry the SAME
+           * `tools/call` once. Layered outside the OAuth recovery above because a
+           * -32042 is not an OAuth authentication error and that block rethrows it.
            */
-          if (usesObo && connection.isOAuthAuthenticationError(error)) {
-            logger.info(
-              `${logPrefix}[${toolName}] OBO token rejected by server; re-exchanging and retrying once`,
+          if (!elicitationStart || !userId) {
+            throw error;
+          }
+          let pending = extractUrlElicitation(error);
+          if (!pending) {
+            throw error;
+          }
+
+          // Refuse elicitation on the shared app-level connection: retrying after one
+          // user's auth could leave it authorized as that user for everyone else.
+          const sharedAppConnection = await this.appConnections?.get(serverName);
+          if (sharedAppConnection && sharedAppConnection === connection) {
+            throw new McpError(
+              ErrorCode.InvalidRequest,
+              `${pending.message} This server requires per-user authorization but is connected at ` +
+                `the app level; configure it to use a user-scoped connection, then retry.`,
             );
-            await applyOboAuthorization(true);
-            connection.setRequestHeaders(resolvedHeaders);
-            result = await requestTool();
-          } else {
-            const requestOAuthHandler = attachSharedOAuthHandler;
-            if (!requestOAuthHandler || !userId) {
-              throw error;
-            }
+          }
 
-            if (!connection.isOAuthAuthenticationError(error)) {
-              throw error;
-            }
-
-            try {
-              await waitForRecoveryWithoutLease(() =>
-                this.recoverOAuthConnection(
-                  connection!,
-                  error,
-                  serverName,
-                  userId,
-                  requestOAuthHandler,
-                  oauthStart,
-                  oauthEnd,
-                  flowManager,
-                  options?.signal,
-                  !recoveryTakeoverConsumed,
-                  requestedCredentialSetId,
-                ),
+          /** A server may require more than one authorization for a single call:
+           *  several entries in `data.elicitations`, or a fresh -32042 once the
+           *  first is satisfied. Resolve them in sequence and retry after each,
+           *  bounded by {@link MAX_ELICITATION_ROUNDS}. */
+          for (let round = 0; pending != null; round++) {
+            if (round >= MAX_ELICITATION_ROUNDS) {
+              throw new McpError(
+                ErrorCode.InvalidRequest,
+                `${pending.message} This tool still requires authorization after ${MAX_ELICITATION_ROUNDS} attempts; use the authorization card above, then retry.`,
               );
-            } catch (recoveryError) {
-              if (recoveryError instanceof OAuthRecoveryTakeoverRequired) {
-                throw recoveryError;
-              }
-              if (options?.signal?.aborted) {
-                throw recoveryError;
-              }
-              logger.warn(`${logPrefix}[${toolName}] Runtime OAuth recovery failed`, recoveryError);
-              throw error;
             }
-            result = await requestTool();
+
+            const flowId = generateElicitationFlowId(userId, serverName, toolName, getTenantId());
+            // Apply the same per-(user, server) pending-elicitation cap as the
+            // server-initiated `elicitation/create` path, so a gateway that keeps
+            // returning -32042 can't spawn unbounded concurrent flows/cards.
+            if (!this.reserveElicitation(userId, serverName)) {
+              throw new McpError(
+                ErrorCode.InvalidRequest,
+                `${pending.message} Too many pending authorizations for ${serverName}; complete or cancel one, then retry using the authorization card above.`,
+              );
+            }
+
+            const current = pending;
+            /** Whether the user actually submitted an action. When they did, the
+             *  completion route has already emitted the resolution; when they did
+             *  not, this call has to settle the card itself. */
+            let waitResolved = false;
+            try {
+              logger.info(
+                `${logPrefix}[${toolName}] URL elicitation required (-32042), flowId: ${flowId}`,
+              );
+              await elicitationStart({
+                flowId,
+                mode: 'url',
+                message: current.message,
+                serverName,
+                toolName,
+                url: current.url,
+                elicitationId: current.elicitationId,
+              });
+
+              let flowResult: ElicitationFlowResult;
+              try {
+                flowResult = await elicitationFlowManager.createFlow(
+                  flowId,
+                  'mcp_elicit',
+                  {
+                    elicitationId: current.elicitationId,
+                    streamId: elicitationStreamId ?? null,
+                    stepId: elicitationStepId,
+                  },
+                  options?.signal,
+                );
+                waitResolved = true;
+              } catch (flowError) {
+                /** A user Stop rejects the flow wait too. That is the cancellation
+                 *  working, not a failed authorization, so it must stay an abort:
+                 *  wrapping it as InvalidRequest would show the user an
+                 *  "authorize and retry" message for a run they just stopped, and
+                 *  hide it from the abort-aware logging below. */
+                if (options?.signal?.aborted === true) {
+                  throw flowError;
+                }
+                const reason = flowError instanceof Error ? flowError.message : String(flowError);
+                throw new McpError(
+                  ErrorCode.InvalidRequest,
+                  `${current.message} Use the authorization card above, then retry. (${reason})`,
+                );
+              }
+
+              if (!isElicitationSuccess(flowResult.action)) {
+                throw new McpError(
+                  ErrorCode.InvalidRequest,
+                  `${current.message} Authorization was cancelled. Use the authorization card above, then retry.`,
+                );
+              }
+
+              logger.debug(
+                `${logPrefix}[${toolName}] URL elicitation authorized, retrying tools/call`,
+              );
+              try {
+                result = await requestTool();
+                pending = null;
+              } catch (retryError) {
+                const next = extractUrlElicitation(retryError);
+                if (!next) {
+                  throw retryError;
+                }
+                pending = next;
+              }
+            } finally {
+              this.releaseElicitation(userId, serverName);
+              if (!waitResolved && elicitationEnd) {
+                try {
+                  await elicitationEnd({ flowId, action: 'cancel' });
+                } catch (endError) {
+                  logger.warn(
+                    `${logPrefix}[${toolName}] Failed to settle elicitation card ${flowId}`,
+                    endError,
+                  );
+                }
+              }
+            }
           }
         }
         const hasPersistentUserConnections =
