@@ -3,7 +3,12 @@ import { RecoilRoot } from 'recoil';
 import { useAtomValue, useStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import type { SubagentUpdateEvent, SubagentIdentity, PartMetadata } from 'librechat-data-provider';
+import type {
+  PartMetadata,
+  SubagentIdentity,
+  SubagentUpdateEvent,
+  ParentSubagentSummary,
+} from 'librechat-data-provider';
 import type {
   SubagentAggregatorState,
   SubagentContentPart,
@@ -27,6 +32,7 @@ import { FailedRevealContext } from '../../reveal';
 import { ChatSurfaceHarness } from 'test/harness';
 
 const mockMCPServerNames: string[] = [];
+let mockIndexedChildren = new Map<string, ParentSubagentSummary>();
 
 jest.mock('~/hooks', () => ({
   useLocalize:
@@ -65,7 +71,15 @@ jest.mock('lucide-react', () => ({
 jest.mock('~/Providers', () => ({
   useAgentsMapContext: () => ({
     'agent-1': { id: 'agent-1', name: 'Analyst One', avatar: { filepath: '/analyst.png' } },
+    agent_reviewer: {
+      id: 'agent_reviewer',
+      name: 'Code Reviewer',
+      avatar: { filepath: '/reviewer.png' },
+    },
   }),
+}));
+jest.mock('~/components/Chat/Subagents/ParentSubagentsProvider', () => ({
+  useParentSubagents: () => ({ byThreadId: mockIndexedChildren }),
 }));
 jest.mock('~/components/Share/MessageIcon', () => ({
   __esModule: true,
@@ -83,6 +97,7 @@ jest.mock('~/utils', () => ({
 afterEach(() => {
   jest.useRealTimers();
   mockMCPServerNames.length = 0;
+  mockIndexedChildren = new Map();
 });
 
 function foldEvents(events: SubagentUpdateEvent[]): {
@@ -472,6 +487,63 @@ describe('SubagentCall', () => {
       }),
     );
     expect(rendered.getSelection()?.legacyOutput).toBeUndefined();
+  });
+
+  it('leads a detached agent card with its name, face and the indexed task status', () => {
+    const output = JSON.stringify({
+      background_task_id: 'task-1',
+      subagent_thread_id: 'child-thread-1',
+      tool: 'subagent',
+      subagent_type: 'agent_reviewer',
+      status: 'running',
+      message:
+        'Started subagent "agent_reviewer" background task. Poll the host background-task tool with background_task_id "task-1".',
+    });
+    mockIndexedChildren = new Map([
+      [
+        'child-thread-1',
+        {
+          threadId: 'child-thread-1',
+          status: 'completed',
+          latestTaskId: 'task-1',
+          tasks: [{ taskId: 'task-1', status: 'completed' }],
+        } as ParentSubagentSummary,
+      ],
+    ]);
+    /** No recorded identity: the type is the agent's id, read as a name. */
+    renderWithState({
+      toolCallId: 'named-detached',
+      initialProgress: 1,
+      output,
+      toolArgs: { subagent_type: 'agent_reviewer', run_in_background: true },
+    });
+
+    const card = screen.getByRole('button', { name: 'Code Reviewer: Agent activity' });
+    expect(within(card).getByText('Code Reviewer')).toBeInTheDocument();
+    expect(within(card).getByRole('img', { hidden: true })).toHaveAttribute('src', '/reviewer.png');
+    expect(within(card).getByText('com_ui_subagent_thread_status_completed')).toBeInTheDocument();
+    expect(within(card).queryByText(/agent_reviewer/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the neutral label for a detached child the index has not reported', () => {
+    const output = JSON.stringify({
+      background_task_id: 'task-1',
+      subagent_thread_id: 'child-thread-1',
+      tool: 'subagent',
+      subagent_type: 'agent_reviewer',
+      status: 'running',
+      message:
+        'Started subagent "agent_reviewer" background task. Poll the host background-task tool with background_task_id "task-1".',
+    });
+    renderWithState({
+      toolCallId: 'unindexed-detached',
+      initialProgress: 1,
+      output,
+      toolArgs: { subagent_type: 'agent_reviewer', run_in_background: true },
+    });
+
+    const card = screen.getByRole('button', { name: 'Code Reviewer: Agent activity' });
+    expect(within(card).getByText('Agent activity')).toBeInTheDocument();
   });
 
   it('disables an inaccessible nested detached drilldown without renderable activity', () => {

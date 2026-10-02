@@ -9,20 +9,26 @@ import {
   areMessageFieldsEqual,
   getHeaderPrefixForScreenReader,
 } from '~/utils';
+import {
+  agentAuthor,
+  resolveChildAgent,
+  readableSubagentType,
+} from '~/components/Chat/Subagents/author';
 import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
 import { parseWakeupText } from '~/components/Chat/Messages/Content/Parts/wakeup';
 import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
 import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
+import { resolveSubagentAgentId } from '~/components/Chat/Subagents/identity';
 import { useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import { PrivateText } from '~/components/Chat/Messages/PrivateText';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
+import { MessageContext, useAgentsMapContext } from '~/Providers';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
 import SubRow from '~/components/Chat/Messages/SubRow';
-import { MessageContext } from '~/Providers';
 import store from '~/store';
 
 type MessageRenderProps = {
@@ -143,6 +149,25 @@ const MessageRender = memo(function MessageRender({
     () => (msg?.isCreatedByUser === true ? parseWakeupText(msg.text) : null),
     [msg?.isCreatedByUser, msg?.text],
   );
+  /** A subagent's report is a turn in its own name, like the turns it writes in
+   *  its panel: the agent named by the wake-up, or the waking agent itself when
+   *  it spawned a copy of itself. Same context `useMessageActions` already reads,
+   *  so no row gains a subscription, and every other row returns at the guard. */
+  const agentsMap = useAgentsMapContext();
+  const wakeupAuthor = useMemo(() => {
+    if (wakeupDisplay?.kind !== 'subagent') return null;
+    const subagentType = wakeupDisplay.tasks[0]?.subagentType;
+    const subagent = resolveChildAgent(
+      resolveSubagentAgentId(null, undefined, subagentType),
+      subagentType,
+      agent,
+      agentsMap,
+    );
+    return agentAuthor(
+      subagent,
+      readableSubagentType(subagentType) ?? localize('com_ui_subagent_actor'),
+    );
+  }, [agent, agentsMap, localize, wakeupDisplay]);
   const messageId = msg?.messageId ?? '';
   const messageContextValue = useMemo(
     () => ({
@@ -160,19 +185,28 @@ const MessageRender = memo(function MessageRender({
   }
 
   const showOwnerText = !edit && msg.isCreatedByUser && Boolean(msg.privacyRevision);
+  const wakeupRowAuthor = edit ? null : wakeupAuthor;
 
   return (
     <MessageRow
       id={msg.messageId}
-      icon={<MessageIcon iconData={iconData} assistant={assistant} agent={agent} />}
-      label={messageLabel ?? ''}
-      hoverLabel={getHeaderHoverLabel(
-        hasConfiguredSender,
-        agent?.model,
-        assistant?.model,
-        msg.model,
-        conversation?.model,
-      )}
+      icon={
+        wakeupRowAuthor?.icon ?? (
+          <MessageIcon iconData={iconData} assistant={assistant} agent={agent} />
+        )
+      }
+      label={wakeupRowAuthor?.name ?? messageLabel ?? ''}
+      hoverLabel={
+        wakeupRowAuthor != null
+          ? undefined
+          : getHeaderHoverLabel(
+              hasConfiguredSender,
+              agent?.model,
+              assistant?.model,
+              msg.model,
+              conversation?.model,
+            )
+      }
       timestamp={msg.createdAt ?? msg.clientTimestamp}
       ariaLabel={getMessageAriaLabel(msg, localize)}
       headerPrefix={getHeaderPrefixForScreenReader(msg, localize)}
@@ -180,7 +214,13 @@ const MessageRender = memo(function MessageRender({
       hasParallelContent={hasParallelContent}
       fullWidth={maximizeChatSpace}
       isEditing={edit}
-      systemLabel={wakeupDisplay != null && !edit ? localize('com_ui_system_event') : undefined}
+      systemLabel={
+        wakeupDisplay != null && wakeupRowAuthor == null && !edit
+          ? localize('com_ui_system_event')
+          : undefined
+      }
+      showAuthor={wakeupRowAuthor != null}
+      outlined={wakeupRowAuthor != null}
       footer={
         <SubRow classes={cn(messageFooterClasses, msg.isCreatedByUser && 'justify-end')}>
           {/* The reading holds the column start: it takes over the slot the streaming
