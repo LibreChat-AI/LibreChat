@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { act, render, screen, waitFor } from '@testing-library/react';
+import type { FormEvent } from 'react';
 import SelectDropDown from '../SelectDropDown';
 
 const OPTIONS = [
@@ -31,18 +32,32 @@ describe('SelectDropDown', () => {
         );
       }
       const user = userEvent.setup();
-      render(<Picker />);
+      const onSubmit = jest.fn((event: FormEvent<HTMLFormElement>) => event.preventDefault());
+      render(
+        <form onSubmit={onSubmit}>
+          <Picker />
+        </form>,
+      );
       const button = screen.getByTestId('select-dropdown-button');
-      await user.click(button);
-      await user.click(await screen.findByRole('option', { name: 'Create Assistant' }));
+      await act(async () => {
+        await user.click(button);
+      });
+      await act(async () => {
+        await user.click(await screen.findByRole('option', { name: 'Create Assistant' }));
+      });
       expect(button).toHaveTextContent('Create Assistant');
 
       await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
       act(() => button.focus());
-      await user.keyboard(key);
+      await act(async () => {
+        await user.keyboard(key);
+      });
       await waitFor(() => expect(screen.getByRole('listbox')).toBeVisible());
+      expect(onSubmit).not.toHaveBeenCalled();
       expect(screen.getByRole('option', { name: 'Second' }).querySelector('svg')).toBeNull();
-      await user.keyboard('{Escape}');
+      await act(async () => {
+        await user.keyboard('{Escape}');
+      });
       await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
     },
   );

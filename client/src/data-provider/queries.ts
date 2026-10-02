@@ -114,34 +114,36 @@ export const useRunningConversationsQuery = (
 ): t.TConversation[] => {
   const queryClient = useQueryClient();
   const results = useQueries({
-    queries: conversationIds.map((conversationId) => ({
-      queryKey: [QueryKeys.runningConversation, conversationId],
-      queryFn: async ({ signal }): Promise<t.TConversation | null> => {
-        try {
-          const [conversation, isShared] = await Promise.all([
-            dataService.getConversationById(conversationId, signal),
-            hasActiveSharedLink(conversationId, signal),
-          ]);
-          signal?.throwIfAborted();
-          return isShared === undefined ? conversation : { ...conversation, isShared };
-        } catch (error) {
-          if (isNotFoundError(error)) {
-            return null;
+    queries: conversationIds.map(
+      (conversationId): UseQueryOptions<t.TConversation | null> => ({
+        queryKey: [QueryKeys.runningConversation, conversationId],
+        queryFn: async ({ signal }): Promise<t.TConversation | null> => {
+          try {
+            const [conversation, isShared] = await Promise.all([
+              dataService.getConversationById(conversationId, signal),
+              hasActiveSharedLink(conversationId, signal),
+            ]);
+            signal?.throwIfAborted();
+            return isShared === undefined ? conversation : { ...conversation, isShared };
+          } catch (error) {
+            if (isNotFoundError(error)) {
+              return null;
+            }
+            throw error;
           }
-          throw error;
-        }
-      },
-      onSuccess: (conversation: t.TConversation | null) => {
-        const conversationKey = [QueryKeys.conversation, conversationId];
-        if (conversation && queryClient.getQueryData(conversationKey) === undefined) {
-          queryClient.setQueryData(conversationKey, conversation);
-        }
-      },
-      staleTime: RUNNING_CONVERSATION_REFRESH_MS,
-      refetchInterval: (data: t.TConversation | null | undefined) =>
-        data === null ? RUNNING_CONVERSATION_MISSING_RETRY_MS : RUNNING_CONVERSATION_REFRESH_MS,
-      refetchOnWindowFocus: false,
-    })),
+        },
+        onSuccess: (conversation: t.TConversation | null) => {
+          const conversationKey = [QueryKeys.conversation, conversationId];
+          if (conversation && queryClient.getQueryData(conversationKey) === undefined) {
+            queryClient.setQueryData(conversationKey, conversation);
+          }
+        },
+        staleTime: RUNNING_CONVERSATION_REFRESH_MS,
+        refetchInterval: (data: t.TConversation | null | undefined) =>
+          data === null ? RUNNING_CONVERSATION_MISSING_RETRY_MS : RUNNING_CONVERSATION_REFRESH_MS,
+        refetchOnWindowFocus: false,
+      }),
+    ),
   });
 
   const rowsRef = useRef<t.TConversation[]>(noRunningConversations);
