@@ -22,6 +22,7 @@ export interface ScheduledMCPPolicyAgent {
   id: string;
   toolDefinitions?: readonly PolicyTool[];
   toolRegistry?: ReadonlyMap<string, PolicyTool>;
+  backgroundToolNames?: readonly string[];
   subagentAgentConfigs?: readonly ScheduledMCPPolicyAgent[];
   subagentGraphConfigs?: readonly {
     definition?: { edges: readonly HandoffEdge[] };
@@ -42,6 +43,7 @@ export function createScheduledMCPRunPolicy(
 } {
   const mcpTools = new Map<string, Set<string>>();
   const handoffs = new Map<string, Set<string>>();
+  const backgroundTools = new Map<string, Set<string>>();
   const registerGraph = (
     members: readonly ScheduledMCPPolicyAgent[],
     admittedEdges: readonly HandoffEdge[],
@@ -92,6 +94,7 @@ export function createScheduledMCPRunPolicy(
         if (tool.toolType === 'mcp' && (tool.mcpRawServerName || tool.serverName)) names.add(name);
       }
       mcpTools.set(agent.id, names);
+      backgroundTools.set(agent.id, new Set(agent.backgroundToolNames ?? []));
     }
   };
   agents.forEach(registerAgent);
@@ -103,6 +106,13 @@ export function createScheduledMCPRunPolicy(
   ]);
   const denied = (input: Parameters<HookCallback<'PreToolUse'>>[0]): boolean => {
     const agentId = input.executingAgentId;
+    // Foreground delegation stays in this guarded run; detached continuations do not.
+    if (
+      input.toolInput.run_in_background === true &&
+      (input.toolName === Constants.SUBAGENT ||
+        (agentId != null && backgroundTools.get(agentId)?.has(input.toolName)))
+    )
+      return true;
     return !(
       mcpTools.has(execution.identity.agentId) &&
       agentId != null &&

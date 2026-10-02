@@ -107,6 +107,33 @@ function invokeHandlerWithConfig(
  * badge / persisted `skills_enabled` + ACL). Tests that mock
  * `getSkillByName` directly need this so they reach the lookup.
  */
+it('keeps enrolled MCP work foreground even when runnable metadata requests detached execution', async () => {
+  const configs: Record<string, unknown>[] = [];
+  const args: unknown[] = [];
+  const name = 'query_mcp_warehouse';
+  const tool = createMockTool(name, configs, { capturedArgs: args });
+  const handler = createToolExecuteHandler({
+    scheduledMCPExecution: { enrolled: true },
+    loadTools: async () => ({ loadedTools: [tool] as never[] }),
+  });
+  const results = await invokeHandlerWithConfig(
+    handler,
+    [{ id: 'read', name, args: { run_in_background: true } }],
+    {
+      user_id: 'scheduled-owner',
+      thread_id: 'scheduled-conversation',
+      backgroundToolNames: [name],
+      scheduledMCPExecution: { enrolled: false },
+    },
+  );
+  expect(results).toEqual([
+    expect.objectContaining({ status: 'success', content: expect.stringContaining('executed') }),
+  ]);
+  expect(JSON.stringify(results)).not.toContain('background_task_id');
+  expect(args).toEqual([{}]);
+  expect(configs).toHaveLength(1);
+});
+
 function skillsInScope(): unknown[] {
   const { Types } = jest.requireActual('mongoose') as typeof import('mongoose');
   return [new Types.ObjectId()];

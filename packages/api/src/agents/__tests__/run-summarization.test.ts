@@ -105,6 +105,7 @@ import {
   Constants,
   buildChildInputs,
   InMemorySubagentTaskStore,
+  buildSubagentToolParams,
   executeHooks,
 } from '@librechat/agents';
 
@@ -4572,6 +4573,53 @@ describe('HITL wiring is gated on hitlCapable', () => {
           expect(JSON.stringify(result)).toContain('Blocked:');
         }
       }
+    },
+  );
+
+  it.each([true, false])(
+    'withholds detached task/wakeup capabilities only for enrolled=%s',
+    async (enrolled) => {
+      const f = await executionFixture();
+      if (!enrolled) f.snapshot.enrollment = null;
+      const execution = (await f.factory.resolve(f.identity, 'invoke'))!;
+      const tasks = {
+        store: new InMemorySubagentTaskStore(),
+        scopeId: 'scheduled-tasks',
+        completionDelivery: 'wakeup' as const,
+      };
+      const root = makeAgent({
+        id: 'root',
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+        subagentAgentConfigs: [makeAgent({ id: 'child' })],
+      });
+      await createRun({
+        agents: [root] as never,
+        signal: new AbortController().signal,
+        scheduledMCPExecution: execution,
+        subagentTasks: tasks,
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: { agents: { toolApproval: { enabled: false } } },
+        } as unknown as AppConfig,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0];
+      expect(config.subagentTasks).toBe(enrolled ? undefined : tasks);
+      const params = buildSubagentToolParams(config.graphConfig.agents[0].subagentConfigs, {
+        background: config.subagentTasks != null,
+        threadContinuation: true,
+      });
+      expect(
+        Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'run_in_background'),
+      ).toBe(!enrolled);
+      expect(
+        Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'subagent_thread_id'),
+      ).toBe(!enrolled);
+      const agent = config.graphConfig.agents[0];
+      expect(agent.subagentConfigs).toEqual([
+        expect.objectContaining({ type: 'child', allowNested: true }),
+      ]);
+      const names = (agent.toolDefinitions ?? []).map((tool: { name: string }) => tool.name);
+      expect(names.includes('check_background_task')).toBe(!enrolled);
     },
   );
 

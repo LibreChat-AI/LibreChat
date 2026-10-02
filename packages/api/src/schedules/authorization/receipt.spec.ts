@@ -4,7 +4,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { AIMessage } from '@librechat/agents/langchain/messages';
 import { createModels, createMethods } from '@librechat/data-schemas';
-import { HookRegistry, ToolNode, executeHooks } from '@librechat/agents';
+import { Constants, HookRegistry, ToolNode, executeHooks } from '@librechat/agents';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { SchedulesServiceDeps } from '../service';
 import {
@@ -535,5 +535,65 @@ it.each(['success', 'error', 'skipped_balance'] as const)(
       lastRun: { status: 'error' },
     });
     expect(card!.lastRun!.mcp).toEqual([...transient.outcomes, ...permanent.outcomes]);
+  },
+);
+
+it.each(['root', 'child'])(
+  'blocks enrolled background delegation from %s before a completion can be registered',
+  async (agentId) => {
+    const f = await setup();
+    const policy = createScheduledMCPRunPolicy(
+      f.execution,
+      [{ id: 'root' }, { id: 'child' }],
+      [],
+      f.record,
+    );
+    const registry = new HookRegistry();
+    registry.register('PreToolUse', { hooks: [policy.hook, policy.receipt] });
+    const start = jest.fn(async () => 'background handle');
+    const delegate = new DynamicStructuredTool({
+      name: Constants.SUBAGENT,
+      description: 'SDK delegation surface',
+      schema: z.object({
+        run_in_background: z.boolean().optional(),
+        subagent_thread_id: z.string().optional(),
+      }),
+      func: start,
+    });
+    const node = new ToolNode({ agentId, tools: [delegate], hookRegistry: registry });
+    const call = (args: Record<string, unknown>, id: string) =>
+      node.invoke(
+        {
+          messages: [
+            new AIMessage({ content: '', tool_calls: [{ id, name: delegate.name, args }] }),
+          ],
+        },
+        { configurable: { run_id: 'scheduled', thread_id: 'thread' } },
+      );
+    for (const args of [
+      { run_in_background: true },
+      { run_in_background: true, subagent_thread_id: 'saved-thread' },
+    ]) {
+      expect(JSON.stringify(await call(args, 'detached'))).toContain('Blocked:');
+      expect(start).not.toHaveBeenCalled();
+    }
+    await call({ run_in_background: false }, 'foreground');
+    expect(start).toHaveBeenCalledTimes(1);
+    await f.service.recordScheduleOutcome({
+      scheduleId: f.schedule.id,
+      scheduledFor: f.scheduledFor,
+      status: 'success',
+      conversationId: 'stream',
+      streamId: 'stream',
+      jobCreatedAt: f.job.createdAt,
+    });
+    expect(await f.methods.getScheduleById(f.schedule.id)).toMatchObject({
+      enabled: false,
+      disabledReason: 'mcp_permission_denied',
+      lastRun: {
+        status: 'error',
+        mcp: [expect.objectContaining({ agentId, reason: 'tool_policy_denied' })],
+      },
+    });
   },
 );

@@ -151,3 +151,36 @@ it('denies safely when an unenrolled run cannot recheck enrollment', async () =>
   expect(result.reason).not.toContain('PRIVATE');
   expect(record).toHaveBeenCalledTimes(1);
 });
+
+it('denies only host-marked ordinary background MCP work, while retaining foreground reads', async () => {
+  const f = await executionFixture();
+  const policy = createScheduledMCPRunPolicy(f.execution, [
+    {
+      id: 'root',
+      backgroundToolNames: ['query_mcp_warehouse'],
+      toolRegistry: new Map([
+        [
+          'query_mcp_warehouse',
+          { name: 'query_mcp_warehouse', toolType: 'mcp', serverName: 'warehouse' },
+        ],
+      ]),
+    },
+  ]);
+  const input = {
+    hook_event_name: 'PreToolUse' as const,
+    runId: 'scheduled',
+    executingAgentId: 'root',
+    toolName: 'query_mcp_warehouse',
+    toolInput: { run_in_background: true },
+    toolUseId: 'read',
+  };
+  expect(await policy.hook(input, new AbortController().signal)).toMatchObject({
+    decision: 'deny',
+  });
+  expect(
+    await policy.hook(
+      { ...input, toolInput: { run_in_background: false } },
+      new AbortController().signal,
+    ),
+  ).toEqual({});
+});
