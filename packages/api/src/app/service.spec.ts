@@ -174,12 +174,12 @@ describe('createAppConfigService', () => {
           baseURL: 'https://global.example',
           models: { default: ['global-model'], fetch: false },
         };
-        const tenants = ['dwh-org', 'dwh-preprod'].map((tenantId) => ({
+        const tenants = ['tenant-a', 'tenant-b'].map((tenantId) => ({
           ...global,
           name: 'Claude',
           tenantId,
-          apiKey: 'dwh-key',
-          baseURL: 'https://dwh.example',
+          apiKey: 'tenant-key',
+          baseURL: 'https://tenant.example',
           models: { default: ['tenant-model'], fetch: false },
         }));
         const custom = tenantFirst ? [...tenants, global] : [global, ...tenants];
@@ -196,7 +196,7 @@ describe('createAppConfigService', () => {
         });
         const { getAppConfig } = createAppConfigService(deps);
 
-        for (const tenantId of ['dwh-org', 'other-org', 'dwh-preprod', 'dwh-org']) {
+        for (const tenantId of ['tenant-a', 'tenant-c', 'tenant-b', 'tenant-a']) {
           const config = await getAppConfig({ role: 'USER', tenantId });
           const expected = tenants.find((endpoint) => endpoint.tenantId === tenantId) ?? global;
           expect(config.endpoints?.custom).toEqual([expected]);
