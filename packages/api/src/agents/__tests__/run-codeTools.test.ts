@@ -1,5 +1,5 @@
 import { FileContext } from 'librechat-data-provider';
-import type { SubagentTaskConfig } from '@librechat/agents';
+import type { AgentInputs, SubagentTaskConfig, SubagentResolveContext } from '@librechat/agents';
 import type { TFile } from 'librechat-data-provider';
 import type { HostSubagentTaskConfig } from '~/agents/subagentDelivery';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
@@ -149,6 +149,62 @@ describe('createRun code-tool eager/session wiring', () => {
       expect(input.additional_instructions).toContain('read or edit');
       expect(input.additional_instructions).not.toContain(file.filepath);
     }
+  });
+
+  it('preserves parent paths when a lazy child has independently planned colliding files', async () => {
+    const shared: TFile = {
+      file_id: 'shared',
+      filename: 'data.csv',
+      filepath: '/uploads/data.csv',
+      type: 'text/csv',
+      user: 'user-1',
+      object: 'file',
+      bytes: 10,
+      embedded: false,
+      usage: 0,
+      context: FileContext.message_attachment,
+      createdAt: '2026-09-01',
+    };
+    const child = makeAgent({
+      id: 'child',
+      fileConsumers: { executeCode: true, fileSearch: false },
+      provisionState: {
+        codeEnvFiles: [{ ...shared }, { ...shared, file_id: 'new', createdAt: '2026-10-01' }],
+        vectorDBFiles: [],
+        aliveFileIds: new Set(),
+        agentScopedFileIds: new Set(),
+        codeEnvDestinations: new Map([
+          ['shared', 'draft-alias.csv'],
+          ['new', 'data.csv'],
+        ]),
+      },
+    });
+    const resolve = jest.fn().mockResolvedValue(child);
+    const config = await captureRunConfig(
+      makeAgent({
+        fileConsumers: { executeCode: true, fileSearch: false },
+        provisionState: {
+          codeEnvFiles: [{ ...shared }],
+          vectorDBFiles: [],
+          aliveFileIds: new Set(),
+          agentScopedFileIds: new Set(),
+        },
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+        lazySubagentConfigs: [{ id: 'child', configId: 'child:1', resolve }],
+      }),
+    );
+    const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+    expect(parentInput.additional_instructions).toContain('/mnt/data/data.csv');
+    expect(resolve).not.toHaveBeenCalled();
+    const lazyConfig = parentInput.subagentConfigs?.[0];
+    const resolveInputs = lazyConfig?.resolveAgentInputs;
+    if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+    const childInput = await resolveInputs({
+      signal: new AbortController().signal,
+    } as SubagentResolveContext);
+    expect(childInput.additional_instructions).toContain('/mnt/data/data.csv');
+    expect(childInput.additional_instructions).not.toContain('draft-alias.csv');
+    expect(childInput.additional_instructions?.match(/\/mnt\/data\/data\.csv/g)).toHaveLength(1);
   });
 
   it('excludes side-effecting/large-arg tools from eager execution', async () => {

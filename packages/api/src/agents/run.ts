@@ -2341,8 +2341,9 @@ export async function createRun({
 
   const buildAgentInput = (agent: RunAgent, opts: { isSubagent?: boolean } = {}): AgentInputs => {
     if (!codeFileAgents.has(agent.id)) {
+      if (agent.provisionState) agent.provisionState.codeEnvDestinations = undefined;
       codeFileAgents.set(agent.id, agent);
-      prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id);
+      prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id, true);
     }
     const isSubagent = opts.isSubagent === true;
     if (runFilesActive) {

@@ -387,6 +387,47 @@ describe('run file execution host', () => {
     ).toEqual(['historical']);
   });
 
+  it('retains only admitted advertised paths when preparing isolated child queues', async () => {
+    const current = file('input', { filename: 'data.csv' });
+    const h = harness({ inputs: [current] });
+    const source = h.contexts.get('worker')!;
+    source.provisionState = {
+      codeEnvFiles: [current],
+      vectorDBFiles: [],
+      aliveFileIds: new Set(),
+      agentScopedFileIds: new Set(['worker-setup']),
+      codeEnvDestinations: new Map([
+        ['input', 'data-shared.csv'],
+        ['worker-setup', 'setup-advertised.csv'],
+        ['historical', 'private-history.csv'],
+      ]),
+    };
+    const executions = [identity('first'), identity('second')];
+    await Promise.all(executions.map((execution) => h.prepare(execution)));
+    for (const execution of executions) {
+      const destinations = h.host.getContext('worker', execution)?.provisionState
+        ?.codeEnvDestinations;
+      expect(destinations).toEqual(
+        new Map([
+          ['input', 'data-shared.csv'],
+          ['worker-setup', 'setup-advertised.csv'],
+        ]),
+      );
+      expect(destinations).not.toBe(source.provisionState.codeEnvDestinations);
+      await h.host.provision([Constants.EXECUTE_CODE], 'worker', h.signal, execution);
+    }
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(4);
+    for (const [params] of h.provisionToCodeEnv.mock.calls) {
+      expect(params.sandboxFilename).toBe(
+        source.provisionState.codeEnvDestinations?.get(params.file.file_id),
+      );
+    }
+    expect(source.provisionState.codeEnvDestinations?.has('historical')).toBe(true);
+    expect(
+      h.host.getContext('worker', executions[0])?.provisionState?.codeEnvDestinations,
+    ).not.toBe(h.host.getContext('worker', executions[1])?.provisionState?.codeEnvDestinations);
+  });
+
   it('isolates concurrent executions of the same agent without broadening storage grants', async () => {
     const h = harness();
     const first = identity('first');

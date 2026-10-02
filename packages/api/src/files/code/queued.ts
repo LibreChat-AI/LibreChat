@@ -99,14 +99,19 @@ export function planCodeFileUploads({
   });
 
   const destinations = createCodeDestinationSet();
+  const liveNames = new Map<string, string>();
   for (const candidate of routeContexts) {
+    const candidateQueuedIds = new Set(
+      candidate.provisionState?.codeEnvFiles.map((file) => file.file_id),
+    );
     for (const file of candidate.tool_resources?.execute_code?.files ?? []) {
-      if (queued.has(file.file_id)) continue;
-      reserveCodeDestination(
-        destinations,
+      if (candidateQueuedIds.has(file.file_id)) continue;
+      const name =
         getCodeEnvRefForProfile(file.metadata, route)?.sandboxFilename ??
-          resolveSandboxFilename(file.filename, file.type),
-      );
+        candidate.provisionState?.codeEnvDestinations?.get(file.file_id) ??
+        resolveSandboxFilename(file.filename, file.type);
+      reserveCodeDestination(destinations, name);
+      liveNames.set(file.file_id, name);
     }
   }
   for (const file of context.pendingProvisionedCodeFiles ?? []) {
@@ -131,6 +136,7 @@ export function planCodeFileUploads({
     if (!file) continue;
     const candidate = queued.get(file.file_id);
     const destination =
+      liveNames.get(file.file_id) ??
       (useAdvertisedNames
         ? (state.codeEnvDestinations?.get(file.file_id) ?? candidate?.advertisedName)
         : undefined) ??
@@ -157,11 +163,18 @@ export function prepareQueuedCodeFileContext(
   agent: CodeFileAgent,
   contexts: Iterable<ProvisionToolContext>,
   userId?: string,
+  useAdvertisedNames = false,
 ): void {
   const key = 'queued_code_files';
   if (agent.dynamicToolContextMap) delete agent.dynamicToolContextMap[key];
   if (agent.fileConsumers?.executeCode !== true || !agent.provisionState) return;
-  const uploads = planCodeFileUploads({ context: agent, contexts, agentId: agent.id, userId });
+  const uploads = planCodeFileUploads({
+    context: agent,
+    contexts,
+    agentId: agent.id,
+    userId,
+    useAdvertisedNames,
+  });
   agent.provisionState.codeEnvDestinations = new Map(
     uploads.map(({ file, destination }) => [file.file_id, destination]),
   );

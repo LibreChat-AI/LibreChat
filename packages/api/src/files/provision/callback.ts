@@ -248,6 +248,10 @@ export function createProvisionFilesCallback({
         userId: req.user?.id,
         useAdvertisedNames: true,
       });
+      provisionState.codeEnvDestinations ??= new Map();
+      for (const { file, destination } of uploads) {
+        provisionState.codeEnvDestinations.set(file.file_id, destination);
+      }
       const queuedCodeFiles = uploads.map(({ file }) => file);
       /** Every file in this tool-load batch shares one wait allowance. */
       const codeApiRateLimitBudget = createCodeApiRateLimitBudget(
