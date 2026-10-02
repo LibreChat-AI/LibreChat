@@ -3,6 +3,7 @@ import {
   isCodeWorkspaceSelections,
   isLinkedWorktreeRoutingAllowed,
   canonicalizeCodeWorkspaceSelections,
+  isCodeWorkspaceCheckoutAvailable,
 } from 'librechat-data-provider';
 import type { CodeWorkspaceSelection } from 'librechat-data-provider';
 import type { CodeEnvironmentConfig, CodeExecutionContext } from '~/agents/execution';
@@ -142,23 +143,30 @@ export async function resolveCodeExecutionWorkspaceContext({
   if (!workspace) {
     throw new CodeWorkspaceSelectionError('missing');
   }
+  const supportsIsolation = workspace.workspaceInstances?.includes('git_worktree') === true;
+  if (
+    !isCodeWorkspaceCheckoutAvailable(
+      selection,
+      workspace,
+      context.codeEnvironmentConfigSchema?.workspaces?.allowCheckoutSelection === true,
+    ) ||
+    (selection.checkout === 'isolated' && !context.conversationWorkspaceInstanceId)
+  ) {
+    throw new CodeWorkspaceSelectionError('unsupported');
+  }
+  const usesIsolation =
+    selection.checkout !== 'source' && supportsIsolation && context.conversationWorkspaceInstanceId;
   return {
     ...context,
     codeWorkspace: {
       ...selection,
       operations: [...(workspace.operations ?? status.operations)],
-      ...(context.conversationWorkspaceInstanceId &&
-      workspace.workspaceInstances?.includes('git_worktree')
-        ? { workspaceInstanceId: context.conversationWorkspaceInstanceId }
-        : {}),
+      ...(usesIsolation ? { workspaceInstanceId: context.conversationWorkspaceInstanceId } : {}),
       ...(isLinkedWorktreeRoutingAllowed(
         context.codeEnvironmentConfigSchema?.workspaces?.linkedWorktrees,
       ) &&
       workspace.workspaceScopes?.includes('git_linked_worktree') &&
-      !(
-        context.conversationWorkspaceInstanceId &&
-        workspace.workspaceInstances?.includes('git_worktree')
-      )
+      !usesIsolation
         ? { linkedWorktrees: true }
         : {}),
       ...(status.maxCommandTimeoutMs == null
