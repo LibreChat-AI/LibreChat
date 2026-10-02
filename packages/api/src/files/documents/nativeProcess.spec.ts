@@ -169,4 +169,36 @@ describe('parser admission configuration', () => {
     first.resolve();
     await expect(Promise.all([running, wider])).resolves.toEqual(['first', 'wider']);
   });
+
+  /**
+   * The code-artifact and fallback-text callers pass no bounds. Parsing first must not
+   * fix the defaults: the upload that later names the deployment's bounds applies them
+   * to the same limiter, still counting the parse already running.
+   */
+  test('an unconfigured first parse leaves the bounds for the configured caller', async () => {
+    const first = deferred();
+    const started: string[] = [];
+    const preview = withParserAdmission(async () => {
+      started.push('preview');
+      await first.promise;
+      return 'preview';
+    });
+    const upload = withParserAdmission(
+      async () => {
+        started.push('upload');
+        return 'upload';
+      },
+      undefined,
+      1,
+      1,
+    );
+    /* Concurrency 1 counts the running preview, and a queue of one sheds the next. */
+    const shed = withParserAdmission(async () => 'shed', undefined, 1, 1);
+
+    await Promise.resolve();
+    expect(started).toEqual(['preview']);
+    await expect(shed).rejects.toThrow(/document parsing/);
+    first.resolve();
+    await expect(Promise.all([preview, upload])).resolves.toEqual(['preview', 'upload']);
+  });
 });

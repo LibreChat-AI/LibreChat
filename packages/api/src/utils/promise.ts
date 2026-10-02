@@ -67,6 +67,15 @@ export interface ConcurrencyLimiterOptions {
   label?: string;
 }
 
+/** A `run` function that admits tasks under the limiter's bounds. */
+export type ConcurrencyLimiter = (<T>(
+  task: () => Promise<T>,
+  signal?: AbortSignal,
+) => Promise<T>) & {
+  /** Applies new bounds to the tasks already running and queued. */
+  resize(concurrency: number, maxQueued?: number): void;
+};
+
 /**
  * Create an in-process concurrency limiter. Returns a `run` function that
  * wraps async tasks: at most `concurrency` invocations may execute at once;
@@ -94,33 +103,27 @@ export interface ConcurrencyLimiterOptions {
  * ```
  */
 export function createConcurrencyLimiter(
-  concurrency: number,
+  initialConcurrency: number,
   options: ConcurrencyLimiterOptions = {},
-): <T>(task: () => Promise<T>, signal?: AbortSignal) => Promise<T> {
-  if (!Number.isInteger(concurrency) || concurrency < 1) {
-    throw new Error(
-      `createConcurrencyLimiter: concurrency must be a positive integer (got ${concurrency})`,
-    );
-  }
-  const { maxQueued, label = 'task' } = options;
-  if (maxQueued !== undefined && (!Number.isInteger(maxQueued) || maxQueued < 0)) {
-    throw new Error(
-      `createConcurrencyLimiter: maxQueued must be a non-negative integer (got ${maxQueued})`,
-    );
-  }
+): ConcurrencyLimiter {
+  const { label = 'task' } = options;
+  assertLimiterBounds(initialConcurrency, options.maxQueued);
+  let concurrency = initialConcurrency;
+  let maxQueued = options.maxQueued;
 
   let active = 0;
   const queue: Array<() => void> = [];
 
   const release = (): void => {
     active--;
-    const next = queue.shift();
-    if (next) {
-      next();
+    /* Checked rather than assumed: after a narrowing `resize`, a finishing task can
+     * leave the count at or above the new bound. */
+    if (active < concurrency) {
+      queue.shift()?.();
     }
   };
 
-  return <T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> =>
+  const limit = <T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> =>
     new Promise<T>((resolve, reject) => {
       if (signal?.aborted) {
         reject(abortReason(signal));
@@ -171,6 +174,34 @@ export function createConcurrencyLimiter(
       signal?.addEventListener('abort', onAbort, { once: true });
       queue.push(entry);
     });
+
+  /* Changes the bounds in place, keeping the running count: a replacement limiter would
+   * start at zero active while this one's tasks still run. A wider bound starts queued
+   * tasks now; a narrower one lets running tasks finish and admits nothing until the
+   * count drops below it. */
+  const resize = (nextConcurrency: number, nextMaxQueued?: number): void => {
+    assertLimiterBounds(nextConcurrency, nextMaxQueued);
+    concurrency = nextConcurrency;
+    maxQueued = nextMaxQueued;
+    while (active < concurrency && queue.length > 0) {
+      queue.shift()?.();
+    }
+  };
+
+  return Object.assign(limit, { resize });
+}
+
+function assertLimiterBounds(concurrency: number, maxQueued?: number): void {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error(
+      `createConcurrencyLimiter: concurrency must be a positive integer (got ${concurrency})`,
+    );
+  }
+  if (maxQueued !== undefined && (!Number.isInteger(maxQueued) || maxQueued < 0)) {
+    throw new Error(
+      `createConcurrencyLimiter: maxQueued must be a non-negative integer (got ${maxQueued})`,
+    );
+  }
 }
 
 function abortReason(signal: AbortSignal): Error {

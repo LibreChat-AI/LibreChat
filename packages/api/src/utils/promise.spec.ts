@@ -185,6 +185,53 @@ describe('createConcurrencyLimiter', () => {
     expect(await pc).toBe('c');
   });
 
+  it('starts queued tasks when resize widens the cap', async () => {
+    const limit = createConcurrencyLimiter(1);
+    const a = deferred<string>();
+    let bStarted = false;
+
+    const pa = limit(() => a.promise);
+    const pb = limit(async () => {
+      bStarted = true;
+      return 'b';
+    });
+
+    await tick();
+    expect(bStarted).toBe(false);
+    limit.resize(2);
+    await tick();
+    expect(bStarted).toBe(true);
+
+    a.resolve('a');
+    expect(await Promise.all([pa, pb])).toEqual(['a', 'b']);
+  });
+
+  it('admits nothing after resize narrows the cap until the running count drops', async () => {
+    const limit = createConcurrencyLimiter(2);
+    const a = deferred<string>();
+    const b = deferred<string>();
+    let cStarted = false;
+
+    const pa = limit(() => a.promise);
+    const pb = limit(() => b.promise);
+    limit.resize(1);
+    const pc = limit(async () => {
+      cStarted = true;
+      return 'c';
+    });
+
+    a.resolve('a');
+    expect(await pa).toBe('a');
+    await tick();
+    expect(cStarted).toBe(false);
+
+    b.resolve('b');
+    expect(await pb).toBe('b');
+    await tick();
+    expect(cStarted).toBe(true);
+    expect(await pc).toBe('c');
+  });
+
   it('dequeues in FIFO order', async () => {
     const limit = createConcurrencyLimiter(1);
     const order: string[] = [];
