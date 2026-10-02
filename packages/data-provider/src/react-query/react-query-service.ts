@@ -187,37 +187,46 @@ export const useRevokeAllUserKeysMutation = (): UseMutationResult<unknown> => {
   });
 };
 
+type ModelsResponse = Awaited<ReturnType<typeof dataService.getModelsWithLabels>>;
+type ModelLabels = ModelsResponse['modelLabels'];
+
+const initialModelsResponse: ModelsResponse = {
+  models: initialModelsConfig,
+  modelLabels: {},
+};
+
 export const useGetModelsQuery = (
-  config?: UseQueryOptions<t.TModelsConfig>,
-): QueryObserverResult<t.TModelsConfig> => {
-  const queryClient = useQueryClient();
-  return useQuery<t.TModelsConfig>(
+  config?: Omit<
+    UseQueryOptions<ModelsResponse, unknown, t.TModelsConfig>,
+    'queryKey' | 'queryFn' | 'select'
+  >,
+): QueryObserverResult<t.TModelsConfig> =>
+  useQuery<ModelsResponse, unknown, t.TModelsConfig>(
     [QueryKeys.models],
-    async () => {
-      const response = await dataService.getModelsWithLabels();
-      queryClient.setQueryData([QueryKeys.modelLabels], response.modelLabels);
-      return response.models;
-    },
+    () => dataService.getModelsWithLabels(),
     {
-      initialData: initialModelsConfig,
+      initialData: initialModelsResponse,
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
       refetchOnMount: false,
       staleTime: Infinity,
       ...config,
+      select: (response) => response.models,
     },
   );
-};
 
-type ModelLabels = Awaited<ReturnType<typeof dataService.getModelsWithLabels>>['modelLabels'];
-
-/** Observe labels populated by the models request without another HTTP fetch. */
+/** Observe labels from the shared models cache without initiating a fetch. */
 export const useGetModelLabelsQuery = (): QueryObserverResult<ModelLabels> =>
-  useQuery<ModelLabels>([QueryKeys.modelLabels], {
-    enabled: false,
-    initialData: {},
-    staleTime: Infinity,
-  });
+  useQuery<ModelsResponse, unknown, ModelLabels>(
+    [QueryKeys.models],
+    () => dataService.getModelsWithLabels(),
+    {
+      enabled: false,
+      initialData: initialModelsResponse,
+      staleTime: Infinity,
+      select: (response) => response.modelLabels,
+    },
+  );
 
 export const useCreatePresetMutation = (): UseMutationResult<
   s.TPreset,
