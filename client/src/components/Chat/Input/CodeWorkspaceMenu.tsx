@@ -246,13 +246,16 @@ export default function CodeWorkspaceMenu({
   const environmentIds = new Set(workspace.environments.map(({ environment }) => environment.id));
   const selectWorkspace = (selection: CodeWorkspaceSelection) => {
     workspace.rememberSelection(selection);
+    const replacedIds = new Set(
+      workspace.machineOptionGroups?.filter((ids) => ids.includes(selection.environmentId)).flat(),
+    );
     setConversation((current) => {
       if (current == null) return current;
       const retained = (current.codeWorkspaces ?? workspace.selections ?? []).filter(
         ({ environmentId }) =>
           environmentIds.has(environmentId) &&
           environmentId !== selection.environmentId &&
-          !workspace.machineOptions?.some(({ id }) => id === environmentId),
+          !replacedIds.has(environmentId),
       );
       return {
         ...current,

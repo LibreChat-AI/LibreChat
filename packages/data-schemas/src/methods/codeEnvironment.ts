@@ -49,7 +49,7 @@ function ownerSlotId(ownerId: Types.ObjectId, slot: number): Types.ObjectId {
 
 function agentReferenceFilter(environmentId: string, tenantId?: string) {
   return {
-    code_environment_id: environmentId,
+    $or: [{ code_environment_id: environmentId }, { code_environment_ids: environmentId }],
     ...(tenantId == null ? { tenantId: { $exists: false } } : { tenantId }),
   };
 }
@@ -140,6 +140,28 @@ async function renewCodeEnvironmentReference(
   if (result.matchedCount !== 1) {
     throw new CodeEnvironmentReferenceError(reservation.environmentId);
   }
+}
+
+/** Hold every machine reference until the write settles. Nesting the existing
+ * guards renews already-acquired leases and releases them if a later acquisition fails. */
+export async function withCodeEnvironmentReferences<T>(
+  mongoose: typeof import('mongoose'),
+  environmentIds: string[],
+  operation: () => Promise<T>,
+  onReferenceLoss?: (result: T, environmentId: string) => Promise<void>,
+): Promise<T> {
+  const ids = [...new Set(environmentIds.filter(Boolean))];
+  const run = (index: number): Promise<T> =>
+    index === ids.length
+      ? operation()
+      : withCodeEnvironmentReference(
+          mongoose,
+          ids[index],
+          () => run(index + 1),
+          undefined,
+          (result) => onReferenceLoss?.(result, ids[index]) ?? Promise.resolve(),
+        );
+  return await run(0);
 }
 
 export async function withCodeEnvironmentReference<T>(

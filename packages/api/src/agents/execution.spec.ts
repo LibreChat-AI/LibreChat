@@ -10,6 +10,7 @@ import {
   getCodeWorkspaceSelections,
   resolveCodeExecutionContext,
 } from './execution';
+import { CodeWorkspaceSelectionError } from '~/code/errors';
 
 jest.mock('@librechat/agents', () => ({
   Constants: { EXECUTE_CODE: 'execute_code' },
@@ -88,7 +89,7 @@ describe('resolveCodeExecutionContext', () => {
     it('rejects routes outside the authorized config instead of falling back', () => {
       expect(() =>
         resolveCodeExecutionContext({ ...params, environments: [environments[0]] }),
-      ).toThrow('not configured');
+      ).toThrow(CodeWorkspaceSelectionError);
     });
 
     it('rejects ambiguous selections and attempts to select managed execution', () => {

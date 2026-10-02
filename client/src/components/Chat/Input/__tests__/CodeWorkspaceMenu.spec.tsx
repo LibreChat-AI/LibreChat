@@ -104,7 +104,10 @@ describe('CodeWorkspaceMenu', () => {
     renderMenu(
       <CodeWorkspaceMenu
         setConversation={setter}
-        workspace={workspace({ machineOptions: [environment, alternate] })}
+        workspace={workspace({
+          machineOptions: [environment, alternate],
+          machineOptionGroups: [[environment.id, alternate.id]],
+        })}
         disabled={false}
       />,
     );
@@ -121,6 +124,39 @@ describe('CodeWorkspaceMenu', () => {
     });
     expect(next.codeWorkspaces).toEqual([{ environmentId: alternate.id, workspaceId: 'runtime' }]);
     read.mockRestore();
+  });
+
+  test('editing a child workspace preserves the primary agent machine choice', async () => {
+    const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+    const child = { ...environment, id: 'child-vm', name: 'Child VM' };
+    const setter = jest.fn();
+    const rootSelection = { environmentId: environment.id, workspaceId: 'project-a' };
+    const childSelection = { environmentId: child.id, workspaceId: 'old' };
+    const graph = workspace({
+      machineOptions: [environment, alternate],
+      machineOptionGroups: [[environment.id, alternate.id]],
+      selections: [rootSelection, childSelection],
+    });
+    graph.environments.push({
+      environment: child,
+      state: 'ready',
+      selected: childSelection,
+      workspaces: [
+        { id: 'old', name: 'Old' },
+        { id: 'new', name: 'Child Project' },
+      ],
+    });
+    renderMenu(<CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />);
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    await userEvent.click(screen.getByRole('menuitemradio', { name: /Child Project/ }));
+    const next = setter.mock.calls[0][0]({
+      ...conversation,
+      codeWorkspaces: [rootSelection, childSelection],
+    });
+    expect(next.codeWorkspaces).toEqual([
+      { environmentId: child.id, workspaceId: 'new' },
+      rootSelection,
+    ]);
   });
 
   test('offers a sole allowed alternative when the original default is no longer accessible', async () => {

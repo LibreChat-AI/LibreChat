@@ -122,6 +122,34 @@ export default function useCodeApprovalMode(
   return { available, modes, selected };
 }
 
+/** The same per-agent eligibility gate is used for routing and draft discovery. Missing
+ * explicit defaults may recover to an allowed machine; managed defaults never opt in. */
+export function getCodeEnvironmentChoiceIds(
+  agent: Agent,
+  environments?: TPublicCodeEnvironment[],
+  allowEnvironmentSelection?: boolean,
+): string[] | undefined {
+  const defaultEnvironment = agent.code_environment_id
+    ? environments?.find((candidate) => candidate.id === agent.code_environment_id)
+    : environments?.find((candidate) => candidate.default === true);
+  if (
+    allowEnvironmentSelection !== true ||
+    !agent.code_environment_ids?.length ||
+    !(
+      defaultEnvironment?.type === 'attached' ||
+      (defaultEnvironment == null && Boolean(agent.code_environment_id))
+    )
+  ) {
+    return undefined;
+  }
+  return [
+    ...new Set([
+      agent.code_environment_id ?? defaultEnvironment?.id,
+      ...agent.code_environment_ids,
+    ]),
+  ].filter((id): id is string => id != null);
+}
+
 export function findExecutionEnvironment(
   agent: Agent,
   environments?: TPublicCodeEnvironment[],
@@ -132,10 +160,7 @@ export function findExecutionEnvironment(
     ? environments?.find((candidate) => candidate.id === agent.code_environment_id)
     : environments?.find((candidate) => candidate.default === true);
   const allowSelection =
-    allowEnvironmentSelection === true &&
-    (agent.code_environment_ids?.length ?? 0) > 0 &&
-    (defaultEnvironment?.type === 'attached' ||
-      (defaultEnvironment == null && Boolean(agent.code_environment_id)));
+    getCodeEnvironmentChoiceIds(agent, environments, allowEnvironmentSelection) != null;
   const selection = resolveCodeEnvironmentSelection({
     environmentId: agent.code_environment_id ?? defaultEnvironment?.id,
     environmentIds: agent.code_environment_ids,

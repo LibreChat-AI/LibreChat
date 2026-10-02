@@ -31,7 +31,11 @@ import {
   useIsReplacingConversationCodeEnvironment,
   useConversationCodeEnvironmentRecovery,
 } from '~/data-provider';
-import { collectReachableAgents, findExecutionEnvironment } from './useCodeApprovalMode';
+import {
+  collectReachableAgents,
+  findExecutionEnvironment,
+  getCodeEnvironmentChoiceIds,
+} from './useCodeApprovalMode';
 import { useWorkspacePreferences } from './workspacePreferences';
 import useAgentToolPermissions from './useAgentToolPermissions';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
@@ -100,6 +104,8 @@ export interface CodeWorkspaceResult {
   environments: CodeWorkspaceEnvironmentResult[];
   /** Alternative machines are discovered on demand; an idle machine never blocks this chat. */
   machineOptions?: TPublicCodeEnvironment[];
+  /** Each group belongs to one reachable coding agent, not the whole graph. */
+  machineOptionGroups?: string[][];
   transition?: CodeWorkspaceTransition;
   selections?: CodeWorkspaceSelection[];
   resolveSelections: (
@@ -206,13 +212,22 @@ export default function useCodeWorkspace(
       if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code)) {
         continue;
       }
-      const environment = findExecutionEnvironment(
+      const selectedEnvironment = findExecutionEnvironment(
         agent,
         statefulCodeSessions?.environments,
         statefulCodeSessions?.allowEnvironmentSelection,
         conversation?.codeWorkspaces,
       );
-      if (agent.code_environment_id && environment == null) complete = false;
+      const defaultEnvironment = findExecutionEnvironment(
+        agent,
+        statefulCodeSessions?.environments,
+      );
+      /** Discovery must remain available while a graph draft is partial or its sealed
+       * route needs recovery. Only final submission resolves the entire graph strictly. */
+      const environment = selectedEnvironment ?? defaultEnvironment;
+      if (environment == null && agent.code_environment_id) {
+        complete = false;
+      }
       if (environment?.type !== 'attached') continue;
       unique.set(environment.id, environment);
       if (agent.code_environment_id === environment.id && agent.code_workspace_id) {
@@ -232,12 +247,13 @@ export default function useCodeWorkspace(
         if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code)) {
           continue;
         }
-        const environment = findExecutionEnvironment(
-          agent,
-          statefulCodeSessions?.environments,
-          statefulCodeSessions?.allowEnvironmentSelection,
-          conversation?.codeWorkspaces,
-        );
+        const environment =
+          findExecutionEnvironment(
+            agent,
+            statefulCodeSessions?.environments,
+            statefulCodeSessions?.allowEnvironmentSelection,
+            conversation?.codeWorkspaces,
+          ) ?? findExecutionEnvironment(agent, statefulCodeSessions?.environments);
         if (environment?.type !== 'attached') continue;
         const owners = preferenceAgentIds.get(environment.id) ?? new Set<string>();
         owners.add(rootAgentId);
@@ -310,25 +326,25 @@ export default function useCodeWorkspace(
   /** A new chat and a saved chat that never decided are both still choosing, so agent defaults, a
    *  remembered selection, and a sole workspace apply to each. */
   const undecided = conversation != null && !locked;
-  const machineOptions =
+  const machineOptionGroups =
     undecided &&
     required &&
     supportsEnvironmentDecisions &&
-    statefulCodeSessions?.allowEnvironmentSelection === true &&
-    primaryAgent != null &&
-    (primaryAgent.code_environment_ids?.length ?? 0) > 0 &&
-    (findExecutionEnvironment(primaryAgent, statefulCodeSessions.environments)?.type ===
-      'attached' ||
-      !statefulCodeSessions.environments?.some(({ id }) => id === primaryAgent.code_environment_id))
-      ? statefulCodeSessions.environments?.filter(
-          ({ id, type, default: isDefault }) =>
-            type === 'attached' &&
-            (primaryAgent?.code_environment_ids?.includes(id) ||
-              (primaryAgent?.code_environment_id
-                ? id === primaryAgent.code_environment_id
-                : isDefault === true)),
-        )
+    statefulCodeSessions?.allowEnvironmentSelection === true
+      ? reachable.agents.flatMap((agent) => {
+          if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code)) {
+            return [];
+          }
+          const ids = getCodeEnvironmentChoiceIds(agent, statefulCodeSessions.environments, true);
+          return ids == null ? [] : [ids];
+        })
       : undefined;
+  const machineOptions = machineOptionGroups?.length
+    ? statefulCodeSessions?.environments?.filter(
+        ({ id, type }) =>
+          type === 'attached' && machineOptionGroups.some((ids) => ids.includes(id)),
+      )
+    : undefined;
   const environmentResults = attachedEnvironments.map((environment, index) => {
     const status = statuses[index];
     const workspaces =
@@ -385,6 +401,21 @@ export default function useCodeWorkspace(
       if (!required || !selectionMetadataComplete || !isCodeWorkspaceSelections(selections ?? [])) {
         return undefined;
       }
+      if (
+        reachable.agents.some((agent) => {
+          const ids = getCodeEnvironmentChoiceIds(
+            agent,
+            statefulCodeSessions?.environments,
+            statefulCodeSessions?.allowEnvironmentSelection,
+          );
+          return (
+            (selections?.filter(({ environmentId }) => ids?.includes(environmentId)).length ?? 0) >
+            1
+          );
+        })
+      ) {
+        return undefined;
+      }
       /** A saved chat's decision is sealed as a whole: trimming a selection its agents no longer use
        *  would submit a set the persisted decision rejects. */
       if (
@@ -423,9 +454,7 @@ export default function useCodeWorkspace(
           (agent) =>
             agent.stateful_code_sessions === true &&
             agent.tools?.includes(Tools.execute_code) &&
-            findExecutionEnvironment(agent, statefulCodeSessions.environments)?.type ===
-              'attached' &&
-            (agent.code_environment_ids?.length ?? 0) > 0 &&
+            getCodeEnvironmentChoiceIds(agent, statefulCodeSessions.environments, true) != null &&
             !resolveCodeEnvironmentSelection({
               environmentId:
                 agent.code_environment_id ??
@@ -617,6 +646,7 @@ export default function useCodeWorkspace(
     visible,
     environments: environmentResults,
     machineOptions,
+    machineOptionGroups,
     transition,
     selections,
     resolveSelections,

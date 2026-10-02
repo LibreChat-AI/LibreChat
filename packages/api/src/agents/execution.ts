@@ -370,6 +370,14 @@ export function resolveCodeExecutionContext(params: {
     selections: params.workspaceSelections,
   });
   if (!selection.valid) throw new CodeWorkspaceSelectionError('invalid');
+  if (
+    allowSelection &&
+    !params.environments?.some(
+      (candidate) => candidate.id === selection.environmentId && isExecutableEnvironment(candidate),
+    )
+  ) {
+    throw new CodeWorkspaceSelectionError('invalid');
+  }
   const configuredEnvironment = resolveConfiguredEnvironment({
     ...params,
     environmentId: selection.environmentId,
