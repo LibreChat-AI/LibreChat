@@ -23,13 +23,52 @@
       "outputs": ["dist/**"]
     },
     "@librechat/data-schemas#build": {
-      "dependsOn": ["^build", "librechat-data-provider#build"]
+      "dependsOn": ["^build", "librechat-data-provider#build"],
+      "inputs": [
+        "src/**",
+        "!src/**/__tests__/**",
+        "!src/**/__mocks__/**",
+        "!src/**/*.test.*",
+        "!src/**/*.spec.*",
+        "tsdown.config.mjs",
+        "tsconfig.json",
+        "tsconfig.build.json",
+        "package.json"
+      ],
+      "outputs": ["dist/**"]
     },
     "@librechat/api#build": {
-      "dependsOn": ["^build", "librechat-data-provider#build", "@librechat/data-schemas#build"]
+      "dependsOn": ["^build", "librechat-data-provider#build", "@librechat/data-schemas#build"],
+      "inputs": [
+        "src/**",
+        "!src/**/__tests__/**",
+        "!src/**/__mocks__/**",
+        "!src/**/*.test.*",
+        "!src/**/*.spec.*",
+        "scripts/**",
+        "tsdown.config.mjs",
+        "tsconfig.json",
+        "tsconfig.build.json",
+        "package.json"
+      ],
+      "outputs": ["dist/**"]
     },
     "@librechat/client#build": {
-      "dependsOn": ["^build", "librechat-data-provider#build"]
+      "dependsOn": ["^build", "librechat-data-provider#build"],
+      "inputs": [
+        "src/**",
+        "!src/**/__tests__/**",
+        "!src/**/__mocks__/**",
+        "!src/**/*.test.*",
+        "!src/**/*.spec.*",
+        "tsdown.config.mjs",
+        "tsconfig.json",
+        "tsconfig.build.json",
+        "postcss.config.*",
+        "tailwind.config.*",
+        "package.json"
+      ],
+      "outputs": ["dist/**"]
     }
   }
 }
