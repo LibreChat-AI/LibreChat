@@ -143,8 +143,9 @@ test.describe('Lia mascot', () => {
     await open(page, { optedIn: true });
     await expect(lia(page)).toBeVisible({ timeout: 10000 });
     await page.waitForTimeout(3500);
-    await lia(page).hover();
-    await expect(lia(page)).toHaveAttribute('title', /^Lia: \S/, { timeout: 5000 });
+    const body = page.getByTestId('lia-body');
+    await body.hover();
+    await expect(body).toHaveAttribute('title', /^Lia: \S/, { timeout: 5000 });
   });
 
   test('what Lia says stays inside her stage @scenario:lia-bubble-in-stage', async ({ page }) => {

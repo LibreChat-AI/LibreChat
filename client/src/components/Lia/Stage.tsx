@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { Bubble, LabelKey, Platform } from './engine/types';
 import type { TranslationKeys } from '~/hooks';
-import { GRID_W, GRID_H, FOOT_Y } from './engine/body';
+import { BX, GRID_W, GRID_H, FOOT_Y, HEAD_ROWS } from './engine/body';
 import { LiaEngine } from './engine/engine';
 import { freeSpan } from './engine/span';
 import { useLocalize } from '~/hooks';
@@ -13,10 +13,12 @@ const SCALE = 2;
 const EDGE = 22 * SCALE;
 /** Below this stage width there is no room beside the greeting, so Lia stays away. */
 const MIN_WIDTH = 360;
-/** The canvas reaches this far either side of Lia and above her feet. It takes clicks, so
- * content it would cover is avoided by the whole box, not just her body. */
-const REACH_X = (GRID_W / 2) * SCALE;
-const REACH_Y = FOOT_Y * SCALE;
+/** How far above the composer Lia reaches, raised arms included; content there is avoided. */
+const HEIGHT = 50 * SCALE;
+/** Lia's body, the only part that takes clicks; the canvas around it is see-through room for
+ * arms and props and lets clicks pass to the page. */
+const BODY_W = (GRID_W - 2 * BX) * SCALE;
+const BODY_H = HEAD_ROWS * SCALE;
 
 /** Words that make Lia react while you type them. */
 const KEYWORDS: Readonly<Record<string, string>> = {
@@ -82,6 +84,7 @@ export default function Stage({
   const localize = useLocalize();
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const hitRef = useRef<HTMLDivElement>(null);
   const bubbleRef = useRef<HTMLDivElement>(null);
   /* Measured when the text changes, so placing the bubble each frame reads no layout. */
   const bubbleWidthRef = useRef(0);
@@ -100,7 +103,8 @@ export default function Stage({
   useEffect(() => {
     const root = rootRef.current;
     const canvas = canvasRef.current;
-    if (!root || !canvas) {
+    const hit = hitRef.current;
+    if (!root || !canvas || !hit) {
       return;
     }
     /* The welcome content above the composer (greeting, agent name) is measured as obstacles,
@@ -134,6 +138,7 @@ export default function Stage({
     const setVisible = (visible: boolean) => {
       const value = visible ? 'visible' : 'hidden';
       canvas.style.visibility = value;
+      hit.style.visibility = value;
       if (bubbleRef.current) {
         bubbleRef.current.style.visibility = value;
       }
@@ -150,18 +155,19 @@ export default function Stage({
       /* While leaving, the conversation replaces the welcome content and Lia rides the composer down. */
       const obstacles = leavingRef.current ? [] : measureObstacles(band);
       const blocked = obstacles
-        .filter((o) => o.bottom - origin.top > top - REACH_Y && o.top - origin.top < top)
-        .map((o) => [o.left - origin.left - REACH_X, o.right - origin.left + REACH_X] as const);
+        .filter((o) => o.bottom - origin.top > top - HEIGHT && o.top - origin.top < top)
+        .map((o) => [o.left - origin.left - EDGE, o.right - origin.left + EDGE] as const);
       const span = freeSpan(
         box.left - origin.left + EDGE,
         box.right - origin.left - EDGE,
         blocked,
         placed?.position.x ?? Infinity,
-        EDGE,
+        /* Any gap that fits her body will do: beside a wide greeting she stands still. */
+        0,
       );
       setVisible(span != null);
       if (span) {
-        room = [Math.max(0, span[0] - REACH_X), Math.min(root.clientWidth, span[1] + REACH_X)];
+        room = [Math.max(0, span[0] - EDGE), Math.min(root.clientWidth, span[1] + EDGE)];
       }
       return span ? { y: top + 1, x0: span[0], x1: span[1] } : null;
     };
@@ -170,6 +176,8 @@ export default function Stage({
       onBubble: setBubble,
       onAction: setActivity,
       onFrame: (head) => {
+        /* The head point is the top of her body, centered. */
+        hit.style.transform = `translate(${Math.round(head.x - BODY_W / 2)}px, ${Math.round(head.y)}px)`;
         const bubbleEl = bubbleRef.current;
         if (!bubbleEl) {
           return;
@@ -401,8 +409,8 @@ export default function Stage({
     window.addEventListener('dragleave', onDragLeave);
     window.addEventListener('drop', onDrop);
     document.addEventListener('visibilitychange', onVisibility);
-    canvas.addEventListener('click', onPet);
-    canvas.addEventListener('pointerenter', onHover);
+    hit.addEventListener('click', onPet);
+    hit.addEventListener('pointerenter', onHover);
 
     engine.play(leavingRef.current ? 'r-send' : 'intro', 4);
     engine.start();
@@ -418,8 +426,8 @@ export default function Stage({
       window.removeEventListener('dragleave', onDragLeave);
       window.removeEventListener('drop', onDrop);
       document.removeEventListener('visibilitychange', onVisibility);
-      canvas.removeEventListener('click', onPet);
-      canvas.removeEventListener('pointerenter', onHover);
+      hit.removeEventListener('click', onPet);
+      hit.removeEventListener('pointerenter', onHover);
       motion.removeEventListener('change', onMotion);
       themeObserver.disconnect();
       mirror.remove();
@@ -444,15 +452,21 @@ export default function Stage({
       <canvas
         ref={canvasRef}
         data-testid="lia"
-        title={localize('com_ui_lia_doing', {
-          0: localize((activity ?? 'com_ui_lia_act_idle') as TranslationKeys),
-        })}
-        className="pointer-events-auto absolute top-0 left-0 z-[5] cursor-pointer [image-rendering:pixelated]"
+        className="absolute top-0 left-0 z-[5] [image-rendering:pixelated]"
         style={{
           width: GRID_W * SCALE,
           height: GRID_H * SCALE,
           transformOrigin: `${32 * SCALE}px ${(FOOT_Y - 1) * SCALE}px`,
         }}
+      />
+      <div
+        ref={hitRef}
+        data-testid="lia-body"
+        title={localize('com_ui_lia_doing', {
+          0: localize((activity ?? 'com_ui_lia_act_idle') as TranslationKeys),
+        })}
+        className="pointer-events-auto absolute top-0 left-0 z-[6] cursor-pointer"
+        style={{ width: BODY_W, height: BODY_H }}
       />
       <div
         ref={bubbleRef}
