@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import type { Page, Request, Route } from '@playwright/test';
+import type { Page, Request } from '@playwright/test';
 import type { AgentDetail } from '../agents.helpers';
 import { cleanupAgent, openAgentBuilder, uniqueAgentName } from '../agents.helpers';
 import {
@@ -13,12 +13,10 @@ import {
 } from '../helpers';
 
 /**
- * The fake model (e2e/setup/fake-model.js, marker `E2E_ASK_USER_QUESTION:`)
- * pauses a real agent run at `ask_user_question`, but with a one-question
- * batch. These scenarios need a multi-question batch, so the run is paused for
- * real and the persisted pending action is then widened to a batch on the
- * stream-status route the reload path reads (`/api/agents/chat/status/:id`).
- * The popover, card, form state and resume request are all the production ones.
+ * The fake model (e2e/setup/fake-model.js) pauses a real agent run at
+ * `ask_user_question` with a three-question batch for `E2E_ASK_USER_QUESTIONS:`,
+ * and with a maximum-size first prompt for `E2E_ASK_USER_LONG_QUESTIONS:`. The
+ * popover, card, form state and resume request are all the production ones.
  */
 
 type BatchQuestion = {
@@ -31,13 +29,6 @@ type BatchQuestion = {
 };
 
 type AskResumeBody = { actionId?: string; answers?: Record<string, string> };
-
-type AskPayload = { questions?: BatchQuestion[]; question?: BatchQuestion };
-type PendingActionShape = { payload?: AskPayload };
-type StatusShape = {
-  pendingAction?: PendingActionShape;
-  resumeState?: { pendingAction?: PendingActionShape };
-};
 
 const ASK_TOOL_ID = 'ask_user_question';
 const MOVE_TO_CHAT = 'Answer later in the chat';
@@ -57,32 +48,13 @@ const isGenerationStart = (request: Request) => {
   );
 };
 
-/** Batch-unique ids; the first matches the id the fake model's own question carries. */
-function buildBatch(label: string, overrides: Partial<BatchQuestion>[] = []): BatchQuestion[] {
-  const base: BatchQuestion[] = [
-    {
-      id: 'environment',
-      question: `Which environment for ${label}?`,
-      options: [
-        { label: 'Staging', value: 'staging' },
-        { label: 'Production', value: 'production' },
-      ],
-    },
-    {
-      id: 'region',
-      question: `Which region for ${label}?`,
-      options: [
-        { label: 'Europe', value: 'europe' },
-        { label: 'Americas', value: 'americas' },
-      ],
-    },
-    {
-      id: 'notes',
-      question: `Anything else for ${label}?`,
-      options: [{ label: 'Nothing else', value: 'none' }],
-    },
+/** The batch the fake model asks, in order. */
+function buildBatch(label: string): BatchQuestion[] {
+  return [
+    { id: 'environment', question: `Which environment for ${label}?` },
+    { id: 'region', question: `Which region for ${label}?` },
+    { id: 'notes', question: `Anything else for ${label}?` },
   ];
-  return base.map((item, index) => ({ ...item, ...(overrides[index] ?? {}) }));
 }
 
 async function createAgent(page: Page): Promise<AgentDetail> {
@@ -113,42 +85,16 @@ async function selectAgent(page: Page, agent: AgentDetail) {
   await form.getByRole('button', { name: 'Select Agent' }).click();
 }
 
-/** Rewrites the status route's pending ask so the reloaded page shows `questions`. */
-async function widenPendingAsk(page: Page, questions: BatchQuestion[]) {
-  const widen = (action?: PendingActionShape) => {
-    if (action?.payload != null) {
-      action.payload.questions = questions;
-      action.payload.question = questions[0];
-    }
-  };
-  await page.route('**/api/agents/chat/status/**', async (route: Route) => {
-    const response = await route.fetch();
-    const body = (await response.json()) as StatusShape;
-    widen(body.pendingAction);
-    widen(body.resumeState?.pendingAction);
-    await route.fulfill({ response, json: body });
-  });
-}
-
 /**
- * Pauses a real run at ask_user_question, then reloads the paused conversation
- * so it renders `questions` as a batch in the composer popover. Returns the
- * popover locator, identified by its move-to-chat control.
+ * Pauses a real run at ask_user_question with the fake model's batch and
+ * returns the composer popover, identified by its move-to-chat control.
  */
-async function openBatch(
-  page: Page,
-  agent: AgentDetail,
-  label: string,
-  questions: BatchQuestion[],
-) {
+async function openBatch(page: Page, agent: AgentDetail, label: string, long = false) {
   await selectAgent(page, agent);
-  const response = await sendMessage(page, `E2E_ASK_USER_QUESTION:${label}`);
+  const marker = long ? 'E2E_ASK_USER_LONG_QUESTIONS' : 'E2E_ASK_USER_QUESTIONS';
+  const response = await sendMessage(page, `${marker}:${label}`);
   expect(response.ok()).toBeTruthy();
   await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
-  await expect(page.getByRole('button', { name: MOVE_TO_CHAT })).toBeVisible({ timeout: 30000 });
-
-  await widenPendingAsk(page, questions);
-  await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('button', { name: MOVE_TO_CHAT })).toBeVisible({ timeout: 30000 });
   await expect(page.getByRole('group', { name: 'Question navigation' })).toBeVisible();
   return popoverOf(page);
@@ -169,13 +115,13 @@ test.describe('ask question batch refinements', () => {
   }) => {
     test.setTimeout(120000);
     const label = `${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
-    const questions = buildBatch(label).slice(0, 2);
+    const questions = buildBatch(label);
     let agentId: string | undefined;
 
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label, questions);
+      const popover = await openBatch(page, agent, label);
 
       const generationStarts: string[] = [];
       page.on('request', (request) => {
@@ -194,7 +140,12 @@ test.describe('ask question batch refinements', () => {
       expect(generationStarts).toEqual([]);
       await expect(messagesView(page).getByText('typed-first-answer')).toHaveCount(0);
 
-      const last = answerField(popover, questions[1].question);
+      const middle = answerField(popover, questions[1].question);
+      await middle.fill('typed-middle-answer');
+      await middle.press('Enter');
+      await expect(popover.getByText(questions[2].question, { exact: true })).toBeVisible();
+
+      const last = answerField(popover, questions[2].question);
       await last.fill('typed-last-answer');
       const [resumeRequest] = await Promise.all([
         page.waitForRequest(isResumeRequest),
@@ -203,7 +154,8 @@ test.describe('ask question batch refinements', () => {
       const body = resumeRequest.postDataJSON() as AskResumeBody;
       expect(body.answers).toEqual({
         [questions[0].id]: 'typed-first-answer',
-        [questions[1].id]: 'typed-last-answer',
+        [questions[1].id]: 'typed-middle-answer',
+        [questions[2].id]: 'typed-last-answer',
       });
       await expect(popover).toBeHidden({ timeout: 30000 });
       expect(generationStarts).toEqual([]);
@@ -218,22 +170,15 @@ test.describe('ask question batch refinements', () => {
   }) => {
     test.setTimeout(120000);
     const label = `${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
-    const longDescription = Array.from(
-      { length: 120 },
-      (_, index) =>
-        `Line ${index + 1} of the long clarification for ${label}, repeated to overflow.`,
-    ).join(' ');
-    expect(longDescription.length).toBeGreaterThan(5000);
-    const questions = buildBatch(label, [{ description: longDescription }]);
     let agentId: string | undefined;
 
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label, questions);
+      const popover = await openBatch(page, agent, label, true);
 
       const prompt = popover.locator('div[class*="max-h-[25vh]"]').first();
-      await expect(prompt).toContainText(`Line 120 of the long clarification for ${label}`);
+      await expect(prompt).toContainText(`Line 60 of the long clarification for ${label}`);
 
       /** The card eases to its height, so wait for the settled box. */
       await expect
@@ -281,7 +226,7 @@ test.describe('ask question batch refinements', () => {
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label, questions);
+      const popover = await openBatch(page, agent, label);
 
       const row = optionRow(popover, 'Staging');
       await expect(row).toBeEnabled();
@@ -306,7 +251,7 @@ test.describe('ask question batch refinements', () => {
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label, questions);
+      const popover = await openBatch(page, agent, label);
 
       await answerField(popover, questions[0].question).fill('kept-across-surfaces');
       await popover.getByRole('button', { name: 'Next', exact: true }).click();
@@ -340,7 +285,7 @@ test.describe('ask question batch refinements', () => {
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label, questions);
+      const popover = await openBatch(page, agent, label);
 
       /** A single-select choice records the answer and advances; come back to it. */
       await optionRow(popover, 'Staging').click();
