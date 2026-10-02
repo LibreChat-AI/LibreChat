@@ -1107,6 +1107,24 @@ describe('resolveAbortedTurnPersistence', () => {
     expect(plan.persistenceErrors[0].message).toContain('anchor unavailable');
   });
 
+  /** The outage itself reaches the caller's error boundary, not only the
+   *  synthetic withheld-turn reason an absent anchor also produces. */
+  it('reports the anchor read failure beside the withheld turn', async () => {
+    const outage = new Error('mongo unavailable');
+
+    const plan = await resolveAbortedTurnPersistence(jobData, true, {
+      userId: 'user-1',
+      getMessages: jest.fn(async () => {
+        throw outage;
+      }),
+    });
+
+    expect(plan.writeResponseRow).toBe(false);
+    expect(plan.withholdFinal).toBe(true);
+    expect(plan.persistenceErrors[0]).toBe(outage);
+    expect(plan.persistenceErrors[1].message).toContain('anchor unavailable');
+  });
+
   it('keeps an ordinary stopped reply unfinished without reading its anchor', async () => {
     const getMessages = jest.fn(async () => []);
 

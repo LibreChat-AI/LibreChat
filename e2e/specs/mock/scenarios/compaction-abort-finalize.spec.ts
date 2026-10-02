@@ -104,6 +104,14 @@ test.describe('compaction abort finalize', () => {
       const compactionId = (compaction as Row | null)?.messageId as string;
       await expect(stop).toBeHidden({ timeout: 20_000 });
 
+      /* The live row comes from the stopped run's final event, before any
+         reload: it must not present the stopped compaction as a reply that
+         was cut short (the notice renders 250ms after the run settles). */
+      const liveRow = page.locator(`[id="${compactionId}"]`);
+      await expect(liveRow).toBeVisible();
+      await page.waitForTimeout(1_000);
+      await expect(liveRow.getByText('This response stopped before it finished')).toHaveCount(0);
+
       /* A live snapshot's shape would leave the turn reading as still running. */
       const settled = await findRow({ conversationId, messageId: compactionId });
       expect(settled?.unfinished).not.toBe(true);

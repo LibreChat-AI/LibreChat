@@ -386,13 +386,28 @@ export async function resolveAbortedTurnPersistence(
     ) => Promise<unknown[]>;
   },
 ): Promise<AbortedTurnPersistencePlan & { persistenceErrors: Error[] }> {
+  /** A failed read still resolves to skip-turn, so cleanup runs; the failure
+   *  itself is reported beside the withheld turn, keeping an outage
+   *  distinguishable from an absent anchor at the caller's error boundary. */
+  let readError: Error | undefined;
   const anchorDecision = await resolveAbortedTurnAnchorDecision(jobData, {
-    messageExists: async (messageId, conversationId) =>
-      (await getMessages({ user: userId, messageId, conversationId }, '_id')).length > 0,
+    messageExists: async (messageId, conversationId) => {
+      try {
+        return (await getMessages({ user: userId, messageId, conversationId }, '_id')).length > 0;
+      } catch (error) {
+        readError = error instanceof Error ? error : new Error(String(error));
+        throw error;
+      }
+    },
   });
   const plan = planAbortedTurnPersistence(anchorDecision, shouldPersistAbortedTurn);
-  const persistenceErrors =
-    plan.withholdFinal && plan.withholdReason ? [new Error(plan.withholdReason)] : [];
+  const persistenceErrors: Error[] = [];
+  if (readError != null) {
+    persistenceErrors.push(readError);
+  }
+  if (plan.withholdFinal && plan.withholdReason) {
+    persistenceErrors.push(new Error(plan.withholdReason));
+  }
   return { ...plan, persistenceErrors };
 }
 
