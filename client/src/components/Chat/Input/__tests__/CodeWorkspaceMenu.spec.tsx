@@ -683,7 +683,7 @@ describe('CodeWorkspaceMenu', () => {
     });
   });
 
-  describe('a chat sealed to a machine it can no longer reach', () => {
+  describe('a chat leaving its sealed workspace decision', () => {
     const mac = { environmentId: 'mac', workspaceId: 'primary' };
     const sealed = { ...conversation, conversationId: 'existing' } as TConversation;
 
@@ -743,7 +743,7 @@ describe('CodeWorkspaceMenu', () => {
         );
 
         await userEvent.click(screen.getByTestId('code-workspace'));
-        /** Nothing to move onto, so the only decision left is to stop waiting for the machine. */
+        /** Detach is explicit; it must not offer a redundant move to the same workspace. */
         expect(
           screen.queryByRole('menuitem', { name: /com_ui_code_workspace_move/ }),
         ).not.toBeInTheDocument();
