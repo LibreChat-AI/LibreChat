@@ -488,8 +488,18 @@ function createActivityWriter(res: Response, onClose: () => void) {
         /** Reserve one bounded snapshot separately so public identity expansion cannot
          * consume the live queue or cause a reconnect loop on an otherwise valid replay. */
         const bytes = replay ? 0 : frameBytes;
+        if (replay && (replaySent || frameBytes > MAX_PUBLIC_REPLAY_BYTES)) {
+          finish();
+          return;
+        }
+        if (replay) replaySent = true;
+        if (!blocked && pending.length === 0) {
+          /** The socket accepts this already-bounded public frame. Queue limits govern
+           * waiting frames, not identity expansion of an immediately writable update. */
+          write(frame);
+          return;
+        }
         if (
-          (replay && (replaySent || frameBytes > MAX_PUBLIC_REPLAY_BYTES)) ||
           pending.length >= SUBAGENT_ACTIVITY_LIMITS.items ||
           pendingBytes + bytes > SUBAGENT_ACTIVITY_LIMITS.bytes
         ) {
@@ -497,7 +507,6 @@ function createActivityWriter(res: Response, onClose: () => void) {
           finish();
           return;
         }
-        if (replay) replaySent = true;
         pending.push({ frame, bytes });
         pendingBytes += bytes;
       }

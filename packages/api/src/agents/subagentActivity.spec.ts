@@ -729,6 +729,38 @@ describe('subagent activity stream authorization', () => {
     expect(transport.handlers.size).toBe(0);
   });
 
+  it('writes a bounded live event whose public identity exceeds the waiting-queue budget', async () => {
+    const eventThreadId = `${'\u0001'.repeat(498)}x`;
+    const req = request();
+    req.params = { parentConversationId, threadId: eventThreadId, taskId };
+    const transport = new TestTransport();
+    const stream = new SubagentActivityStream(transport);
+    const handler = createSubagentActivityStreamHandler(
+      {
+        getConvoOwnership: jest.fn().mockResolvedValue(parent),
+        getSubagentThreadForParent: jest.fn().mockResolvedValue({
+          ...child,
+          subagentThread: { ...child.subagentThread, parentToolCallId: 'event-binding:private' },
+        }),
+        getMessages: jest.fn().mockResolvedValue([]),
+      },
+      stream,
+    );
+    const res = response();
+    await handler(req, res);
+    await stream.publish(
+      eventThreadId,
+      taskId,
+      update({ parentToolCallId: undefined, ancestry: [], data: { text: 'x'.repeat(64_000) } }),
+    );
+    const publicFrame = res.chunks.find((chunk) => chunk.includes('on_subagent_update'))!;
+    expect(Buffer.byteLength(publicFrame)).toBeGreaterThan(65_536);
+    expect(res.end).not.toHaveBeenCalled();
+    expect(transport.getSubscriberCount(subagentActivityStreamId(eventThreadId, taskId))).toBe(1);
+    res.emit('close');
+    stream.destroy();
+  });
+
   it.each([false, true])(
     'delivers an expanded event-thread snapshot without closing (blocked: %s)',
     async (blocked) => {
