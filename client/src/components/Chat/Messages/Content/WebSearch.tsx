@@ -378,17 +378,15 @@ export default function WebSearch({
                             {source.title || domain}
                           </span>
                           {snippet && (
-                            <span className="text-text-secondary mt-0.5 line-clamp-2 block text-[0.6875rem] leading-relaxed">
+                            <span className="text-text-secondary mt-0.5 line-clamp-2 block text-[11px] leading-relaxed">
                               {snippet}
                             </span>
                           )}
                         </span>
                         <span className="shrink-0 text-right">
-                          <span className="text-text-secondary block text-[0.6875rem]">
-                            {domain}
-                          </span>
+                          <span className="text-text-secondary block text-[11px]">{domain}</span>
                           {source.date && (
-                            <span className="text-text-secondary block text-[0.625rem]">
+                            <span className="text-text-secondary block text-[10px]">
                               {source.date}
                             </span>
                           )}

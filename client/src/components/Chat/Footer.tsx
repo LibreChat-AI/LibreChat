@@ -146,7 +146,7 @@ function Footer({ className, startupConfig, configuredOnly = false }: FooterProp
              rather than the brighter `text-secondary`: the underline carries the
              affordance, and a link that outshines its own sentence puts the
              emphasis back where this change takes it from. */
-          'text-text-muted absolute right-0 bottom-0 left-0 hidden items-center justify-center gap-2 px-2 py-2 text-center text-xs sm:flex md:px-[3.75rem]'
+          'text-text-muted absolute right-0 bottom-0 left-0 hidden items-center justify-center gap-2 px-2 py-2 text-center text-xs sm:flex md:px-15'
         }
       >
         {footerElements.map((contentRender, index) => {
@@ -157,7 +157,7 @@ function Footer({ className, startupConfig, configuredOnly = false }: FooterProp
               {!isLastElement && (
                 <div
                   key={`separator-${index}`}
-                  className="border-border-medium h-2 border-r-[0.0625rem]"
+                  className="border-border-medium h-2 border-r-[1px]"
                 />
               )}
             </React.Fragment>

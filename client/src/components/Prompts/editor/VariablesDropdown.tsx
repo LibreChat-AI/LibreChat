@@ -127,7 +127,7 @@ export default function VariablesDropdown({
               {localize('com_ui_special_variables')}
             </span>
             {usedCount > 0 && (
-              <span className="bg-surface-tertiary text-text-secondary flex size-4 items-center justify-center rounded-full text-[0.625rem] font-medium">
+              <span className="bg-surface-tertiary text-text-secondary flex size-4 items-center justify-center rounded-full text-[10px] font-medium">
                 {usedCount}
               </span>
             )}

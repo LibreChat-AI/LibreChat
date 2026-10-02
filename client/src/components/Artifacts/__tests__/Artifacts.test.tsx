@@ -232,7 +232,7 @@ describe('Artifacts fullscreen preview', () => {
     });
 
     expect(panel).toHaveStyle({ height: '90vh' });
-    expect(panel).toHaveClass('inset-x-0', 'bottom-0', 'rounded-t-[1.25rem]');
+    expect(panel).toHaveClass('inset-x-0', 'bottom-0', 'rounded-t-[20px]');
   });
 
   it('keeps the mobile version menu above the fullscreen panel', async () => {

@@ -32,7 +32,7 @@ export default function Button({
       <div className="flex w-full items-center justify-center gap-2">
         {children}
         {shortcutDisplay && (
-          <span className="border-border-light text-text-secondary hidden rounded-md border px-1.5 py-0.5 text-[0.625rem] leading-none md:inline-flex">
+          <span className="border-border-light text-text-secondary hidden rounded-md border px-1.5 py-0.5 text-[10px] leading-none md:inline-flex">
             {shortcutDisplay}
           </span>
         )}

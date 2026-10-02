@@ -39,7 +39,7 @@ function Footer({ startupConfig }: { startupConfig: TStartupConfig | null | unde
     <div className="align-end m-4 flex justify-center gap-2" role="contentinfo">
       {privacyPolicyRender}
       {privacyPolicyRender && termsOfServiceRender && (
-        <div className="border-border-medium border-r-[0.0625rem]" />
+        <div className="border-border-medium border-r-[1px]" />
       )}
       {termsOfServiceRender}
     </div>

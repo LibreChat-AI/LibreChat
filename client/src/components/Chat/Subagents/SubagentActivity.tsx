@@ -179,7 +179,7 @@ export function SubagentActivityScrollSurface({
         className={cn('min-h-0 flex-1 overflow-y-auto', padded && 'px-4 py-4')}
         data-subagent-activity-scroll-surface
       >
-        <div ref={contentRef} className={cn(headerInset && 'pt-[3.25rem]')}>
+        <div ref={contentRef} className={cn(headerInset && 'pt-13')}>
           {children}
         </div>
       </div>

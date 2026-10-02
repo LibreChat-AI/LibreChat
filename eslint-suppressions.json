@@ -148,7 +148,7 @@
   },
   "client/src/components/Chat/Footer.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/Chat/Input/AddedConvo.tsx": {
@@ -816,9 +816,6 @@
     }
   },
   "client/src/components/Chat/Subagents/SubagentActivity.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 13
     },

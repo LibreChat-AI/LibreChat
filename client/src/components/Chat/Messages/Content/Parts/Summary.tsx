@@ -45,7 +45,7 @@ const SummaryContent = memo(({ children, meta }: { children: React.ReactNode; me
   return (
     <div className="border-border-medium bg-surface-tertiary text-text-secondary relative rounded-3xl border p-4 pb-10">
       {meta && <span className="text-text-secondary mb-1 block text-xs">{meta}</span>}
-      <p className={cn('leading-[1.625rem] whitespace-pre-wrap', fontSize)}>{children}</p>
+      <p className={cn('leading-[26px] whitespace-pre-wrap', fontSize)}>{children}</p>
     </div>
   );
 });
@@ -82,7 +82,7 @@ const SummaryButton = memo(
           aria-expanded={isExpanded}
           aria-controls={contentId}
           className={cn(
-            'group/button h-auto flex-1 justify-start gap-0 rounded-lg p-0 leading-[1.125rem] font-normal hover:bg-transparent',
+            'group/button h-auto flex-1 justify-start gap-0 rounded-lg p-0 leading-[18px] font-normal hover:bg-transparent',
             fontSize,
           )}
         >

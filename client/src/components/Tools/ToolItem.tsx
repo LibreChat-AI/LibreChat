@@ -37,14 +37,14 @@ function ToolItem({ tool, onAddTool, onRemoveTool, isInstalled = false }: ToolIt
               <img
                 src={icon}
                 alt={localize('com_ui_logo', { 0: name })}
-                className="bg-surface-fixed h-full w-full rounded-[0.3125rem]"
+                className="bg-surface-fixed h-full w-full rounded-[5px]"
               />
             ) : (
-              <div className="border-border-medium flex h-full w-full items-center justify-center rounded-[0.3125rem] border bg-transparent">
+              <div className="border-border-medium flex h-full w-full items-center justify-center rounded-[5px] border bg-transparent">
                 <Wrench className="text-text-secondary h-8 w-8" />
               </div>
             )}
-            <div className="ring-border-light absolute inset-0 rounded-[0.3125rem] ring-1 ring-inset"></div>
+            <div className="ring-border-light absolute inset-0 rounded-[5px] ring-1 ring-inset"></div>
           </div>
         </div>
         <div className="flex min-w-0 flex-col items-start justify-between">

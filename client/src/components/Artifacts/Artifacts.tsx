@@ -475,8 +475,8 @@ export default function Artifacts() {
             'bg-surface-primary text-text-primary flex w-full flex-col text-xl motion-reduce:transition-none',
             isMobile
               ? cn(
-                  'fixed z-[100] shadow-[0_-0.625rem_3.75rem_rgba(0,0,0,0.35)]',
-                  isFullscreen ? 'inset-0 rounded-none' : 'inset-x-0 bottom-0 rounded-t-[1.25rem]',
+                  'fixed z-[100] shadow-[0_-10px_60px_rgba(0,0,0,0.35)]',
+                  isFullscreen ? 'inset-0 rounded-none' : 'inset-x-0 bottom-0 rounded-t-[20px]',
                   isVisible && !isClosing
                     ? 'translate-y-0 opacity-100'
                     : 'translate-y-full opacity-0 transition-all',

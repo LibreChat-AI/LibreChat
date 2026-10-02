@@ -137,7 +137,7 @@ export default function VersionItem({
                 {versionTitle}
               </span>
               {isActive && (
-                <span className="bg-status-success-subtle text-status-success inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.625rem] font-semibold tracking-wide uppercase">
+                <span className="bg-status-success-subtle text-status-success inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase">
                   <span
                     className="bg-status-success-strong size-1.5 rounded-full"
                     aria-hidden="true"
@@ -146,7 +146,7 @@ export default function VersionItem({
                 </span>
               )}
               {!isActive && isLatest && (
-                <span className="bg-surface-tertiary text-text-secondary rounded-full px-2 py-0.5 text-[0.625rem] font-semibold tracking-wide uppercase">
+                <span className="bg-surface-tertiary text-text-secondary rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase">
                   {localize('com_ui_latest')}
                 </span>
               )}

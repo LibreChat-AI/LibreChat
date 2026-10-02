@@ -161,7 +161,7 @@ function SidebarItem({ icon, label, active, onClick, count }: SidebarEntry) {
       <span className="flex size-4 shrink-0 items-center justify-center">{icon}</span>
       <span className="flex-1 truncate">{label}</span>
       {count !== undefined && count > 0 && (
-        <span className="text-text-secondary text-[0.6875rem] tabular-nums">{count}</span>
+        <span className="text-text-secondary text-[11px] tabular-nums">{count}</span>
       )}
     </button>
   );
