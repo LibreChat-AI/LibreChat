@@ -349,6 +349,13 @@ describe('agentCreateSchema with subagents', () => {
 });
 
 describe('stateful code environments', () => {
+  it('rejects a machine list above the wire safety ceiling before any persistence', () => {
+    expect(
+      agentUpdateSchema.safeParse({
+        code_environment_ids: Array.from({ length: 129 }, (_, i) => `machine-${i}`),
+      }).success,
+    ).toBe(false);
+  });
   it.each([{ value: ['machine-a', 'machine-b'] }, { value: [] }])(
     'accepts an explicit machine allowlist of $value',
     ({ value }) => {

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   CODE_WORKSPACE_ID_PATTERN,
+  MAX_AGENT_CODE_ENVIRONMENT_CHOICES,
   MemoryScope,
   SkillsScope,
   getMaxSubagents,
@@ -415,9 +416,9 @@ export const agentSubagentsSchema: z.ZodOptional<z.ZodType<AgentSubagentsConfig>
 
 /** Base agent schema with all common fields */
 const agentCodeEnvironmentIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
-const agentCodeEnvironmentIdsSchema: z.ZodArray<z.ZodString> = z.array(
-  agentCodeEnvironmentIdSchema,
-);
+const agentCodeEnvironmentIdsSchema: z.ZodArray<z.ZodString> = z
+  .array(agentCodeEnvironmentIdSchema)
+  .max(MAX_AGENT_CODE_ENVIRONMENT_CHOICES);
 const agentGitIdentityUpdateSchema: z.ZodType<AgentGitIdentity | null | undefined> =
   agentGitIdentitySchema.nullable();
 

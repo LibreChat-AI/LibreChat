@@ -35,6 +35,7 @@ import {
   collectReachableAgents,
   findExecutionEnvironment,
   getCodeEnvironmentChoiceIds,
+  findCodeWorkspaceDiscoveryEnvironment,
 } from './useCodeApprovalMode';
 import { useWorkspacePreferences } from './workspacePreferences';
 import useAgentToolPermissions from './useAgentToolPermissions';
@@ -55,6 +56,8 @@ export type CodeWorkspaceState =
 
 export interface CodeWorkspaceEnvironmentResult {
   environment: TPublicCodeEnvironment;
+  /** Coding agents whose execution requires this machine, including reachable subagents. */
+  requiredBy?: Array<{ id: string; name?: string | null }>;
   state: Exclude<CodeWorkspaceState, 'not_required' | 'relocatable'>;
   workspaces: CodeWorkspaceDescriptor[];
   selected?: CodeWorkspaceSelection;
@@ -106,6 +109,8 @@ export interface CodeWorkspaceResult {
   machineOptions?: TPublicCodeEnvironment[];
   /** Each group belongs to one reachable coding agent, not the whole graph. */
   machineOptionGroups?: string[][];
+  /** Fixed graph targets must survive an alternative pick for a different agent. */
+  fixedMachineIds?: string[];
   transition?: CodeWorkspaceTransition;
   selections?: CodeWorkspaceSelection[];
   resolveSelections: (
@@ -207,29 +212,28 @@ export default function useCodeWorkspace(
     const unique = new Map<string, TPublicCodeEnvironment>();
     const defaults = new Map<string, Set<string>>();
     const preferenceAgentIds = new Map<string, Set<string>>();
+    const requiredBy = new Map<string, Array<{ id: string; name?: string | null }>>();
     let complete = true;
     for (const agent of reachable.agents) {
       if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code)) {
         continue;
       }
-      const selectedEnvironment = findExecutionEnvironment(
+      const environment = findCodeWorkspaceDiscoveryEnvironment(
         agent,
         statefulCodeSessions?.environments,
         statefulCodeSessions?.allowEnvironmentSelection,
         conversation?.codeWorkspaces,
       );
-      const defaultEnvironment = findExecutionEnvironment(
-        agent,
-        statefulCodeSessions?.environments,
-      );
       /** Discovery must remain available while a graph draft is partial or its sealed
        * route needs recovery. Only final submission resolves the entire graph strictly. */
-      const environment = selectedEnvironment ?? defaultEnvironment;
       if (environment == null && agent.code_environment_id) {
         complete = false;
       }
       if (environment?.type !== 'attached') continue;
       unique.set(environment.id, environment);
+      const owners = requiredBy.get(environment.id) ?? [];
+      owners.push({ id: agent.id, name: agent.name });
+      requiredBy.set(environment.id, owners);
       if (agent.code_environment_id === environment.id && agent.code_workspace_id) {
         const choices = defaults.get(environment.id) ?? new Set<string>();
         choices.add(agent.code_workspace_id);
@@ -247,13 +251,12 @@ export default function useCodeWorkspace(
         if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code)) {
           continue;
         }
-        const environment =
-          findExecutionEnvironment(
-            agent,
-            statefulCodeSessions?.environments,
-            statefulCodeSessions?.allowEnvironmentSelection,
-            conversation?.codeWorkspaces,
-          ) ?? findExecutionEnvironment(agent, statefulCodeSessions?.environments);
+        const environment = findCodeWorkspaceDiscoveryEnvironment(
+          agent,
+          statefulCodeSessions?.environments,
+          statefulCodeSessions?.allowEnvironmentSelection,
+          conversation?.codeWorkspaces,
+        );
         if (environment?.type !== 'attached') continue;
         const owners = preferenceAgentIds.get(environment.id) ?? new Set<string>();
         owners.add(rootAgentId);
@@ -264,6 +267,7 @@ export default function useCodeWorkspace(
       complete,
       defaults,
       preferenceAgentIds,
+      requiredBy,
       environments: [...unique.values()].sort((a, b) => a.id.localeCompare(b.id)),
     };
   }, [
@@ -345,6 +349,20 @@ export default function useCodeWorkspace(
           type === 'attached' && machineOptionGroups.some((ids) => ids.includes(id)),
       )
     : undefined;
+  const fixedMachineIds = reachable.agents.flatMap((agent) => {
+    if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code))
+      return [];
+    if (
+      getCodeEnvironmentChoiceIds(
+        agent,
+        statefulCodeSessions?.environments,
+        statefulCodeSessions?.allowEnvironmentSelection,
+      ) != null
+    )
+      return [];
+    const environment = findExecutionEnvironment(agent, statefulCodeSessions?.environments);
+    return environment?.type === 'attached' ? [environment.id] : [];
+  });
   const environmentResults = attachedEnvironments.map((environment, index) => {
     const status = statuses[index];
     const workspaces =
@@ -393,7 +411,13 @@ export default function useCodeWorkspace(
     else if (selected != null) state = 'ready';
     else if (stored != null) state = 'missing';
     else if (workspaces.length === 0) state = 'unavailable';
-    return { environment, state, workspaces, selected };
+    return {
+      environment,
+      state,
+      workspaces,
+      selected,
+      requiredBy: workspaceMetadata.requiredBy.get(environment.id),
+    };
   });
 
   const resolveSelections = useCallback(
@@ -401,27 +425,9 @@ export default function useCodeWorkspace(
       if (!required || !selectionMetadataComplete || !isCodeWorkspaceSelections(selections ?? [])) {
         return undefined;
       }
-      if (
-        reachable.agents.some((agent) => {
-          const ids = getCodeEnvironmentChoiceIds(
-            agent,
-            statefulCodeSessions?.environments,
-            statefulCodeSessions?.allowEnvironmentSelection,
-          );
-          return (
-            (selections?.filter(({ environmentId }) => ids?.includes(environmentId)).length ?? 0) >
-            1
-          );
-        })
-      ) {
-        return undefined;
-      }
-      /** A saved chat's decision is sealed as a whole: trimming a selection its agents no longer use
-       *  would submit a set the persisted decision rejects. */
-      if (
-        locked &&
-        selections?.some(({ environmentId }) => !attachedEnvironmentIds.has(environmentId))
-      ) {
+      /** Never silently discard a machine the user picked. A sealed choice needs a transition;
+       * a draft choice not used by the graph must be corrected before it can execute elsewhere. */
+      if (selections?.some(({ environmentId }) => !attachedEnvironmentIds.has(environmentId))) {
         return undefined;
       }
       const resolved: CodeWorkspaceSelection[] = [];
@@ -471,7 +477,6 @@ export default function useCodeWorkspace(
     [
       attachedEnvironmentIds,
       environmentResults,
-      locked,
       required,
       selectionMetadataComplete,
       reachable.agents,
@@ -647,6 +652,7 @@ export default function useCodeWorkspace(
     environments: environmentResults,
     machineOptions,
     machineOptionGroups,
+    fixedMachineIds,
     transition,
     selections,
     resolveSelections,

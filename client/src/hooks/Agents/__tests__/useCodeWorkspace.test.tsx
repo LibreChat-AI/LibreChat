@@ -61,6 +61,125 @@ describe('useCodeWorkspace', () => {
       return config;
     }
 
+    it('names the reviewer whose separate machine still needs a workspace', () => {
+      enableChoices();
+      mockAgentPermissions().agent.name = 'Lia';
+      mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
+      mockAgentsMap.mockReturnValue({
+        reviewer: {
+          id: 'reviewer',
+          name: 'PR Reviewer',
+          stateful_code_sessions: true,
+          tools: [Tools.execute_code],
+          code_environment_id: 'runtime-vm',
+        },
+      });
+      mockStatus.mockImplementation((ids: string[]) =>
+        ids.map((id) => ({
+          data: {
+            environmentId: id,
+            status: 'ready',
+            workspaces:
+              id === 'runtime-vm' ? [{ id: 'one' }, { id: 'two' }] : [{ id: 'project-a' }],
+          },
+        })),
+      );
+      const { result } = renderHook(() =>
+        useCodeWorkspace(
+          conversation([{ environmentId: 'personal-vm', workspaceId: 'project-a' }]),
+        ),
+      );
+      expect(result.current.canSubmit).toBe(false);
+      expect(
+        result.current.environments.find(({ environment }) => environment.id === 'runtime-vm'),
+      ).toMatchObject({ state: 'choose', requiredBy: [{ id: 'reviewer', name: 'PR Reviewer' }] });
+    });
+
+    it('shares one selected machine between Lia and a reviewer that both explicitly allow it', () => {
+      enableChoices();
+      mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
+      mockAgentsMap.mockReturnValue({
+        reviewer: {
+          id: 'reviewer',
+          name: 'PR Reviewer',
+          stateful_code_sessions: true,
+          tools: [Tools.execute_code],
+          code_environment_id: 'runtime-vm',
+          code_environment_ids: ['personal-vm'],
+        },
+      });
+      const selection = [{ environmentId: 'personal-vm', workspaceId: 'project-a' }];
+      const { result } = renderHook(() => useCodeWorkspace(conversation(selection)));
+      expect(result.current.canSubmit).toBe(true);
+      expect(result.current.environments).toHaveLength(1);
+      expect(result.current.environments[0].requiredBy).toEqual(
+        expect.arrayContaining([
+          { id: 'reviewer', name: 'PR Reviewer' },
+          { id: 'agent_primary', name: undefined },
+        ]),
+      );
+      expect(result.current.resolveSubmission(selection)?.codeWorkspaces).toEqual(selection);
+    });
+
+    it('preserves the default plus an overlapping machine required by a fixed reviewer', () => {
+      enableChoices();
+      mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
+      mockAgentsMap.mockReturnValue({
+        reviewer: {
+          id: 'reviewer',
+          stateful_code_sessions: true,
+          tools: [Tools.execute_code],
+          code_environment_id: 'runtime-vm',
+        },
+      });
+      mockStatus.mockImplementation((ids: string[]) =>
+        ids.map((id) => ({
+          data: { environmentId: id, status: 'ready', workspaces: [{ id: 'project-a' }] },
+        })),
+      );
+      const choices = [
+        { environmentId: 'personal-vm', workspaceId: 'project-a' },
+        { environmentId: 'runtime-vm', workspaceId: 'project-a' },
+      ];
+      const { result } = renderHook(() => useCodeWorkspace(conversation(choices)));
+      expect(result.current.canSubmit).toBe(true);
+      expect(result.current.fixedMachineIds).toEqual(['runtime-vm']);
+      expect(result.current.resolveSubmission(choices)?.codeWorkspaces).toEqual(choices);
+    });
+
+    it('offers an explicit saved-chat recovery target when the selected default disappears', () => {
+      const config = enableChoices();
+      config.statefulCodeSessions.environments = config.statefulCodeSessions.environments.filter(
+        ({ id }: { id: string }) => id !== 'personal-vm',
+      );
+      mockStartupConfig.mockReturnValue({
+        codeEnvironmentDecisionVersion: 1,
+        codeEnvironmentMoveVersion: 1,
+      });
+      mockStatus.mockImplementation((ids: string[]) =>
+        ids.map((id) => ({
+          data: { environmentId: id, status: 'ready', workspaces: [{ id: 'project-a' }] },
+        })),
+      );
+      const selected = [{ environmentId: 'personal-vm', workspaceId: 'project-a' }];
+      const { result } = renderHook(() =>
+        useCodeWorkspace({
+          ...conversation(selected),
+          conversationId: 'saved',
+          codeEnvironmentMode: 'attached',
+        }),
+      );
+      expect(result.current.canSubmit).toBe(false);
+      expect(result.current.transition).toMatchObject({
+        kind: 'move',
+        detachable: false,
+        from: selected,
+      });
+      expect(result.current.transition?.targets.map(({ environment }) => environment.id)).toEqual([
+        'runtime-vm',
+      ]);
+    });
+
     it('offers authorized alternatives without querying their status or blocking the default', () => {
       enableChoices();
       const { result } = renderHook(() => useCodeWorkspace(conversation()));
@@ -116,14 +235,24 @@ describe('useCodeWorkspace', () => {
       },
     );
 
-    it('fails closed on an inaccessible or ambiguous selected machine', () => {
-      enableChoices();
+    it('fails closed on inaccessible, unused or ambiguous non-default machines', () => {
+      const config = enableChoices();
+      mockAgentPermissions().agent.code_environment_ids.push('third-vm');
+      config.statefulCodeSessions.environments.push({
+        id: 'third-vm',
+        name: 'Third VM',
+        type: 'attached',
+      });
       for (const selected of [
         [{ environmentId: 'other-users-vm', workspaceId: 'primary' }],
         [{ environmentId: 'unlisted-vm', workspaceId: 'primary' }],
         [
           { environmentId: 'runtime-vm', workspaceId: 'primary' },
+          { environmentId: 'third-vm', workspaceId: 'project-a' },
+        ],
+        [
           { environmentId: 'personal-vm', workspaceId: 'project-a' },
+          { environmentId: 'runtime-vm', workspaceId: 'primary' },
         ],
       ]) {
         const { result } = renderHook(() => useCodeWorkspace(conversation(selected)));

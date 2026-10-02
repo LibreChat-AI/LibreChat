@@ -1,6 +1,6 @@
 import { Types } from 'mongoose';
 import { createHash } from 'crypto';
-import { ResourceType } from 'librechat-data-provider';
+import { ResourceType, MAX_AGENT_CODE_ENVIRONMENT_CHOICES } from 'librechat-data-provider';
 import type { CodeEnvironmentUserSettings } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import type { CodeEnvironmentDocument } from '~/types';
@@ -150,6 +150,9 @@ export async function withCodeEnvironmentReferences<T>(
   operation: () => Promise<T>,
   onReferenceLoss?: (result: T, environmentId: string) => Promise<void>,
 ): Promise<T> {
+  if (environmentIds.length > MAX_AGENT_CODE_ENVIRONMENT_CHOICES + 1) {
+    throw new Error('Agent code environment references exceed the storage safety ceiling');
+  }
   const ids = [...new Set(environmentIds.filter(Boolean))];
   const run = (index: number): Promise<T> =>
     index === ids.length

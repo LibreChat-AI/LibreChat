@@ -67,6 +67,17 @@ that opt-in is enabled and the agent has a nonempty `code_environment_ids` list.
 `code_environment_id` is implicitly allowed; every additional machine still requires the user's
 own access and current worker capabilities. This does not move an existing chat between machines.
 
+Each coding agent in the graph contributes its machine requirement, including lazy subagents.
+The composer identifies an unselected agent and machine beneath the picker, and each machine
+section lists its agents. Agents may share one selection when they explicitly allow that machine.
+When a graph selects both a default and an alternative for another agent, the selected default
+wins for that agent; without its default, exactly one permitted target must match. Independent
+fixed-machine requirements are retained when a different agent picks an alternative.
+
+`maxEnvironmentChoices` limits additional machines per agent (default 32, ceiling 128). The
+builder uses the same limit; create, update, duplicate and restore authorize all listed machines
+against the loaded principal-scoped config before reserving database references.
+
 Assertions inspect **tool outputs**, not echoed arguments or the model's final prose.
 The default hosted Code API URL is deliberately pointed at an invalid local route,
 so an accidental routing regression can never send fixtures to a production endpoint.

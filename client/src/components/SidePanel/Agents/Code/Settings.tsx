@@ -1,13 +1,6 @@
 import { useCallback, useEffect } from 'react';
 import { useFormContext } from 'react-hook-form';
 import {
-  AgentCapabilities,
-  agentGitIdentitySchema,
-  STATEFUL_CODE_ENVIRONMENTS,
-  resolveStatefulCodeEnvironment,
-  resolveAllowedStatefulCodeEnvironments,
-} from 'librechat-data-provider';
-import {
   Switch,
   Select,
   SelectContent,
@@ -22,6 +15,14 @@ import {
   Input,
   Checkbox,
 } from '@librechat/client';
+import {
+  AgentCapabilities,
+  DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES,
+  agentGitIdentitySchema,
+  STATEFUL_CODE_ENVIRONMENTS,
+  resolveStatefulCodeEnvironment,
+  resolveAllowedStatefulCodeEnvironments,
+} from 'librechat-data-provider';
 import type { StatefulCodeEnvironment } from 'librechat-data-provider';
 import type { AgentForm } from '~/common';
 import { useAuthContext, useGetAgentsConfig, useLocalize } from '~/hooks';
@@ -60,6 +61,9 @@ export default function CodeSettings() {
   const environment = watch('stateful_code_environment') ?? 'user';
   const codeEnvironmentId = watch('code_environment_id');
   const additionalMachines = watch('code_environment_ids') ?? [];
+  const machineChoiceLimit =
+    agentsConfig?.statefulCodeSessions?.maxEnvironmentChoices ??
+    DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES;
   const workspaceId = watch('code_workspace_id') ?? '';
   const configuredEnvironments = agentsConfig?.statefulCodeSessions?.allowedEnvironments;
   const executionEnvironments = agentsConfig?.statefulCodeSessions?.environments ?? [];
@@ -221,6 +225,9 @@ export default function CodeSettings() {
                     <p className="text-text-tertiary text-xs">
                       {localize('com_ui_code_environment_per_chat_info')}
                     </p>
+                    <p className="text-text-tertiary text-xs">
+                      {localize('com_ui_code_environment_choice_limit', { 0: machineChoiceLimit })}
+                    </p>
                     {executionEnvironments
                       .filter(({ type }) => type === 'attached')
                       .map((candidate) => {
@@ -232,7 +239,11 @@ export default function CodeSettings() {
                               id={id}
                               aria-label={candidate.name}
                               checked={isDefault || additionalMachines.includes(candidate.id)}
-                              disabled={isDefault}
+                              disabled={
+                                isDefault ||
+                                (!additionalMachines.includes(candidate.id) &&
+                                  additionalMachines.length >= machineChoiceLimit)
+                              }
                               onCheckedChange={(checked) =>
                                 setValue(
                                   'code_environment_ids',

@@ -28,6 +28,7 @@ const {
   codeExecutionAuthHeaders,
   getCodeFileLocation,
   resolveCodeExecutionContext,
+  resolveCodeExecutionWorkspaceSelections,
   resolveMCPClientCapabilityProfile,
 } = require('@librechat/api');
 const {
@@ -389,9 +390,10 @@ const loadTools = async ({
             allowEnvironmentSelection:
               options.req?.config?.endpoints?.agents?.statefulCodeSessions
                 ?.allowEnvironmentSelection,
-            workspaceSelections:
-              options.req?.resolvedConversation?.codeWorkspaces ??
-              options.req?.body?.codeWorkspaces,
+            workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+              conversation: options.req?.resolvedConversation,
+              request: options.req?.body,
+            }),
             environments:
               options.req?.config?.endpoints?.agents?.statefulCodeSessions?.environments,
             userId: user,

@@ -47,6 +47,7 @@ import {
   CODE_ENVIRONMENT_MOVE_VERSION,
   CODE_ENVIRONMENT_TRANSITION_VERSION,
   CODE_WORKSPACE_RECOVERY_VERSION,
+  MAX_AGENT_CODE_ENVIRONMENT_CHOICES,
 } from './code/workspace';
 import { ComponentTypes, SettingTypes, OptionTypes } from './generate';
 import { STATEFUL_CODE_ENVIRONMENTS } from './stateful-code';
@@ -1509,6 +1510,13 @@ export const agentsEndpointSchema = baseEndpointSchema
           /** Allow agents with a machine allowlist to use a chat-owned machine instead of their default.
            * Enable after every API replica supports per-chat machine routing. */
           allowEnvironmentSelection: z.boolean().optional(),
+          /** Maximum additional machine choices saved on an agent (wire ceiling: 128). */
+          maxEnvironmentChoices: z
+            .number()
+            .int()
+            .min(1)
+            .max(MAX_AGENT_CODE_ENVIRONMENT_CHOICES)
+            .optional(),
           /** Server-only personal worker enrollment policy. Effective principal
            * policy may tighten, but never raise, the deployment ceiling. */
           principalWorkers: z

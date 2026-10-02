@@ -8,6 +8,7 @@ import type { AgentForm } from '~/common';
 import CodeSettings from '../Code/Settings';
 const mockWorkspaceStatusQueries = jest.fn();
 const mockMachineChoicesEnabled = jest.fn();
+const mockMachineChoiceLimit = jest.fn();
 jest.mock('~/data-provider', () => ({
   useCodeEnvironmentStatusQueries: () => mockWorkspaceStatusQueries(),
 }));
@@ -20,6 +21,7 @@ jest.mock('~/hooks', () => ({
       capabilities: ['stateful_code_sessions'],
       statefulCodeSessions: {
         allowEnvironmentSelection: mockMachineChoicesEnabled(),
+        maxEnvironmentChoices: mockMachineChoiceLimit(),
         environments: [
           { id: 'byom', name: 'My machine', type: 'attached', default: true },
           { id: 'runtime', name: 'Runtime machine', type: 'attached' },
@@ -31,6 +33,7 @@ jest.mock('~/hooks', () => ({
 
 beforeEach(() => {
   mockMachineChoicesEnabled.mockReturnValue(false);
+  mockMachineChoiceLimit.mockReturnValue(32);
   mockWorkspaceStatusQueries.mockReturnValue([
     {
       data: {
@@ -47,9 +50,11 @@ beforeEach(() => {
 function IdentityForm({
   savedIdentity,
   savedWorkspace,
+  savedMachines,
 }: {
   savedIdentity?: AgentForm['git_identity'];
   savedWorkspace?: string;
+  savedMachines?: string[];
 }) {
   const [dialogOpen, setDialogOpen] = useState(true);
   const methods = useForm<AgentForm>({
@@ -59,6 +64,7 @@ function IdentityForm({
       stateful_code_sessions: true,
       git_identity: savedIdentity,
       code_workspace_id: savedWorkspace,
+      code_environment_ids: savedMachines,
     },
   });
   return (
@@ -97,6 +103,16 @@ test('defines an explicit machine allowlist without changing the default, and pe
   expect(screen.getByTestId('machine-default')).toBeEmptyDOMElement();
   fireEvent.click(alternative);
   expect(screen.getByTestId('machine-allowlist')).toHaveTextContent('[]');
+});
+
+test('honors the server machine-choice limit without disabling the selected choice', () => {
+  mockMachineChoicesEnabled.mockReturnValue(true);
+  mockMachineChoiceLimit.mockReturnValue(1);
+  const { unmount } = render(<IdentityForm savedMachines={['missing']} />);
+  expect(screen.getByRole('checkbox', { name: 'Runtime machine' })).toBeDisabled();
+  unmount();
+  render(<IdentityForm savedMachines={['runtime']} />);
+  expect(screen.getByRole('checkbox', { name: 'Runtime machine' })).not.toBeDisabled();
 });
 
 test('does not offer machine choices when the deployment has not enabled them', () => {

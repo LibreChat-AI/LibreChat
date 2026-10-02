@@ -18,6 +18,18 @@ import { CodeWorkspaceSelectionError } from '~/code/errors';
 export const CODE_API_EXPECTED_PROFILE_HEADER = 'X-CodeAPI-Expected-Profile';
 export const CODE_API_BRIDGE_WORKER_HEADER = 'X-LibreChat-Code-Worker-ID';
 
+/** Persisted choices are authoritative, including an empty set. All execution ingresses share
+ * this precedence so a request cannot replace an admitted conversation's machine selection. */
+export function resolveCodeExecutionWorkspaceSelections({
+  conversation,
+  request,
+}: {
+  conversation?: { codeWorkspaces?: unknown } | null;
+  request?: { codeWorkspaces?: unknown } | null;
+}): unknown {
+  return conversation?.codeWorkspaces ?? request?.codeWorkspaces;
+}
+
 export type CodeExecutionProfile = 'default' | 'stateful';
 export type CodeEnvironmentConfig = NonNullable<
   NonNullable<TAgentsEndpoint['statefulCodeSessions']>['environments']

@@ -174,6 +174,25 @@ export function findExecutionEnvironment(
   return allowSelection && resolved?.type !== 'attached' ? undefined : resolved;
 }
 
+/** Discovery can expose an authorized recovery target after a default disappears. This never
+ * admits execution: a saved chat must explicitly replace its sealed decision before using it. */
+export function findCodeWorkspaceDiscoveryEnvironment(
+  agent: Agent,
+  environments?: TPublicCodeEnvironment[],
+  allowEnvironmentSelection?: boolean,
+  selections?: CodeWorkspaceSelection[],
+): TPublicCodeEnvironment | undefined {
+  return (
+    findExecutionEnvironment(agent, environments, allowEnvironmentSelection, selections) ??
+    findExecutionEnvironment(agent, environments) ??
+    environments?.find(
+      ({ id, type }) =>
+        type === 'attached' &&
+        getCodeEnvironmentChoiceIds(agent, environments, allowEnvironmentSelection)?.includes(id),
+    )
+  );
+}
+
 export function collectReachableAgents(
   roots: Array<Agent | undefined>,
   agentsMap: TAgentsMap | undefined,

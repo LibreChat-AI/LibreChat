@@ -9,6 +9,7 @@ import {
   codeExecutionHeaders,
   getCodeWorkspaceSelections,
   resolveCodeExecutionContext,
+  resolveCodeExecutionWorkspaceSelections,
 } from './execution';
 import { CodeWorkspaceSelectionError } from '~/code/errors';
 
@@ -16,6 +17,29 @@ jest.mock('@librechat/agents', () => ({
   Constants: { EXECUTE_CODE: 'execute_code' },
   getCodeBaseURL: jest.fn(() => 'http://code-default.test/v1///'),
 }));
+
+describe('resolveCodeExecutionWorkspaceSelections', () => {
+  it('keeps persisted choices and empty sets authoritative over request overrides', () => {
+    const requested = [{ environmentId: 'runtime-vm', workspaceId: 'runtime' }];
+    const persisted = [{ environmentId: 'application-vm', workspaceId: 'app' }];
+    expect(
+      resolveCodeExecutionWorkspaceSelections({
+        conversation: { codeWorkspaces: persisted },
+        request: { codeWorkspaces: requested },
+      }),
+    ).toBe(persisted);
+    expect(
+      resolveCodeExecutionWorkspaceSelections({
+        conversation: { codeWorkspaces: [] },
+        request: { codeWorkspaces: requested },
+      }),
+    ).toEqual([]);
+    expect(
+      resolveCodeExecutionWorkspaceSelections({ request: { codeWorkspaces: requested } }),
+    ).toBe(requested);
+    expect(resolveCodeExecutionWorkspaceSelections({})).toBeUndefined();
+  });
+});
 
 describe('resolveCodeExecutionContext', () => {
   describe('per-chat attached machines', () => {
@@ -92,7 +116,19 @@ describe('resolveCodeExecutionContext', () => {
       ).toThrow(CodeWorkspaceSelectionError);
     });
 
-    it('rejects ambiguous selections and attempts to select managed execution', () => {
+    it('preserves the selected default when another graph agent needs an allowed alternative', () => {
+      expect(
+        resolveCodeExecutionContext({
+          ...params,
+          workspaceSelections: [
+            ...params.workspaceSelections,
+            { environmentId: 'application-vm', workspaceId: 'primary' },
+          ],
+        }).environmentId,
+      ).toBe('application-vm');
+    });
+
+    it('rejects ambiguous non-default selections and attempts to select managed execution', () => {
       expect(() =>
         resolveCodeExecutionContext({
           ...params,
@@ -100,6 +136,8 @@ describe('resolveCodeExecutionContext', () => {
             ...params.workspaceSelections,
             { environmentId: 'application-vm', workspaceId: 'primary' },
           ],
+          environmentId: 'missing-default',
+          environmentIds: ['application-vm', 'runtime-vm'],
         }),
       ).toThrow('The selected attached workspace is invalid.');
       expect(() =>

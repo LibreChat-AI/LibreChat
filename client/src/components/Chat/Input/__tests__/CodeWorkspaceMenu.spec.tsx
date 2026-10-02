@@ -20,7 +20,14 @@ jest.mock('librechat-data-provider', () => {
 });
 
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
+  useLocalize: () => (key: string, values?: Record<string, unknown>) => {
+    if (key === 'com_ui_code_workspace_required_for')
+      return `Choose a workspace for ${values?.[0]} on ${values?.[1]}.`;
+    if (key === 'com_ui_code_workspace_used_by') return `Used by ${values?.[0]}`;
+    if (key === 'com_ui_code_workspace_agent_status')
+      return `${values?.[0]} needs ${values?.[1]}: ${values?.[2]}`;
+    return key;
+  },
 }));
 
 jest.mock('@librechat/client', () => {
@@ -92,6 +99,66 @@ function renderMenu(ui: React.ReactElement) {
 }
 
 describe('CodeWorkspaceMenu', () => {
+  test('explains the missing reviewer workspace while the selected primary workspace is ready', async () => {
+    const reviewerMachine = { ...environment, id: 'reviewer-vm', name: 'Danny Skynet Trusted VM' };
+    const graph = workspace({ state: 'choose', canSubmit: false });
+    graph.environments[0].requiredBy = [{ id: 'lia', name: 'Lia' }];
+    graph.environments.push({
+      environment: reviewerMachine,
+      state: 'choose',
+      workspaces: [{ id: 'review', name: 'Review' }],
+      requiredBy: [{ id: 'reviewer', name: 'PR Reviewer' }],
+    });
+    renderMenu(
+      <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Choose a workspace for PR Reviewer on Danny Skynet Trusted VM.',
+    );
+    expect(screen.getByRole('status')).not.toHaveTextContent('for Lia');
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    expect(screen.getByText('Used by Lia')).toBeVisible();
+    expect(screen.getByText('Used by PR Reviewer')).toBeVisible();
+  });
+
+  test('does not call an unavailable reviewer machine an unselected workspace', () => {
+    const graph = workspace({ state: 'unavailable', canSubmit: false });
+    graph.environments[0] = {
+      ...graph.environments[0],
+      state: 'unavailable',
+      selected: undefined,
+      requiredBy: [{ id: 'reviewer', name: 'PR Reviewer' }],
+    };
+    renderMenu(
+      <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'PR Reviewer needs Personal VM: com_ui_code_workspace_unavailable',
+    );
+    expect(screen.getByRole('status')).not.toHaveTextContent('Choose a workspace');
+  });
+
+  test('keeps a fixed graph machine when replacing an overlapping primary choice', async () => {
+    const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+    const setter = jest.fn();
+    const selection = { environmentId: alternate.id, workspaceId: 'runtime' };
+    const graph = workspace({
+      machineOptionGroups: [[environment.id, alternate.id]],
+      fixedMachineIds: [alternate.id],
+    });
+    graph.environments.push({
+      environment: alternate,
+      state: 'ready',
+      workspaces: [{ id: 'runtime', name: 'Runtime' }],
+      selected: selection,
+    });
+    renderMenu(<CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />);
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    await userEvent.click(screen.getByRole('menuitemradio', { name: /Project A/ }));
+    expect(
+      setter.mock.calls[0][0]({ ...conversation, codeWorkspaces: [selection] }).codeWorkspaces,
+    ).toEqual([{ environmentId: environment.id, workspaceId: 'project-a' }, selection]);
+  });
   test('loads only a chosen allowed machine and replaces the draft selection', async () => {
     const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
     const read = jest.spyOn(dataService, 'getCodeEnvironmentStatus').mockResolvedValue({

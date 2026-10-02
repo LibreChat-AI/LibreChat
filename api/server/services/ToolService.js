@@ -56,6 +56,7 @@ const {
   resolveAttachedWorkspaceRequestTimeoutMs,
   createContextProgrammaticBashTool,
   resolveCodeExecutionContext,
+  resolveCodeExecutionWorkspaceSelections,
   resolveCodeExecutionWorkspaceContext,
   resolveRunFileCodeExecutionContext,
   resolveCallerCapabilityProjectionSnapshot,
@@ -888,8 +889,10 @@ async function loadToolDefinitionsWrapper({
       environmentIds: agent.code_environment_ids,
       allowEnvironmentSelection:
         req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-      workspaceSelections:
-        req.resolvedConversation?.codeWorkspaces ?? runtimeRequestBody?.codeWorkspaces,
+      workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+        conversation: req.resolvedConversation,
+        request: runtimeRequestBody,
+      }),
       environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
       userId: req.user.id,
       agentId: agent.id,
@@ -1808,8 +1811,10 @@ async function loadAgentTools({
       environmentIds: agent.code_environment_ids,
       allowEnvironmentSelection:
         req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-      workspaceSelections:
-        req.resolvedConversation?.codeWorkspaces ?? runtimeRequestBody?.codeWorkspaces,
+      workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+        conversation: req.resolvedConversation,
+        request: runtimeRequestBody,
+      }),
       environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
       userId: req.user.id,
       agentId: agent.id,
@@ -2245,8 +2250,10 @@ async function loadToolsForExecution({
     environmentIds: agent?.code_environment_ids,
     allowEnvironmentSelection:
       req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-    workspaceSelections:
-      req.resolvedConversation?.codeWorkspaces ?? runtimeRequestBody?.codeWorkspaces,
+    workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+      conversation: req.resolvedConversation,
+      request: runtimeRequestBody,
+    }),
     environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
     userId: req.user.id,
     agentId: agent?.id,

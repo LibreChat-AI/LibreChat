@@ -76,6 +76,7 @@ import {
 import {
   normalizeStatefulCodeEnvironment,
   resolveCodeExecutionContext,
+  resolveCodeExecutionWorkspaceSelections,
   type CodeEnvironmentConfig,
   type CodeExecutionContext,
 } from './execution';
@@ -1587,8 +1588,10 @@ export async function initializeAgent(
     environmentIds: agent.code_environment_ids,
     allowEnvironmentSelection:
       appConfig?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-    workspaceSelections:
-      runtime.resolvedConversation?.codeWorkspaces ?? requestBody?.codeWorkspaces,
+    workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+      conversation: runtime.resolvedConversation,
+      request: requestBody,
+    }),
     environments: configuredCodeEnvironments,
     userId: requestFileOwnerId,
     agentId: agent.id,

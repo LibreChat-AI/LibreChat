@@ -3232,6 +3232,21 @@ describe('Agent Methods', () => {
       expect((await getAgent({ id }))?.code_environment_ids).toEqual([]);
     });
 
+    test('refuses an oversized reference list before acquiring any reservations', async () => {
+      const reserveSpy = jest.spyOn(mongoose.models.CodeEnvironment, 'findOneAndUpdate');
+      const operation = jest.fn();
+      await expect(
+        withCodeEnvironmentReferences(
+          mongoose,
+          Array.from({ length: 130 }, (_, i) => `machine-${i}`),
+          operation,
+        ),
+      ).rejects.toThrow('storage safety ceiling');
+      expect(reserveSpy).not.toHaveBeenCalled();
+      expect(operation).not.toHaveBeenCalled();
+      reserveSpy.mockRestore();
+    });
+
     test('releases acquired machine references when a later acquisition fails', async () => {
       const createdBy = new mongoose.Types.ObjectId();
       const ids = [`environment_${uuidv4()}`, `environment_${uuidv4()}`];

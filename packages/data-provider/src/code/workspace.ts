@@ -1,6 +1,9 @@
 export const CODE_WORKSPACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 /** Protocol-v1 ceiling enforced by the worker and Code API. */
 export const CODE_WORKSPACE_MAX_COUNT = 32;
+/** Wire/storage safety ceiling; deployments may set a lower per-agent choice limit. */
+export const MAX_AGENT_CODE_ENVIRONMENT_CHOICES = 128;
+export const DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES = 32;
 /** API/client protocol for immutable conversation-owned environment decisions. */
 export const CODE_ENVIRONMENT_DECISION_VERSION = 1 as const;
 /** API/client protocol for an owner's explicit move of a sealed environment decision. */
@@ -180,7 +183,10 @@ export function resolveCodeEnvironmentSelection({
   const allowed = new Set(environmentIds ?? []);
   if (environmentId) allowed.add(environmentId);
   const matches = selections.filter((selection) => allowed.has(selection.environmentId));
-  // Do not guess when a graph names two of this agent's allowed machines.
+  /** A graph may need an alternative for a different agent. Preserve this agent's explicit
+   * default when present; without it, require exactly one allowed target rather than guessing. */
+  const selectedDefault = matches.find((selection) => selection.environmentId === environmentId);
+  if (selectedDefault != null) return { valid: true, environmentId };
   if (matches.length !== 1) return { valid: false };
   return { valid: true, environmentId: matches[0].environmentId };
 }
