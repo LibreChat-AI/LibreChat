@@ -20,6 +20,7 @@ import type {
 } from './types';
 import type { SerializableJobData } from '../stream/interfaces/IJobStore';
 import type { AgentCheckpointGeneration } from '../agents/checkpointer';
+import type { ScheduleMCPExecution } from './authorization/execution';
 import type { BalanceUpdateFields } from '../types/balance';
 import type { GetAppConfigOptions } from '../app/service';
 import {
@@ -206,6 +207,8 @@ export interface SchedulesService {
     jobCreatedAt?: number;
     userId?: string;
     serverName: string;
+    /** Trusted mandatory-hook scope; transport receipts retain their existing epoch fence. */
+    identity?: ScheduleMCPExecution['identity'];
   }) => Promise<boolean>;
   /**
    * Stamps a scheduled run's interactive Stop BEFORE the abort is signalled, so the owner
@@ -317,6 +320,29 @@ export async function recordScheduledMCPToolAuthFailure(
     logger.warn('[schedules] could not persist MCP authorization failure receipt:', error);
     return false;
   }
+}
+
+/** Captures host scope, never model arguments or mutable runnable config. */
+export function createScheduledMCPPolicyRecorder(
+  execution: ScheduleMCPExecution | undefined,
+  job: { streamId?: string | null; jobCreatedAt?: number; userId?: string; tenantId?: string },
+  record: SchedulesService['recordMCPToolAuthFailure'],
+): ((error: ScheduledMCPPolicyError) => Promise<boolean>) | undefined {
+  if (!execution) return;
+  const identity = Object.freeze({ ...execution.identity });
+  const scope = Object.freeze({ ...job });
+  return (error) => {
+    if (scope.userId !== identity.ownerId || (scope.tenantId ?? null) !== identity.tenantId)
+      return Promise.resolve(false);
+    return record({
+      error,
+      identity,
+      streamId: scope.streamId ?? undefined,
+      jobCreatedAt: scope.jobCreatedAt,
+      userId: identity.ownerId,
+      serverName: error.outcomes[0].server,
+    });
+  };
 }
 
 /** Test-only overrides for the service's bounded waits (drains, barriers). */
@@ -866,6 +892,7 @@ export function createSchedulesService(
     jobCreatedAt,
     userId,
     serverName,
+    identity,
   }: Parameters<SchedulesService['recordMCPToolAuthFailure']>[0]): Promise<boolean> {
     const cause = error instanceof Error ? error.cause : undefined;
     const missing = error instanceof OboTokenResolutionError ? error : cause;
@@ -885,7 +912,12 @@ export function createSchedulesService(
       job.userId !== userId ||
       !job.scheduleId ||
       !job.scheduledFor ||
-      !job.conversationId
+      !job.conversationId ||
+      (identity != null &&
+        (job.scheduleId !== identity.scheduleId ||
+          job.userId !== identity.ownerId ||
+          (job.tenantId ?? null) !== identity.tenantId ||
+          job.agent_id !== identity.agentId))
     ) {
       return false;
     }

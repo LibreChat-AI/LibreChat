@@ -34,8 +34,10 @@ export function createScheduledMCPRunPolicy(
   execution: ScheduleMCPExecution,
   agents: readonly ScheduledMCPPolicyAgent[],
   edges: readonly HandoffEdge[] = [],
+  recordDenial?: (error: ScheduledMCPPolicyError) => Promise<boolean>,
 ): {
   hook: HookCallback<'PreToolUse'>;
+  receipt: HookCallback<'PreToolUse'>;
   registerAgent: (agent: ScheduledMCPPolicyAgent) => void;
 } {
   const mcpTools = new Map<string, Set<string>>();
@@ -99,24 +101,34 @@ export function createScheduledMCPRunPolicy(
     Constants.TOOL_SEARCH,
     ASK_USER_QUESTION_TOOL_NAME,
   ]);
+  const denied = (input: Parameters<HookCallback<'PreToolUse'>>[0]): boolean => {
+    const agentId = input.executingAgentId;
+    return !(
+      mcpTools.has(execution.identity.agentId) &&
+      agentId != null &&
+      mcpTools.has(agentId) &&
+      (controls.has(input.toolName) ||
+        handoffs.get(agentId)?.has(input.toolName) === true ||
+        mcpTools.get(agentId)!.has(input.toolName))
+    );
+  };
   return {
     registerAgent,
     hook: async (input) => {
-      const agentId = input.executingAgentId;
-      if (
-        mcpTools.has(execution.identity.agentId) &&
-        agentId != null &&
-        mcpTools.has(agentId) &&
-        (controls.has(input.toolName) ||
-          handoffs.get(agentId)?.has(input.toolName) === true ||
-          mcpTools.get(agentId)!.has(input.toolName))
-      )
-        return {};
-      // This hook only tightens tool approval. The final MCP boundary still reauthorizes.
+      if (!denied(input)) return {};
       return {
         decision: 'deny',
-        reason: new ScheduledMCPPolicyError('tool_policy_denied', '', agentId).message,
+        reason: new ScheduledMCPPolicyError('tool_policy_denied', '', input.executingAgentId)
+          .message,
       };
+    },
+    // Separate hook: a failed or timed-out receipt must never erase the immediate deny.
+    receipt: async (input) => {
+      if (denied(input))
+        await recordDenial?.(
+          new ScheduledMCPPolicyError('tool_policy_denied', '', input.executingAgentId),
+        );
+      return {};
     },
   };
 }

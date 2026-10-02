@@ -25,6 +25,7 @@ const {
   recordCollectedUsage,
   resolveRunUsageContext,
   getScheduleMCPExecution,
+  createScheduledMCPPolicyRecorder,
   recordFallbackTokenUsage,
   createDetachedSubagentUsageRecorder,
   sendEvent,
@@ -4951,6 +4952,16 @@ class AgentClient extends BaseClient {
           (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
         const createRunPromise = createRun({
           scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
+          recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
+            getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
+            {
+              streamId,
+              jobCreatedAt: this.jobCreatedAt,
+              userId: this.options.req?.user?.id,
+              tenantId: this.options.req?.user?.tenantId,
+            },
+            require('~/server/services/Schedules').recordMCPToolAuthFailure,
+          ),
           agents,
           // Conversation-stable identity for the e2e run hook; a resumed run
           // carries no messages, so history cannot identify the conversation.
@@ -5736,6 +5747,16 @@ class AgentClient extends BaseClient {
         (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
       run = await createRun({
         scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
+        recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
+          getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
+          {
+            streamId,
+            jobCreatedAt: this.jobCreatedAt,
+            userId: this.options.req?.user?.id,
+            tenantId: this.options.req?.user?.tenantId,
+          },
+          require('~/server/services/Schedules').recordMCPToolAuthFailure,
+        ),
         agents,
         conversationId: this.conversationId,
         modelCallbacks: [

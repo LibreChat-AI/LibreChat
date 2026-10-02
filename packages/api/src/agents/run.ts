@@ -53,6 +53,7 @@ import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Callbacks } from '@langchain/core/callbacks/manager';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
+import type { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
 import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { ModelErrorTrackerCallback } from '~/agents/failures/tracker';
 import type { ToolInputValidationError } from '~/agents/toolValidation';
@@ -2127,6 +2128,7 @@ export async function createRun({
   hitlCapable = false,
   resolvedToolApprovalHooks,
   scheduledMCPExecution,
+  recordScheduledMCPDenial,
   toolInputValidationErrors,
   sessionStartSource,
   streaming = true,
@@ -2268,6 +2270,7 @@ export async function createRun({
    */
   resolvedToolApprovalHooks?: readonly ResolvedToolApprovalHook[];
   scheduledMCPExecution?: ScheduleMCPExecution;
+  recordScheduledMCPDenial?: (error: ScheduledMCPPolicyError) => Promise<boolean>;
   /** Plugin-hook SessionStart lifecycle source: 'startup' (default) or 'resume' on HITL-rebuild paths. */
   sessionStartSource?: string;
   /** Request-scoped tool input failures consumed by the completion handler. */
@@ -2785,7 +2788,12 @@ export async function createRun({
   );
   const hitl = hitlCapable ? approvalWiring : undefined;
   const scheduledPolicy = scheduledMCPExecution
-    ? createScheduledMCPRunPolicy(scheduledMCPExecution, agents, agents[0].edges ?? [])
+    ? createScheduledMCPRunPolicy(
+        scheduledMCPExecution,
+        agents,
+        agents[0].edges ?? [],
+        recordScheduledMCPDenial,
+      )
     : undefined;
   registerResolvedMCPToolAliases = (resolvedAgent) => {
     scheduledPolicy?.registerAgent(resolvedAgent);
@@ -2847,7 +2855,7 @@ export async function createRun({
   let hooks = approvalWiring?.hooks;
   if (scheduledPolicy) {
     hooks ??= new HookRegistry();
-    hooks.register('PreToolUse', { hooks: [scheduledPolicy.hook] });
+    hooks.register('PreToolUse', { hooks: [scheduledPolicy.hook, scheduledPolicy.receipt] });
   }
   if (usesSubagentCompletionWakeups(activeSubagentTasks)) {
     hooks = hooks ?? new HookRegistry();

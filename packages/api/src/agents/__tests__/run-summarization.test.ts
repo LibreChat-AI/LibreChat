@@ -4575,6 +4575,49 @@ describe('HITL wiring is gated on hitlCapable', () => {
     },
   );
 
+  it('installs the mandatory receipt hook independently of ordinary approval', async () => {
+    const f = await executionFixture();
+    const recorder = jest.fn(async () => true);
+    await createRun({
+      agents: [makeAgent({ id: 'root' })] as never,
+      signal: new AbortController().signal,
+      scheduledMCPExecution: f.execution,
+      recordScheduledMCPDenial: recorder,
+      appConfig: {
+        ...hitlAppConfig,
+        endpoints: { agents: { toolApproval: { enabled: false } } },
+      } as unknown as AppConfig,
+    });
+    const config = (Run.create as jest.Mock).mock.calls[0][0];
+    const body = jest.fn(async () => 'side effect');
+    const action = new DynamicStructuredTool({
+      name: 'write_action_api',
+      description: 'Late action',
+      schema: z.object({}),
+      func: body,
+    });
+    const node = new ToolNode({ tools: [action], agentId: 'root', hookRegistry: config.hooks });
+    await node.invoke(
+      {
+        messages: [
+          new AIMessage({ content: '', tool_calls: [{ id: 'call', name: action.name, args: {} }] }),
+        ],
+      },
+      { configurable: { run_id: 'scheduled', thread_id: 'thread' } },
+    );
+    expect(body).not.toHaveBeenCalled();
+    expect(recorder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        failure: {
+          reason: 'tool_policy_denied',
+          status: 'mcp_permission_denied',
+          recovery: 'configure',
+          automaticReplay: false,
+        },
+      }),
+    );
+  });
+
   it('passes only admitted root graph handoffs into the mandatory scheduled hook', async () => {
     const f = await executionFixture();
     const agents = [
