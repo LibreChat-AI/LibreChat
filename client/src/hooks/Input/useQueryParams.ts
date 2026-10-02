@@ -1,7 +1,8 @@
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef, useState } from 'react';
+import isEqual from 'lodash/isEqual';
 import { useRecoilValue } from 'recoil';
 import { useSearchParams } from 'react-router-dom';
-import { QueryClient, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, EModelEndpoint, PermissionBits } from 'librechat-data-provider';
 import type {
   AgentListResponse,
@@ -9,6 +10,7 @@ import type {
   TStartupConfig,
   TPreset,
 } from 'librechat-data-provider';
+import type { QueryClient } from '@tanstack/react-query';
 import {
   clearModelForNonEphemeralAgent,
   removeUnavailableTools,
@@ -25,7 +27,10 @@ import store from '~/store';
 
 const PROJECT_ID_SEARCH_PARAM = 'projectId';
 
-const injectAgentIntoAgentsMap = (queryClient: QueryClient, agent: any) => {
+const injectAgentIntoAgentsMap = (
+  queryClient: QueryClient,
+  agent: AgentListResponse['data'][number],
+) => {
   const editCacheKey = [QueryKeys.agents, { requiredPermission: PermissionBits.EDIT }];
   const editCache = queryClient.getQueryData<AgentListResponse>(editCacheKey);
 
@@ -40,11 +45,7 @@ const injectAgentIntoAgentsMap = (queryClient: QueryClient, agent: any) => {
   }
 };
 
-/**
- * Hook that processes URL query parameters to initialize chat with specified settings and prompt.
- * Handles model switching, prompt auto-filling, and optional auto-submission with race condition protection.
- * Supports immediate or deferred submission based on whether settings need to be applied first.
- */
+/** Stages URL prompts, then auto-submits once normalized conversation settings match. */
 export default function useQueryParams({
   textAreaRef,
 }: {
@@ -55,11 +56,11 @@ export default function useQueryParams({
   const MAX_SETTINGS_WAIT_MS = 3000;
   const processedRef = useRef(false);
   const pendingSubmitRef = useRef(false);
-  const settingsAppliedRef = useRef(false);
   const submissionHandledRef = useRef(false);
   const promptTextRef = useRef<string | null>(null);
   const validSettingsRef = useRef<TPreset | null>(null);
   const settingsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [submissionStatus, setSubmissionStatus] = useState<'idle' | 'preparing' | 'failed'>('idle');
 
   const methods = useChatFormContext();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -83,6 +84,28 @@ export default function useQueryParams({
     return preservedParams;
   }, [searchParams]);
 
+  const conversationRef = useRef(conversation);
+  conversationRef.current = conversation;
+
+  const areSettingsApplied = useCallback(() => {
+    const convo = conversationRef.current;
+    if (!validSettingsRef.current || !convo) {
+      return false;
+    }
+
+    for (const [key, value] of Object.entries(validSettingsRef.current)) {
+      if (['presetOverride', 'iconURL', 'modelLabel'].includes(key)) {
+        continue;
+      }
+
+      if (!isEqual(convo[key], value)) {
+        return false;
+      }
+    }
+
+    return true;
+  }, []);
+
   /**
    * Applies settings from URL query parameters to create a new conversation.
    * Handles model spec lookup, endpoint normalization, and conversation switching logic.
@@ -99,7 +122,7 @@ export default function useQueryParams({
         const modelSpecs = startupConfig?.modelSpecs?.list ?? [];
         const spec = modelSpecs.find((s) => s.name === newPreset.spec);
         if (!spec) {
-          return;
+          return false;
         }
         newPreset = {
           ...spec.preset,
@@ -125,6 +148,12 @@ export default function useQueryParams({
             break;
           }
         }
+      }
+
+      clearModelForNonEphemeralAgent(newPreset);
+      validSettingsRef.current = newPreset;
+      if (areSettingsApplied()) {
+        return true;
       }
 
       const {
@@ -174,17 +203,24 @@ export default function useQueryParams({
           template: currentConvo,
           preset: newPreset,
           keepAddedConvos: true,
+          keepComposerState: true,
         });
-        return;
+        return true;
       }
 
       newConversation({
-        template: { chatProjectId: conversation?.chatProjectId ?? null },
+        template: {
+          chatProjectId: conversation?.chatProjectId ?? null,
+          ...(newPreset.agent_id ? { agent_id: newPreset.agent_id } : {}),
+        },
         preset: newPreset,
         keepAddedConvos: true,
+        keepComposerState: true,
       });
+      return true;
     },
     [
+      areSettingsApplied,
       queryClient,
       modularChat,
       conversation,
@@ -194,33 +230,7 @@ export default function useQueryParams({
     ],
   );
 
-  const conversationRef = useRef(conversation);
-  conversationRef.current = conversation;
-
-  const areSettingsApplied = useCallback(() => {
-    const convo = conversationRef.current;
-    if (!validSettingsRef.current || !convo) {
-      return false;
-    }
-
-    for (const [key, value] of Object.entries(validSettingsRef.current)) {
-      if (['presetOverride', 'iconURL', 'spec', 'modelLabel'].includes(key)) {
-        continue;
-      }
-
-      if (convo[key] !== value) {
-        return false;
-      }
-    }
-
-    return true;
-  }, []);
-
-  /**
-   * Processes message submission exactly once, preventing duplicate submissions.
-   * Sets the prompt text, submits the message, and cleans up URL parameters afterward.
-   * Has internal guards to ensure it only executes once regardless of how many times it's called.
-   */
+  /** Consumes an auto-submit once, leaving a refused submission in the composer. */
   const processSubmission = useCallback(() => {
     if (submissionHandledRef.current || !pendingSubmitRef.current || !promptTextRef.current) {
       return;
@@ -229,7 +239,11 @@ export default function useQueryParams({
     submissionHandledRef.current = true;
     pendingSubmitRef.current = false;
 
-    methods.setValue('text', promptTextRef.current, { shouldValidate: true });
+    setSubmissionStatus('idle');
+    if (settingsTimeoutRef.current) {
+      clearTimeout(settingsTimeoutRef.current);
+      settingsTimeoutRef.current = null;
+    }
 
     methods.handleSubmit((data) => {
       if (data.text?.trim()) {
@@ -274,12 +288,18 @@ export default function useQueryParams({
       if (!textAreaRef.current) {
         return;
       }
+      const { decodedPrompt, validSettings, shouldAutoSubmit } = processQueryParams();
+      if (decodedPrompt && promptTextRef.current == null) {
+        promptTextRef.current = decodedPrompt;
+        methods.setValue('text', decodedPrompt, { shouldValidate: true });
+        textAreaRef.current.focus();
+        textAreaRef.current.setSelectionRange(decodedPrompt.length, decodedPrompt.length);
+      }
+
       const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
       if (!startupConfig) {
         return;
       }
-
-      const { decodedPrompt, validSettings, shouldAutoSubmit } = processQueryParams();
       const hasSettings = Object.keys(validSettings).length > 0;
 
       const autoSubmitAllowed = startupConfig.interface?.autoSubmitFromUrl !== false;
@@ -301,51 +321,30 @@ export default function useQueryParams({
         }
       };
 
-      if (hasSettings) {
-        validSettingsRef.current = validSettings;
-      }
-
-      if (decodedPrompt) {
-        promptTextRef.current = decodedPrompt;
-      }
-
-      // Handle auto-submission
-      if (willAutoSubmit && decodedPrompt) {
-        if (hasSettings) {
-          // Settings are changing, defer submission
-          pendingSubmitRef.current = true;
-
-          // Set a timeout to handle the case where settings might never fully apply
+      const settingsAccepted = !hasSettings || newQueryConvo(validSettings) === true;
+      if (willAutoSubmit && decodedPrompt.trim()) {
+        pendingSubmitRef.current = true;
+        if (!settingsAccepted) {
+          pendingSubmitRef.current = false;
+          submissionHandledRef.current = true;
+          setSubmissionStatus('failed');
+        } else if (!hasSettings || areSettingsApplied()) {
+          processSubmission();
+        } else {
+          setSubmissionStatus('preparing');
           settingsTimeoutRef.current = setTimeout(() => {
+            settingsTimeoutRef.current = null;
             if (!submissionHandledRef.current && pendingSubmitRef.current) {
-              logger.log(
-                'conversation',
-                'Settings application timeout, proceeding with submission',
-              );
-              processSubmission();
+              pendingSubmitRef.current = false;
+              submissionHandledRef.current = true;
+              setSubmissionStatus('failed');
+              logger.log('conversation', 'Settings application timeout, retaining prompt');
+              setSearchParams(getPreservedSearchParams(), { replace: true });
             }
           }, MAX_SETTINGS_WAIT_MS);
-        } else {
-          methods.setValue('text', decodedPrompt, { shouldValidate: true });
-          textAreaRef.current.focus();
-          textAreaRef.current.setSelectionRange(decodedPrompt.length, decodedPrompt.length);
-
-          methods.handleSubmit((data) => {
-            if (data.text?.trim()) {
-              submitMessage(data);
-            }
-          })();
         }
-      } else if (decodedPrompt) {
-        methods.setValue('text', decodedPrompt, { shouldValidate: true });
-        textAreaRef.current.focus();
-        textAreaRef.current.setSelectionRange(decodedPrompt.length, decodedPrompt.length);
       } else {
         submissionHandledRef.current = true;
-      }
-
-      if (hasSettings && !areSettingsApplied()) {
-        newQueryConvo(validSettings);
       }
 
       success();
@@ -353,9 +352,6 @@ export default function useQueryParams({
 
     return () => {
       clearInterval(intervalId);
-      if (settingsTimeoutRef.current) {
-        clearTimeout(settingsTimeoutRef.current);
-      }
     };
   }, [
     searchParams,
@@ -376,7 +372,6 @@ export default function useQueryParams({
     if (
       !processedRef.current ||
       submissionHandledRef.current ||
-      settingsAppliedRef.current ||
       !validSettingsRef.current ||
       !conversation
     ) {
@@ -384,8 +379,6 @@ export default function useQueryParams({
     }
 
     if (areSettingsApplied()) {
-      settingsAppliedRef.current = true;
-
       if (pendingSubmitRef.current) {
         if (settingsTimeoutRef.current) {
           clearTimeout(settingsTimeoutRef.current);
@@ -398,6 +391,15 @@ export default function useQueryParams({
     }
   }, [conversation, processSubmission, areSettingsApplied]);
 
+  useEffect(
+    () => () => {
+      if (settingsTimeoutRef.current) {
+        clearTimeout(settingsTimeoutRef.current);
+      }
+    },
+    [],
+  );
+
   const { isAuthenticated } = useAuthContext();
   const agentsMap = useAgentsMap({ isAuthenticated });
   useEffect(() => {
@@ -405,4 +407,12 @@ export default function useQueryParams({
       injectAgentIntoAgentsMap(queryClient, urlAgent);
     }
   }, [urlAgent, queryClient, agentsMap]);
+
+  const clearSettingsError = useCallback(() => setSubmissionStatus('idle'), []);
+
+  return {
+    clearSettingsError,
+    isPreparing: submissionStatus === 'preparing',
+    settingsError: submissionStatus === 'failed',
+  };
 }

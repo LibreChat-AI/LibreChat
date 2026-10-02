@@ -443,6 +443,12 @@ const ChatForm = memo(function ChatForm({
     [methods, steering],
   );
 
+  const {
+    isPreparing: isPreparingFromUrl,
+    settingsError: urlSettingsError,
+    clearSettingsError,
+  } = useQueryParams({ textAreaRef });
+
   const handleKeyUp = useHandleKeyUp({
     index,
     textAreaRef,
@@ -457,7 +463,7 @@ const ChatForm = memo(function ChatForm({
     textAreaRef,
     submitButtonRef,
     setIsScrollable,
-    disabled: disableInputs || answerMode.composerLocked,
+    disabled: disableInputs || answerMode.composerLocked || isPreparingFromUrl,
     // The composer IS the free-form answer box while a question pause is live.
     placeholder: composerReserved ? answerPlaceholder : placeholder,
     // Enter stays live during a run when it can steer/queue instead of send.
@@ -466,8 +472,6 @@ const ChatForm = memo(function ChatForm({
     answerModeActive: answerMode.composerAnswers,
     enterToSend,
   });
-
-  useQueryParams({ textAreaRef });
 
   /** Attachments stand in for text only on the normal send path. Answer mode
    *  hands the composer text straight to the paused run, which answers with
@@ -653,6 +657,7 @@ const ChatForm = memo(function ChatForm({
               fileCount={submittableFileCount}
               disabled={
                 filesLoading ||
+                isPreparingFromUrl ||
                 disableInputs ||
                 !codeWorkspace.canSubmit ||
                 isNotAppendable ||
@@ -663,6 +668,7 @@ const ChatForm = memo(function ChatForm({
           ),
     [
       codeWorkspace.canSubmit,
+      isPreparingFromUrl,
       endpoint,
       duringRunSlot,
       filesLoading,
@@ -729,7 +735,9 @@ const ChatForm = memo(function ChatForm({
   return (
     <form
       onSubmit={methods.handleSubmit((data) => {
-        submitComposerText(data);
+        if (!isPreparingFromUrl && submitComposerText(data) !== false) {
+          clearSettingsError();
+        }
       })}
       className={cn(
         /* `margin-bottom` is animated as well as `max-width`: it is what carries
@@ -882,7 +890,12 @@ const ChatForm = memo(function ChatForm({
                           textAreaRef as React.MutableRefObject<HTMLTextAreaElement | null>
                         ).current = e;
                       }}
-                      disabled={disableInputs || isNotAppendable || answerMode.composerLocked}
+                      disabled={
+                        disableInputs ||
+                        isNotAppendable ||
+                        answerMode.composerLocked ||
+                        isPreparingFromUrl
+                      }
                       onPaste={handlePaste}
                       onKeyDown={(e) => {
                         // Answer mode consumes option-navigation keys from the
@@ -939,6 +952,11 @@ const ChatForm = memo(function ChatForm({
                     </div>
                   </div>
                 </div>
+              )}
+              {(isPreparingFromUrl || urlSettingsError) && (
+                <p role="status" className="text-text-secondary px-5 pb-2 text-sm">
+                  {localize(urlSettingsError ? 'com_ui_url_settings_failed' : 'com_ui_sending')}
+                </p>
               )}
               {(codeWorkspace.state === 'choose' || codeWorkspace.state === 'missing') && (
                 <p
