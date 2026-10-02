@@ -257,7 +257,11 @@ export function markAbortedCompactionContent(
       continue;
     }
     contentParts.splice(index, 1);
-    removedUnfinishedRound = true;
+    /** Walking backwards, an outcome already seen belongs to a later round:
+     *  this placeholder is an earlier round the later one superseded. */
+    if (!hasOutcome) {
+      removedUnfinishedRound = true;
+    }
   }
   /** An earlier round's checkpoint is not this round's outcome: a round the
    *  run opened but never finished still records the typed failure beside it,

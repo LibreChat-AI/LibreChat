@@ -425,6 +425,21 @@ describe('markAbortedCompactionContent', () => {
     ]);
   });
 
+  /** Checkpoints are last-summary-wins: an earlier round that never
+   *  finished is superseded by the later usable summary, not a failure. */
+  it('synthesizes no failure when a later round completed after an empty one', () => {
+    const parts = [emptySummaryPlaceholder(), completedSummary('The later checkpoint.')];
+
+    markAbortedCompactionContent(parts, true);
+
+    expect(parts).toEqual([
+      expect.objectContaining({
+        type: ContentTypes.SUMMARY,
+        initiatedBy: 'user',
+      }),
+    ]);
+  });
+
   /** A run stopped before any part streamed still needs an identifiable row:
    *  an empty one reads as an answer to the message it hangs off. */
   it('records the typed failure when nothing streamed before the stop', () => {
