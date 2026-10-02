@@ -41,7 +41,11 @@
         } catch (e) {
           /* Web Storage denied or unparsable: the default scale applies. */
         }
-        document.documentElement.style.setProperty('--ui-scale', String(uiScale));
+        /* The stylesheet's :root already declares 1, so the default leaves the
+         * root's inline style untouched. */
+        if (uiScale !== 1) {
+          document.documentElement.style.setProperty('--ui-scale', String(uiScale));
+        }
 
         let theme = null;
         try {
