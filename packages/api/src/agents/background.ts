@@ -668,6 +668,7 @@ export interface BackgroundTask {
     claimId: string;
     claimedAt: number;
     generationId?: string;
+    receiptReconciled?: true;
   };
   /** The declared tool may return a process-local live artifact. A terminal
    * same-generation poll may therefore deliver from the local claim after it
@@ -1823,7 +1824,12 @@ export class BackgroundTaskRegistryClass {
     userId: string,
     conversationId: string,
     taskId: string,
-    claim: { kind: 'manual' | 'wakeup'; claimId: string; generationId?: string },
+    claim: {
+      kind: 'manual' | 'wakeup';
+      claimId: string;
+      generationId?: string;
+      receiptReconciled?: true;
+    },
   ): 'acquired' | 'replay' | 'claimed' | 'not_ready' {
     const task = this.get(userId, conversationId, taskId);
     if (task == null || task.status === 'running') {
@@ -1834,9 +1840,14 @@ export class BackgroundTaskRegistryClass {
       task.updatedAt = Date.now();
       return 'acquired';
     }
-    return task.resultClaim.kind === claim.kind && task.resultClaim.claimId === claim.claimId
-      ? 'replay'
-      : 'claimed';
+    if (task.resultClaim.kind !== claim.kind || task.resultClaim.claimId !== claim.claimId) {
+      return 'claimed';
+    }
+    if (claim.receiptReconciled === true && task.resultClaim.receiptReconciled !== true) {
+      task.resultClaim.receiptReconciled = true;
+      task.updatedAt = Date.now();
+    }
+    return 'replay';
   }
 
   releaseResultClaim(
@@ -2674,6 +2685,7 @@ export async function runCheckBackgroundTask(params: {
                   taskId,
                   {
                     kind: 'manual',
+                    receiptReconciled: true,
                     claimId: invocationId,
                     ...(params.generationId == null ? {} : { generationId: params.generationId }),
                   },
@@ -2744,6 +2756,7 @@ export async function runCheckBackgroundTask(params: {
                 taskId,
                 {
                   kind: 'manual',
+                  receiptReconciled: true,
                   claimId: invocationId,
                   ...(params.generationId == null ? {} : { generationId: params.generationId }),
                 },
@@ -3242,6 +3255,7 @@ export function getBackgroundCodeDelivery(params: {
                     kind: task.resultClaim.kind,
                     claimId: task.resultClaim.claimId,
                     claimedAt: new Date(task.resultClaim.claimedAt),
+                    ...(task.resultClaim.receiptReconciled === true && { receiptReconciled: true }),
                     ...(task.resultClaim.generationId == null
                       ? {}
                       : { generationId: task.resultClaim.generationId }),

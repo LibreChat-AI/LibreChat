@@ -1156,7 +1156,12 @@ export function createBackgroundToolDeadClaimRecovery(
     const generationFence = await fenceGenerationClaim({ userId, conversationId, claimId });
     if (generationFence === 'unavailable') return false;
     if (generationFence === 'started' && batch != null) {
-      await confirmAdmission();
+      // The native claim CAS proves admission even when a custom store cannot
+      // read historical claims or the live generation has been cleaned up.
+      await batchRecovery?.confirmAgentBackgroundToolResultBatch({
+        ...owner,
+        batchId: batch.batchId,
+      });
       return false;
     }
     if (await claimGenerationIsActive()) {

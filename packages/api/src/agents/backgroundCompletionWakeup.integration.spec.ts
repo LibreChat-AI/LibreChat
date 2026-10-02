@@ -5,13 +5,22 @@ import {
   createModels,
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
 } from '@librechat/data-schemas';
+import type { IMessage } from '@librechat/data-schemas';
 import type { AgentTriggerFetch } from './triggers/host';
 import {
   createBackgroundToolCompletionWakeupResolver,
   createBackgroundToolDeadClaimRecovery,
   BACKGROUND_TOOL_COMPLETION_SOURCE,
 } from './backgroundCompletionWakeup';
+import {
+  backgroundTaskRegistry,
+  runCheckBackgroundTask,
+  getBackgroundCodeDelivery,
+} from './background';
 import { createAgentTriggerEnvelope, getAgentTriggerIdempotencyKey } from './triggers/envelope';
+import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
+import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import { createAgentTriggerExecutionHost } from './triggers/host';
 import { prepareAgentTriggerDelivery } from './triggers/delivery';
 import { claimBackgroundToolResult } from './backgroundClaims';
@@ -841,3 +850,198 @@ it('keeps explicit manual recovery able to reopen a committed claim after its ge
     ).status,
   ).toBe('acquired');
 });
+
+it.each(['same-generation', 'later-generation'] as const)(
+  'restores manual reconciliation after %s final persistence',
+  async (scenario) => {
+    const generationId = scenario === 'same-generation' ? parentMessageId : 'manual-generation';
+    const created = backgroundTaskRegistry.create({
+      userId,
+      conversationId,
+      toolCallId: 'manual-final-call',
+      toolName: 'tool',
+      messageId: parentMessageId,
+      harvestStarted: true,
+    });
+    if ('atCapacity' in created) throw new Error('Unexpected task capacity');
+    const taskId = created.task.id;
+    const root = await ready(taskId);
+    await project(taskId);
+    await mongoose.models.Message.updateOne(
+      { user: userId, messageId: parentMessageId },
+      { $set: { unfinished: true } },
+    );
+    const original = await mongoose.models.Message.findOne({
+      user: userId,
+      messageId: parentMessageId,
+    }).lean<Pick<IMessage, 'content'>>();
+    backgroundTaskRegistry.complete(userId, conversationId, taskId, { content: 'manual-result' });
+    backgroundTaskRegistry.finishHarvest(userId, conversationId, taskId);
+    backgroundTaskRegistry.markCompletionWakeup(userId, conversationId, taskId, {
+      renew: async () => true,
+      retire: async (reason, options) =>
+        methods.retireAgentTriggerDelivery({
+          deliveryKey: getAgentTriggerIdempotencyKey(root),
+          sourceId: BACKGROUND_TOOL_COMPLETION_SOURCE,
+          settledAt: new Date(),
+          reason,
+          ...options,
+        }),
+    });
+    const polled = JSON.parse(
+      await runCheckBackgroundTask({
+        userId,
+        conversationId,
+        args: { background_task_id: taskId },
+        toolCallId: 'confirmed-poll',
+        runId: 'manual-run',
+        generationId,
+        claimBackgroundToolResult: (input) =>
+          claimBackgroundToolResult(methods, methods.getAgentBackgroundToolResultClaim, input),
+      }),
+    );
+    expect(polled).toMatchObject({ status: 'completed', result: 'manual-result' });
+    expect(backgroundTaskRegistry.get(userId, conversationId, taskId)?.resultClaim).toMatchObject({
+      receiptReconciled: true,
+    });
+    // Final full persistence uses content captured before manual confirmation.
+    await mongoose.models.Message.updateOne(
+      { user: userId, messageId: parentMessageId },
+      { $set: { unfinished: false, content: original?.content } },
+    );
+    const restored = getBackgroundCodeDelivery({
+      userId,
+      conversationId,
+      args: { background_task_id: taskId },
+    });
+    expect(restored?.backgroundTask?.resultClaim).toMatchObject({ receiptReconciled: true });
+    await methods.updateToolCallResult({
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      toolCallId: taskId,
+      output: 'manual-result',
+      backgroundTask: restored?.backgroundTask,
+    });
+    const release = jest.fn(methods.releaseBackgroundToolResultClaims);
+    const recover = createBackgroundToolDeadClaimRecovery(
+      async () => false,
+      release,
+      async () => null,
+      async () => 'unavailable',
+    );
+    const claim = await methods.claimBackgroundToolResults({
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      taskId,
+      kind: 'wakeup',
+      claimId: 'automatic-probe',
+    });
+    if (claim.status !== 'claimed' || claim.claim == null)
+      throw new Error('Expected preserved manual claim');
+    expect(claim.claim).toMatchObject({ receiptReconciled: true });
+    expect(
+      await recover({
+        userId,
+        conversationId,
+        messageId: parentMessageId,
+        claimId: claim.claim.claimId,
+        kind: 'manual',
+        generationId,
+        onlyIfUnreconciled: true,
+      }),
+    ).toBe(false);
+    expect(
+      (await methods.getAgentTriggerDelivery(getAgentTriggerIdempotencyKey(root)))?.status,
+    ).toBe('succeeded');
+  },
+);
+
+it.each(['admitted', 'unpublished'] as const)(
+  'uses native recovery proof after custom-store %s job cleanup',
+  async (state) => {
+    const root = await ready('one');
+    const sibling = await ready('two');
+    const key = getAgentTriggerIdempotencyKey(root);
+    await methods.claimAgentBackgroundToolResultBatch({
+      ...owner(key),
+      limit: 8,
+      maxMetadataChars: 16000,
+    });
+    const store = new InMemoryJobStore({ ttlAfterComplete: 0 });
+    // Historical lookup is optional; the native claim/fence CAS still exists.
+    Reflect.set(store, 'getIdempotencyClaim', undefined);
+    const manager = new GenerationJobManagerClass();
+    manager.configure({
+      jobStore: store,
+      eventTransport: new InMemoryEventTransport(),
+      isRedis: false,
+    });
+    manager.initialize();
+    try {
+      const claimed = await manager.claimGeneration(userId, key, conversationId, conversationId, 2);
+      if (state === 'admitted') {
+        const job = await manager.createJob(conversationId, userId, conversationId, {
+          idempotencyClientRequestId: key,
+          idempotencyClaimToken: claimed.existing!.claimToken,
+          initialMetadata: { generationProtocolVersion: 2 },
+        });
+        expect(await store.deleteJob(conversationId, job.createdAt)).toBe(true);
+      }
+      expect(
+        await manager.getGenerationAdmissionEvidence(userId, key, conversationId, conversationId),
+      ).toBeNull();
+      await mongoose.models.AgentTriggerDelivery.updateOne(
+        { deliveryKey: key },
+        { $set: { capabilityStatus: 'dead' } },
+      );
+      const release = jest.fn(methods.releaseAgentBackgroundToolResultClaims);
+      const recover = createBackgroundToolDeadClaimRecovery(
+        async (deliveryKey, sourceId, reason, options) =>
+          methods.retireAgentTriggerDelivery({
+            deliveryKey,
+            sourceId,
+            reason,
+            settledAt: new Date(),
+            ...options,
+          }),
+        methods.releaseBackgroundToolResultClaims,
+        async () => null,
+        ({ userId, conversationId, claimId }) =>
+          manager.fenceGenerationClaimForRecovery(userId, claimId, conversationId, conversationId),
+        release,
+        methods,
+        (...args) => manager.getGenerationAdmissionEvidence(...args),
+      );
+      expect(
+        await recover({ userId, conversationId, messageId: parentMessageId, claimId: key }),
+      ).toBe(state === 'unpublished');
+      if (state === 'admitted') {
+        expect(release).not.toHaveBeenCalled();
+        expect(
+          await methods.claimAgentBackgroundToolResultBatch({
+            ...owner(getAgentTriggerIdempotencyKey(sibling)),
+            limit: 8,
+            maxMetadataChars: 16000,
+          }),
+        ).toMatchObject({ status: 'claimed', ownerStatus: 'applied' });
+        const batch = await methods.getAgentBackgroundToolResultBatch(owner(key));
+        expect(batch?.proofCopiedAt).toBeInstanceOf(Date);
+      } else {
+        expect(release).toHaveBeenCalledWith(expect.objectContaining({ recoveryFenced: true }));
+        expect(
+          (
+            await methods.claimAgentBackgroundToolResultBatch({
+              ...owner(getAgentTriggerIdempotencyKey(sibling)),
+              limit: 8,
+              maxMetadataChars: 16000,
+            })
+          ).status,
+        ).toBe('acquired');
+      }
+    } finally {
+      await manager.destroy();
+    }
+  },
+);

@@ -5655,15 +5655,16 @@ describe('background result receipt batches', () => {
       await ready('one');
       await ready('two');
       const updateOne = Delivery.updateOne.bind(Delivery);
-      let writes = 0;
       const crash =
         phase === 'claim'
           ? jest.spyOn(Delivery, 'updateMany').mockImplementationOnce(() => {
               throw new Error('crash after candidate write');
             })
           : jest.spyOn(Delivery, 'updateOne').mockImplementation((...args) => {
-              if (++writes === 2) throw new Error('crash after result claims');
-              return updateOne(...args);
+              const query = updateOne(...args);
+              if (JSON.stringify(query.getUpdate()).includes('backgroundToolResultBatch.members'))
+                throw new Error('crash after result claims');
+              return query;
             });
       await expect(methods.claimAgentBackgroundToolResultBatch(input('one'))).rejects.toThrow(
         'crash',
@@ -5683,10 +5684,9 @@ describe('background result receipt batches', () => {
     await ready('one');
     await ready('two');
     const updateOne = Delivery.updateOne.bind(Delivery);
-    let writes = 0;
     const lostReply = jest.spyOn(Delivery, 'updateOne').mockImplementation((...args) => {
       const query = updateOne(...args);
-      if (++writes === 2) {
+      if (JSON.stringify(query.getUpdate()).includes('backgroundToolResultBatch.members')) {
         const execute = query.exec.bind(query);
         jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
           await execute();
@@ -6074,6 +6074,139 @@ describe('background result receipt batches', () => {
     expect(await predecessor).toEqual({ status: 'not_ready' });
     cleanup.mockRestore();
     expect(await methods.claimAgentBackgroundToolResultBatch(input('one'))).toEqual(current);
+  });
+
+  it('clears a collecting-only plan retired by a manual poll after its collector crashes', async () => {
+    await ready('one');
+    await ready('two');
+    const write = Delivery.updateOne.bind(Delivery);
+    const crash = jest.spyOn(Delivery, 'updateOne').mockImplementation((...args) => {
+      const query = write(...args);
+      if (JSON.stringify(query.getUpdate()).includes('backgroundToolResult.resultClaim'))
+        throw new Error('crash before root claim');
+      return query;
+    });
+    await expect(methods.claimAgentBackgroundToolResultBatch(input('one'))).rejects.toThrow(
+      'crash before root claim',
+    );
+    crash.mockRestore();
+    const collecting = await Delivery.findOne({ deliveryKey: 'one' })
+      .select('+backgroundToolResultBatch +backgroundToolResult')
+      .lean();
+    expect(collecting?.backgroundToolResultBatch).toMatchObject({ candidates: ['one', 'two'] });
+    expect(collecting?.backgroundToolResult?.resultClaim).toBeUndefined();
+    expect(
+      await methods.retireAgentTriggerDelivery({
+        deliveryKey: 'one',
+        sourceId,
+        settledAt: START,
+        reason: 'manual poll',
+        onlyIfUnclaimed: true,
+        requireTransition: true,
+      }),
+    ).toBe(true);
+    const retired = await Delivery.findOne({ deliveryKey: 'one' })
+      .select('+backgroundToolResultBatch')
+      .lean();
+    expect(retired).toMatchObject({
+      status: 'succeeded',
+      expiresAt: new Date(START.getTime() + 90 * 24 * 60 * 60_000),
+    });
+    expect(retired).not.toHaveProperty('backgroundToolResultBatch');
+    expect(
+      await methods.getAgentBackgroundToolResultClaim({ ...input('two'), taskId: 'two' }),
+    ).toBeNull();
+    expect((await methods.claimAgentBackgroundToolResultBatch(input('two'))).status).toBe(
+      'acquired',
+    );
+  });
+
+  it('prevents a stale collector from acquiring siblings after empty-plan retirement', async () => {
+    await ready('one');
+    await ready('two');
+    let pause: () => void = () => undefined;
+    let resume: () => void = () => undefined;
+    const paused = new Promise<void>((resolve) => {
+      pause = resolve;
+    });
+    const barrier = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const write = Delivery.updateOne.bind(Delivery);
+    const rootClaim = jest.spyOn(Delivery, 'updateOne').mockImplementation((...args) => {
+      const query = write(...args);
+      if (JSON.stringify(query.getUpdate()).includes('backgroundToolResult.resultClaim')) {
+        const execute = query.exec.bind(query);
+        jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+          pause();
+          await barrier;
+          return execute();
+        });
+      }
+      return query;
+    });
+    const collecting = methods.claimAgentBackgroundToolResultBatch(input('one'));
+    await paused;
+    expect(
+      await methods.retireAgentTriggerDelivery({
+        deliveryKey: 'one',
+        sourceId,
+        settledAt: START,
+        reason: 'manual poll',
+        onlyIfUnclaimed: true,
+      }),
+    ).toBe(true);
+    resume();
+    expect(await collecting).toEqual({ status: 'not_ready' });
+    rootClaim.mockRestore();
+    expect(
+      await methods.getAgentBackgroundToolResultClaim({ ...input('two'), taskId: 'two' }),
+    ).toBeNull();
+    expect(await Delivery.findOne({ deliveryKey: 'one' }).lean()).toHaveProperty('expiresAt');
+  });
+
+  it('retains an owned collecting plan before membership publication', async () => {
+    await ready('one');
+    await ready('two');
+    const crash = jest.spyOn(Delivery, 'updateMany').mockImplementationOnce(() => {
+      throw new Error('crash before sibling claims');
+    });
+    await expect(methods.claimAgentBackgroundToolResultBatch(input('one'))).rejects.toThrow(
+      'crash before sibling claims',
+    );
+    crash.mockRestore();
+    expect(
+      await methods.retireAgentTriggerDelivery({
+        deliveryKey: 'one',
+        sourceId,
+        settledAt: START,
+        reason: 'manual poll',
+        onlyIfUnclaimed: true,
+      }),
+    ).toBe(false);
+    await Delivery.updateOne({ deliveryKey: 'one' }, { $set: { capabilityStatus: 'dead' } });
+    expect(
+      await methods.retireAgentTriggerDelivery({
+        deliveryKey: 'one',
+        sourceId,
+        settledAt: START,
+        reason: 'recovery',
+        onlyIfDead: true,
+      }),
+    ).toBe(true);
+    const retired = await Delivery.findOne({ deliveryKey: 'one' })
+      .select('+backgroundToolResultBatch')
+      .lean();
+    expect(retired?.backgroundToolResultBatch).toBeDefined();
+    expect(retired).not.toHaveProperty('expiresAt');
+    expect(
+      await methods.releaseAgentBackgroundToolResultClaims({
+        ...input('one'),
+        claimId: 'one',
+        recoveryFenced: true,
+      }),
+    ).toBe(true);
+    expect(await Delivery.findOne({ deliveryKey: 'one' }).lean()).toHaveProperty('expiresAt');
   });
 
   it('retains a retired owner across the TTL horizon until every claim is released', async () => {

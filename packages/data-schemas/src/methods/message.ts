@@ -798,6 +798,7 @@ export interface MessageMethods {
         claimId: string;
         claimedAt: Date;
         generationId?: string;
+        receiptReconciled?: true;
       };
     };
   }): Promise<{ matched: boolean; unfinished: boolean }>;

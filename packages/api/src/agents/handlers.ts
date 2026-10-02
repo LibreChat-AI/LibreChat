@@ -6446,6 +6446,9 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                               kind: current.resultClaim.kind,
                               claimId: current.resultClaim.claimId,
                               claimedAt: new Date(current.resultClaim.claimedAt),
+                              ...(current.resultClaim.receiptReconciled === true && {
+                                receiptReconciled: true,
+                              }),
                               ...(current.resultClaim.generationId == null
                                 ? {}
                                 : { generationId: current.resultClaim.generationId }),

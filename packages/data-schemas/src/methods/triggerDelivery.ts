@@ -2242,7 +2242,7 @@ export function createAgentTriggerDeliveryMethods(
         },
       };
     })();
-    const retire = (retainBatch: boolean) =>
+    const retire = (retainBatch: boolean, discardEmptyPlan = false) =>
       Delivery()
         .findOneAndUpdate(
           {
@@ -2250,21 +2250,27 @@ export function createAgentTriggerDeliveryMethods(
             'envelope.event.source.type': 'internal',
             'envelope.event.source.id': input.sourceId,
             ...statusFence,
-            ...(retainBatch
-              ? {
-                  backgroundToolResultBatch: { $exists: true },
-                  'backgroundToolResultBatch.proofCopiedAt': { $exists: false },
-                }
-              : {
-                  $and: [
-                    {
-                      $or: [
-                        { backgroundToolResultBatch: { $exists: false } },
-                        { 'backgroundToolResultBatch.proofCopiedAt': { $exists: true } },
-                      ],
-                    },
-                  ],
-                }),
+            ...(discardEmptyPlan && {
+              backgroundToolResultBatch: { $exists: true },
+              'backgroundToolResultBatch.members.0': { $exists: false },
+              'backgroundToolResult.resultClaim.claimId': { $ne: input.deliveryKey },
+            }),
+            ...(!discardEmptyPlan &&
+              retainBatch && {
+                backgroundToolResultBatch: { $exists: true },
+                'backgroundToolResultBatch.proofCopiedAt': { $exists: false },
+              }),
+            ...(!discardEmptyPlan &&
+              !retainBatch && {
+                $and: [
+                  {
+                    $or: [
+                      { backgroundToolResultBatch: { $exists: false } },
+                      { 'backgroundToolResultBatch.proofCopiedAt': { $exists: true } },
+                    ],
+                  },
+                ],
+              }),
             ...(input.onlyIfUnclaimed === true
               ? { 'backgroundToolResult.resultClaim': { $exists: false } }
               : {}),
@@ -2290,6 +2296,7 @@ export function createAgentTriggerDeliveryMethods(
               capabilityClaimToken: 1,
               lastError: 1,
               ...(retainBatch && { expiresAt: 1 }),
+              ...(discardEmptyPlan && { backgroundToolResultBatch: 1 }),
             },
           },
           { new: true },
@@ -2298,7 +2305,7 @@ export function createAgentTriggerDeliveryMethods(
         .lean<Pick<IAgentTriggerDelivery, '_id' | 'orderingKey' | 'laneCleanupPendingAt'>>();
     // A retired owner is its followers' recovery and frozen-membership record.
     // Its TTL cannot start while release or receipt-proof copying is incomplete.
-    const retired = (await retire(false)) ?? (await retire(true));
+    const retired = (await retire(false)) ?? (await retire(false, true)) ?? (await retire(true));
     if (retired?._id != null) {
       try {
         await fulfillLaneCleanupRequest(retired);
@@ -3207,6 +3214,36 @@ export function createAgentTriggerDeliveryMethods(
     let batch = root.backgroundToolResultBatch;
     if (batch == null) return { status: 'not_ready' };
     if (batch.members == null) {
+      // Retirement of a collecting-only plan contends with this root CAS.
+      // No sibling can depend on the owner until its own receipt is claimed.
+      if (root.backgroundToolResult?.resultClaim?.claimId !== input.deliveryKey) {
+        const claimedRoot = await Delivery().updateOne(
+          {
+            ...scope,
+            deliveryKey: input.deliveryKey,
+            status: { $in: UNDELIVERED_STATUSES },
+            capabilityStatus: { $ne: 'dead' },
+            'backgroundToolResultBatch.batchId': batch.batchId,
+            'backgroundToolResultBatch.releasing': { $ne: true },
+            'backgroundToolResult.resultClaim': { $exists: false },
+            ...(input.deliveryClaimToken == null
+              ? {}
+              : { capabilityClaimToken: input.deliveryClaimToken }),
+          },
+          {
+            $set: {
+              'backgroundToolResult.resultClaim': {
+                kind: 'wakeup',
+                claimId: input.deliveryKey,
+                claimedAt: new Date(),
+                batchId: batch.batchId,
+              },
+            },
+          },
+          { timestamps: false },
+        );
+        if (claimedRoot.matchedCount !== 1) return { status: 'not_ready' };
+      }
       await Delivery().updateMany(
         {
           ...scope,

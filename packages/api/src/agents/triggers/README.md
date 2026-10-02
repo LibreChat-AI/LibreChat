@@ -329,3 +329,8 @@ Failed confirmation rolls back only unreconciled ownership. If rollback is unava
 automatic delivery invokes manual-generation recovery after that owner is no longer active.
 Its release CAS excludes committed manual handoffs, including confirmation after a stale
 snapshot. Explicit manual recovery keeps its existing generation-fenced contract.
+
+Manual reconciliation survives registry restoration and final response persistence.
+Collecting plans acquire the root before siblings, so empty retirement can clear an
+unowned plan without orphaning claims. Native `started` recovery fences confirm admission
+even when a custom store cannot read historical claims after job cleanup.
