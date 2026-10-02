@@ -12,6 +12,7 @@ import type { RunStep, StandardGraph } from '@librechat/agents';
 import type { AgentEventDetachedTerminalEvidence } from '~/agents/triggers/types';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
+import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
 import type { MCPRuntimeRequestBody } from '~/mcp/types';
@@ -1660,6 +1661,8 @@ export interface IEventTransport {
     handlers: {
       /** `generationId` identifies the immutable generation that emitted the chunk. */
       onChunk: (event: unknown, generationId?: number) => void;
+      /** One ordered snapshot before live delivery, only for replay subscriptions. */
+      onReplay?: (events: unknown[]) => void;
       /** `generationId` identifies the immutable generation that emitted the done event. */
       onDone?: (event: unknown, generationId?: number) => void;
       /** `generationId` identifies the immutable generation that emitted the error. */
@@ -1668,6 +1671,8 @@ export interface IEventTransport {
     options?: {
       /** Hold sequenced events until syncReorderBuffer establishes the replay frontier. */
       deferSequenceDelivery?: boolean;
+      /** Per-viewer bounded replay; does not rewind other subscribers. */
+      replay?: ReplayLimits;
       /** After opening a fresh Pub/Sub channel, atomically capture its sequence frontier
        * and fence delivery so synchronization cannot lose an attachment-time frame. */
       captureSequenceFrontier?: boolean;
@@ -1685,6 +1690,20 @@ export interface IEventTransport {
    * advance a subscriber to the exact ordering frontier.
    */
   emitChunk(streamId: string, event: unknown, generationId?: number): void | Promise<void | number>;
+
+  /** Retain an observational chunk even with no viewers, then publish it atomically. */
+  emitReplayableChunk?(
+    streamId: string,
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void>;
+  emitReplayableDone?(
+    streamId: string,
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void>;
 
   /**
    * Publish a done event - returns Promise in Redis mode for ordered delivery.

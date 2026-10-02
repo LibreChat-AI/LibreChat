@@ -1550,13 +1550,34 @@ describe('useCodeWorkspace', () => {
       });
     });
 
-    it('keeps a reachable sealed workspace out of the composer', () => {
+    it('keeps a healthy attached workspace visible with an explicit detach action', () => {
       const kept = { environmentId: 'personal-vm', workspaceId: 'project-a' };
 
       const { result } = renderHook(() => useCodeWorkspace(sealed([kept])));
 
       expect(result.current.state).toBe('ready');
       expect(result.current.canSubmit).toBe(true);
+      expect(result.current.transition).toMatchObject({
+        kind: 'detach',
+        from: [kept],
+        retained: [kept],
+        targets: [],
+        detachable: true,
+      });
+      expect(result.current.visible).toBe(true);
+      expect(result.current.resolveSubmission([kept], 'attached')).toEqual({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [kept],
+      });
+    });
+
+    it('does not offer healthy detach to a replica that only supports moves', () => {
+      mockStartupConfig.mockReturnValue({
+        codeEnvironmentDecisionVersion: 1,
+        codeEnvironmentMoveVersion: 1,
+      });
+      const kept = { environmentId: 'personal-vm', workspaceId: 'project-a' };
+      const { result } = renderHook(() => useCodeWorkspace(sealed([kept])));
       expect(result.current.transition).toBeUndefined();
       expect(result.current.visible).toBe(false);
     });

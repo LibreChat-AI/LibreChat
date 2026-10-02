@@ -57,6 +57,12 @@ function describeTransition(
   transition: CodeWorkspaceTransition,
   localize: ReturnType<typeof useLocalize>,
 ): { label: string; info: string } {
+  if (transition.kind === 'detach') {
+    return {
+      label: localize('com_ui_code_workspace_detach'),
+      info: localize('com_ui_code_workspace_detach_info'),
+    };
+  }
   if (transition.targets.some(({ state }) => state === 'missing')) {
     return {
       label: localize('com_ui_code_workspace_recover'),
@@ -337,7 +343,9 @@ export default function CodeWorkspaceMenu({
    *  own item: this one only confirms a decision that still names at least one workspace. */
   const proposed = transition == null ? [] : [...transition.retained, ...chosenTargets];
   const offersMove =
-    transition != null && (transition.targets.length > 0 || transition.retained.length > 0);
+    transition != null &&
+    transition.kind !== 'detach' &&
+    (transition.targets.length > 0 || transition.retained.length > 0);
   const moveReady =
     transition != null && chosenTargets.length === transition.targets.length && proposed.length > 0;
   const applyTransition = (to: CodeWorkspaceSelection[]) => {

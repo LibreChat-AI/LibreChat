@@ -683,7 +683,7 @@ describe('CodeWorkspaceMenu', () => {
     });
   });
 
-  describe('a chat sealed to a machine it can no longer reach', () => {
+  describe('a chat leaving its sealed workspace decision', () => {
     const mac = { environmentId: 'mac', workspaceId: 'primary' };
     const sealed = { ...conversation, conversationId: 'existing' } as TConversation;
 
@@ -691,60 +691,71 @@ describe('CodeWorkspaceMenu', () => {
       jest.restoreAllMocks();
     });
 
-    test.each(['offline', 'no-longer-used'])(
-      'continues without the %s workspace',
-      async (scenario) => {
-        const moveSpy = jest
-          .spyOn(dataService, 'moveConversationCodeEnvironment')
-          .mockResolvedValue({
-            conversationId: 'existing',
-            codeEnvironmentMode: 'without_attached',
-          });
-        const setConversation = jest.fn();
-        renderMenu(
-          <CodeWorkspaceMenu
-            setConversation={setConversation}
-            workspace={workspace({
-              locked: true,
-              required: scenario === 'offline',
-              canSubmit: scenario !== 'offline',
-              state: scenario === 'offline' ? 'unavailable' : 'not_required',
-              selections: undefined,
-              environments:
-                scenario === 'offline'
-                  ? [{ environment, state: 'unavailable', workspaces: [], selected: undefined }]
-                  : [],
-              transition: {
-                kind: 'move',
-                conversationId: 'existing',
-                from: [mac],
-                previous: scenario === 'offline' ? [] : [{ id: 'mac', name: 'Danny Mac' }],
-                retained: [],
-                targets: [],
-                detachable: true,
-              },
-            })}
-            disabled={false}
-          />,
-        );
+    test.each<[string, CodeWorkspaceResult['state'], CodeWorkspaceResult['environments']]>([
+      [
+        'offline',
+        'unavailable',
+        [{ environment, state: 'unavailable', workspaces: [], selected: undefined }],
+      ],
+      ['no-longer-used', 'not_required', []],
+      [
+        'healthy',
+        'ready',
+        [
+          {
+            environment: { ...environment, id: 'mac' },
+            state: 'ready',
+            workspaces: [{ id: 'primary' }],
+            selected: mac,
+          },
+        ],
+      ],
+    ])('continues without the %s workspace', async (scenario, state, environments) => {
+      const moveSpy = jest.spyOn(dataService, 'moveConversationCodeEnvironment').mockResolvedValue({
+        conversationId: 'existing',
+        codeEnvironmentMode: 'without_attached',
+      });
+      const setConversation = jest.fn();
+      renderMenu(
+        <CodeWorkspaceMenu
+          setConversation={setConversation}
+          workspace={workspace({
+            locked: true,
+            required: scenario !== 'no-longer-used',
+            canSubmit: scenario !== 'offline',
+            state,
+            selections: undefined,
+            environments,
+            transition: {
+              kind: scenario === 'healthy' ? 'detach' : 'move',
+              conversationId: 'existing',
+              from: [mac],
+              previous: scenario === 'no-longer-used' ? [{ id: 'mac', name: 'Danny Mac' }] : [],
+              retained: scenario === 'healthy' ? [mac] : [],
+              targets: [],
+              detachable: true,
+            },
+          })}
+          disabled={false}
+        />,
+      );
 
-        await userEvent.click(screen.getByTestId('code-workspace'));
-        /** Nothing to move onto, so the only decision left is to stop waiting for the machine. */
-        expect(
-          screen.queryByRole('menuitem', { name: /com_ui_code_workspace_move/ }),
-        ).not.toBeInTheDocument();
-        await userEvent.click(screen.getByTestId('code-workspace-detach'));
+      await userEvent.click(screen.getByTestId('code-workspace'));
+      /** Detach is explicit; it must not offer a redundant move to the same workspace. */
+      expect(
+        screen.queryByRole('menuitem', { name: /com_ui_code_workspace_move/ }),
+      ).not.toBeInTheDocument();
+      await userEvent.click(screen.getByTestId('code-workspace-detach'));
 
-        await waitFor(() => expect(moveSpy).toHaveBeenCalledTimes(1));
-        expect(moveSpy).toHaveBeenCalledWith({ conversationId: 'existing', from: [mac], to: [] });
-        const update = setConversation.mock.calls[0][0];
-        expect(update(sealed)).toEqual({
-          ...sealed,
-          codeEnvironmentMode: 'without_attached',
-          codeWorkspaces: undefined,
-        });
-      },
-    );
+      await waitFor(() => expect(moveSpy).toHaveBeenCalledTimes(1));
+      expect(moveSpy).toHaveBeenCalledWith({ conversationId: 'existing', from: [mac], to: [] });
+      const update = setConversation.mock.calls[0][0];
+      expect(update(sealed)).toEqual({
+        ...sealed,
+        codeEnvironmentMode: 'without_attached',
+        codeWorkspaces: undefined,
+      });
+    });
   });
 
   describe('a chat sealed to a machine its agent no longer uses', () => {
