@@ -31,7 +31,14 @@ async function parseAddedConversation(
   getEndpointsConfig: LoadAddedAgentDeps['getEndpointsConfig'],
 ): Promise<Record<string, unknown> | null> {
   const { endpoint, endpointType, spec } = conversation;
-  const defaultParamsEndpoint = getDefaultParamsEndpoint(await getEndpointsConfig?.(), endpoint);
+  /** Optional for built-in endpoints; the primary request also parses on without it. */
+  let endpointsConfig: TEndpointsConfig | undefined;
+  try {
+    endpointsConfig = await getEndpointsConfig?.();
+  } catch (err) {
+    logger.error('[loadAddedAgent] Error fetching endpoints config', err);
+  }
+  const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
   const parsedBody = parseCompactConvo({
     endpoint: endpoint as EModelEndpoint,
     endpointType,

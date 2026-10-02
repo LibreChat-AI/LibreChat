@@ -1228,6 +1228,22 @@ describe('loadAgent', () => {
       expect(result?.model_parameters).toEqual({ useResponsesApi: true });
     });
 
+    test('still loads when the endpoints config cannot be resolved', async () => {
+      const getEndpointsConfig = jest.fn().mockRejectedValue(new Error('config unavailable'));
+
+      const result = await loadAddedAgent(
+        { req: { user: { id: 'user123' }, config: appConfig }, conversation: responsesConvo },
+        { ...deps, getEndpointsConfig },
+      );
+
+      expect(getEndpointsConfig).toHaveBeenCalledTimes(1);
+      expect(result?.model_parameters).toEqual({
+        useResponsesApi: true,
+        reasoning_effort: 'high',
+        temperature: 0.4,
+      });
+    });
+
     test('parses custom endpoints with their resolved default params endpoint', async () => {
       const getEndpointsConfig = jest.fn().mockResolvedValue({
         Claude: { customParams: { defaultParamsEndpoint: 'anthropic' } },
