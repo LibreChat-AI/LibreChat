@@ -21,7 +21,7 @@ import { renderHook, act } from '@testing-library/react';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRecoilValue } from 'recoil';
-import { EModelEndpoint } from 'librechat-data-provider';
+import { EModelEndpoint, parseConvo } from 'librechat-data-provider';
 import type { TConversation, TStartupConfig } from 'librechat-data-provider';
 import useQueryParams from './useQueryParams';
 import { useChatContext, useChatFormContext } from '~/Providers';
@@ -202,7 +202,9 @@ describe('useQueryParams', () => {
     } | null = { modelSpecs: { list: [] } },
   ) => {
     const textAreaRef = { current: document.createElement('textarea') };
-    const mockSetValue = jest.fn();
+    const mockSetValue = jest.fn((_field: string, text: string) => {
+      textAreaRef.current.value = text;
+    });
     const mockSubmitMessage = jest.fn();
     const mockNewConversation = jest.fn();
     const mockSetSearchParams = jest.fn();
@@ -221,7 +223,8 @@ describe('useQueryParams', () => {
     });
     (useChatFormContext as jest.Mock).mockReturnValue({
       setValue: mockSetValue,
-      handleSubmit: jest.fn((callback) => () => callback({ text: params.prompt || params.q })),
+      getValues: jest.fn(() => textAreaRef.current.value),
+      handleSubmit: jest.fn((callback) => () => callback({ text: textAreaRef.current.value })),
     });
     (useSubmitMessage as jest.Mock).mockReturnValue({ submitMessage: mockSubmitMessage });
     const updateConversation = (conversation: Partial<TConversation>) => {
@@ -379,14 +382,35 @@ describe('useQueryParams', () => {
     );
   });
 
-  it('does not auto-send a missing model spec', () => {
-    const hook = mountQuery({ spec: 'missing', q: 'hi', submit: 'true' });
-    expect(hook.mockNewConversation).not.toHaveBeenCalled();
-    expect(hook.result.current).toEqual(
-      expect.objectContaining({ isPreparing: false, settingsError: true }),
+  it('matches nullable spec settings after the endpoint schema removes them', () => {
+    const preset = { endpoint: EModelEndpoint.openAI, model: 'gpt-4o', temperature: null };
+    const hook = mountQuery(
+      { spec: 'helper', q: 'hi', submit: 'true' },
+      { modelSpecs: { list: [{ name: 'helper', label: 'Helper', preset }] } },
     );
-    act(() => jest.advanceTimersByTime(4000));
+    const conversation = parseConvo({
+      endpoint: EModelEndpoint.openAI,
+      conversation: { ...preset, spec: 'helper' },
+    });
+    expect(conversation?.temperature).toBeUndefined();
+    hook.updateConversation({ ...conversation, endpoint: EModelEndpoint.openAI });
+    hook.rerender();
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.settingsError).toBe(false);
+  });
+
+  it('preserves menu-hidden spec names for the server to resolve', () => {
+    const hook = mountQuery({ spec: 'hidden', endpoint: 'openAI', q: 'hi', submit: 'true' });
+    expect(hook.mockNewConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preset: expect.objectContaining({ spec: 'hidden', endpoint: 'openAI' }),
+      }),
+    );
     expect(hook.mockSubmitMessage).not.toHaveBeenCalled();
+    hook.updateConversation({ endpoint: EModelEndpoint.openAI, model: 'gpt-4o', spec: 'hidden' });
+    hook.rerender();
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.settingsError).toBe(false);
   });
 
   it('clears the pending timer on unmount', () => {

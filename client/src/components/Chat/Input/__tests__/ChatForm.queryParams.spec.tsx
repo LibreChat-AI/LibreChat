@@ -9,6 +9,7 @@ import { act, render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TConversation } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
+import { getNewConversationDraftId, setDraft } from '~/utils/drafts';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { startupConfigKey } from '~/data-provider';
@@ -84,7 +85,7 @@ function Harness({ conversation }: { conversation: TConversation }) {
   );
 }
 
-function mountComposer() {
+function mountComposer(conversation = initialConversation) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, staleTime: Infinity, cacheTime: Infinity },
@@ -98,6 +99,13 @@ function mountComposer() {
   queryClient.setQueryData([QueryKeys.tokenConfig], {});
   queryClient.setQueryData([QueryKeys.customConfigSpeech], {});
   queryClient.setQueryData([QueryKeys.name, EModelEndpoint.openAI], { expiresAt: '' });
+  queryClient.setQueryData([QueryKeys.name, EModelEndpoint.agents], { expiresAt: '' });
+  queryClient.setQueryData([QueryKeys.name, EModelEndpoint.assistants], { expiresAt: '' });
+  queryClient.setQueryData([QueryKeys.messages, conversation.conversationId], []);
+  queryClient.setQueryData([QueryKeys.assistant, EModelEndpoint.assistants, 'asst_test'], {
+    id: 'asst_test',
+    model: 'gpt-4o',
+  });
   queryClient.setQueryData([QueryKeys.toolAuth, 'web_search'], { authenticated: false });
   queryClient.setQueryData([QueryKeys.toolFavorites], []);
   queryClient.setQueryData([QueryKeys.skillStates], {});
@@ -115,7 +123,11 @@ function mountComposer() {
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
-        <MemoryRouter initialEntries={['/c/new?agent_id=agent_test&q=hi&submit=true']}>
+        <MemoryRouter
+          initialEntries={[
+            `/c/${conversation.conversationId}?agent_id=agent_test&q=hi&submit=true`,
+          ]}
+        >
           <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
             <DndProvider backend={HTML5Backend}>{children}</DndProvider>
           </AuthContextProvider>
@@ -123,7 +135,7 @@ function mountComposer() {
       </RecoilRoot>
     </QueryClientProvider>
   );
-  return render(<Harness conversation={initialConversation} />, { wrapper });
+  return render(<Harness conversation={conversation} />, { wrapper });
 }
 
 describe('ChatForm URL submission', () => {
@@ -165,6 +177,34 @@ describe('ChatForm URL submission', () => {
     expect(ask).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
   });
+
+  it.each(['', 'unrelated saved message'])(
+    'preserves the URL prompt when the new conversation restores draft %p',
+    async (savedText) => {
+      setDraft({ id: getNewConversationDraftId(), value: savedText });
+      const view = mountComposer({
+        ...initialConversation,
+        conversationId: 'existing-assistants-chat',
+        endpoint: EModelEndpoint.assistants,
+        assistant_id: 'asst_test',
+      });
+      await act(async () => jest.advanceTimersByTime(100));
+      expect(screen.getByTestId('text-input')).toHaveValue('hi');
+      view.rerender(
+        <Harness
+          conversation={{
+            ...initialConversation,
+            endpoint: EModelEndpoint.agents,
+            agent_id: 'agent_test',
+            model: undefined,
+          }}
+        />,
+      );
+      await act(async () => Promise.resolve());
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'hi' }), expect.anything());
+    },
+  );
 
   it('sends the visible prompt once when the requested agent reaches the conversation', async () => {
     const view = mountComposer();

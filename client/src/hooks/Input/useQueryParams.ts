@@ -3,7 +3,13 @@ import isEqual from 'lodash/isEqual';
 import { useRecoilValue } from 'recoil';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { QueryKeys, EModelEndpoint, PermissionBits } from 'librechat-data-provider';
+import {
+  QueryKeys,
+  parseConvo,
+  EModelEndpoint,
+  PermissionBits,
+  getDefaultParamsEndpoint,
+} from 'librechat-data-provider';
 import type {
   AgentListResponse,
   TEndpointsConfig,
@@ -93,18 +99,32 @@ export default function useQueryParams({
       return false;
     }
 
+    const normalizedSettings = convo.endpoint
+      ? parseConvo({
+          endpoint: convo.endpoint,
+          endpointType: convo.endpointType,
+          conversation: validSettingsRef.current,
+          defaultParamsEndpoint: getDefaultParamsEndpoint(
+            queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]) ?? {},
+            convo.endpoint,
+          ),
+        })
+      : validSettingsRef.current;
+
     for (const [key, value] of Object.entries(validSettingsRef.current)) {
       if (['presetOverride', 'iconURL', 'modelLabel'].includes(key)) {
         continue;
       }
 
-      if (!isEqual(convo[key], value)) {
+      const expectedValue =
+        key === 'endpoint' || key === 'endpointType' ? value : normalizedSettings?.[key];
+      if (!isEqual(convo[key], expectedValue)) {
         return false;
       }
     }
 
     return true;
-  }, []);
+  }, [queryClient]);
 
   /**
    * Applies settings from URL query parameters to create a new conversation.
@@ -121,14 +141,14 @@ export default function useQueryParams({
         const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
         const modelSpecs = startupConfig?.modelSpecs?.list ?? [];
         const spec = modelSpecs.find((s) => s.name === newPreset.spec);
-        if (!spec) {
-          return false;
+        if (spec) {
+          newPreset = {
+            ...spec.preset,
+            iconURL: getModelSpecIconURL(spec),
+            spec: spec.name,
+          } as TPreset;
         }
-        newPreset = {
-          ...spec.preset,
-          iconURL: getModelSpecIconURL(spec),
-          spec: spec.name,
-        } as TPreset;
+        /** Hidden specs remain opaque here and are resolved server-side by name. */
       }
 
       let newEndpoint = newPreset.endpoint ?? '';
@@ -230,6 +250,13 @@ export default function useQueryParams({
     ],
   );
 
+  const restoreUrlPrompt = useCallback(() => {
+    const prompt = promptTextRef.current;
+    if (prompt != null && methods.getValues('text') !== prompt) {
+      methods.setValue('text', prompt, { shouldValidate: true });
+    }
+  }, [methods]);
+
   /** Consumes an auto-submit once, leaving a refused submission in the composer. */
   const processSubmission = useCallback(() => {
     if (submissionHandledRef.current || !pendingSubmitRef.current || !promptTextRef.current) {
@@ -245,6 +272,7 @@ export default function useQueryParams({
       settingsTimeoutRef.current = null;
     }
 
+    restoreUrlPrompt();
     methods.handleSubmit((data) => {
       if (data.text?.trim()) {
         submitMessage(data);
@@ -253,7 +281,7 @@ export default function useQueryParams({
     })();
 
     setSearchParams(getPreservedSearchParams(), { replace: true });
-  }, [methods, submitMessage, setSearchParams, getPreservedSearchParams]);
+  }, [methods, submitMessage, setSearchParams, getPreservedSearchParams, restoreUrlPrompt]);
 
   useEffect(() => {
     const processQueryParams = () => {
@@ -335,6 +363,7 @@ export default function useQueryParams({
           settingsTimeoutRef.current = setTimeout(() => {
             settingsTimeoutRef.current = null;
             if (!submissionHandledRef.current && pendingSubmitRef.current) {
+              restoreUrlPrompt();
               pendingSubmitRef.current = false;
               submissionHandledRef.current = true;
               setSubmissionStatus('failed');
@@ -365,6 +394,7 @@ export default function useQueryParams({
     queryClient,
     processSubmission,
     areSettingsApplied,
+    restoreUrlPrompt,
   ]);
 
   useEffect(() => {
@@ -372,24 +402,19 @@ export default function useQueryParams({
     if (
       !processedRef.current ||
       submissionHandledRef.current ||
+      !pendingSubmitRef.current ||
       !validSettingsRef.current ||
       !conversation
     ) {
       return;
     }
 
+    restoreUrlPrompt();
     if (areSettingsApplied()) {
-      if (pendingSubmitRef.current) {
-        if (settingsTimeoutRef.current) {
-          clearTimeout(settingsTimeoutRef.current);
-          settingsTimeoutRef.current = null;
-        }
-
-        logger.log('conversation', 'Settings fully applied, processing submission');
-        processSubmission();
-      }
+      logger.log('conversation', 'Settings fully applied, processing submission');
+      processSubmission();
     }
-  }, [conversation, processSubmission, areSettingsApplied]);
+  }, [conversation, processSubmission, areSettingsApplied, restoreUrlPrompt]);
 
   useEffect(
     () => () => {
