@@ -1834,6 +1834,35 @@ describe('BaseClient', () => {
       expect(provider).not.toHaveBeenCalled();
     });
 
+    test.each([false, true])(
+      'cancels protected Stop before native admission, pre-aborted: %s',
+      async (preAborted) => {
+        const { client, req, provider } = protectedClient();
+        const controller = new AbortController();
+        if (preAborted) {
+          controller.abort();
+        }
+        const ready = deferred();
+        const completion = deferred();
+        const onStart = jest.fn();
+        client.sendCompletion = jest.fn(async () => {
+          ready.resolve();
+          return completion.promise;
+        });
+        const sent = client.sendMessage(req.body.text, { abortController: controller, onStart });
+        const observed = sent.catch((error) => error);
+        await ready.promise;
+        if (!preAborted) {
+          controller.abort();
+        }
+        completion.resolve({ completion: 'Stopped before model' });
+        expect(await observed).toEqual(expect.objectContaining({ code: 'content_filter_block' }));
+        expect(client.saveMessageToDatabase).not.toHaveBeenCalled();
+        expect(onStart).not.toHaveBeenCalled();
+        expect(provider).not.toHaveBeenCalled();
+      },
+    );
+
     test.each(['user-id', 'user-id__1', 'user-id__invalid'])(
       'rejects a protected persistence-skipping override %s before model invocation',
       async (overrideUserMessageId) => {

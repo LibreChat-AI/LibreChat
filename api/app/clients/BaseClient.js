@@ -37,6 +37,7 @@ const {
   deferPrivateTextStart,
   requirePrivateTextPersistence,
   rejectPrivateTextAdmission,
+  bindPrivateTextPersistenceAbort,
   persistedReasoningOverrideFields,
 } = require('@librechat/api');
 const {
@@ -996,17 +997,12 @@ class BaseClient {
           start,
           cancel,
         });
-        const requestAbortSignal = this.abortController?.signal;
-        if (requestAbortSignal?.aborted) {
-          /** Preserve the historical durability contract for Stop: abort
-           * persistence may publish the partial assistant response before the
-           * provider unwinds, so its parent write must already be underway. */
-          start();
-        } else if (requestAbortSignal != null) {
-          const startOnAbort = () => start();
-          requestAbortSignal.addEventListener('abort', startOnAbort, { once: true });
-          removeAbortListener = () => requestAbortSignal.removeEventListener('abort', startOnAbort);
-        }
+        removeAbortListener = bindPrivateTextPersistenceAbort(
+          this.options.req,
+          this.abortController?.signal,
+          start,
+          cancel,
+        );
         this.modelBoundUserMessagePersistence = userMessagePersistence;
         userMessagePromise = persistencePromise;
       } else {

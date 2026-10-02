@@ -681,6 +681,11 @@ export interface ModelBoundChatModelCallback {
   readonly handleChatModelStart: (
     llm: object | undefined,
     messageBatches: readonly (readonly ModelBoundProviderMessage[])[],
+    runId?: string,
+    parentRunId?: string,
+    extraParams?: Record<string, unknown>,
+    tags?: string[],
+    metadata?: Record<string, unknown>,
   ) => void | Promise<void>;
 }
 
@@ -3240,7 +3245,11 @@ export function createModelBoundChatModelCallback(
   input: Omit<ModelBoundProviderContentInput, 'providerMessages'>,
   options: {
     readonly onContentRejected?: (error: unknown) => void;
-    readonly onContentAllowed?: () => void | Promise<void>;
+    readonly onContentAllowed?: (context: {
+      runId?: string;
+      parentRunId?: string;
+      metadata?: Record<string, unknown>;
+    }) => void | Promise<void>;
   } = {},
 ): ModelBoundChatModelCallback {
   const storedMessageSnapshot = snapshotBoundedProviderArray(input.storedMessages);
@@ -3269,6 +3278,11 @@ export function createModelBoundChatModelCallback(
     handleChatModelStart: (
       _llm: object | undefined,
       messageBatches: readonly (readonly ModelBoundProviderMessage[])[],
+      runId?: string,
+      parentRunId?: string,
+      _extraParams?: Record<string, unknown>,
+      _tags?: string[],
+      metadata?: Record<string, unknown>,
     ) => {
       let messageBatchCount = 0;
       let messageBatchesOverflowed = false;
@@ -3326,7 +3340,7 @@ export function createModelBoundChatModelCallback(
         options.onContentRejected?.(error);
         throw new FatalModelBoundPolicyError(error);
       }
-      return options.onContentAllowed?.();
+      return options.onContentAllowed?.({ runId, parentRunId, metadata });
     },
   });
   return callback;

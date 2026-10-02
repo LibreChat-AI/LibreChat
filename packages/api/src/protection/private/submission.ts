@@ -465,6 +465,30 @@ export function rejectPrivateTextAdmission(req: object | undefined): void {
   }
 }
 
+/** Stop before protected admission owns no persisted turn. Ordinary Stop retains its writer. */
+export function bindPrivateTextPersistenceAbort(
+  req: object | undefined,
+  signal: AbortSignal | undefined,
+  start: () => unknown,
+  cancel: () => unknown,
+): () => void {
+  const abort = () => {
+    const capture = req == null ? undefined : captures.get(req);
+    if (capture != null && capture.admissionState() !== true) {
+      capture.admit(false);
+      cancel();
+      return;
+    }
+    start();
+  };
+  if (signal?.aborted) {
+    abort();
+    return () => {};
+  }
+  signal?.addEventListener('abort', abort, { once: true });
+  return () => signal?.removeEventListener('abort', abort);
+}
+
 /** Recovery may retain ordinary failures, but cannot revive an unadmitted protected turn. */
 export async function savePrivateTextErrorTurn(
   req: object | undefined,
