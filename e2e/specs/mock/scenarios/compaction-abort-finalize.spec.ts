@@ -191,7 +191,7 @@ test.describe('compaction abort finalize', () => {
     const stop = page.getByRole('button', { name: 'Stop generating' });
     await stop.click({ timeout: 10_000 });
     await expect(stop).toBeHidden({ timeout: 20_000 });
-    await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/, { timeout: 15_000 });
+    await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}(\?|$)/, { timeout: 15_000 });
     const conversationId = new URL(page.url()).pathname.replace('/c/', '');
 
     try {
