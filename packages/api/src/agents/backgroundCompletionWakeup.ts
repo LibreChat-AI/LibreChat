@@ -587,6 +587,27 @@ export function createBackgroundToolCompletionWakeupResolver({
         ) {
           return { status: 'settled' };
         }
+        if (released && recoverDeadClaim != null) {
+          await Promise.all(
+            projections.map(async (projection) => {
+              if (
+                projection.status !== 'claimed' ||
+                projection.claim?.kind !== 'manual' ||
+                projection.claim.receiptReconciled === true ||
+                projection.claim.generationId == null
+              )
+                return;
+              await recoverDeadClaim({
+                userId,
+                conversationId: envelope.target.conversationId,
+                messageId: envelope.target.parentMessageId,
+                claimId: projection.claim.claimId,
+                kind: 'manual',
+                generationId: projection.claim.generationId,
+              });
+            }),
+          );
+        }
         throw executionError('Background result ownership is being reconciled.', {
           code: 'BACKGROUND_TOOL_CLAIM_RECONCILING',
           retryable: true,

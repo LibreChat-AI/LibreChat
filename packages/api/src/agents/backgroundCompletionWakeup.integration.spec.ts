@@ -436,3 +436,211 @@ it('settles a root only after a manual poll has completed receipt reconciliation
     }),
   ).resolves.toEqual({ status: 'settled' });
 });
+
+it.each([false, true])(
+  'rolls back an unconfirmed manual claim with generation identity %s',
+  async (withGeneration) => {
+    const root = await ready('one');
+    await project('one');
+    const confirmation = jest
+      .spyOn(mongoose.models.Message, 'updateOne')
+      .mockImplementationOnce(() => {
+        throw new Error('confirmation unavailable');
+      });
+    await expect(
+      claimBackgroundToolResult(methods, methods.getAgentBackgroundToolResultClaim, {
+        userId,
+        conversationId,
+        messageId: parentMessageId,
+        taskId: 'one',
+        kind: 'manual',
+        claimId: 'manual-poll',
+        ...(withGeneration && { generationId: 'manual-generation' }),
+      }),
+    ).rejects.toThrow('confirmation unavailable');
+    confirmation.mockRestore();
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods,
+      getGenerationJob: async () => null,
+    });
+    if (root.mode !== 'continue') throw new Error('Expected continuation');
+    const prepared = await resolve(root, {
+      idempotencyKey: getAgentTriggerIdempotencyKey(root),
+      requiredWorkerCapability: capability,
+    });
+    expect(prepared?.status === 'ready' && prepared.input).toContain('"result":"one"');
+  },
+);
+
+it('resolves a committed manual confirmation whose write reply was lost', async () => {
+  const root = await ready('one');
+  await project('one');
+  const update = mongoose.models.Message.updateOne.bind(mongoose.models.Message);
+  const lostReply = jest
+    .spyOn(mongoose.models.Message, 'updateOne')
+    .mockImplementationOnce((...args) => {
+      const query = update(...args);
+      const execute = query.exec.bind(query);
+      jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+        await execute();
+        throw new Error('lost confirmation reply');
+      });
+      return query;
+    });
+  const consumed = await claimBackgroundToolResult(
+    methods,
+    methods.getAgentBackgroundToolResultClaim,
+    {
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      taskId: 'one',
+      kind: 'manual',
+      claimId: 'manual-poll',
+      generationId: 'manual-generation',
+    },
+  );
+  expect(consumed).toMatchObject({ status: 'acquired', results: [{ taskId: 'one' }] });
+  lostReply.mockRestore();
+  expect(
+    await methods.releaseBackgroundToolResultClaims({
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      taskIds: ['one'],
+      kind: 'manual',
+      claimId: 'manual-poll',
+      onlyIfUnreconciled: true,
+    }),
+  ).toBe(false);
+  const resolve = createBackgroundToolCompletionWakeupResolver({
+    methods,
+    getGenerationJob: async () => null,
+  });
+  if (root.mode !== 'continue') throw new Error('Expected continuation');
+  await expect(
+    resolve(root, {
+      idempotencyKey: getAgentTriggerIdempotencyKey(root),
+      requiredWorkerCapability: capability,
+    }),
+  ).resolves.toEqual({ status: 'settled' });
+});
+
+it('recovers abandoned manual ownership after both confirmation and rollback failed', async () => {
+  const root = await ready('one');
+  await ready('two');
+  await project('one');
+  const confirmation = jest
+    .spyOn(methods, 'confirmBackgroundToolResultClaim')
+    .mockRejectedValueOnce(new Error('confirmation unavailable'));
+  const rollback = jest
+    .spyOn(methods, 'releaseBackgroundToolResultClaims')
+    .mockRejectedValueOnce(new Error('rollback unavailable'));
+  await expect(
+    claimBackgroundToolResult(methods, methods.getAgentBackgroundToolResultClaim, {
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      taskId: 'one',
+      kind: 'manual',
+      claimId: 'manual-poll',
+      generationId: 'manual-generation',
+    }),
+  ).rejects.toThrow('rollback unavailable');
+  confirmation.mockRestore();
+  rollback.mockRestore();
+  let active = true;
+  const getGenerationJob = async () =>
+    active ? { status: 'running', metadata: { responseMessageId: 'manual-generation' } } : null;
+  const recover = createBackgroundToolDeadClaimRecovery(
+    async () => false,
+    methods.releaseBackgroundToolResultClaims,
+    getGenerationJob,
+    async () => 'unavailable',
+  );
+  const recoverDeadClaim = jest.fn(recover);
+  const resolve = createBackgroundToolCompletionWakeupResolver({
+    methods,
+    getGenerationJob,
+    recoverDeadClaim,
+  });
+  if (root.mode !== 'continue') throw new Error('Expected continuation');
+  const key = getAgentTriggerIdempotencyKey(root);
+  await mongoose.models.AgentTriggerDelivery.updateOne(
+    { deliveryKey: key },
+    { $set: { capabilityClaimToken: 'exact-queue-lease' } },
+  );
+  const context = {
+    idempotencyKey: key,
+    requiredWorkerCapability: capability,
+    deliveryClaimToken: 'exact-queue-lease',
+  };
+  await expect(resolve(root, context)).rejects.toMatchObject({ code: 'PARENT_NOT_READY' });
+  expect(recoverDeadClaim).not.toHaveBeenCalled();
+  active = false;
+  await expect(resolve(root, context)).rejects.toMatchObject({
+    code: 'BACKGROUND_TOOL_CLAIM_RECONCILING',
+    deferWithoutAttempt: true,
+  });
+  expect(recoverDeadClaim).toHaveBeenCalledWith(
+    expect.objectContaining({
+      kind: 'manual',
+      claimId: 'manual-poll',
+      generationId: 'manual-generation',
+    }),
+  );
+  const prepared = await resolve(root, context);
+  expect(prepared?.status === 'ready' && prepared.input).toContain('one');
+  expect(prepared?.status === 'ready' && prepared.input).toContain('two');
+});
+
+it('does not use a different manual owner as confirmation read-back proof', async () => {
+  await ready('one');
+  await project('one');
+  const update = mongoose.models.Message.updateOne.bind(mongoose.models.Message);
+  const replaced = jest
+    .spyOn(mongoose.models.Message, 'updateOne')
+    .mockImplementationOnce((...args) => {
+      const query = update(...args);
+      jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+        await update(
+          { user: userId, messageId: parentMessageId },
+          {
+            $set: {
+              'content.0.tool_call.backgroundTask.resultClaim': {
+                kind: 'manual',
+                claimId: 'successor-poll',
+                receiptReconciled: true,
+              },
+            },
+          },
+        );
+        throw new Error('predecessor confirmation failed');
+      });
+      return query;
+    });
+  await expect(
+    claimBackgroundToolResult(methods, methods.getAgentBackgroundToolResultClaim, {
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      taskId: 'one',
+      kind: 'manual',
+      claimId: 'manual-poll',
+    }),
+  ).rejects.toThrow('predecessor confirmation failed');
+  replaced.mockRestore();
+  expect(
+    await methods.claimBackgroundToolResults({
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      taskId: 'one',
+      kind: 'wakeup',
+      claimId: 'automatic',
+    }),
+  ).toMatchObject({
+    status: 'claimed',
+    claim: { claimId: 'successor-poll', receiptReconciled: true },
+  });
+});

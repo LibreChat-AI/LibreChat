@@ -323,3 +323,7 @@ member is safe without the owner. Retirement also closes publication and dispatc
 A failed receipt write is repaired from its durable terminal message projection.
 Manual polling marks receipt reconciliation before automatic delivery can settle that
 handoff; speculative manual ownership only defers the automatic delivery.
+
+Manual confirmation resolves a lost reply by reading the exact committed claim.
+Failed confirmation rolls back only unreconciled ownership. If rollback is unavailable,
+automatic delivery invokes manual-generation recovery after that owner is no longer active.

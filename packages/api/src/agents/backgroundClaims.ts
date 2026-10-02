@@ -34,7 +34,7 @@ export async function claimBackgroundToolResult(
   if (messageId == null) {
     throw new Error('The background result claim has no parent message identity');
   }
-  const release = async () => {
+  const release = async (onlyIfUnreconciled = false) => {
     const released = await methods.releaseBackgroundToolResultClaims({
       userId: input.userId,
       conversationId: input.conversationId,
@@ -43,8 +43,9 @@ export async function claimBackgroundToolResult(
       kind: input.kind,
       claimId: input.claimId,
       ...(input.batchId != null && { batchId: input.batchId }),
+      ...(onlyIfUnreconciled && { onlyIfUnreconciled: true }),
     });
-    if (!released) {
+    if (!released && !onlyIfUnreconciled) {
       throw new Error('The background result claim could not be released');
     }
   };
@@ -56,18 +57,25 @@ export async function claimBackgroundToolResult(
     throw error;
   }
   if (receiptClaim == null || receiptClaim.claimId === input.claimId) {
-    if (
-      input.kind === 'manual' &&
-      methods.confirmBackgroundToolResultClaim != null &&
-      !(await methods.confirmBackgroundToolResultClaim({
-        userId: input.userId,
-        conversationId: input.conversationId,
-        messageId,
-        taskId: input.taskId,
-        claimId: input.claimId,
-      }))
-    ) {
-      throw new Error('The reconciled background result claim was superseded');
+    if (input.kind === 'manual' && methods.confirmBackgroundToolResultClaim != null) {
+      try {
+        if (
+          !(await methods.confirmBackgroundToolResultClaim({
+            userId: input.userId,
+            conversationId: input.conversationId,
+            messageId,
+            taskId: input.taskId,
+            claimId: input.claimId,
+          }))
+        ) {
+          throw new Error('The reconciled background result claim was superseded');
+        }
+      } catch (error) {
+        // This CAS removes only speculative ownership. A committed or unknown
+        // handoff remains owned for generation-fenced recovery.
+        await release(true);
+        throw error;
+      }
     }
     return messageClaim;
   }

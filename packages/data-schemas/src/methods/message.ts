@@ -835,6 +835,8 @@ export interface MessageMethods {
     taskIds?: string[];
     /** Receipt-backed results can precede the message projection. */
     allowMissingMessage?: true;
+    /** Manual rollback must not erase a committed receipt handoff. */
+    onlyIfUnreconciled?: true;
     batchId?: string;
     kind: 'manual' | 'wakeup';
     claimId: string;
@@ -2353,25 +2355,45 @@ export function createMessageMethods(
       'tool_call.backgroundTask.resultClaim.kind': 'manual',
       'tool_call.backgroundTask.resultClaim.claimId': input.claimId,
     };
-    const confirmed = await Message.updateOne(
-      {
+    try {
+      const confirmed = await Message.updateOne(
+        {
+          user: input.userId,
+          conversationId: input.conversationId,
+          messageId: input.messageId,
+          content: { $elemMatch: identity },
+        },
+        {
+          $set: { 'content.$[part].tool_call.backgroundTask.resultClaim.receiptReconciled': true },
+        },
+        {
+          arrayFilters: [
+            {
+              'part.tool_call.backgroundTask.taskId': input.taskId,
+              'part.tool_call.backgroundTask.resultClaim.kind': 'manual',
+              'part.tool_call.backgroundTask.resultClaim.claimId': input.claimId,
+            },
+          ],
+        },
+      );
+      return confirmed.matchedCount === 1;
+    } catch (error) {
+      // A lost write reply is not an uncommitted handoff. Read only the exact
+      // manual claim, never manufacture success from another claimant.
+      const committed = await Message.exists({
         user: input.userId,
         conversationId: input.conversationId,
         messageId: input.messageId,
-        content: { $elemMatch: identity },
-      },
-      { $set: { 'content.$[part].tool_call.backgroundTask.resultClaim.receiptReconciled': true } },
-      {
-        arrayFilters: [
-          {
-            'part.tool_call.backgroundTask.taskId': input.taskId,
-            'part.tool_call.backgroundTask.resultClaim.kind': 'manual',
-            'part.tool_call.backgroundTask.resultClaim.claimId': input.claimId,
+        content: {
+          $elemMatch: {
+            ...identity,
+            'tool_call.backgroundTask.resultClaim.receiptReconciled': true,
           },
-        ],
-      },
-    );
-    return confirmed.matchedCount === 1;
+        },
+      });
+      if (committed != null) return true;
+      throw error;
+    }
   }
 
   async function releaseBackgroundToolResultClaims({
@@ -2380,6 +2402,7 @@ export function createMessageMethods(
     messageId,
     taskIds,
     allowMissingMessage,
+    onlyIfUnreconciled,
     kind,
     claimId,
     batchId,
@@ -2390,10 +2413,14 @@ export function createMessageMethods(
     taskIds?: string[];
     /** Receipt-backed results can precede the message projection. */
     allowMissingMessage?: true;
+    /** Manual rollback must not erase a committed receipt handoff. */
+    onlyIfUnreconciled?: true;
     batchId?: string;
     kind: 'manual' | 'wakeup';
     claimId: string;
   }): Promise<boolean> {
+    if (onlyIfUnreconciled === true && kind !== 'manual')
+      throw new TypeError('Unreconciled rollback requires a manual claim');
     if (taskIds?.length === 0) {
       return true;
     }
@@ -2416,6 +2443,9 @@ export function createMessageMethods(
             'part.tool_call.backgroundTask.resultClaim.kind': kind,
             'part.tool_call.backgroundTask.resultClaim.claimId': claimId,
             'part.tool_call.backgroundTask.resultClaim.batchId': batchId ?? null,
+            ...(onlyIfUnreconciled === true && {
+              'part.tool_call.backgroundTask.resultClaim.receiptReconciled': { $ne: true },
+            }),
             ...(taskIds == null
               ? {}
               : { 'part.tool_call.backgroundTask.taskId': { $in: taskIds } }),
