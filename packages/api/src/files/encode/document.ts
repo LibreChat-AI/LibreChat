@@ -19,8 +19,6 @@ import type {
   DocumentResult,
   ServerRequest,
 } from '~/types';
-import { processTextWithTokenLimit } from '~/utils/text';
-import { countTokens } from '~/utils/tokenizer';
 import {
   getFileStream,
   getConfiguredFileSizeLimit,
@@ -28,7 +26,9 @@ import {
   isAttachmentObjectNotFoundError,
 } from './utils';
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
+import { processTextWithTokenLimit } from '~/utils/text';
 import { runGuardedEncode } from './memoryGuard';
+import { countTokens } from '~/utils/tokenizer';
 
 /** Anthropic only accepts PDFs as base64 documents; textual types must use a text source */
 function getAnthropicDocumentSource(
