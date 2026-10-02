@@ -15,6 +15,8 @@ import {
   isAvatarUploadOnlyDirty,
   hasPersistedDirtyFields,
   mayHavePersistedChange,
+  shouldSyncSavedStarters,
+  isSavedAgentOption,
 } from '../AgentPanel';
 
 test('the create identity contract excludes the update-only clear sentinel', () => {
@@ -282,6 +284,44 @@ describe('composeAgentUpdatePayload', () => {
 
     expect(payload.model_parameters).toEqual(form.model_parameters);
   });
+
+  it('sends edited starters trimmed and without blanks', () => {
+    const form = createForm();
+    form.agent = { conversation_starters: ['Plan my week'] } as AgentForm['agent'];
+    form.conversation_starters = ['  Plan my week ', '', '   ', 'Summarize'];
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+
+    expect(payload.conversation_starters).toEqual(['Plan my week', 'Summarize']);
+  });
+
+  it('sends an empty list so removing every starter clears them', () => {
+    const form = createForm();
+    form.agent = { conversation_starters: ['Plan my week'] } as AgentForm['agent'];
+    form.conversation_starters = [];
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+
+    expect(payload.conversation_starters).toEqual([]);
+  });
+
+  it('leaves untouched stored starters alone, even past the builder cap', () => {
+    const stored = [' Padded ', 'Two', 'Three', 'Four', 'Five', 'Six'];
+    const form = createForm();
+    form.agent = { conversation_starters: stored } as AgentForm['agent'];
+    form.conversation_starters = [...stored];
+    form.name = 'Renamed';
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+
+    expect(payload.conversation_starters).toBeUndefined();
+  });
+
+  it('omits starters when the form never loaded them', () => {
+    const { payload } = composeAgentUpdatePayload(createForm(), 'agent_123');
+
+    expect(payload.conversation_starters).toBeUndefined();
+  });
 });
 
 describe('persistAvatarChanges', () => {
@@ -472,5 +512,58 @@ describe('mayHavePersistedChange', () => {
     expect(
       mayHavePersistedChange({ name: 'Agent' }, agent({ description: 'before' }), agent()),
     ).toBe(false);
+  });
+});
+
+describe('shouldSyncSavedStarters', () => {
+  const submitted = { agentId: 'agent_a', starters: ['  Plan my week', ''] };
+
+  it('syncs when the rows still hold what the save sent for the same agent', () => {
+    expect(shouldSyncSavedStarters(submitted, { ...submitted }, 'agent_a')).toBe(true);
+  });
+
+  it('keeps starter edits made while the save was in flight', () => {
+    const current = { agentId: 'agent_a', starters: ['  Plan my week', 'Typed during save'] };
+    expect(shouldSyncSavedStarters(submitted, current, 'agent_a')).toBe(false);
+  });
+
+  it('leaves the rows alone after switching to another agent during the save', () => {
+    const current = { agentId: 'agent_b', starters: submitted.starters };
+    expect(shouldSyncSavedStarters(submitted, current, 'agent_a')).toBe(false);
+  });
+
+  it('syncs a create once the form carries the new id, but not another agent', () => {
+    const created = { agentId: '', starters: ['Hi'] };
+    expect(shouldSyncSavedStarters(created, { agentId: '', starters: ['Hi'] }, 'agent_new')).toBe(
+      true,
+    );
+    expect(
+      shouldSyncSavedStarters(created, { agentId: 'agent_new', starters: ['Hi'] }, 'agent_new'),
+    ).toBe(true);
+    expect(
+      shouldSyncSavedStarters(created, { agentId: 'agent_b', starters: ['Hi'] }, 'agent_new'),
+    ).toBe(false);
+  });
+
+  it('does nothing without a submitted snapshot', () => {
+    expect(shouldSyncSavedStarters(null, { agentId: 'agent_a', starters: [] }, 'agent_a')).toBe(
+      false,
+    );
+  });
+});
+
+describe('isSavedAgentOption', () => {
+  const option = { id: 'agent_b', conversation_starters: ['  B  '] } as AgentForm['agent'];
+
+  it('merges a save into the option of the agent it was for', () => {
+    expect(isSavedAgentOption(option, 'agent_b')).toBe(true);
+  });
+
+  it('keeps another agent selected while the save was in flight as its own baseline', () => {
+    expect(isSavedAgentOption(option, 'agent_a')).toBe(false);
+  });
+
+  it('ignores a missing option', () => {
+    expect(isSavedAgentOption(undefined, 'agent_a')).toBe(false);
   });
 });

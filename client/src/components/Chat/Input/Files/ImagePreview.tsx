@@ -121,7 +121,7 @@ const ImagePreview = ({
         type="button"
         className={cn(
           'relative size-14 overflow-hidden rounded-xl transition-shadow',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-text-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface-primary',
+          'focus-visible:ring-text-primary focus-visible:ring-offset-surface-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-2',
           className,
         )}
         style={style}
@@ -148,13 +148,13 @@ const ImagePreview = ({
           <div
             className={cn(
               'absolute inset-0 flex transform-gpu cursor-pointer items-center justify-center rounded-xl transition-opacity duration-200 ease-in-out',
-              showExpandAffordance ? 'bg-black/20 opacity-100' : 'opacity-0',
+              showExpandAffordance ? 'bg-surface-media-overlay/20 opacity-100' : 'opacity-0',
             )}
             aria-hidden="true"
           >
             <Maximize2
               className={cn(
-                'size-5 transform-gpu text-white drop-shadow-lg transition-all duration-200',
+                'text-text-on-media size-5 transform-gpu drop-shadow-lg transition-all duration-200',
                 showExpandAffordance ? 'scale-110' : '',
               )}
             />
@@ -166,11 +166,11 @@ const ImagePreview = ({
       <DialogPrimitive.Root open={isModalOpen} onOpenChange={handleOpenChange}>
         <DialogPrimitive.Portal>
           <DialogPrimitive.Overlay
-            className="fixed inset-0 z-[250] bg-black/90"
+            className="bg-surface-media-overlay/90 fixed inset-0 z-[250]"
             onClick={handleBackgroundClick}
           />
           <DialogPrimitive.Content
-            className="fixed inset-0 z-[250] flex items-center justify-center outline-none"
+            className="fixed inset-0 z-[250] flex items-center justify-center outline-hidden"
             onOpenAutoFocus={(e) => {
               e.preventDefault();
               closeButtonRef.current?.focus();
@@ -186,9 +186,9 @@ const ImagePreview = ({
             <Button
               ref={closeButtonRef}
               onClick={() => handleOpenChange(false)}
-              variant="ghost"
+              variant="media"
               size="icon"
-              className="absolute right-4 top-4 z-20 text-white hover:bg-white/10"
+              className="absolute top-4 right-4 z-20"
               aria-label={localize('com_ui_close')}
             >
               <X className="size-5" aria-hidden="true" />

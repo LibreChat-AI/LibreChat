@@ -42,6 +42,7 @@ jest.mock('~/hooks/Nav/useUnifiedSidebarLinks', () => ({
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
   useChatHelpers: () => ({}),
+  useShowMarketplace: () => false,
 }));
 
 jest.mock('~/Providers', () => ({
@@ -70,7 +71,7 @@ const drawerVisibility = (expanded: boolean, isSliding: boolean): string => {
   mockSidebarState.expanded = expanded;
   const { unmount } = render(
     <MemoryRouter>
-      <UnifiedSidebar isSliding={isSliding} />
+      <UnifiedSidebar isSliding={isSliding} switchToHistory={true} />
     </MemoryRouter>,
   );
   const drawer = document.getElementById(MOBILE_DRAWER_ID);

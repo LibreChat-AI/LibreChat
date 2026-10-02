@@ -23,7 +23,20 @@ export default defineConfig({
   // CommonJS (jest.config.js / babel.config.js are CJS) while still shipping dual ESM/CJS.
   fixedExtension: true,
   define,
-  copy: [{ from: 'src/icons/provider/assets', to: 'dist' }],
+  copy: [
+    { from: 'src/icons/provider/assets', to: 'dist' },
+    // The color tokens ship as CSS: an app imports `@librechat/client/theme.css` into the
+    // stylesheet that imports Tailwind, and gets `bg-surface-primary` and the rest. `to` names
+    // the destination directory, not the file, pointing it at `dist/theme.css` produced a
+    // directory of that name holding `tokens.css`, and the export resolved to a folder, so the
+    // file keeps its name in `dist` and the export maps `./theme.css` onto it. It imports the stock
+    // values and the font faces beside it by relative path, and the faces load `fonts/`, so all of
+    // them ship side by side.
+    { from: 'src/theme/tokens.css', to: 'dist' },
+    { from: 'src/theme/defaults.css', to: 'dist' },
+    { from: 'src/theme/fonts.css', to: 'dist' },
+    { from: 'src/theme/fonts', to: 'dist' },
+  ],
   // Extract all component CSS into a single `dist/style.css` (no import left in the JS, so the
   // CJS output stays valid CommonJS). Consumers import `@librechat/client/style.css` once.
   css: { inject: false },

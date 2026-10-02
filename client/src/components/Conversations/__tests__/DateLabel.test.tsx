@@ -59,17 +59,20 @@ describe('DateLabel', () => {
     ).toBeInTheDocument();
   });
 
-  it('applies mt-0 for the first date header', () => {
+  /** The first heading opens the list and needs no gap above it; every later one
+   *  separates two groups. The size of that gap is a design decision, so what is
+   *  pinned here is that the two cases differ, not the value. */
+  it('opens the list flush for the first date header', () => {
     const { container } = render(<DateLabel groupName="com_ui_date_today" isFirst={true} />);
     const heading = container.querySelector('h2');
     expect(heading).toHaveClass('mt-0');
-    expect(heading).not.toHaveClass('mt-2');
+    expect(heading).not.toHaveClass('mt-1.5');
   });
 
-  it('applies mt-2 for non-first date headers', () => {
+  it('separates a later date header from the group above it', () => {
     const { container } = render(<DateLabel groupName="com_ui_date_today" isFirst={false} />);
     const heading = container.querySelector('h2');
-    expect(heading).toHaveClass('mt-2');
+    expect(heading).toHaveClass('mt-1.5');
     expect(heading).not.toHaveClass('mt-0');
   });
 });

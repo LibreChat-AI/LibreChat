@@ -2,6 +2,17 @@ import { z } from 'zod';
 import type { ZodError } from 'zod';
 import type { TEndpointsConfig, TModelsConfig, TConfig } from './types';
 import {
+  MAX_SUBAGENTS,
+  MAX_SUBAGENTS_CEILING,
+  MAX_CHAT_PROJECT_DESCRIPTION_LENGTH,
+  MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH,
+  MAX_CHAT_PROJECT_FILES,
+  MAX_CHAT_PROJECT_FILES_CEILING,
+  MAX_CHAT_PROJECT_DESCRIPTION_LENGTH_CEILING,
+  MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH_CEILING,
+  DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
+} from './limits';
+import {
   filtersConfigSchema,
   MAX_PII_CUSTOM_REGEX_CHARACTERS,
   MAX_PII_CUSTOM_REGEX_INSTRUCTIONS,
@@ -27,10 +38,10 @@ export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT = 24 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
 export const AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT = 5_000;
 import {
-  MAX_SUBAGENTS,
-  MAX_SUBAGENTS_CEILING,
-  DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
-} from './limits';
+  DEFAULT_MCP_APP_CSP_LIMITS,
+  resolveMCPAppCspLimits,
+  type MCPAppCspLimits,
+} from './mcp/csp';
 import {
   CODE_ENVIRONMENT_DECISION_VERSION,
   CODE_ENVIRONMENT_MOVE_VERSION,
@@ -55,14 +66,31 @@ export {
   MAX_CHAT_PROJECT_DESCRIPTION_LENGTH,
   DEFAULT_RETAINED_ANSWER_TOKENS,
   DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
+  MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH,
+  MAX_CHAT_PROJECT_FILES,
+  MAX_CHAT_PROJECT_FILES_CEILING,
+  MAX_CHAT_PROJECT_DESCRIPTION_LENGTH_CEILING,
+  MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH_CEILING,
 } from './limits';
 
 export const defaultSocialLogins = ['google', 'facebook', 'openid', 'github', 'discord', 'saml'];
 
+export const TWO_FACTOR_ENROLLMENT_REQUIRED_CODE = 'TWO_FACTOR_ENROLLMENT_REQUIRED' as const;
+
+/** A federated record was refused a password login, so the only way in is its identity provider. */
+export const TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE =
+  'TWO_FACTOR_FEDERATED_LOGIN_BLOCKED' as const;
+
+const TWO_FACTOR_POLICY_PROVIDERS = new Set(['local', 'ldap']);
+
+export function isTwoFactorPolicyProvider(provider: string | null | undefined): boolean {
+  return provider == null || TWO_FACTOR_POLICY_PROVIDERS.has(provider);
+}
+
 /** How long a started social login may take to return to its callback before its `state` expires. */
 export const DEFAULT_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
-export const BASE_ONLY_CONFIG_SECTIONS = ['filters'] as const;
+export const BASE_ONLY_CONFIG_SECTIONS = ['filters', 'mcpAppSandbox'] as const;
 /** Sections that may be stored in the tenant's base config document but must
  * not be overridden or tombstoned by role, group, or user config documents. */
 export const BASE_PRINCIPAL_CONFIG_SECTIONS = ['langfuse'] as const;
@@ -123,6 +151,10 @@ export const excludedKeys = new Set([
   'spec',
   'disableParams',
   'chatProjectId',
+  'lastResponseAt',
+  'lastResponseMessageId',
+  'lastResponseIsManual',
+  'lastSeenAt',
 ]);
 
 export enum SettingsViews {
@@ -1199,6 +1231,10 @@ const codeEnvironmentPermissionFieldSchema = z
 export const CODE_ENVIRONMENT_COMMAND_TIMEOUT_DEFAULT_MS = 30_000;
 /** Protocol-level ceiling; deployments may only lower this value. */
 export const CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS = 5 * 60_000;
+/** Historical line window for attached workspace reads. */
+export const CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES = 200;
+/** Protocol-v1 read ceiling supported by existing workers. */
+export const CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES = 500;
 /**
  * Client retry horizon across Code API admission windows. Also the hard cap:
  * deployments may only lower it. `0` disables client retries, not the server's
@@ -1233,6 +1269,22 @@ export const codeEnvironmentUserConfigSchema = z
       .optional(),
     limits: z
       .object({
+        /** Foreground Bash timeout when the call omits timeoutMs. Omission keeps 30 seconds;
+         * the effective command ceiling may lower this value. */
+        defaultCommandTimeoutMs: z
+          .number()
+          .int()
+          .min(1)
+          .max(CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS)
+          .optional(),
+        /** Attached read_file line window when max_lines is omitted. Omission keeps 200 lines;
+         * the existing byte budget can truncate the result sooner. */
+        defaultReadFileLines: z
+          .number()
+          .int()
+          .min(1)
+          .max(CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES)
+          .optional(),
         /** Maximum timeout a Bash invocation may request. Omission preserves
          * the historical 30-second command budget. */
         maxCommandTimeoutMs: z
@@ -1331,6 +1383,9 @@ export type CodeWorkerEnrollmentPolicy = NonNullable<
   NonNullable<z.infer<typeof agentsEndpointSchema>['statefulCodeSessions']>['principalWorkers']
 >;
 
+/** Agents whose S3 avatar refresh is remembered for one user; see `avatarRefresh`. */
+export const DEFAULT_AVATAR_REFRESH_COVERAGE_LIMIT = 1000;
+
 export const DEFAULT_MAX_PROVIDER_ERROR_CHARS = 2000;
 export const DEFAULT_AGENT_MODEL_RESPONSE_BODY_TIMEOUT_MS = 900_000;
 export const DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS = 300_000;
@@ -1425,6 +1480,22 @@ export const agentsEndpointSchema = baseEndpointSchema
       codeApiUploadConcurrency: z.number().int().min(1).max(100).optional().default(3),
       /** Maximum wall-clock time spent waiting on Code API rate limits per operation. */
       codeApiMaxRetryWaitMs: z.number().int().min(0).max(300_000).optional().default(20_000),
+      /** S3 avatar re-signing for agent list responses. */
+      avatarRefresh: z
+        .object({
+          /** Per-agent refresh deadlines remembered for one user across pages. Once this
+           *  many are held the oldest are dropped, and a dropped agent is signed and
+           *  persisted again when a later page shows it, so deployments whose readers
+           *  browse past this many S3-backed avatars should raise it. */
+          coverageLimit: z
+            .number()
+            .int()
+            .min(1)
+            .max(1_000_000)
+            .optional()
+            .default(DEFAULT_AVATAR_REFRESH_COVERAGE_LIMIT),
+        })
+        .optional(),
       allowedProviders: z.array(z.union([z.string(), eModelEndpointSchema])).optional(),
       capabilities: z
         .array(z.nativeEnum(AgentCapabilities))
@@ -1892,6 +1963,17 @@ export type TVertexAIConfig = TVertexAISchema & {
  * Anthropic endpoint schema with optional Vertex AI configuration.
  * Extends baseEndpointSchema with Vertex AI support.
  */
+/**
+ * A built-in endpoint whose configured `models` list replaces its `*_MODELS`
+ * environment list. Read from the per-request config, so principal overrides
+ * can narrow it.
+ */
+export const modelListEndpointSchema = baseEndpointSchema.merge(
+  z.object({
+    models: z.array(z.string()).optional(),
+  }),
+);
+
 export const anthropicEndpointSchema = baseEndpointSchema.merge(
   z.object({
     /** Vertex AI configuration for running Anthropic models on Google Cloud */
@@ -2050,7 +2132,18 @@ export enum RateLimitPrefix {
   IMPORT = 'IMPORT',
   TTS = 'TTS',
   STT = 'STT',
+  EMAIL_CHANGE = 'EMAIL_CHANGE',
+  EMAIL_CHANGE_CONFIRM = 'EMAIL_CHANGE_CONFIRM',
 }
+
+export const mcpAppRateLimitSchema = z
+  .object({
+    resourcesPerMinute: z.number().int().positive().default(120),
+    toolCallsPerMinute: z.number().int().positive().default(60),
+  })
+  .default({});
+
+export type TMCPAppRateLimits = z.infer<typeof mcpAppRateLimitSchema>;
 
 export const rateLimitSchema = z.object({
   twoFactorManagement: z
@@ -2097,7 +2190,30 @@ export const rateLimitSchema = z.object({
       userWindowInMinutes: z.number().optional(),
     })
     .optional(),
+  mcpApps: mcpAppRateLimitSchema.optional(),
+  /** Requesting a change of the registered email; keyed by the authenticated user. */
+  emailChange: z
+    .object({
+      userMax: z.number().optional(),
+      userWindowInMinutes: z.number().optional(),
+    })
+    .optional(),
+  /** Confirming one; the endpoint is unauthenticated, so the source address is bounded too. */
+  emailChangeConfirm: z
+    .object({
+      ipMax: z.number().optional(),
+      ipWindowInMinutes: z.number().optional(),
+      userMax: z.number().optional(),
+      userWindowInMinutes: z.number().optional(),
+    })
+    .optional(),
 });
+
+export function resolveMCPAppRateLimits(
+  rateLimits?: z.input<typeof rateLimitSchema>,
+): TMCPAppRateLimits {
+  return mcpAppRateLimitSchema.parse(rateLimits?.mcpApps);
+}
 
 export enum EImageOutputType {
   PNG = 'png',
@@ -2118,11 +2234,18 @@ export type TTermsOfService = z.infer<typeof termsOfServiceSchema>;
 // Schema for localized string (either simple string or language-keyed object)
 const localizedStringSchema = z.union([z.string(), z.record(z.string())]);
 export type LocalizedString = z.infer<typeof localizedStringSchema>;
-
 export const mcpRefreshDefaults = {
   toolsRefreshInterval: 5 * 60 * 1000,
   statusRefreshInterval: 30 * 1000,
 };
+
+/** Default confirmation window for a client-side steer escalation arm. */
+export const DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS = 10_000;
+export const DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS = 60_000;
+/** Last-resort expiry of the client's per-pane queued-send lock. */
+export const DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS = 60_000;
+/** How many recently touched files the composer palette offers to reuse. */
+export const DEFAULT_COMPOSER_RECENT_FILES = 5;
 
 const mcpServersSchema = z
   .object({
@@ -2233,8 +2356,38 @@ export function resolveTraceViewerConfig(
 export enum RetentionMode {
   ALL = 'all',
   TEMPORARY = 'temporary',
+  EPHEMERAL = 'ephemeral',
 }
 
+const themeModeSchema = z
+  .object({
+    colors: z.record(
+      z.string().regex(/^[a-z][a-z0-9-]*$/),
+      z.string().regex(/^\d{1,3} \d{1,3} \d{1,3}$/),
+    ),
+    appearance: z.record(z.string()),
+    brands: z.record(z.string()),
+  })
+  .partial()
+  .strict();
+
+/**
+ * Shape of an inline deployment theme. Token names and value ranges are checked
+ * by `collectThemeIssues` in `theme.ts`, which owns the token list.
+ */
+export const themeDefinitionSchema = z
+  .object({
+    version: z.literal(1),
+    name: z.string().trim().min(1),
+    modes: z.object({ light: themeModeSchema, dark: themeModeSchema }).partial().strict(),
+    brands: z.record(z.string()).optional(),
+  })
+  .strict();
+
+export type TThemeDefinitionConfig = z.infer<typeof themeDefinitionSchema>;
+
+/** A bundled theme name or an inline theme definition applied to every user. */
+export const deploymentThemeSchema = z.union([z.string().trim().min(1), themeDefinitionSchema]);
 /** Single source for the agents panel selector's unsearched list cap; the
  * schema default and the client fallback both read it. */
 export const DEFAULT_AGENT_SELECTOR_LIMIT = 10;
@@ -2253,8 +2406,17 @@ export function normalizeAgentSelectorLimit(value: unknown): number {
     : DEFAULT_AGENT_SELECTOR_LIMIT;
 }
 
+/** Retention modes that apply expiration deadlines to all data, not just user-marked temporary chats. */
+export const isAllDataRetention = (mode?: RetentionMode | null): boolean =>
+  mode === RetentionMode.ALL || mode === RetentionMode.EPHEMERAL;
+
+/** Whether the retention mode forces every conversation to be temporary, overriding the per-chat toggle. */
+export const isForcedTemporaryRetention = (mode?: RetentionMode | null): boolean =>
+  mode === RetentionMode.EPHEMERAL;
+
 export const interfaceSchema = z
   .object({
+    theme: deploymentThemeSchema.optional(),
     privacyPolicy: z
       .object({
         externalUrl: z.string().optional(),
@@ -2312,6 +2474,10 @@ export const interfaceSchema = z
     webSearch: z.boolean().optional(),
     contextUsage: z.boolean().optional(),
     contextCost: z.boolean().optional(),
+    /** Opening the artifacts pane in its own browser window. Enabled by
+     *  default; a deployment that cannot use popups can turn it off and keep
+     *  the docked pane. */
+    artifactUndocking: z.boolean().optional(),
     feedback: z.boolean().optional(),
     currency: z
       .object({
@@ -2329,6 +2495,10 @@ export const interfaceSchema = z
     marketplace: z
       .object({
         use: z.boolean().optional(),
+        /** Backoff steps, in milliseconds, before each automatic retry of a failed
+         *  marketplace request; the count is also how many automatic attempts there are.
+         *  An empty array leaves only the manual Retry. Omit for LibreChat's sequence. */
+        retryDelaysMs: z.array(z.number().int().min(0).max(600_000)).max(20).optional(),
       })
       .optional(),
     fileSearch: z.boolean().optional(),
@@ -2368,6 +2538,50 @@ export const interfaceSchema = z
         }),
       ])
       .optional(),
+    /**
+     * What the reply-alert capabilities may do on this deployment. Each field gates a
+     * capability rather than setting it: the preferences themselves stay per device, because
+     * notification permission and audio output belong to the machine the reader sits at.
+     */
+    replyNotifications: z
+      .object({
+        /** Whether an unseen count may reach the tab title and favicon. */
+        tabBadge: z.boolean().optional(),
+        /** Whether readers may turn on desktop notifications for replies. */
+        desktop: z.boolean().optional(),
+        /** Whether readers may turn on the reply chime. */
+        sound: z.boolean().optional(),
+        /**
+         * How many conversations one away poll looks at. A reply lifts its conversation, so the
+         * newest activity is what the first page holds.
+         *
+         * Bounded by the conversation list's own maximum page, which the server clamps every
+         * request to: advertising a wider range here would accept a number the read silently
+         * truncates. Covering a deployment whose replies outpace a single page wants the
+         * server-side unseen query rather than a larger page.
+         */
+        pollLimit: z.number().int().min(1).max(100).optional(),
+        /** Milliseconds between list checks while the tab is unfocused and an away alert is on. */
+        pollIntervalMs: z.number().int().min(10_000).max(600_000).optional(),
+        /**
+         * Milliseconds between list refreshes while the tab is focused, so a reply produced
+         * elsewhere eventually shows its dot. Deliberately far slower than the away poll.
+         *
+         * Capped at five minutes because this refresh is what renews the unfiltered discovery
+         * snapshot, and the client holds an unobserved snapshot authoritative for five minutes:
+         * a slower refresh would let it lapse, dropping its unseen rows from the count until the
+         * next one.
+         */
+        focusedRefreshMs: z.number().int().min(60_000).max(300_000).optional(),
+      })
+      .default({
+        tabBadge: true,
+        desktop: true,
+        sound: true,
+        pollLimit: 100,
+        pollIntervalMs: 30_000,
+        focusedRefreshMs: 300_000,
+      }),
     schedules: z
       .union([
         z.boolean(),
@@ -2387,12 +2601,44 @@ export const interfaceSchema = z
           requireProject: z.boolean().optional(),
           /** Pins every scheduled run to ONE chat project, ignoring any client
            *  choice. Implies `requireProject`. The project must belong to the
-           *  schedule's owner, so a deployment-wide value only makes sense with a
-           *  per-user/per-role config override. */
+           *  schedule's owner, so a deployment-wide value only makes sense with
+           *  a per-user/per-role config override. */
           projectId: z.string().trim().min(1).optional(),
         }),
       ])
       .optional(),
+    /** Client confirmation window for a steer escalation arm, in milliseconds. */
+    steerArmConfirmationTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .max(2_147_483_647)
+      .default(DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS),
+    /** How long the client keeps reconciling a transport-ambiguous queued turn
+     *  before it stops polling, in milliseconds. A slow proxy or a delayed
+     *  read replica needs a longer window than the default. */
+    queuedTurnReconciliationTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .max(2_147_483_647)
+      .default(DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS),
+    /** How long a queued send may hold its pane before the claim is treated as
+     *  broken and released, in milliseconds. A healthy start releases it at once;
+     *  this only bounds a start that failed without ever reporting progress. */
+    queuedSendLockTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .max(2_147_483_647)
+      .default(DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS),
+    /** How many recently touched files the composer palette requests and shows
+     *  while idle; 0 turns that idle list off. Searching the palette still
+     *  finds any of the user's files, since it is the composer's only way to
+     *  reuse one. Capped at the file list endpoint's
+     *  own default maximum (`fileListLimit`) so the palette can never ask for
+     *  more than a typical deployment will return. */
+    composerRecentFiles: z.number().int().min(0).max(100).default(DEFAULT_COMPOSER_RECENT_FILES),
   })
   .default({
     modelSelect: true,
@@ -2421,6 +2667,7 @@ export const interfaceSchema = z
     webSearch: true,
     contextUsage: true,
     contextCost: false,
+    artifactUndocking: true,
     feedback: true,
     peoplePicker: {
       users: true,
@@ -2458,14 +2705,27 @@ export const interfaceSchema = z
       public: true,
       snapshotFiles: true,
     },
+    replyNotifications: {
+      tabBadge: true,
+      desktop: true,
+      sound: true,
+      pollLimit: 100,
+      pollIntervalMs: 30_000,
+      focusedRefreshMs: 300_000,
+    },
     // `schedules` is deliberately ABSENT from this default. It is experimental and
     // default-off in v1, and zod applies this whole object when `interface` is omitted
     // from librechat.yaml — including it would silently enable the feature (and permit
     // billable scheduled runs) on every deployment that never opted in. The PERMISSION
     // defaults live in updateInterfacePermissions, which is a separate concern.
+    steerArmConfirmationTimeoutMs: DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
+    queuedTurnReconciliationTimeoutMs: DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS,
+    queuedSendLockTimeoutMs: DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS,
+    composerRecentFiles: DEFAULT_COMPOSER_RECENT_FILES,
   });
 
 export type TInterfaceConfig = z.infer<typeof interfaceSchema>;
+export type TReplyNotificationsConfig = TInterfaceConfig['replyNotifications'];
 export type TBalanceConfig = z.infer<typeof balanceSchema>;
 export type TTransactionsConfig = z.infer<typeof transactionsSchema>;
 
@@ -2510,6 +2770,87 @@ export type StartupConfigContext = 'share';
  */
 export type EndpointsDropParamsMap = Record<string, string[] | Record<string, string[]>>;
 
+export type TMCPAppOperationLimits = {
+  maxBytes: number;
+  timeoutMs: number;
+  maxActive: number;
+};
+
+export const DEFAULT_MCP_APP_OPERATION_LIMITS: TMCPAppOperationLimits = {
+  maxBytes: 4 * 1024 * 1024,
+  timeoutMs: 30_000,
+  maxActive: 16,
+};
+
+export function resolveMCPAppOperationLimits(
+  limits?: Partial<TMCPAppOperationLimits>,
+): TMCPAppOperationLimits {
+  return { ...DEFAULT_MCP_APP_OPERATION_LIMITS, ...limits };
+}
+
+export type TMCPAppsPolicy = {
+  enabled: boolean;
+  legacyHtmlEnabled: boolean;
+  cspLimits?: MCPAppCspLimits;
+  /** Server-enforced UTF-8 JSON byte cap for one persisted MCP App artifact. */
+  maxPersistedAppBytes?: number;
+  /** Shared per-user ceiling applied before principal-scoped MCP App admission. */
+  maxAdmissionRequestsPerMinute?: number;
+  /** Maximum simultaneously opened App views per authenticated host. */
+  maxActiveViews?: number;
+  /** Maximum UTF-16 characters displayed for an App-requested action before denying it. */
+  maxActionPreviewChars?: number;
+  /** Server-side bounds for App operations; never derived from App-provided content. */
+  operationLimits?: TMCPAppOperationLimits;
+  /** Deployment-owned dedicated Sandbox Proxy URL published to authenticated clients. */
+  sandboxUrl?: string;
+};
+
+/** Aggregate App-bearing message target; cannot exceed the safe storage ceiling. */
+export const DEFAULT_MCP_APP_MESSAGE_BYTES: number = 12 * 1024 * 1024;
+export const MAX_MCP_APP_MESSAGE_BYTES: number = 12 * 1024 * 1024;
+export const DEFAULT_MCP_APP_PERSISTED_BYTES = 1024 * 1024;
+export const MAX_MCP_APP_PERSISTED_BYTES = 4 * 1024 * 1024;
+export const DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE = 240;
+export const DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS = 3;
+export const MAX_MCP_APP_ACTIVE_VIEWS = 32;
+export const DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS = 16_384;
+export const MAX_MCP_APP_ACTION_PREVIEW_CHARS = 131_072;
+
+export const DEFAULT_MCP_APPS_POLICY: TMCPAppsPolicy = {
+  enabled: false,
+  legacyHtmlEnabled: false,
+  maxPersistedAppBytes: DEFAULT_MCP_APP_PERSISTED_BYTES,
+  maxAdmissionRequestsPerMinute: DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+  maxActiveViews: DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+  maxActionPreviewChars: DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+};
+
+export function resolveMCPAppsPolicy(
+  value?: boolean,
+  cspLimits?: Partial<MCPAppCspLimits>,
+  maxPersistedAppBytes = DEFAULT_MCP_APP_PERSISTED_BYTES,
+  maxAdmissionRequestsPerMinute = DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+  sandboxUrl?: string,
+  maxActiveViews = DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+  maxActionPreviewChars = DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+  operationLimits?: Partial<TMCPAppOperationLimits>,
+): TMCPAppsPolicy {
+  return {
+    enabled: value === true,
+    legacyHtmlEnabled: value !== false,
+    ...(cspLimits != null ? { cspLimits: resolveMCPAppCspLimits(cspLimits) } : {}),
+    maxPersistedAppBytes,
+    maxAdmissionRequestsPerMinute,
+    maxActiveViews,
+    maxActionPreviewChars,
+    ...(operationLimits != null
+      ? { operationLimits: resolveMCPAppOperationLimits(operationLimits) }
+      : {}),
+    ...(sandboxUrl !== undefined ? { sandboxUrl } : {}),
+  };
+}
+
 export type TStartupConfig = {
   appTitle: string;
   socialLogins?: string[];
@@ -2542,6 +2883,12 @@ export type TStartupConfig = {
   openidLoginEnabled: boolean;
   appleLoginEnabled: boolean;
   samlLoginEnabled: boolean;
+  passkeyLoginEnabled: boolean;
+  /** Per-account passkey enrollment cap, from `passkeys.perUserMax`; post-login only. */
+  maxPasskeysPerUser?: number;
+  /** What one chat list filter request may name (`conversationList`), resolved from the
+   *  deployment's base config as the list route resolves it; post-login only. */
+  conversationListLimits?: TConversationListConfig;
   openidLabel: string;
   openidImageUrl: string;
   openidAutoRedirect: boolean;
@@ -2559,13 +2906,16 @@ export type TStartupConfig = {
   registrationEnabled: boolean;
   socialLoginEnabled: boolean;
   passwordResetEnabled: boolean;
+  twoFactorAuthenticationRequired?: boolean;
   emailEnabled: boolean;
+  allowEmailChange: boolean;
   showBirthdayIcon: boolean;
   helpAndFaqURL: string;
   /** Admin panel link, only present for users with admin access */
   adminPanelURL?: string;
   customFooter?: string;
   modelSpecs?: TSpecsConfig;
+  projects?: TChatProjectsConfig;
   modelDescriptions?: Record<string, Record<string, string>>;
   sharedLinksEnabled: boolean;
   publicSharedLinksEnabled: boolean;
@@ -2579,6 +2929,8 @@ export type TStartupConfig = {
   rum?: TRumConfig;
   bundlerURL?: string;
   staticBundlerURL?: string;
+  /** Whether the deployment has a configured RAG service. */
+  ragEnabled?: boolean;
   sharePointFilePickerEnabled?: boolean;
   sharePointBaseUrl?: string;
   sharePointPickerGraphScope?: string;
@@ -2614,6 +2966,7 @@ export type TStartupConfig = {
     }
   >;
   mcpPlaceholder?: string;
+  mcpApps?: TMCPAppsPolicy;
   conversationImportMaxFileSize?: number;
   buildInfo?: {
     commit?: string | null;
@@ -2627,7 +2980,7 @@ export type TStartupConfig = {
 
 export type TSharedLinkStartupInterface = Pick<
   Partial<TInterfaceConfig>,
-  'privacyPolicy' | 'termsOfService' | 'codeHighlightThrottleMs'
+  'privacyPolicy' | 'termsOfService' | 'codeHighlightThrottleMs' | 'theme' | 'artifactUndocking'
 >;
 
 export type TSharedLinkStartupConfig = Pick<TStartupConfig, 'appTitle'> &
@@ -3118,14 +3471,62 @@ export const openIdDiscoverySchema = z.object({
 });
 
 export type TOpenIdDiscoveryConfig = z.infer<typeof openIdDiscoverySchema>;
+export const chatProjectsConfigSchema = z
+  .object({
+    /** Maximum number of reference files attached to one Chat Project. Defaults to 50. */
+    maxFiles: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_CHAT_PROJECT_FILES_CEILING)
+      .optional()
+      .default(MAX_CHAT_PROJECT_FILES),
+    /** Maximum instruction characters stored for one Chat Project. Defaults to 16000. */
+    maxInstructionsLength: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH_CEILING)
+      .optional()
+      .default(MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH),
+    /** Maximum description characters stored for one Chat Project. Defaults to 1000. */
+    maxDescriptionLength: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_CHAT_PROJECT_DESCRIPTION_LENGTH_CEILING)
+      .optional()
+      .default(MAX_CHAT_PROJECT_DESCRIPTION_LENGTH),
+  })
+  .strict()
+  .default({});
+
+export type TChatProjectsConfig = z.infer<typeof chatProjectsConfigSchema>;
 
 /** Maximum CAS attempts per ACL document, including the initial attempt. */
 export const permissionWriteAttemptsSchema = z.number().int().min(1).max(100).default(3);
+
+/**
+ * Validation limits for the conversation list's filter facets. The field defaults are the
+ * only definition of these values: `getConfigDefaults()` resolves them for AppService, and
+ * the parser takes what AppService resolved.
+ */
+export const conversationListConfigSchema = z.object({
+  /** How many endpoint names one filter request may name. The list is a fixed menu of the
+   * endpoints a deployment serves, so a request naming more than this is not a user
+   * choosing filters: it is an unbounded `$in` arriving from somewhere else. */
+  maxEndpointFilters: z.number().int().min(1).max(1_000).default(50),
+  /** One endpoint name. Long enough for a custom endpoint, short enough to bound the query. */
+  maxEndpointNameLength: z.number().int().min(1).max(1_024).default(128),
+});
+
+export type TConversationListConfig = z.infer<typeof conversationListConfigSchema>;
 
 export const configSchema = z.object({
   version: z.string(),
   permissions: z.object({ maxWriteAttempts: permissionWriteAttemptsSchema }).optional(),
   cache: z.boolean().default(true),
+  projects: chatProjectsConfigSchema,
   ocr: ocrSchema.optional(),
   webSearch: webSearchSchema.optional(),
   langfuse: langfuseConfigSchema.optional(),
@@ -3134,9 +3535,95 @@ export const configSchema = z.object({
   skillSync: skillSyncConfigSchema,
   secureImageLinks: z.boolean().optional(),
   imageOutputType: z.nativeEnum(EImageOutputType).default(EImageOutputType.PNG),
+  conversationList: conversationListConfigSchema.default(() =>
+    conversationListConfigSchema.parse({}),
+  ),
   includedTools: z.array(z.string()).optional(),
   filteredTools: z.array(z.string()).optional(),
   mcpServers: MCPServersSchema.optional(),
+  mcpAppSandbox: z
+    .object({
+      url: z
+        .string()
+        .trim()
+        .url()
+        .refine(
+          (value) => {
+            try {
+              return ['http:', 'https:'].includes(new URL(value).protocol);
+            } catch {
+              return false;
+            }
+          },
+          { message: 'MCP App sandbox URL must use http:// or https://' },
+        )
+        .optional(),
+      maxSourcesPerDirective: z
+        .number()
+        .int()
+        .positive()
+        .max(Number.MAX_SAFE_INTEGER)
+        .default(DEFAULT_MCP_APP_CSP_LIMITS.maxSourcesPerDirective),
+      maxSerializedLength: z
+        .number()
+        .int()
+        .positive()
+        .max(Number.MAX_SAFE_INTEGER)
+        .default(DEFAULT_MCP_APP_CSP_LIMITS.maxSerializedLength),
+      maxPersistedAppBytes: z
+        .number()
+        .int()
+        .positive()
+        .max(MAX_MCP_APP_PERSISTED_BYTES)
+        .default(DEFAULT_MCP_APP_PERSISTED_BYTES),
+      maxPersistedMessageBytes: z
+        .number()
+        .int()
+        .positive()
+        .max(MAX_MCP_APP_MESSAGE_BYTES)
+        .default(DEFAULT_MCP_APP_MESSAGE_BYTES),
+      maxAdmissionRequestsPerMinute: z
+        .number()
+        .int()
+        .positive()
+        .max(Number.MAX_SAFE_INTEGER)
+        .default(DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE),
+      maxActiveViews: z
+        .number()
+        .int()
+        .positive()
+        .max(MAX_MCP_APP_ACTIVE_VIEWS)
+        .default(DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS),
+      maxActionPreviewChars: z
+        .number()
+        .int()
+        .positive()
+        .max(MAX_MCP_APP_ACTION_PREVIEW_CHARS)
+        .default(DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS),
+      operationLimits: z
+        .object({
+          maxBytes: z
+            .number()
+            .int()
+            .positive()
+            .max(16 * 1024 * 1024)
+            .default(DEFAULT_MCP_APP_OPERATION_LIMITS.maxBytes),
+          timeoutMs: z
+            .number()
+            .int()
+            .positive()
+            .max(10 * 60_000)
+            .default(DEFAULT_MCP_APP_OPERATION_LIMITS.timeoutMs),
+          maxActive: z
+            .number()
+            .int()
+            .positive()
+            .max(256)
+            .default(DEFAULT_MCP_APP_OPERATION_LIMITS.maxActive),
+        })
+        .default({}),
+    })
+    .default({}),
   mcpSettings: z
     .object({
       allowedDomains: z.array(z.string()).optional(),
@@ -3196,10 +3683,13 @@ export const configSchema = z.object({
           authorizationFenceRetryBatchSize: z.number().int().positive().max(10_000).default(100),
         })
         .default({}),
+      apps: z.boolean().optional(),
     })
     .optional(),
   interface: interfaceSchema,
   turnstile: turnstileSchema.optional(),
+  /** Maximum rows an explicitly limited GET /files request may return. */
+  fileListLimit: z.number().int().positive().default(100),
   fileStrategy: fileStorageSchema.default(FileSources.local),
   fileStrategies: fileStrategiesSchema,
   cloudfront: cloudfrontConfigSchema,
@@ -3219,6 +3709,24 @@ export const configSchema = z.object({
       openidDiscovery: openIdDiscoverySchema.partial().optional(),
     })
     .default({ socialLogins: defaultSocialLogins }),
+  /** Changing the registered email address. An unset field falls back to its env var, then the
+   *  documented default, so an existing deployment keeps the behavior it has today. */
+  emailChange: z
+    .object({
+      /** `ALLOW_EMAIL_CHANGE` when unset; enabled when neither is given. */
+      enabled: z.boolean().optional(),
+      /** Lifetime of a verification link. */
+      tokenTTLSeconds: z.number().int().min(60).max(86_400).optional(),
+    })
+    .optional(),
+  /** WebAuthn passkey enrollment. An unset field falls back to its env var, then the
+   *  documented default, so an existing deployment keeps the behavior it has today. */
+  passkeys: z
+    .object({
+      /** `MAX_PASSKEYS_PER_USER` when unset; the documented default when neither is given. */
+      perUserMax: z.number().int().min(1).max(100).optional(),
+    })
+    .default({}),
   balance: balanceSchema.optional(),
   transactions: transactionsSchema.optional(),
   speech: z
@@ -3244,8 +3752,8 @@ export const configSchema = z.object({
        * endpoint > a custom endpoint's own config.
        */
       all: baseEndpointSchema.omit({ baseURL: true }).optional(),
-      [EModelEndpoint.openAI]: baseEndpointSchema.optional(),
-      [EModelEndpoint.google]: baseEndpointSchema.optional(),
+      [EModelEndpoint.openAI]: modelListEndpointSchema.optional(),
+      [EModelEndpoint.google]: modelListEndpointSchema.optional(),
       [EModelEndpoint.anthropic]: anthropicEndpointSchema.optional(),
       [EModelEndpoint.azureOpenAI]: azureEndpointSchema.optional(),
       [EModelEndpoint.azureAssistants]: assistantEndpointSchema.optional(),
@@ -3805,9 +4313,16 @@ export enum CacheKeys {
    * Key for admin panel OAuth exchange codes (one-time-use, short TTL).
    */
   ADMIN_OAUTH_EXCHANGE = 'ADMIN_OAUTH_EXCHANGE',
+  /**
+   * Key for pending WebAuthn (passkey) ceremony challenges (one-time-use, short TTL).
+   */
+  PASSKEY_CHALLENGE = 'PASSKEY_CHALLENGE',
 }
 
 export const AUTH_USER_DOC_BY_ID_PREFIX = 'auth-user-doc-byid';
+
+/** Lifetime of a cached auth user document, and so the longest a stale one can be served. */
+export const AUTH_USER_DOC_CACHE_TTL_MS = 5000;
 
 /**
  * Enum for violation types, used to identify, log, and cache violations.
@@ -4515,6 +5030,9 @@ export function splitToolCallName(
 }
 
 /** Maximum explicit subagent hops allowed from any root agent at runtime. */
+/** Upper bound on WebAuthn credentials a single user may register. */
+export const MAX_PASSKEYS_PER_USER = 20;
+
 export const MAX_SUBAGENT_DEPTH = 5;
 
 /** Maximum unique explicit subagent targets that may be loaded at runtime. */

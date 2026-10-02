@@ -2,6 +2,8 @@ import { logger } from '@librechat/data-schemas';
 import { excludedKeys, isAgentsEndpoint, isEphemeralAgentId } from 'librechat-data-provider';
 import type { AppConfig, ConversationMethods, IConversation } from '@librechat/data-schemas';
 import type { TConversation } from 'librechat-data-provider';
+import type { PersistedReply } from './announce';
+import { isAnnounceableReply } from './announce';
 
 type SaveConvo = ConversationMethods['saveConvo'];
 type SaveConvoOptions = NonNullable<Parameters<SaveConvo>[2]>;
@@ -44,6 +46,12 @@ export interface TurnConversationWrite extends TurnConversationFields {
   initialized?: boolean;
   /** The message this write just saved, appended to the conversation's message list. */
   savedMessageId?: SavedMessageId;
+  /**
+   * The assistant reply this write persisted, if any. Absent for the user's own turn and for a
+   * reply whose message write resolved empty; whether it may raise an indicator is decided by
+   * `isAnnounceableReply`, the same predicate every other persistence path asks.
+   */
+  reply?: PersistedReply;
 }
 
 export interface TurnConversationResult {
@@ -135,6 +143,24 @@ async function loadExistingConversation(
   return deps.getConvo(write.ctx.userId, write.conversationId);
 }
 
+/**
+ * The reply stamp a write carries, and nothing when it carries none.
+ *
+ * `saveConvo` assigns the timestamp itself, past its own awaited reads and against the write, so
+ * a catch-up recorded by `/seen` while one of those reads is in flight cannot outrank this reply
+ * and leave it reading as already seen. A temporary chat is never announced: it has no row in the
+ * lists the indicator is read from, and a row with nothing a reader can open is not either.
+ */
+function getReplyStamp(
+  write: TurnConversationWrite,
+): { stampReply: true; replyMessageId: string } | Record<string, never> {
+  const { reply } = write;
+  if (reply == null || !isAnnounceableReply({ ...reply, isTemporary: write.ctx.isTemporary })) {
+    return {};
+  }
+  return { stampReply: true, replyMessageId: reply.messageId as string };
+}
+
 async function writeConversation(
   deps: ConversationStore,
   write: TurnConversationWrite,
@@ -143,12 +169,15 @@ async function writeConversation(
 ): Promise<TurnConversationResult> {
   const { req, ctx, conversationId, endpoint, endpointType, endpointOptions = {} } = write;
   const agentOwned = isAgentOwned(write);
+  const inserting = write.initialized !== true && existing == null;
+  const { chatProjectId, ...storedOptions } = endpointOptions;
   const conversation = await deps.saveConvo(
     ctx,
     {
       endpoint,
       endpointType,
-      ...endpointOptions,
+      ...storedOptions,
+      ...(inserting && chatProjectId !== undefined ? { chatProjectId } : {}),
       conversationId: endpointOptions.conversationId ?? conversationId,
     },
     {
@@ -156,9 +185,9 @@ async function writeConversation(
       unsetFields: existing != null ? getUnsetFields(existing, endpointOptions, agentOwned) : {},
       noUpsert: req?._agentEventBindingParentConversationId != null,
       initialAgentId: agentOwned ? (write.agentId ?? null) : null,
-      createdAtOnInsert:
-        write.initialized !== true && existing == null ? getCreatedAtOnInsert(req) : undefined,
+      createdAtOnInsert: inserting ? getCreatedAtOnInsert(req) : undefined,
       ...(appendMessageIds != null ? { appendMessageIds } : {}),
+      ...getReplyStamp(write),
     },
   );
   if (req != null && conversation != null && 'conversationId' in conversation) {

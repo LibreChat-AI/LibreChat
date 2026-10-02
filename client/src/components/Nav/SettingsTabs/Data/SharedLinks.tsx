@@ -196,11 +196,11 @@ export default function SharedLinks() {
               to={`/share/${shareId}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="group flex items-center gap-1.5 truncate rounded-sm font-medium text-text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+              className="group text-text-primary focus-visible:ring-text-primary flex items-center gap-1.5 truncate rounded-sm font-medium underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:outline-hidden"
             >
               <span className="truncate">{title}</span>
               <ExternalLink
-                className="size-3.5 flex-shrink-0 text-text-tertiary transition-colors group-hover:text-text-secondary"
+                className="text-text-tertiary group-hover:text-text-secondary size-3.5 shrink-0 transition-colors"
                 aria-hidden="true"
               />
             </Link>
@@ -290,10 +290,11 @@ export default function SharedLinks() {
         </OGDialogTrigger>
 
         <OGDialogContent
+          focusOutline="hidden"
           ref={contentRef}
           tabIndex={-1}
           onOpenAutoFocus={handleOpenAutoFocus}
-          className="w-11/12 max-w-3xl shadow-2xl focus:outline-none"
+          className="w-11/12 max-w-3xl shadow-2xl"
         >
           <OGDialogHeader>
             <OGDialogTitle>{localize('com_nav_shared_links')}</OGDialogTitle>
@@ -302,7 +303,7 @@ export default function SharedLinks() {
             columns={columns}
             data={allLinks}
             getRowId={getRowId}
-            className="scrollbar-gutter-stable max-h-[60vh] min-h-80"
+            className="max-h-[60vh] min-h-80 scrollbar-gutter-stable"
             hasNextPage={hasNextPage}
             isFetchingNextPage={isFetchingNextPage}
             isFetching={isFetching}

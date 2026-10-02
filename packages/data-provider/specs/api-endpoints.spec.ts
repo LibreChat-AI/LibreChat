@@ -6,6 +6,10 @@ import {
   buildLoginRedirectUrl,
   getSharedLinks,
   agentQueuedTurnsByConversation,
+  enableTwoFactorSetup,
+  confirmTwoFactorSetup,
+  acknowledgeTwoFactorSetup,
+  finalizeTwoFactorSetup,
 } from '../src/api-endpoints';
 
 describe('buildLoginRedirectUrl', () => {
@@ -115,5 +119,14 @@ describe('agent queued turns', () => {
 
   it('encodes queued-turn identity as one path segment', () => {
     expect(agentQueuedTurn('turn/a b')).toBe('/api/agents/chat/queued-turns/turn%2Fa%20b');
+  });
+});
+
+describe('required two-factor setup endpoints', () => {
+  it('uses the purpose-specific setup paths', () => {
+    expect(enableTwoFactorSetup()).toBe('/api/auth/2fa/setup');
+    expect(confirmTwoFactorSetup()).toBe('/api/auth/2fa/setup/confirm');
+    expect(acknowledgeTwoFactorSetup()).toBe('/api/auth/2fa/setup/acknowledge');
+    expect(finalizeTwoFactorSetup()).toBe('/api/auth/2fa/setup/finalize');
   });
 });

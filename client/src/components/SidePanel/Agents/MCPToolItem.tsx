@@ -57,7 +57,7 @@ export default function MCPToolItem({
 
   return (
     <div className="overflow-hidden rounded-lg">
-      <div className="flex items-center gap-1 rounded-lg pr-1 transition-colors hover:bg-surface-secondary">
+      <div className="hover:bg-surface-secondary flex items-center gap-1 rounded-lg pr-1 transition-colors">
         <button
           type="button"
           onClick={onToggleSelect}
@@ -65,19 +65,19 @@ export default function MCPToolItem({
           aria-label={tool.metadata.name}
           className={cn(
             'flex min-w-0 flex-1 items-center gap-2.5 rounded-lg p-2 text-left',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary',
+            'focus-visible:ring-ring-primary focus:outline-hidden focus-visible:ring-2',
           )}
         >
           <span
             aria-hidden="true"
             className={cn(
-              'flex size-4 shrink-0 items-center justify-center rounded border border-border-medium transition-colors',
+              'border-border-medium flex size-4 shrink-0 items-center justify-center rounded border transition-colors',
               isSelected && 'bg-surface-inverted text-text-inverted',
             )}
           >
             {isSelected && <Check className="size-4" />}
           </span>
-          <span className="min-w-0 flex-1 truncate text-sm text-text-primary">
+          <span className="text-text-primary min-w-0 flex-1 truncate text-sm">
             {tool.metadata.name}
           </span>
         </button>
@@ -158,11 +158,11 @@ export default function MCPToolItem({
         <div className="min-h-0 overflow-hidden">
           <div
             className={cn(
-              'border-t border-border-light px-3 py-3 transition-opacity duration-200 ease-out motion-reduce:transition-none',
+              'border-border-light border-t px-3 py-3 transition-opacity duration-200 ease-out motion-reduce:transition-none',
               expanded ? 'opacity-100' : 'opacity-0',
             )}
           >
-            <p className="max-h-44 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-text-secondary">
+            <p className="text-text-secondary max-h-44 overflow-y-auto text-xs leading-relaxed whitespace-pre-wrap">
               {description || localize('com_ui_mcp_no_description')}
             </p>
           </div>

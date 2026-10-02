@@ -7,6 +7,8 @@ export * from './utils';
 export { createModels } from './models';
 export {
   createMethods,
+  AGENT_OWNER_CONTACT_RESOLVED_FIELD,
+  AgentSortCursorError,
   CLIENT_MESSAGE_SELECT,
   SUBAGENT_TRANSCRIPT_SOURCE_BYTE_LIMIT,
   RoleConflictError,
@@ -44,6 +46,10 @@ export {
   MCPAuthorityProofError,
   createMCPAuthorizationFenceRetryStorage,
   MAX_MCP_AUTHORITY_TARGETS,
+  InvalidAvailableProjectFilesCursorError,
+  parseAvailableProjectFilesCursor,
+  MAX_AVAILABLE_PROJECT_FILES_LIMIT,
+  DEFAULT_AVAILABLE_PROJECT_FILES_LIMIT,
   createMCPAuthorityBootRevision,
   createMCPAuthorityConfigSourceRevision,
   createMCPAuthorityCredentialRevision,

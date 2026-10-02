@@ -440,19 +440,19 @@ export default function McpSection({ item }: Props) {
   return (
     <div className="flex flex-col gap-5">
       {item.description && (
-        <p className="max-h-40 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed text-text-secondary">
+        <p className="text-text-secondary max-h-40 overflow-y-auto text-sm leading-relaxed whitespace-pre-wrap">
           {item.description}
         </p>
       )}
 
       <div className="flex flex-col">
-        <div className="flex items-center justify-between rounded-xl border border-border-light bg-surface-secondary px-3 py-2.5">
+        <div className="border-border-light bg-surface-secondary flex items-center justify-between rounded-xl border px-3 py-2.5">
           <div className="flex items-center gap-2">
             <span
               className={cn('size-2.5 rounded-full', statusDisplay.dotClass)}
               aria-hidden="true"
             />
-            <span className="text-sm font-medium text-text-primary">
+            <span className="text-text-primary text-sm font-medium">
               {localize(statusDisplay.labelKey, { 0: serverName })}
             </span>
           </div>
@@ -489,7 +489,7 @@ export default function McpSection({ item }: Props) {
 
       <div className="flex flex-col gap-2">
         <div className="flex min-h-7 items-center justify-between">
-          <span className="text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+          <span className="text-text-secondary text-[11px] font-medium tracking-wide uppercase">
             {localize('com_ui_tools_mcp_tools_section')}
           </span>
           {(hasTools || runtimeToolsAvailable) && (
@@ -544,9 +544,9 @@ export default function McpSection({ item }: Props) {
                   programmaticToolsEnabled ||
                   backgroundToolsEnabled ||
                   toolIntentsEnabled) && (
-                  <span className="mx-1 h-4 w-px bg-border-light" aria-hidden="true" />
+                  <span className="bg-border-light mx-1 h-4 w-px" aria-hidden="true" />
                 )}
-              <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs text-text-secondary">
+              <label className="text-text-secondary flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs">
                 <Checkbox
                   checked={hasTools ? allSelected : isWildcardAttached}
                   onCheckedChange={(checked) =>
@@ -557,7 +557,7 @@ export default function McpSection({ item }: Props) {
                       ? localize('com_ui_tools_mcp_deselect_all')
                       : localize('com_ui_tools_mcp_select_all')
                   }
-                  className="size-4 rounded border border-border-medium"
+                  className="border-border-medium rounded border"
                 />
                 <span>
                   {(hasTools ? allSelected : isWildcardAttached)
@@ -613,7 +613,7 @@ export default function McpSection({ item }: Props) {
             </div>
           </Collapse>
           <Collapse open={!hasTools && !toolsLoading}>
-            <p className="rounded-xl border border-dashed border-border-light p-3 text-center text-xs text-text-tertiary">
+            <p className="border-border-light text-text-tertiary rounded-xl border border-dashed p-3 text-center text-xs">
               {localize(runtimeToolsAvailable ? runtimeToolsMessage : 'com_ui_tools_mcp_no_tools')}
             </p>
           </Collapse>

@@ -1,11 +1,13 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import { SoleToolContext, useToolAutoExpand } from '../disclosure';
 import { FailedRevealContext, useFailedReveal } from '../reveal';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
 import ToolCallGroup from '../ToolCallGroup';
+import { FoldHeaderContext } from '../rail';
 import { ToolAuthWarning } from '../auth';
 
 const mockMCPServerNames: string[] = [];
@@ -14,6 +16,9 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, values?: Record<string | number, string>) => {
     if (key === 'com_ui_ran_n_actions') {
       return `Ran ${values?.[0]} actions`;
+    }
+    if (key === 'com_ui_preparing_n_actions') {
+      return `Preparing ${values?.[0]} actions`;
     }
     if (key === 'com_ui_running_n_actions') {
       return `Running ${values?.[0]} actions`;
@@ -100,6 +105,19 @@ jest.mock('~/hooks/MCP', () => {
   };
 });
 
+jest.mock('~/components/MCPUIResource', () => ({
+  MCPAppViews: ({ attachments }: { attachments?: TAttachment[] }) => (
+    <>
+      {(attachments ?? [])
+        .filter((item) => item.type === 'ui_resources')
+        .flatMap((item) => item.ui_resources ?? [])
+        .map((resource: { resourceId: string; toolName?: string }, index) => (
+          <iframe key={`${resource.resourceId}:${index}`} title={`MCP App: ${resource.toolName}`} />
+        ))}
+    </>
+  ),
+}));
+
 jest.mock('../ToolOutput', () => ({
   StackedToolIcons: ({ toolNames }: { toolNames: string[] }) => (
     <span data-testid="stacked-icons" data-tool-names={toolNames.join(',')} />
@@ -118,6 +136,7 @@ jest.mock('lucide-react', () => ({
   MessageCircleQuestion: () => <span data-testid="question-icon">{'question'}</span>,
   ListChecks: () => <span data-testid="task-check-icon">{'checks'}</span>,
   TriangleAlert: () => <span>{'warning'}</span>,
+  CircleMinus: () => <span>{'collapse'}</span>,
 }));
 
 const mockSubmittedAskAnswers = new Map<string, string>();
@@ -298,6 +317,32 @@ describe('ToolCallGroup image hoisting', () => {
     const group = screen.getByTestId('attachment-group');
     expect(group).toBeInTheDocument();
     expect(group.getAttribute('data-count')).toBe('2');
+  });
+
+  it('keeps correlated App views outside the collapsed panel across disclosure toggles', () => {
+    const appAttachment = {
+      type: Tools.ui_resources,
+      toolCallId: 'call-0',
+      agentId: 'agent-a',
+      stepId: 'step-a',
+      [Tools.ui_resources]: [
+        { resourceId: 'alpha', toolName: 'alpha' },
+        { resourceId: 'beta', toolName: 'beta' },
+      ],
+    } as unknown as TAttachment;
+    renderGroup({ ...baseProps, groupAttachments: [appAttachment] });
+
+    const frames = screen.getAllByTitle(/MCP App:/);
+    expect(frames).toHaveLength(2);
+    expect(screen.getByTestId('tool-call-group-panel')).not.toContainElement(frames[0]);
+    const firstFrame = frames[0];
+
+    const toggle = screen.getByRole('button');
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+
+    expect(screen.getAllByTitle(/MCP App:/)).toHaveLength(2);
+    expect(screen.getAllByTitle(/MCP App:/)[0]).toBe(firstFrame);
   });
 
   it('hoists non-image attachments so they survive collapse', () => {
@@ -578,13 +623,45 @@ describe('ToolCallGroup image hoisting', () => {
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
     const collapsible = screen.getByTestId('tool-call-group-panel');
     expect(screen.getByTestId('approval-0')).toBeInTheDocument();
+    const rail = screen.getByTestId('fold-rail');
+    fireEvent.mouseEnter(rail);
+    expect(screen.getByTestId('fold-rail-knob')).toBeInTheDocument();
 
     fireEvent.click(button);
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    expect(rail).toBeDisabled();
+    fireEvent.mouseEnter(rail);
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
     fireEvent.transitionEnd(collapsible);
 
     expect(button).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByTestId('approval-0')).toBeInTheDocument();
     expect(screen.getByTestId('approval-1')).toBeInTheDocument();
+  });
+
+  it('clears a retained group rail when its containing phase collapses', () => {
+    const phaseHeader = { current: document.createElement('div') };
+    const groupProps = {
+      ...baseProps,
+      parts: [{ part: makeApprovalPart('t1'), idx: 0 }],
+    };
+    const group = (expanded: boolean) => (
+      <RecoilRoot>
+        <FoldHeaderContext.Provider value={{ header: phaseHeader, expanded }}>
+          <ToolCallGroup {...groupProps} />
+        </FoldHeaderContext.Provider>
+      </RecoilRoot>
+    );
+    const { rerender } = render(group(true));
+    const rail = screen.getByTestId('fold-rail');
+    fireEvent.mouseEnter(rail);
+    expect(screen.getByTestId('fold-rail-knob')).toBeInTheDocument();
+    rerender(group(false));
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    expect(rail).toBeDisabled();
+    rerender(group(true));
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    expect(rail).not.toBeDisabled();
   });
 
   it('keeps deeply nested unresolved approval bodies mounted while the group is collapsed', () => {
@@ -1375,5 +1452,161 @@ describe('ToolCallGroup failure fast path', () => {
     fireEvent.click(header);
     expect(header).toHaveClass('text-text-primary');
     expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('pl-6');
+  });
+
+  it('collapses from its rail, showing the knob on its header while the rail is hovered', () => {
+    renderGroup(props(jest.fn()));
+    const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
+    fireEvent.click(header);
+    const rail = screen.getByTestId('fold-rail');
+    expect(rail).toHaveAttribute('tabindex', '-1');
+    expect(rail).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    fireEvent.mouseEnter(rail);
+    expect(header).toContainElement(screen.getByTestId('fold-rail-knob'));
+    fireEvent.click(rail);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    /** Still drawn while the panel animates shut: a second click is a no-op. */
+    fireEvent.click(rail);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+  });
+});
+
+describe('grouped tool preparation', () => {
+  it('keeps a collapsed group preparing until at least one call dispatches', () => {
+    const first = makePart('first', '', 'lookup', '{"query":"first');
+    const second = makePart('second', '', 'lookup', '{"query":"second');
+    const parts = [
+      { part: first, idx: 0 },
+      { part: second, idx: 1 },
+    ];
+    const props = {
+      parts,
+      isSubmitting: true,
+      isLast: true,
+      showThinking: false,
+      lastContentIdx: 1,
+      renderPart: (_part: TMessageContentParts, idx: number) => <div key={idx} />,
+    };
+    const { rerender } = renderGroup(props);
+    fireEvent.click(screen.getByRole('button', { name: /^Preparing 2 actions/ }));
+    expect(screen.getByRole('button', { name: /^Preparing 2 actions/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    const dispatched =
+      first.type === ContentTypes.TOOL_CALL
+        ? { ...first, tool_call: { ...first.tool_call, toolDispatchedAt: 100 } }
+        : first;
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props} parts={[{ part: dispatched, idx: 0 }, parts[1]]} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { name: /^Running 2 actions/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    const closed = parts.map(({ part, idx }) => ({
+      idx,
+      part:
+        part.type === ContentTypes.TOOL_CALL
+          ? { ...part, tool_call: { ...part.tool_call, runStepStatus: 'cancelled' as const } }
+          : part,
+    }));
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props} parts={closed} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toBeInTheDocument();
+    expect(screen.queryByText(/^Preparing /)).not.toBeInTheDocument();
+  });
+});
+
+describe('legacy function preparation groups', () => {
+  it('prepares partial function arguments, then runs and settles using each call’s signals', () => {
+    const legacy = (id: string, args: string, progress = 0.1): TMessageContentParts => ({
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id,
+        type: ToolCallTypes.FUNCTION,
+        function: { name: 'lookup', arguments: args, output: '' },
+        progress,
+      },
+    });
+    const props = (firstArgs: string, secondArgs: string, progress = 0.1) => ({
+      parts: [
+        { part: legacy('first', firstArgs, progress), idx: 0 },
+        { part: legacy('second', secondArgs, progress), idx: 1 },
+      ],
+      isSubmitting: true,
+      isLast: true,
+      showThinking: false,
+      lastContentIdx: 1,
+      renderPart: (_part: TMessageContentParts, idx: number) => <div key={idx} />,
+    });
+    const { rerender } = renderGroup(props('{"query":"first', '{"query":"second'));
+    fireEvent.click(screen.getByRole('button', { name: /^Preparing 2 actions/ }));
+    expect(screen.getByRole('button', { name: /^Preparing 2 actions/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props('{"query":"first"}', '{"query":"second')} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { name: /^Running 2 actions/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props('{"query":"first', '{"query":"second', 1)} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toBeInTheDocument();
+  });
+});
+
+describe('ToolCallGroup sole tool', () => {
+  function Probe({ idx }: { idx: number }) {
+    return <div data-testid={`probe-${idx}`}>{String(useToolAutoExpand())}</div>;
+  }
+  const props = (ids: string[]) =>
+    ({
+      parts: ids.map((id, idx) => ({ part: makePart(id), idx })),
+      isSubmitting: false,
+      isLast: false,
+      showThinking: false,
+      lastContentIdx: ids.length - 1,
+      renderPart: (_p: TMessageContentParts, idx: number) => <Probe key={idx} idx={idx} />,
+    }) satisfies React.ComponentProps<typeof ToolCallGroup>;
+
+  it('opens the only tool call inside the group by default', () => {
+    renderGroup(props(['only']));
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('probe-0')).toHaveTextContent('true');
+  });
+
+  it('keeps a one-call group collapsed when its phase holds several calls', () => {
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={false}>
+          <ToolCallGroup {...props(['only'])} />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('probe-0')).toHaveTextContent('false');
+  });
+
+  it('leaves calls collapsed when the group holds more than one', () => {
+    renderGroup(props(['a', 'b']));
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('probe-0')).toHaveTextContent('false');
+    expect(screen.getByTestId('probe-1')).toHaveTextContent('false');
   });
 });

@@ -15,6 +15,7 @@ export enum QueryKeys {
   conversationTraceRecords = 'conversationTraceRecords',
   conversationTraceRecord = 'conversationTraceRecord',
   user = 'user',
+  passkeys = 'passkeys',
   name = 'name', // user key name
   models = 'models',
   balance = 'balance',
@@ -39,6 +40,7 @@ export enum QueryKeys {
   mcpTools = 'mcpTools',
   mcpConnectionStatus = 'mcpConnectionStatus',
   mcpAuthValues = 'mcpAuthValues',
+  mcpAppResourceHtml = 'mcpAppResourceHtml',
   agentTools = 'agentTools',
   actions = 'actions',
   assistantDocs = 'assistantDocs',
@@ -54,6 +56,8 @@ export enum QueryKeys {
   promptGroup = 'promptGroup',
   projects = 'projects',
   project = 'project',
+  projectFiles = 'projectFiles',
+  projectAvailableFiles = 'projectAvailableFiles',
   projectConversations = 'projectConversations',
   categories = 'categories',
   randomPrompts = 'randomPrompts',
@@ -108,6 +112,9 @@ export enum QueryKeys {
 // Dynamic query keys that require parameters
 export const DynamicQueryKeys = {
   agentFiles: (agentId: string) => ['agentFiles', agentId] as const,
+  projectFiles: (projectId: string) => [QueryKeys.projectFiles, projectId] as const,
+  projectAvailableFiles: (projectId: string) =>
+    [QueryKeys.projectAvailableFiles, projectId] as const,
   codeEnvironmentStatus: (id: string) => [QueryKeys.codeEnvironments, id, 'status'] as const,
 } as const;
 
@@ -148,17 +155,26 @@ export enum MutationKeys {
   updateRole = 'updateRole',
   enableTwoFactor = 'enableTwoFactor',
   verifyTwoFactor = 'verifyTwoFactor',
+  registerPasskey = 'registerPasskey',
+  renamePasskey = 'renamePasskey',
+  deletePasskey = 'deletePasskey',
+  passkeyLogin = 'passkeyLogin',
   updateMemoryPreferences = 'updateMemoryPreferences',
   createProject = 'createProject',
   updateProject = 'updateProject',
   deleteProject = 'deleteProject',
   assignConversationToProject = 'assignConversationToProject',
+  addProjectFile = 'addProjectFile',
+  removeProjectFile = 'removeProjectFile',
   /* Skill mutations from the original UI PR — tree/node operations are
    * phase 2 and currently stubbed in the data-service layer. */
   createSkillNode = 'createSkillNode',
   updateSkillNode = 'updateSkillNode',
   deleteSkillNode = 'deleteSkillNode',
   updateSkillNodeContent = 'updateSkillNodeContent',
+  /** Artifact code save, keyed so the editor pane can see a save started by
+   *  another instance of itself — the pane is remounted when it changes hosts. */
+  editArtifact = 'editArtifact',
   convoPin = 'convoPin',
   archiveAllConversations = 'archiveAllConversations',
   createSchedule = 'createSchedule',
@@ -169,4 +185,6 @@ export enum MutationKeys {
   updateCodeEnvironmentSettings = 'updateCodeEnvironmentSettings',
   deleteCodeEnvironment = 'deleteCodeEnvironment',
   moveConversationCodeEnvironment = 'moveConversationCodeEnvironment',
+  convoSeen = 'convoSeen',
+  convoUnread = 'convoUnread',
 }

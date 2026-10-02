@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useMemo, useState } from 'react';
 import { v4 } from 'uuid';
 import debounce from 'lodash/debounce';
+import { useSetRecoilState } from 'recoil';
 import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
-import { useRecoilValue, useSetRecoilState } from 'recoil';
 import {
   megabyte,
   QueryKeys,
@@ -37,9 +37,10 @@ import {
 import { useGetFileConfig, useUploadFileMutation } from '~/data-provider';
 import useAgentUploadTarget from '~/hooks/Agents/useAgentUploadTarget';
 import useLocalize, { TranslationKeys } from '~/hooks/useLocalize';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useDelayedUploadToast } from './useDelayedUploadToast';
 import { useChatContext } from '~/Providers/ChatContext';
-import store, { ephemeralAgentByConvoId } from '~/store';
+import { ephemeralAgentByConvoId } from '~/store';
 import useClientResize from './useClientResize';
 import useUpdateFiles from './useUpdateFiles';
 
@@ -166,7 +167,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
   const setEphemeralAgent = useSetRecoilState(
     ephemeralAgentByConvoId(conversation?.conversationId ?? Constants.NEW_CONVO),
   );
-  const isTemporary = useRecoilValue(store.isTemporary);
+  const { isTemporary } = useChatSettings();
   const setError = (error: string) => setErrors((prevErrors) => [...prevErrors, error]);
 
   /** Names the files left out of a batch that is otherwise still uploading. Callers report a batch

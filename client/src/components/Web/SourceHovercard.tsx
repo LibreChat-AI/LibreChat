@@ -70,11 +70,11 @@ function FileHovercardContent({
   return (
     <>
       <div className="flex items-center gap-2">
-        <FileText className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
+        <FileText className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
         <Button
           variant="link"
           onClick={onClick}
-          className="h-auto min-w-0 justify-start truncate p-0 text-sm font-medium text-text-primary hover:underline"
+          className="text-text-primary h-auto min-w-0 justify-start truncate p-0 text-sm font-medium hover:underline"
         >
           {fileName}
         </Button>
@@ -82,19 +82,19 @@ function FileHovercardContent({
       {(fileRelevance != null || (filePages && filePages.length > 0)) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
           {fileRelevance != null && fileRelevance > 0 && (
-            <span className="text-xs text-text-secondary">
+            <span className="text-text-secondary text-xs">
               {localize('com_ui_relevance')}: {Math.round(fileRelevance * 100)}%
             </span>
           )}
           {filePages && filePages.length > 0 && (
-            <span className="text-xs text-text-secondary">
+            <span className="text-text-secondary text-xs">
               {localize('com_file_pages', { pages: filePages.join(', ') })}
             </span>
           )}
         </div>
       )}
       {source.snippet && (
-        <p className="mt-1.5 line-clamp-3 break-words text-xs leading-relaxed text-text-secondary">
+        <p className="text-text-secondary mt-1.5 line-clamp-3 text-xs leading-relaxed break-words">
           {source.snippet}
         </p>
       )}
@@ -135,14 +135,14 @@ export function SourceHovercard({
               isFile ? (
                 <button
                   onClick={handleFileClick}
-                  className="ml-1 inline-flex h-5 max-w-36 items-center gap-1 overflow-hidden text-ellipsis whitespace-nowrap rounded-xl border border-border-heavy bg-surface-secondary px-2 text-xs font-medium text-text-primary no-underline transition-colors hover:bg-surface-hover"
+                  className="border-border-heavy bg-surface-secondary text-text-primary hover:bg-surface-hover ml-1 inline-flex h-5 max-w-36 items-center gap-1 overflow-hidden rounded-xl border px-2 text-xs font-medium text-ellipsis whitespace-nowrap no-underline transition-colors"
                   onMouseEnter={onMouseEnter}
                   onMouseLeave={onMouseLeave}
                   title={
                     isLocalFile ? localize('com_sources_download_local_unavailable') : undefined
                   }
                 >
-                  <FileText className="size-2.5 shrink-0 text-text-secondary" aria-hidden="true" />
+                  <FileText className="text-text-secondary size-2.5 shrink-0" aria-hidden="true" />
                   {label}
                 </button>
               ) : (
@@ -150,7 +150,7 @@ export function SourceHovercard({
                   href={source.link}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="ml-1 inline-block h-5 max-w-36 cursor-pointer items-center overflow-hidden text-ellipsis whitespace-nowrap rounded-xl border border-border-heavy bg-surface-secondary px-2 text-xs font-medium no-underline transition-colors hover:bg-surface-hover"
+                  className="border-border-heavy bg-surface-secondary hover:bg-surface-hover ml-1 inline-block h-5 max-w-36 cursor-pointer items-center overflow-hidden rounded-xl border px-2 text-xs font-medium text-ellipsis whitespace-nowrap no-underline transition-colors"
                   onMouseEnter={onMouseEnter}
                   onMouseLeave={onMouseLeave}
                 >
@@ -159,7 +159,7 @@ export function SourceHovercard({
               )
             }
           />
-          <Ariakit.HovercardDisclosure className="ml-0.5 rounded-full text-text-primary focus:outline-none focus:ring-2 focus:ring-text-primary">
+          <Ariakit.HovercardDisclosure className="text-text-primary focus:ring-text-primary ml-0.5 rounded-full focus:ring-2 focus:outline-hidden">
             <VisuallyHidden>{localize('com_citation_more_details', { label })}</VisuallyHidden>
             <ChevronDown className="icon-sm" aria-hidden="true" />
           </Ariakit.HovercardDisclosure>
@@ -182,21 +182,21 @@ export function SourceHovercard({
                 ) : (
                   <>
                     <div className="mb-1.5 overflow-hidden text-sm">
-                      <FaviconImage domain={domain} className="float-left mr-2 mt-0.5" />
-                      <span className="float-right ml-2 max-w-[40%] truncate text-xs text-text-secondary">
+                      <FaviconImage domain={domain} className="float-left mt-0.5 mr-2" />
+                      <span className="text-text-secondary float-right ml-2 max-w-[40%] truncate text-xs">
                         {domain}
                       </span>
                       <a
                         href={source.link}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="font-medium text-text-primary hover:underline"
+                        className="text-text-primary font-medium hover:underline"
                       >
                         {source.title || source.link}
                       </a>
                     </div>
                     {source.snippet && (
-                      <p className="line-clamp-4 break-words text-xs text-text-secondary md:text-sm">
+                      <p className="text-text-secondary line-clamp-4 text-xs break-words md:text-sm">
                         {source.snippet}
                       </p>
                     )}

@@ -110,6 +110,7 @@ const renderArtifacts = async ({
             latestMessageId: null,
             latestMessageText: '',
             conversationId: 'conversation-1',
+            canUndock: true,
           }}
         >
           {includeStateControls && <ArtifactStateControls />}

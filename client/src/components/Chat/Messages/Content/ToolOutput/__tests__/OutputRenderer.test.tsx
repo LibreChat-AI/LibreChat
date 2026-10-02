@@ -32,6 +32,67 @@ describe('OutputRenderer', () => {
     expect(copy).toHaveBeenCalledWith(raw, { format: 'text/plain' });
   });
 
+  it('keeps the head by default and the tail for terminal output when collapsed', () => {
+    const text = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n');
+    const { unmount } = render(<OutputRenderer text={text} />);
+    expect(screen.getByText(/line 1/).textContent?.split('\n')[0]).toBe('line 1');
+    unmount();
+
+    render(<OutputRenderer text={text} variant="terminal" />);
+    const shown = screen.getByText(/line 30/).textContent?.split('\n') ?? [];
+    expect(shown[0]).toBe('line 16');
+    expect(shown).toHaveLength(15);
+  });
+
+  it('keeps whitespace-only terminal output', () => {
+    const { container } = render(<OutputRenderer text={'\n\n'} variant="terminal" />);
+    expect(container.querySelector('pre')?.textContent).toBe('\n\n');
+  });
+
+  it('does not count a final newline as a line when collapsing terminal output', () => {
+    const numbered = (n: number) =>
+      Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+    const { unmount } = render(<OutputRenderer text={numbered(20)} variant="terminal" />);
+    expect(screen.queryByText('com_ui_show_more')).not.toBeInTheDocument();
+    unmount();
+
+    render(<OutputRenderer text={numbered(30)} variant="terminal" />);
+    const shown = screen.getByText(/line 30/).textContent?.split('\n') ?? [];
+    expect(shown).toHaveLength(15);
+    expect(shown[0]).toBe('line 16');
+  });
+
+  it('keeps segment styling when collapsing terminal output to its tail', () => {
+    const out = Array.from({ length: 25 }, (_, i) => `out ${i + 1}`).join('\n') + '\n';
+    const err = 'stderr:\nboom\n';
+    const trailer = '[exit code: 1]';
+    render(
+      <OutputRenderer
+        text={out + err + trailer}
+        variant="terminal"
+        segments={[
+          { text: out },
+          { text: err, className: 'text-status-error' },
+          { text: trailer, className: 'text-text-tertiary' },
+        ]}
+      />,
+    );
+    const pre = screen.getByText(/out 25/).closest('pre') as HTMLElement;
+    const shown = (pre.textContent ?? '').split('\n');
+    expect(shown).toHaveLength(15);
+    expect(shown[0]).toBe('out 14');
+    expect(screen.getByText(/boom/)).toHaveClass('text-status-error');
+    expect(screen.getByText('[exit code: 1]')).toHaveClass('text-text-tertiary');
+  });
+
+  it('shows as many styled lines as plain lines when output ends in a newline', () => {
+    const out = Array.from({ length: 30 }, (_, i) => `row ${i + 1}`).join('\n') + '\n';
+    render(<OutputRenderer text={out} variant="terminal" segments={[{ text: out }]} />);
+    const shown = (screen.getByText(/row 30/).closest('pre')?.textContent ?? '').split('\n');
+    expect(shown.filter(Boolean)).toHaveLength(15);
+    expect(shown[0]).toBe('row 16');
+  });
+
   it('does not treat text between bracketed prefixes as a tool-call error', () => {
     expect(isError('Error: [agent] unexpected [search] tool call failed: unavailable')).toBe(false);
   });

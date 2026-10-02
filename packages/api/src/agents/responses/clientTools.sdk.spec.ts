@@ -1,3 +1,4 @@
+import { AIMessageChunk } from '@langchain/core/messages';
 import {
   ChatModelStreamHandler,
   HandlerRegistry,
@@ -8,10 +9,9 @@ import {
 } from '@librechat/agents';
 import type { ToolExecuteBatchRequest } from '@librechat/agents';
 import type { Response as ServerResponse } from 'express';
-import { AIMessageChunk } from '@langchain/core/messages';
+import { createResponsesEventHandlers } from './service';
 import { createClientToolHandoff } from './clientTools';
 import { createResponseTracker } from './handlers';
-import { createResponsesEventHandlers } from './service';
 
 jest.mock('@librechat/data-schemas', () => ({ logger: { warn: jest.fn() } }));
 jest.mock('../usage', () => ({ aggregateCollectedUsage: jest.fn() }));

@@ -31,7 +31,7 @@ export default function List({
   };
 
   return (
-    <section className="flex-grow" aria-label={localize('com_ui_prompt_groups')}>
+    <section className="grow" aria-label={localize('com_ui_prompt_groups')}>
       <div>{renderContent()}</div>
     </section>
   );

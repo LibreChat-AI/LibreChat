@@ -209,7 +209,7 @@ export default function UploadSkillDialog({ isOpen, setIsOpen }: UploadSkillDial
     >
       <OGDialogContent className="w-11/12 max-w-lg overflow-hidden">
         <div className="flex flex-col gap-6 p-1 sm:p-2">
-          <h2 className="text-lg font-bold text-text-primary">
+          <h2 className="text-text-primary text-lg font-bold">
             {localize('com_ui_skill_upload_title')}
           </h2>
 
@@ -225,7 +225,7 @@ export default function UploadSkillDialog({ isOpen, setIsOpen }: UploadSkillDial
               onDrop={handleDrop}
               disabled={importMutation.isLoading}
               className={cn(
-                'flex h-[120px] w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-sm text-text-secondary transition-colors',
+                'text-text-secondary flex h-[120px] w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-sm transition-colors',
                 isDragging
                   ? 'border-border-heavy bg-surface-hover'
                   : 'border-border-medium hover:bg-surface-hover',
@@ -235,7 +235,7 @@ export default function UploadSkillDialog({ isOpen, setIsOpen }: UploadSkillDial
               {importMutation.isLoading ? (
                 <Spinner className="size-8" />
               ) : (
-                <Upload className="size-8 text-text-secondary" aria-hidden="true" />
+                <Upload className="text-text-secondary size-8" aria-hidden="true" />
               )}
               {localize('com_ui_skill_upload_drag')}
             </button>
@@ -243,17 +243,17 @@ export default function UploadSkillDialog({ isOpen, setIsOpen }: UploadSkillDial
             {failure != null && failure.files.length > 0 && (
               <div
                 role="alert"
-                className="flex flex-col gap-1 rounded-lg border border-border-medium bg-surface-secondary p-3 text-xs"
+                className="border-border-medium bg-surface-secondary flex flex-col gap-1 rounded-lg border p-3 text-xs"
               >
-                <p className="font-medium text-text-destructive">
+                <p className="text-text-destructive font-medium">
                   {localize(failureHeadingKey(failure.code))}
                 </p>
                 {/* An archive may hold up to 500 entries, and the dialog's own
                     overflow-hidden would clip a long list past the viewport. */}
-                <ul className="max-h-40 list-inside list-disc overflow-y-auto text-text-secondary">
+                <ul className="text-text-secondary max-h-40 list-inside list-disc overflow-y-auto">
                   {failure.files.map((failedFile) => (
                     <li key={failedFile.path}>
-                      <span className="break-all font-medium text-text-primary">
+                      <span className="text-text-primary font-medium break-all">
                         {failedFile.path}
                       </span>
                       {FAILURE_REASON_KEYS[failedFile.reason] != null
@@ -267,7 +267,7 @@ export default function UploadSkillDialog({ isOpen, setIsOpen }: UploadSkillDial
               </div>
             )}
 
-            <div className="flex flex-col gap-3 text-xs text-text-secondary">
+            <div className="text-text-secondary flex flex-col gap-3 text-xs">
               <div>
                 <p className="font-medium">{localize('com_ui_skill_upload_requirements')}</p>
                 <ul className="mt-1 list-inside list-disc">

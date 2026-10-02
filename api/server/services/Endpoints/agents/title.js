@@ -172,6 +172,7 @@ const addTitle = async (
       {
         context: 'api/server/services/Endpoints/agents/title.js',
         noUpsert: true,
+        preserveUpdatedAt: true,
         /** Metadata-only: write the title and nothing else. Without this, `saveConvo`
          *  reads every message id and `$set`s the whole `messages` array, and an
          *  immediate-mode title saves while the turn is still running — so a response
