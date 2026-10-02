@@ -46,8 +46,8 @@ export default function ExtractedTextPanel({ fileId, enabled, shareId }: Extract
    * every 2.5s, so this is a loading state rather than an empty one. */
   if (isInitialLoading || data?.status === 'pending') {
     return (
-      <div className="flex h-40 items-center justify-center" role="status">
-        <Spinner className="text-text-secondary" />
+      <div className="text-text-secondary flex h-40 items-center justify-center" role="status">
+        <Spinner />
         <span className="sr-only">{localize('com_ui_loading')}</span>
       </div>
     );
@@ -55,7 +55,7 @@ export default function ExtractedTextPanel({ fileId, enabled, shareId }: Extract
 
   if (isError) {
     return (
-      <p className="py-8 text-center text-sm text-text-secondary" role="alert">
+      <p className="text-text-secondary py-8 text-center text-sm" role="alert">
         {localize('com_ui_extracted_text_error')}
       </p>
     );
@@ -63,7 +63,7 @@ export default function ExtractedTextPanel({ fileId, enabled, shareId }: Extract
 
   if (!text) {
     return (
-      <p className="py-8 text-center text-sm text-text-secondary">
+      <p className="text-text-secondary py-8 text-center text-sm">
         {localize('com_ui_extracted_text_none')}
       </p>
     );
@@ -71,12 +71,12 @@ export default function ExtractedTextPanel({ fileId, enabled, shareId }: Extract
 
   return (
     <div className="relative">
-      <div className="absolute right-2 top-2 z-10">
+      <div className="absolute top-2 right-2 z-10">
         <CopyButton
           isCopied={isCopied}
           onClick={handleCopy}
           iconOnly
-          className="rounded-lg bg-surface-secondary"
+          className="bg-surface-secondary rounded-lg"
         />
       </div>
       {/* Focusable so the overflow region can be scrolled from the keyboard:
@@ -85,7 +85,7 @@ export default function ExtractedTextPanel({ fileId, enabled, shareId }: Extract
         tabIndex={0}
         role="region"
         aria-label={localize('com_ui_extracted_text_region_label')}
-        className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-surface-tertiary p-4 pr-12 text-sm text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary focus-visible:ring-offset-2"
+        className="bg-surface-tertiary text-text-primary focus-visible:ring-text-primary max-h-[60vh] overflow-auto rounded-lg p-4 pr-12 text-sm break-words whitespace-pre-wrap focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
       >
         {text}
       </pre>

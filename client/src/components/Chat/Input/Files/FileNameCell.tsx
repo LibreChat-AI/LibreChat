@@ -48,7 +48,7 @@ export default function FileNameCell({ file }: { file: TFile }) {
           type="button"
           onClick={() => setOpen(true)}
           aria-label={localize('com_ui_view_extracted_text_var', { 0: file.filename })}
-          className="self-center truncate rounded underline decoration-dotted underline-offset-4 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+          className="hover:text-text-primary focus-visible:ring-text-primary self-center truncate rounded underline decoration-dotted underline-offset-4 focus-visible:ring-2 focus-visible:outline-none"
         >
           {file.filename}
         </button>

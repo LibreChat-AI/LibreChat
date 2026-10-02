@@ -34,7 +34,9 @@ export default function FileTextDialog({
     <OGDialog open={open} onOpenChange={onOpenChange}>
       <OGDialogContent className="w-11/12 max-w-3xl" showCloseButton={true}>
         <OGDialogHeader>
-          <OGDialogTitle className="truncate">{filename}</OGDialogTitle>
+          <OGDialogTitle>
+            <span className="block truncate">{filename}</span>
+          </OGDialogTitle>
           <OGDialogDescription>{localize('com_ui_extracted_text_description')}</OGDialogDescription>
         </OGDialogHeader>
         <ExtractedTextPanel fileId={fileId} enabled={open} />
