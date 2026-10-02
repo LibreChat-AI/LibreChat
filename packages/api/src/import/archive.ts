@@ -210,25 +210,31 @@ function openEntryStream(zipfile: yauzl.ZipFile, entry: yauzl.Entry): Promise<Re
   });
 }
 
+/** Deflate's stored-block fallback frames at most 65,535 bytes per block
+ * behind a 5-byte header, so this is the largest raw stream an entry within
+ * `maxEntryBytes` can produce. Capping the raw read at `maxEntryBytes` itself
+ * would refuse an incompressible entry the decompressed cap allows. */
+function maxDeflatedBytes(maxEntryBytes: number): number {
+  return maxEntryBytes + Math.max(1, Math.ceil(maxEntryBytes / 65535)) * 5;
+}
+
 /**
- * Drains a raw (non-inflated) entry stream into a single buffer. The cap
- * checked here is the compressed byte count, not the eventual decompressed
- * size: for a STORED entry (`compressionMethod === 0`) the two are
- * identical, and for a DEFLATE entry the compressed stream can only be
- * marginally larger than the uncompressed content (deflate's stored-block
- * fallback adds a few bytes per 64 KB block at worst), so this still
- * catches a runaway/corrupt entry before it is held in memory in full.
- * The authoritative per-entry cap for DEFLATE entries is enforced by
- * `zlib.inflateRaw`'s `maxOutputLength` in `inflateEntry`.
+ * Drains a raw (non-inflated) entry stream into a single buffer, refusing it
+ * once it passes `maxRawBytes`. For a STORED entry that is the decompressed
+ * cap itself; for a DEFLATE entry it is the worst-case deflated size of an
+ * entry at that cap (`maxDeflatedBytes`), which still stops a runaway or
+ * corrupt entry before it is held in full. The authoritative per-entry cap
+ * for DEFLATE entries is `zlib.inflateRaw`'s `maxOutputLength` in
+ * `inflateEntry`.
  */
-function readRawEntry(readStream: Readable, name: string, limits: ArchiveLimits): Promise<Buffer> {
+function readRawEntry(readStream: Readable, name: string, maxRawBytes: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let bytes = 0;
 
     readStream.on('data', (chunk: Buffer) => {
       bytes += chunk.byteLength;
-      if (bytes > limits.maxEntryBytes) {
+      if (bytes > maxRawBytes) {
         reject(new ZipBombError(`Entry ${name} exceeds the maximum decompressed size`));
         readStream.destroy();
         return;
@@ -420,9 +426,13 @@ export async function openArchive(
     ensureWithinTotalBudget(name, limits, totals);
     const entry = entryOf(name);
     const readStream = await openEntryStream(zipfile, entry);
-    const raw = await readRawEntry(readStream, name, limits);
-    const output =
-      entry.compressionMethod === 0 ? raw : await inflateEntry(raw, name, limits.maxEntryBytes);
+    const stored = entry.compressionMethod === 0;
+    const raw = await readRawEntry(
+      readStream,
+      name,
+      stored ? limits.maxEntryBytes : maxDeflatedBytes(limits.maxEntryBytes),
+    );
+    const output = stored ? raw : await inflateEntry(raw, name, limits.maxEntryBytes);
 
     chargeEntry(name, output.byteLength, limits, totals);
 

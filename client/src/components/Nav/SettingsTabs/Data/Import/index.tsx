@@ -74,10 +74,11 @@ export default function Import() {
    * on the way there (a 503, a dropped connection) leaves the import
    * running, so the last status we hold keeps rendering while the query
    * retries; swapping in the "job lost" card there hid a live import behind a
-   * dead end. With no status to fall back on there is nothing to show but the
-   * card.
+   * dead end. With no status yet (a reload whose first poll failed), the panel
+   * keeps loading: polling continues, and the card's "import another" would
+   * invite a second upload of an export the server may still be importing.
    */
-  const isLost = isGone || (isJobError && job == null);
+  const isLost = isGone;
   useEffect(() => {
     if (isSettled || isGone) {
       writeActiveJobId(user?.id, null);

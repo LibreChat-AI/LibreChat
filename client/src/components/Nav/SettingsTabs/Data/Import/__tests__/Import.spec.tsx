@@ -501,8 +501,12 @@ describe('Import panel', () => {
     expect(dataProvider.useImportJobQuery).toHaveBeenCalledWith('job-42');
   });
 
-  it('shows a recoverable error instead of an endless spinner when the job cannot be fetched', () => {
-    dataProvider.useImportJobQuery.mockReturnValue({ data: undefined, isError: true });
+  it('shows a recoverable error instead of an endless spinner when the job no longer exists', () => {
+    dataProvider.useImportJobQuery.mockReturnValue({
+      data: undefined,
+      isError: true,
+      error: { response: { status: 404 } },
+    });
     render(<Import />);
 
     act(() => {
@@ -648,6 +652,20 @@ describe('Import panel', () => {
     render(<Import />);
 
     expect(screen.getByRole('button', { name: /cancel import/i })).toBeInTheDocument();
+    expect(window.localStorage.getItem(activeJobKey())).toBe('job-99');
+  });
+
+  it('keeps loading, not lost, when the first poll after a reload fails transiently', () => {
+    window.localStorage.setItem(activeJobKey(), 'job-99');
+    dataProvider.useImportJobQuery.mockReturnValue({
+      data: undefined,
+      isError: true,
+      error: { response: { status: 503 } },
+    });
+
+    render(<Import />);
+
+    expect(screen.queryByRole('button', { name: /import another/i })).not.toBeInTheDocument();
     expect(window.localStorage.getItem(activeJobKey())).toBe('job-99');
   });
 

@@ -2,6 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import JSZip from 'jszip';
+import crypto from 'crypto';
 import { ImportFileTooLargeError, sanitizeImportError } from './errors';
 import { assertSafeName, openArchive, ZipBombError } from './archive';
 
@@ -113,6 +114,22 @@ describe('openArchive', () => {
     const filepath = await writeZip({ 'big.json': 'x'.repeat(5000) });
     const archive = await openArchive(filepath, { maxEntryBytes: 100 });
     await expect(archive.read('big.json')).rejects.toThrow(ZipBombError);
+    archive.close();
+  });
+
+  /** Random bytes do not compress, so their DEFLATE stream is a few bytes
+   * longer than the entry; the cap is on the decompressed size. */
+  it('reads an incompressible entry that sits exactly at the per-entry cap', async () => {
+    const content = crypto.randomBytes(5000);
+    const zip = new JSZip();
+    zip.file('blob.bin', content, { compression: 'DEFLATE' });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-import-'));
+    createdDirs.push(dir);
+    const filepath = path.join(dir, 'export.zip');
+    fs.writeFileSync(filepath, await zip.generateAsync({ type: 'nodebuffer' }));
+
+    const archive = await openArchive(filepath, { maxEntryBytes: 5000 });
+    await expect(archive.read('blob.bin')).resolves.toEqual(content);
     archive.close();
   });
 
