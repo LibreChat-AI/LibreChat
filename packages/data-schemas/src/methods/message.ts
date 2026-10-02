@@ -2239,99 +2239,94 @@ export function createMessageMethods(
         ? { generationId: requestedGenerationId }
         : {}),
     };
-    const updated = await Message.findOneAndUpdate(
-      {
-        user: userId,
-        conversationId,
-        messageId: resolvedMessageId,
-        ...(kind === 'manual' && allowUnfinished ? {} : { unfinished: { $ne: true } }),
-        content: {
-          $elemMatch: {
-            type: 'tool_call',
-            'tool_call.backgroundTask.taskId': taskId,
-            'tool_call.backgroundTask.status': { $in: ['completed', 'error'] },
-            ...(kind === 'wakeup' ? { 'tool_call.backgroundTask.completionWakeup': true } : {}),
-            ...(replaying
-              ? {
-                  'tool_call.backgroundTask.resultClaim.kind': kind,
-                  'tool_call.backgroundTask.resultClaim.claimId': claimId,
-                  'tool_call.backgroundTask.resultClaim.batchId': batchId ?? null,
-                }
-              : /** Missing OR stored null: the in-memory claimable scan, the
-                 * claim arrayFilters, and the settle stamp all treat a null
-                 * claim as unclaimed, and the subfield-preserving settle write
-                 * keeps a persisted null a whole-object rewrite used to drop.
-                 * `$exists: false` here would strand such a part as terminal
-                 * but permanently unclaimable. */
-                { 'tool_call.backgroundTask.resultClaim': null }),
-          },
+    const claimFilter: FilterQuery<IMessage> = {
+      user: userId,
+      conversationId,
+      messageId: resolvedMessageId,
+      ...(kind === 'manual' && allowUnfinished ? {} : { unfinished: { $ne: true } }),
+      content: {
+        $elemMatch: {
+          type: 'tool_call',
+          'tool_call.backgroundTask.taskId': taskId,
+          'tool_call.backgroundTask.status': { $in: ['completed', 'error'] },
+          ...(kind === 'wakeup' ? { 'tool_call.backgroundTask.completionWakeup': true } : {}),
+          ...(replaying
+            ? {
+                'tool_call.backgroundTask.resultClaim.kind': kind,
+                'tool_call.backgroundTask.resultClaim.claimId': claimId,
+                'tool_call.backgroundTask.resultClaim.batchId': batchId ?? null,
+              }
+            : /** Missing OR stored null: the in-memory claimable scan, the
+               * claim arrayFilters, and the settle stamp all treat a null
+               * claim as unclaimed, and the subfield-preserving settle write
+               * keeps a persisted null a whole-object rewrite used to drop.
+               * `$exists: false` here would strand such a part as terminal
+               * but permanently unclaimable. */
+              { 'tool_call.backgroundTask.resultClaim': null }),
         },
-        ...(agentId != null
-          ? {
-              $expr: {
-                $anyElementTrue: {
-                  $map: {
-                    input: { $ifNull: ['$content', []] },
-                    as: 'candidate',
-                    in: {
-                      $and: [
-                        { $eq: ['$$candidate.tool_call.backgroundTask.taskId', taskId] },
-                        {
-                          $in: [
-                            {
-                              $ifNull: [
-                                {
-                                  $ifNull: ['$$candidate.agentId', '$$candidate.tool_call.agentId'],
-                                },
-                                null,
-                              ],
-                            },
-                            [null, agentId],
-                          ],
-                        },
-                      ],
-                    },
+      },
+      ...(agentId != null
+        ? {
+            $expr: {
+              $anyElementTrue: {
+                $map: {
+                  input: { $ifNull: ['$content', []] },
+                  as: 'candidate',
+                  in: {
+                    $and: [
+                      { $eq: ['$$candidate.tool_call.backgroundTask.taskId', taskId] },
+                      {
+                        $in: [
+                          {
+                            $ifNull: [
+                              {
+                                $ifNull: ['$$candidate.agentId', '$$candidate.tool_call.agentId'],
+                              },
+                              null,
+                            ],
+                          },
+                          [null, agentId],
+                        ],
+                      },
+                    ],
                   },
                 },
               },
-            }
-          : {}),
-      },
-      /** Stamps the claim onto every part this pass admitted. The filtered
-       * positional operator selects those parts by predicate, so the write
-       * touches only them instead of re-emitting the whole content array, and
-       * needs no read-modify-write. Amazon DocumentDB rejects the
-       * aggregation-pipeline form this replaces. */
-      { $set: { 'content.$[part].tool_call.backgroundTask.resultClaim': claimStamp } },
-      {
-        new: true,
-        projection: { content: 1 },
-        arrayFilters: [
+            },
+          }
+        : {}),
+    };
+    const updated = replaying
+      ? await Message.findOne(claimFilter).select({ content: 1 }).lean<IMessage | null>()
+      : await Message.findOneAndUpdate(
+          claimFilter,
+          /** Stamps the claim onto every part this pass admitted. The filtered
+           * positional operator selects those parts by predicate, so the write
+           * touches only them instead of re-emitting the whole content array, and
+           * needs no read-modify-write. Amazon DocumentDB rejects the
+           * aggregation-pipeline form this replaces. */
+          { $set: { 'content.$[part].tool_call.backgroundTask.resultClaim': claimStamp } },
           {
-            'part.type': 'tool_call',
-            'part.tool_call.backgroundTask.taskId': { $in: candidates },
-            'part.tool_call.backgroundTask.status': { $in: ['completed', 'error'] },
-            ...(kind === 'wakeup'
-              ? { 'part.tool_call.backgroundTask.completionWakeup': true }
-              : {}),
-            $and: [
+            new: true,
+            projection: { content: 1 },
+            arrayFilters: [
               {
-                /** Unclaimed, or already held by this exact claimant (replay). */
-                $or: [
-                  { 'part.tool_call.backgroundTask.resultClaim': null },
+                'part.type': 'tool_call',
+                'part.tool_call.backgroundTask.taskId': { $in: candidates },
+                'part.tool_call.backgroundTask.status': { $in: ['completed', 'error'] },
+                ...(kind === 'wakeup'
+                  ? { 'part.tool_call.backgroundTask.completionWakeup': true }
+                  : {}),
+                $and: [
                   {
-                    'part.tool_call.backgroundTask.resultClaim.kind': kind,
-                    'part.tool_call.backgroundTask.resultClaim.claimId': claimId,
-                    'part.tool_call.backgroundTask.resultClaim.batchId': batchId ?? null,
+                    'part.tool_call.backgroundTask.resultClaim': null,
                   },
+                  ...(agentId == null ? [] : [agentOwnershipFilter('part.', agentId)]),
                 ],
               },
-              ...(agentId == null ? [] : [agentOwnershipFilter('part.', agentId)]),
             ],
           },
-        ],
-      },
-    ).lean<IMessage | null>();
+        ).lean<IMessage | null>();
     if (updated == null) {
       return { status: 'not_ready' };
     }

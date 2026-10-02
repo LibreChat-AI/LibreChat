@@ -334,3 +334,7 @@ Manual reconciliation survives registry restoration and final response persisten
 Collecting plans acquire the root before siblings, so empty retirement can clear an
 unowned plan without orphaning claims. Native `started` recovery fences confirm admission
 even when a custom store cannot read historical claims after job cleanup.
+
+Exact durable replays read the current claim without rewriting its handoff proof.
+Applied followers finish interrupted owner proof copying before they settle, including
+retired roots removed from the delivery queue.

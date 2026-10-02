@@ -1045,3 +1045,172 @@ it.each(['admitted', 'unpublished'] as const)(
     }
   },
 );
+
+it.each(['lookup', 'confirmation', 'confirmation-unknown'] as const)(
+  'preserves a committed manual replay when %s is unavailable',
+  async (phase) => {
+    const root = await ready('one');
+    await project('one');
+    const key = getAgentTriggerIdempotencyKey(root);
+    await mongoose.models.AgentTriggerDelivery.updateOne(
+      { deliveryKey: key },
+      { $set: { capabilityStatus: 'leased', capabilityClaimToken: 'automatic-lease' } },
+    );
+    const input = {
+      userId,
+      conversationId,
+      taskId: 'one',
+      kind: 'manual' as const,
+      claimId: 'committed-poll',
+      generationId: 'manual-generation',
+    };
+    const delivered = await claimBackgroundToolResult(
+      methods,
+      methods.getAgentBackgroundToolResultClaim,
+      input,
+    );
+    expect(delivered).toMatchObject({ status: 'acquired' });
+    let restore: () => void = () => undefined;
+    try {
+      if (phase === 'lookup') {
+        await expect(
+          claimBackgroundToolResult(
+            methods,
+            async () => {
+              throw new Error('receipt lookup unavailable');
+            },
+            input,
+          ),
+        ).rejects.toThrow();
+      } else if (phase === 'confirmation') {
+        const failure = jest
+          .spyOn(mongoose.models.Message, 'updateOne')
+          .mockImplementationOnce(() => {
+            throw new Error('confirmation write unavailable');
+          });
+        restore = () => {
+          failure.mockRestore();
+        };
+        // Exact committed read-back succeeds even though this replay's write fails.
+        await expect(
+          claimBackgroundToolResult(methods, methods.getAgentBackgroundToolResultClaim, {
+            ...input,
+            generationId: undefined,
+          }),
+        ).resolves.toEqual(delivered);
+      } else {
+        const failure = jest
+          .spyOn(methods, 'confirmBackgroundToolResultClaim')
+          .mockRejectedValueOnce(new Error('confirmation outcome unavailable'));
+        restore = () => {
+          failure.mockRestore();
+        };
+        await expect(
+          claimBackgroundToolResult(methods, methods.getAgentBackgroundToolResultClaim, input),
+        ).rejects.toThrow('confirmation outcome unavailable');
+      }
+    } finally {
+      restore();
+    }
+    const competitor = await methods.claimBackgroundToolResults({
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      taskId: 'one',
+      kind: 'wakeup',
+      claimId: 'automatic-probe',
+    });
+    expect(competitor).toMatchObject({
+      status: 'claimed',
+      claim: { claimId: input.claimId, generationId: 'manual-generation', receiptReconciled: true },
+    });
+    expect(
+      await methods.releaseBackgroundToolResultClaims({
+        userId,
+        conversationId,
+        messageId: parentMessageId,
+        taskIds: ['one'],
+        kind: 'manual',
+        claimId: input.claimId,
+        onlyIfUnreconciled: true,
+      }),
+    ).toBe(false);
+    if (root.mode !== 'continue') throw new Error('Expected continuation');
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods,
+      getGenerationJob: async () => null,
+    });
+    await expect(
+      resolve(root, {
+        idempotencyKey: key,
+        requiredWorkerCapability: capability,
+        deliveryClaimToken: 'automatic-lease',
+      }),
+    ).resolves.toEqual({ status: 'settled' });
+  },
+);
+
+it('repairs native started-fence confirmation from an applied follower after a retired owner crashed', async () => {
+  const root = await ready('one');
+  const sibling = await ready('two');
+  const key = getAgentTriggerIdempotencyKey(root);
+  const claimed = await methods.claimAgentBackgroundToolResultBatch({
+    ...owner(key),
+    limit: 8,
+    maxMetadataChars: 16000,
+  });
+  if (claimed.status !== 'acquired') throw new Error('Expected frozen batch');
+  await mongoose.models.AgentTriggerDelivery.updateOne(
+    { deliveryKey: key },
+    { $set: { capabilityStatus: 'dead' } },
+  );
+  const recover = createBackgroundToolDeadClaimRecovery(
+    async (deliveryKey, sourceId, reason, options) =>
+      methods.retireAgentTriggerDelivery({
+        deliveryKey,
+        sourceId,
+        reason,
+        settledAt: new Date(),
+        ...options,
+      }),
+    methods.releaseBackgroundToolResultClaims,
+    async () => null,
+    async () => 'started',
+    methods.releaseAgentBackgroundToolResultClaims,
+    methods,
+    async () => null,
+  );
+  const Delivery = mongoose.models.AgentTriggerDelivery;
+  const copyFailure = jest.spyOn(Delivery, 'updateMany').mockImplementationOnce(() => {
+    throw new Error('proof copy lost');
+  });
+  await expect(
+    recover({ userId, conversationId, messageId: parentMessageId, claimId: key }),
+  ).rejects.toThrow('proof copy lost');
+  copyFailure.mockRestore();
+  expect(await Delivery.findOne({ deliveryKey: key }).lean()).toMatchObject({
+    status: 'succeeded',
+  });
+  expect(await Delivery.findOne({ deliveryKey: key }).lean()).not.toHaveProperty('expiresAt');
+  if (sibling.mode !== 'continue') throw new Error('Expected sibling');
+  const resolve = createBackgroundToolCompletionWakeupResolver({
+    methods,
+    getGenerationJob: async () => null,
+  });
+  await expect(
+    resolve(sibling, {
+      idempotencyKey: getAgentTriggerIdempotencyKey(sibling),
+      requiredWorkerCapability: capability,
+    }),
+  ).resolves.toEqual({ status: 'settled' });
+  expect(
+    (await methods.getAgentBackgroundToolResultBatch(owner(key)))?.proofCopiedAt,
+  ).toBeInstanceOf(Date);
+  expect(await Delivery.findOne({ deliveryKey: key }).lean()).toHaveProperty('expiresAt');
+  expect(
+    await methods.getAgentBackgroundToolResultClaim({ ...owner(key), taskId: 'one' }),
+  ).toMatchObject({ appliedAt: expect.any(Date) });
+  expect(
+    await methods.getAgentBackgroundToolResultClaim({ ...owner(key), taskId: 'two' }),
+  ).toMatchObject({ appliedAt: expect.any(Date) });
+});

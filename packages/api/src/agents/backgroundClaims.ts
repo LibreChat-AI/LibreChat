@@ -34,7 +34,7 @@ export async function claimBackgroundToolResult(
   if (messageId == null) {
     throw new Error('The background result claim has no parent message identity');
   }
-  const release = async (onlyIfUnreconciled = false) => {
+  const release = async (allowReconciled = false) => {
     const released = await methods.releaseBackgroundToolResultClaims({
       userId: input.userId,
       conversationId: input.conversationId,
@@ -43,9 +43,9 @@ export async function claimBackgroundToolResult(
       kind: input.kind,
       claimId: input.claimId,
       ...(input.batchId != null && { batchId: input.batchId }),
-      ...(onlyIfUnreconciled && { onlyIfUnreconciled: true }),
+      ...(input.kind === 'manual' && { onlyIfUnreconciled: true }),
     });
-    if (!released && !onlyIfUnreconciled) {
+    if (!released && !allowReconciled) {
       throw new Error('The background result claim could not be released');
     }
   };

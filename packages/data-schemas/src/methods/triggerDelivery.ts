@@ -3099,13 +3099,6 @@ export function createAgentTriggerDeliveryMethods(
           batchId: root.backgroundToolResultBatch.batchId,
         });
       }
-      if (claim.appliedAt != null)
-        return {
-          status: 'claimed',
-          claimId: claim.claimId,
-          batchId: claim.batchId!,
-          ownerStatus: 'applied',
-        };
       const owner = await Delivery()
         .findOne({ ...scope, deliveryKey: claim.claimId })
         .select(projection)
@@ -3113,6 +3106,17 @@ export function createAgentTriggerDeliveryMethods(
       const batch = owner?.backgroundToolResultBatch;
       const member = batch?.members?.includes(input.deliveryKey);
       if (member && batch?.batchId === claim.batchId && batch?.appliedAt != null) {
+        // Retirement removed this owner from the queue. Its followers must
+        // finish the proof copy before they can all settle and abandon it.
+        if (
+          batch.proofCopiedAt == null &&
+          !(await confirmAgentBackgroundToolResultBatch({
+            ...input,
+            deliveryKey: claim.claimId,
+            batchId: batch.batchId,
+          }))
+        )
+          return { status: 'not_ready' };
         return {
           status: 'claimed',
           claimId: claim.claimId,
@@ -3120,6 +3124,13 @@ export function createAgentTriggerDeliveryMethods(
           ownerStatus: 'applied',
         };
       }
+      if (claim.appliedAt != null)
+        return {
+          status: 'claimed',
+          claimId: claim.claimId,
+          batchId: claim.batchId!,
+          ownerStatus: 'applied',
+        };
       // A stale collector may finish a CAS after another collector froze a subset.
       if (
         (batch?.members != null && !member) ||

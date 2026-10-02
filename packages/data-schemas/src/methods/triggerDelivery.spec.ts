@@ -6286,6 +6286,76 @@ describe('background result receipt batches', () => {
     });
   });
 
+  it.each(['before-copy', 'partial-copy', 'before-finish'] as const)(
+    'repairs a retired owner from its applied follower after %s failure',
+    async (phase) => {
+      await ready('one');
+      await ready('two');
+      await ready('three');
+      const acquired = await methods.claimAgentBackgroundToolResultBatch(input('one'));
+      if (acquired.status !== 'acquired') throw new Error('Expected batch');
+      await Delivery.updateOne({ deliveryKey: 'one' }, { $set: { capabilityStatus: 'dead' } });
+      await methods.retireAgentTriggerDelivery({
+        deliveryKey: 'one',
+        sourceId,
+        reason: 'recovery',
+        onlyIfDead: true,
+        settledAt: START,
+      });
+      const copy = Delivery.updateMany.bind(Delivery);
+      const finish = Delivery.updateOne.bind(Delivery);
+      const failure =
+        phase === 'before-finish'
+          ? jest.spyOn(Delivery, 'updateOne').mockImplementation((...args) => {
+              const query = finish(...args);
+              if (JSON.stringify(query.getUpdate()).includes('proofCopiedAt'))
+                throw new Error('proof completion failed');
+              return query;
+            })
+          : jest.spyOn(Delivery, 'updateMany').mockImplementationOnce((...args) => {
+              if (phase === 'before-copy') throw new Error('proof copy failed');
+              const query = copy(
+                { ...args[0], deliveryKey: { $in: ['one', 'two'] } },
+                args[1],
+                args[2],
+              );
+              const execute = query.exec.bind(query);
+              jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+                await execute();
+                throw new Error('partial proof copy failed');
+              });
+              return query;
+            });
+      await expect(confirmBatch(input('one'))).rejects.toThrow();
+      failure.mockRestore();
+      expect(await Delivery.findOne({ deliveryKey: 'one' }).lean()).not.toHaveProperty('expiresAt');
+      const cannotRepair = jest.spyOn(Delivery, 'updateMany').mockImplementationOnce(() => {
+        throw new Error('retry cannot copy');
+      });
+      await expect(methods.claimAgentBackgroundToolResultBatch(input('two'))).rejects.toThrow(
+        'retry cannot copy',
+      );
+      cannotRepair.mockRestore();
+      await expect(
+        methods.claimAgentBackgroundToolResultBatch(input('two')),
+      ).resolves.toMatchObject({ status: 'claimed', ownerStatus: 'applied' });
+      const repaired = await Delivery.findOne({ deliveryKey: 'one' })
+        .select('+backgroundToolResultBatch')
+        .lean();
+      expect(repaired?.backgroundToolResultBatch?.proofCopiedAt).toBeInstanceOf(Date);
+      expect(repaired?.expiresAt).toBeInstanceOf(Date);
+      for (const taskId of ['one', 'two', 'three']) {
+        expect(
+          await methods.getAgentBackgroundToolResultClaim({ ...input(taskId), taskId }),
+        ).toMatchObject({ appliedAt: expect.any(Date) });
+      }
+      await Delivery.deleteOne({ deliveryKey: 'one' });
+      await expect(
+        methods.claimAgentBackgroundToolResultBatch(input('three')),
+      ).resolves.toMatchObject({ status: 'claimed', ownerStatus: 'applied' });
+    },
+  );
+
   it('does not publish a late collecting plan onto an already retired owner', async () => {
     await ready('one');
     await ready('two');
