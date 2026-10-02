@@ -87,7 +87,7 @@ function Harness({ conversation }: { conversation: TConversation }) {
 function mountComposer() {
   const queryClient = new QueryClient({
     defaultOptions: {
-      queries: { retry: false, staleTime: Infinity, cacheTime: 0 },
+      queries: { retry: false, staleTime: Infinity, cacheTime: Infinity },
       mutations: { retry: false },
     },
   });
@@ -95,6 +95,7 @@ function mountComposer() {
   queryClient.setQueryData(startupConfigKey(true), { modelSpecs: { list: [] } });
   queryClient.setQueryData(startupConfigKey(false), { modelSpecs: { list: [] } });
   queryClient.setQueryData([QueryKeys.fileConfig], {});
+  queryClient.setQueryData([QueryKeys.tokenConfig], {});
   queryClient.setQueryData([QueryKeys.customConfigSpeech], {});
   queryClient.setQueryData([QueryKeys.name, EModelEndpoint.openAI], { expiresAt: '' });
   queryClient.setQueryData([QueryKeys.toolAuth, 'web_search'], { authenticated: false });
