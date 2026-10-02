@@ -3316,5 +3316,10 @@
   "com_ui_schedule_consent_error": "Authorization could not be updated. Reload the current state and try again.",
   "com_ui_schedule_consent_issuer": "Issuer: {{issuer}}",
   "com_ui_schedule_consent_audience": "Audience: {{audience}}",
-  "com_ui_schedule_consent_scopes": "Scopes: {{scopes}}"
+  "com_ui_schedule_consent_scopes": "Scopes: {{scopes}}",
+  "com_ui_code_checkout_mode": "Checkout mode",
+  "com_ui_code_checkout_isolated": "Isolated worktree",
+  "com_ui_code_checkout_isolated_info": "Created on the first workspace operation from the worker's Git snapshot. Uncommitted changes are not copied.",
+  "com_ui_code_checkout_source": "Registered checkout",
+  "com_ui_code_checkout_source_info": "Use the machine's registered checkout directly. Other chats may share these files."
 }

@@ -7,6 +7,7 @@ import type { TFile } from './types/files';
 import {
   CODE_ENVIRONMENT_MODES,
   CODE_WORKSPACE_ID_PATTERN,
+  CODE_WORKSPACE_CHECKOUT_MODES,
   MAX_AGENT_CODE_ENVIRONMENT_CHOICES,
 } from './code/workspace';
 import { userSubmittedMessageFieldPathSchema } from './filters';
@@ -1202,6 +1203,7 @@ export const tConversationSchema = z.object({
         .object({
           environmentId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
           workspaceId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
+          checkout: z.enum(CODE_WORKSPACE_CHECKOUT_MODES).optional(),
           agentIds: z
             .array(z.string().regex(CODE_WORKSPACE_ID_PATTERN))
             .min(1)

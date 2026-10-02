@@ -1350,6 +1350,9 @@ export const codeEnvironmentUserConfigSchema = z
          * worker advertises linked-worktree lanes. Omission keeps every request scoped to
          * its checkout. */
         linkedWorktrees: z.boolean().optional(),
+        /** Permit explicit per-conversation checkout choices after every API replica supports
+         * them. Omission preserves automatic worker isolation and hides the selector. */
+        allowCheckoutSelection: z.boolean().optional().default(false),
       })
       .strict()
       .optional(),

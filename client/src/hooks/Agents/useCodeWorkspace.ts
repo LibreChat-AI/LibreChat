@@ -4,6 +4,7 @@ import {
   Tools,
   isEphemeralAgentId,
   isCodeWorkspaceSelections,
+  isCodeWorkspaceCheckoutAvailable,
   resolveCodeEnvironmentSelection,
 } from 'librechat-data-provider';
 import {
@@ -412,8 +413,15 @@ export default function useCodeWorkspace(
     ) {
       state = 'unavailable';
     } else if (status.data.workspaces == null) state = 'unsupported';
-    else if (selected != null) state = 'ready';
-    else if (stored != null) state = 'missing';
+    else if (selected != null) {
+      state = isCodeWorkspaceCheckoutAvailable(
+        selected,
+        workspaces.find(({ id }) => id === selected.workspaceId),
+        environment.configSchema?.workspaces?.allowCheckoutSelection === true,
+      )
+        ? 'ready'
+        : 'unsupported';
+    } else if (stored != null) state = 'missing';
     else if (workspaces.length === 0) state = 'unavailable';
     return {
       environment,
@@ -448,11 +456,20 @@ export default function useCodeWorkspace(
           result.state !== 'loading' &&
           result.state !== 'unavailable' &&
           result.state !== 'unsupported' &&
-          result.workspaces.some(({ id }) => id === requested.workspaceId)
+          result.workspaces.some(
+            (descriptor) =>
+              descriptor.id === requested.workspaceId &&
+              isCodeWorkspaceCheckoutAvailable(
+                requested,
+                descriptor,
+                result.environment.configSchema?.workspaces?.allowCheckoutSelection === true,
+              ),
+          )
         ) {
           resolved.push({
             environmentId: result.environment.id,
             workspaceId: requested.workspaceId,
+            ...(requested.checkout == null ? {} : { checkout: requested.checkout }),
             ...(requested.agentIds == null ? {} : { agentIds: requested.agentIds }),
           });
           continue;

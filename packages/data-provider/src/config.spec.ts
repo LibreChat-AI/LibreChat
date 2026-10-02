@@ -963,8 +963,18 @@ describe('attached code environment user config schema', () => {
     });
   });
 
+  it('keeps checkout selection disabled by default without creating workspace policy', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({})).not.toHaveProperty('workspaces');
+    expect(codeEnvironmentUserConfigSchema.parse({ workspaces: {} }).workspaces).toEqual({
+      allowCheckoutSelection: false,
+    });
+  });
+
   it.each([
     [{ linkedWorktrees: true }, true],
+    [{ allowCheckoutSelection: true }, true],
+    [{ allowCheckoutSelection: false }, true],
+    [{ allowCheckoutSelection: 'yes' }, false],
     [{ linkedWorktrees: 'yes' }, false],
     [{ linkedWorktrees: true, subdirectories: true }, false],
   ])('validates the linked worktree lane toggle %p', (workspaces, valid) => {

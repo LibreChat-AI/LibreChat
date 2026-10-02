@@ -452,6 +452,75 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
     expect(resolved.codeWorkspace?.environment).toEqual(environment);
   });
 
+  it.each(['source', 'isolated'] as const)(
+    'honors an explicit %s checkout choice',
+    async (checkout) => {
+      jest
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(
+          workspaceStatus([{ id: 'worktree', workspaceInstances: ['git_worktree'] }]),
+        );
+      const resolved = await resolveCodeExecutionWorkspaceContext({
+        context: {
+          ...context,
+          conversationWorkspaceInstanceId: 'c'.repeat(64),
+          codeEnvironmentConfigSchema: { workspaces: { allowCheckoutSelection: true } },
+        },
+        requestedSelections: [{ environmentId: 'personal', workspaceId: 'worktree', checkout }],
+        environments,
+        getAppConfig,
+      });
+      expect(resolved.codeWorkspace?.checkout).toBe(checkout);
+      expect(resolved.codeWorkspace?.workspaceInstanceId).toBe(
+        checkout === 'isolated' ? 'c'.repeat(64) : undefined,
+      );
+    },
+  );
+
+  it.each([
+    { enabled: false, capable: true, instance: 'c'.repeat(64) },
+    { enabled: true, capable: false, instance: 'c'.repeat(64) },
+    { enabled: true, capable: true, instance: undefined },
+  ])(
+    'refuses unsupported isolation instead of executing in the source: %j',
+    async ({ enabled, capable, instance }) => {
+      jest
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(
+          workspaceStatus([
+            { id: 'worktree', ...(capable ? { workspaceInstances: ['git_worktree'] } : {}) },
+          ]),
+        );
+      await expect(
+        resolveCodeExecutionWorkspaceContext({
+          context: {
+            ...context,
+            conversationWorkspaceInstanceId: instance,
+            codeEnvironmentConfigSchema: { workspaces: { allowCheckoutSelection: enabled } },
+          },
+          requestedSelections: [
+            { environmentId: 'personal', workspaceId: 'worktree', checkout: 'isolated' },
+          ],
+          environments,
+          getAppConfig,
+        }),
+      ).rejects.toMatchObject({ reason: 'unsupported' });
+    },
+  );
+
+  it('refuses a checkout choice that changes the sealed decision', async () => {
+    const selection = { environmentId: 'personal', workspaceId: 'worktree' };
+    await expect(
+      resolveCodeExecutionWorkspaceContext({
+        context,
+        persistedSelections: [{ ...selection, checkout: 'isolated' }],
+        requestedSelections: [{ ...selection, checkout: 'source' }],
+        environments,
+        getAppConfig,
+      }),
+    ).rejects.toMatchObject({ reason: 'locked' });
+  });
+
   it('activates a server-derived instance only when the worker advertises worktree support', async () => {
     const workspaceInstanceId = 'c'.repeat(64);
     jest
@@ -496,7 +565,9 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
       resolveCodeExecutionWorkspaceContext({
         context: {
           ...context,
-          codeEnvironmentConfigSchema: { workspaces: { linkedWorktrees } },
+          codeEnvironmentConfigSchema: {
+            workspaces: { linkedWorktrees, allowCheckoutSelection: false },
+          },
           ...(instanceId ? { conversationWorkspaceInstanceId: instanceId } : {}),
         },
         requestedSelections: [{ environmentId: 'personal', workspaceId }],
