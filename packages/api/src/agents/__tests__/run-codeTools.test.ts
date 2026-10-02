@@ -2,7 +2,11 @@ import { FileContext } from 'librechat-data-provider';
 import type { AgentInputs, SubagentTaskConfig, SubagentResolveContext } from '@librechat/agents';
 import type { TFile } from 'librechat-data-provider';
 import type { HostSubagentTaskConfig } from '~/agents/subagentDelivery';
+import type { ProvisionToolContext } from '~/files/provision/callback';
+import type { ServerRequest } from '~/types';
+import { createProvisionFilesCallback } from '~/files/provision/callback';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
+import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
 import { createRun } from '~/agents/run';
 
@@ -279,6 +283,136 @@ describe('createRun code-tool eager/session wiring', () => {
       expect(childInput.additional_instructions).toContain(`/mnt/data/${childPath}`);
       expect(parentInput.additional_instructions).toContain('/mnt/data/data.csv');
       expect(childInput.initialSessions?.get('execute_code')?.files).toEqual([live]);
+    },
+  );
+
+  it.each(
+    [
+      ['data.csv', 'data.csv'],
+      ['data', 'data/input.csv'],
+      ['data/input.csv', 'data'],
+    ].flatMap(([parentName, childName]) =>
+      ['sequential', 'parallel'].map((mode) => ({ parentName, childName, mode })),
+    ),
+  )(
+    'reconciles repeated $mode lazy instances against $parentName while uploading $childName',
+    async ({ mode, parentName, childName }) => {
+      const parentFile: TFile = {
+        file_id: 'parent-file',
+        filename: parentName,
+        filepath: '/uploads/data.csv',
+        type: 'text/csv',
+        user: 'user-1',
+        object: 'file',
+        bytes: 10,
+        embedded: false,
+        usage: 0,
+        context: FileContext.message_attachment,
+      };
+      const childFile = {
+        ...parentFile,
+        file_id: 'child-file',
+        filename: childName,
+        context: FileContext.agents,
+      };
+      const makeChild = () => ({
+        ...makeAgent({ id: 'child' }),
+        fileConsumers: { executeCode: true, fileSearch: false },
+        dynamicToolContextMap: {},
+        provisionState: {
+          codeEnvFiles: [{ ...childFile }],
+          vectorDBFiles: [],
+          aliveFileIds: new Set<string>(),
+          agentScopedFileIds: new Set([childFile.file_id]),
+          codeEnvDestinations: new Map([[childFile.file_id, childFile.filename]]),
+        },
+      });
+      const children = [makeChild(), makeChild()];
+      const resolve = jest
+        .fn()
+        .mockResolvedValueOnce(children[0])
+        .mockResolvedValueOnce(children[1]);
+      const parent = {
+        ...makeAgent(),
+        tool_resources: { execute_code: { files: [parentFile] } },
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+        lazySubagentConfigs: [{ id: 'child', configId: 'child:1', resolve }],
+      };
+      const config = await captureRunConfig(parent);
+      const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+      const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+      if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+      const resolutionContext = {
+        signal: new AbortController().signal,
+      } as SubagentResolveContext;
+      const inputs =
+        mode === 'parallel'
+          ? await Promise.all(children.map(() => resolveInputs(resolutionContext)))
+          : [await resolveInputs(resolutionContext), await resolveInputs(resolutionContext)];
+      const names = children.map((child) =>
+        child.provisionState.codeEnvDestinations.get(childFile.file_id),
+      );
+      for (let index = 0; index < children.length; index++) {
+        expect(names[index]).toBeDefined();
+        expect(names[index]).not.toBe(childFile.filename);
+        expect(inputs[index].additional_instructions).toContain(`/mnt/data/${names[index]}`);
+      }
+      expect(names[1]).toBe(names[0]);
+      expect(children[0].provisionState.codeEnvDestinations).not.toBe(
+        children[1].provisionState.codeEnvDestinations,
+      );
+
+      const contexts = new Map<string, ProvisionToolContext>([[parent.id, parent]]);
+      const provisionToCodeEnv = jest.fn(
+        async ({ file, sandboxFilename }: { file: TFile; sandboxFilename?: string }) => {
+          const ref = {
+            kind: 'agent' as const,
+            id: 'child',
+            storage_session_id: 'child-store',
+            file_id: file.file_id,
+            sandboxFilename,
+          };
+          return {
+            referenceSet: { codeEnvRefs: { default: ref } },
+            refUpdate: { file_id: file.file_id, routeKey: 'default', ref },
+            sandboxFilename: sandboxFilename ?? file.filename,
+          };
+        },
+      );
+      const provision = createProvisionFilesCallback({
+        req: { user: { id: 'user-1' } } as ServerRequest,
+        agentToolContexts: contexts,
+        provisionToCodeEnv,
+        provisionToVectorDB: jest.fn(),
+        updateFile: jest.fn(),
+        updateCodeEnvRef: jest.fn(),
+        addEmbeddedEntity: jest.fn(),
+      });
+      for (const child of children) {
+        contexts.set(child.id, child);
+        const refs = await provision(['execute_code'], child.id);
+        const merged = mergeCodeFilesIntoContext(
+          {
+            session_id: 'parent-store',
+            files: [
+              {
+                id: parentFile.file_id,
+                storage_session_id: 'parent-store',
+                name: parentFile.filename,
+                resource_id: 'user-1',
+                kind: 'user',
+              },
+            ],
+          },
+          refs,
+        );
+        expect(merged?.files.map((file) => file.name)).toEqual([parentFile.filename, names[0]]);
+      }
+      expect(provisionToCodeEnv).toHaveBeenCalledTimes(1);
+      const earlierPlan = children[0].provisionState.codeEnvDestinations;
+      resolve.mockResolvedValueOnce(children[0]);
+      await resolveInputs(resolutionContext);
+      expect(children[0].provisionState.codeEnvDestinations).toBe(earlierPlan);
     },
   );
 

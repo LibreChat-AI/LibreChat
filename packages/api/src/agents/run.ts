@@ -2339,11 +2339,13 @@ export async function createRun({
     prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id);
   }
 
+  const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
   const buildAgentInput = (agent: RunAgent, opts: { isSubagent?: boolean } = {}): AgentInputs => {
-    if (!codeFileAgents.has(agent.id)) {
+    if (!preparedCodeFileAgents.has(agent)) {
       if (agent.provisionState) agent.provisionState.codeEnvDestinations = undefined;
       codeFileAgents.set(agent.id, agent);
       prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id, true);
+      preparedCodeFileAgents.add(agent);
     }
     const isSubagent = opts.isSubagent === true;
     if (runFilesActive) {
