@@ -16,6 +16,8 @@ interface ConvoLinkProps {
   /** Shortcuts the row responds to, declared on the element that takes focus so
    *  assistive tech announces them when the user arrives here. */
   keyShortcuts?: string;
+  /** Id of text that adds context the title does not carry, such as the chat's project. */
+  describedBy?: string;
   children: React.ReactNode;
 }
 
@@ -45,6 +47,7 @@ const ConvoLink: React.FC<ConvoLinkProps> = ({
   isSmallScreen,
   localize,
   keyShortcuts,
+  describedBy,
   children,
 }) => {
   const [isOverflowing, setIsOverflowing] = useState(false);
@@ -133,6 +136,7 @@ const ConvoLink: React.FC<ConvoLinkProps> = ({
       )}
       aria-current={isActiveConvo ? 'page' : undefined}
       aria-keyshortcuts={keyShortcuts}
+      aria-describedby={describedBy}
       aria-label={
         (isSharedBadgeVisible
           ? localize('com_ui_conversation_label_shared', {

@@ -329,10 +329,13 @@ const Conversations: FC<ConversationsProps> = ({
    *  or filter result that grew rows it did not match would stop reading as that result. */
   const isUnnarrowed =
     !search.query && !isArchivedView && filterTags.length === 0 && facetFilterCount === 0;
+  const listsNewestFirst = sort.field === 'updatedAt' && sort.direction === 'desc';
   const runningIdsToFetch = useMemo(
     () =>
-      isUnnarrowed && isChatsExpanded ? unlistedRunningIds(datedConversations, activeJobIds) : [],
-    [isUnnarrowed, isChatsExpanded, datedConversations, activeJobIds],
+      isUnnarrowed && isChatsExpanded && listsNewestFirst
+        ? unlistedRunningIds(datedConversations, activeJobIds)
+        : [],
+    [isUnnarrowed, isChatsExpanded, listsNewestFirst, datedConversations, activeJobIds],
   );
   const unlistedRunning = useRunningConversationsQuery(runningIdsToFetch);
   /** The archive keeps its server order, while search still promotes active matches. */

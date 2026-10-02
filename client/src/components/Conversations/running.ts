@@ -77,7 +77,7 @@ export function groupConversationsWithRunning(
 
   const added = unlisted.filter((conversation) => {
     const id = conversation.conversationId;
-    if (!id || !activeJobIds.has(id) || runningIds.has(id)) {
+    if (!id || conversation.isArchived === true || !activeJobIds.has(id) || runningIds.has(id)) {
       return false;
     }
     runningIds.add(id);

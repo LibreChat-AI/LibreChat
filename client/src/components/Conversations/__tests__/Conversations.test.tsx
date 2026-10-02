@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { CellMeasurerCache, List } from 'react-virtualized';
 import type { TConversation } from 'librechat-data-provider';
 import { hasAttachmentsAtom, resetFacetsAtom } from '../facets';
+import { chatSortAtom } from '../chatFilters';
 import Conversations from '../Conversations';
 import store from '~/store';
 
@@ -565,6 +566,20 @@ describe('Conversations: Running lists chats outside the Chats list', () => {
     const rows = screen.getAllByTestId('convo');
     expect(rows.map((row) => row.textContent)).toEqual(['Project chat', 'Idle chat']);
     expect(rows.map((row) => row.getAttribute('data-project-badge'))).toEqual(['true', 'false']);
+  });
+
+  it('fetches nothing under a sort that has no Running group', () => {
+    const jotaiStore = getDefaultStore();
+    const previous = jotaiStore.get(chatSortAtom);
+    jotaiStore.set(chatSortAtom, { field: 'title', direction: 'asc' });
+    try {
+      renderList();
+
+      expect(mockRunningConversationsQuery).toHaveBeenLastCalledWith([]);
+      expect(screen.queryByRole('heading', { name: 'com_a11y_chats_running_section' })).toBeNull();
+    } finally {
+      jotaiStore.set(chatSortAtom, previous);
+    }
   });
 
   it('keeps a search result to its own matches', () => {

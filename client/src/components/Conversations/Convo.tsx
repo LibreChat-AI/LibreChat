@@ -1,4 +1,4 @@
-import React, { memo, useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { memo, useId, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useDrag } from 'react-dnd';
 import { Link2 } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
@@ -68,6 +68,8 @@ function Conversation({
   const { data: startupConfig } = useGetStartupConfig();
   const sharedLinksEnabled = startupConfig?.sharedLinksEnabled === true;
   const isSharedBadgeVisible = conversation.isShared === true && sharedLinksEnabled;
+  const projectLabelId = useId();
+  const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
   const isUnseen = isConversationUnseen(conversation);
   const isShiftHeld = useShiftKey();
   const { conversationId, title = '' } = conversation;
@@ -363,6 +365,7 @@ function Conversation({
           isSmallScreen={isSmallScreen}
           localize={localize}
           keyShortcuts={keyShortcuts}
+          describedBy={projectBadgeProjectId ? projectLabelId : undefined}
         >
           <ConversationEndpointIcon conversation={conversation} size={20} context="menu-item" />
         </ConvoLink>
@@ -375,8 +378,8 @@ function Conversation({
       {isSharedBadgeVisible && (
         <Link2 className="icon-sm text-text-secondary mr-1 shrink-0" aria-hidden="true" />
       )}
-      {showProjectBadge && conversation.chatProjectId && (
-        <ProjectBadge projectId={conversation.chatProjectId} />
+      {projectBadgeProjectId && (
+        <ProjectBadge projectId={projectBadgeProjectId} labelId={projectLabelId} />
       )}
       {conversation.pinned === true && (
         <UnpinButton

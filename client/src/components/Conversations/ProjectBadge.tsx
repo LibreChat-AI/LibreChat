@@ -5,7 +5,7 @@ import { useLocalize } from '~/hooks';
 
 /** Marks a row listed outside its project, such as a project chat in the Running group,
  *  so it reads as filed elsewhere rather than as a chat with no project. */
-function ProjectBadge({ projectId }: { projectId: string }) {
+function ProjectBadge({ projectId, labelId }: { projectId: string; labelId: string }) {
   const localize = useLocalize();
   const { data: project } = useProjectQuery(projectId);
   const label = project?.name
@@ -19,7 +19,9 @@ function ProjectBadge({ projectId }: { projectId: string }) {
       data-testid="convo-project-badge"
     >
       <Folder className="icon-sm" aria-hidden="true" />
-      <span className="sr-only">{label}</span>
+      <span id={labelId} className="sr-only">
+        {label}
+      </span>
     </span>
   );
 }

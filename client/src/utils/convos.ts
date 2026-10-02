@@ -1457,6 +1457,10 @@ export function updateConvoInAllQueries(
   queryClient.setQueryData<TConversation>([QueryKeys.conversation, conversationId], (current) =>
     current ? updater(current) : current,
   );
+  queryClient.setQueryData<TConversation | null>(
+    [QueryKeys.runningConversation, conversationId],
+    (current) => (current ? updater(current) : current),
+  );
   updatePinnedConvosQuery(queryClient, conversationId, updater, moveToTop);
 
   const queries = findConversationListQueries(queryClient);
@@ -1559,6 +1563,10 @@ export function updateConvoInAllQueries(
 // Remove
 export function removeConvoFromAllQueries(queryClient: QueryClient, conversationId: string) {
   updatePinnedConvosQuery(queryClient, conversationId, () => null);
+  queryClient.setQueryData<TConversation | null>(
+    [QueryKeys.runningConversation, conversationId],
+    (current) => (current === undefined ? current : null),
+  );
 
   const queries = findConversationListQueries(queryClient);
 

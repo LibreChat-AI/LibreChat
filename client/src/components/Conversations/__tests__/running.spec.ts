@@ -156,6 +156,13 @@ describe('running chats the loaded rows do not hold', () => {
     expect(groups).toEqual([[RUNNING_CHATS_GROUP, [loaded]]]);
   });
 
+  it('leaves an archived chat out even while its run continues', () => {
+    const dated = groupConversations([convo('idle', 0)], newestFirst);
+    const archived = { ...projectChat('archived', 1), isArchived: true } as TConversation;
+
+    expect(partitionGroups(dated, new Set(['archived']), newestFirst, [archived])).toBe(dated);
+  });
+
   it.each([
     { field: 'createdAt' as const, direction: 'desc' as const },
     { ...newestFirst, includePinned: true },

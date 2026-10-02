@@ -84,32 +84,55 @@ export const useGetConvoIdQuery = (
 };
 
 const RUNNING_CONVERSATION_REFRESH_MS = 15_000;
+const RUNNING_CONVERSATION_MISSING_RETRY_MS = 2_000;
 const noRunningConversations: t.TConversation[] = [];
+
+/** The list endpoints derive `isShared` from active shared links; the record alone lacks it. */
+async function hasActiveSharedLink(conversationId: string): Promise<boolean | undefined> {
+  try {
+    const link = await dataService.getSharedLink(conversationId);
+    return link.shareId != null;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Rows for running chats that no loaded sidebar list holds: chats filed in a project,
  * pinned chats, and chats past the pages fetched so far. Each row refreshes while it is
- * shown, so a title generated mid-run reaches it, and a chat whose record is not written
- * yet reads as absent and is asked again rather than cached as an error.
+ * shown, so a title generated mid-run reaches it. A chat whose record is not written yet
+ * reads as absent and is asked again within seconds, so a short run is not missed.
+ *
+ * The rows live under their own key so a pending or absent result never lands in the
+ * cache the chat view reads; a complete record seeds that cache only where it is empty.
  */
 export const useRunningConversationsQuery = (
   conversationIds: readonly string[],
 ): t.TConversation[] => {
+  const queryClient = useQueryClient();
   const results = useQueries({
     queries: conversationIds.map((conversationId) => ({
       queryKey: [QueryKeys.runningConversation, conversationId],
       queryFn: async (): Promise<t.TConversation | null> => {
+        let conversation: t.TConversation;
         try {
-          return await dataService.getConversationById(conversationId);
+          conversation = await dataService.getConversationById(conversationId);
         } catch (error) {
           if (isNotFoundError(error)) {
             return null;
           }
           throw error;
         }
+        const conversationKey = [QueryKeys.conversation, conversationId];
+        if (queryClient.getQueryData(conversationKey) === undefined) {
+          queryClient.setQueryData(conversationKey, conversation);
+        }
+        const isShared = await hasActiveSharedLink(conversationId);
+        return isShared === undefined ? conversation : { ...conversation, isShared };
       },
       staleTime: RUNNING_CONVERSATION_REFRESH_MS,
-      refetchInterval: RUNNING_CONVERSATION_REFRESH_MS,
+      refetchInterval: (data: t.TConversation | null | undefined) =>
+        data === null ? RUNNING_CONVERSATION_MISSING_RETRY_MS : RUNNING_CONVERSATION_REFRESH_MS,
       refetchOnWindowFocus: false,
     })),
   });
