@@ -23,7 +23,7 @@ const normalize = (value: string): string => value.trim().toLowerCase();
 
 const fromEntry = ({ value, label, icon, color }: CategoryEntry): TCategory => ({
   value,
-  label: label ?? value,
+  label: label || value,
   ...(icon && { icon }),
   ...(color && { color }),
 });
@@ -33,7 +33,11 @@ export function resolvePromptCategories(
   customValues: string[],
 ): TCategory[] {
   const categories = config?.categories;
-  const entries: CategoryEntry[] = categories?.list ?? [];
+  const entries: CategoryEntry[] = (categories?.list ?? []).map((entry) => ({
+    ...entry,
+    value: entry.value.trim(),
+    label: entry.label?.trim(),
+  }));
   const result: TCategory[] =
     categories?.enableDefaultCategories === false
       ? []
@@ -62,13 +66,12 @@ export function resolvePromptCategories(
     return result;
   }
 
-  const seen = new Set(result.flatMap((c) => [normalize(c.value), normalize(c.label)]));
+  const seen = new Set(result.map((c) => c.value));
   for (const value of customValues) {
-    const key = normalize(value);
-    if (seen.has(key)) {
+    if (seen.has(value)) {
       continue;
     }
-    seen.add(key);
+    seen.add(value);
     result.push({ value, label: value, custom: true });
   }
   return result;

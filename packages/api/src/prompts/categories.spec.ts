@@ -69,26 +69,38 @@ describe('resolvePromptCategories', () => {
     ).toEqual([{ value: 'code', label: 'code' }]);
   });
 
-  it('appends custom values after configured ones, skipping duplicates', () => {
+  it('appends custom values after configured ones, deduping by exact value', () => {
     const result = resolvePromptCategories(
       cfg({ allowCustom: true, enableDefaultCategories: false, list: [{ value: 'hr' }] }),
-      ['HR', 'alpha', 'Alpha', 'beta'],
+      ['hr', 'alpha', 'Alpha', 'beta', 'beta'],
     );
     expect(result).toEqual([
       { value: 'hr', label: 'hr' },
       { value: 'alpha', label: 'alpha', custom: true },
+      { value: 'Alpha', label: 'Alpha', custom: true },
       { value: 'beta', label: 'beta', custom: true },
     ]);
   });
 
-  it('skips custom values matching a configured label', () => {
+  it('keeps a stored value that only matches a configured label', () => {
     const result = resolvePromptCategories(
       cfg({
         allowCustom: true,
         enableDefaultCategories: false,
         list: [{ value: 'hr', label: 'People' }],
       }),
-      ['people'],
+      ['People'],
+    );
+    expect(result).toEqual([
+      { value: 'hr', label: 'People' },
+      { value: 'People', label: 'People', custom: true },
+    ]);
+  });
+
+  it('trims configured values and labels', () => {
+    const result = resolvePromptCategories(
+      cfg({ enableDefaultCategories: false, list: [{ value: ' hr ', label: ' People ' }] }),
+      [],
     );
     expect(result).toEqual([{ value: 'hr', label: 'People' }]);
   });
