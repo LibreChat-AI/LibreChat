@@ -7,10 +7,10 @@ import {
   getEndpointFileConfig,
 } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
-import type { TokenCountFn } from '~/utils/text';
 import type { OmittedAttachment, ServerRequest } from '~/types';
-import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
+import type { TokenCountFn } from '~/utils/text';
 import { AGENT_ATTACHMENT_LIMIT_EXCEEDED, AGENT_ATTACHMENT_UNSUPPORTED } from './errors';
+import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
 import { countTokens } from '~/utils/tokenizer';
 import { extractFileContext } from '~/files';
 
