@@ -24,6 +24,7 @@ const {
   collectCodeExecutionProfileRoutes,
   getLazySubagentConfigId,
   resolveCodeExecutionContext,
+  resolveCodeExecutionWorkspaceSelections,
   optsOutOfAttachedCodeEnvironment,
   isImplicitStatefulCodeRouteAvailable,
   resolveCodeExecutionWorkspaceContext,
@@ -1141,6 +1142,13 @@ const initializeClientWithProvider = async ({
           statefulSessions: statefulCodeSessions,
           environment: statefulCodeEnvironment,
           environmentId: agent.code_environment_id,
+          environmentIds: agent.code_environment_ids,
+          allowEnvironmentSelection:
+            appConfig.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+          workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+            conversation: admittedConversation,
+            request: runtimeRequestBody,
+          }),
           environments: configuredCodeEnvironments,
           userId,
           agentId: agent.id,

@@ -305,6 +305,28 @@ describe('createEndpointsConfigService', () => {
       });
     });
 
+    it('advertises machine selection only when the deployment enables it', async () => {
+      const deps = createMockDeps({
+        loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+          [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+        }),
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            endpoints: {
+              [EModelEndpoint.agents]: {
+                statefulCodeSessions: { allowEnvironmentSelection: true },
+              },
+            },
+          }),
+        ),
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+      const result = await getEndpointsConfig(fakeReq());
+      expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions?.allowEnvironmentSelection).toBe(
+        true,
+      );
+    });
+
     it.each([
       [{ enabled: true }, ['ask']],
       [{ enabled: true, mode: 'default' }, ['ask']],

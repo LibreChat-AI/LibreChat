@@ -20,7 +20,16 @@ jest.mock('librechat-data-provider', () => {
 });
 
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
+  useLocalize: () => (key: string, values?: Record<string, unknown>) => {
+    if (key === 'com_ui_code_workspace_required_for')
+      return `Choose a workspace for ${values?.[0]} on ${values?.[1]}.`;
+    if (key === 'com_ui_code_workspace_graph_requirement')
+      return 'Every coding agent in this chat needs a workspace, including subagents.';
+    if (key === 'com_ui_code_workspace_used_by') return `Used by ${values?.[0]}`;
+    if (key === 'com_ui_code_workspace_agent_status')
+      return `${values?.[0]} needs ${values?.[1]}: ${values?.[2]}`;
+    return key;
+  },
 }));
 
 jest.mock('@librechat/client', () => {
@@ -92,6 +101,221 @@ function renderMenu(ui: React.ReactElement) {
 }
 
 describe('CodeWorkspaceMenu', () => {
+  test('explains the missing reviewer workspace while the selected primary workspace is ready', async () => {
+    const reviewerMachine = { ...environment, id: 'reviewer-vm', name: 'Danny Skynet Trusted VM' };
+    const graph = workspace({ state: 'choose', canSubmit: false });
+    graph.environments[0].requiredBy = [{ id: 'lia', name: 'Lia' }];
+    graph.environments.push({
+      environment: reviewerMachine,
+      state: 'choose',
+      workspaces: [{ id: 'review', name: 'Review' }],
+      requiredBy: [{ id: 'reviewer', name: 'PR Reviewer' }],
+    });
+    renderMenu(
+      <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Choose a workspace for PR Reviewer on Danny Skynet Trusted VM.',
+    );
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Every coding agent in this chat needs a workspace, including subagents.',
+    );
+    expect(screen.getByRole('status')).not.toHaveTextContent('for Lia');
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    expect(screen.getByText('Used by Lia')).toBeVisible();
+    expect(screen.getByText('Used by PR Reviewer')).toBeVisible();
+  });
+
+  test('does not call an unavailable reviewer machine an unselected workspace', () => {
+    const graph = workspace({ state: 'unavailable', canSubmit: false });
+    graph.environments[0] = {
+      ...graph.environments[0],
+      state: 'unavailable',
+      selected: undefined,
+      requiredBy: [{ id: 'reviewer', name: 'PR Reviewer' }],
+    };
+    renderMenu(
+      <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'PR Reviewer needs Personal VM: com_ui_code_workspace_unavailable',
+    );
+    expect(screen.getByRole('status')).not.toHaveTextContent('Choose a workspace');
+  });
+
+  test('keeps a fixed graph machine when replacing an overlapping primary choice', async () => {
+    const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+    const setter = jest.fn();
+    const selection = { environmentId: alternate.id, workspaceId: 'runtime' };
+    const graph = workspace({
+      machineOptionGroups: [[environment.id, alternate.id]],
+      fixedMachineIds: [alternate.id],
+    });
+    graph.environments.push({
+      environment: alternate,
+      state: 'ready',
+      workspaces: [{ id: 'runtime', name: 'Runtime' }],
+      selected: selection,
+    });
+    renderMenu(<CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />);
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    await userEvent.click(screen.getByRole('menuitemradio', { name: /Project A/ }));
+    expect(
+      setter.mock.calls[0][0]({ ...conversation, codeWorkspaces: [selection] }).codeWorkspaces,
+    ).toEqual([{ environmentId: environment.id, workspaceId: 'project-a' }, selection]);
+  });
+  test('loads only a chosen allowed machine and replaces the draft selection', async () => {
+    const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+    const read = jest.spyOn(dataService, 'getCodeEnvironmentStatus').mockResolvedValue({
+      environmentId: alternate.id,
+      status: 'ready',
+      operations: ['read_file'],
+      workspaces: [{ id: 'runtime', name: 'Runtime Project' }],
+    });
+    const setter = jest.fn();
+    renderMenu(
+      <CodeWorkspaceMenu
+        setConversation={setter}
+        workspace={workspace({
+          machineOptions: [environment, alternate],
+          machineOptionGroups: [[environment.id, alternate.id]],
+        })}
+        disabled={false}
+      />,
+    );
+    expect(read).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    expect(read).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Runtime VM' }));
+    await userEvent.click(await screen.findByRole('menuitemradio', { name: /Runtime Project/ }));
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith(alternate.id);
+    const next = setter.mock.calls[0][0]({
+      ...conversation,
+      codeWorkspaces: [{ environmentId: environment.id, workspaceId: 'project-a' }],
+    });
+    expect(next.codeWorkspaces).toEqual([{ environmentId: alternate.id, workspaceId: 'runtime' }]);
+    read.mockRestore();
+  });
+
+  test('records primary ownership on B while retaining the fixed reviewer on A', async () => {
+    const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+    const read = jest.spyOn(dataService, 'getCodeEnvironmentStatus').mockResolvedValue({
+      environmentId: alternate.id,
+      status: 'ready',
+      operations: ['read_file'],
+      workspaces: [{ id: 'runtime', name: 'Runtime Project' }],
+    });
+    const setter = jest.fn();
+    renderMenu(
+      <CodeWorkspaceMenu
+        setConversation={setter}
+        workspace={workspace({
+          machineOptions: [environment, alternate],
+          machineOptionGroups: [[environment.id, alternate.id]],
+          machineChoiceOwners: [{ agentId: 'lia', environmentIds: [environment.id, alternate.id] }],
+          fixedMachineIds: [environment.id],
+        })}
+        disabled={false}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Runtime VM' }));
+    await userEvent.click(await screen.findByRole('menuitemradio', { name: /Runtime Project/ }));
+    expect(
+      setter.mock.calls[0][0]({
+        ...conversation,
+        codeWorkspaces: [
+          { environmentId: environment.id, workspaceId: 'project-a', agentIds: ['lia'] },
+        ],
+      }).codeWorkspaces,
+    ).toEqual([
+      { environmentId: environment.id, workspaceId: 'project-a' },
+      { environmentId: alternate.id, workspaceId: 'runtime', agentIds: ['lia'] },
+    ]);
+    read.mockRestore();
+  });
+
+  test('editing a child workspace preserves the primary agent machine choice', async () => {
+    const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+    const child = { ...environment, id: 'child-vm', name: 'Child VM' };
+    const setter = jest.fn();
+    const rootSelection = { environmentId: environment.id, workspaceId: 'project-a' };
+    const childSelection = { environmentId: child.id, workspaceId: 'old' };
+    const graph = workspace({
+      machineOptions: [environment, alternate],
+      machineOptionGroups: [[environment.id, alternate.id]],
+      selections: [rootSelection, childSelection],
+    });
+    graph.environments.push({
+      environment: child,
+      state: 'ready',
+      selected: childSelection,
+      workspaces: [
+        { id: 'old', name: 'Old' },
+        { id: 'new', name: 'Child Project' },
+      ],
+    });
+    renderMenu(<CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />);
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    await userEvent.click(screen.getByRole('menuitemradio', { name: /Child Project/ }));
+    const next = setter.mock.calls[0][0]({
+      ...conversation,
+      codeWorkspaces: [rootSelection, childSelection],
+    });
+    expect(next.codeWorkspaces).toEqual([
+      { environmentId: child.id, workspaceId: 'new' },
+      rootSelection,
+    ]);
+  });
+
+  test('offers a sole allowed alternative when the original default is no longer accessible', async () => {
+    const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+    renderMenu(
+      <CodeWorkspaceMenu
+        setConversation={jest.fn()}
+        workspace={workspace({
+          state: 'unavailable',
+          environments: [],
+          machineOptions: [alternate],
+        })}
+        disabled={false}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    expect(screen.getByRole('menuitem', { name: 'Runtime VM' })).toBeVisible();
+  });
+
+  test('offers retry for an offline alternative without losing the current workspace', async () => {
+    const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+    const read = jest
+      .spyOn(dataService, 'getCodeEnvironmentStatus')
+      .mockResolvedValueOnce({ environmentId: alternate.id, status: 'offline' })
+      .mockResolvedValue({
+        environmentId: alternate.id,
+        status: 'ready',
+        operations: ['read_file'],
+        workspaces: [{ id: 'runtime', name: 'Runtime Project' }],
+      });
+    const setter = jest.fn();
+    renderMenu(
+      <CodeWorkspaceMenu
+        setConversation={setter}
+        workspace={workspace({ machineOptions: [environment, alternate] })}
+        disabled={false}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Runtime VM' }));
+    const retry = await screen.findByRole('menuitem', {
+      name: 'com_ui_code_workspace_unavailable',
+    });
+    expect(setter).not.toHaveBeenCalled();
+    await userEvent.click(retry);
+    expect(await screen.findByRole('menuitemradio', { name: /Runtime Project/ })).toBeVisible();
+    expect(read).toHaveBeenCalledTimes(2);
+    read.mockRestore();
+  });
   test('explains a failed reconciliation and retries without permitting workspace changes', async () => {
     const store = createStore();
     const request = {

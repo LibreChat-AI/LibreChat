@@ -10,6 +10,28 @@ import { CodeWorkspaceSelectionError } from './capabilities';
 const selection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
 
 describe('resolveConversationCodeEnvironmentDecision', () => {
+  it('seals agent ownership, accepts reordered retries and refuses a route reassignment', () => {
+    const selected = { ...selection, agentIds: ['reviewer', 'primary'] };
+    const conversation = {
+      conversationId: 'saved',
+      codeEnvironmentMode: 'attached' as const,
+      codeWorkspaces: [selected],
+    };
+    expect(
+      resolveConversationCodeEnvironmentDecision({
+        conversationId: 'saved',
+        conversation,
+        requestedSelections: [{ ...selected, agentIds: ['primary', 'reviewer'] }],
+      }).codeWorkspaces,
+    ).toEqual([{ ...selected, agentIds: ['primary', 'reviewer'] }]);
+    expect(() =>
+      resolveConversationCodeEnvironmentDecision({
+        conversationId: 'saved',
+        conversation,
+        requestedSelections: [{ ...selected, agentIds: ['other'] }],
+      }),
+    ).toThrow(CodeWorkspaceSelectionError);
+  });
   it('defaults a new conversation without a selection to no attached environment', () => {
     expect(resolveConversationCodeEnvironmentDecision({ conversationId: 'new' })).toEqual({
       mode: 'without_attached',

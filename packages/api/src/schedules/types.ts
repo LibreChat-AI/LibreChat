@@ -12,6 +12,7 @@ import type { SlotClaimResult } from './capacity';
 export interface ScheduleLimits {
   /** Feature-level switch: when false the engine claims/fires nothing. */
   enabled: boolean;
+  mcpConsent?: { enabled: boolean; maxLifetimeHours: number };
   maxPerUser: number;
   minIntervalMinutes: number;
   autoDisableAfterFailures: number;

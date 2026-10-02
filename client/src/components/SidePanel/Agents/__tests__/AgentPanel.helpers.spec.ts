@@ -61,6 +61,19 @@ const createForm = (): AgentForm => ({
 });
 
 describe('composeAgentUpdatePayload', () => {
+  it('omits unchanged unavailable machine choices but submits an explicit removal', () => {
+    const form = createForm();
+    form.agent = {
+      ...({ id: 'agent_123', code_environment_ids: ['missing'] } as Agent),
+      value: 'agent_123',
+    };
+    form.code_environment_ids = ['missing'];
+    expect(
+      composeAgentUpdatePayload(form, 'agent_123').payload.code_environment_ids,
+    ).toBeUndefined();
+    form.code_environment_ids = [];
+    expect(composeAgentUpdatePayload(form, 'agent_123').payload.code_environment_ids).toEqual([]);
+  });
   it('includes avatar: null when resetting a persistent agent', () => {
     const form = createForm();
     form.avatar_action = 'reset';

@@ -33,6 +33,7 @@ import {
   MIN_BALANCE_RESERVATION_TTL_MS,
   DEFAULT_BALANCE_RESERVATION_TTL_MS,
 } from './balance';
+import { scheduledMCPResourceBindingSchema } from './types/scheduleConsent';
 
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT = 24 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
@@ -47,6 +48,7 @@ import {
   CODE_ENVIRONMENT_MOVE_VERSION,
   CODE_ENVIRONMENT_TRANSITION_VERSION,
   CODE_WORKSPACE_RECOVERY_VERSION,
+  MAX_AGENT_CODE_ENVIRONMENT_CHOICES,
 } from './code/workspace';
 import { ComponentTypes, SettingTypes, OptionTypes } from './generate';
 import { STATEFUL_CODE_ENVIRONMENTS } from './stateful-code';
@@ -1506,6 +1508,16 @@ export const agentsEndpointSchema = baseEndpointSchema
       statefulCodeSessions: z
         .object({
           allowedEnvironments: z.array(z.enum(STATEFUL_CODE_ENVIRONMENTS)).min(1),
+          /** Allow agents with a machine allowlist to use a chat-owned machine instead of their default.
+           * Enable after every API replica supports per-chat machine routing. */
+          allowEnvironmentSelection: z.boolean().optional(),
+          /** Maximum additional machine choices saved on an agent (wire ceiling: 128). */
+          maxEnvironmentChoices: z
+            .number()
+            .int()
+            .min(1)
+            .max(MAX_AGENT_CODE_ENVIRONMENT_CHOICES)
+            .optional(),
           /** Server-only personal worker enrollment policy. Effective principal
            * policy may tighten, but never raise, the deployment ceiling. */
           principalWorkers: z
@@ -2593,6 +2605,13 @@ export const interfaceSchema = z
           autoDisableAfterFailures: z.number().int().min(1).optional(),
           admissionConcurrency: z.number().int().min(1).max(100).optional(),
           fireConcurrency: z.number().int().min(1).optional(),
+          mcpConsent: z
+            .object({
+              enabled: z.boolean().optional(),
+              maxLifetimeHours: z.number().int().min(1).max(8760).optional(),
+              resources: z.record(scheduledMCPResourceBindingSchema).optional(),
+            })
+            .optional(),
           mcpPreflightConcurrency: z.number().int().min(1).max(10).optional(),
           mcpPreflightTimeoutMs: z.number().int().min(1000).max(600000).optional(),
           /** Refuse schedules that are not filed under a chat project. Enforced on
