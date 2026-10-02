@@ -162,7 +162,7 @@ test.describe('project dialogs', () => {
     await expect(dialog).toBeVisible();
 
     releaseSave();
-    await expect(page.getByText('Failed to rename project')).toBeVisible();
+    await expect(page.getByText('Failed to rename project', { exact: true })).toBeVisible();
     await expect(dialog).toBeVisible();
     await expect(nameInput).toHaveValue(draft);
   });
