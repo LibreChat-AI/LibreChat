@@ -583,6 +583,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       ),
       limits: {
         maxPerUser: limits.maxPerUser,
+        ...(limits.mcpConsent?.enabled && { mcpConsent: true }),
         // minIntervalMinutes ships with the list so the dialog can refuse a cadence
         // the floor would reject, instead of surfacing it as a 400 after submit.
         minIntervalMinutes: limits.minIntervalMinutes,

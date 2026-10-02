@@ -5,6 +5,7 @@ const {
   SCHEDULE_FILE_HOLD,
   generateCheckAccess,
   createSchedulesHandlers,
+  createScheduleMCPConsentHost,
 } = require('@librechat/api');
 const { requireJwtAuth, configMiddleware, messageIpLimiter } = require('~/server/middleware');
 const {
@@ -85,6 +86,18 @@ const handlers = createSchedulesHandlers({
   // create race, so every scheduling WRITE consults the user-level flag instead.
   isUserDeleting,
 });
+
+const consentHost = createScheduleMCPConsentHost({
+  methods,
+  getLimits,
+  findUser: (id) => methods.findUser({ _id: id }),
+  getRoleByName,
+  canViewAgent: async (agentId, user) => (await resolveAgentFireAccess(agentId, user)) === 'ok',
+});
+
+router.get('/:id/mcp-consent', consentHost.handlers.get);
+router.post('/:id/mcp-consent', checkSchedulesCreate, consentHost.handlers.confirm);
+router.delete('/:id/mcp-consent', consentHost.handlers.revoke);
 
 router.get('/', checkSchedulesAccess, handlers.listSchedules);
 router.get('/:id', checkSchedulesAccess, handlers.getSchedule);

@@ -99,6 +99,7 @@ export enum QueryKeys {
   favorites = 'favorites',
   /* Scheduled chats */
   schedules = 'schedules',
+  scheduleMCPConsent = 'scheduleMCPConsent',
   schedule = 'schedule',
   parentSubagents = 'parentSubagents',
   subagentThread = 'subagentThread',
@@ -181,6 +182,8 @@ export enum MutationKeys {
   updateSchedule = 'updateSchedule',
   deleteSchedule = 'deleteSchedule',
   runSchedule = 'runSchedule',
+  confirmScheduleMCPConsent = 'confirmScheduleMCPConsent',
+  revokeScheduleMCPConsent = 'revokeScheduleMCPConsent',
   pairCodeEnvironment = 'pairCodeEnvironment',
   updateCodeEnvironmentSettings = 'updateCodeEnvironmentSettings',
   deleteCodeEnvironment = 'deleteCodeEnvironment',

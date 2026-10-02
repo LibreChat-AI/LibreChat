@@ -38,8 +38,10 @@ import { useAgentsMapContext } from '~/Providers';
 import ScheduleDialog from './ScheduleDialog';
 import { describeCadence } from './cadence';
 import { scheduleRowState } from './state';
+import Consent from './Consent';
 
 interface ScheduleCardProps {
+  consentEnabled?: boolean;
   schedule: TSchedule;
   /** Resolved by the panel, which holds ONE project-name lookup for the whole list —
    *  deriving it per card is O(schedules x projects) on every project-list refresh. */
@@ -152,7 +154,7 @@ function TrailingState({
   );
 }
 
-export default function ScheduleCard({ schedule, projectName }: ScheduleCardProps) {
+export default function ScheduleCard({ schedule, projectName, consentEnabled }: ScheduleCardProps) {
   const localize = useLocalize();
   const navigate = useNavigate();
   const lastRunKey = scheduleLastRunKey(schedule);
@@ -179,6 +181,8 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
 
   const menuId = useId();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [consentOpen, setConsentOpen] = useState(false);
+  const consentButtonRef = useRef<HTMLButtonElement>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const editButtonRef = useRef<HTMLButtonElement>(null);
@@ -276,6 +280,20 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
 
   const dropdownItems = useMemo(
     () => [
+      ...(consentEnabled
+        ? [
+            {
+              label: localize('com_ui_schedule_consent_title'),
+              onClick: () => setConsentOpen(true),
+              ariaHasPopup: 'dialog' as const,
+              hideOnClick: false,
+              ref: consentButtonRef,
+              render: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+                <button {...props} />
+              ),
+            },
+          ]
+        : []),
       {
         label: localize('com_ui_schedule_run_now'),
         onClick: handleRunNow,
@@ -306,7 +324,7 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
         render: (props) => <button {...props} />,
       },
     ],
-    [localize, handleRunNow, runSchedule.isLoading],
+    [localize, handleRunNow, runSchedule.isLoading, consentEnabled],
   );
 
   const lastRunConvoId = schedule.lastRun?.conversationId;
@@ -409,6 +427,14 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
           />
         </div>
       </div>
+      {consentOpen && (
+        <Consent
+          id={schedule.id}
+          name={schedule.name}
+          onOpenChange={setConsentOpen}
+          triggerRef={consentButtonRef}
+        />
+      )}
       {editOpen && (
         <ScheduleDialog
           open={editOpen}

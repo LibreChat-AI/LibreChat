@@ -1,3 +1,7 @@
+import type { ScheduleMCPConsentStorage } from './scheduleConsent';
+import { createScheduleMCPConsentStorage } from './scheduleConsent';
+export { createScheduleMCPConsentStorage } from './scheduleConsent';
+export type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from './scheduleConsent';
 import type {
   FileMethods,
   FileOwnerScope,
@@ -277,6 +281,7 @@ export type AllMethods = UserMethods &
   SkillSyncMethods &
   AgentTriggerDeliveryMethods &
   AgentQueuedTurnMethods &
+  ScheduleMCPConsentStorage &
   ScheduleMethods &
   AgentMethods &
   ConfigMethods &
@@ -516,6 +521,7 @@ export function createMethods(
     ...agentTriggerDeliveryMethods,
     ...agentQueuedTurnMethods,
     ...createScheduleMethods(mongoose),
+    ...createScheduleMCPConsentStorage(mongoose),
     /* Tier 5 */
     ...agentMethods,
     /* Config */
