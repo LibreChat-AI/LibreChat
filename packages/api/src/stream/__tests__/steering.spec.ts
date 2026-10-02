@@ -1044,9 +1044,9 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
         const result = await manager.abortJob(streamId);
 
         expect(result.success).toBe(true);
-        expect(responseMessageOf(result.finalEvent)).not.toHaveProperty(
-          'userSubmittedMessageFieldPaths',
-        );
+        const responseMessage = responseMessageOf(result.finalEvent);
+        expect(responseMessage?.userSubmittedPaths).toEqual(['/content/0/steer']);
+        expect(responseMessage).not.toHaveProperty('userSubmittedMessageFieldPaths');
       });
 
       test('remaps an applied decision past a filtered part onto the published content', async () => {
