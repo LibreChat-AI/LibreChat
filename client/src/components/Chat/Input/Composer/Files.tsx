@@ -313,21 +313,28 @@ export default function FileGrid({
           text={emptyText}
         />
       ) : (
-        <ul
-          className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3"
-          aria-label={localize('com_ui_composer_files')}
-        >
-          {visible.map((file) => (
-            <li key={file.file_id}>
-              <FileCard
-                file={file}
-                onAttach={onAttach}
-                onPreview={openPreview}
-                disabled={disabled}
-              />
-            </li>
-          ))}
-        </ul>
+        <>
+          {/* Announces how many files the search and view leave, without making the
+              interactive cards themselves a live region. */}
+          <p className="sr-only" role="status" aria-live="polite">
+            {localize('com_ui_search_results_count', { count: visible.length })}
+          </p>
+          <ul
+            className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3"
+            aria-label={localize('com_ui_composer_files')}
+          >
+            {visible.map((file) => (
+              <li key={file.file_id}>
+                <FileCard
+                  file={file}
+                  onAttach={onAttach}
+                  onPreview={openPreview}
+                  disabled={disabled}
+                />
+              </li>
+            ))}
+          </ul>
+        </>
       )}
       <DialogImage
         isOpen={previewKind === 'image' && imageUrl != null}

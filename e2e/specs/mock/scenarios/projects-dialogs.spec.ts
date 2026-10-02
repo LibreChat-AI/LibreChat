@@ -187,6 +187,10 @@ test.describe('project dialogs', () => {
 
     const picker = await openPicker(page);
     await expect(picker.getByText('only-document.txt')).toBeVisible();
+    /* The result count is announced politely while cards are listed. */
+    await expect(picker.getByRole('status').filter({ hasText: 'results found' })).toHaveText(
+      '1 results found',
+    );
     await picker.getByRole('radio', { name: 'Images', exact: true }).click();
     await expect(picker.getByText('No results match your search')).toBeVisible();
     await expect(picker.getByText('only-document.txt')).toHaveCount(0);
