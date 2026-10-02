@@ -52,12 +52,23 @@ function scopeEndpointList<T extends { name?: string; tenantId?: string }>(
   hiddenEndpoints: ReadonlySet<string>,
 ): T[] | undefined {
   if (!endpoints) return endpoints;
-  const scoped = endpoints.filter(
-    (endpoint) =>
-      (!endpoint.tenantId || endpoint.tenantId === tenantId) &&
-      !hiddenEndpoints.has(normalizeEndpointName(endpoint.name ?? '')),
-  );
-  return scoped.length === endpoints.length ? endpoints : scoped;
+  const tenantNames = new Set<string>();
+  const scoped = endpoints.filter((endpoint) => {
+    const name = normalizeEndpointName(endpoint.name ?? '');
+    if ((endpoint.tenantId && endpoint.tenantId !== tenantId) || hiddenEndpoints.has(name)) {
+      return false;
+    }
+    if (endpoint.tenantId) tenantNames.add(name);
+    return true;
+  });
+  const selected =
+    tenantNames.size === 0
+      ? scoped
+      : scoped.filter(
+          (endpoint) =>
+            endpoint.tenantId || !tenantNames.has(normalizeEndpointName(endpoint.name ?? '')),
+        );
+  return selected.length === endpoints.length ? endpoints : selected;
 }
 
 function scopeModelSpecs(
