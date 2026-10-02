@@ -1562,7 +1562,6 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     const terminalUpdate = (
       status: RecordRunOutcomeParams['status'],
       error: string | undefined,
-      includeInputMcp: boolean,
     ) => ({
       $set: {
         status,
@@ -1572,9 +1571,10 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
           ? { conversationId: params.conversationId }
           : {}),
         ...(error ? { error } : {}),
-        ...(includeInputMcp && params.mcp ? { mcp: params.mcp } : {}),
         ...(params.durationMs != null ? { durationMs: params.durationMs } : {}),
       },
+      // Merge in the same transition; neither a receipt race nor a crash can lose a source.
+      ...(params.mcp?.length && { $addToSet: { mcp: { $each: params.mcp } } }),
       // Only terminal settlement releases the global capacity slot, not an abort request.
       $unset: {
         capacitySlot: 1,
@@ -1594,9 +1594,8 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         terminalUpdate(
           incomingFailure ? 'error' : params.status,
           incomingFailure ? authError : params.error,
-          true,
         ),
-        { new: false },
+        { new: true },
       )
       .lean<IScheduleRun>();
     let effectiveParams = incomingFailure
@@ -1606,8 +1605,8 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       settled = await ScheduleRun()
         .findOneAndUpdate(
           { ...runFilter, $or: receiptPredicates },
-          terminalUpdate('error', authError, false),
-          { new: false },
+          terminalUpdate('error', authError),
+          { new: true },
         )
         .lean<IScheduleRun>();
       if (settled != null) {
@@ -1618,6 +1617,8 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     if (settled == null) {
       return;
     }
+    // The post-image is the authoritative union, including receipts admitted just before this CAS.
+    effectiveParams = { ...effectiveParams, mcp: settled.mcp };
     // SINGLE SEAM: the config fence is DERIVED here from the row being settled, not
     // passed in by each caller. Callers only say "this occurrence reached status X" and
     // structurally cannot forget a token — which is exactly how the reconcile and

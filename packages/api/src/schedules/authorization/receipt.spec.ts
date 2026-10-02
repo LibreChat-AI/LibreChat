@@ -499,3 +499,41 @@ it('retains a transport consent denial before a transient first job lookup', asy
     lastRun: { status: 'error', mcp: failure.outcomes },
   });
 });
+
+it.each(['success', 'error', 'skipped_balance'] as const)(
+  'merges an earlier Mongo receipt with a job-only permanent denial during %s settlement',
+  async (status) => {
+    const f = await setup(true);
+    const transient = new ScheduledMCPPolicyError('dependency_unavailable', '', 'root');
+    expect(await f.record(transient)).toBe(true);
+    await f.enroll();
+    const permanent = new ScheduledMCPPolicyError('binding_mismatch', '', 'child');
+    const write = jest
+      .spyOn(f.service.engineDeps.methods, 'recordMCPToolAuthFailure')
+      .mockRejectedValueOnce(new Error('Transient Mongo receipt outage'));
+    expect(await f.record(permanent)).toBe(true);
+    write.mockRestore();
+    expect((await store.getJob('stream'))?.scheduleMCPFailure).toEqual(permanent.outcomes[0]);
+    expect((await f.methods.getScheduleRunAbortState(f.schedule.id, f.scheduledFor))?.mcp).toEqual(
+      transient.outcomes,
+    );
+    expect(
+      await f.service.recordScheduleOutcome({
+        scheduleId: f.schedule.id,
+        scheduledFor: f.scheduledFor,
+        status,
+        conversationId: 'stream',
+        streamId: 'stream',
+        jobCreatedAt: f.job.createdAt,
+      }),
+    ).toBe(true);
+    const card = await f.methods.getScheduleById(f.schedule.id);
+    expect(card).toMatchObject({
+      enabled: false,
+      disabledReason: 'mcp_reauth_required',
+      failureCount: 1,
+      lastRun: { status: 'error' },
+    });
+    expect(card!.lastRun!.mcp).toEqual([...transient.outcomes, ...permanent.outcomes]);
+  },
+);
