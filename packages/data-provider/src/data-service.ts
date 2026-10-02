@@ -206,8 +206,11 @@ export const listSharedLinks = async (
   return request.get(endpoints.getSharedLinks(pageSize, sortBy, sortDirection, search, cursor));
 };
 
-export function getSharedLink(conversationId: string): Promise<t.TSharedLinkGetResponse> {
-  return request.get(endpoints.getSharedLink(conversationId));
+export function getSharedLink(
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<t.TSharedLinkGetResponse> {
+  return request.get(endpoints.getSharedLink(conversationId), signal ? { signal } : undefined);
 }
 
 export function createSharedLink(
@@ -1002,8 +1005,8 @@ export function getConversations(cursor: string): Promise<t.TGetConversationsRes
   return request.get(endpoints.conversations({ cursor }));
 }
 
-export function getConversationById(id: string): Promise<s.TConversation> {
-  return request.get(endpoints.conversationById(id));
+export function getConversationById(id: string, signal?: AbortSignal): Promise<s.TConversation> {
+  return request.get(endpoints.conversationById(id), signal ? { signal } : undefined);
 }
 
 export function updateConversation(

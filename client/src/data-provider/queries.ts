@@ -88,9 +88,12 @@ const RUNNING_CONVERSATION_MISSING_RETRY_MS = 2_000;
 const noRunningConversations: t.TConversation[] = [];
 
 /** The list endpoints derive `isShared` from active shared links; the record alone lacks it. */
-async function hasActiveSharedLink(conversationId: string): Promise<boolean | undefined> {
+async function hasActiveSharedLink(
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<boolean | undefined> {
   try {
-    const link = await dataService.getSharedLink(conversationId);
+    const link = await dataService.getSharedLink(conversationId, signal);
     return link.shareId != null;
   } catch {
     return undefined;
@@ -113,22 +116,26 @@ export const useRunningConversationsQuery = (
   const results = useQueries({
     queries: conversationIds.map((conversationId) => ({
       queryKey: [QueryKeys.runningConversation, conversationId],
-      queryFn: async (): Promise<t.TConversation | null> => {
-        let conversation: t.TConversation;
+      queryFn: async ({ signal }): Promise<t.TConversation | null> => {
         try {
-          conversation = await dataService.getConversationById(conversationId);
+          const [conversation, isShared] = await Promise.all([
+            dataService.getConversationById(conversationId, signal),
+            hasActiveSharedLink(conversationId, signal),
+          ]);
+          signal?.throwIfAborted();
+          return isShared === undefined ? conversation : { ...conversation, isShared };
         } catch (error) {
           if (isNotFoundError(error)) {
             return null;
           }
           throw error;
         }
+      },
+      onSuccess: (conversation: t.TConversation | null) => {
         const conversationKey = [QueryKeys.conversation, conversationId];
-        if (queryClient.getQueryData(conversationKey) === undefined) {
+        if (conversation && queryClient.getQueryData(conversationKey) === undefined) {
           queryClient.setQueryData(conversationKey, conversation);
         }
-        const isShared = await hasActiveSharedLink(conversationId);
-        return isShared === undefined ? conversation : { ...conversation, isShared };
       },
       staleTime: RUNNING_CONVERSATION_REFRESH_MS,
       refetchInterval: (data: t.TConversation | null | undefined) =>

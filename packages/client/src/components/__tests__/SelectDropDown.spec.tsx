@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import SelectDropDown from '../SelectDropDown';
 
 const OPTIONS = [
@@ -12,6 +13,39 @@ async function openList() {
 }
 
 describe('SelectDropDown', () => {
+  it.each(['{Enter}', ' '])(
+    'reopens an empty picker with %s after clearing its value',
+    async (key) => {
+      function Picker() {
+        const [value, setValue] = useState<(typeof OPTIONS)[number] | null>(OPTIONS[1]);
+        return (
+          <SelectDropDown
+            value={value}
+            setValue={(next) => setValue(next as typeof value)}
+            availableValues={OPTIONS}
+            placeholder="Create Assistant"
+            renderOption={() => <span>Create Assistant</span>}
+            showLabel={false}
+            emptyTitle={true}
+          />
+        );
+      }
+      const user = userEvent.setup();
+      render(<Picker />);
+      const button = screen.getByTestId('select-dropdown-button');
+      await user.click(button);
+      await user.click(await screen.findByRole('option', { name: 'Create Assistant' }));
+      expect(button).toHaveTextContent('Create Assistant');
+
+      await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+      act(() => button.focus());
+      await user.keyboard(key);
+      await waitFor(() => expect(screen.getByRole('listbox')).toBeVisible());
+      expect(screen.getByRole('option', { name: 'Second' }).querySelector('svg')).toBeNull();
+      await user.keyboard('{Escape}');
+      await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+    },
+  );
   it('renders the placeholder in the muted tone when no value is chosen', () => {
     render(
       <SelectDropDown

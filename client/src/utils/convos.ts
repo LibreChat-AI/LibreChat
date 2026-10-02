@@ -313,7 +313,7 @@ export function invalidateConversationLists(
   filters?: Omit<InvalidateQueryFilters, 'queryKey'>,
 ): Promise<void> {
   return Promise.all(
-    CONVERSATION_LIST_KEYS.map((listKey) =>
+    [...CONVERSATION_LIST_KEYS, QueryKeys.runningConversation].map((listKey) =>
       queryClient.invalidateQueries({ queryKey: [listKey], ...filters }),
     ),
   ).then(() => undefined);
@@ -1435,6 +1435,19 @@ export function findConvoInAllQueries(
   }
   freshest = freshestCandidate(freshest, findPinnedCandidate(queryClient, conversationId));
 
+  const runningKey = [QueryKeys.runningConversation, conversationId];
+  const runningQuery = queryClient.getQueryCache().find(runningKey);
+  if (runningQuery) {
+    freshest = freshestCandidate(
+      freshest,
+      candidateFrom(
+        queryClient,
+        runningQuery,
+        queryClient.getQueryData<TConversation | null>(runningKey) ?? undefined,
+      ),
+    );
+  }
+
   /* The conversation opened by URL is loaded into its own point query, and an old one need not
      appear in any loaded list page at all. Without this it would read as absent, absent reads
      as caught up, and the reply the user is looking at would never be acknowledged. */
@@ -1454,13 +1467,20 @@ export function updateConvoInAllQueries(
   updater: (c: TConversation) => TConversation,
   moveToTop = false,
 ) {
+  const runningKey = [QueryKeys.runningConversation, conversationId];
+  void queryClient.cancelQueries({ queryKey: runningKey, exact: true });
   queryClient.setQueryData<TConversation>([QueryKeys.conversation, conversationId], (current) =>
     current ? updater(current) : current,
   );
-  queryClient.setQueryData<TConversation | null>(
-    [QueryKeys.runningConversation, conversationId],
-    (current) => (current ? updater(current) : current),
-  );
+  queryClient.setQueryData<TConversation | null>(runningKey, (current) => {
+    if (!current) {
+      return current;
+    }
+    const next = preserveReadState(preserveListFlags(updater(current), current), current);
+    return moveToTop && next.updatedAt === current.updatedAt
+      ? { ...next, updatedAt: new Date().toISOString() }
+      : next;
+  });
   updatePinnedConvosQuery(queryClient, conversationId, updater, moveToTop);
 
   const queries = findConversationListQueries(queryClient);
@@ -1562,10 +1582,11 @@ export function updateConvoInAllQueries(
 
 // Remove
 export function removeConvoFromAllQueries(queryClient: QueryClient, conversationId: string) {
+  const runningKey = [QueryKeys.runningConversation, conversationId];
+  void queryClient.cancelQueries({ queryKey: runningKey, exact: true });
   updatePinnedConvosQuery(queryClient, conversationId, () => null);
-  queryClient.setQueryData<TConversation | null>(
-    [QueryKeys.runningConversation, conversationId],
-    (current) => (current === undefined ? current : null),
+  queryClient.setQueryData<TConversation | null>(runningKey, (current) =>
+    current === undefined ? current : null,
   );
 
   const queries = findConversationListQueries(queryClient);

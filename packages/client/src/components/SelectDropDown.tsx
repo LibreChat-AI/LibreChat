@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React from 'react';
 import { JSX } from 'react/jsx-runtime';
 import {
   Label,
@@ -99,8 +99,6 @@ function SelectDropDown({
   const options = hasSearchRender ? filteredValues : values;
   const renderIcon = showOptionIcon && value != null && (value as OptionWithIcon).icon != null;
 
-  const buttonRef = useRef<HTMLButtonElement>(null);
-
   return (
     <div className={cn('flex items-center justify-center gap-2', containerClassName ?? '')}>
       <div className={cn('relative w-full', subContainerClassName ?? '')}>
@@ -108,16 +106,7 @@ function SelectDropDown({
           {({ open }) => (
             <>
               <ListboxButton
-                ref={buttonRef}
                 data-testid="select-dropdown-button"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    if (!open && buttonRef.current) {
-                      buttonRef.current.click();
-                    }
-                  }
-                }}
                 className={cn(
                   'border-border-control bg-surface-secondary focus-visible:ring-focus-control disabled:bg-surface-secondary relative flex w-full cursor-default flex-col rounded-md border py-2 pr-10 pl-3 text-left focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden sm:text-sm',
                   disabledFillClasses,

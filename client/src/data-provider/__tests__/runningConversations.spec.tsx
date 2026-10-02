@@ -1,9 +1,16 @@
-import { renderHook, waitFor } from '@testing-library/react';
-import { QueryKeys, dataService } from 'librechat-data-provider';
+import { RecoilRoot } from 'recoil';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryKeys, dataService, setTokenHeader } from 'librechat-data-provider';
 import type { TConversation, TSharedLinkGetResponse } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { removeConvoFromAllQueries, updateConvoInAllQueries } from '~/utils/convos';
+import {
+  findConvoInAllQueries,
+  removeConvoFromAllQueries,
+  updateConvoInAllQueries,
+} from '~/utils/convos';
+import { useAssignConversationToProjectMutation } from '../Projects/mutations';
+import { useArchiveAllConversationsMutation } from '../mutations';
 import { useRunningConversationsQuery } from '../queries';
 
 jest.mock('librechat-data-provider', () => {
@@ -14,6 +21,8 @@ jest.mock('librechat-data-provider', () => {
       ...actual.dataService,
       getConversationById: jest.fn(),
       getSharedLink: jest.fn(),
+      assignConversationToProject: jest.fn(),
+      archiveAllConversations: jest.fn(),
     },
   };
 });
@@ -34,12 +43,22 @@ const record = (overrides: Partial<TConversation> = {}): TConversation =>
     ...overrides,
   }) as TConversation;
 
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+};
+
 const notFound = () => Object.assign(new Error('Not found'), { status: 404 });
 
 let queryClient: QueryClient;
 
 const wrapper = ({ children }: { children: ReactNode }) => (
-  <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  <RecoilRoot>
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  </RecoilRoot>
 );
 
 describe('useRunningConversationsQuery', () => {
@@ -51,6 +70,7 @@ describe('useRunningConversationsQuery', () => {
 
   afterEach(() => {
     queryClient.clear();
+    setTokenHeader(undefined);
   });
 
   it('returns the record with its shared-link state and seeds an empty conversation cache', async () => {
@@ -64,7 +84,10 @@ describe('useRunningConversationsQuery', () => {
 
     await waitFor(() => expect(result.current).toHaveLength(1));
     expect(result.current[0]).toMatchObject({ conversationId: 'c1', isShared: true });
-    expect(queryClient.getQueryData([QueryKeys.conversation, 'c1'])).toEqual(record());
+    expect(queryClient.getQueryData([QueryKeys.conversation, 'c1'])).toEqual({
+      ...record(),
+      isShared: true,
+    });
   });
 
   it('leaves a conversation the chat view already cached untouched', async () => {
@@ -100,5 +123,123 @@ describe('useRunningConversationsQuery', () => {
 
     removeConvoFromAllQueries(queryClient, 'c1');
     await waitFor(() => expect(result.current).toEqual([]));
+  });
+  it('does not let an older poll overwrite a local update', async () => {
+    const poll = deferred<TConversation>();
+    getConversationById.mockResolvedValueOnce(record()).mockReturnValueOnce(poll.promise);
+    const { result } = renderHook(() => useRunningConversationsQuery(['c1']), { wrapper });
+    await waitFor(() => expect(result.current).toHaveLength(1));
+    const refetch = queryClient.refetchQueries([QueryKeys.runningConversation, 'c1']);
+    await waitFor(() => expect(getConversationById).toHaveBeenCalledTimes(2));
+
+    act(() => updateConvoInAllQueries(queryClient, 'c1', (c) => ({ ...c, title: 'Renamed' })));
+    await act(async () => {
+      poll.resolve(record());
+      await refetch;
+    });
+    await waitFor(() => expect(result.current[0]?.title).toBe('Renamed'));
+  });
+
+  it('preserves sidebar flags and read state when replacing a running row', async () => {
+    const stamps = {
+      lastResponseAt: '2026-01-02T00:00:00.000Z',
+      lastSeenAt: '2026-01-01T00:00:00.000Z',
+    };
+    getConversationById.mockResolvedValue(record({ pinned: true, ...stamps }));
+    getSharedLink.mockResolvedValue({
+      shareId: 'share-1',
+      success: true,
+    } as TSharedLinkGetResponse);
+    const { result } = renderHook(() => useRunningConversationsQuery(['c1']), { wrapper });
+    await waitFor(() => expect(result.current).toHaveLength(1));
+
+    act(() => updateConvoInAllQueries(queryClient, 'c1', () => record({ title: 'New title' })));
+    await waitFor(() =>
+      expect(result.current[0]).toMatchObject({
+        title: 'New title',
+        pinned: true,
+        isShared: true,
+        ...stamps,
+      }),
+    );
+  });
+
+  it('does not seed the navigation cache after its last observer leaves', async () => {
+    const pending = deferred<TConversation>();
+    getConversationById.mockReturnValue(pending.promise);
+    const { unmount } = renderHook(() => useRunningConversationsQuery(['c1']), { wrapper });
+    await waitFor(() => expect(getConversationById).toHaveBeenCalled());
+    unmount();
+    await act(async () => pending.resolve(record()));
+    expect(queryClient.getQueryData([QueryKeys.conversation, 'c1'])).toBeUndefined();
+  });
+
+  it('drops a removed row without allowing an older poll to restore it', async () => {
+    const poll = deferred<TConversation>();
+    getConversationById.mockResolvedValueOnce(record()).mockReturnValueOnce(poll.promise);
+    const { result } = renderHook(() => useRunningConversationsQuery(['c1']), { wrapper });
+    await waitFor(() => expect(result.current).toHaveLength(1));
+    const refetch = queryClient.refetchQueries([QueryKeys.runningConversation, 'c1']);
+    await waitFor(() => expect(getConversationById).toHaveBeenCalledTimes(2));
+
+    act(() => removeConvoFromAllQueries(queryClient, 'c1'));
+    await act(async () => {
+      poll.resolve(record());
+      await refetch;
+    });
+    await waitFor(() => expect(result.current).toEqual([]));
+  });
+
+  it('uses the newest running row when reading cached reply state', () => {
+    queryClient.setQueryData([QueryKeys.conversation, 'c1'], record());
+    const running = record({ lastResponseAt: '2026-01-03T00:00:00.000Z' });
+    queryClient.setQueryData([QueryKeys.runningConversation, 'c1'], running);
+    expect(findConvoInAllQueries(queryClient, 'c1')?.lastResponseAt).toBe(running.lastResponseAt);
+  });
+
+  it('publishes a project assignment to the running row immediately', async () => {
+    const claims = btoa(JSON.stringify({ id: 'user-a' })).replace(/=+$/, '');
+    setTokenHeader(`header.${claims}.signature`);
+    getConversationById.mockResolvedValue(record());
+    jest.mocked(dataService.assignConversationToProject).mockResolvedValue({
+      conversation: record({ chatProjectId: 'project-2' }),
+      projectId: 'project-2',
+      previousProjectId: 'project-1',
+    });
+    const { result } = renderHook(
+      () => ({
+        rows: useRunningConversationsQuery(['c1']),
+        assignment: useAssignConversationToProjectMutation(),
+      }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+    getConversationById.mockResolvedValue(record({ chatProjectId: 'project-2' }));
+
+    await act(async () => {
+      await result.current.assignment.mutateAsync({ conversationId: 'c1', projectId: 'project-2' });
+    });
+    await waitFor(() => expect(result.current.rows[0]?.chatProjectId).toBe('project-2'));
+  });
+
+  it('refreshes running rows immediately after Archive All', async () => {
+    getConversationById
+      .mockResolvedValueOnce(record())
+      .mockResolvedValue(record({ isArchived: true }));
+    jest.mocked(dataService.archiveAllConversations).mockResolvedValue({ archivedCount: 1 });
+    const { result } = renderHook(
+      () => ({
+        rows: useRunningConversationsQuery(['c1']),
+        archive: useArchiveAllConversationsMutation(),
+      }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+
+    await act(async () => {
+      await result.current.archive.mutateAsync();
+    });
+    await waitFor(() => expect(getConversationById).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.rows[0]?.isArchived).toBe(true));
   });
 });
