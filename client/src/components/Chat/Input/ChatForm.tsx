@@ -320,7 +320,7 @@ const ChatForm = memo(function ChatForm({
    *  collapsed batch is neither, it hands the composer back to the thread. */
   const composerReserved = answerMode.composerAnswers || answerMode.composerLocked;
 
-  const consumeDraft = useAutoSave({
+  const { consumeDraft, preserveText } = useAutoSave({
     index,
     files,
     setFiles,
@@ -447,7 +447,7 @@ const ChatForm = memo(function ChatForm({
     isPreparing: isPreparingFromUrl,
     settingsError: urlSettingsError,
     clearSettingsError,
-  } = useQueryParams({ textAreaRef });
+  } = useQueryParams({ textAreaRef, onBeforePrompt: preserveText });
 
   const handleKeyUp = useHandleKeyUp({
     index,

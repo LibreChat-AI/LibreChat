@@ -10,7 +10,7 @@ import { MemoryRouter, useNavigate, useLocation } from 'react-router-dom';
 import type { TConversation } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
-import { getNewConversationDraftId, setDraft } from '~/utils/drafts';
+import { getNewConversationDraftId, getDraft, setDraft } from '~/utils/drafts';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { startupConfigKey } from '~/data-provider';
@@ -249,6 +249,67 @@ describe('ChatForm URL submission', () => {
       expect(ask).not.toHaveBeenCalled();
     },
   );
+
+  it.each(['', 'original unsent draft'])(
+    'preserves the departing chat draft %p when a URL prompt starts another chat',
+    async (sourceDraft) => {
+      const sourceConversation = {
+        ...initialConversation,
+        conversationId: 'existing-chat',
+        endpoint: EModelEndpoint.assistants,
+        assistant_id: 'asst_test',
+      };
+      setDraft({ id: sourceConversation.conversationId, value: sourceDraft });
+      const view = mountComposer(sourceConversation);
+      expect(screen.getByTestId('text-input')).toHaveValue(sourceDraft);
+      await act(async () => jest.advanceTimersByTime(100));
+      expect(screen.getByTestId('text-input')).toHaveValue('hi');
+      await act(async () => {
+        view.navigate('/c/new?agent_id=agent_test&q=hi&submit=true');
+        view.rerender(
+          <Harness
+            conversation={{
+              ...initialConversation,
+              endpoint: EModelEndpoint.agents,
+              agent_id: 'agent_test',
+              model: undefined,
+            }}
+          />,
+        );
+      });
+      expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'hi' }), expect.anything());
+      expect(getDraft(sourceConversation.conversationId) ?? '').toBe(sourceDraft);
+      await act(async () => {
+        view.navigate('/c/existing-chat');
+        view.rerender(<Harness conversation={sourceConversation} />);
+      });
+      expect(screen.getByTestId('text-input')).toHaveValue(sourceDraft);
+    },
+  );
+
+  it('preserves the source draft if the URL request is cancelled before its switch completes', async () => {
+    const sourceConversation = {
+      ...initialConversation,
+      conversationId: 'existing-chat',
+      endpoint: EModelEndpoint.assistants,
+      assistant_id: 'asst_test',
+    };
+    setDraft({ id: sourceConversation.conversationId, value: 'original unsent draft' });
+    setDraft({ id: 'other-chat', value: 'destination draft' });
+    const view = mountComposer(sourceConversation);
+    await act(async () => jest.advanceTimersByTime(100));
+    await act(async () => {
+      view.navigate('/c/other-chat');
+      view.rerender(
+        <Harness conversation={{ ...initialConversation, conversationId: 'other-chat' }} />,
+      );
+    });
+    expect(screen.getByTestId('text-input')).toHaveValue('destination draft');
+    expect(getDraft(sourceConversation.conversationId)).toBe('original unsent draft');
+    expect(ask).not.toHaveBeenCalled();
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(getDraft(sourceConversation.conversationId)).toBe('original unsent draft');
+  });
 
   it('clears settled setup guidance when leaving for another chat', async () => {
     setDraft({ id: 'other-chat', value: 'destination draft' });

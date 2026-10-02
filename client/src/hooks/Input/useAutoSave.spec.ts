@@ -131,6 +131,86 @@ describe('useAutoSave — conversation switching', () => {
     expect(mockSetDraft).toHaveBeenCalledWith({ id: 'convo-1', value: 'draft in progress' });
   });
 
+  it('preserves live text before replacement and saves it when switching away', () => {
+    const textAreaRef = { current: document.createElement('textarea') };
+    const { result, rerender } = renderHook(
+      ({ conversationId }: { conversationId: string }) =>
+        useAutoSave({ conversationId, textAreaRef, files: new Map(), setFiles: jest.fn() }),
+      { initialProps: { conversationId: 'convo-1' } },
+    );
+    textAreaRef.current.value = 'original unsent draft';
+    act(() => result.current.preserveText());
+    textAreaRef.current.value = 'URL prompt';
+    mockSetDraft.mockClear();
+    act(() => rerender({ conversationId: 'convo-2' }));
+    expect(mockSetDraft).toHaveBeenCalledWith({ id: 'convo-1', value: 'original unsent draft' });
+    expect(mockSetDraft).not.toHaveBeenCalledWith({ id: 'convo-1', value: 'URL prompt' });
+  });
+
+  it('flushes an earlier input debounce without persisting the programmatic replacement', () => {
+    jest.useFakeTimers();
+    const textAreaRef = { current: document.createElement('textarea') };
+    const { result, unmount } = renderHook(() =>
+      useAutoSave({
+        conversationId: 'convo-1',
+        textAreaRef,
+        files: new Map(),
+        setFiles: jest.fn(),
+      }),
+    );
+    textAreaRef.current.value = 'unfinished typing';
+    textAreaRef.current.dispatchEvent(new Event('input'));
+    act(() => result.current.preserveText());
+    textAreaRef.current.value = 'URL prompt';
+    mockSetDraft.mockClear();
+    unmount();
+    expect(mockSetDraft).toHaveBeenCalledWith({ id: 'convo-1', value: 'unfinished typing' });
+    expect(mockSetDraft).not.toHaveBeenCalledWith({ id: 'convo-1', value: 'URL prompt' });
+    jest.useRealTimers();
+  });
+
+  it('resumes normal persistence when the user edits the programmatically replaced text', () => {
+    jest.useFakeTimers();
+    const textAreaRef = { current: document.createElement('textarea') };
+    const { result } = renderHook(() =>
+      useAutoSave({
+        conversationId: 'convo-1',
+        textAreaRef,
+        files: new Map(),
+        setFiles: jest.fn(),
+      }),
+    );
+    textAreaRef.current.value = 'original unsent draft';
+    act(() => result.current.preserveText());
+    textAreaRef.current.value = 'edited URL prompt';
+    textAreaRef.current.dispatchEvent(new Event('input'));
+    act(() => jest.advanceTimersByTime(25));
+    expect(mockSetDraft).toHaveBeenLastCalledWith({ id: 'convo-1', value: 'edited URL prompt' });
+    jest.useRealTimers();
+  });
+
+  it('does not overwrite another live tab’s draft while preserving replacement text', () => {
+    markTabLive('other-tab');
+    setFilesDraft('convo-1', { fileIds: ['theirs'], pendingPastes: {}, tabId: 'other-tab' });
+    const textAreaRef = { current: document.createElement('textarea') };
+    mockSetDraft.mockImplementation(jest.requireActual('~/utils').setDraft);
+    localStorage.setItem(`${LocalStorageKeys.TEXT_DRAFT}convo-1`, encodeBase64('their draft'));
+    const { result } = renderHook(() =>
+      useAutoSave({
+        conversationId: 'convo-1',
+        textAreaRef,
+        files: new Map(),
+        setFiles: jest.fn(),
+      }),
+    );
+    textAreaRef.current.value = 'our text';
+    act(() => result.current.preserveText());
+    expect(localStorage.getItem(`${LocalStorageKeys.TEXT_DRAFT}convo-1`)).toBe(
+      encodeBase64('their draft'),
+    );
+    mockSetDraft.mockReset();
+  });
+
   it('restores an incomplete pasted-text upload into the composer after reload', () => {
     mockGetDraft.mockReturnValue('before  after');
     setFilesDraft('convo-1', {
@@ -936,7 +1016,7 @@ describe('useAutoSave — file cache updates', () => {
     localStorage.setItem(pendingTextKey, encodeBase64('submitted text'));
     localStorage.setItem(foreignTextKey, encodeBase64('their text'));
     act(() => rerender({ isSubmitting: false }));
-    act(() => result.current());
+    act(() => result.current.consumeDraft());
     expect(clearAllDrafts).toHaveBeenLastCalledWith(Constants.PENDING_CONVO);
     expect(localStorage.getItem(pendingTextKey)).toBeNull();
     expect(getFilesDraft(Constants.PENDING_CONVO).fileIds).toEqual([]);

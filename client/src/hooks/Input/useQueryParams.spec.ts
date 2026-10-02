@@ -410,6 +410,28 @@ describe('useQueryParams', () => {
     expect(hook.result.current.settingsError).toBe(false);
   });
 
+  it.each([
+    { endpoint: EModelEndpoint.openAI, endpointType: undefined },
+    { endpoint: 'MyProvider' as EModelEndpoint, endpointType: EModelEndpoint.custom },
+  ])('matches nullable endpoint metadata for $endpoint', ({ endpoint, endpointType }) => {
+    const preset = { endpoint, endpointType: null, model: 'gpt-4o' };
+    const hook = mountQuery(
+      { spec: 'helper', q: 'hi', submit: 'true' },
+      { modelSpecs: { list: [{ name: 'helper', label: 'Helper', preset }] } },
+    );
+    const conversation = buildDefaultConvo({
+      models: ['gpt-4o'],
+      endpoint,
+      conversation: { conversationId: 'new', endpointType } as TConversation,
+      lastConversationSetup: { ...preset, spec: 'helper' } as TConversation,
+    });
+    expect(conversation.endpointType).toBe(endpointType);
+    hook.updateConversation(conversation);
+    hook.rerender();
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.settingsError).toBe(false);
+  });
+
   it.each([{ tools: [] }, { tools: ['web_search'] }])(
     'matches preset tools retained by the conversation builder: $tools',
     ({ tools }) => {

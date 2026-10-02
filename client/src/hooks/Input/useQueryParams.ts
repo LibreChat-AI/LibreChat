@@ -8,6 +8,7 @@ import {
   parseConvo,
   EModelEndpoint,
   PermissionBits,
+  getEndpointField,
   getDefaultParamsEndpoint,
 } from 'librechat-data-provider';
 import type {
@@ -56,8 +57,10 @@ const injectAgentIntoAgentsMap = (
 /** Stages URL prompts, then auto-submits once normalized conversation settings match. */
 export default function useQueryParams({
   textAreaRef,
+  onBeforePrompt,
 }: {
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
+  onBeforePrompt?: () => void;
 }) {
   const maxAttempts = 50;
   const attemptsRef = useRef(0);
@@ -204,15 +207,13 @@ export default function useQueryParams({
       return false;
     }
 
+    const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]) ?? {};
     const normalizedSettings = convo.endpoint
       ? parseConvo({
           endpoint: convo.endpoint,
           endpointType: convo.endpointType,
           conversation: validSettingsRef.current,
-          defaultParamsEndpoint: getDefaultParamsEndpoint(
-            queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]) ?? {},
-            convo.endpoint,
-          ),
+          defaultParamsEndpoint: getDefaultParamsEndpoint(endpointsConfig, convo.endpoint),
         })
       : validSettingsRef.current;
 
@@ -221,10 +222,12 @@ export default function useQueryParams({
         continue;
       }
 
-      const expectedValue =
-        key === 'endpoint' || key === 'endpointType' || (key === 'tools' && value != null)
-          ? value
-          : normalizedSettings?.[key];
+      let expectedValue = normalizedSettings?.[key];
+      if (key === 'endpoint' || (key === 'tools' && value != null)) {
+        expectedValue = value;
+      } else if (key === 'endpointType') {
+        expectedValue = value ?? getEndpointField(endpointsConfig, convo.endpoint, 'type');
+      }
       if (!isEqual(convo[key], expectedValue)) {
         return false;
       }
@@ -458,6 +461,7 @@ export default function useQueryParams({
       const { decodedPrompt, validSettings, shouldAutoSubmit } = processQueryParams();
       if (decodedPrompt && promptTextRef.current == null) {
         promptTextRef.current = decodedPrompt;
+        onBeforePrompt?.();
         methods.setValue('text', decodedPrompt, { shouldValidate: true });
         textAreaRef.current.focus();
         textAreaRef.current.setSelectionRange(decodedPrompt.length, decodedPrompt.length);
@@ -530,6 +534,7 @@ export default function useQueryParams({
     searchParams,
     methods,
     textAreaRef,
+    onBeforePrompt,
     newQueryConvo,
     newConversation,
     submitMessage,
