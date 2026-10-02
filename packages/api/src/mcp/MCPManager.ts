@@ -1891,8 +1891,11 @@ Please follow these instructions when using tools from the respective MCP server
         } catch (error) {
           if (error instanceof ScheduledMCPPolicyError) throw error;
           // A resource rejection cannot prove that the operation had no side effects.
-          if (enforceSchedule && isMCPTransportAuthenticationError(error)) {
-            throw new MCPAuthenticationRejectedError(serverName, false, error);
+          if (enforceSchedule) {
+            if (isMCPTransportAuthenticationError(error))
+              throw new MCPAuthenticationRejectedError(serverName, false, error);
+            // JSON-RPC OAuth-looking errors are operation failures, not replay permission.
+            throw error;
           }
           if (directBearerRecovery && user && isMCPTransportAuthenticationError(error)) {
             if (directBearerRecoveryState.attempted) {

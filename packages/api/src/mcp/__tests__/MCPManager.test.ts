@@ -2084,6 +2084,39 @@ describe('MCPManager', () => {
       expect(request.mock.calls[1]).toEqual(request.mock.calls[0]);
     });
 
+    it.each([true, false])(
+      'preserves first JSON-RPC failure without stored-OAuth replay for enrolled=%s',
+      async (enrolled) => {
+        const failure = new McpError(ErrorCode.InternalError, 'HTTP 401 invalid_token');
+        const request = jest.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce(toolResult);
+        const connection = createConnection(request);
+        attachOAuthHandler();
+        const manager = await createManager(connection);
+        const authorize = jest.fn(async () => undefined);
+        const identity = {
+          scheduleId: 's',
+          ownerId: mockUser.id,
+          tenantId: null,
+          agentId: 'root',
+          invocationMode: 'delegated' as const,
+        };
+        const result = manager.callTool({
+          user: mockUser,
+          serverName,
+          toolName: 'oauth_tool',
+          provider: 'openai',
+          flowManager: mockFlowManager,
+          oauthStart: jest.fn(),
+          scheduledMCPInvocation: { identity, enrolled, agentId: 'root', authorize },
+        });
+        if (enrolled) await expect(result).rejects.toBe(failure);
+        else await expect(result).resolves.toBeDefined();
+        expect(request).toHaveBeenCalledTimes(enrolled ? 1 : 2);
+        expect(authorize).toHaveBeenCalledTimes(enrolled ? 1 : 2);
+        expect(connection.connect).toHaveBeenCalledTimes(enrolled ? 0 : 1);
+      },
+    );
+
     it('carries the request credential through a delayed 401 after the connection rotates', async () => {
       let credential = 'credential-a';
       const request = jest
@@ -3831,6 +3864,60 @@ describe('MCPManager', () => {
       });
       expect(mockResolveOboToken).not.toHaveBeenCalled();
     });
+
+    it.each([true, false])(
+      'does not replay an enrolled OBO JSON-RPC invalid_token failure, enrolled=%s',
+      async (enrolled) => {
+        const failure = new McpError(ErrorCode.InternalError, 'invalid_token');
+        const request = jest
+          .fn()
+          .mockRejectedValueOnce(failure)
+          .mockResolvedValueOnce({ content: [{ type: 'text', text: 'retried' }] });
+        const connection = {
+          isConnected: jest.fn().mockResolvedValue(true),
+          setRequestHeaders: jest.fn(),
+          setOAuthTokens: jest.fn(),
+          isOAuthAuthenticationError: jest.fn().mockReturnValue(true),
+          timeout: 30000,
+          client: { request },
+        } as unknown as MCPConnection;
+        mockResolveOboToken.mockResolvedValue({
+          access_token: 'current-token',
+          token_type: 'Bearer',
+          obtained_at: Date.now(),
+          expires_at: Date.now() + 3600_000,
+        });
+        mockAppConnections({ get: jest.fn().mockResolvedValue(connection) });
+        (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(serverConfig);
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        jest.spyOn(manager, 'getUserConnection').mockResolvedValue(connection);
+        const authorize = jest.fn(async () => undefined);
+        const identity = {
+          scheduleId: 's',
+          ownerId: String(mockUser.id),
+          tenantId: null,
+          agentId: 'root',
+          invocationMode: 'delegated' as const,
+        };
+        const result = manager.callTool({
+          user: mockUser as IUser,
+          serverName,
+          toolName: 'test_tool',
+          provider: 'openai',
+          flowManager: mockFlowManager as unknown as Parameters<
+            typeof manager.callTool
+          >[0]['flowManager'],
+          oboTokenResolver: mockOboTokenResolver,
+          upstreamTokenProvider: mockUpstreamTokenProvider,
+          scheduledMCPInvocation: { identity, enrolled, agentId: 'root', authorize },
+        });
+        if (enrolled) await expect(result).rejects.toBe(failure);
+        else await expect(result).resolves.toBeDefined();
+        expect(request).toHaveBeenCalledTimes(enrolled ? 1 : 2);
+        expect(authorize).toHaveBeenCalledTimes(enrolled ? 1 : 2);
+        expect(mockResolveOboToken).toHaveBeenCalledTimes(enrolled ? 1 : 2);
+      },
+    );
 
     it('re-exchanges past the token cache when the server rejects the bearer mid-call', async () => {
       const authError = new Error('HTTP 401 Unauthorized');

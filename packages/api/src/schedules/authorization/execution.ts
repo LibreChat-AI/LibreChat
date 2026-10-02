@@ -13,6 +13,7 @@ import { ScheduleMCPConsentError } from './service';
 import { waitUntilDeadline } from '~/mcp/utils';
 
 export interface ScheduledMCPInvocation {
+  readonly identity: ScheduledMCPIdentity;
   /** False only for a monitored legacy occurrence. */
   readonly enrolled?: boolean;
   readonly agentId?: string;
@@ -120,6 +121,7 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
       checkEnrollment,
       bind(agentId: string | undefined, selectionName: string): ScheduledMCPInvocation {
         return Object.freeze({
+          identity: capturedIdentity,
           agentId,
           enrolled,
           async authorize({

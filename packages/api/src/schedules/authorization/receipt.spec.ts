@@ -462,3 +462,40 @@ it('keeps a failed receipt through approval pause and a rebuilt settlement servi
     lastRun: { status: 'error', mcp: failure.outcomes },
   });
 });
+
+it('retains a transport consent denial before a transient first job lookup', async () => {
+  const f = await setup();
+  const invocation = f.execution.bind('child', 'query');
+  const failure = new ScheduledMCPPolicyError('consent_revoked', 'warehouse', 'child');
+  const read = jest
+    .spyOn(store, 'getJob')
+    .mockRejectedValueOnce(new Error('Transient lookup outage'));
+  const persisted = await recordScheduledMCPToolAuthFailure(
+    {
+      error: failure,
+      identity: invocation.identity,
+      streamId: 'stream',
+      jobCreatedAt: f.job.createdAt,
+      userId: f.execution.identity.ownerId,
+      serverName: 'warehouse',
+    },
+    () => f.service.recordMCPToolAuthFailure,
+  );
+  expect(persisted).toBe(false);
+  read.mockRestore();
+  expect(
+    await f.service.recordScheduleOutcome({
+      scheduleId: f.schedule.id,
+      scheduledFor: f.scheduledFor,
+      status: 'success',
+      conversationId: 'stream',
+      streamId: 'stream',
+      jobCreatedAt: f.job.createdAt,
+    }),
+  ).toBe(true);
+  expect(await f.methods.getScheduleById(f.schedule.id)).toMatchObject({
+    enabled: false,
+    disabledReason: 'mcp_reauth_required',
+    lastRun: { status: 'error', mcp: failure.outcomes },
+  });
+});

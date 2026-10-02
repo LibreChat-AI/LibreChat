@@ -1427,6 +1427,7 @@ function createToolInstance({
       // recording a durable tool failure; other tool errors are a cheap no-op.
       await require('~/server/services/Schedules').recordMCPToolAuthFailure({
         error,
+        identity: scheduledMCPInvocation?.identity,
         streamId,
         jobCreatedAt,
         userId,
