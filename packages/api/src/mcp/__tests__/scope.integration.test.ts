@@ -11,6 +11,7 @@ import type { FlowStateManager } from '~/flow/manager';
 import type { MCPRequestContext } from '~/mcp/request';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '~/mcp/request';
+import { executionFixture } from '~/schedules/authorization/execution.helper';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { getFreePort } from '~/mcp/__tests__/helpers/oauthTestServer';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
@@ -246,6 +247,55 @@ describe('request-scoped MCP lifecycle integration', () => {
     contexts.add(context);
     return context;
   }
+
+  it('sends enrolled reads once and never sends a revoked child/resume retry to the real server', async () => {
+    const context = createContext();
+    const config: ParsedServerConfig = { type: 'streamable-http', url: server.url };
+    const connection = await manager.getConnection({
+      user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const catalog = await connection.fetchToolsSnapshot();
+    const f = await executionFixture('resume', catalog.tools[0], server.url);
+    const protectedConnection = await manager.getConnection({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const invoke = (agentId: string) =>
+      manager.callTool({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        toolName: 'echo',
+        provider: 'openai',
+        toolArguments: { value: 'read' },
+        requestScopedConnections: context,
+        flowManager,
+        scheduledMCPInvocation: f.invocation(agentId),
+      });
+    try {
+      await invoke('root');
+      await invoke('child');
+      expect(server.toolCallCount()).toBe(2);
+      await f.revoke();
+      await expect(invoke('child')).rejects.toMatchObject({
+        failure: { reason: 'consent_revoked', automaticReplay: false },
+      });
+      await expect(invoke('root')).rejects.toMatchObject({
+        failure: { reason: 'consent_revoked' },
+      });
+      expect(server.toolCallCount()).toBe(2);
+    } finally {
+      await Promise.all([connection.disconnect(), protectedConnection.disconnect()]);
+    }
+    MCPConnection.clearCooldown('warehouse');
+  });
 
   it('coalesces a concurrent burst, tears down the run, and isolates the next run', async () => {
     const config = createServerConfig(server.url);

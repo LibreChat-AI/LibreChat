@@ -33,6 +33,7 @@ import {
 } from '../agents/checkpointer';
 import { fireSchedule, BALANCE_SKIP_DISABLE_THRESHOLD } from './fire';
 import { GenerationJobManager } from '../stream/GenerationJobManager';
+import { ScheduledMCPPolicyError } from './authorization/policy';
 import { isStopConfirmed } from '../stream/interfaces/IJobStore';
 import { buildBalanceUpdateFields } from '../middleware/balance';
 import { getAppConfigOptionsFromUser } from '../app/service';
@@ -298,8 +299,9 @@ export async function recordScheduledMCPToolAuthFailure(
   const cause = input.error instanceof Error ? input.error.cause : undefined;
   const missing = input.error instanceof OboTokenResolutionError ? input.error : cause;
   if (
-    !(missing instanceof OboTokenResolutionError) ||
-    missing.reason !== 'missing_upstream_provider' ||
+    (!(input.error instanceof ScheduledMCPPolicyError) &&
+      (!(missing instanceof OboTokenResolutionError) ||
+        missing.reason !== 'missing_upstream_provider')) ||
     !input.streamId ||
     input.jobCreatedAt == null ||
     !input.userId
@@ -327,40 +329,14 @@ export interface ScheduleServiceTimings {
  * own engine singleton and job-store-shared flag, so state never leaks between
  * instances.
  */
-export function createSchedulesService(
-  deps: SchedulesServiceDeps,
-  timings?: ScheduleServiceTimings,
-): SchedulesService {
-  const { methods } = deps;
-
-  // Fail LOUDLY at construction, not per-fire. The JS adapter (api/server/services/
-  // Schedules) is not typechecked against SchedulesServiceDeps, so a missing dep would
-  // otherwise surface only as a `deps.X is not a function` deep inside a live fire —
-  // which is exactly how the deletion-barrier probe shipped unwired twice.
-  const REQUIRED_DEPS: Array<keyof SchedulesServiceDeps> = [
-    'methods',
-    'getAppConfig',
-    'findUserById',
-    'findBalance',
-    'upsertBalance',
-    'initializeNullBalance',
-    'resolveAgentFireAccess',
-    'getChatProject',
-    'isUserDeleting',
-    'enqueueAgentTrigger',
-    'getTriggerDelivery',
-  ];
-  for (const key of REQUIRED_DEPS) {
-    if (deps[key] == null) {
-      throw new Error(`createSchedulesService: missing required dependency "${key}"`);
-    }
-  }
-
+export function createScheduleLimitsResolver(
+  getAppConfig: SchedulesServiceDeps['getAppConfig'],
+): SchedulesService['getLimits'] {
   /**
    * Resolves schedule limits, honoring per-principal (role/user) config overrides
    * when a user is supplied (routes pass req.user, the fire path passes the owner).
    */
-  async function getLimits(user?: ScheduleUserContext): Promise<ScheduleLimits> {
+  return async function getLimits(user?: ScheduleUserContext): Promise<ScheduleLimits> {
     // The BASE `interface.schedules: false` is a global stop and must win over any
     // principal override. Without this a tenant/role/user override resolving to
     // enabled would let the sidebar and CRUD handlers admit schedules that
@@ -373,7 +349,7 @@ export function createSchedulesService(
     // the engine gate (isGloballyDisabled) already uses.
     if (
       user != null &&
-      isRuntimeDisabled((await deps.getAppConfig({ baseOnly: true }))?.interfaceConfig?.schedules)
+      isRuntimeDisabled((await getAppConfig({ baseOnly: true }))?.interfaceConfig?.schedules)
     ) {
       return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
     }
@@ -385,8 +361,8 @@ export function createSchedulesService(
     // override as if it were the deployment-wide value, which is exactly what the
     // global cap exists to prevent an override from widening.
     const appConfig = user
-      ? await deps.getAppConfig(getAppConfigOptionsFromUser(user))
-      : await deps.getAppConfig({ baseOnly: true });
+      ? await getAppConfig(getAppConfigOptionsFromUser(user))
+      : await getAppConfig({ baseOnly: true });
     // The env kill switch is a GLOBAL stop and must be visible everywhere limits are
     // consulted (write handlers, fire path), not only at the engine tick.
     if (isEnabled(process.env.SCHEDULES_DISABLED)) {
@@ -431,7 +407,39 @@ export function createSchedulesService(
       requireProject: config.requireProject === true || projectId != null,
       ...(projectId != null && { projectId }),
     };
+  };
+}
+
+export function createSchedulesService(
+  deps: SchedulesServiceDeps,
+  timings?: ScheduleServiceTimings,
+): SchedulesService {
+  const { methods } = deps;
+
+  // Fail LOUDLY at construction, not per-fire. The JS adapter (api/server/services/
+  // Schedules) is not typechecked against SchedulesServiceDeps, so a missing dep would
+  // otherwise surface only as a `deps.X is not a function` deep inside a live fire —
+  // which is exactly how the deletion-barrier probe shipped unwired twice.
+  const REQUIRED_DEPS: Array<keyof SchedulesServiceDeps> = [
+    'methods',
+    'getAppConfig',
+    'findUserById',
+    'findBalance',
+    'upsertBalance',
+    'initializeNullBalance',
+    'resolveAgentFireAccess',
+    'getChatProject',
+    'isUserDeleting',
+    'enqueueAgentTrigger',
+    'getTriggerDelivery',
+  ];
+  for (const key of REQUIRED_DEPS) {
+    if (deps[key] == null) {
+      throw new Error(`createSchedulesService: missing required dependency "${key}"`);
+    }
   }
+
+  const getLimits = createScheduleLimitsResolver(deps.getAppConfig);
 
   const MANUAL_RUN_LEASE_MS = 5 * 60 * 1000;
   // Bounded wait for aborted scheduled runs to settle during account-deletion quiesce,
@@ -859,8 +867,9 @@ export function createSchedulesService(
     const cause = error instanceof Error ? error.cause : undefined;
     const missing = error instanceof OboTokenResolutionError ? error : cause;
     if (
-      !(missing instanceof OboTokenResolutionError) ||
-      missing.reason !== 'missing_upstream_provider' ||
+      (!(error instanceof ScheduledMCPPolicyError) &&
+        (!(missing instanceof OboTokenResolutionError) ||
+          missing.reason !== 'missing_upstream_provider')) ||
       !streamId ||
       jobCreatedAt == null ||
       !userId
@@ -883,6 +892,7 @@ export function createSchedulesService(
       conversationId: job.conversationId,
       ...(job.tenantId ? { tenantId: job.tenantId } : {}),
       server: serverName,
+      ...(error instanceof ScheduledMCPPolicyError && { outcome: error.outcomes[0] }),
     });
   }
 

@@ -2,6 +2,7 @@ import { logger } from '@librechat/data-schemas';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { SchedulesServiceDeps } from './service';
 import { createSchedulesService, recordScheduledMCPToolAuthFailure } from './service';
+import { ScheduledMCPPolicyError } from './authorization/policy';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { isShutdownInProgress } from '../app/shutdown';
 
@@ -809,6 +810,30 @@ describe('scheduled OBO tool failure settlement', () => {
       warn.mockRestore();
     },
   );
+
+  it('records the public-safe policy denial for the exact scheduled generation', async () => {
+    const { service, methods } = setup();
+    const error = new ScheduledMCPPolicyError('tool_policy_denied', 'Graph', 'child');
+    const input = { error, streamId: 'c1', jobCreatedAt: 42, userId: 'owner', serverName: 'Graph' };
+    await expect(
+      recordScheduledMCPToolAuthFailure(input, () => service.recordMCPToolAuthFailure),
+    ).resolves.toBe(true);
+    expect(methods.recordMCPToolAuthFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: {
+          server: 'Graph',
+          agentId: 'child',
+          status: 'mcp_permission_denied',
+          reason: 'tool_policy_denied',
+          recovery: 'configure',
+          automaticReplay: false,
+        },
+      }),
+    );
+    await expect(service.recordMCPToolAuthFailure({ ...input, jobCreatedAt: 43 })).resolves.toBe(
+      false,
+    );
+  });
 
   it('records a typed tool failure only for the matching scheduled generation and owner', async () => {
     const { service, methods, store } = setup();

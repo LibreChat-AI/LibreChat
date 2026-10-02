@@ -26,6 +26,7 @@ export type ScheduleMCPGraphDeps = Pick<
 export interface ScheduledMCPRequirements {
   tools: Array<{ name: string; agentId: string }>;
   serverHints: Set<string>;
+  candidates: Array<{ name: string; agentId: string }>;
 }
 
 /** The runtime's bounded graph expansion, shared by readiness and enrollment metadata. */
@@ -41,6 +42,7 @@ export async function resolveScheduledMCPRequirements(
   };
   throwIfAborted();
   const tools: Array<{ name: string; agentId: string }> = [];
+  const candidates: Array<{ name: string; agentId: string }> = [];
   const serverHints = new Set<string>();
   const graphEdges: NonNullable<AgentGraphNode['edges']> = [];
   const explicitSeeds = new Set<string>([agentId]);
@@ -336,6 +338,7 @@ export async function resolveScheduledMCPRequirements(
   for (const id of reachable) {
     const agent = accessibleById.get(id);
     if (!agent || !expanded.has(id)) continue;
+    candidates.push(...(agent.tools ?? []).map((name) => ({ name, agentId: agent.id })));
     tools.push(
       ...(agent.tools ?? [])
         .filter((tool) => !isActionTool(tool))
@@ -343,5 +346,5 @@ export async function resolveScheduledMCPRequirements(
     );
     for (const name of agent.mcpServerNames ?? []) serverHints.add(name);
   }
-  return { tools, serverHints };
+  return { tools, serverHints, candidates };
 }

@@ -53,6 +53,7 @@ import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Callbacks } from '@langchain/core/callbacks/manager';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
+import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { ModelErrorTrackerCallback } from '~/agents/failures/tracker';
 import type { ToolInputValidationError } from '~/agents/toolValidation';
 import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
@@ -115,6 +116,7 @@ import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/a
 import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils/headers';
 import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
+import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
@@ -2124,6 +2126,7 @@ export async function createRun({
   eventActorCheckpointing = false,
   hitlCapable = false,
   resolvedToolApprovalHooks,
+  scheduledMCPExecution,
   toolInputValidationErrors,
   sessionStartSource,
   streaming = true,
@@ -2264,6 +2267,7 @@ export async function createRun({
    * Reuse them here so a context-aware factory is evaluated exactly once for the run.
    */
   resolvedToolApprovalHooks?: readonly ResolvedToolApprovalHook[];
+  scheduledMCPExecution?: ScheduleMCPExecution;
   /** Plugin-hook SessionStart lifecycle source: 'startup' (default) or 'resume' on HITL-rebuild paths. */
   sessionStartSource?: string;
   /** Request-scoped tool input failures consumed by the completion handler. */
@@ -2780,7 +2784,11 @@ export async function createRun({
     nativeEditFileAgentIds,
   );
   const hitl = hitlCapable ? approvalWiring : undefined;
+  const scheduledPolicy = scheduledMCPExecution
+    ? createScheduledMCPRunPolicy(scheduledMCPExecution, agents)
+    : undefined;
   registerResolvedMCPToolAliases = (resolvedAgent) => {
+    scheduledPolicy?.registerAgent(resolvedAgent);
     for (const agentId of collectNativeEditFileAgentIds([resolvedAgent])) {
       nativeEditFileAgentIds.add(agentId);
     }
@@ -2837,6 +2845,10 @@ export async function createRun({
    * this guard is defense in depth).
    */
   let hooks = approvalWiring?.hooks;
+  if (scheduledPolicy) {
+    hooks ??= new HookRegistry();
+    hooks.register('PreToolUse', { hooks: [scheduledPolicy.hook] });
+  }
   if (usesSubagentCompletionWakeups(activeSubagentTasks)) {
     hooks = hooks ?? new HookRegistry();
     hooks.register('PostToolUse', {

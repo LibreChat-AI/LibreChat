@@ -17,6 +17,7 @@ import type { OpenAI } from 'openai';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
 import type { OpenAIConfiguration, AzureOptions } from '~/types';
 import { clearToolApprovalHooks, registerToolApprovalHook } from '~/agents/hitl/hooks';
+import { executionFixture } from '~/schedules/authorization/execution.helper';
 import { createRun, isAskUserQuestionAdminDisabled } from '~/agents/run';
 import { initializeOpenAI } from '~/endpoints/openai/initialize';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
@@ -4518,6 +4519,58 @@ describe('HITL wiring is gated on hitlCapable', () => {
       );
       expect(body).not.toHaveBeenCalled();
       expect(JSON.stringify(result)).toContain('Blocked:');
+    },
+  );
+
+  it.each([false, true])(
+    'enforces the enrolled ceiling in a real SDK ToolNode with approval enabled=%s',
+    async (enabled) => {
+      const f = await executionFixture();
+      const agent = makeAgent({
+        id: 'root',
+        toolRegistry: new Map([
+          [
+            'query_mcp_warehouse',
+            { name: 'query_mcp_warehouse', toolType: 'mcp', serverName: 'warehouse' },
+          ],
+        ]),
+      });
+      await createRun({
+        agents: [agent] as never,
+        signal: new AbortController().signal,
+        scheduledMCPExecution: f.execution,
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: {
+            agents: { toolApproval: { enabled, mode: 'bypass', deny: ['query_mcp_warehouse'] } },
+          },
+        } as unknown as AppConfig,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0];
+      expect(config).not.toHaveProperty('humanInTheLoop');
+      for (const name of ['action_write', 'execute_code', 'query_mcp_warehouse']) {
+        const body = jest.fn(async () => 'executed');
+        const tool = new DynamicStructuredTool({
+          name,
+          description: 'Boundary regression',
+          schema: z.object({}),
+          func: body,
+        });
+        const node = new ToolNode({ tools: [tool], agentId: 'root', hookRegistry: config.hooks });
+        const result = await node.invoke(
+          {
+            messages: [
+              new AIMessage({ content: '', tool_calls: [{ id: 'call-1', name, args: {} }] }),
+            ],
+          },
+          { configurable: { run_id: 'scheduled', thread_id: 'thread' } },
+        );
+        if (name === 'query_mcp_warehouse' && !enabled) expect(body).toHaveBeenCalledTimes(1);
+        else {
+          expect(body).not.toHaveBeenCalled();
+          expect(JSON.stringify(result)).toContain('Blocked:');
+        }
+      }
     },
   );
 

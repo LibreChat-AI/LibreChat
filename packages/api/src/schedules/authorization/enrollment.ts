@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
 import {
   Constants,
   buildServerNameAliases,
   splitMCPToolKey,
   scheduledMCPResourceBindingSchema,
+  scheduledMCPReadOnlyPolicySchema,
 } from 'librechat-data-provider';
 import type {
   AgentGraphAccessContext,
@@ -15,6 +15,7 @@ import type { ScheduledMCPTarget, TModelsConfig } from 'librechat-data-provider'
 import type { ScheduleMCPEnrollmentResolver } from './service';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { ParsedServerConfig } from '~/mcp/types';
+import { getScheduledMCPPolicyRevision, isScheduledMCPCandidate } from './policy';
 import { getScheduledMCPConfigurationRevision } from './configuration';
 import { resolveScheduledMCPRequirements } from '../requirements';
 import { getAppConfigOptionsFromUser } from '~/app/service';
@@ -59,7 +60,7 @@ export function createScheduleMCPEnrollmentResolver(
     const names = Object.keys(servers);
     const aliases = buildServerNameAliases(names);
     const candidates = [...names, ...aliases.keys()];
-    const { tools } = await resolveScheduledMCPRequirements(
+    const { tools, candidates: candidateTools } = await resolveScheduledMCPRequirements(
       identity.agentId,
       user,
       {
@@ -70,6 +71,8 @@ export function createScheduleMCPEnrollmentResolver(
       async () => appConfig,
       signal,
     );
+    if (candidateTools.some(({ name }) => !isScheduledMCPCandidate(name)))
+      throw new ScheduleMCPConsentError('consent_unavailable');
     const selected = new Map<string, Map<string, Set<string>>>();
     for (const { name: key, agentId } of tools) {
       if (
@@ -120,10 +123,15 @@ export function createScheduleMCPEnrollmentResolver(
     signal?.throwIfAborted();
     for (const target of targets.values()) {
       target.permittedTools.sort((a, b) => a.agentId.localeCompare(b.agentId));
-      // Selection revision is not read-only certification; invocation still requires trusted policy.
-      target.policyRevision = createHash('sha256')
-        .update(JSON.stringify(target.permittedTools))
-        .digest('hex');
+      const policy = scheduledMCPReadOnlyPolicySchema.safeParse(
+        typeof schedules === 'object'
+          ? schedules.mcpConsent?.readOnlyPolicy?.[target.resource.serverName]
+          : undefined,
+      );
+      target.policyRevision = getScheduledMCPPolicyRevision(
+        target.permittedTools,
+        policy.success ? policy.data : undefined,
+      );
     }
     return [...targets.values()];
   };

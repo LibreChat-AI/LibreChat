@@ -16,3 +16,6 @@ export * from './authorization/handlers';
 export type * from './authorization/contract';
 
 export * from './authorization/enrollment';
+export * from './authorization/execution';
+export * from './authorization/runtime';
+export * from './authorization/policy';

@@ -1,3 +1,4 @@
+const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 require('events').EventEmitter.defaultMaxListeners = 100;
 const { logger, MAX_AGENT_EVENT_ACTOR_ENCODING_LENGTH } = require('@librechat/data-schemas');
 const { getBufferString, HumanMessage } = require('@librechat/agents/langchain/messages');
@@ -23,6 +24,7 @@ const {
   isMemoryAgentEnabled,
   recordCollectedUsage,
   resolveRunUsageContext,
+  getScheduleMCPExecution,
   recordFallbackTokenUsage,
   createDetachedSubagentUsageRecorder,
   sendEvent,
@@ -4948,6 +4950,7 @@ class AgentClient extends BaseClient {
           activityPhase?.handlers(offsetHandlers) ??
           (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
         const createRunPromise = createRun({
+          scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
           agents,
           // Conversation-stable identity for the e2e run hook; a resumed run
           // carries no messages, so history cannot identify the conversation.
@@ -5732,6 +5735,7 @@ class AgentClient extends BaseClient {
         activityPhase?.handlers(offsetHandlers) ??
         (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
       run = await createRun({
+        scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
         agents,
         conversationId: this.conversationId,
         modelCallbacks: [

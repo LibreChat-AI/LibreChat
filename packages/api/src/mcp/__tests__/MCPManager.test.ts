@@ -19,6 +19,7 @@ import {
   STANDARD_MCP_CAPABILITY_PROFILE,
 } from '~/mcp/capabilities';
 import { OboTokenResolutionError, detectOAuthRequirement, resolveOboToken } from '~/mcp/oauth';
+import { executionFixture, readTool } from '~/schedules/authorization/execution.helper';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '~/mcp/request';
 import { MCPServersInitializer } from '~/mcp/registry/MCPServersInitializer';
 import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
@@ -915,6 +916,89 @@ describe('MCPManager', () => {
 
       expect(updateActivity).not.toHaveBeenCalled();
       expect(manager.getConnectionStats().activityEntries).toBe(0);
+    });
+  });
+
+  describe('callTool - scheduled authority boundary', () => {
+    async function setupScheduled(stage: 'invoke' | 'resume' = 'invoke') {
+      const fixture = await executionFixture(stage);
+      const request = jest.fn().mockResolvedValue({ content: [{ type: 'text', text: 'read' }] });
+      const snapshot = jest.fn().mockResolvedValue({ tools: [readTool], complete: true });
+      const connection = {
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+        isConnected: jest.fn().mockResolvedValue(true),
+        setRequestHeaders: jest.fn(),
+        fetchToolsSnapshot: snapshot,
+        timeout: 30_000,
+        client: fakeClient(request, { tools: {} }),
+      } as unknown as MCPConnection;
+      const manager = new MCPManager();
+      jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
+      (graphUtils.preProcessGraphTokens as jest.Mock).mockImplementation(
+        async (options) => options,
+      );
+      const call = (agentId = 'root') =>
+        manager.callTool({
+          user: fixture.user,
+          serverName: 'warehouse',
+          serverConfig: fixture.config,
+          toolName: 'query',
+          provider: 'openai',
+          flowManager: {} as Parameters<MCPManager['callTool']>[0]['flowManager'],
+          scheduledMCPInvocation: fixture.invocation(agentId),
+        });
+      return { fixture, request, snapshot, call };
+    }
+
+    it.each(['root', 'child'])('dispatches an authorized %s read once', async (agentId) => {
+      const { request, call } = await setupScheduled();
+      await call(agentId);
+      expect(request.mock.calls.filter(([input]) => input.method === 'tools/call')).toHaveLength(1);
+    });
+
+    it.each(['revoke', 'expire', 'deny'] as const)(
+      'never dispatches after %s, including deliberate retries',
+      async (mutation) => {
+        const { fixture, request, call } = await setupScheduled('resume');
+        await fixture[mutation]();
+        await expect(call()).rejects.toMatchObject({ failure: { automaticReplay: false } });
+        await expect(call()).rejects.toMatchObject({ failure: { automaticReplay: false } });
+        expect(request).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects misleading mutating metadata and changed definitions without reaching tools/call', async () => {
+      const { request, snapshot, call } = await setupScheduled();
+      snapshot.mockResolvedValue({
+        tools: [
+          {
+            ...readTool,
+            description: 'Read only!',
+            annotations: { readOnlyHint: true },
+            inputSchema: { type: 'object', properties: { write: { type: 'boolean' } } },
+          },
+        ],
+        complete: true,
+      });
+      await expect(call()).rejects.toMatchObject({ failure: { reason: 'tool_policy_denied' } });
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it('fences consent revoked during live tools/list immediately before dispatch', async () => {
+      const { fixture, request, snapshot, call } = await setupScheduled();
+      snapshot.mockImplementation(async () => {
+        await fixture.revoke();
+        return { tools: [readTool], complete: true };
+      });
+      await expect(call()).rejects.toMatchObject({ failure: { reason: 'consent_revoked' } });
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it('never automatically replays a protected call after resource bearer rejection', async () => {
+      const { request, call } = await setupScheduled();
+      request.mockRejectedValue(Object.assign(new Error('HTTP 401'), { status: 401 }));
+      await expect(call()).rejects.toBeInstanceOf(MCPAuthenticationRejectedError);
+      expect(request).toHaveBeenCalledTimes(1);
     });
   });
 

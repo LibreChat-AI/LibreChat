@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { scheduledMCPFailureReasonSchema } from './scheduleConsent';
 
 /** Cadences the dialog builds from structured pickers (hour, minute, weekday). */
 export const scheduleStructuredFrequencies = ['hourly', 'daily', 'weekdays', 'weekly'] as const;
@@ -213,6 +214,9 @@ export const scheduleMCPOutcomeSchema = z.object({
   agentId: z.string().optional(),
   /** Additional diagnosis; older clients ignore unknown keys and retain the known status. */
   detail: z.enum(['unattended_auth_required']).optional(),
+  reason: scheduledMCPFailureReasonSchema.optional(),
+  recovery: z.enum(['authorize', 'configure', 'restore_permission', 'retry_later']).optional(),
+  automaticReplay: z.literal(false).optional(),
   status: z.enum([
     'ready',
     'mcp_reauth_required',

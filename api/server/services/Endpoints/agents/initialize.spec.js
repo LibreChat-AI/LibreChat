@@ -193,6 +193,16 @@ describe('initializeClient — processAgent ACL gate', () => {
         source: { type: 'schedule', id: 'sched-1' },
       },
     };
+    await db.createSchedule({
+      id: 'sched-1',
+      user: testUser._id,
+      agent_id: PRIMARY_ID,
+      name: 'Legacy read',
+      prompt: 'Read',
+      cadence: { frequency: 'hourly', minute: 0, hour: 1 },
+      timezone: 'UTC',
+      enabled: true,
+    });
     const signal = new AbortController().signal;
     mockInitializeAgent.mockImplementationOnce(async ({ loadTools, agent }) => {
       await loadTools({
