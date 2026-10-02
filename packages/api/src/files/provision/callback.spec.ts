@@ -142,15 +142,21 @@ describe('createProvisionFilesCallback', () => {
   );
 
   it.each([
-    ['parent', 'data.csv', 'data.csv'],
-    ['child', 'data.csv', 'data.csv'],
-    ['parent', 'data', 'data/input.csv'],
-    ['child', 'data', 'data/input.csv'],
-    ['parent', 'data/input.csv', 'data'],
-    ['child', 'data/input.csv', 'data'],
+    ['parent', 'data.csv', 'data.csv', false],
+    ['child', 'data.csv', 'data.csv', false],
+    ['parent', 'data', 'data/input.csv', false],
+    ['child', 'data', 'data/input.csv', false],
+    ['parent', 'data/input.csv', 'data', false],
+    ['child', 'data/input.csv', 'data', false],
+    ['parent', 'data.csv', 'data.csv', true],
+    ['child', 'data.csv', 'data.csv', true],
+    ['parent', 'data', 'data/input.csv', true],
+    ['child', 'data', 'data/input.csv', true],
+    ['parent', 'data/input.csv', 'data', true],
+    ['child', 'data/input.csv', 'data', true],
   ])(
-    'keeps both late live %s mounts (%s) and frozen uploads (%s) through session injection',
-    async (firstAgentId, liveName, uploadName) => {
+    'keeps both %s-first live mounts (%s) and frozen uploads (%s) through injection, retry=%s',
+    async (firstAgentId, liveName, uploadName, retry) => {
       const shared = makeFile({ file_id: 'shared', filename: uploadName });
       const parent: CodeFileAgent = {
         id: 'parent',
@@ -193,13 +199,23 @@ describe('createProvisionFilesCallback', () => {
           [child.id, child],
         ],
       });
+      if (retry) provisionToCodeEnv.mockRejectedValueOnce(new Error('Transient upload failure'));
       const provisioned = new Map<string, Awaited<ReturnType<typeof provisionFiles>>>();
       for (const id of [firstAgentId, firstAgentId === 'parent' ? 'child' : 'parent']) {
+        if (retry && id === firstAgentId) {
+          await expect(provisionFiles([Constants.EXECUTE_CODE], id)).rejects.toThrow(
+            'Failed to provision',
+          );
+          continue;
+        }
         provisioned.set(id, await provisionFiles([Constants.EXECUTE_CODE], id));
+      }
+      if (retry) {
+        provisioned.set(firstAgentId, await provisionFiles([Constants.EXECUTE_CODE], firstAgentId));
       }
       expect(provisioned.get(parent.id)?.[0].name).toBe(parentPath);
       expect(provisioned.get(child.id)?.[0].name).toBe(childPath);
-      expect(provisionToCodeEnv).toHaveBeenCalledTimes(2);
+      expect(provisionToCodeEnv).toHaveBeenCalledTimes(retry ? 3 : 2);
       const merged = mergeCodeFilesIntoContext(
         {
           session_id: 'setup-store',
