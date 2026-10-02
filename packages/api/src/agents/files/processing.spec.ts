@@ -52,6 +52,41 @@ describe('bounded host edit workers', () => {
     },
   );
 
+  it.each([
+    ['9 MiB ASCII', 'a'.repeat(9 * 1024 * 1024)],
+    ['10 MiB ASCII', 'a'.repeat(10 * 1024 * 1024)],
+    ['10 MiB UTF-8', 'é'.repeat(5 * 1024 * 1024)],
+  ])('supports full matching context for %s with omitted limits', async (_label, content) => {
+    const replacement = 'b' + content.slice(1);
+    const result = await processor.apply(content, [{ old_text: content, new_text: replacement }]);
+    expect(result.content).toBe(replacement);
+    expect(result.strategies).toEqual(['exact']);
+  });
+
+  it('supports replace_all with full 10 MiB context and a same-size replacement', async () => {
+    const content = 'a'.repeat(10 * 1024 * 1024);
+    const replacement = 'b' + content.slice(1);
+    await expect(
+      processor.apply(content, [{ old_text: content, new_text: replacement, replace_all: true }]),
+    ).resolves.toEqual({
+      content: replacement,
+      strategies: ['exact'],
+    });
+  });
+
+  it.each([false, true])(
+    'admits a full-file replacement into a smaller result, replace_all=%s',
+    async (replaceAll) => {
+      const content = 'a'.repeat(10 * 1024 * 1024);
+      await expect(
+        processor.apply(content, [{ old_text: content, new_text: 'b', replace_all: replaceAll }]),
+      ).resolves.toEqual({
+        content: 'b',
+        strategies: ['exact'],
+      });
+    },
+  );
+
   it('bounds every intermediate result, even when a later edit would shrink it', async () => {
     await expect(
       processor.apply(
@@ -117,6 +152,25 @@ describe('worker lifecycle', () => {
         content: 'ready',
         strategies: [],
       });
+    } finally {
+      startup.mockRestore();
+      await processor.close();
+    }
+  });
+
+  it('rejects oversized clone input before acquiring a worker', async () => {
+    const processor = createHostEditProcessor(fixture);
+    const startup = jest.spyOn(
+      jest.requireActual<typeof import('node:worker_threads')>('node:worker_threads'),
+      'Worker',
+    );
+    try {
+      await expect(
+        processor.apply('a', [{ old_text: 'a'.repeat(512), new_text: 'b' }], {
+          maxWorkBytes: 1024,
+        }),
+      ).rejects.toThrow('budget exceeded');
+      expect(startup).not.toHaveBeenCalled();
     } finally {
       startup.mockRestore();
       await processor.close();

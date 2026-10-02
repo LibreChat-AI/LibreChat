@@ -75,11 +75,11 @@ export function createHostEditProcessor(workerPath: string): {
       if (content.length > maxOutputBytes) {
         throw new HostEditError('File exceeds the authoring size limit. Nothing was written.');
       }
-      // String lengths fence structured-clone work without scanning attacker-controlled text.
+      // Bound UTF-16 clone bytes without scanning; the worker accounts UTF-8 processing.
       let inputUnits = content.length;
       for (const edit of edits) {
         inputUnits += edit.old_text.length + edit.new_text.length;
-        if (inputUnits > limits.maxWorkBytes / 3) {
+        if (inputUnits > limits.maxWorkBytes / 2) {
           throw new HostEditError(
             'File edit processing budget exceeded; split the batch. Nothing was written.',
           );

@@ -314,8 +314,10 @@ function findReplacementMatch(
   content: string,
   needle: string,
   budget: EditWorkBudget,
+  contentBytes: number,
+  needleBytes: number,
 ): MatchStatus {
-  const scanBytes = Buffer.byteLength(content) + Buffer.byteLength(needle);
+  const scanBytes = contentBytes + needleBytes;
   budget.scan(scanBytes);
   const exact = findExactMatch(content, needle, budget);
   if (exact.status !== 'none') {
@@ -358,10 +360,10 @@ function describeMatchCount(count: number): string {
 function projectedReplaceAllBytes(
   content: string,
   matches: readonly MatchedRange[],
-  text: string,
+  contentBytes: number,
+  replacementBytes: number,
 ): number {
-  const replacementBytes = Buffer.byteLength(text, 'utf8');
-  let bytes = Buffer.byteLength(content, 'utf8');
+  let bytes = contentBytes;
   for (const match of matches) {
     bytes +=
       replacementBytes -
@@ -400,14 +402,14 @@ export function applyTextEdits(
 
   for (const edit of edits) {
     const workingBytes = Buffer.byteLength(working);
-    budget.scan(workingBytes + Buffer.byteLength(edit.old_text) + Buffer.byteLength(edit.new_text));
+    const oldBytes = Buffer.byteLength(edit.old_text);
+    const newBytes = Buffer.byteLength(edit.new_text);
+    budget.scan(oldBytes + newBytes);
+    if (edit.replace_all === true) budget.scan(workingBytes + oldBytes);
     const exactCount =
       edit.replace_all === true ? countExactMatches(working, edit.old_text, budget) : 0;
     if (exactCount > 0) {
-      const projectedBytes =
-        Buffer.byteLength(working, 'utf8') +
-        exactCount *
-          (Buffer.byteLength(edit.new_text, 'utf8') - Buffer.byteLength(edit.old_text, 'utf8'));
+      const projectedBytes = workingBytes + exactCount * (newBytes - oldBytes);
       if (projectedBytes > MAX_AUTHORING_BYTES) {
         throw new HostEditError(
           `replace_all would make the file larger than ${MAX_AUTHORING_BYTES} bytes; nothing was written.`,
@@ -418,7 +420,7 @@ export function applyTextEdits(
       strategies.push(exactCount > 1 ? `exact x${exactCount}` : 'exact');
       continue;
     }
-    const match = findReplacementMatch(working, edit.old_text, budget);
+    const match = findReplacementMatch(working, edit.old_text, budget, workingBytes, oldBytes);
     if (match.status === 'none') {
       throw new HostEditError('old_text did not match the file content.');
     }
@@ -434,7 +436,7 @@ export function applyTextEdits(
         );
       }
       const matches = nonOverlapping(match.matches);
-      const projectedBytes = projectedReplaceAllBytes(working, matches, edit.new_text);
+      const projectedBytes = projectedReplaceAllBytes(working, matches, workingBytes, newBytes);
       if (projectedBytes > MAX_AUTHORING_BYTES) {
         throw new HostEditError(
           `replace_all would make the file larger than ${MAX_AUTHORING_BYTES} bytes; nothing was written.`,
@@ -447,8 +449,10 @@ export function applyTextEdits(
     }
     const projectedBytes =
       workingBytes -
-      Buffer.byteLength(working.slice(match.index, match.index + match.length)) +
-      Buffer.byteLength(edit.new_text);
+      (match.strategy === 'exact'
+        ? oldBytes
+        : Buffer.byteLength(working.slice(match.index, match.index + match.length))) +
+      newBytes;
     if (projectedBytes > MAX_AUTHORING_BYTES) {
       throw new HostEditError(
         `edited content exceeds ${MAX_AUTHORING_BYTES} byte limit; nothing was written.`,

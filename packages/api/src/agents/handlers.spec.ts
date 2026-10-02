@@ -6128,6 +6128,29 @@ describe('createToolExecuteHandler', () => {
       expect(Buffer.byteLength(writeSandboxFile.mock.calls[0][0].content)).toBe(10 * 1024 * 1024);
     });
 
+    it('persists one permitted full-context sandbox replacement with omitted limits', async () => {
+      const content =
+        'start\n' + ('x'.repeat(1023) + '\n').repeat(10239) + 'x'.repeat(1014) + '\nend';
+      const replacement = 'begin' + content.slice(5);
+      const writeSandboxFile = jest.fn(async (_params: { content: string }) => ({
+        stdout: 'written',
+      }));
+      const handler = makeSandboxAuthoringHandler({
+        readSandboxFile: jest.fn(async () => ({ content })),
+        writeSandboxFile,
+      });
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'full_context',
+          name: 'edit_file',
+          args: { path: '/mnt/data/large.txt', old_text: content, new_text: replacement },
+        },
+      ]);
+      expect(result.status).toBe('success');
+      expect(writeSandboxFile).toHaveBeenCalledTimes(1);
+      expect(writeSandboxFile.mock.calls[0][0].content).toBe(replacement);
+    });
+
     it.each([false, true])(
       'sanitizes sandbox processing failures, asynchronous=%s',
       async (asynchronous) => {
