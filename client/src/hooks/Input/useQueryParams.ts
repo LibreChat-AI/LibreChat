@@ -1,8 +1,8 @@
-import { useEffect, useCallback, useRef, useState } from 'react';
+import { useEffect, useCallback, useRef, useState, useMemo } from 'react';
 import isEqual from 'lodash/isEqual';
 import { useRecoilValue } from 'recoil';
-import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import {
   QueryKeys,
   parseConvo,
@@ -22,7 +22,8 @@ import {
   removeUnavailableTools,
   specDisplayFieldReset,
   processValidSettings,
-  getModelSpecIconURL,
+  mergeQuerySettingsWithSpec,
+  getModelSpecPreset,
   getConvoSwitchLogic,
   logger,
 } from '~/utils';
@@ -62,6 +63,7 @@ export default function useQueryParams({
   const MAX_SETTINGS_WAIT_MS = 3000;
   const processedRef = useRef(false);
   const pendingSubmitRef = useRef(false);
+  const validatingRef = useRef(false);
   const submissionHandledRef = useRef(false);
   const promptTextRef = useRef<string | null>(null);
   const validSettingsRef = useRef<TPreset | null>(null);
@@ -70,10 +72,30 @@ export default function useQueryParams({
 
   const methods = useChatFormContext();
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
+  const searchIdentity = useMemo(() => {
+    const params = new URLSearchParams(searchParams);
+    params.sort();
+    return params.toString();
+  }, [searchParams]);
+  const route = {
+    pathname: location.pathname,
+    search: searchIdentity,
+    projectId: searchParams.get(PROJECT_ID_SEARCH_PARAM),
+  };
+  const originRouteRef = useRef(route);
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const originConversationRef = useRef<string | null | undefined>(null);
+  const destinationRef = useRef<string | null>(null);
+  const cancelledRef = useRef(false);
+  const mountedRef = useRef(true);
   const getDefaultConversation = useDefaultConvo();
   const modularChat = useRecoilValue(store.modularChat);
   const availableTools = useRecoilValue(store.availableTools);
   const { submitMessage } = useSubmitMessage();
+  const submitMessageRef = useRef(submitMessage);
+  submitMessageRef.current = submitMessage;
 
   const queryClient = useQueryClient();
   const { conversation, newConversation } = useChatContext();
@@ -92,6 +114,59 @@ export default function useQueryParams({
 
   const conversationRef = useRef(conversation);
   conversationRef.current = conversation;
+
+  const ownsComposer = useCallback(() => {
+    const currentId = conversationRef.current?.conversationId;
+    const current = routeRef.current;
+    return (
+      current.projectId === originRouteRef.current.projectId &&
+      (current.pathname === originRouteRef.current.pathname ||
+        (destinationRef.current != null && current.pathname === `/c/${destinationRef.current}`)) &&
+      (!processedRef.current ||
+        currentId == null ||
+        currentId === originConversationRef.current ||
+        currentId === destinationRef.current)
+    );
+  }, []);
+
+  const ownsRequest = useCallback(
+    () =>
+      mountedRef.current &&
+      !cancelledRef.current &&
+      routeRef.current.search === originRouteRef.current.search &&
+      ownsComposer(),
+    [ownsComposer],
+  );
+
+  const cancelRequest = useCallback(() => {
+    cancelledRef.current = true;
+    processedRef.current = true;
+    submissionHandledRef.current = true;
+    pendingSubmitRef.current = false;
+    validatingRef.current = false;
+    if (settingsTimeoutRef.current) {
+      clearTimeout(settingsTimeoutRef.current);
+      settingsTimeoutRef.current = null;
+    }
+    setSubmissionStatus('idle');
+  }, []);
+
+  useEffect(() => {
+    if (
+      ((!submissionHandledRef.current || validatingRef.current) && !ownsRequest()) ||
+      (submissionStatus === 'failed' && !ownsComposer())
+    ) {
+      cancelRequest();
+    }
+  }, [
+    location,
+    conversation,
+    searchIdentity,
+    submissionStatus,
+    ownsComposer,
+    ownsRequest,
+    cancelRequest,
+  ]);
 
   const areSettingsApplied = useCallback(() => {
     const convo = conversationRef.current;
@@ -142,11 +217,7 @@ export default function useQueryParams({
         const modelSpecs = startupConfig?.modelSpecs?.list ?? [];
         const spec = modelSpecs.find((s) => s.name === newPreset.spec);
         if (spec) {
-          newPreset = {
-            ...spec.preset,
-            iconURL: getModelSpecIconURL(spec),
-            spec: spec.name,
-          } as TPreset;
+          newPreset = mergeQuerySettingsWithSpec(getModelSpecPreset(spec), newPreset);
         }
         /** Hidden specs remain opaque here and are resolved server-side by name. */
       }
@@ -219,6 +290,7 @@ export default function useQueryParams({
 
         /* We don't reset the latest message, only when changing settings mid-converstion */
         logger.log('conversation', 'Switching conversation from query params', currentConvo);
+        destinationRef.current = currentConvo.conversationId ?? 'new';
         newConversation({
           template: currentConvo,
           preset: newPreset,
@@ -228,6 +300,7 @@ export default function useQueryParams({
         return true;
       }
 
+      destinationRef.current = 'new';
       newConversation({
         template: {
           chatProjectId: conversation?.chatProjectId ?? null,
@@ -252,36 +325,70 @@ export default function useQueryParams({
 
   const restoreUrlPrompt = useCallback(() => {
     const prompt = promptTextRef.current;
-    if (prompt != null && methods.getValues('text') !== prompt) {
+    if (ownsRequest() && prompt != null && methods.getValues('text') !== prompt) {
       methods.setValue('text', prompt, { shouldValidate: true });
     }
-  }, [methods]);
+  }, [methods, ownsRequest]);
 
   /** Consumes an auto-submit once, leaving a refused submission in the composer. */
   const processSubmission = useCallback(() => {
-    if (submissionHandledRef.current || !pendingSubmitRef.current || !promptTextRef.current) {
+    if (
+      submissionHandledRef.current ||
+      !pendingSubmitRef.current ||
+      !promptTextRef.current ||
+      !ownsRequest()
+    ) {
       return;
     }
 
     submissionHandledRef.current = true;
     pendingSubmitRef.current = false;
 
-    setSubmissionStatus('idle');
+    setSubmissionStatus('preparing');
     if (settingsTimeoutRef.current) {
       clearTimeout(settingsTimeoutRef.current);
       settingsTimeoutRef.current = null;
     }
 
     restoreUrlPrompt();
-    methods.handleSubmit((data) => {
-      if (data.text?.trim()) {
-        submitMessage(data);
-        logger.log('conversation', 'Message submitted from query params');
+    validatingRef.current = true;
+    const cleanUp = () => {
+      validatingRef.current = false;
+      if (ownsRequest()) {
+        setSearchParams(getPreservedSearchParams(), { replace: true });
       }
-    })();
-
-    setSearchParams(getPreservedSearchParams(), { replace: true });
-  }, [methods, submitMessage, setSearchParams, getPreservedSearchParams, restoreUrlPrompt]);
+    };
+    methods.handleSubmit(
+      (data) => {
+        if (!ownsRequest()) {
+          return;
+        }
+        if (validSettingsRef.current && !areSettingsApplied()) {
+          setSubmissionStatus('failed');
+          cleanUp();
+          return;
+        }
+        setSubmissionStatus('idle');
+        if (data.text?.trim() && submitMessageRef.current(data) !== false) {
+          logger.log('conversation', 'Message submitted from query params');
+        }
+        cleanUp();
+      },
+      () => {
+        if (ownsRequest()) {
+          setSubmissionStatus('idle');
+        }
+        cleanUp();
+      },
+    )();
+  }, [
+    methods,
+    ownsRequest,
+    areSettingsApplied,
+    setSearchParams,
+    getPreservedSearchParams,
+    restoreUrlPrompt,
+  ]);
 
   useEffect(() => {
     const processQueryParams = () => {
@@ -312,6 +419,11 @@ export default function useQueryParams({
       }
 
       attemptsRef.current += 1;
+      if (!ownsRequest()) {
+        cancelRequest();
+        clearInterval(intervalId);
+        return;
+      }
 
       if (!textAreaRef.current) {
         return;
@@ -344,11 +456,12 @@ export default function useQueryParams({
         clearInterval(intervalId);
 
         // Defer URL cleanup until after submission completes (processSubmission handles it)
-        if (!pendingSubmitRef.current) {
+        if ((!willAutoSubmit || !decodedPrompt.trim()) && ownsRequest()) {
           setSearchParams(getPreservedSearchParams(), { replace: true });
         }
       };
 
+      originConversationRef.current = conversationRef.current?.conversationId;
       const settingsAccepted = !hasSettings || newQueryConvo(validSettings) === true;
       if (willAutoSubmit && decodedPrompt.trim()) {
         pendingSubmitRef.current = true;
@@ -362,6 +475,10 @@ export default function useQueryParams({
           setSubmissionStatus('preparing');
           settingsTimeoutRef.current = setTimeout(() => {
             settingsTimeoutRef.current = null;
+            if (!ownsRequest()) {
+              cancelRequest();
+              return;
+            }
             if (!submissionHandledRef.current && pendingSubmitRef.current) {
               restoreUrlPrompt();
               pendingSubmitRef.current = false;
@@ -395,6 +512,8 @@ export default function useQueryParams({
     processSubmission,
     areSettingsApplied,
     restoreUrlPrompt,
+    ownsRequest,
+    cancelRequest,
   ]);
 
   useEffect(() => {
@@ -404,7 +523,8 @@ export default function useQueryParams({
       submissionHandledRef.current ||
       !pendingSubmitRef.current ||
       !validSettingsRef.current ||
-      !conversation
+      !conversation ||
+      !ownsRequest()
     ) {
       return;
     }
@@ -414,16 +534,17 @@ export default function useQueryParams({
       logger.log('conversation', 'Settings fully applied, processing submission');
       processSubmission();
     }
-  }, [conversation, processSubmission, areSettingsApplied, restoreUrlPrompt]);
+  }, [conversation, processSubmission, areSettingsApplied, restoreUrlPrompt, ownsRequest]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
       if (settingsTimeoutRef.current) {
         clearTimeout(settingsTimeoutRef.current);
       }
-    },
-    [],
-  );
+    };
+  }, []);
 
   const { isAuthenticated } = useAuthContext();
   const agentsMap = useAgentsMap({ isAuthenticated });
@@ -437,7 +558,7 @@ export default function useQueryParams({
 
   return {
     clearSettingsError,
-    isPreparing: submissionStatus === 'preparing',
-    settingsError: submissionStatus === 'failed',
+    isPreparing: submissionStatus === 'preparing' && ownsRequest(),
+    settingsError: submissionStatus === 'failed' && ownsComposer(),
   };
 }

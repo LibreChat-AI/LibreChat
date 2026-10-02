@@ -1,14 +1,15 @@
 import React, { useMemo, useState } from 'react';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
-import { MemoryRouter } from 'react-router-dom';
 import { RecoilRoot, useRecoilState } from 'recoil';
 import { HTML5Backend } from 'react-dnd-html5-backend';
+import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { act, render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TConversation } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
+import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
 import { getNewConversationDraftId, setDraft } from '~/utils/drafts';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
@@ -25,6 +26,7 @@ const initialConversation = {
 
 const ask = jest.fn();
 const newConversation = jest.fn();
+const transport = { ...defaultChatTransport, listQueued: async () => [] };
 
 function Harness({ conversation }: { conversation: TConversation }) {
   const [files, setFiles] = useRecoilState(store.filesByIndex(0));
@@ -102,6 +104,7 @@ function mountComposer(conversation = initialConversation) {
   queryClient.setQueryData([QueryKeys.name, EModelEndpoint.agents], { expiresAt: '' });
   queryClient.setQueryData([QueryKeys.name, EModelEndpoint.assistants], { expiresAt: '' });
   queryClient.setQueryData([QueryKeys.messages, conversation.conversationId], []);
+  queryClient.setQueryData([QueryKeys.messages, 'other-chat'], []);
   queryClient.setQueryData([QueryKeys.assistant, EModelEndpoint.assistants, 'asst_test'], {
     id: 'asst_test',
     model: 'gpt-4o',
@@ -120,6 +123,11 @@ function mountComposer(conversation = initialConversation) {
     [EModelEndpoint.openAI]: { order: 0 },
     [EModelEndpoint.agents]: { order: 1 },
   });
+  let navigate: ReturnType<typeof useNavigate>;
+  function NavigationBridge() {
+    navigate = useNavigate();
+    return null;
+  }
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
@@ -128,14 +136,18 @@ function mountComposer(conversation = initialConversation) {
             `/c/${conversation.conversationId}?agent_id=agent_test&q=hi&submit=true`,
           ]}
         >
+          <NavigationBridge />
           <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-            <DndProvider backend={HTML5Backend}>{children}</DndProvider>
+            <ChatTransportContext.Provider value={transport}>
+              <DndProvider backend={HTML5Backend}>{children}</DndProvider>
+            </ChatTransportContext.Provider>
           </AuthContextProvider>
         </MemoryRouter>
       </RecoilRoot>
     </QueryClientProvider>
   );
-  return render(<Harness conversation={conversation} />, { wrapper });
+  const view = render(<Harness conversation={conversation} />, { wrapper });
+  return { ...view, navigate: (to: string) => navigate(to) };
 }
 
 describe('ChatForm URL submission', () => {
@@ -205,6 +217,77 @@ describe('ChatForm URL submission', () => {
       expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'hi' }), expect.anything());
     },
   );
+
+  it.each([EModelEndpoint.openAI, EModelEndpoint.agents])(
+    'cancels the URL request when navigating to another %s chat',
+    async (endpoint) => {
+      setDraft({ id: 'other-chat', value: 'destination draft' });
+      const view = mountComposer();
+      await act(async () => jest.advanceTimersByTime(100));
+      await act(async () => {
+        view.navigate('/c/other-chat');
+        view.rerender(
+          <Harness
+            conversation={{
+              ...initialConversation,
+              conversationId: 'other-chat',
+              endpoint,
+              ...(endpoint === EModelEndpoint.agents ? { agent_id: 'agent_test' } : {}),
+            }}
+          />,
+        );
+      });
+      expect(screen.getByTestId('text-input')).toHaveValue('destination draft');
+      expect(screen.getByTestId('text-input')).not.toBeDisabled();
+      expect(screen.queryByText('Sending...')).not.toBeInTheDocument();
+      expect(ask).not.toHaveBeenCalled();
+      await act(async () => jest.advanceTimersByTime(4000));
+      expect(screen.getByTestId('text-input')).toHaveValue('destination draft');
+      expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
+      expect(ask).not.toHaveBeenCalled();
+    },
+  );
+
+  it('clears settled setup guidance when leaving for another chat', async () => {
+    setDraft({ id: 'other-chat', value: 'destination draft' });
+    const view = mountComposer();
+    await act(async () => jest.advanceTimersByTime(3100));
+    expect(screen.getByText(/Chat settings could not be applied/)).toBeInTheDocument();
+    await act(async () => {
+      view.navigate('/c/other-chat');
+      view.rerender(
+        <Harness conversation={{ ...initialConversation, conversationId: 'other-chat' }} />,
+      );
+    });
+    expect(screen.getByTestId('text-input')).toHaveValue('destination draft');
+    expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('allows its own URL-preserving switch from an existing chat to a new one', async () => {
+    const view = mountComposer({
+      ...initialConversation,
+      conversationId: 'existing-chat',
+      endpoint: EModelEndpoint.assistants,
+      assistant_id: 'asst_test',
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    await act(async () => {
+      view.navigate('/c/new?agent_id=agent_test&q=hi&submit=true');
+      view.rerender(
+        <Harness
+          conversation={{
+            ...initialConversation,
+            endpoint: EModelEndpoint.agents,
+            agent_id: 'agent_test',
+            model: undefined,
+          }}
+        />,
+      );
+    });
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'hi' }), expect.anything());
+  });
 
   it('sends the visible prompt once when the requested agent reaches the conversation', async () => {
     const view = mountComposer();

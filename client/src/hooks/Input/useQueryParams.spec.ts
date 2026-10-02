@@ -18,7 +18,7 @@ jest.mock('~/store', () => ({
 }));
 
 import { renderHook, act } from '@testing-library/react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRecoilValue } from 'recoil';
 import { EModelEndpoint, parseConvo } from 'librechat-data-provider';
@@ -32,6 +32,7 @@ import store from '~/store';
 // Other mocks
 jest.mock('react-router-dom', () => ({
   useSearchParams: jest.fn(),
+  useLocation: jest.fn(),
 }));
 
 jest.mock('@tanstack/react-query', () => ({
@@ -114,6 +115,7 @@ describe('useQueryParams', () => {
   // Setup common mocks before each test
   beforeEach(() => {
     jest.useFakeTimers();
+    (useLocation as jest.Mock).mockReturnValue({ pathname: '/c/new', key: 'origin' });
 
     // Reset mock for window.history.replaceState
     jest.spyOn(window.history, 'replaceState').mockClear();
@@ -243,6 +245,14 @@ describe('useQueryParams', () => {
       mockNewConversation,
       mockSetSearchParams,
       updateConversation,
+      textAreaRef,
+      updateRoute: (pathname: string, params: Record<string, string> = {}) => {
+        (useLocation as jest.Mock).mockReturnValue({ pathname, key: 'destination' });
+        (useSearchParams as jest.Mock).mockReturnValue([
+          new URLSearchParams(params),
+          mockSetSearchParams,
+        ]);
+      },
     };
   };
 
@@ -399,6 +409,34 @@ describe('useQueryParams', () => {
     expect(hook.result.current.settingsError).toBe(false);
   });
 
+  it('preserves explicit URL overrides over visible spec defaults', () => {
+    const hook = mountQuery(
+      { spec: 'helper', temperature: '0.1', q: 'hi', submit: 'true' },
+      {
+        modelSpecs: {
+          list: [
+            {
+              name: 'helper',
+              label: 'Helper',
+              preset: { endpoint: 'openAI', model: 'gpt-4o', temperature: 0.8 },
+            },
+          ],
+        },
+      },
+    );
+    expect(hook.mockNewConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ preset: expect.objectContaining({ temperature: 0.1 }) }),
+    );
+    hook.updateConversation({
+      endpoint: EModelEndpoint.openAI,
+      model: 'gpt-4o',
+      spec: 'helper',
+      temperature: 0.1,
+    });
+    hook.rerender();
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves menu-hidden spec names for the server to resolve', () => {
     const hook = mountQuery({ spec: 'hidden', endpoint: 'openAI', q: 'hi', submit: 'true' });
     expect(hook.mockNewConversation).toHaveBeenCalledWith(
@@ -411,6 +449,61 @@ describe('useQueryParams', () => {
     hook.rerender();
     expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
     expect(hook.result.current.settingsError).toBe(false);
+  });
+
+  it('cancels pending URL setup before startup config arrives', () => {
+    const hook = mountQuery({ agent_id: 'agent_test', q: 'hi', submit: 'true' }, null);
+    hook.textAreaRef.current.value = 'destination draft';
+    hook.updateRoute('/c/other-chat');
+    hook.updateConversation({ conversationId: 'other-chat', endpoint: EModelEndpoint.openAI });
+    hook.rerender();
+    act(() => jest.advanceTimersByTime(6000));
+    expect(hook.textAreaRef.current.value).toBe('destination draft');
+    expect(hook.mockSetSearchParams).not.toHaveBeenCalled();
+    expect(hook.mockSubmitMessage).not.toHaveBeenCalled();
+  });
+
+  it('cancels a pending URL request when the new-chat project changes', () => {
+    const hook = mountQuery({ agent_id: 'agent_test', q: 'hi', submit: 'true', projectId: 'p1' });
+    hook.textAreaRef.current.value = 'project two draft';
+    hook.updateRoute('/c/new', { projectId: 'p2' });
+    hook.rerender();
+    act(() => jest.advanceTimersByTime(4000));
+    expect(hook.textAreaRef.current.value).toBe('project two draft');
+    expect(hook.mockSubmitMessage).not.toHaveBeenCalled();
+    expect(hook.mockSetSearchParams).not.toHaveBeenCalled();
+    expect(hook.result.current.isPreparing).toBe(false);
+  });
+
+  it('does not submit or clean the destination URL if validation finishes after navigation', () => {
+    const hook = mountQuery({ agent_id: 'agent_test', q: 'hi', submit: 'true' });
+    let finishValidation: (() => void) | undefined;
+    const methods = (useChatFormContext as jest.Mock).mock.results.at(-1)?.value;
+    methods.handleSubmit.mockImplementation((callback) => () => {
+      finishValidation = () => callback({ text: 'hi' });
+    });
+    hook.updateConversation({ endpoint: EModelEndpoint.agents, agent_id: 'agent_test' });
+    hook.rerender();
+    expect(finishValidation).toBeDefined();
+    expect(hook.mockSetSearchParams).not.toHaveBeenCalled();
+    hook.updateRoute('/c/other-chat');
+    hook.updateConversation({ conversationId: 'other-chat', endpoint: EModelEndpoint.openAI });
+    hook.rerender();
+    act(() => finishValidation?.());
+    expect(hook.mockSubmitMessage).not.toHaveBeenCalled();
+    expect(hook.mockSetSearchParams).not.toHaveBeenCalled();
+  });
+
+  it('retains a refused auto-submission without retrying it', () => {
+    const hook = mountQuery({ agent_id: 'agent_test', q: 'hi', submit: 'true' });
+    hook.mockSubmitMessage.mockReturnValue(false);
+    hook.updateConversation({ endpoint: EModelEndpoint.agents, agent_id: 'agent_test' });
+    hook.rerender();
+    act(() => jest.advanceTimersByTime(4000));
+    hook.rerender();
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+    expect(hook.textAreaRef.current.value).toBe('hi');
+    expect(hook.result.current.isPreparing).toBe(false);
   });
 
   it('clears the pending timer on unmount', () => {
