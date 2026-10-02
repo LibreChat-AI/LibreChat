@@ -1,5 +1,6 @@
 import type { TConversation, GroupedConversations } from 'librechat-data-provider';
 import type { ConversationGroupOptions } from '~/utils/convos';
+import { isTemporaryConversation } from '~/utils/conversation';
 
 export const RUNNING_CHATS_GROUP = 'com_ui_running_chats';
 
@@ -77,7 +78,13 @@ export function groupConversationsWithRunning(
 
   const added = unlisted.filter((conversation) => {
     const id = conversation.conversationId;
-    if (!id || conversation.isArchived === true || !activeJobIds.has(id) || runningIds.has(id)) {
+    if (
+      !id ||
+      conversation.isArchived === true ||
+      isTemporaryConversation(conversation) ||
+      !activeJobIds.has(id) ||
+      runningIds.has(id)
+    ) {
       return false;
     }
     runningIds.add(id);

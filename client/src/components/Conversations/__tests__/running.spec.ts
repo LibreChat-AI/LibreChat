@@ -156,6 +156,30 @@ describe('running chats the loaded rows do not hold', () => {
     expect(groups).toEqual([[RUNNING_CHATS_GROUP, [loaded]]]);
   });
 
+  it.each([{ isTemporary: true }, { expiredAt: '2026-12-31T00:00:00.000Z' }])(
+    'leaves a temporary chat out while its run continues: %j',
+    (retention) => {
+      const dated = groupConversations([convo('idle', 0)], newestFirst);
+      const temporary = { ...projectChat('temporary', 1), ...retention } as TConversation;
+
+      expect(partitionGroups(dated, new Set(['temporary']), newestFirst, [temporary])).toBe(dated);
+    },
+  );
+
+  it('keeps an explicitly non-temporary chat eligible even when it expires', () => {
+    const dated = groupConversations([convo('idle', 0)], newestFirst);
+    const expiring = {
+      ...projectChat('expiring', 1),
+      isTemporary: false,
+      expiredAt: '2026-12-31T00:00:00.000Z',
+    } as TConversation;
+
+    expect(partitionGroups(dated, new Set(['expiring']), newestFirst, [expiring])[0]).toEqual([
+      RUNNING_CHATS_GROUP,
+      [expiring],
+    ]);
+  });
+
   it('leaves an archived chat out even while its run continues', () => {
     const dated = groupConversations([convo('idle', 0)], newestFirst);
     const archived = { ...projectChat('archived', 1), isArchived: true } as TConversation;
