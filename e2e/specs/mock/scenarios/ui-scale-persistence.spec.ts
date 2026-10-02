@@ -61,7 +61,9 @@ test.describe('UI scale persistence', () => {
     await withStoredScale(page, MAX_SCALE);
     await recordPaintSamples(page);
     await page.goto('/c/new', { timeout: 10000 });
-    await expect(page.getByTestId('nav-user')).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible({
+      timeout: 20000,
+    });
     await expectRootFontPx(page, BASE_FONT_PX * MAX_SCALE);
 
     const samples = await paintSamples(page);
@@ -113,7 +115,9 @@ test.describe('UI scale persistence', () => {
     await cdp.send('Page.setFontSizes', { fontSizes: { standard: 20, fixed: 13 } });
 
     await page.goto('/c/new', { timeout: 10000 });
-    await expect(page.getByTestId('nav-user')).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible({
+      timeout: 20000,
+    });
     /* 20px preference x 150% scale. Hard-coding 16px in the root rule would
        silently discard the preference and land on 24px. */
     await expectRootFontPx(page, 30);

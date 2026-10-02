@@ -9,6 +9,7 @@ import {
   accountButton,
   appearanceCard,
   closeSettingsButton,
+  conversationRow,
   decreaseButton,
   documentOverflowsHorizontally,
   expectRootFontPx,
@@ -176,14 +177,15 @@ test.describe('UI scale layout', () => {
 
     try {
       await page.goto('/c/new', { timeout: 10000 });
-      const firstRow = page.getByTestId('convo-item').first();
-      await expect(firstRow).toBeVisible({ timeout: 20000 });
+      /* Below the drawer breakpoint the list lives in a drawer that is not
+         painted while closed, so the row is reached through it. */
+      let firstRow = await conversationRow(page, 'Scaled row 1');
       const unscaledFont = await rootFontPx(page);
       const unscaled = await box(firstRow);
 
       await withStoredScale(page, MAX_SCALE);
       await page.reload({ timeout: 15000 });
-      await expect(firstRow).toBeVisible({ timeout: 20000 });
+      firstRow = await conversationRow(page, 'Scaled row 1');
       await expectRootFontPx(page, unscaledFont * MAX_SCALE);
       const scaled = await box(firstRow);
 
