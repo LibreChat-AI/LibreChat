@@ -124,9 +124,15 @@ test.describe('tool output polish', () => {
     await page.mouse.move(1, 1);
     await expect.poll(() => opacityOf(copy)).toBe(0);
 
-    /* Tab from the row header reaches the copy button first; focus-visible reveals it. */
+    /* Tabbing on from the row header reaches the copy button (the scrollable output box can
+       take a stop first); focus-visible reveals it. */
     await header.focus();
-    await page.keyboard.press('Tab');
+    for (let presses = 0; presses < 5; presses++) {
+      await page.keyboard.press('Tab');
+      if (await copy.evaluate((el) => el === document.activeElement)) {
+        break;
+      }
+    }
     await expect(copy).toBeFocused();
     await expect.poll(() => opacityOf(copy)).toBe(1);
   });
