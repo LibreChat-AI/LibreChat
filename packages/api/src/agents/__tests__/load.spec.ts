@@ -818,7 +818,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           ephemeralAgent: { subagents: { enabled: true, allowSelf: true, agent_ids: [] } },
         } as unknown as TConversation,
@@ -843,7 +843,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           ephemeralAgent: { subagents: { enabled: true, allowSelf: true, agent_ids: [] } },
         } as unknown as TConversation,
@@ -873,7 +873,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           ephemeralAgent: { mcp: ['overlay'] },
         } as unknown as TConversation,
@@ -904,7 +904,7 @@ describe('loadAgent', () => {
                 {
                   name: 'added-skills-on',
                   label: 'Added Skills On',
-                  preset: { endpoint: 'openai', model: 'gpt-4' },
+                  preset: { endpoint: 'openAI', model: 'gpt-4' },
                   skills: true,
                 },
               ],
@@ -912,7 +912,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           spec: 'added-skills-on',
         } as unknown as TConversation,
@@ -938,7 +938,7 @@ describe('loadAgent', () => {
                 {
                   name: 'added-scoped-skills',
                   label: 'Added Scoped Skills',
-                  preset: { endpoint: 'openai', model: 'gpt-4' },
+                  preset: { endpoint: 'openAI', model: 'gpt-4' },
                   skills: ['finance-analyst', 'brand-writer'],
                 },
               ],
@@ -946,7 +946,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           spec: 'added-scoped-skills',
         } as unknown as TConversation,
@@ -974,7 +974,7 @@ describe('loadAgent', () => {
                 {
                   name: 'added-self-spawn',
                   label: 'Added Self Spawn',
-                  preset: { endpoint: 'openai', model: 'gpt-4' },
+                  preset: { endpoint: 'openAI', model: 'gpt-4' },
                   subagents,
                 },
               ],
@@ -982,7 +982,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           spec: 'added-self-spawn',
         } as unknown as TConversation,
@@ -1010,7 +1010,7 @@ describe('loadAgent', () => {
                 {
                   name: 'mirrored-scoped-skills',
                   label: 'Mirrored Scoped Skills',
-                  preset: { endpoint: 'openai', model: 'gpt-4' },
+                  preset: { endpoint: 'openAI', model: 'gpt-4' },
                   skills: ['brand-writer'],
                   subagents,
                 },
@@ -1019,7 +1019,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           spec: 'mirrored-scoped-skills',
         } as unknown as TConversation,
@@ -1048,7 +1048,7 @@ describe('loadAgent', () => {
                 {
                   name: 'added-asks',
                   label: 'Added Asks',
-                  preset: { endpoint: 'openai', model: 'gpt-4' },
+                  preset: { endpoint: 'openAI', model: 'gpt-4' },
                   askUserQuestion: true,
                 },
               ],
@@ -1056,7 +1056,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           spec: 'added-asks',
         } as unknown as TConversation,
@@ -1079,7 +1079,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           ephemeralAgent: { ask_user_question: true },
         } as unknown as TConversation,
