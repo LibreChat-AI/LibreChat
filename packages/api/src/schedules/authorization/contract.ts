@@ -33,6 +33,8 @@ export interface ScheduledMCPAuthorizationRequest {
   readonly identity: ScheduledMCPIdentity;
   readonly resource: ScheduledMCPResource;
   readonly stage: 'activation' | 'mint' | 'invoke' | 'resume';
+  /** Set only by the owner-authorized manual trigger or its verified resume metadata. */
+  readonly manual?: boolean;
   readonly selection: ScheduledMCPToolSelection;
 }
 

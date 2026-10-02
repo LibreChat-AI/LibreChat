@@ -102,6 +102,7 @@ import {
   Providers,
   HookRegistry,
   ToolNode,
+  Constants,
   buildChildInputs,
   InMemorySubagentTaskStore,
   executeHooks,
@@ -4573,6 +4574,43 @@ describe('HITL wiring is gated on hitlCapable', () => {
       }
     },
   );
+
+  it('passes only admitted root graph handoffs into the mandatory scheduled hook', async () => {
+    const f = await executionFixture();
+    const agents = [
+      makeAgent({ id: 'root', edges: [{ from: 'root', to: 'child', edgeType: 'handoff' }] }),
+      makeAgent({ id: 'child' }),
+      makeAgent({ id: 'peer' }),
+    ];
+    await createRun({
+      agents: agents as never,
+      signal: new AbortController().signal,
+      scheduledMCPExecution: f.execution,
+      appConfig: {
+        ...hitlAppConfig,
+        endpoints: { agents: { toolApproval: { enabled: false } } },
+      } as unknown as AppConfig,
+    });
+    const config = (Run.create as jest.Mock).mock.calls[0][0];
+    for (const [toolName, expected] of [
+      [`${Constants.LC_TRANSFER_TO_}child`, undefined],
+      [`${Constants.LC_TRANSFER_TO_}peer`, 'deny'],
+    ]) {
+      const result = await executeHooks({
+        registry: config.hooks,
+        input: {
+          hook_event_name: 'PreToolUse',
+          runId: 'run',
+          toolName: toolName!,
+          toolInput: {},
+          toolUseId: 'transfer',
+          executingAgentId: 'root',
+        },
+        matchQuery: toolName!,
+      });
+      expect(result.decision).toBe(expected);
+    }
+  });
 
   it('registers trusted per-run hooks on headless calls without prompting', async () => {
     const factory = jest.fn(() => async () => ({ decision: 'deny' as const }));

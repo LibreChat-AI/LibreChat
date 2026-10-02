@@ -366,3 +366,98 @@ it('does not share an authority snapshot across concurrent attempts', async () =
   expect(f.findUser).toHaveBeenCalledTimes(2);
   expect(f.getAppConfig).toHaveBeenCalledTimes(4);
 });
+
+it.each([false, true])(
+  'allows a paused enrolled manual run at readiness and execution, restored=%s',
+  async (restored) => {
+    const f = await setup();
+    f.row.enabled = false;
+    f.snapshot.enabled = false;
+    await expect(
+      f.preflight('root', f.user, { scheduleId: 'schedule', manual: true, concurrency: 2 }),
+    ).resolves.toEqual([{ server: 'warehouse', status: 'ready' }]);
+    await expect(
+      f.preflight('root', f.user, { scheduleId: 'schedule', concurrency: 2 }),
+    ).rejects.toMatchObject({
+      outcomes: [expect.objectContaining({ reason: 'binding_mismatch' })],
+    });
+    const trigger = structuredClone(f.req);
+    const manualReq = {
+      ...trigger,
+      body: {
+        ...trigger.body,
+        agentTrigger: { ...trigger.body.agentTrigger, metadata: { manual: true } },
+      },
+    };
+    await f.host.prepare(
+      restored
+        ? {
+            req: { user: f.user, _isScheduledFire: true, body: { manual: false } },
+            context: f.context,
+            restoredContext: {
+              scheduleId: 'schedule',
+              ownerId: 'owner',
+              tenantId: 'tenant',
+              agentId: 'root',
+              invocationMode: 'delegated',
+            },
+            restoredJob: { scheduleId: 'schedule', scheduleManual: true },
+          }
+        : { req: manualReq, context: f.context },
+    );
+    const call = () =>
+      bindScheduledMCPInvocation(f.context, 'child', 'query')!.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.serverConfig,
+        toolName: 'query',
+        loadTools: async () => ({ tools: [readTool], complete: true }),
+      });
+    await expect(call()).resolves.toBeUndefined();
+    expect(f.storage.admitScheduleMCPConsent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ requireEnabled: false }),
+    );
+    await f.host.consent.service.revoke(f.identity, f.snapshot.enrollment!.revision);
+    await expect(call()).rejects.toMatchObject({ failure: { reason: 'consent_revoked' } });
+    expect(f.row.enabled).toBe(false);
+  },
+);
+
+it('does not elevate automatic paused runs from body or mutable request flags', async () => {
+  const f = await setup();
+  f.row.enabled = false;
+  f.snapshot.enabled = false;
+  const req = {
+    ...f.req,
+    _isManualScheduledFire: true,
+    body: { ...f.req.body, manual: true, scheduleManual: true },
+  };
+  await f.host.prepare({ req, context: f.context });
+  await expect(
+    bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: f.serverConfig,
+      toolName: 'query',
+      loadTools: async () => ({ tools: [readTool], complete: true }),
+    }),
+  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+});
+
+it.each(['expire', 'deny'] as const)('manual invocation still denies %s', async (mutation) => {
+  const f = await executionFixture();
+  f.snapshot.enabled = false;
+  const execution = (await f.factory.resolve(f.identity, 'invoke', { manual: true }))!;
+  f[mutation]();
+  await expect(
+    execution.bind('root', 'query').authorize({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: f.config,
+      toolName: 'query',
+      loadTools: async () => ({ tools: [readTool], complete: true }),
+    }),
+  ).rejects.toMatchObject({
+    failure: { reason: mutation === 'expire' ? 'consent_expired' : 'rbac_denied' },
+  });
+});

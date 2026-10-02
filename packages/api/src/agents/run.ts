@@ -2785,7 +2785,7 @@ export async function createRun({
   );
   const hitl = hitlCapable ? approvalWiring : undefined;
   const scheduledPolicy = scheduledMCPExecution
-    ? createScheduledMCPRunPolicy(scheduledMCPExecution, agents)
+    ? createScheduledMCPRunPolicy(scheduledMCPExecution, agents, agents[0].edges ?? [])
     : undefined;
   registerResolvedMCPToolAliases = (resolvedAgent) => {
     scheduledPolicy?.registerAgent(resolvedAgent);

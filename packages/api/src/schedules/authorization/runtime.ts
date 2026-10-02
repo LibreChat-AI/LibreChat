@@ -33,7 +33,7 @@ export function createScheduleMCPRuntimeHost(
     req: RuntimeRequest;
     context?: RequestScopedMCPConnectionStore;
     restoredContext?: ScheduledTokenContext;
-    restoredJob?: { scheduleId?: string };
+    restoredJob?: { scheduleId?: string; scheduleManual?: boolean };
   }) => Promise<void>;
 } {
   function createEvaluation(enrollment: ScheduleMCPEnrollmentDeps) {
@@ -134,7 +134,11 @@ export function createScheduleMCPRuntimeHost(
           (restoredContext.tenantId ?? null) !== (req.user.tenantId ?? null))
       )
         throw new ScheduledMCPPolicyError('binding_mismatch', '');
-      await execution.attach(context, identity, restoredContext ? 'resume' : 'invoke', true);
+      await execution.attach(context, identity, restoredContext ? 'resume' : 'invoke', true, {
+        manual: restoredContext
+          ? restoredJob?.scheduleId === scheduleId && restoredJob.scheduleManual === true
+          : fire?.manual === true,
+      });
     },
   };
 }

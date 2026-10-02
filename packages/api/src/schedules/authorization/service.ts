@@ -298,7 +298,7 @@ export function createScheduleMCPConsentService(
       if (request.resource.credentialMode === 'browser_bearer') return denial('unsupported_mode');
       if (now() >= consent.absoluteExpiresAtMs) return denial('consent_expired');
       if (
-        (!snapshot!.enabled && request.stage !== 'activation') ||
+        (!snapshot!.enabled && request.stage !== 'activation' && request.manual !== true) ||
         snapshot!.agentId !== request.identity.agentId ||
         enrollment!.scheduleRevision !== snapshot!.configRevision ||
         !identityMatches(consent.identity, request.identity) ||
@@ -341,7 +341,7 @@ export function createScheduleMCPConsentService(
         expectedConfigRevision: snapshot!.configRevision,
         revision: enrollment!.revision,
         consentId: consent.id,
-        requireEnabled: request.stage !== 'activation',
+        requireEnabled: request.stage !== 'activation' && request.manual !== true,
       });
       if (!admitted) {
         const latest = await authority.lookupConsent(request.identity, request.resource, options);

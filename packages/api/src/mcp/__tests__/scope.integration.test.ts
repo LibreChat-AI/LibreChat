@@ -297,6 +297,57 @@ describe('request-scoped MCP lifecycle integration', () => {
     MCPConnection.clearCooldown('warehouse');
   });
 
+  it('dispatches a paused enrolled manual read without permitting an automatic call', async () => {
+    const context = createContext();
+    const config: ParsedServerConfig = { type: 'streamable-http', url: server.url };
+    const connection = await manager.getConnection({
+      user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const catalog = await connection.fetchToolsSnapshot();
+    const f = await executionFixture('resume', catalog.tools[0], server.url);
+    f.snapshot.enabled = false;
+    const manual = (await f.factory.resolve(f.identity, 'resume', { manual: true }))!;
+    const protectedConnection = await manager.getConnection({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const call = (guard: ReturnType<typeof manual.bind>) =>
+      manager.callTool({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        toolName: 'echo',
+        provider: 'openai',
+        toolArguments: { value: 'read' },
+        requestScopedConnections: context,
+        flowManager,
+        scheduledMCPInvocation: guard,
+      });
+    try {
+      await expect(call(f.invocation('root'))).rejects.toMatchObject({
+        failure: { reason: 'binding_mismatch' },
+      });
+      expect(server.toolCallCount()).toBe(0);
+      await call(manual.bind('child', 'echo'));
+      expect(server.toolCallCount()).toBe(1);
+      await f.revoke();
+      await expect(call(manual.bind('child', 'echo'))).rejects.toMatchObject({
+        failure: { reason: 'consent_revoked' },
+      });
+      expect(server.toolCallCount()).toBe(1);
+    } finally {
+      await Promise.all([connection.disconnect(), protectedConnection.disconnect()]);
+      MCPConnection.clearCooldown('warehouse');
+    }
+  });
+
   it('coalesces a concurrent burst, tears down the run, and isolates the next run', async () => {
     const config = createServerConfig(server.url);
     const firstRun = createContext();

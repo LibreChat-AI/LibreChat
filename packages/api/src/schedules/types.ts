@@ -336,5 +336,7 @@ export type ScheduleMCPPreflight = (
     deadlineMs?: number;
     scheduleId?: string;
     stage?: 'activation' | 'invoke' | 'resume';
+    /** Trusted fire host provenance, never a body-provided permission. */
+    manual?: boolean;
   },
 ) => Promise<ScheduleMCPOutcome[]>;

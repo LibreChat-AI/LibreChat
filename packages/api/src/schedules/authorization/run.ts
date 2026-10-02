@@ -4,6 +4,14 @@ import type { ScheduleMCPExecution } from './execution';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { ScheduledMCPPolicyError } from './policy';
 
+interface HandoffEdge {
+  from: string | string[];
+  to: string | string[];
+  edgeType?: 'handoff' | 'direct';
+  /** Only presence is used; evaluation and destination validation remain SDK-owned. */
+  condition?: unknown;
+}
+
 interface PolicyTool {
   name: string;
   toolType?: string;
@@ -15,18 +23,54 @@ export interface ScheduledMCPPolicyAgent {
   toolDefinitions?: readonly PolicyTool[];
   toolRegistry?: ReadonlyMap<string, PolicyTool>;
   subagentAgentConfigs?: readonly ScheduledMCPPolicyAgent[];
-  subagentGraphConfigs?: readonly { memberConfigs: readonly ScheduledMCPPolicyAgent[] }[];
+  subagentGraphConfigs?: readonly {
+    definition?: { edges: readonly HandoffEdge[] };
+    memberConfigs: readonly ScheduledMCPPolicyAgent[];
+  }[];
 }
 
 /** No direct actions, arbitrary code or unclassified tools in an enrolled read-only run. */
 export function createScheduledMCPRunPolicy(
   execution: ScheduleMCPExecution,
   agents: readonly ScheduledMCPPolicyAgent[],
+  edges: readonly HandoffEdge[] = [],
 ): {
   hook: HookCallback<'PreToolUse'>;
   registerAgent: (agent: ScheduledMCPPolicyAgent) => void;
 } {
   const mcpTools = new Map<string, Set<string>>();
+  const handoffs = new Map<string, Set<string>>();
+  const registerGraph = (
+    members: readonly ScheduledMCPPolicyAgent[],
+    admittedEdges: readonly HandoffEdge[],
+  ): void => {
+    const ids = new Set(members.map(({ id }) => id));
+    for (const edge of admittedEdges) {
+      const sources = Array.isArray(edge.from) ? edge.from : [edge.from];
+      const targets = Array.isArray(edge.to) ? edge.to : [edge.to];
+      // Match SDK categorization, including its implicit one-to-many direct edge.
+      if (
+        edge.edgeType === 'direct' ||
+        (edge.edgeType == null &&
+          edge.condition == null &&
+          sources.length === 1 &&
+          targets.length > 1) ||
+        !targets.length ||
+        !targets.every((id) => ids.has(id))
+      )
+        continue;
+      const names =
+        edge.condition != null
+          ? ['conditional_transfer']
+          : targets.map((id) => `${Constants.LC_TRANSFER_TO_}${id}`);
+      for (const source of sources) {
+        if (!ids.has(source)) continue;
+        const controls = handoffs.get(source) ?? new Set<string>();
+        for (const name of names) controls.add(name);
+        handoffs.set(source, controls);
+      }
+    }
+  };
   const registerAgent = (root: ScheduledMCPPolicyAgent): void => {
     const queue = [root];
     const visited = new Set<ScheduledMCPPolicyAgent>();
@@ -34,7 +78,10 @@ export function createScheduledMCPRunPolicy(
       if (visited.has(agent)) continue;
       visited.add(agent);
       queue.push(...(agent.subagentAgentConfigs ?? []));
-      for (const graph of agent.subagentGraphConfigs ?? []) queue.push(...graph.memberConfigs);
+      for (const graph of agent.subagentGraphConfigs ?? []) {
+        queue.push(...graph.memberConfigs);
+        registerGraph(graph.memberConfigs, graph.definition?.edges ?? []);
+      }
       const names = mcpTools.get(agent.id) ?? new Set<string>();
       for (const tool of agent.toolDefinitions ?? []) {
         if (tool.toolType === 'mcp' && tool.serverName) names.add(tool.name);
@@ -46,6 +93,7 @@ export function createScheduledMCPRunPolicy(
     }
   };
   agents.forEach(registerAgent);
+  registerGraph(agents, edges);
   const controls = new Set<string>([
     Constants.SUBAGENT,
     Constants.TOOL_SEARCH,
@@ -59,7 +107,9 @@ export function createScheduledMCPRunPolicy(
         mcpTools.has(execution.identity.agentId) &&
         agentId != null &&
         mcpTools.has(agentId) &&
-        (controls.has(input.toolName) || mcpTools.get(agentId)!.has(input.toolName))
+        (controls.has(input.toolName) ||
+          handoffs.get(agentId)?.has(input.toolName) === true ||
+          mcpTools.get(agentId)!.has(input.toolName))
       )
         return {};
       // This hook only tightens tool approval. The final MCP boundary still reauthorizes.

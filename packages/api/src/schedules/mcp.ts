@@ -211,6 +211,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                 invocationMode: 'delegated',
               },
               options.stage ?? 'invoke',
+              { manual: options.manual === true },
             )
           : undefined;
     } catch (error) {

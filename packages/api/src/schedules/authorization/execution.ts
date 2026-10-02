@@ -58,23 +58,27 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
   resolve: (
     identity: ScheduledMCPIdentity,
     stage: ScheduleMCPExecution['stage'],
+    options?: { manual?: boolean },
   ) => Promise<ScheduleMCPExecution | undefined>;
   attach: (
     context: RequestScopedMCPConnectionStore,
     identity: ScheduledMCPIdentity,
     stage: ScheduleMCPExecution['stage'],
     requireEnrollment?: boolean,
+    options?: { manual?: boolean },
   ) => Promise<void>;
 } {
   async function resolve(
     identity: ScheduledMCPIdentity,
     stage: ScheduleMCPExecution['stage'],
+    options: { manual?: boolean } = {},
   ): Promise<ScheduleMCPExecution | undefined> {
     const snapshot = await deps.storage.readScheduleMCPConsent(identity);
     if (snapshot?.compatible === false) throw new ScheduledMCPPolicyError('binding_mismatch', '');
     // Existing schedules remain legacy until explicitly enrolled. Revoked enrollments stay protected.
     if (!snapshot?.enrollment) return;
     const capturedIdentity = Object.freeze({ ...identity });
+    const manual = options.manual === true;
     const resources = new Map(
       snapshot.enrollment.consents.map(({ resource }) => [
         resource.serverName,
@@ -144,6 +148,7 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
                 identity: capturedIdentity,
                 resource: resource!,
                 stage,
+                ...(manual && { manual: true }),
                 selection: { agentId: agentId!, tools: [selectionName] },
               },
               { signal },
@@ -161,8 +166,8 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
   }
   return {
     resolve,
-    async attach(context, identity, stage, requireEnrollment = false) {
-      const execution = await resolve(identity, stage);
+    async attach(context, identity, stage, requireEnrollment = false, options) {
+      const execution = await resolve(identity, stage, options);
       if (!execution && requireEnrollment) throw new ScheduledMCPPolicyError('consent_missing', '');
       if (execution) executions.set(context, execution);
     },
