@@ -68,6 +68,7 @@ describe('Import panel', () => {
     onError?: (error: unknown) => void;
   } = {};
   let capturedStartOptions: { onError?: (error: unknown) => void } = {};
+  let capturedCancelOptions: { onError?: (error: unknown) => void } = {};
   let showToast: jest.Mock;
   let uploadMutate: jest.Mock;
   let startMutate: jest.Mock;
@@ -76,6 +77,7 @@ describe('Import panel', () => {
   beforeEach(() => {
     capturedUploadOptions = {};
     capturedStartOptions = {};
+    capturedCancelOptions = {};
     showToast = jest.fn();
     uploadMutate = jest.fn();
 
@@ -96,10 +98,12 @@ describe('Import panel', () => {
         return { mutate: startMutate, isLoading: false };
       },
     );
-    dataProvider.useCancelImportMutation.mockReturnValue({
-      mutate: cancelMutate,
-      isLoading: false,
-    });
+    dataProvider.useCancelImportMutation.mockImplementation(
+      (options: typeof capturedCancelOptions) => {
+        capturedCancelOptions = options ?? {};
+        return { mutate: cancelMutate, isLoading: false };
+      },
+    );
     dataProvider.useImportJobQuery.mockReturnValue({ data: undefined });
     window.localStorage.clear();
   });
@@ -792,6 +796,24 @@ describe('Import panel', () => {
     expect(showToast).toHaveBeenCalledWith(
       expect.objectContaining({
         message: 'There was an error importing your data',
+        severity: 'error',
+      }),
+    );
+  });
+
+  it('shows an error toast when cancelling the import fails', () => {
+    dataProvider.useImportJobQuery.mockReturnValue({
+      data: job({ phase: 'conversations', status: 'active' }),
+    });
+    render(<Import />);
+
+    act(() => {
+      capturedCancelOptions.onError?.(new Error('cancel failed'));
+    });
+
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'The import could not be cancelled. Try again.',
         severity: 'error',
       }),
     );

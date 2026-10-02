@@ -122,7 +122,16 @@ export default function Import() {
     },
   });
 
-  const cancelMutation = useCancelImportMutation();
+  /** The refetch the hook runs on error settles what the panel shows; the
+   * toast says the button did not take, so the user can try again. */
+  const cancelMutation = useCancelImportMutation({
+    onError: () => {
+      showToast({
+        message: localize('com_ui_import_cancel_error'),
+        severity: NotificationSeverity.ERROR,
+      });
+    },
+  });
 
   const handleFile = useCallback(
     (file: File) => {

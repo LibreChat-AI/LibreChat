@@ -51,11 +51,9 @@ export const useStartImportMutation = (options?: {
   });
 };
 
-export const useCancelImportMutation = (): UseMutationResult<
-  ImportJobActionResult,
-  unknown,
-  string
-> => {
+export const useCancelImportMutation = (options?: {
+  onError?: (error: unknown) => void;
+}): UseMutationResult<ImportJobActionResult, unknown, string> => {
   const queryClient = useQueryClient();
 
   return useMutation<ImportJobActionResult, unknown, string>({
@@ -74,9 +72,10 @@ export const useCancelImportMutation = (): UseMutationResult<
     /** A dropped response is ambiguous: cancellation may already have
      * succeeded while polling is paused on the confirmation screen. Refetch
      * both the job and any conversations the run may have committed. */
-    onError: (_error, jobId) => {
+    onError: (error, jobId) => {
       queryClient.invalidateQueries([QueryKeys.importJob, jobId]);
       invalidateImportedConversations(queryClient);
+      options?.onError?.(error);
     },
   });
 };

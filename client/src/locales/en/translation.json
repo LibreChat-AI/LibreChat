@@ -1798,6 +1798,7 @@
   "com_ui_import_another": "Import another file",
   "com_ui_import_assets": "{{0}} attachments ({{1}})",
   "com_ui_import_cancel": "Cancel import",
+  "com_ui_import_cancel_error": "The import could not be cancelled. Try again.",
   "com_ui_import_cancelled": "Import cancelled",
   "com_ui_import_conversation_error": "There was an error importing your data",
   "com_ui_import_conversation_file_type_error": "Unsupported import type",

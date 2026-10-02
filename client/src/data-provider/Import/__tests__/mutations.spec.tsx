@@ -219,7 +219,8 @@ describe('useCancelImportMutation', () => {
     const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
 
-    const { result, unmount } = renderHook(() => useCancelImportMutation(), {
+    const onError = jest.fn();
+    const { result, unmount } = renderHook(() => useCancelImportMutation({ onError }), {
       wrapper: createWrapper(queryClient),
     });
 
@@ -227,6 +228,7 @@ describe('useCancelImportMutation', () => {
       await result.current.mutateAsync('job-1').catch(() => undefined);
     });
 
+    expect(onError).toHaveBeenCalledTimes(1);
     expect(invalidateSpy).toHaveBeenCalledWith([QueryKeys.importJob, 'job-1']);
     expect(invalidateSpy).toHaveBeenCalledWith([QueryKeys.allConversations]);
 
