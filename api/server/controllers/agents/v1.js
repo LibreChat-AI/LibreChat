@@ -44,7 +44,8 @@ const {
   reconcileAgentWorkspaceDefault,
   resolveAgentWorkspaceRestoreConfiguration,
   shouldValidateAgentWorkspaceDefaultBinding,
-  validateAgentWorkspaceDefaultBinding,
+  validateStatefulCodeEnvironment,
+  validateAgentCodeEnvironmentAllowlist,
   marketplaceMineFilter,
   resolveMarketplaceListQuery,
   mapMarketplaceListError,
@@ -65,7 +66,6 @@ const {
   AgentCapabilities,
   EModelEndpoint,
   FileSources,
-  resolveAllowedStatefulCodeEnvironments,
   removeCodeExecutionCaller,
   hasActivePiiFields,
   hasActivePiiPatterns,
@@ -481,69 +481,6 @@ const isCodeInterpreterCapabilityEnabled = (req) => {
   return capabilities.includes(AgentCapabilities.execute_code);
 };
 
-/** Reject a newly selected stateful workspace scope that the deployment owner
- * has excluded. Disabled sessions and unrelated edits remain saveable so an
- * allowlist tightening never silently rewrites or strands an existing agent. */
-const validateStatefulCodeEnvironment = (
-  req,
-  res,
-  enabled,
-  environment,
-  environmentId,
-  environmentIdSelected = false,
-  workspaceId,
-  currentWorkspaceId,
-  currentEnvironmentId,
-) => {
-  const configuredEnvironments =
-    req.config?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments ?? [];
-  const workspaceValidation = validateAgentWorkspaceDefaultBinding({
-    workspaceId,
-    environmentId,
-    currentWorkspaceId,
-    currentEnvironmentId,
-    environments: configuredEnvironments,
-  });
-  if (!workspaceValidation.valid) {
-    res.status(400).json({ error: workspaceValidation.error });
-    return false;
-  }
-  if (enabled !== true && !environmentIdSelected) {
-    return true;
-  }
-  if (environmentId != null) {
-    const configuredEnvironment = configuredEnvironments.find(
-      (configured) => configured.id === environmentId,
-    );
-    const pairingOnly =
-      configuredEnvironment?.pairing?.allowPrincipalWorkers === true &&
-      configuredEnvironment.pairing.workerId == null &&
-      configuredEnvironment.workerId == null;
-    if (configuredEnvironment == null || pairingOnly) {
-      res.status(400).json({
-        error: `Stateful code environment is not configured: ${environmentId}`,
-      });
-      return false;
-    }
-  }
-  if (enabled !== true) {
-    return true;
-  }
-
-  const allowedEnvironments = resolveAllowedStatefulCodeEnvironments(
-    req.config?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.allowedEnvironments,
-  );
-  const resolvedEnvironment = environment ?? 'user';
-  if (allowedEnvironments.includes(resolvedEnvironment)) {
-    return true;
-  }
-
-  res.status(403).json({
-    error: `Stateful code environment is not allowed by this deployment: ${resolvedEnvironment}`,
-  });
-  return false;
-};
-
 /**
  * @param {import('librechat-data-provider').AgentSubagentsConfig | undefined} subagents
  * @param {Express.Request} req
@@ -806,6 +743,9 @@ const createAgentHandler = async (req, res) => {
         agentData.code_environment_id,
         agentData.code_environment_id != null,
         agentData.code_workspace_id,
+        undefined,
+        undefined,
+        agentData.code_environment_ids,
       )
     ) {
       return;
@@ -1084,6 +1024,9 @@ const updateAgentHandler = async (req, res) => {
     /** See the create path: retain hydrated file IDs through validation. */
     normalizeToolResourceFiles(req.body?.tool_resources);
     const validatedData = agentUpdateSchema.parse(req.body);
+    if (!validateAgentCodeEnvironmentAllowlist(req, res, validatedData.code_environment_ids)) {
+      return;
+    }
     // Preserve explicit null for avatar to allow resetting the avatar
     const {
       avatar: avatarField,
@@ -1470,6 +1413,9 @@ const duplicateAgentHandler = async (req, res) => {
       id: newAgentId,
       author: userId,
     });
+    if (!validateAgentCodeEnvironmentAllowlist(req, res, newAgentData.code_environment_ids)) {
+      return;
+    }
     if (
       isActiveAgentWorkspaceConfiguration(newAgentData) &&
       !validateStatefulCodeEnvironment(
@@ -2024,6 +1970,9 @@ const revertAgentVersionHandler = async (req, res) => {
     }
 
     const revertVersion = existingAgent.versions?.[version_index];
+    if (!validateAgentCodeEnvironmentAllowlist(req, res, revertVersion?.code_environment_ids)) {
+      return;
+    }
     const restoredWorkspaceConfiguration = revertVersion
       ? resolveAgentWorkspaceRestoreConfiguration({
           version: revertVersion,

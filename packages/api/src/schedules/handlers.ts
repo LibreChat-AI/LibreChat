@@ -5,7 +5,12 @@ import {
   updateSchedulePayloadSchema,
   isCronCadence,
 } from 'librechat-data-provider';
-import type { TScheduleCadence, TCreateSchedule, TUpdateSchedule } from 'librechat-data-provider';
+import type {
+  TScheduleCadence,
+  TCreateSchedule,
+  TUpdateSchedule,
+  TSchedule,
+} from 'librechat-data-provider';
 import type { ScheduleMethods, ISchedule, IScheduleRun } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type {
@@ -246,10 +251,11 @@ export type WireSchedule = Pick<
   | 'configRevision'
   | 'createdAt'
   | 'updatedAt'
-> & {
-  /** See `TSchedule.inFlight`: the generating occurrences, from their own run rows. */
-  inFlight?: Array<{ conversationId: string }>;
-};
+> &
+  Pick<TSchedule, 'hasMCPConsent'> & {
+    /** See `TSchedule.inFlight`: the generating occurrences, from their own run rows. */
+    inFlight?: Array<{ conversationId: string }>;
+  };
 
 /** Only generating occurrences are read for the list. `ScheduleRun` is indexed by
  *  status, not by user, and `started` rows are bounded globally by the capacity
@@ -297,6 +303,7 @@ export function toWireSchedule(
 ): WireSchedule {
   return {
     id: schedule.id,
+    ...(schedule.mcpConsent && { hasMCPConsent: true }),
     user: schedule.user,
     name: schedule.name,
     prompt: schedule.prompt,
@@ -583,6 +590,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       ),
       limits: {
         maxPerUser: limits.maxPerUser,
+        ...(limits.mcpConsent?.enabled && { mcpConsent: true }),
         // minIntervalMinutes ships with the list so the dialog can refuse a cadence
         // the floor would reject, instead of surfacing it as a 400 after submit.
         minIntervalMinutes: limits.minIntervalMinutes,

@@ -9,3 +9,10 @@ export * from './readiness';
 export * from './trigger';
 export * from './types';
 export * from './mcp';
+
+export * from './authorization/service';
+export * from './authorization/host';
+export * from './authorization/handlers';
+export type * from './authorization/contract';
+
+export * from './authorization/enrollment';

@@ -458,6 +458,7 @@ export const getAllPromptGroups = () => `${prompts()}/all`;
 /* Scheduled chats */
 export const schedules = () => `${BASE_URL}/api/schedules`;
 export const schedule = (id: string) => `${schedules()}/${encodeURIComponent(id)}`;
+export const scheduleMCPConsent = (id: string) => `${schedule(id)}/mcp-consent`;
 export const runSchedule = (id: string) => `${schedule(id)}/run`;
 
 /* Skills */

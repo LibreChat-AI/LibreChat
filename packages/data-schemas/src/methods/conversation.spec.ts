@@ -1338,6 +1338,24 @@ describe('Conversation Operations', () => {
     const userId = 'user123';
     const unsetFields = { codeEnvironmentMode: 1, codeWorkspaces: 1 };
 
+    it('preserves explicit agent ownership through save, reload and a stale ordinary save', async () => {
+      const conversationId = uuidv4();
+      const codeWorkspaces = [{ ...mac, agentIds: ['primary', 'reviewer'] }];
+      await saveConvo(
+        { userId },
+        { conversationId, codeEnvironmentMode: 'attached', codeWorkspaces },
+      );
+      expect((await getConvo(userId, conversationId))?.codeWorkspaces).toEqual(codeWorkspaces);
+      await saveConvo(
+        { userId },
+        { conversationId, codeEnvironmentMode: 'attached', codeWorkspaces: [vm] },
+      );
+      expect(
+        (await methods.readAdmittedConvoCodeEnvironmentDecision(userId, conversationId))
+          ?.codeWorkspaces,
+      ).toEqual(codeWorkspaces);
+    });
+
     it.each([
       { codeEnvironmentMode: 'attached', codeWorkspaces: [mac] },
       { codeEnvironmentMode: 'without_attached' },

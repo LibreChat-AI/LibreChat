@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { Check, ChevronDown, Folder, FolderSync, FolderX, RefreshCw } from 'lucide-react';
 import { TooltipAnchor, composerControlClasses, useToastContext } from '@librechat/client';
+import { Check, ChevronDown, Folder, FolderSync, FolderX, RefreshCw, Monitor } from 'lucide-react';
 import type { CodeWorkspaceSelection, TConversation } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type {
@@ -14,6 +14,7 @@ import {
   useCodeWorkspaceRefresh,
   useMoveConversationCodeEnvironmentMutation,
   useReconcileConversationCodeEnvironmentMutation,
+  useCodeEnvironmentStatusQueries,
 } from '~/data-provider';
 import {
   cn,
@@ -105,6 +106,7 @@ function chosenWorkspaceId(
 
 function EnvironmentWorkspaces({
   environment,
+  requiredBy,
   workspaces,
   emptyLabel,
   hideOnClick,
@@ -112,6 +114,7 @@ function EnvironmentWorkspaces({
   onSelect,
 }: {
   environment: CodeWorkspaceEnvironmentResult['environment'];
+  requiredBy?: CodeWorkspaceEnvironmentResult['requiredBy'];
   workspaces: CodeWorkspaceEnvironmentResult['workspaces'];
   emptyLabel: string;
   hideOnClick: boolean;
@@ -120,10 +123,17 @@ function EnvironmentWorkspaces({
 }) {
   const localize = useLocalize();
   return (
-    <div>
+    <div data-code-environment-id={environment.id}>
       <Ariakit.MenuHeading render={<div />} className={headingClasses}>
         {environment.name ?? environment.id}
       </Ariakit.MenuHeading>
+      {requiredBy != null && requiredBy.length > 0 && (
+        <p className="text-text-secondary px-2.5 pb-2 text-xs">
+          {localize('com_ui_code_workspace_used_by', {
+            0: requiredBy.map(({ id, name }) => name || id).join(', '),
+          })}
+        </p>
+      )}
       {workspaces.length === 0 && (
         <div className="text-text-secondary px-2.5 py-2 text-sm">{emptyLabel}</div>
       )}
@@ -177,6 +187,17 @@ function EnvironmentWorkspaces({
   );
 }
 
+function WorkspaceRequirements({ id, requirements }: { id: string; requirements: string[] }) {
+  if (requirements.length === 0) return null;
+  return (
+    <div id={id} role="status" aria-live="polite" className="text-text-secondary text-xs">
+      {requirements.map((requirement) => (
+        <p key={requirement}>{requirement}</p>
+      ))}
+    </div>
+  );
+}
+
 export default function CodeWorkspaceMenu({
   setConversation,
   workspace,
@@ -186,10 +207,28 @@ export default function CodeWorkspaceMenu({
   workspace: CodeWorkspaceResult;
   disabled: boolean;
 }) {
+  const requirementsId = useId();
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const menuStore = Ariakit.useMenuStore({ focusLoop: true, placement: 'top-start' });
   const isOpen = menuStore.useState('open');
+  const [machineId, setMachineId] = useState<string | null>(null);
+  const machine = workspace.machineOptions?.find(
+    ({ id }) =>
+      id === machineId && !workspace.environments.some(({ environment }) => environment.id === id),
+  );
+  const machineQueries = useCodeEnvironmentStatusQueries(
+    machine ? [machine.id] : [],
+    isOpen && machine != null && !workspace.locked,
+  );
+  const machineQuery = machineQueries[0];
+  const machineStatus = machineQuery?.data;
+  const machineReady =
+    machine != null &&
+    machineStatus?.environmentId === machine.id &&
+    machineStatus.status === 'ready' &&
+    machineStatus.workspaces != null &&
+    machineStatus.operations != null;
   const moveMutation = useMoveConversationCodeEnvironmentMutation(setConversation);
   const reconcileMutation = useReconcileConversationCodeEnvironmentMutation(setConversation);
   const { refresh, isRefreshing } = useCodeWorkspaceRefresh();
@@ -228,18 +267,38 @@ export default function CodeWorkspaceMenu({
   const environmentIds = new Set(workspace.environments.map(({ environment }) => environment.id));
   const selectWorkspace = (selection: CodeWorkspaceSelection) => {
     workspace.rememberSelection(selection);
+    const replacedIds = new Set(
+      workspace.machineOptionGroups?.filter((ids) => ids.includes(selection.environmentId)).flat(),
+    );
+    const owners = workspace.machineChoiceOwners
+      ?.filter(({ environmentIds }) => environmentIds.includes(selection.environmentId))
+      .map(({ agentId }) => agentId);
     setConversation((current) => {
       if (current == null) return current;
-      const retained = (current.codeWorkspaces ?? workspace.selections ?? []).filter(
-        ({ environmentId }) =>
-          environmentIds.has(environmentId) && environmentId !== selection.environmentId,
+      const retained = (current.codeWorkspaces ?? workspace.selections ?? []).flatMap(
+        ({ agentIds, ...existing }) => {
+          if (
+            !environmentIds.has(existing.environmentId) ||
+            existing.environmentId === selection.environmentId
+          )
+            return [];
+          const remaining = agentIds?.filter((id) => !owners?.includes(id));
+          const fixed = workspace.fixedMachineIds?.includes(existing.environmentId);
+          if (
+            !fixed &&
+            (agentIds == null ? replacedIds.has(existing.environmentId) : remaining?.length === 0)
+          )
+            return [];
+          return [{ ...existing, ...(remaining?.length ? { agentIds: remaining } : {}) }];
+        },
       );
       return {
         ...current,
         codeEnvironmentMode: 'attached',
-        codeWorkspaces: [...retained, selection].sort((a, b) =>
-          a.environmentId.localeCompare(b.environmentId),
-        ),
+        codeWorkspaces: [
+          ...retained,
+          { ...selection, ...(owners?.length ? { agentIds: owners } : {}) },
+        ].sort((a, b) => a.environmentId.localeCompare(b.environmentId)),
       };
     });
   };
@@ -264,7 +323,15 @@ export default function CodeWorkspaceMenu({
   const chosenTargets =
     transition?.targets.flatMap((target) => {
       const workspaceId = chosenWorkspaceId(target, moveChoices);
-      return workspaceId == null ? [] : [{ environmentId: target.environment.id, workspaceId }];
+      return workspaceId == null
+        ? []
+        : [
+            {
+              environmentId: target.environment.id,
+              workspaceId,
+              ...(target.selectionOwners?.length ? { agentIds: target.selectionOwners } : {}),
+            },
+          ];
     }) ?? [];
   /** A transition replaces the whole decision, so an empty target set is the detach and gets its
    *  own item: this one only confirms a decision that still names at least one workspace. */
@@ -311,12 +378,46 @@ export default function CodeWorkspaceMenu({
   } else if (label == null) {
     label = labelKey ? localize(labelKey) : localize('com_ui_code_workspace_choose');
   }
+  if (onlyDescriptor && (workspace.machineOptions?.length ?? 0) > 1) {
+    label = `${onlyEnvironment?.environment.name ?? onlyEnvironment?.environment.id} · ${label}`;
+  }
   const Icon =
     workspace.mode === 'without_attached' ||
     workspace.state === 'missing' ||
     workspace.state === 'unavailable'
       ? FolderX
       : Folder;
+  const pendingRequirements =
+    workspace.state === 'without_attached'
+      ? []
+      : workspace.environments.flatMap(({ environment, state, requiredBy }) => {
+          if (state === 'ready' || !requiredBy?.length) return [];
+          const agents = requiredBy.map(({ id, name }) => name || id).join(', ');
+          return [
+            state === 'choose'
+              ? localize('com_ui_code_workspace_required_for', {
+                  0: agents,
+                  1: environment.name ?? environment.id,
+                })
+              : localize('com_ui_code_workspace_agent_status', {
+                  0: agents,
+                  1: environment.name ?? environment.id,
+                  2: localize(stateLabels[state] ?? 'com_ui_code_workspace_unavailable'),
+                }),
+          ];
+        });
+  const requirements =
+    pendingRequirements.length === 0 && workspace.state === 'choose' && !workspace.canSubmit
+      ? [localize('com_ui_code_workspace_graph_selection_conflict')]
+      : pendingRequirements;
+  if (
+    requirements.length > 0 &&
+    new Set(
+      workspace.environments.flatMap(({ requiredBy }) => requiredBy?.map(({ id }) => id) ?? []),
+    ).size > 1
+  ) {
+    requirements.unshift(localize('com_ui_code_workspace_graph_requirement'));
+  }
 
   if (workspace.locked && transition == null) {
     /** A sealed decision with no transition on offer only reports where this chat runs: without a
@@ -327,26 +428,30 @@ export default function CodeWorkspaceMenu({
         ? localize('com_ui_code_workspace_without_attached_info')
         : localize('com_ui_code_workspace_locked_recovery');
     return (
-      <TooltipAnchor
-        description={recovery}
-        render={
-          <button
-            type="button"
-            data-testid="code-workspace-locked-status"
-            disabled={disabled || isRefreshing}
-            onClick={() => void refresh()}
-            aria-label={`${label}. ${recovery}. ${localize('com_ui_retry')}`}
-            aria-busy={isRefreshing}
-            className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')}
-          />
-        }
-      >
-        <Icon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-        <span role="status" className="max-w-[16rem] min-w-0 truncate">
-          {label}
-        </span>
-        <RefreshCw className="text-text-secondary size-3 shrink-0" aria-hidden="true" />
-      </TooltipAnchor>
+      <div className="flex min-w-0 flex-col items-start gap-1">
+        <TooltipAnchor
+          description={requirements.join(' ') || recovery}
+          render={
+            <button
+              type="button"
+              data-testid="code-workspace-locked-status"
+              disabled={disabled || isRefreshing}
+              onClick={() => void refresh()}
+              aria-label={`${label}. ${recovery}. ${localize('com_ui_retry')}`}
+              aria-describedby={requirements.length > 0 ? requirementsId : undefined}
+              aria-busy={isRefreshing}
+              className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')}
+            />
+          }
+        >
+          <Icon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+          <span role="status" className="max-w-[16rem] min-w-0 truncate">
+            {label}
+          </span>
+          <RefreshCw className="text-text-secondary size-3 shrink-0" aria-hidden="true" />
+        </TooltipAnchor>
+        <WorkspaceRequirements id={requirementsId} requirements={requirements} />
+      </div>
     );
   }
 
@@ -360,37 +465,43 @@ export default function CodeWorkspaceMenu({
 
   return (
     <Ariakit.MenuProvider store={menuStore}>
-      <TooltipAnchor
-        description={transitionText?.info ?? localize('com_ui_code_workspace')}
-        disabled={isOpen}
-        render={
-          <Ariakit.MenuButton
-            disabled={buttonDisabled}
-            data-testid={renamesForMove ? 'code-workspace-move' : 'code-workspace'}
-            aria-label={
-              transitionText == null
-                ? `${localize('com_ui_code_workspace')}: ${label}`
-                : `${buttonLabel}. ${transitionText.info}`
-            }
+      <div className="flex min-w-0 flex-col items-start gap-1">
+        <TooltipAnchor
+          description={
+            transitionText?.info ?? (requirements.join(' ') || localize('com_ui_code_workspace'))
+          }
+          disabled={isOpen}
+          render={
+            <Ariakit.MenuButton
+              disabled={buttonDisabled}
+              data-testid={renamesForMove ? 'code-workspace-move' : 'code-workspace'}
+              aria-describedby={requirements.length > 0 ? requirementsId : undefined}
+              aria-label={
+                transitionText == null
+                  ? `${localize('com_ui_code_workspace')}: ${label}`
+                  : `${buttonLabel}. ${transitionText.info}`
+              }
+              className={cn(
+                composerControlClasses(),
+                'md:px-theme-control-x max-w-full min-w-0 px-2.5',
+                isOpen && 'bg-surface-hover',
+                buttonDisabled && 'cursor-not-allowed opacity-50',
+              )}
+            />
+          }
+        >
+          <ButtonIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+          <span className="max-w-[12rem] min-w-0 truncate">{buttonLabel}</span>
+          <ChevronDown
             className={cn(
-              composerControlClasses(),
-              'md:px-theme-control-x max-w-full min-w-0 px-2.5',
-              isOpen && 'bg-surface-hover',
-              buttonDisabled && 'cursor-not-allowed opacity-50',
+              'text-text-secondary size-3 shrink-0 transition-transform',
+              isOpen && 'rotate-180',
             )}
+            aria-hidden="true"
           />
-        }
-      >
-        <ButtonIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-        <span className="max-w-[12rem] min-w-0 truncate">{buttonLabel}</span>
-        <ChevronDown
-          className={cn(
-            'text-text-secondary size-3 shrink-0 transition-transform',
-            isOpen && 'rotate-180',
-          )}
-          aria-hidden="true"
-        />
-      </TooltipAnchor>
+        </TooltipAnchor>
+        <WorkspaceRequirements id={requirementsId} requirements={requirements} />
+      </div>
       <Ariakit.Menu
         portal={true}
         gutter={8}
@@ -413,6 +524,7 @@ export default function CodeWorkspaceMenu({
               <EnvironmentWorkspaces
                 key={target.environment.id}
                 environment={target.environment}
+                requiredBy={target.requiredBy}
                 workspaces={target.workspaces}
                 emptyLabel={localize('com_ui_code_workspace_unavailable')}
                 hideOnClick={false}
@@ -499,19 +611,79 @@ export default function CodeWorkspaceMenu({
                 )}
               </Ariakit.MenuItemRadio>
             )}
-            {workspace.environments.map(({ environment, state, workspaces, selected }) => (
-              <EnvironmentWorkspaces
-                key={environment.id}
-                environment={environment}
-                workspaces={workspaces}
-                emptyLabel={localize(stateLabels[state] ?? 'com_ui_code_workspace_unavailable')}
-                hideOnClick={true}
-                isSelected={(workspaceId) =>
-                  workspace.mode === 'attached' && workspaceId === selected?.workspaceId
-                }
-                onSelect={selectWorkspace}
-              />
-            ))}
+            {workspace.environments.map(
+              ({ environment, state, workspaces, selected, requiredBy }) => (
+                <EnvironmentWorkspaces
+                  key={environment.id}
+                  environment={environment}
+                  requiredBy={requiredBy}
+                  workspaces={workspaces}
+                  emptyLabel={localize(stateLabels[state] ?? 'com_ui_code_workspace_unavailable')}
+                  hideOnClick={true}
+                  isSelected={(workspaceId) =>
+                    workspace.mode === 'attached' && workspaceId === selected?.workspaceId
+                  }
+                  onSelect={selectWorkspace}
+                />
+              ),
+            )}
+            {workspace.machineOptions?.some(({ id }) => !environmentIds.has(id)) && (
+              <>
+                <Ariakit.MenuSeparator className="border-border-light my-1 h-0 w-full border-t" />
+                <Ariakit.MenuHeading render={<div />} className={headingClasses}>
+                  {localize('com_ui_code_environment_choose_machine')}
+                </Ariakit.MenuHeading>
+                {workspace.machineOptions
+                  ?.filter(({ id }) => !environmentIds.has(id))
+                  .map((candidate) => (
+                    <Ariakit.MenuItem
+                      key={candidate.id}
+                      hideOnClick={false}
+                      className={menuItemClasses(machineId === candidate.id)}
+                      onClick={() => setMachineId(candidate.id)}
+                    >
+                      <Monitor
+                        className="text-text-secondary mt-0.5 size-4 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span className="text-text-primary min-w-0 flex-1 truncate text-left text-sm">
+                        {candidate.name ?? candidate.id}
+                      </span>
+                    </Ariakit.MenuItem>
+                  ))}
+                {machine != null &&
+                  (machineReady ? (
+                    <EnvironmentWorkspaces
+                      environment={machine}
+                      workspaces={machineStatus?.workspaces ?? []}
+                      emptyLabel={localize('com_ui_code_workspace_unavailable')}
+                      hideOnClick={true}
+                      isSelected={() => false}
+                      onSelect={selectWorkspace}
+                    />
+                  ) : (
+                    <Ariakit.MenuItem
+                      hideOnClick={false}
+                      className={menuItemClasses()}
+                      disabled={machineQuery?.isLoading}
+                      aria-busy={machineQuery?.isLoading}
+                      onClick={() => void machineQuery?.refetch()}
+                    >
+                      <RefreshCw
+                        className="text-text-secondary mt-0.5 size-4 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span role="status" className="text-text-secondary text-sm">
+                        {localize(
+                          machineQuery?.isLoading
+                            ? 'com_ui_code_workspace_loading'
+                            : 'com_ui_code_workspace_unavailable',
+                        )}
+                      </span>
+                    </Ariakit.MenuItem>
+                  ))}
+              </>
+            )}
           </>
         )}
         <Ariakit.MenuSeparator className="border-border-light my-1 h-0 w-full border-t" />

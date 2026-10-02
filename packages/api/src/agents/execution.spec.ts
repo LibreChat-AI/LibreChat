@@ -1,6 +1,7 @@
 import winston from 'winston';
 import { Writable } from 'node:stream';
 import { logger } from '@librechat/data-schemas';
+import type { Agent, TConversation } from 'librechat-data-provider';
 import type { CodeExecutionContext } from './execution';
 import {
   assertCodeExecutionApprovalBinding,
@@ -9,14 +10,206 @@ import {
   codeExecutionHeaders,
   getCodeWorkspaceSelections,
   resolveCodeExecutionContext,
+  resolveCodeExecutionWorkspaceSelections,
 } from './execution';
+import { CodeWorkspaceSelectionError } from '~/code/errors';
+import { loadAddedAgent } from './added';
 
 jest.mock('@librechat/agents', () => ({
+  ...jest.requireActual('@librechat/agents'),
   Constants: { EXECUTE_CODE: 'execute_code' },
   getCodeBaseURL: jest.fn(() => 'http://code-default.test/v1///'),
 }));
 
+describe('resolveCodeExecutionWorkspaceSelections', () => {
+  it('keeps persisted choices and empty sets authoritative over request overrides', () => {
+    const requested = [{ environmentId: 'runtime-vm', workspaceId: 'runtime' }];
+    const persisted = [{ environmentId: 'application-vm', workspaceId: 'app' }];
+    expect(
+      resolveCodeExecutionWorkspaceSelections({
+        conversation: { codeWorkspaces: persisted },
+        request: { codeWorkspaces: requested },
+      }),
+    ).toBe(persisted);
+    expect(
+      resolveCodeExecutionWorkspaceSelections({
+        conversation: { codeWorkspaces: [] },
+        request: { codeWorkspaces: requested },
+      }),
+    ).toEqual([]);
+    expect(
+      resolveCodeExecutionWorkspaceSelections({ request: { codeWorkspaces: requested } }),
+    ).toBe(requested);
+    expect(resolveCodeExecutionWorkspaceSelections({})).toBeUndefined();
+  });
+});
+
 describe('resolveCodeExecutionContext', () => {
+  describe('per-chat attached machines', () => {
+    const environments = ['application-vm', 'runtime-vm'].map((id) => ({
+      id,
+      name: id,
+      type: 'attached' as const,
+      owner: 'deployment' as const,
+      baseURL: `https://${id}.example.com/v1`,
+      workerId: `worker-${id}`,
+      configSchema: {
+        permissions: {
+          commandExecution: { allowed: ['ask' as const, 'deny' as const], default: 'ask' as const },
+        },
+      },
+      settings: {
+        permissions: {
+          commandExecution: id === 'runtime-vm' ? ('deny' as const) : ('ask' as const),
+        },
+      },
+    }));
+    const params = {
+      statefulSessions: true,
+      environmentId: 'application-vm',
+      environments,
+      userId: 'user-1',
+      agentId: 'lia',
+      conversationId: 'chat-runtime',
+      allowEnvironmentSelection: true,
+      environmentIds: ['runtime-vm'],
+      workspaceSelections: [{ environmentId: 'runtime-vm', workspaceId: 'primary' }],
+    };
+
+    it('keeps the owned route after the real added-agent loader assigns its runtime suffix', async () => {
+      const added = await loadAddedAgent(
+        { req: {}, conversation: { agent_id: 'agent_lia' } as TConversation },
+        {
+          getAgent: async () => ({ id: 'agent_lia' }) as Agent,
+          getMCPServerTools: jest.fn(),
+        },
+      );
+      expect(added?.id).toBe('agent_lia____1');
+      expect(
+        resolveCodeExecutionContext({
+          ...params,
+          agentId: added?.id,
+          workspaceSelections: [
+            { environmentId: 'application-vm', workspaceId: 'primary' },
+            { environmentId: 'runtime-vm', workspaceId: 'primary', agentIds: ['agent_lia'] },
+          ],
+        }).environmentId,
+      ).toBe('runtime-vm');
+    });
+
+    it.each([false, true])('rejects revoked owned routes when allowSelection=%s', (enabled) => {
+      expect(() =>
+        resolveCodeExecutionContext({
+          ...params,
+          allowEnvironmentSelection: enabled,
+          environmentIds: [],
+          workspaceSelections: [
+            { environmentId: 'application-vm', workspaceId: 'primary' },
+            { environmentId: 'runtime-vm', workspaceId: 'primary', agentIds: ['lia'] },
+          ],
+        }),
+      ).toThrow(CodeWorkspaceSelectionError);
+    });
+
+    it('uses explicit ownership for a primary alternative without moving its fixed reviewer', () => {
+      const choices = [
+        { environmentId: 'application-vm', workspaceId: 'primary' },
+        { environmentId: 'runtime-vm', workspaceId: 'primary', agentIds: ['lia'] },
+      ];
+      expect(
+        resolveCodeExecutionContext({ ...params, workspaceSelections: choices }).environmentId,
+      ).toBe('runtime-vm');
+      expect(
+        resolveCodeExecutionContext({
+          ...params,
+          agentId: 'reviewer',
+          environmentIds: undefined,
+          workspaceSelections: choices,
+        }).environmentId,
+      ).toBe('application-vm');
+    });
+
+    it('routes the same agent independently per chat, including policy and session partitions', () => {
+      const runtime = resolveCodeExecutionContext(params);
+      const application = resolveCodeExecutionContext({
+        ...params,
+        conversationId: 'chat-application',
+        workspaceSelections: [{ environmentId: 'application-vm', workspaceId: 'primary' }],
+      });
+      expect(runtime).toMatchObject({
+        environmentId: 'runtime-vm',
+        bridgeWorkerId: 'worker-runtime-vm',
+        baseUrl: 'https://runtime-vm.example.com/v1',
+        codeEnvironmentSettings: environments[1].settings,
+      });
+      expect(application.environmentId).toBe('application-vm');
+      expect(application.codeEnvironmentSettings?.permissions?.commandExecution).toBe('ask');
+      expect(runtime.codeEnvironmentSettings?.permissions?.commandExecution).toBe('deny');
+      expect(runtime.executionRouteKey).not.toBe(application.executionRouteKey);
+      expect(runtime.codeSessionKey).not.toBe(application.codeSessionKey);
+      expect(runtime.conversationWorkspaceInstanceId).not.toBe(
+        application.conversationWorkspaceInstanceId,
+      );
+    });
+
+    it.each(['allowEnvironmentSelection', 'environmentIds'] as const)(
+      'retains fixed routing when %s is disabled',
+      (gate) => {
+        expect(
+          resolveCodeExecutionContext({
+            ...params,
+            ...(gate === 'allowEnvironmentSelection'
+              ? { allowEnvironmentSelection: false }
+              : { environmentIds: [] }),
+          }).environmentId,
+        ).toBe('application-vm');
+      },
+    );
+
+    it('rejects routes outside the authorized config instead of falling back', () => {
+      expect(() =>
+        resolveCodeExecutionContext({ ...params, environments: [environments[0]] }),
+      ).toThrow(CodeWorkspaceSelectionError);
+    });
+
+    it('preserves the selected default when another graph agent needs an allowed alternative', () => {
+      expect(
+        resolveCodeExecutionContext({
+          ...params,
+          workspaceSelections: [
+            ...params.workspaceSelections,
+            { environmentId: 'application-vm', workspaceId: 'primary' },
+          ],
+        }).environmentId,
+      ).toBe('application-vm');
+    });
+
+    it('rejects ambiguous non-default selections and attempts to select managed execution', () => {
+      expect(() =>
+        resolveCodeExecutionContext({
+          ...params,
+          workspaceSelections: [
+            ...params.workspaceSelections,
+            { environmentId: 'application-vm', workspaceId: 'primary' },
+          ],
+          environmentId: 'missing-default',
+          environmentIds: ['application-vm', 'runtime-vm'],
+        }),
+      ).toThrow('The selected attached workspace is invalid.');
+      expect(() =>
+        resolveCodeExecutionContext({
+          ...params,
+          environments: [environments[0], { ...environments[1], type: 'managed' }],
+        }),
+      ).toThrow('does not advertise selectable workspaces');
+    });
+
+    it('can choose another authorized machine when the old default has disappeared', () => {
+      expect(
+        resolveCodeExecutionContext({ ...params, environments: [environments[1]] }).environmentId,
+      ).toBe('runtime-vm');
+    });
+  });
   const originalStatefulUrl = process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
 
   afterEach(() => {
@@ -567,6 +760,14 @@ describe('stateful code approval target binding', () => {
   it('persists only the environment/workspace pair, not live capabilities', () => {
     expect(getCodeWorkspaceSelections([context()])).toEqual([
       { environmentId: 'environment-a', workspaceId: 'project-a' },
+    ]);
+  });
+
+  it('retains graph ownership when removing live workspace capabilities', () => {
+    const owned = context();
+    owned.codeWorkspace!.agentIds = ['agent-a'];
+    expect(getCodeWorkspaceSelections([owned])).toEqual([
+      { environmentId: 'environment-a', workspaceId: 'project-a', agentIds: ['agent-a'] },
     ]);
   });
 });
