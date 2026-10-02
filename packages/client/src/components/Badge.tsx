@@ -72,7 +72,7 @@ export default function Badge({
   const badgeClassName = cn(
     'group relative inline-flex items-center gap-1.5 rounded-full px-4 py-1.5',
     'border border-border-medium text-sm font-medium transition-shadow',
-    '@container-[37.5rem]:w-full size-9 p-2',
+    '@container-[600px]:w-full size-9 p-2',
     /** A resting badge takes the badge label ink; a hovered or selected one moves to the primary
      *  ink, which holds AA on the hover and active fills where a muted label may not. */
     isActive
@@ -91,18 +91,18 @@ export default function Badge({
       {Icon && (
         <Icon
           className={cn(
-            '@container-[37.5rem]:h-4 @container-[37.5rem]:w-4 relative h-5 w-5',
+            '@container-[600px]:h-4 @container-[600px]:w-4 relative h-5 w-5',
             !label && 'mx-auto',
           )}
           aria-hidden="true"
         />
       )}
-      <span className="@container-[37.5rem]:inline relative hidden">{label}</span>
+      <span className="@container-[600px]:inline relative hidden">{label}</span>
 
       {isEditing && !isDragging && (
         <motion.button
           type="button"
-          className="@container-[37.5rem]:h-5 @container-[37.5rem]:w-5 bg-surface-secondary-alt text-text-primary absolute -top-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full shadow-xs"
+          className="@container-[600px]:h-5 @container-[600px]:w-5 bg-surface-secondary-alt text-text-primary absolute -top-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full shadow-xs"
           aria-label={isAvailable ? `Remove ${label}` : `Restore ${label}`}
           initial={{ opacity: 0, scale: 0.8 }}
           animate={{ opacity: 1, scale: 1 }}
