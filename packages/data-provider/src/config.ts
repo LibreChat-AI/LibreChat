@@ -1392,11 +1392,37 @@ export const DEFAULT_MAX_PROVIDER_ERROR_CHARS = 2000;
 export const DEFAULT_AGENT_MODEL_RESPONSE_BODY_TIMEOUT_MS = 900_000;
 export const DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS = 300_000;
 
+export const HOST_FILE_EDIT_HARD_MAX_COUNT = 100;
+
+/** Host-side skill/sandbox edit budgets. Attached workers retain their own limits. */
+export const hostFileEditLimitsSchema = z
+  .object({
+    maxEdits: z
+      .number()
+      .int()
+      .min(1)
+      .max(HOST_FILE_EDIT_HARD_MAX_COUNT)
+      .default(HOST_FILE_EDIT_HARD_MAX_COUNT),
+    maxWorkBytes: z
+      .number()
+      .int()
+      .min(1024)
+      .max(256 * 1024 * 1024)
+      .default(32 * 1024 * 1024),
+    maxOccurrences: z.number().int().min(1).max(1_000_000).default(100_000),
+    timeoutMs: z.number().int().min(100).max(10_000).default(2000),
+    maxConcurrent: z.number().int().min(1).max(8).default(2),
+  })
+  .strict();
+
+export type HostFileEditLimits = z.infer<typeof hostFileEditLimitsSchema>;
+
 export const agentsEndpointSchema = baseEndpointSchema
   .omit({ baseURL: true })
   .merge(
     z.object({
       /* agents specific */
+      hostFileEdits: hostFileEditLimitsSchema.optional(),
       /** Maximum provider error characters retained in unprotected terminal failures. */
       maxProviderErrorChars: z
         .number()

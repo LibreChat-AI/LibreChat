@@ -1,3 +1,4 @@
+import { applyTextEdits } from './files/matching';
 jest.mock('./prewarm', () => ({
   markSandboxReady: jest.fn(),
 }));
@@ -5320,25 +5321,21 @@ describe('createToolExecuteHandler', () => {
         if (++normalizations > budget) throw new Error('Repeated window normalization');
         return trimEnd.call(this);
       });
-      let result: ToolExecuteResult;
+      let message = '';
       try {
-        [result] = await invokeHandler(handler, [
-          {
-            id: 'call_matching_large_miss',
-            name: 'edit_file',
-            args: {
-              path: 'skills/matching-skill/references/a.md',
-              old_text: oldText,
-              new_text: 'changed',
-            },
-          },
-        ]);
+        applyTextEdits(content, [{ old_text: oldText, new_text: 'changed' }], {
+          maxEdits: 100,
+          maxWorkBytes: 33554432,
+          maxOccurrences: 100000,
+          maxOutputBytes: 10 * 1024 * 1024,
+        });
+      } catch (error) {
+        message = error instanceof Error ? error.message : '';
       } finally {
         spy.mockRestore();
       }
       expect(normalizations).toBe(budget);
-      expect(result.status).toBe('error');
-      expect(result.errorMessage).toContain('old_text did not match');
+      expect(message).toContain('old_text did not match');
       expect(saveSkillFileContent).not.toHaveBeenCalled();
     });
 
@@ -5488,7 +5485,7 @@ describe('createToolExecuteHandler', () => {
       },
     );
 
-    it('replaces any number of exact matches when the result fits', async () => {
+    it('replaces more than 10000 exact matches within the work budget', async () => {
       const saveSkillFileContent = jest.fn(async () => ({
         bytes: 10_001,
         relativePath: 'references/a.md',
@@ -5533,6 +5530,192 @@ describe('createToolExecuteHandler', () => {
       expect(saveSkillFileContent).toHaveBeenCalledWith(
         expect.objectContaining({ content: 'bc\n'.repeat(10_001) }),
       );
+    });
+
+    const amplificationEdits = () => [
+      ...Array.from({ length: 23 }, () => ({ old_text: 'a', new_text: 'aa', replace_all: true })),
+      ...Array.from({ length: 30 }, (_, i) => ({
+        old_text: i % 2 ? 'b' : 'a',
+        new_text: i % 2 ? 'a' : 'b',
+        replace_all: true,
+      })),
+      { old_text: 'a', new_text: '', replace_all: true },
+    ];
+
+    it.each(['SKILL.md', 'references/a.md'])(
+      'rejects compact amplification atomically for %s without starving timers',
+      async (file) => {
+        const updateSkill = jest.fn();
+        const saveSkillFileContent = jest.fn();
+        const handler = makeAuthoringHandler({
+          getSkillByName: jest.fn(async () => ({
+            _id: SKILL_ID,
+            name: 'bounded-skill',
+            body: 'ax',
+            fileCount: 1,
+            version: 1,
+          })),
+          getSkillFileByPath: jest.fn(async () => ({
+            content: 'ax',
+            isBinary: false,
+            bytes: 2,
+            mimeType: 'text/markdown',
+            filepath: '/tmp/a.md',
+            file_id: 'revision-1',
+            source: 'local',
+            relativePath: 'references/a.md',
+          })),
+          updateSkill,
+          saveSkillFileContent,
+        });
+        let timerFired = false;
+        const timer = setTimeout(() => {
+          timerFired = true;
+        }, 0);
+        const [result] = await invokeHandler(handler, [
+          {
+            id: 'amplification',
+            name: 'edit_file',
+            args: { path: `skills/bounded-skill/${file}`, edits: amplificationEdits() },
+          },
+        ]);
+        clearTimeout(timer);
+        expect(result.status).toBe('error');
+        expect(result.errorMessage).toContain('budget exceeded');
+        expect(timerFired).toBe(true);
+        expect(updateSkill).not.toHaveBeenCalled();
+        expect(saveSkillFileContent).not.toHaveBeenCalled();
+      },
+    );
+
+    it('honors deployment work limits across alternating edits, including contraction', async () => {
+      const saveSkillFileContent = jest.fn();
+      const handler = makeAuthoringHandler(
+        {
+          getSkillByName: jest.fn(async () => ({
+            _id: SKILL_ID,
+            name: 'bounded-skill',
+            body: '# Existing',
+            fileCount: 1,
+            version: 1,
+          })),
+          getSkillFileByPath: jest.fn(async () => ({
+            content: 'a'.repeat(1000),
+            isBinary: false,
+            bytes: 1000,
+            mimeType: 'text/markdown',
+            filepath: '/tmp/a.md',
+            file_id: 'revision-1',
+            source: 'local',
+            relativePath: 'references/a.md',
+          })),
+          saveSkillFileContent,
+        },
+        {
+          req: {
+            user: { id: 'user-1' },
+            config: {
+              endpoints: {
+                agents: { hostFileEdits: { maxWorkBytes: 12000, maxOccurrences: 100000 } },
+              },
+            },
+          },
+        },
+      );
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'alternating',
+          name: 'edit_file',
+          args: {
+            path: 'skills/bounded-skill/references/a.md',
+            edits: [
+              { old_text: 'a', new_text: 'b', replace_all: true },
+              { old_text: 'b', new_text: 'a', replace_all: true },
+              { old_text: 'a', new_text: 'b', replace_all: true },
+              { old_text: 'b', new_text: 'a', replace_all: true },
+              { old_text: 'a', new_text: '', replace_all: true },
+            ],
+          },
+        },
+      ]);
+      expect(result.errorMessage).toContain('processing budget exceeded');
+      expect(saveSkillFileContent).not.toHaveBeenCalled();
+    });
+
+    it('cancels host processing without writing an intermediate skill revision', async () => {
+      const controller = new AbortController();
+      const saveSkillFileContent = jest.fn();
+      const handler = makeAuthoringHandler({
+        runSignal: controller.signal,
+        getSkillByName: jest.fn(async () => ({
+          _id: SKILL_ID,
+          name: 'bounded-skill',
+          body: '# Existing',
+          fileCount: 1,
+          version: 1,
+        })),
+        getSkillFileByPath: jest.fn(async () => ({
+          content: 'ax',
+          isBinary: false,
+          bytes: 2,
+          mimeType: 'text/markdown',
+          filepath: '/tmp/a.md',
+          file_id: 'revision-1',
+          source: 'local',
+          relativePath: 'references/a.md',
+        })),
+        saveSkillFileContent,
+      });
+      const timer = setTimeout(() => controller.abort(), 0);
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'cancelled',
+          name: 'edit_file',
+          args: { path: 'skills/bounded-skill/references/a.md', edits: amplificationEdits() },
+        },
+      ]);
+      clearTimeout(timer);
+      expect(result.status).toBe('error');
+      expect(saveSkillFileContent).not.toHaveBeenCalled();
+    });
+
+    it('checks cancellation again after final permission checks and before saving', async () => {
+      const controller = new AbortController();
+      const saveSkillFileContent = jest.fn();
+      const handler = makeAuthoringHandler({
+        runSignal: controller.signal,
+        canEditSkill: jest.fn(async () => {
+          controller.abort();
+          return true;
+        }),
+        getSkillByName: jest.fn(async () => ({
+          _id: SKILL_ID,
+          name: 'bounded-skill',
+          body: '# Existing',
+          fileCount: 1,
+          version: 1,
+        })),
+        getSkillFileByPath: jest.fn(async () => ({
+          content: 'ax',
+          isBinary: false,
+          bytes: 2,
+          mimeType: 'text/markdown',
+          filepath: '/tmp/a.md',
+          file_id: 'revision-1',
+          source: 'local',
+          relativePath: 'references/a.md',
+        })),
+        saveSkillFileContent,
+      });
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'cancel_before_save',
+          name: 'edit_file',
+          args: { path: 'skills/bounded-skill/references/a.md', old_text: 'a', new_text: 'b' },
+        },
+      ]);
+      expect(result.status).toBe('error');
+      expect(saveSkillFileContent).not.toHaveBeenCalled();
     });
 
     it('blocks authoring hidden skills unless they were primed this turn', async () => {
@@ -5756,6 +5939,29 @@ describe('createToolExecuteHandler', () => {
         ...params,
       });
     }
+
+    it('rejects exact replacement amplification before writing a non-attached sandbox file', async () => {
+      const writeSandboxFile = jest.fn();
+      const handler = makeSandboxAuthoringHandler({
+        readSandboxFile: jest.fn(async () => ({ content: 'ax' })),
+        writeSandboxFile,
+      });
+      const edits = Array.from({ length: 23 }, () => ({
+        old_text: 'a',
+        new_text: 'aa',
+        replace_all: true,
+      }));
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'sandbox_amplification',
+          name: 'edit_file',
+          args: { path: '/mnt/data/a.txt', edits },
+        },
+      ]);
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toContain('budget exceeded');
+      expect(writeSandboxFile).not.toHaveBeenCalled();
+    });
 
     it('creates a sandbox file when it does not already exist', async () => {
       const readSandboxFile = jest.fn(async () => {

@@ -698,6 +698,13 @@ endpoints:
   #   maxRecursionLimit: 100
   #   # (optional) Abort a run once a single streamed tool call's arguments exceed this many bytes.
   #   # Guards against runaway malformed tool-call generation. Defaults to 65536 (64 KiB); 0 disables.
+  #   # Host-side skill/sandbox edits, not attached-worker edits. Over-budget calls write nothing.
+  #   hostFileEdits:
+  #     maxEdits: 100
+  #     maxWorkBytes: 33554432  # cumulative matching/reconstruction bytes
+  #     maxOccurrences: 100000 # cumulative occurrences across every edit/pass
+  #     timeoutMs: 2000       # terminate an overlong worker job
+  #     maxConcurrent: 2      # per API process; no waiting queue
   #   maxToolCallArgBytes: 65536
   #   # (optional) Abort a run once a single model generation emits more than this many stream events.
   #   # Defense in depth against looping provider streams. Disabled by default.

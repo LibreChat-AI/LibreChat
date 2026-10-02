@@ -42,6 +42,32 @@ const endpointsConfig: TEndpointsConfig = {
   Gemini: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
 };
 
+describe('host-side file edit limits', () => {
+  it('keeps configuration optional and resolves safe defaults when configured', () => {
+    expect(agentsEndpointSchema.parse({}).hostFileEdits).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ hostFileEdits: {} }).hostFileEdits).toEqual({
+      maxEdits: 100,
+      maxWorkBytes: 33554432,
+      maxOccurrences: 100000,
+      timeoutMs: 2000,
+      maxConcurrent: 2,
+    });
+  });
+  it.each([
+    { maxEdits: 101 },
+    { maxEdits: 0 },
+    { maxWorkBytes: 0 },
+    { maxOccurrences: 1000001 },
+    { timeoutMs: 0 },
+    { timeoutMs: 10001 },
+    { maxConcurrent: 9 },
+    { maxConcurrent: 1.5 },
+    { ignored: true },
+  ])('rejects unsafe limits %p', (hostFileEdits) => {
+    expect(agentsEndpointSchema.safeParse({ hostFileEdits }).success).toBe(false);
+  });
+});
+
 describe('authenticated 2FA management rate limits', () => {
   it('accepts an account budget and defaults an empty configuration to seven requests', () => {
     for (const [input, expected] of [
