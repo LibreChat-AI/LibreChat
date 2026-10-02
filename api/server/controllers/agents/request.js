@@ -483,6 +483,17 @@ async function saveErrorTurn(
         saveMessage(reqCtx, message, {
           context: 'api/server/controllers/agents/request.js - finalize failed compaction turn',
         }),
+      announceSettledTurn: (messageId) =>
+        announceErrorTurn(
+          { stampConvoLastResponse },
+          {
+            userId,
+            conversationId,
+            messageId,
+            isTemporary: reqCtx.isTemporary,
+            context: 'AgentController - finalized failed compaction turn',
+          },
+        ),
     });
     if (coveredByExistingRow) {
       return;

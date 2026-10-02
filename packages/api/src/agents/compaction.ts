@@ -338,6 +338,10 @@ export async function resolveAbortedTurnAnchorDecision(
 export interface AbortedTurnPersistencePlan {
   writeUserRow: boolean;
   writeResponseRow: boolean;
+  /** An ordinary stopped reply stays `unfinished` so it can be continued; a
+   *  stopped compaction is settled, since nothing continues it and a live
+   *  envelope would keep restored sessions reading it as still running. */
+  responseUnfinished: boolean;
   withholdFinal: boolean;
   withholdReason?: string;
 }
@@ -354,11 +358,42 @@ export function planAbortedTurnPersistence(
   return {
     writeUserRow: active && anchorDecision === 'persist',
     writeResponseRow: active,
+    responseUnfinished: anchorDecision === 'persist',
     withholdFinal: withhold,
     ...(withhold && {
       withholdReason: 'Compaction anchor unavailable; abort turn withheld',
     }),
   };
+}
+
+/**
+ * The abort route's whole persistence decision for a stopped turn: reads the
+ * compaction anchor through the caller's message reader (id-only), plans the
+ * rows, and returns the failures the route must report so the manager
+ * publishes a reconciliation frame instead of a normal FINAL.
+ */
+export async function resolveAbortedTurnPersistence(
+  jobData: Parameters<typeof resolveAbortedTurnAnchorDecision>[0],
+  shouldPersistAbortedTurn: boolean,
+  {
+    userId,
+    getMessages,
+  }: {
+    userId?: string;
+    getMessages: (
+      filter: { user?: string; messageId: string; conversationId?: string },
+      projection?: string,
+    ) => Promise<unknown[]>;
+  },
+): Promise<AbortedTurnPersistencePlan & { persistenceErrors: Error[] }> {
+  const anchorDecision = await resolveAbortedTurnAnchorDecision(jobData, {
+    messageExists: async (messageId, conversationId) =>
+      (await getMessages({ user: userId, messageId, conversationId }, '_id')).length > 0,
+  });
+  const plan = planAbortedTurnPersistence(anchorDecision, shouldPersistAbortedTurn);
+  const persistenceErrors =
+    plan.withholdFinal && plan.withholdReason ? [new Error(plan.withholdReason)] : [];
+  return { ...plan, persistenceErrors };
 }
 
 /** A message row as the failed-turn settlement reads it: identity for the
@@ -390,6 +425,7 @@ export async function settleExistingRowsBeforeErrorTurn(
     liveResponseMessageId,
     getMessages,
     saveFinalizedTurn,
+    announceSettledTurn,
   }: {
     userId: string;
     conversationId: string;
@@ -400,6 +436,9 @@ export async function settleExistingRowsBeforeErrorTurn(
       projection?: string,
     ) => Promise<ReadableMessageRow[]>;
     saveFinalizedTurn: (message: Record<string, unknown>) => Promise<unknown>;
+    /** Announces a row this settlement finalized, as the error row's own
+     *  path does, so other devices learn the persisted turn ended. */
+    announceSettledTurn?: (messageId: string) => Promise<unknown>;
   },
 ): Promise<boolean> {
   const isCompaction = requestBody?.compact === true;
@@ -416,11 +455,14 @@ export async function settleExistingRowsBeforeErrorTurn(
     if (partial.length === 0) {
       return false;
     }
-    await persistFinalizedCompactionTurn(partial[0], requestBody, {
+    const finalized = await persistFinalizedCompactionTurn(partial[0], requestBody, {
       messageId: liveResponseMessageId,
       conversationId,
       saveMessage: saveFinalizedTurn,
     });
+    if (finalized) {
+      await announceSettledTurn?.(liveResponseMessageId);
+    }
     return true;
   };
   const existing = await getMessages(

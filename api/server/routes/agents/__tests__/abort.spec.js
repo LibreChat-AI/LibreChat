@@ -439,7 +439,7 @@ describe('Agent Abort Endpoint', () => {
           expect.objectContaining({
             messageId: compactionRowId,
             parentMessageId: anchorId,
-            unfinished: true,
+            unfinished: false,
             isCreatedByUser: false,
           }),
           expect.objectContaining({ context: expect.stringContaining('abort endpoint') }),

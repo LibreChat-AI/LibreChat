@@ -20,6 +20,7 @@ import {
   persistFinalizedCompactionTurn,
   isSettledJobRecord,
   planAbortedTurnPersistence,
+  resolveAbortedTurnPersistence,
   resolveAbortedTurnAnchorDecision,
   settleExistingRowsBeforeErrorTurn,
   resolveFailedTurnContent,
@@ -1019,6 +1020,7 @@ describe('planAbortedTurnPersistence', () => {
     expect(planAbortedTurnPersistence('persist', true)).toEqual({
       writeUserRow: true,
       writeResponseRow: true,
+      responseUnfinished: true,
       withholdFinal: false,
     });
   });
@@ -1027,6 +1029,7 @@ describe('planAbortedTurnPersistence', () => {
     expect(planAbortedTurnPersistence('skip-anchor', true)).toEqual({
       writeUserRow: false,
       writeResponseRow: true,
+      responseUnfinished: false,
       withholdFinal: false,
     });
   });
@@ -1035,6 +1038,7 @@ describe('planAbortedTurnPersistence', () => {
     expect(planAbortedTurnPersistence('skip-turn', true)).toEqual({
       writeUserRow: false,
       writeResponseRow: false,
+      responseUnfinished: false,
       withholdFinal: true,
       withholdReason: expect.stringContaining('anchor unavailable'),
     });
@@ -1044,6 +1048,7 @@ describe('planAbortedTurnPersistence', () => {
     expect(planAbortedTurnPersistence('persist', false)).toEqual({
       writeUserRow: false,
       writeResponseRow: false,
+      responseUnfinished: true,
       withholdFinal: false,
     });
   });
@@ -1055,7 +1060,64 @@ describe('planAbortedTurnPersistence', () => {
     expect(planAbortedTurnPersistence('skip-turn', false)).toEqual({
       writeUserRow: false,
       writeResponseRow: false,
+      responseUnfinished: false,
       withholdFinal: false,
+    });
+  });
+});
+
+describe('resolveAbortedTurnPersistence', () => {
+  const jobData = {
+    compact: true,
+    conversationId: 'conversation-1',
+    userMessage: { messageId: 'leaf-1' },
+  };
+
+  /** Nothing continues a stopped compaction, so its row is written settled. */
+  it('writes a settled response under a persisted compaction anchor', async () => {
+    const getMessages = jest.fn(async () => [{ _id: 'row' }]);
+
+    const plan = await resolveAbortedTurnPersistence(jobData, true, {
+      userId: 'user-1',
+      getMessages,
+    });
+
+    expect(getMessages).toHaveBeenCalledWith(
+      { user: 'user-1', messageId: 'leaf-1', conversationId: 'conversation-1' },
+      '_id',
+    );
+    expect(plan).toMatchObject({
+      writeUserRow: false,
+      writeResponseRow: true,
+      responseUnfinished: false,
+      withholdFinal: false,
+      persistenceErrors: [],
+    });
+  });
+
+  it('reports the withheld final when the compaction anchor is missing', async () => {
+    const plan = await resolveAbortedTurnPersistence(jobData, true, {
+      userId: 'user-1',
+      getMessages: jest.fn(async () => []),
+    });
+
+    expect(plan.writeResponseRow).toBe(false);
+    expect(plan.withholdFinal).toBe(true);
+    expect(plan.persistenceErrors).toHaveLength(1);
+    expect(plan.persistenceErrors[0].message).toContain('anchor unavailable');
+  });
+
+  it('keeps an ordinary stopped reply unfinished without reading its anchor', async () => {
+    const getMessages = jest.fn(async () => []);
+
+    const plan = await resolveAbortedTurnPersistence({}, true, { getMessages });
+
+    expect(getMessages).not.toHaveBeenCalled();
+    expect(plan).toMatchObject({
+      writeUserRow: true,
+      writeResponseRow: true,
+      responseUnfinished: true,
+      persistenceErrors: [],
     });
   });
 });
@@ -1103,6 +1165,27 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
       unfinished: false,
       error: true,
     });
+  });
+
+  /** The error row's own path announces the persisted turn; a finalized live
+   *  row stands in for it, so it is announced the same way. */
+  it('announces the live row it finalized', async () => {
+    const announceSettledTurn = jest.fn(async () => undefined);
+    const { deps: d } = deps({ 'live-response': [partialSummaryRow()] });
+
+    await settleExistingRowsBeforeErrorTurn({ compact: true }, { ...d, announceSettledTurn });
+
+    expect(announceSettledTurn).toHaveBeenCalledWith('live-response');
+  });
+
+  it('announces nothing when the existing row needed no write', async () => {
+    const announceSettledTurn = jest.fn(async () => undefined);
+    const { saved, deps: d } = deps({ 'live-response': [{ messageId: 'live-response' }] });
+
+    await settleExistingRowsBeforeErrorTurn({}, { ...d, announceSettledTurn });
+
+    expect(saved).toHaveLength(0);
+    expect(announceSettledTurn).not.toHaveBeenCalled();
   });
 
   /** The error id normalizes back to the anchor itself when the anchor ends

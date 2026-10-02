@@ -3,7 +3,14 @@ import type { APIRequestContext, Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { getE2EUser } from '../../../setup/user';
 import { deleteConversations, deleteMessagesByConversation, seedMessages, withMongo } from '../db';
-import { messagesView, sendMessage, sendMessageAndWaitForCompletion } from '../helpers';
+import {
+  MOCK_ENDPOINTS,
+  NEW_CHAT_PATH,
+  messagesView,
+  sendMessage,
+  selectMockEndpoint,
+  sendMessageAndWaitForCompletion,
+} from '../helpers';
 
 const userEmail = getE2EUser().email;
 const LABEL_SERVER = `http://127.0.0.1:${process.env.E2E_LABEL_PORT || '8889'}`;
@@ -173,18 +180,21 @@ test.describe('compaction abort finalize', () => {
     const label = `stopped-reply-${randomUUID().slice(0, 8)}`;
     const prompt = `E2E_SLOW_REPLY:${label}`;
 
-    await page.goto('/c/new');
+    await page.goto(NEW_CHAT_PATH);
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
     const run = await sendMessage(page, prompt);
     expect(run.ok()).toBeTruthy();
     await expect(messagesView(page).getByText('chunk-010')).toBeVisible({ timeout: 15_000 });
+
+    /* Stop while the reply is still streaming; the conversation id is read
+       once the run has settled. */
+    const stop = page.getByRole('button', { name: 'Stop generating' });
+    await stop.click({ timeout: 10_000 });
+    await expect(stop).toBeHidden({ timeout: 20_000 });
     await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/, { timeout: 15_000 });
     const conversationId = new URL(page.url()).pathname.replace('/c/', '');
 
     try {
-      const stop = page.getByTestId('stop-generation-button');
-      await stop.click();
-      await expect(stop).toBeHidden({ timeout: 20_000 });
-
       let reply: Row | null = null;
       await expect
         .poll(
@@ -208,7 +218,9 @@ test.describe('compaction abort finalize', () => {
       await page.reload();
       await expect(messagesView(page).getByText(prompt)).toBeVisible({ timeout: 20_000 });
       await expect(messagesView(page).getByText('chunk-010')).toBeVisible();
-      await expect(page.getByTestId('stop-generation-button')).toHaveCount(0);
+      /* Stopped well before the end of the scripted stream. */
+      await expect(messagesView(page).getByText('chunk-159')).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
     } finally {
       await cleanup(conversationId);
     }
