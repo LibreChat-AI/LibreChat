@@ -978,7 +978,10 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
         overrides: {
           content?: Array<Record<string, unknown>>;
           userSubmittedPaths?: string[];
-          userSubmittedMessageFieldPaths?: Array<{ path: string; field: string }>;
+          userSubmittedMessageFieldPaths?: Array<{
+            path: string;
+            field: 'answer' | 'decision_response' | 'decision_reason';
+          }>;
         } = {},
       ) {
         const job = await manager.createJob(streamId, 'user-1');
