@@ -779,10 +779,16 @@ function makeStatusKey(sourceId: string, tenantId?: string): string {
   return `${tenantId ?? ''}:${sourceId}`;
 }
 
-async function ensurePublicViewer(
+async function ensureSourceSharing(
   deps: GitHubSkillSyncDeps,
   skillId: Types.ObjectId,
+  source: SkillSyncGitHubSourceConfig,
 ): Promise<void> {
+  // Manual sharing belongs to administrators. In particular, do not restore a
+  // removed PUBLIC grant or publish a newly created/recovered mirror.
+  if (source.sharePublicly === false) {
+    return;
+  }
   await deps.grantPermission({
     principalType: PrincipalType.PUBLIC,
     principalId: null,
@@ -1096,6 +1102,7 @@ async function deleteSyncedSkillForRestore(
 async function restoreDeletedSyncedSkill(
   deps: GitHubSkillSyncDeps,
   deleted: DeletedSyncedSkillJournal,
+  source: SkillSyncGitHubSourceConfig,
 ): Promise<void> {
   const restored = await deps.createSkill(toCreateSkillInput(deleted.skill));
   for (const file of deleted.files) {
@@ -1104,7 +1111,7 @@ async function restoreDeletedSyncedSkill(
       skillId: restored.skill._id,
     });
   }
-  await ensurePublicViewer(deps, restored.skill._id);
+  await ensureSourceSharing(deps, restored.skill._id, source);
 }
 
 async function cleanupDeletedSyncedSkillFiles(
@@ -1746,7 +1753,7 @@ async function syncSource(params: {
             `Skill "${effectivePrepared.existing.name}" was modified during sync`,
           );
         }
-        await ensurePublicViewer(deps, effectivePrepared.existing._id);
+        await ensureSourceSharing(deps, effectivePrepared.existing._id, source);
         const previousFiles = await deps.listSkillFiles(effectivePrepared.existing._id);
         const journal: SyncSkillFilesJournal = { staleFiles: [], savedFiles: [] };
         let fileCounts: SyncSkillFilesResult;
@@ -1803,7 +1810,7 @@ async function syncSource(params: {
             );
           });
           if (staleConflictCleanup?.deletedSkill) {
-            await restoreDeletedSyncedSkill(deps, staleConflictCleanup.deletedSkill).catch(
+            await restoreDeletedSyncedSkill(deps, staleConflictCleanup.deletedSkill, source).catch(
               (cleanupError) => {
                 logger.error(
                   '[GitHubSkillSync] Failed to recreate stale mirrored skill after sync failure:',
@@ -1846,7 +1853,7 @@ async function syncSource(params: {
           discovered,
           assertNotCancelled,
         });
-        await ensurePublicViewer(deps, skill._id);
+        await ensureSourceSharing(deps, skill._id, source);
         logSkillWarnings(skill.name, upserted.warnings);
         counts.syncedSkillCount++;
         counts.syncedFileCount += fileCounts.syncedFileCount;

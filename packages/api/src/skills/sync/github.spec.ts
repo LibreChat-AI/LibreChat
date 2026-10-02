@@ -238,6 +238,7 @@ function makeSourceAuthorId(sourceId = 'librechat-skills', tenantId?: string): T
 
 function createDeps(
   overrides: Partial<GitHubSkillSyncDeps> = {},
+  sharePublicly?: boolean,
 ): GitHubSkillSyncDeps & { statuses: ISkillSyncStatus[] } {
   const statuses: ISkillSyncStatus[] = [];
   const deps: GitHubSkillSyncDeps & { statuses: ISkillSyncStatus[] } = {
@@ -250,6 +251,7 @@ function createDeps(
         sources: [
           {
             id: 'librechat-skills',
+            sharePublicly,
             owner: 'LibreChat',
             repo: 'skills',
             ref: 'main',
@@ -338,51 +340,91 @@ function createDeps(
 }
 
 describe('createGitHubSkillSyncRunner', () => {
-  it('creates a GitHub skill and syncs bundled files from a configured path', async () => {
+  it('applies sharing independently for public and manually shared sources', async () => {
     const deps = createDeps();
-    const runner = createGitHubSkillSyncRunner(deps);
-    const result = await runner.runOnce();
-    const fetchedUrls = (deps.fetchFn as unknown as jest.Mock).mock.calls.map(
-      ([input]: [RequestInfo | URL]) => input.toString(),
-    );
-
+    const config = await deps.getConfig();
+    if (!config?.github) throw new Error('Expected fixture config');
+    const github = config.github;
+    const source = github.sources[0];
+    deps.getConfig = () => ({
+      ...config,
+      github: {
+        ...github,
+        sources: [
+          { ...source, sharePublicly: true },
+          { ...source, id: 'restricted-skills', sharePublicly: false },
+        ],
+      },
+    });
+    const result = await createGitHubSkillSyncRunner(deps).runOnce();
     expect(result.status).toBe('completed');
-    expect(fetchedUrls.some((url) => url.includes('/git/trees/tree-sha?recursive=1'))).toBe(false);
-    expect(fetchedUrls.some((url) => url.includes('/git/trees/skills-tree-sha?recursive=1'))).toBe(
-      true,
-    );
-    expect(deps.createSkill).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'research',
-        description: 'Research things',
-        body: expect.stringContaining('Body'),
-        alwaysApply: true,
-        source: 'github',
-        sourceMetadata: expect.objectContaining({
-          provider: 'github',
-          sourceId: 'librechat-skills',
-          upstreamId: 'librechat-skills:skills/research',
-          skillBlobSha: 'skill-md-sha',
-        }),
-      }),
-    );
-    expect(deps.upsertSkillFile).toHaveBeenCalledWith(
-      expect.objectContaining({
-        relativePath: 'scripts/run.sh',
-        sourceMetadata: expect.objectContaining({
-          upstreamId: 'librechat-skills:skills/research',
-          blobSha: 'file-sha',
-          commitSha: 'commit-sha',
-        }),
-      }),
+    expect(deps.createSkill).toHaveBeenCalledTimes(2);
+    expect(deps.grantPermission).toHaveBeenCalledTimes(1);
+    const [publicResult, restrictedResult] = await Promise.all(
+      (deps.createSkill as jest.Mock).mock.results.map((result) => result.value),
     );
     expect(deps.grantPermission).toHaveBeenCalledWith(
-      expect.objectContaining({
-        principalType: 'public',
-        accessRoleId: 'skill_viewer',
-      }),
+      expect.objectContaining({ resourceId: publicResult.skill._id }),
+    );
+    expect(deps.grantPermission).not.toHaveBeenCalledWith(
+      expect.objectContaining({ resourceId: restrictedResult.skill._id }),
     );
   });
+
+  it.each([undefined, true, false])(
+    'creates a GitHub skill and syncs bundled files from a configured path (sharePublicly=%s)',
+    async (sharePublicly) => {
+      const deps = createDeps({}, sharePublicly);
+      const runner = createGitHubSkillSyncRunner(deps);
+      const result = await runner.runOnce();
+      const fetchedUrls = (deps.fetchFn as unknown as jest.Mock).mock.calls.map(
+        ([input]: [RequestInfo | URL]) => input.toString(),
+      );
+
+      expect(result.status).toBe('completed');
+      expect(fetchedUrls.some((url) => url.includes('/git/trees/tree-sha?recursive=1'))).toBe(
+        false,
+      );
+      expect(
+        fetchedUrls.some((url) => url.includes('/git/trees/skills-tree-sha?recursive=1')),
+      ).toBe(true);
+      expect(deps.createSkill).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'research',
+          description: 'Research things',
+          body: expect.stringContaining('Body'),
+          alwaysApply: true,
+          source: 'github',
+          sourceMetadata: expect.objectContaining({
+            provider: 'github',
+            sourceId: 'librechat-skills',
+            upstreamId: 'librechat-skills:skills/research',
+            skillBlobSha: 'skill-md-sha',
+          }),
+        }),
+      );
+      expect(deps.upsertSkillFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          relativePath: 'scripts/run.sh',
+          sourceMetadata: expect.objectContaining({
+            upstreamId: 'librechat-skills:skills/research',
+            blobSha: 'file-sha',
+            commitSha: 'commit-sha',
+          }),
+        }),
+      );
+      if (sharePublicly === false) {
+        expect(deps.grantPermission).not.toHaveBeenCalled();
+      } else {
+        expect(deps.grantPermission).toHaveBeenCalledWith(
+          expect.objectContaining({
+            principalType: 'public',
+            accessRoleId: 'skill_viewer',
+          }),
+        );
+      }
+    },
+  );
 
   it('drops an invalid alwaysApply alias when canonical always-apply is valid', async () => {
     const deps = createDeps({
@@ -1814,82 +1856,92 @@ describe('createGitHubSkillSyncRunner', () => {
     );
   });
 
-  it('fails the source when recreating a stale mirror cannot preserve its dependent state', async () => {
-    const staleId = new Types.ObjectId();
-    const existingId = new Types.ObjectId();
-    const author = makeSourceAuthorId();
-    const makeExisting = (
-      upstreamId: string,
-      _id: Types.ObjectId,
-      name: string,
-    ): ISkill & { _id: Types.ObjectId } => {
-      const skill = makeSkill({
-        name,
-        description: `${name} skill`,
-        body: 'Old body',
-        author,
-        authorName: 'GitHub Sync',
-        source: 'github',
-        sourceMetadata: { provider: 'github', sourceId: 'librechat-skills', upstreamId },
+  it.each([undefined, true, false])(
+    'fails the source when recreating a stale mirror cannot preserve its dependent state (sharePublicly=%s)',
+    async (sharePublicly) => {
+      const staleId = new Types.ObjectId();
+      const existingId = new Types.ObjectId();
+      const author = makeSourceAuthorId();
+      const makeExisting = (
+        upstreamId: string,
+        _id: Types.ObjectId,
+        name: string,
+      ): ISkill & { _id: Types.ObjectId } => {
+        const skill = makeSkill({
+          name,
+          description: `${name} skill`,
+          body: 'Old body',
+          author,
+          authorName: 'GitHub Sync',
+          source: 'github',
+          sourceMetadata: { provider: 'github', sourceId: 'librechat-skills', upstreamId },
+        });
+        skill._id = _id;
+        return skill;
+      };
+      const staleSkill = makeExisting('librechat-skills:skills/removed', staleId, 'renamed');
+      const syncedSkill = makeExisting('librechat-skills:skills/research', existingId, 'research');
+      const persistedSkills = new Map(
+        [staleSkill, syncedSkill].map((skill) => [skill._id.toString(), skill]),
+      );
+      let restoredSkill: (ISkill & { _id: Types.ObjectId }) | undefined;
+      const createSkill = jest.fn(async (input: CreateSkillInput): Promise<CreateSkillResult> => {
+        restoredSkill = makeSkill(input);
+        persistedSkills.set(restoredSkill._id.toString(), restoredSkill);
+        return { skill: restoredSkill, warnings: [] };
       });
-      skill._id = _id;
-      return skill;
-    };
-    const staleSkill = makeExisting('librechat-skills:skills/removed', staleId, 'renamed');
-    const syncedSkill = makeExisting('librechat-skills:skills/research', existingId, 'research');
-    const persistedSkills = new Map(
-      [staleSkill, syncedSkill].map((skill) => [skill._id.toString(), skill]),
-    );
-    let restoredSkill: (ISkill & { _id: Types.ObjectId }) | undefined;
-    const createSkill = jest.fn(async (input: CreateSkillInput): Promise<CreateSkillResult> => {
-      restoredSkill = makeSkill(input);
-      persistedSkills.set(restoredSkill._id.toString(), restoredSkill);
-      return { skill: restoredSkill, warnings: [] };
-    });
-    const deleteSkill = jest.fn(async (id: string) => {
-      return completeSkillDeletion(persistedSkills.delete(id));
-    });
-    const deps = createDeps({
-      fetchFn: githubFetch('---\nname: renamed\ndescription: Renamed skill\n---\nBody'),
-      findSkillBySourceIdentity: jest.fn(async ({ upstreamId }) =>
-        upstreamId === 'librechat-skills:skills/research' ? syncedSkill : null,
-      ),
-      getSkillById: jest.fn(async (id) =>
-        id.toString() === existingId.toString() ? syncedSkill : null,
-      ),
-      listSkillsBySource: jest.fn(async () => [...persistedSkills.values()]),
-      createSkill,
-      deleteSkill,
-      updateSkill: jest.fn(async () => ({ status: 'conflict' as const, current: syncedSkill })),
-    });
-    const runner = createGitHubSkillSyncRunner(deps);
-    const result = await runner.runOnce();
+      const deleteSkill = jest.fn(async (id: string) => {
+        return completeSkillDeletion(persistedSkills.delete(id));
+      });
+      const deps = createDeps(
+        {
+          fetchFn: githubFetch('---\nname: renamed\ndescription: Renamed skill\n---\nBody'),
+          findSkillBySourceIdentity: jest.fn(async ({ upstreamId }) =>
+            upstreamId === 'librechat-skills:skills/research' ? syncedSkill : null,
+          ),
+          getSkillById: jest.fn(async (id) =>
+            id.toString() === existingId.toString() ? syncedSkill : null,
+          ),
+          listSkillsBySource: jest.fn(async () => [...persistedSkills.values()]),
+          createSkill,
+          deleteSkill,
+          updateSkill: jest.fn(async () => ({ status: 'conflict' as const, current: syncedSkill })),
+        },
+        sharePublicly,
+      );
+      const runner = createGitHubSkillSyncRunner(deps);
+      const result = await runner.runOnce();
 
-    expect(result.status).toBe('failed');
-    expect(deleteSkill).toHaveBeenCalledWith(staleId.toString());
-    expect(deleteSkill).toHaveBeenCalledTimes(1);
-    expect(createSkill).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'renamed',
-        sourceMetadata: expect.objectContaining({
-          upstreamId: 'librechat-skills:skills/removed',
+      expect(result.status).toBe('failed');
+      expect(deleteSkill).toHaveBeenCalledWith(staleId.toString());
+      expect(deleteSkill).toHaveBeenCalledTimes(1);
+      expect(createSkill).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'renamed',
+          sourceMetadata: expect.objectContaining({
+            upstreamId: 'librechat-skills:skills/removed',
+          }),
         }),
-      }),
-    );
-    expect(deps.grantPermission).toHaveBeenCalledWith(
-      expect.objectContaining({ resourceId: restoredSkill?._id }),
-    );
-    expect(persistedSkills.has(restoredSkill?._id.toString() ?? '')).toBe(true);
-    expect(deps.upsertStatus).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        status: 'failed',
-        errorCode: 'SYNC_ROLLBACK_FAILED',
-        errorMessage: 'Rollback failed after: Skill "research" changed during sync',
-        deletedSkillCount: 0,
-        deletedFileCount: 0,
-      }),
-    );
-  });
+      );
+      if (sharePublicly === false) {
+        expect(deps.grantPermission).not.toHaveBeenCalled();
+      } else {
+        expect(deps.grantPermission).toHaveBeenCalledWith(
+          expect.objectContaining({ resourceId: restoredSkill?._id }),
+        );
+      }
+      expect(persistedSkills.has(restoredSkill?._id.toString() ?? '')).toBe(true);
+      expect(deps.upsertStatus).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          status: 'failed',
+          errorCode: 'SYNC_ROLLBACK_FAILED',
+          errorMessage: 'Rollback failed after: Skill "research" changed during sync',
+          deletedSkillCount: 0,
+          deletedFileCount: 0,
+        }),
+      );
+    },
+  );
 
   it.each([
     { failedStep: 'skill_files' as const, expectedBlobDeletes: 0 },
@@ -2466,63 +2518,70 @@ describe('createGitHubSkillSyncRunner', () => {
     );
   });
 
-  it('reuses a same-named source mirror when a skill moves configured paths', async () => {
-    const existing = makeSkill({
-      name: 'research',
-      description: 'Old description',
-      author: makeSourceAuthorId(),
-      authorName: 'GitHub Sync',
-      frontmatter: {},
-      source: 'github',
-      sourceMetadata: {
-        provider: 'github',
-        sourceId: 'librechat-skills',
-        upstreamId: 'librechat-skills:skills/old-research',
-        owner: 'LibreChat',
-        repo: 'skills',
-        ref: 'main',
-        skillPath: 'skills/old-research',
-      },
-    }) as ISkill & { _id: Types.ObjectId };
-    const unchangedFile = makeSkillFile(existing, {
-      sourceMetadata: {
-        provider: 'github',
-        sourceId: 'librechat-skills',
-        upstreamId: 'librechat-skills:skills/old-research',
-        commitSha: 'old-commit-sha',
-        blobSha: 'file-sha',
-        path: 'skills/old-research/scripts/run.sh',
-      },
-    });
-    const deps = createDeps({
-      findSkillBySourceIdentity: jest.fn(async () => null),
-      listSkillsBySource: jest.fn(async () => [existing]),
-      getSkillById: jest.fn(async () => existing),
-      getSkillFileByPath: jest.fn(async () => unchangedFile),
-      listSkillFiles: jest.fn(async () => [unchangedFile]),
-      updateSkill: jest.fn(async ({ update }) => {
-        Object.assign(existing, update, { version: existing.version + 1 });
-        return { status: 'updated' as const, skill: existing, warnings: [] };
-      }),
-    });
-    const runner = createGitHubSkillSyncRunner(deps);
-    const result = await runner.runOnce();
+  it.each([undefined, true, false])(
+    'reuses a same-named source mirror when a skill moves configured paths (sharePublicly=%s)',
+    async (sharePublicly) => {
+      const existing = makeSkill({
+        name: 'research',
+        description: 'Old description',
+        author: makeSourceAuthorId(),
+        authorName: 'GitHub Sync',
+        frontmatter: {},
+        source: 'github',
+        sourceMetadata: {
+          provider: 'github',
+          sourceId: 'librechat-skills',
+          upstreamId: 'librechat-skills:skills/old-research',
+          owner: 'LibreChat',
+          repo: 'skills',
+          ref: 'main',
+          skillPath: 'skills/old-research',
+        },
+      }) as ISkill & { _id: Types.ObjectId };
+      const unchangedFile = makeSkillFile(existing, {
+        sourceMetadata: {
+          provider: 'github',
+          sourceId: 'librechat-skills',
+          upstreamId: 'librechat-skills:skills/old-research',
+          commitSha: 'old-commit-sha',
+          blobSha: 'file-sha',
+          path: 'skills/old-research/scripts/run.sh',
+        },
+      });
+      const deps = createDeps(
+        {
+          findSkillBySourceIdentity: jest.fn(async () => null),
+          listSkillsBySource: jest.fn(async () => [existing]),
+          getSkillById: jest.fn(async () => existing),
+          getSkillFileByPath: jest.fn(async () => unchangedFile),
+          listSkillFiles: jest.fn(async () => [unchangedFile]),
+          updateSkill: jest.fn(async ({ update }) => {
+            Object.assign(existing, update, { version: existing.version + 1 });
+            return { status: 'updated' as const, skill: existing, warnings: [] };
+          }),
+        },
+        sharePublicly,
+      );
+      const runner = createGitHubSkillSyncRunner(deps);
+      const result = await runner.runOnce();
 
-    expect(result.status).toBe('completed');
-    expect(deps.createSkill).not.toHaveBeenCalled();
-    expect(deps.updateSkill).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: existing._id.toString(),
-        update: expect.objectContaining({
-          sourceMetadata: expect.objectContaining({
-            upstreamId: 'librechat-skills:skills/research',
-            skillPath: 'skills/research',
+      expect(result.status).toBe('completed');
+      expect(deps.grantPermission).toHaveBeenCalledTimes(sharePublicly === false ? 0 : 1);
+      expect(deps.createSkill).not.toHaveBeenCalled();
+      expect(deps.updateSkill).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: existing._id.toString(),
+          update: expect.objectContaining({
+            sourceMetadata: expect.objectContaining({
+              upstreamId: 'librechat-skills:skills/research',
+              skillPath: 'skills/research',
+            }),
           }),
         }),
-      }),
-    );
-    expect(deps.deleteSkill).not.toHaveBeenCalled();
-  });
+      );
+      expect(deps.deleteSkill).not.toHaveBeenCalled();
+    },
+  );
 
   it('fails the source when skill rollback reports incomplete cleanup', async () => {
     /* A clean rollback is just a skipped skill. A failed one leaves the mirror
@@ -2861,57 +2920,63 @@ describe('createGitHubSkillSyncRunner', () => {
     );
   });
 
-  it('skips existing skill updates when the upstream package is unchanged', async () => {
-    const skillMarkdown = '---\nname: research\ndescription: Research things\n---\nBody';
-    const existing = makeSkill({
-      name: 'research',
-      description: 'Research things',
-      body: skillMarkdown,
-      frontmatter: {},
-      author: new Types.ObjectId(),
-      authorName: 'GitHub Sync',
-      source: 'github',
-      sourceMetadata: {
-        provider: 'github',
-        sourceId: 'librechat-skills',
-        upstreamId: 'librechat-skills:skills/research',
-        owner: 'LibreChat',
-        repo: 'skills',
-        ref: 'main',
-        skillPath: 'skills/research',
-        commitSha: 'old-commit-sha',
-        skillBlobSha: 'skill-md-sha',
-        syncedAt: '2026-05-30T00:00:00.000Z',
-        syncStatus: 'synced',
-      },
-    }) as ISkill & { _id: Types.ObjectId };
-    const unchangedFile = makeSkillFile(existing, {
-      sourceMetadata: {
-        provider: 'github',
-        sourceId: 'librechat-skills',
-        upstreamId: 'librechat-skills:skills/research',
-        commitSha: 'old-commit-sha',
-        blobSha: 'file-sha',
-        path: 'skills/research/scripts/run.sh',
-      },
-    });
-    const deps = createDeps({
-      fetchFn: githubFetch(skillMarkdown),
-      findSkillBySourceIdentity: jest.fn(async () => existing),
-      getSkillById: jest.fn(async () => existing),
-      getSkillFileByPath: jest.fn(async () => unchangedFile),
-      listSkillFiles: jest.fn(async () => [unchangedFile]),
-      updateSkill: jest.fn(),
-    });
-    const runner = createGitHubSkillSyncRunner(deps);
-    const result = await runner.runOnce();
+  it.each([undefined, true, false])(
+    'skips existing skill updates when the upstream package is unchanged (sharePublicly=%s)',
+    async (sharePublicly) => {
+      const skillMarkdown = '---\nname: research\ndescription: Research things\n---\nBody';
+      const existing = makeSkill({
+        name: 'research',
+        description: 'Research things',
+        body: skillMarkdown,
+        frontmatter: {},
+        author: new Types.ObjectId(),
+        authorName: 'GitHub Sync',
+        source: 'github',
+        sourceMetadata: {
+          provider: 'github',
+          sourceId: 'librechat-skills',
+          upstreamId: 'librechat-skills:skills/research',
+          owner: 'LibreChat',
+          repo: 'skills',
+          ref: 'main',
+          skillPath: 'skills/research',
+          commitSha: 'old-commit-sha',
+          skillBlobSha: 'skill-md-sha',
+          syncedAt: '2026-05-30T00:00:00.000Z',
+          syncStatus: 'synced',
+        },
+      }) as ISkill & { _id: Types.ObjectId };
+      const unchangedFile = makeSkillFile(existing, {
+        sourceMetadata: {
+          provider: 'github',
+          sourceId: 'librechat-skills',
+          upstreamId: 'librechat-skills:skills/research',
+          commitSha: 'old-commit-sha',
+          blobSha: 'file-sha',
+          path: 'skills/research/scripts/run.sh',
+        },
+      });
+      const deps = createDeps(
+        {
+          fetchFn: githubFetch(skillMarkdown),
+          findSkillBySourceIdentity: jest.fn(async () => existing),
+          getSkillById: jest.fn(async () => existing),
+          getSkillFileByPath: jest.fn(async () => unchangedFile),
+          listSkillFiles: jest.fn(async () => [unchangedFile]),
+          updateSkill: jest.fn(),
+        },
+        sharePublicly,
+      );
+      const runner = createGitHubSkillSyncRunner(deps);
+      const result = await runner.runOnce();
 
-    expect(result.status).toBe('completed');
-    expect(deps.saveBuffer).not.toHaveBeenCalled();
-    expect(deps.upsertSkillFile).not.toHaveBeenCalled();
-    expect(deps.updateSkill).not.toHaveBeenCalled();
-    expect(deps.grantPermission).toHaveBeenCalled();
-  });
+      expect(result.status).toBe('completed');
+      expect(deps.saveBuffer).not.toHaveBeenCalled();
+      expect(deps.upsertSkillFile).not.toHaveBeenCalled();
+      expect(deps.updateSkill).not.toHaveBeenCalled();
+      expect(deps.grantPermission).toHaveBeenCalledTimes(sharePublicly === false ? 0 : 1);
+    },
+  );
 
   it('does not mutate existing skill files when permission grant fails', async () => {
     const existing = makeSkill({

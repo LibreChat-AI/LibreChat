@@ -493,6 +493,8 @@ export const skillSyncGitHubSourceSchema = z
     credentialKey: skillSyncIdentifierSchema.optional(),
     token: skillSyncTokenReferenceSchema.optional(),
     tenantId: skillSyncTenantIdSchema.optional(),
+    /** Omit or set true to ensure public viewer access; false leaves sharing to admins. */
+    sharePublicly: z.boolean().optional(),
   })
   .superRefine((source, ctx) => {
     if (!source.credentialKey && !source.token) {
