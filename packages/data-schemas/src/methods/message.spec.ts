@@ -5991,3 +5991,19 @@ describe('Message Operations', () => {
     });
   });
 });
+
+describe('receipt-backed claim release before projection', () => {
+  it('allows a missing message only when the receipt owner explicitly opts in', async () => {
+    const input = {
+      userId: new mongoose.Types.ObjectId().toString(),
+      conversationId: 'missing-conversation',
+      messageId: 'missing-parent',
+      kind: 'wakeup' as const,
+      claimId: 'batch-root',
+    };
+    await expect(releaseBackgroundToolResultClaims(input)).resolves.toBe(false);
+    await expect(
+      releaseBackgroundToolResultClaims({ ...input, allowMissingMessage: true }),
+    ).resolves.toBe(true);
+  });
+});

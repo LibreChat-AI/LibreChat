@@ -818,6 +818,8 @@ export interface MessageMethods {
     messageId: string;
     /** Omit to release every sibling owned by this exact batch claim. */
     taskIds?: string[];
+    /** Receipt-backed results can precede the message projection. */
+    allowMissingMessage?: true;
     kind: 'manual' | 'wakeup';
     claimId: string;
   }): Promise<boolean>;
@@ -2300,6 +2302,7 @@ export function createMessageMethods(
     conversationId,
     messageId,
     taskIds,
+    allowMissingMessage,
     kind,
     claimId,
   }: {
@@ -2307,6 +2310,8 @@ export function createMessageMethods(
     conversationId: string;
     messageId: string;
     taskIds?: string[];
+    /** Receipt-backed results can precede the message projection. */
+    allowMissingMessage?: true;
     kind: 'manual' | 'wakeup';
     claimId: string;
   }): Promise<boolean> {
@@ -2345,7 +2350,11 @@ export function createMessageMethods(
         messageId,
         content: { $not: { $type: 'array' } },
       });
-      return arraylessRow != null;
+      if (arraylessRow != null) return true;
+      return (
+        allowMissingMessage === true &&
+        (await Message.exists({ user: userId, conversationId, messageId })) == null
+      );
     }
     const remaining = parseBackgroundToolResults(updated, { kind, claimId });
     return taskIds == null

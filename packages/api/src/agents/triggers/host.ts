@@ -172,7 +172,12 @@ export interface AgentTriggerExecutionHostDeps {
 export interface AgentTriggerExecutionHost {
   dispatch: (
     envelope: unknown,
-    options?: { signal?: AbortSignal; attempt?: number; maxAttempts?: number },
+    options?: {
+      signal?: AbortSignal;
+      attempt?: number;
+      maxAttempts?: number;
+      deliveryClaimToken?: string;
+    },
   ) => Promise<AgentTriggerExecutionResult>;
 }
 

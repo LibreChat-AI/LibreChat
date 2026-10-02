@@ -204,7 +204,12 @@ export interface AgentTriggerDeliveryEngineDeps {
   store: AgentTriggerDeliveryStore;
   dispatch: (
     envelope: unknown,
-    options?: { signal?: AbortSignal; attempt?: number; maxAttempts?: number },
+    options?: {
+      signal?: AbortSignal;
+      attempt?: number;
+      maxAttempts?: number;
+      deliveryClaimToken?: string;
+    },
   ) => Promise<AgentTriggerExecutionResult>;
   /** Source-owned terminalization must commit before its delivery can become
    * dead, including recovery after a crash that exhausted the attempt budget. */
@@ -489,6 +494,7 @@ export function createAgentTriggerDeliveryEngine(
           signal: controller.signal,
           attempt,
           maxAttempts,
+          deliveryClaimToken: delivery.claimToken,
         });
       } catch (error) {
         const attemptedAt = now();

@@ -10,6 +10,7 @@ import type {
 import type { IUser } from '~/types/user';
 import {
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
@@ -5552,5 +5553,476 @@ describe('agent trigger delivery methods', () => {
 
     await expect(methods.cancelAgentTriggerUserPurge(user, fenceStartedAt)).resolves.toBe(false);
     expect(await UserPurge.countDocuments({ _id: user })).toBe(1);
+  });
+});
+
+describe('background result receipt batches', () => {
+  const capability = AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3;
+  const sourceId = 'background-tool-completion';
+  let user: mongoose.Types.ObjectId;
+  beforeEach(() => {
+    user = new mongoose.Types.ObjectId();
+  });
+
+  async function ready(
+    key: string,
+    overrides: Partial<Parameters<typeof methods.enqueueAgentTriggerDelivery>[0]> = {},
+  ) {
+    await methods.enqueueAgentTriggerDelivery(
+      enqueueInput({
+        deliveryKey: key,
+        orderingKey: `lane-${key}`,
+        user,
+        tenantId: 'tenant-1',
+        requiredWorkerCapability: capability,
+        envelope: {
+          event: {
+            type: 'background-tool.completion',
+            source: { id: sourceId, type: 'internal' },
+            payload: { taskId: key, toolCallId: `call-${key}`, toolName: 'tool' },
+          },
+          target: { conversationId: 'conversation', parentMessageId: 'parent', agentId: 'agent' },
+        },
+        ...overrides,
+      }),
+    );
+    await methods.persistAgentBackgroundToolResult({
+      deliveryKey: key,
+      sourceId,
+      result: { status: 'completed', output: `output-${key}`, settledAt: START },
+    });
+  }
+
+  function input(deliveryKey: string) {
+    return {
+      deliveryKey,
+      sourceId,
+      userId: user.toString(),
+      tenantId: 'tenant-1',
+      conversationId: 'conversation',
+      parentMessageId: 'parent',
+      agentId: 'agent',
+      limit: 8,
+      maxMetadataChars: 16000,
+    };
+  }
+
+  it('freezes ready membership, defers followers, and confirms every receipt before settlement', async () => {
+    await ready('one');
+    await ready('two');
+    const batch = await methods.claimAgentBackgroundToolResultBatch(input('one'));
+    expect(batch).toMatchObject({
+      status: 'acquired',
+      results: [{ taskId: 'one' }, { taskId: 'two' }],
+    });
+    await expect(methods.claimAgentBackgroundToolResultBatch(input('two'))).resolves.toMatchObject({
+      status: 'claimed',
+      ownerStatus: 'pending',
+    });
+    await ready('late');
+    expect(await methods.claimAgentBackgroundToolResultBatch(input('one'))).toEqual(batch);
+    expect(await methods.confirmAgentBackgroundToolResultBatch(input('one'))).toBe(true);
+    await expect(methods.claimAgentBackgroundToolResultBatch(input('two'))).resolves.toMatchObject({
+      status: 'claimed',
+      ownerStatus: 'applied',
+    });
+    await Delivery.deleteOne({ deliveryKey: 'one' });
+    await expect(methods.claimAgentBackgroundToolResultBatch(input('two'))).resolves.toMatchObject({
+      status: 'claimed',
+      ownerStatus: 'applied',
+    });
+    expect((await methods.claimAgentBackgroundToolResultBatch(input('late'))).status).toBe(
+      'acquired',
+    );
+  });
+
+  it.each(['claim', 'membership'] as const)(
+    'reconstructs the same candidates after a crash during %s',
+    async (phase) => {
+      await ready('one');
+      await ready('two');
+      const updateOne = Delivery.updateOne.bind(Delivery);
+      let writes = 0;
+      const crash =
+        phase === 'claim'
+          ? jest.spyOn(Delivery, 'updateMany').mockImplementationOnce(() => {
+              throw new Error('crash after candidate write');
+            })
+          : jest.spyOn(Delivery, 'updateOne').mockImplementation((...args) => {
+              if (++writes === 2) throw new Error('crash after result claims');
+              return updateOne(...args);
+            });
+      await expect(methods.claimAgentBackgroundToolResultBatch(input('one'))).rejects.toThrow(
+        'crash',
+      );
+      crash.mockRestore();
+      await ready('late');
+      const retry = await methods.claimAgentBackgroundToolResultBatch(input('one'));
+      expect(retry).toMatchObject({
+        status: 'acquired',
+        results: [{ taskId: 'one' }, { taskId: 'two' }],
+      });
+      expect(JSON.stringify(retry)).not.toContain('late');
+    },
+  );
+
+  it('reads back frozen membership after a lost write reply', async () => {
+    await ready('one');
+    await ready('two');
+    const updateOne = Delivery.updateOne.bind(Delivery);
+    let writes = 0;
+    const lostReply = jest.spyOn(Delivery, 'updateOne').mockImplementation((...args) => {
+      const query = updateOne(...args);
+      if (++writes === 2) {
+        const execute = query.exec.bind(query);
+        jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+          await execute();
+          throw new Error('lost membership reply');
+        });
+      }
+      return query;
+    });
+    await expect(methods.claimAgentBackgroundToolResultBatch(input('one'))).rejects.toThrow(
+      'lost membership reply',
+    );
+    lostReply.mockRestore();
+    await ready('late');
+    expect(await methods.claimAgentBackgroundToolResultBatch(input('one'))).toMatchObject({
+      status: 'acquired',
+      results: [{ taskId: 'one' }, { taskId: 'two' }],
+    });
+  });
+
+  it('returns only successful per-result claims when another root wins part of the selection', async () => {
+    await ready('one');
+    await ready('two');
+    await ready('three');
+    const updateMany = Delivery.updateMany.bind(Delivery);
+    const partial = jest.spyOn(Delivery, 'updateMany').mockImplementationOnce((...args) => {
+      return updateMany({ ...args[0], deliveryKey: { $in: ['one', 'three'] } }, args[1], args[2]);
+    });
+    expect(await methods.claimAgentBackgroundToolResultBatch(input('one'))).toMatchObject({
+      status: 'acquired',
+      results: [{ taskId: 'one' }, { taskId: 'three' }],
+    });
+    partial.mockRestore();
+    expect((await methods.claimAgentBackgroundToolResultBatch(input('two'))).status).toBe(
+      'acquired',
+    );
+  });
+
+  it('releases every member and clears the frozen plan after definite rejection', async () => {
+    await ready('one');
+    await ready('two');
+    await methods.claimAgentBackgroundToolResultBatch(input('one'));
+    expect(
+      await methods.releaseAgentBackgroundToolResultClaims({ ...input('one'), claimId: 'one' }),
+    ).toBe(true);
+    expect(
+      await methods.getAgentBackgroundToolResultClaim({ ...input('two'), taskId: 'two' }),
+    ).toBeNull();
+    expect((await methods.claimAgentBackgroundToolResultBatch(input('two'))).status).toBe(
+      'acquired',
+    );
+  });
+
+  it.each(['dead', 'retired'] as const)(
+    'keeps followers recoverable when their root is %s',
+    async (terminal) => {
+      await ready('one');
+      await ready('two');
+      await methods.claimAgentBackgroundToolResultBatch(input('one'));
+      await Delivery.updateOne(
+        { deliveryKey: 'one' },
+        terminal === 'dead'
+          ? { $set: { status: 'leased', capabilityStatus: 'dead' } }
+          : { $set: { status: 'succeeded', result: { backgroundToolCompletionRetired: true } } },
+      );
+      await expect(
+        methods.claimAgentBackgroundToolResultBatch(input('two')),
+      ).resolves.toMatchObject({ status: 'claimed', ownerStatus: 'recoverable' });
+      expect(await Delivery.exists({ deliveryKey: 'two' })).not.toBeNull();
+    },
+  );
+
+  it('does not mix tenants, principals, branches, agents, sources, or v2 deliveries', async () => {
+    await ready('one');
+    await ready('v2', {
+      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+    });
+    await ready('tenant', { tenantId: 'tenant-2' });
+    await ready('user', { user: new mongoose.Types.ObjectId() });
+    for (const [key, field, value] of [
+      ['branch', 'parentMessageId', 'other-parent'],
+      ['agent', 'agentId', 'other-agent'],
+      ['conversation', 'conversationId', 'other-conversation'],
+    ] as const) {
+      await ready(key, {
+        envelope: {
+          event: {
+            type: 'background-tool.completion',
+            source: { id: sourceId, type: 'internal' },
+            payload: { taskId: key, toolCallId: key, toolName: 'tool' },
+          },
+          target: {
+            conversationId: 'conversation',
+            parentMessageId: 'parent',
+            agentId: 'agent',
+            [field]: value,
+          },
+        },
+      });
+    }
+    expect(await methods.claimAgentBackgroundToolResultBatch(input('one'))).toMatchObject({
+      status: 'acquired',
+      results: [{ taskId: 'one' }],
+    });
+    await expect(methods.claimAgentBackgroundToolResultBatch(input('v2'))).resolves.toEqual({
+      status: 'legacy',
+    });
+    await expect(
+      methods.claimAgentBackgroundToolResultBatch({ ...input('tenant'), tenantId: 'tenant-1' }),
+    ).resolves.toEqual({ status: 'not_ready' });
+  });
+
+  it('prevents v2 workers from acquiring either a root or a follower during a rolling upgrade', async () => {
+    await ready('one');
+    await ready('two');
+    await methods.claimAgentBackgroundToolResultBatch(input('one'));
+    await expect(
+      methods.claimNextAgentTriggerDelivery({
+        workerId: 'old',
+        claimToken: 'old-token',
+        now: START,
+        leaseUntil: new Date(START.getTime() + 60000),
+        workerCapabilities: [AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2],
+      }),
+    ).resolves.toBeNull();
+    const next = await methods.claimNextAgentTriggerDelivery({
+      workerId: 'new',
+      claimToken: 'new-token',
+      now: START,
+      leaseUntil: new Date(START.getTime() + 60000),
+      workerCapabilities: [capability],
+    });
+    expect(next).not.toBeNull();
+  });
+
+  it('does not let an expired lease release its successor preparation', async () => {
+    await ready('one');
+    await ready('two');
+    await Delivery.updateOne({ deliveryKey: 'one' }, { $set: { capabilityClaimToken: 'current' } });
+    expect(
+      (
+        await methods.claimAgentBackgroundToolResultBatch({
+          ...input('one'),
+          deliveryClaimToken: 'current',
+        })
+      ).status,
+    ).toBe('acquired');
+    await expect(
+      methods.releaseAgentBackgroundToolResultClaims({
+        ...input('one'),
+        claimId: 'one',
+        deliveryClaimToken: 'expired',
+      }),
+    ).resolves.toBe(false);
+    expect((await methods.claimAgentBackgroundToolResultBatch(input('two'))).status).toBe(
+      'claimed',
+    );
+    expect(await methods.confirmAgentBackgroundToolResultBatch(input('one'))).toBe(true);
+    await expect(
+      methods.releaseAgentBackgroundToolResultClaims({
+        ...input('one'),
+        claimId: 'one',
+        deliveryClaimToken: 'current',
+      }),
+    ).resolves.toBe(false);
+    await expect(methods.claimAgentBackgroundToolResultBatch(input('two'))).resolves.toMatchObject({
+      status: 'claimed',
+      ownerStatus: 'applied',
+    });
+  });
+
+  it('serializes definite release against an admission confirmation', async () => {
+    await ready('one');
+    await ready('two');
+    await methods.claimAgentBackgroundToolResultBatch(input('one'));
+    const [released, confirmed] = await Promise.all([
+      methods.releaseAgentBackgroundToolResultClaims({ ...input('one'), claimId: 'one' }),
+      methods.confirmAgentBackgroundToolResultBatch(input('one')),
+    ]);
+    expect(Number(released) + Number(confirmed)).toBe(1);
+  });
+
+  it('uses bounded selection, including a batch size of one', async () => {
+    await ready('one');
+    await ready('two');
+    expect(
+      await methods.claimAgentBackgroundToolResultBatch({ ...input('one'), limit: 1 }),
+    ).toMatchObject({ status: 'acquired', results: [{ taskId: 'one' }] });
+    expect(
+      await methods.getAgentBackgroundToolResultClaim({ ...input('two'), taskId: 'two' }),
+    ).toBeNull();
+  });
+
+  it('keeps private batch state out of delivery reads and erases it with conversation results', async () => {
+    await ready('one');
+    await ready('two');
+    await methods.claimAgentBackgroundToolResultBatch(input('one'));
+    expect(await methods.getAgentTriggerDelivery('one')).not.toHaveProperty(
+      'backgroundToolResultBatch',
+    );
+    await methods.eraseAgentTriggerDeliveryConversationResults(user, ['conversation']);
+    const row = await Delivery.findOne({ deliveryKey: 'one' })
+      .select('+backgroundToolResultBatch +backgroundToolResult')
+      .lean();
+    expect(row).not.toHaveProperty('backgroundToolResultBatch');
+    expect(row).not.toHaveProperty('backgroundToolResult');
+  });
+});
+
+describe('background receipt batch contention', () => {
+  async function seed(
+    groups = 1,
+    capability = AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
+  ) {
+    const user = new mongoose.Types.ObjectId();
+    const claims: Parameters<typeof methods.claimAgentBackgroundToolResultBatch>[0][] = [];
+    for (let group = 0; group < groups; group++) {
+      for (let task = 0; task < 4; task++) {
+        const key = `group-${group}-task-${task}`;
+        await methods.enqueueAgentTriggerDelivery(
+          enqueueInput({
+            deliveryKey: key,
+            orderingKey: key,
+            user,
+            requiredWorkerCapability: capability,
+            envelope: {
+              event: {
+                type: 'background-tool.completion',
+                source: { id: 'background-tool-completion', type: 'internal' },
+                payload: { taskId: key, toolCallId: key, toolName: 'tool' },
+              },
+              target: {
+                conversationId: `conversation-${group}`,
+                parentMessageId: 'parent',
+                agentId: 'agent',
+              },
+            },
+          }),
+        );
+        await methods.persistAgentBackgroundToolResult({
+          deliveryKey: key,
+          sourceId: 'background-tool-completion',
+          result: { status: 'completed', output: key, settledAt: START },
+        });
+        claims.push({
+          deliveryKey: key,
+          sourceId: 'background-tool-completion',
+          userId: user.toString(),
+          tenantId: 'tenant-1',
+          conversationId: `conversation-${group}`,
+          parentMessageId: 'parent',
+          agentId: 'agent',
+          limit: 8,
+          maxMetadataChars: 16000,
+        });
+      }
+    }
+    return claims;
+  }
+
+  it('makes progress when two workers cross the collecting barrier together', async () => {
+    const claims = await seed();
+    let arrivals = 0;
+    let open: () => void = () => undefined;
+    const barrier = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const updateMany = Delivery.updateMany.bind(Delivery);
+    const race = jest.spyOn(Delivery, 'updateMany').mockImplementation((...args) => {
+      const query = updateMany(...args);
+      const execute = query.exec.bind(query);
+      jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+        if (++arrivals === 2) open();
+        await barrier;
+        return execute();
+      });
+      return query;
+    });
+    const batches = await Promise.all(
+      claims.slice(0, 2).map((claim) => methods.claimAgentBackgroundToolResultBatch(claim)),
+    );
+    race.mockRestore();
+    const consumed: string[] = [];
+    for (let index = 0; index < batches.length; index++) {
+      const batch = batches[index]!;
+      if (batch.status !== 'acquired') continue;
+      consumed.push(...batch.results.map((result) => result.taskId));
+      await methods.confirmAgentBackgroundToolResultBatch(claims[index]!);
+    }
+    for (const claim of claims) {
+      const batch = await methods.claimAgentBackgroundToolResultBatch(claim);
+      if (batch.status === 'acquired' && !consumed.includes(claim.deliveryKey)) {
+        consumed.push(...batch.results.map((result) => result.taskId));
+        await methods.confirmAgentBackgroundToolResultBatch(claim);
+      }
+    }
+    expect(new Set(consumed).size).toBe(4);
+    expect(consumed).toHaveLength(4);
+  });
+
+  it('reduces 8 conversations by 4 ready receipts without duplicates or stranded results', async () => {
+    const baselineClaims = await seed(
+      8,
+      AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+    );
+    let baselineTurns = 0;
+    for (const claim of baselineClaims) {
+      const batch = await methods.claimAgentBackgroundToolResults({
+        ...claim,
+        claimId: claim.deliveryKey,
+      });
+      if (batch.status === 'acquired') baselineTurns++;
+    }
+    await Promise.all([Delivery.deleteMany({}), LaneSequence.deleteMany({})]);
+    const claims = await seed(8);
+    const started = Date.now();
+    const consumed: string[] = [];
+    const latency: number[] = [];
+    let turns = 0;
+    // One ready root per conversation, as with a bounded worker pool behind
+    // a busy parent. A separate barrier test covers same-conversation overlap.
+    for (let round = 0; round < 4; round++) {
+      await Promise.all(
+        Array.from({ length: 8 }, async (_, group) => {
+          const claim = claims[group * 4 + round]!;
+          const batch = await methods.claimAgentBackgroundToolResultBatch(claim);
+          if (batch.status !== 'acquired') return;
+          turns++;
+          consumed.push(...batch.results.map((result) => result.taskId));
+          await methods.confirmAgentBackgroundToolResultBatch(claim);
+          latency.push(Date.now() - started);
+        }),
+      );
+    }
+    const unique = new Set(consumed).size;
+    const report = {
+      uniqueResults: unique,
+      duplicates: consumed.length - unique,
+      strandedResults: 32 - unique,
+      baselineTurns,
+      turns,
+      admissionLatencyMs: Math.max(...latency),
+    };
+    console.info('BACKGROUND_RECEIPT_STRESS', JSON.stringify(report));
+    expect(report).toMatchObject({
+      uniqueResults: 32,
+      duplicates: 0,
+      strandedResults: 0,
+      baselineTurns: 32,
+      turns: 8,
+    });
   });
 });

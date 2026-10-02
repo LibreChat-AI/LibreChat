@@ -269,3 +269,28 @@ event whose individual timing or acknowledgment is actionable. `fire`, `steer`, 
 `continue` deliveries reject the option instead of silently weakening their semantics. Deliveries
 with `expectedAction` also reject coalescing because one generation cannot prove several distinct
 action fences.
+
+## Background receipt batches
+
+Ordinary background tool and code completions use `background_tool_completion_batch_v3`.
+Older workers cannot claim these rows; v2 receipts retain task-local delivery. Subagent
+completions do not join receipt batches. The existing `completionResultBatchSize` bounds
+selection, with no collection window. Scope is owner, tenant, conversation, launching
+parent message, and target agent. Results launched on different parent messages remain
+separate even when their branches later converge.
+
+The root persists candidate keys before per-result claims, then freezes only successful
+claims in `backgroundToolResultBatch.members`. Retries use that same list. Each member's
+message projection is reconciled before dispatch. Definite rejection releases every
+claim and the unadmitted plan. Ambiguous dispatch retains ownership and retries the same
+idempotency key. Admission proof is stored before followers settle, and copied to each
+receipt so root retention cannot strand a follower.
+
+Followers defer without consuming attempts. A dead or retired root is recovered through
+the generation-admission fence before claims are released. Losing collectors release
+claims they cannot dispatch. Concurrent roots can still split the ready set; batching is
+opportunistic, not one-turn-per-conversation election.
+
+`triggerDelivery.spec.ts` includes a real-Mongo collecting barrier, crash/lost-reply
+injection, rolling-upgrade isolation, and an 8-conversation × 4-result storage stress
+harness. Its latency measures receipt admission, not model turns or deployment latency.

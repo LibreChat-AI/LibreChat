@@ -1,4 +1,4 @@
-import { AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2 } from '@librechat/data-schemas';
+import { AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3 } from '@librechat/data-schemas';
 import type { AgentTriggerProducerLeaseStatus } from '@librechat/data-schemas';
 import type { CodeApprovalMode } from 'librechat-data-provider';
 import type { EnqueueBackgroundToolCompletion } from './backgroundCompletionWakeup';
@@ -168,7 +168,7 @@ describe('background tool completion wakeups', () => {
     expect(options).toEqual({
       orderingKey: 'background-tool-completion:conversation-1:task-1',
       availableAt: new Date(NOW + 250),
-      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
       producerLeaseUntil: new Date(NOW + 30_000),
     });
     if (admission !== false) {
@@ -265,6 +265,7 @@ describe('background tool completion wakeups', () => {
       userId: 'user-1',
       conversationId: 'conversation-1',
       messageId: 'response-1',
+      allowMissingMessage: true,
       kind: 'wakeup',
       claimId: 'batch-root-delivery',
     });
@@ -1032,5 +1033,192 @@ describe('pending background completions', () => {
     if (outcome !== 'delivering' || rows[0]?.claimedByWakeup === true) {
       expect(retire).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe('capability-gated receipt batch resolution', () => {
+  function batchMethods() {
+    const { methods } = resolverMethods();
+    return {
+      ...methods,
+      claimAgentBackgroundToolResultBatch: jest.fn(async () => ({
+        status: 'acquired' as const,
+        results: [
+          {
+            taskId: 'task-1',
+            toolCallId: 'call-1',
+            toolName: 'tool',
+            status: 'completed' as const,
+            output: 'one',
+          },
+          {
+            taskId: 'task-2',
+            toolCallId: 'call-2',
+            toolName: 'tool',
+            status: 'completed' as const,
+            output: 'two',
+          },
+        ],
+      })),
+      confirmAgentBackgroundToolResultBatch: jest.fn(async () => true),
+    };
+  }
+
+  it('reconciles every member before dispatch and confirms only after admission', async () => {
+    const methods = batchMethods();
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => null,
+    });
+    const prepared = await resolve(await envelope(), { idempotencyKey: 'delivery-1' });
+    expect(methods.claimBackgroundToolResults).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ taskId: 'task-1' }),
+    );
+    expect(methods.claimBackgroundToolResults).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ taskId: 'task-2' }),
+    );
+    expect(methods.confirmAgentBackgroundToolResultBatch).not.toHaveBeenCalled();
+    expect(methods.claimAgentBackgroundToolResultBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: 'tenant-1',
+        limit: 8,
+        maxMetadataChars: BACKGROUND_TOOL_WAKEUP_INPUT_MAX_CHARS - 256,
+      }),
+    );
+    if (prepared?.status !== 'ready') throw new Error('Expected ready');
+    expect(prepared.input).toContain('task-2');
+    await prepared.settleOnAdmission?.({
+      mode: 'continue',
+      status: 'started',
+      conversationId: 'conversation-1',
+    });
+    expect(methods.confirmAgentBackgroundToolResultBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('defers followers until the root has confirmed admission', async () => {
+    const methods = batchMethods();
+    methods.claimAgentBackgroundToolResultBatch
+      .mockResolvedValueOnce({
+        status: 'claimed',
+        claimId: 'root',
+        ownerStatus: 'pending',
+      } as never)
+      .mockResolvedValueOnce({
+        status: 'claimed',
+        claimId: 'root',
+        ownerStatus: 'applied',
+      } as never);
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => null,
+    });
+    await expect(resolve(await envelope(), { idempotencyKey: 'follower' })).rejects.toMatchObject({
+      code: 'BACKGROUND_TOOL_BATCH_PENDING',
+      deferWithoutAttempt: true,
+    });
+    await expect(resolve(await envelope(), { idempotencyKey: 'follower' })).resolves.toEqual({
+      status: 'settled',
+    });
+    expect(methods.claimBackgroundToolResults).not.toHaveBeenCalled();
+  });
+
+  it('uses fenced dead-owner recovery before retrying a follower as its own root', async () => {
+    const methods = batchMethods();
+    const recoverDeadClaim = jest.fn(async () => true);
+    methods.claimAgentBackgroundToolResultBatch.mockResolvedValueOnce({
+      status: 'claimed',
+      claimId: 'root',
+      ownerStatus: 'recoverable',
+    } as never);
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => null,
+      recoverDeadClaim,
+    });
+    await expect(resolve(await envelope(), { idempotencyKey: 'follower' })).rejects.toMatchObject({
+      code: 'BACKGROUND_TOOL_BATCH_PENDING',
+    });
+    expect(recoverDeadClaim).toHaveBeenCalledWith(
+      expect.objectContaining({ claimId: 'root', messageId: 'response-1' }),
+    );
+    expect((await resolve(await envelope(), { idempotencyKey: 'follower' }))?.status).toBe('ready');
+  });
+
+  it('releases the entire frozen batch when a sibling manual poll wins', async () => {
+    const methods = batchMethods();
+    methods.claimBackgroundToolResults
+      .mockResolvedValueOnce({ status: 'acquired', results: [] })
+      .mockResolvedValueOnce({
+        status: 'claimed',
+        claim: { kind: 'manual', claimId: 'poll' },
+      } as never);
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => null,
+    });
+    await expect(resolve(await envelope(), { idempotencyKey: 'root' })).rejects.toMatchObject({
+      code: 'BACKGROUND_TOOL_CLAIM_RECONCILING',
+    });
+    expect(methods.releaseAgentBackgroundToolResultClaims).toHaveBeenCalledWith(
+      expect.objectContaining({ claimId: 'root' }),
+    );
+    expect(methods.confirmAgentBackgroundToolResultBatch).not.toHaveBeenCalled();
+  });
+
+  it('releases receipt ownership even when no message projection has landed', async () => {
+    const methods = batchMethods();
+    methods.claimBackgroundToolResults.mockResolvedValue({ status: 'not_found' } as never);
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => null,
+    });
+    const prepared = await resolve(await envelope(), { idempotencyKey: 'root' });
+    if (prepared?.status !== 'ready') throw new Error('Expected ready');
+    await prepared.releaseOnDefiniteFailure?.();
+    expect(methods.releaseBackgroundToolResultClaims).toHaveBeenCalledWith(
+      expect.objectContaining({ allowMissingMessage: true }),
+    );
+    expect(methods.releaseAgentBackgroundToolResultClaims).toHaveBeenCalled();
+  });
+
+  it('retains ownership when admission confirmation fails after dispatch', async () => {
+    const methods = batchMethods();
+    methods.confirmAgentBackgroundToolResultBatch.mockRejectedValueOnce(new Error('lost reply'));
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => null,
+    });
+    const prepared = await resolve(await envelope(), { idempotencyKey: 'root' });
+    if (prepared?.status !== 'ready') throw new Error('Expected ready');
+    await expect(
+      prepared.settleOnAdmission?.({
+        mode: 'continue',
+        status: 'started',
+        conversationId: 'conversation-1',
+      }),
+    ).rejects.toThrow('lost reply');
+    expect(methods.releaseAgentBackgroundToolResultClaims).not.toHaveBeenCalled();
+  });
+
+  it('still detects a lost producer while a v3 receipt is not ready', async () => {
+    const methods = batchMethods();
+    methods.claimAgentBackgroundToolResultBatch.mockResolvedValueOnce({
+      status: 'not_ready',
+      waitingForResult: true,
+    } as never);
+    methods.getAgentTriggerDeliveryProducerLease.mockResolvedValueOnce({
+      status: 'expired',
+      leaseUntil: new Date(0),
+    });
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => null,
+    });
+    await expect(resolve(await envelope(), { idempotencyKey: 'root' })).rejects.toMatchObject({
+      code: 'BACKGROUND_TOOL_PRODUCER_LOST',
+      retryable: false,
+    });
   });
 });
