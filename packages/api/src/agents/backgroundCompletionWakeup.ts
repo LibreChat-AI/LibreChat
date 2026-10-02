@@ -463,6 +463,7 @@ export function createBackgroundToolCompletionWakeupResolver({
             claimId: projection.claim.claimId,
             kind: 'manual',
             generationId: projection.claim.generationId,
+            onlyIfUnreconciled: true,
           });
         }
         if (projection.status === 'claimed')
@@ -604,6 +605,7 @@ export function createBackgroundToolCompletionWakeupResolver({
                 claimId: projection.claim.claimId,
                 kind: 'manual',
                 generationId: projection.claim.generationId,
+                onlyIfUnreconciled: true,
               });
             }),
           );
@@ -1068,7 +1070,16 @@ export function createBackgroundToolDeadClaimRecovery(
   >,
   getAdmissionEvidence?: BackgroundToolCompletionWakeupResolverDeps['getGenerationAdmissionEvidence'],
 ): BackgroundToolDeadClaimRecovery {
-  return async ({ userId, conversationId, messageId, claimId, kind, generationId, batchId }) => {
+  return async ({
+    userId,
+    conversationId,
+    messageId,
+    claimId,
+    kind,
+    generationId,
+    batchId,
+    onlyIfUnreconciled,
+  }) => {
     if (kind === 'manual') {
       if (generationId == null || generationId.length === 0) {
         return false;
@@ -1085,6 +1096,7 @@ export function createBackgroundToolDeadClaimRecovery(
         messageId,
         kind: 'manual',
         claimId,
+        ...(onlyIfUnreconciled === true && { onlyIfUnreconciled }),
       });
     }
     const owner = {

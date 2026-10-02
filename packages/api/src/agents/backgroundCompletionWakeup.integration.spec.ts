@@ -644,3 +644,200 @@ it('does not use a different manual owner as confirmation read-back proof', asyn
     claim: { claimId: 'successor-poll', receiptReconciled: true },
   });
 });
+
+it.each(['missing-receipt', 'batch-root', 'batch-sibling'] as const)(
+  'preserves a manual handoff committed after the %s recovery snapshot',
+  async (scenario) => {
+    const polled = await ready('one', scenario !== 'missing-receipt');
+    const other = scenario === 'batch-sibling' ? await ready('two') : undefined;
+    const root = other ?? polled;
+    await project('one');
+    let confirmationReached: () => void = () => undefined;
+    let confirmNow: () => void = () => undefined;
+    let recoveryReached: () => void = () => undefined;
+    let recoverNow: () => void = () => undefined;
+    const confirmationEntered = new Promise<void>((resolve) => {
+      confirmationReached = resolve;
+    });
+    const confirmationBarrier = new Promise<void>((resolve) => {
+      confirmNow = resolve;
+    });
+    const recoveryEntered = new Promise<void>((resolve) => {
+      recoveryReached = resolve;
+    });
+    const recoveryBarrier = new Promise<void>((resolve) => {
+      recoverNow = resolve;
+    });
+    const confirm = methods.confirmBackgroundToolResultClaim.bind(methods);
+    const pausedConfirmation = jest
+      .spyOn(methods, 'confirmBackgroundToolResultClaim')
+      .mockImplementationOnce(async (input) => {
+        confirmationReached();
+        await confirmationBarrier;
+        return confirm(input);
+      });
+    const manual = claimBackgroundToolResult(methods, methods.getAgentBackgroundToolResultClaim, {
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      taskId: 'one',
+      kind: 'manual',
+      claimId: 'manual-poll',
+      generationId: 'manual-generation',
+    });
+    await confirmationEntered;
+    let manualActive = true;
+    const release = jest.fn(methods.releaseBackgroundToolResultClaims);
+    const recover = createBackgroundToolDeadClaimRecovery(
+      async () => false,
+      release,
+      async () =>
+        manualActive
+          ? { status: 'running', metadata: { responseMessageId: 'manual-generation' } }
+          : null,
+      async () => 'unavailable',
+    );
+    const recoverDeadClaim = jest.fn(async (input: Parameters<typeof recover>[0]) => {
+      recoveryReached();
+      await recoveryBarrier;
+      return recover(input);
+    });
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods,
+      getGenerationJob: async () => null,
+      recoverDeadClaim,
+    });
+    if (root.mode !== 'continue') throw new Error('Expected continuation');
+    const key = getAgentTriggerIdempotencyKey(root);
+    await mongoose.models.AgentTriggerDelivery.updateMany(
+      { deliveryKey: { $in: [key, getAgentTriggerIdempotencyKey(polled)] } },
+      {
+        $set: {
+          capabilityStatus: 'leased',
+          capabilityClaimToken: 'exact-queue-lease',
+          capabilityLeaseBy: 'automatic-worker',
+          capabilityLeaseUntil: new Date(Date.now() + 60_000),
+        },
+      },
+    );
+    const context = {
+      idempotencyKey: key,
+      requiredWorkerCapability: capability,
+      deliveryClaimToken: 'exact-queue-lease',
+    };
+    const automatic = resolve(root, context);
+    await recoveryEntered;
+    confirmNow();
+    expect(await manual).toMatchObject({ status: 'acquired', results: [{ taskId: 'one' }] });
+    // The automatic queue lease won manual retirement. The poll returned its
+    // result and its generation ended while recovery held a stale snapshot.
+    expect(
+      await methods.retireAgentTriggerDelivery({
+        deliveryKey: getAgentTriggerIdempotencyKey(polled),
+        sourceId: BACKGROUND_TOOL_COMPLETION_SOURCE,
+        settledAt: new Date(),
+        reason: 'manual poll',
+        onlyIfUnclaimed: true,
+        requireTransition: true,
+      }),
+    ).toBe(false);
+    manualActive = false;
+    recoverNow();
+    await expect(automatic).rejects.toMatchObject({
+      code: 'BACKGROUND_TOOL_CLAIM_RECONCILING',
+      deferWithoutAttempt: true,
+    });
+    expect(recoverDeadClaim).toHaveBeenCalledWith(
+      expect.objectContaining({ onlyIfUnreconciled: true }),
+    );
+    expect(release).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'manual', claimId: 'manual-poll', onlyIfUnreconciled: true }),
+    );
+    const claim = await methods.claimBackgroundToolResults({
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      taskId: 'one',
+      kind: 'wakeup',
+      claimId: 'probe',
+    });
+    expect(claim).toMatchObject({
+      status: 'claimed',
+      claim: { claimId: 'manual-poll', receiptReconciled: true },
+    });
+    const pollEnvelope = polled.mode === 'continue' ? polled : undefined;
+    if (pollEnvelope == null) throw new Error('Expected polled continuation');
+    await expect(
+      resolve(pollEnvelope, {
+        idempotencyKey: getAgentTriggerIdempotencyKey(polled),
+        requiredWorkerCapability: capability,
+      }),
+    ).resolves.toEqual({ status: 'settled' });
+    if (other != null) {
+      const row = await methods.getAgentTriggerDelivery(getAgentTriggerIdempotencyKey(polled));
+      if (row == null) throw new Error('Expected polled delivery');
+      expect(
+        await methods.completeAgentTriggerDelivery({
+          id: row.id,
+          workerId: 'automatic-worker',
+          claimToken: 'exact-queue-lease',
+          attempt: 1,
+          settledAt: new Date(),
+          result: { status: 'settled', mode: 'continue', conversationId },
+        }),
+      ).toBe(true);
+      const remaining = await resolve(root, context);
+      if (remaining?.status !== 'ready') throw new Error('Expected undelivered sibling');
+      expect(remaining.input).toContain('"background_task_id":"two"');
+      expect(remaining.input).not.toContain('"background_task_id":"one"');
+      await remaining.beginDispatch?.();
+    }
+    pausedConfirmation.mockRestore();
+  },
+);
+
+it('keeps explicit manual recovery able to reopen a committed claim after its generation ends', async () => {
+  await ready('one');
+  await project('one');
+  await claimBackgroundToolResult(methods, methods.getAgentBackgroundToolResultClaim, {
+    userId,
+    conversationId,
+    messageId: parentMessageId,
+    taskId: 'one',
+    kind: 'manual',
+    claimId: 'manual-poll',
+    generationId: 'manual-generation',
+  });
+  let active = true;
+  const recover = createBackgroundToolDeadClaimRecovery(
+    async () => false,
+    methods.releaseBackgroundToolResultClaims,
+    async () =>
+      active ? { status: 'running', metadata: { responseMessageId: 'manual-generation' } } : null,
+    async () => 'unavailable',
+  );
+  const input = {
+    userId,
+    conversationId,
+    messageId: parentMessageId,
+    claimId: 'manual-poll',
+    kind: 'manual' as const,
+    generationId: 'manual-generation',
+  };
+  expect(await recover(input)).toBe(false);
+  active = false;
+  expect(await recover({ ...input, onlyIfUnreconciled: true })).toBe(false);
+  expect(await recover(input)).toBe(true);
+  expect(
+    (
+      await methods.claimBackgroundToolResults({
+        userId,
+        conversationId,
+        messageId: parentMessageId,
+        taskId: 'one',
+        kind: 'manual',
+        claimId: 'next-poll',
+      })
+    ).status,
+  ).toBe('acquired');
+});

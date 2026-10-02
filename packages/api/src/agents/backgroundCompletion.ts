@@ -66,6 +66,8 @@ export interface BackgroundToolDeadClaimRecoveryInput {
   messageId: string;
   claimId: string;
   batchId?: string;
+  /** Automatic repair cannot reopen a committed manual handoff. */
+  onlyIfUnreconciled?: true;
   /** Omitted for the legacy automatic-wakeup recovery path. */
   kind?: 'manual' | 'wakeup';
   /** Required to prove that a manual claim's owning generation is no longer active. */
