@@ -7212,6 +7212,345 @@ describe('createToolExecuteHandler', () => {
     });
   });
 
+  describe('read_file explicit skill text ranges', () => {
+    const sources = ['body', 'cached', 'streamed', 'sandbox'] as const;
+    const text = Array.from({ length: 660 }, (_, i) => `catalogue line ${i + 1}`).join('\n');
+
+    function readFixture(source: (typeof sources)[number], content = text, req?: never) {
+      const paths = {
+        body: 'skills/codegraph/SKILL.md',
+        cached: 'skills/codegraph/references/shapes.sql',
+        streamed: 'skills/codegraph/references/shapes.sql',
+        sandbox: '/mnt/data/catalogue.sql',
+      };
+      const path = paths[source];
+      const getSkillByName = jest.fn(async () => ({
+        _id: '507f1f77bcf86cd799439011' as unknown as never,
+        name: 'codegraph',
+        body: content,
+        fileCount: 1,
+        version: 1,
+      }));
+      const getSkillFileByPath = jest.fn(async () => ({
+        file_id: 'revision-a',
+        mimeType: 'text/plain',
+        bytes: Buffer.byteLength(content),
+        filepath: '/storage/codegraph/shapes.sql',
+        source: 'local',
+        relativePath: 'references/shapes.sql',
+        ...(source === 'cached' ? { content, isBinary: false } : {}),
+      }));
+      const getDownloadStream = jest.fn(async () => Readable.from([Buffer.from(content)]));
+      const updateSkillFileContent = jest.fn(async () => undefined);
+      const readSandboxFile: NonNullable<ToolExecuteOptions['readSandboxFile']> = jest.fn(
+        async ({ maxBytes }) => {
+          if (maxBytes != null && Buffer.byteLength(content) > maxBytes) {
+            return {
+              tooLarge: true as const,
+              reason: 'size' as const,
+              bytes: Buffer.byteLength(content),
+            };
+          }
+          return { content, ...(maxBytes == null ? {} : { complete: true as const }) };
+        },
+      );
+      const handler = createToolExecuteHandler({
+        loadTools: async () => ({
+          loadedTools: [],
+          configurable: {
+            req: req ?? { user: { id: 'user-1' }, config: {} },
+            accessibleSkillIds: skillsInScope(),
+            activeSkillNames: new Set(['codegraph']),
+            codeEnvAvailable: source === 'sandbox',
+          },
+        }),
+        getSkillByName,
+        getSkillFileByPath,
+        getStrategyFunctions: () => ({ getDownloadStream }),
+        updateSkillFileContent,
+        readSandboxFile,
+      });
+      const read = async (range: { start_line?: number; max_lines?: number } = {}) => {
+        const [result] = await invokeHandler(handler, [
+          { id: 'ranged-read', name: Constants.READ_FILE, args: { path, ...range } },
+        ]);
+        return result;
+      };
+      return { path, read, getDownloadStream, updateSkillFileContent };
+    }
+
+    it.each(sources)(
+      'returns exactly lines 100–159 with continuation for %s text',
+      async (source) => {
+        const { read, path, updateSkillFileContent } = readFixture(source);
+        const result = await read({ start_line: 100, max_lines: 60 });
+        expect(result.status).toBe('success');
+        const numbered = String(result.content)
+          .split('\n')
+          .filter((line) => /^\s*\d+ \| /.test(line));
+        expect(numbered).toEqual(
+          Array.from({ length: 60 }, (_, i) => `${100 + i} | catalogue line ${100 + i}`),
+        );
+        expect(result.content).toContain(
+          `call read_file again with path "${path}" and start_line 160`,
+        );
+        expect(result.content).not.toContain('660 | catalogue line 660');
+        if (source === 'streamed') {
+          expect(updateSkillFileContent).toHaveBeenCalledWith(
+            expect.anything(),
+            'references/shapes.sql',
+            { content: text, isBinary: false },
+            'revision-a',
+          );
+        }
+      },
+    );
+
+    it.each(sources)('preserves a no-range full read for %s text', async (source) => {
+      const { read, path } = readFixture(source);
+      const result = await read();
+      const numbered = text
+        .split('\n')
+        .map((line, i) => `${String(i + 1).padStart(3, ' ')} | ${line}`)
+        .join('\n');
+      let header = '';
+      if (source === 'body') header = `File: ${path}\n\n`;
+      else if (source !== 'sandbox')
+        header = `File: ${path} (${Buffer.byteLength(text)} bytes)\n\n`;
+      expect(result.content).toBe(header + numbered);
+      expect(result.content).not.toContain('more content');
+    });
+
+    it.each(sources)(
+      'uses 200 lines only when %s text supplies a partial range',
+      async (source) => {
+        const { read } = readFixture(source);
+        const startOnly = await read({ start_line: 100 });
+        expect(
+          String(startOnly.content)
+            .split('\n')
+            .filter((line) => /^\s*\d+ \| /.test(line)),
+        ).toHaveLength(200);
+        expect(startOnly.content).toContain('start_line 300');
+        const limitOnly = await read({ max_lines: 2 });
+        expect(limitOnly.content).toContain('1 | catalogue line 1\n2 | catalogue line 2');
+        expect(limitOnly.content).toContain('start_line 3');
+      },
+    );
+
+    it.each(
+      sources.flatMap((source) => [
+        { source, range: { start_line: 0 } },
+        { source, range: { max_lines: 501 } },
+        { source, range: { start_line: 1.5 } },
+        { source, range: { max_lines: -1 } },
+      ]),
+    )('rejects an invalid range for $source: $range', async ({ source, range }) => {
+      const result = await readFixture(source).read(range);
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toBe(
+        'start_line must be positive and max_lines must be between 1 and 500.',
+      );
+    });
+
+    it.each(sources)(
+      'reports the final and beyond-EOF pages without phantom lines for %s text',
+      async (source) => {
+        const { read } = readFixture(source);
+        const last = await read({ start_line: 650, max_lines: 60 });
+        expect(
+          String(last.content)
+            .split('\n')
+            .filter((line) => /^\s*\d+ \| /.test(line)),
+        ).toHaveLength(11);
+        expect(last.content).not.toContain('more content');
+        const beyond = await read({ start_line: 700, max_lines: 60 });
+        expect(beyond.status).toBe('success');
+        expect(beyond.content).not.toMatch(/\d+ \| /);
+        expect(beyond.content).not.toContain('more content');
+      },
+    );
+
+    it.each(['body', 'cached', 'streamed'] as const)(
+      'blocks the full %s skill text before slicing a clean page',
+      async (source) => {
+        const req = {
+          user: { id: 'user-1' },
+          config: {
+            filters: {
+              skills: {
+                pii: {
+                  fields: ['instructions', 'file_text'],
+                  starterPatterns: [],
+                  customPatterns: [{ id: 'secret', label: 'secret', regex: 'PROTECTED-SECRET' }],
+                },
+              },
+            },
+          },
+        } as never;
+        const result = await readFixture(
+          source,
+          `clean first line\nPROTECTED-SECRET\nlast`,
+          req,
+        ).read({ start_line: 1, max_lines: 1 });
+        expect(result.status).toBe('error');
+        expect(result.errorMessage).toContain('content_filter_block');
+        expect(result.content).not.toContain('clean first line');
+        expect(result.errorMessage).not.toContain('PROTECTED-SECRET');
+      },
+    );
+
+    it.each(['cached', 'streamed', 'sandbox'] as const)(
+      'blocks full %s file text under the files policy before slicing',
+      async (source) => {
+        const req = {
+          user: { id: 'user-1' },
+          config: {
+            filters: {
+              files: {
+                pii: {
+                  fields: ['content'],
+                  starterPatterns: [],
+                  customPatterns: [{ id: 'secret', label: 'secret', regex: 'PROTECTED-SECRET' }],
+                },
+              },
+            },
+          },
+        } as never;
+        const result = await readFixture(source, `clean first line\nPROTECTED-SECRET`, req).read({
+          max_lines: 1,
+        });
+        expect(result.status).toBe('error');
+        expect(result.errorMessage).toContain('content_filter_block');
+        expect(result.content).not.toContain('clean first line');
+      },
+    );
+
+    it.each(['body', 'cached'] as const)(
+      'bounds UTF-8 %s range output and continues at the first omitted line',
+      async (source) => {
+        const content = ['skip', '界'.repeat(80_000), '界'.repeat(10_000)].join('\n');
+        const result = await readFixture(source, content).read({ start_line: 2, max_lines: 2 });
+        expect(result.status).toBe('success');
+        expect(result.content).toContain('2 | ');
+        expect(result.content).not.toContain('3 | ');
+        expect(result.content).toContain('truncated at 262144 bytes');
+        expect(result.content).toContain('start_line 3');
+        expect(Buffer.byteLength(String(result.content), 'utf8')).toBeLessThan(262_450);
+      },
+    );
+
+    it.each(['body', 'cached'] as const)(
+      'does not advertise a non-progressing continuation for an oversized %s line',
+      async (source) => {
+        const result = await readFixture(source, '界'.repeat(100_000)).read({ max_lines: 1 });
+        expect(result.status).toBe('success');
+        expect(result.content).toContain('cannot be paged by line');
+        expect(result.content).not.toContain('call read_file again');
+        expect(result.content).not.toContain('�');
+      },
+    );
+
+    it('leaves skill binary metadata and image artifacts unchanged when range parameters are present', async () => {
+      const image = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'base64',
+      );
+      const bytesByPath = { 'chart.png': image, 'data.bin': Buffer.from([0, 1, 2]) };
+      const handler = createToolExecuteHandler({
+        loadTools: async () => ({
+          loadedTools: [],
+          configurable: {
+            req: { user: { id: 'user-1' }, config: {} },
+            accessibleSkillIds: skillsInScope(),
+          },
+        }),
+        getSkillByName: async () => ({
+          _id: '507f1f77bcf86cd799439011' as unknown as never,
+          name: 'binary-skill',
+          body: '# Binary',
+          fileCount: 2,
+          version: 1,
+        }),
+        getSkillFileByPath: async (_id, relativePath) => ({
+          mimeType: relativePath === 'chart.png' ? 'image/png' : 'application/octet-stream',
+          bytes: bytesByPath[relativePath as keyof typeof bytesByPath].length,
+          isBinary: true,
+          filepath: `/storage/${relativePath}`,
+          source: 'local',
+          relativePath,
+        }),
+        getStrategyFunctions: () => ({
+          getDownloadStream: async (_req, path) =>
+            Readable.from(bytesByPath[path.split('/').pop() as keyof typeof bytesByPath]),
+        }),
+      });
+      for (const path of ['skills/binary-skill/chart.png', 'skills/binary-skill/data.bin']) {
+        const results = await invokeHandler(handler, [
+          { id: 'binary-full', name: Constants.READ_FILE, args: { path } },
+          {
+            id: 'binary-ranged',
+            name: Constants.READ_FILE,
+            args: { path, start_line: 100, max_lines: 60 },
+          },
+        ]);
+        expect(results[1].status).toBe(results[0].status);
+        expect(results[1].content).toEqual(results[0].content);
+        expect(results[1].artifact).toEqual(results[0].artifact);
+      }
+    });
+
+    it('refuses incomplete or oversized sandbox text instead of reporting a false EOF', async () => {
+      const original = text;
+      const readSandboxFile: NonNullable<ToolExecuteOptions['readSandboxFile']> = jest.fn(
+        async () => ({ content: original.slice(0, 100) }),
+      );
+      const handler = createToolExecuteHandler({
+        loadTools: async () => ({ loadedTools: [], configurable: { codeEnvAvailable: true } }),
+        readSandboxFile,
+      });
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'incomplete-prefix',
+          name: Constants.READ_FILE,
+          args: { path: '/mnt/data/catalogue.txt', start_line: 650, max_lines: 1 },
+        },
+      ]);
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toContain('retrieval was incomplete');
+      expect(result.content).toBe('');
+      expect(readSandboxFile).toHaveBeenCalledWith(expect.objectContaining({ maxBytes: 262_144 }));
+      const tooLarge = await readFixture('sandbox', 'x'.repeat(262_145)).read({
+        start_line: 100,
+        max_lines: 1,
+      });
+      expect(tooLarge.status).toBe('error');
+      expect(tooLarge.errorMessage).toContain('retrieved completely');
+      expect(tooLarge.content).toBe('');
+    });
+
+    it('preserves streamed oversized-file metadata and avoids a download even with an explicit range', async () => {
+      const { read, getDownloadStream } = readFixture('streamed', 'x'.repeat(262_145));
+      for (const range of [{}, { start_line: 1, max_lines: 1 }]) {
+        expect((await read(range)).content).toContain('too large to read directly');
+      }
+      expect(getDownloadStream).not.toHaveBeenCalled();
+    });
+
+    it.each(sources)(
+      'keeps blank lines and trailing-newline numbering unchanged for a no-range %s read',
+      async (source) => {
+        const { read } = readFixture(source, 'first\n\nlast\n');
+        const full = await read();
+        expect(full.content).toContain('1 | first\n2 | \n3 | last\n4 | ');
+        const page = await read({ start_line: 2, max_lines: 2 });
+        expect(page.content).toContain('2 | \n3 | last');
+        expect(page.content).not.toContain('4 | ');
+        expect(page.content).not.toContain('more content');
+      },
+    );
+  });
+
   describe('read_file sandbox fallback (code-env paths + non-skill segments)', () => {
     function makeReadFileHandler(params: {
       codeEnvAvailable?: boolean;
@@ -7318,6 +7657,73 @@ describe('createToolExecuteHandler', () => {
         content: '1 | const ready = true;',
       });
     });
+
+    it.each([200, 500])(
+      'reads the configured %i-line window and preserves explicit pagination',
+      async (defaultReadFileLines) => {
+        const lines = Array.from({ length: 450 }, (_, i) => `line ${i + 1}`);
+        const readWorkspaceFile = jest.fn<
+          ReturnType<NonNullable<ToolExecuteOptions['readWorkspaceFile']>>,
+          Parameters<NonNullable<ToolExecuteOptions['readWorkspaceFile']>>
+        >(async ({ start_line = 1, max_lines = 200 }) => {
+          const selected = lines.slice(start_line - 1, start_line - 1 + max_lines);
+          const endLine = start_line + selected.length - 1;
+          return {
+            protocolVersion: 1,
+            operation: 'read_file',
+            workspaceId: 'primary',
+            path: 'notes.txt',
+            content: selected.join('\n'),
+            startLine: start_line,
+            endLine,
+            truncated: endLine < lines.length,
+            ...(endLine < lines.length ? { nextStartLine: endLine + 1 } : {}),
+          };
+        });
+        const handler = makeReadFileHandler({
+          codeEnvAvailable: true,
+          readWorkspaceFile,
+          codeExecutionContext: {
+            baseUrl: 'https://code.example.com/v1',
+            codeSessionKey: 'execute_code:stateful:attached',
+            executionProfile: 'stateful',
+            environmentType: 'attached',
+            statefulSessions: true,
+            codeEnvironmentConfigSchema: { limits: { defaultReadFileLines } },
+          },
+        });
+        const [result] = await invokeHandler(handler, [
+          {
+            id: 'call_configured_window',
+            name: Constants.READ_FILE,
+            args: { path: 'workspace/notes.txt' },
+          },
+        ]);
+        expect(readWorkspaceFile).toHaveBeenCalledWith(
+          expect.objectContaining({ start_line: 1, max_lines: defaultReadFileLines }),
+        );
+        expect(result.status).toBe('success');
+        if (defaultReadFileLines === 500) {
+          expect(result.content).toContain('450 | line 450');
+          expect(result.content).not.toContain('more content');
+        } else {
+          expect(result.content).toContain('200 | line 200');
+          expect(result.content).toContain('start_line 201');
+        }
+        const [page] = await invokeHandler(handler, [
+          {
+            id: 'call_explicit_window',
+            name: Constants.READ_FILE,
+            args: { path: 'workspace/notes.txt', start_line: 10, max_lines: 2 },
+          },
+        ]);
+        expect(readWorkspaceFile).toHaveBeenLastCalledWith(
+          expect.objectContaining({ start_line: 10, max_lines: 2 }),
+        );
+        expect(page.content).toContain('10 | line 10\n11 | line 11');
+        expect(page.content).toContain('start_line 12');
+      },
+    );
 
     it('forwards the run abort signal to attached workspace reads', async () => {
       const readWorkspaceFile = jest.fn(async () => ({

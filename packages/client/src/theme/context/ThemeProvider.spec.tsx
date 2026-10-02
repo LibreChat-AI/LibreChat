@@ -832,7 +832,7 @@ describe('ThemeProvider', () => {
       modes: {
         light: {
           colors: { 'rgb-accent-primary': '4 5 6' },
-          appearance: { controlRadius: '2px', futureSpacing: '3rem' },
+          appearance: { controlRadius: '2px', futureSpacing: '3.3125rem' },
         },
       },
     };
@@ -851,7 +851,7 @@ describe('ThemeProvider', () => {
       expect(root.dataset.theme).toBe('newer');
       expect(root.style.getPropertyValue('--accent-primary')).toBe('4 5 6');
       expect(root.style.getPropertyValue('--theme-control-radius')).toBe('2px');
-      expect(root.getAttribute('style')).not.toContain('3rem');
+      expect(root.getAttribute('style')).not.toContain('3.3125rem');
       expect(warn).toHaveBeenCalledWith(
         '[ThemeProvider] Unknown light appearance token ignored: futureSpacing',
       );
@@ -890,7 +890,7 @@ describe('ThemeProvider', () => {
     it('still discards a stored definition whose known key has an invalid value', async () => {
       const invalid = {
         ...newerDefinition,
-        modes: { light: { appearance: { controlRadius: 'huge', futureSpacing: '3rem' } } },
+        modes: { light: { appearance: { controlRadius: 'huge', futureSpacing: '3.3125rem' } } },
       };
       localStorage.setItem('theme-definition', JSON.stringify(invalid));
 

@@ -21,6 +21,8 @@ const passkeyStepUpLimiter = require('./passkeyStepUpLimiter');
 const verifyEmailSubmissionLimiter = require('./verifyEmailSubmissionLimiter');
 const resetPasswordSubmissionLimiter = require('./resetPasswordSubmissionLimiter');
 
+const { twoFactorSetupLimiter } = twoFactorTempLimiter;
+
 module.exports = {
   ...uploadLimiters,
   ...importLimiters,
@@ -43,4 +45,5 @@ module.exports = {
   verifyEmailSubmissionLimiter,
   resetPasswordSubmissionLimiter,
   twoFactorTempLimiter,
+  twoFactorSetupLimiter,
 };

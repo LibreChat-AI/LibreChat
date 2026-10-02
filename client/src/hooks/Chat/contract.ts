@@ -26,11 +26,9 @@ import type {
   ExtendedFile,
   TAskFunction,
   Artifact,
+  PtcTrace,
 } from '~/common';
-import type { PendingSteer } from '~/store/families';
-import type { PtcTrace } from '~/store/ptc';
-
-export type { PtcTrace, PtcTraceEntry } from '~/store/ptc';
+import type { PendingSteer } from './queue';
 
 /** Options accepted by {@link ChatConversationContract.newConversation}: the shared params plus
  *  the two flags only the root pane's generator honors. */

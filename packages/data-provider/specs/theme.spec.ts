@@ -47,3 +47,42 @@ describe('menu and tooltip shadow roles in a theme definition', () => {
     }
   });
 });
+
+describe('field fill roles in a theme definition', () => {
+  const theme = {
+    version: 1,
+    name: 'field-fill-reference',
+    modes: {
+      light: {
+        colors: { 'rgb-field-fill': '251 252 255', 'rgb-field-text': '48 46 50' },
+        appearance: { fieldFillStyle: 'fill' },
+      },
+      dark: { appearance: { fieldFillStyle: 'transparent' } },
+    },
+  };
+
+  it('accepts the fill style and opaque field colors', () => {
+    expect(deploymentThemeSchema.safeParse(theme).success).toBe(true);
+    expect(messages(theme)).toEqual([]);
+  });
+
+  it('rejects an unknown fill style and a translucent field color', () => {
+    const glass = { ...theme, modes: { light: { appearance: { fieldFillStyle: 'glass' } } } };
+    expect(messages(glass)).toEqual(['Invalid appearance value for fieldFillStyle: glass']);
+
+    const translucent = {
+      ...theme,
+      modes: { light: { colors: { 'rgb-field-fill': '1 2 3 / 0.5' } } },
+    };
+    expect(deploymentThemeSchema.safeParse(translucent).success).toBe(false);
+    expect(messages(translucent)).toHaveLength(1);
+  });
+
+  it('keeps a definition that names a color token this reader does not know', () => {
+    const newer = {
+      ...theme,
+      modes: { light: { colors: { 'rgb-field-fill': '251 252 255', 'rgb-field-hover': '1 2 3' } } },
+    };
+    expect(messages(newer)).toEqual([]);
+  });
+});

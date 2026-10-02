@@ -29,7 +29,7 @@ export default function Code({ version }: { version: number | string }) {
                 {...field}
                 checked={field.value}
                 onCheckedChange={field.onChange}
-                className="relative float-left mr-2 inline-flex h-4 w-4 cursor-pointer"
+                className="relative float-left mr-2 inline-flex cursor-pointer"
                 value={field.value.toString()}
                 aria-labelledby={Capabilities.code_interpreter}
               />

@@ -369,6 +369,48 @@ test.describe('passkeys', () => {
     await expect(page.getByTestId('nav-user')).toHaveCount(0);
   });
 
+  test('a passkey sign-in on an account that must enroll opens two-factor setup @scenario:required-2fa-passkey-sign-in-hands-off-setup', async ({
+    browser,
+    playwright,
+    baseURL,
+  }) => {
+    test.setTimeout(90000);
+    const request = await playwright.request.newContext({ baseURL: passkeyBaseURL(baseURL) });
+    user = await createFreshUser(request);
+    context = await openContextFor(browser, request, passkeyBaseURL(baseURL));
+    await request.dispose();
+    const page = await context.newPage();
+    await addVirtualAuthenticator(page);
+
+    await addPasskey(page, user.password);
+    await logOut(page);
+    /**
+     * The harness runs with enforcement off, so the ceremony is verified for real and the
+     * answer is replaced with the payload the server returns under enforcement.
+     */
+    await context.route('**/api/auth/passkey/login/verify', async (route) => {
+      const response = await route.fetch();
+      expect(response.ok()).toBeTruthy();
+      await route.fulfill({
+        response,
+        json: {
+          code: 'TWO_FACTOR_ENROLLMENT_REQUIRED',
+          twoFAPending: true,
+          twoFASetupRequired: true,
+          tempToken: 'passkey-setup-token',
+        },
+      });
+    });
+    await signInWithPasskey(page);
+
+    await expect(page).toHaveURL(/\/login\/2fa\/setup$/, { timeout: 15000 });
+    expect(await page.evaluate(() => window.sessionStorage.getItem('two_factor_setup_token'))).toBe(
+      'passkey-setup-token',
+    );
+    await expect(page.getByRole('button', { name: 'Generate QR Code' })).toBeVisible();
+    await expect(page.getByTestId('nav-user')).toHaveCount(0);
+  });
+
   test('a password reset revokes earlier access tokens and removes passkeys @scenario:password-reset-revokes-tokens-and-passkeys', async ({
     playwright,
     baseURL,

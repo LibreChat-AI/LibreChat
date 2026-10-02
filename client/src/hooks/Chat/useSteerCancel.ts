@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { useSetAtom, useStore } from 'jotai';
 import { useRecoilCallback, useRecoilValue } from 'recoil';
-import type { PendingSteer } from '~/store/families';
+import type { PendingSteer } from '~/hooks/Chat/queue';
 import { useComposerRestoreHost } from '~/Providers/ComposerRestoreContext';
 import { appendAppliedSteerIds, carriedSteerContext } from '~/utils';
 import { pendingSteerCancelClientIdsFamily } from '~/store/steer';

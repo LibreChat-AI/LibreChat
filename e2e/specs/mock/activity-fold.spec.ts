@@ -139,6 +139,38 @@ test.describe('activity fold', () => {
     await expect(panel).toContainText(/error/i);
     await shot(page, 'revealed-by-pill');
 
+    /** Each open fold's rail lights up under the pointer, swaps ITS header's
+     *  glyph for a collapse knob, and collapses only that fold. */
+    const knobs = messagesView(page).getByTestId('fold-rail-knob');
+    const phaseRail = messagesView(page)
+      .getByTestId('activity-phase-panel')
+      .locator('> div > [data-testid="fold-rail"]');
+    const groupPanel = messagesView(page)
+      .getByTestId('tool-call-group-panel')
+      .filter({ has: page.getByTestId('tool-call').filter({ hasText: /^Failed:/ }) });
+    const groupRail = groupPanel.locator('> div > [data-testid="fold-rail"]');
+    const groupHeader = groupPanel.locator('xpath=preceding-sibling::div[1]').getByRole('button');
+    const lineColor = (railLocator: typeof groupRail) =>
+      railLocator.locator('span').evaluate((line) => getComputedStyle(line).backgroundColor);
+    const restingLine = await lineColor(groupRail);
+    await expect(knobs).toHaveCount(0);
+    await groupRail.hover();
+    await expect(knobs).toHaveCount(1);
+    await expect(groupHeader.getByTestId('fold-rail-knob')).toBeVisible();
+    await expect.poll(() => lineColor(groupRail)).not.toBe(restingLine);
+    await shot(page, 'group-rail-hover');
+    await phaseRail.hover();
+    await expect(knobs).toHaveCount(1);
+    await expect(header.getByTestId('fold-rail-knob')).toBeVisible();
+    await shot(page, 'phase-rail-hover');
+    await groupRail.click();
+    await expect(groupHeader).toHaveAttribute('aria-expanded', 'false');
+    await expect(header).toHaveAttribute('aria-expanded', 'true');
+    await phaseRail.click();
+    await expect(header).toHaveAttribute('aria-expanded', 'false');
+    await expect(knobs).toHaveCount(0);
+    await shot(page, 'rail-collapsed');
+
     /** Survives a reload from the persisted message. */
     await page.reload();
     const reloaded = messagesView(page).getByRole('button', { name: PHASE_LABEL, exact: true });
@@ -185,6 +217,60 @@ test.describe('activity fold', () => {
     await groupHeader.click();
     await expect(messagesView(page).locator('[data-testid="tool-call"]').first()).toBeVisible();
     await shot(page, 'clean-open-group');
+
+    const phaseRail = messagesView(page)
+      .getByTestId('activity-phase-panel')
+      .locator('> div > [data-testid="fold-rail"]');
+    const groupRail = group.locator('> div > [data-testid="fold-rail"]');
+    const phaseLabel = header.getByText(PHASE_LABEL, { exact: true });
+    const beforeHover = await phaseLabel.boundingBox();
+    await phaseRail.hover();
+    await expect(header.getByTestId('fold-rail-knob')).toBeVisible();
+    expect(await phaseLabel.boundingBox()).toEqual(beforeHover);
+
+    const groupLabel = groupHeader.locator('[role="status"]');
+    const beforeGroupHover = await groupLabel.boundingBox();
+    await groupRail.hover();
+    await expect(groupHeader.getByTestId('fold-rail-knob')).toBeVisible();
+    expect(await groupLabel.boundingBox()).toEqual(beforeGroupHover);
+
+    /** Keep room below the historical fold so collapse cannot clamp away an overlap. */
+    const phaseCard = messagesView(page).getByTestId('activity-phase-card');
+    await phaseCard.evaluate((card) => {
+      const spacer = document.createElement('div');
+      spacer.style.height = '1200px';
+      card.after(spacer);
+    });
+    await group.locator('> div > div').evaluate((rows) => {
+      (rows as HTMLElement).style.paddingBottom = '1200px';
+    });
+    await groupRail.click({ position: { x: 12, y: 900 } });
+    await expect(groupHeader).toHaveAttribute('aria-expanded', 'false');
+    await expect(header).toHaveAttribute('aria-expanded', 'true');
+    await expect
+      .poll(async () => {
+        const phaseBox = await header.boundingBox();
+        const groupBox = await groupHeader.boundingBox();
+        return phaseBox != null && groupBox != null && groupBox.y >= phaseBox.y + phaseBox.height;
+      })
+      .toBe(true);
+    const isPointerAccessible = (button: typeof header) =>
+      button.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        return element.contains(document.elementFromPoint(box.left + 12, box.top + box.height / 2));
+      });
+    await expect(groupHeader).toBeInViewport();
+    await expect.poll(() => isPointerAccessible(groupHeader)).toBe(true);
+    await shot(page, 'nested-rail-revealed');
+
+    await phaseRail.locator('..').evaluate((rows) => {
+      (rows as HTMLElement).style.paddingBottom = '1200px';
+    });
+    await phaseRail.click({ position: { x: 12, y: 900 } });
+    await expect(header).toHaveAttribute('aria-expanded', 'false');
+    await expect(header).toBeInViewport();
+    await expect.poll(() => isPointerAccessible(header)).toBe(true);
+    await shot(page, 'phase-rail-revealed');
     expect(problems.filter((line) => !line.includes('favicon'))).toEqual([]);
   });
 });

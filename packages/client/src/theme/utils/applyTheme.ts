@@ -77,6 +77,11 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
     variables.push(['--switch-thumb', colors['rgb-surface-primary']]);
   }
 
+  /** The field fill follows the canvas, as in `resolveTheme`. */
+  if (colors['rgb-field-fill'] === undefined && colors['rgb-surface-primary'] !== undefined) {
+    variables.push(['--field-fill', colors['rgb-surface-primary']]);
+  }
+
   if (colors['rgb-table-header-text'] === undefined && colors['rgb-text-secondary'] !== undefined) {
     variables.push(['--table-header-text', colors['rgb-text-secondary']]);
   }

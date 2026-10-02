@@ -496,6 +496,15 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--border-field-focus')).toBe('30 31 32');
   });
 
+  it('maps a legacy theme canvas and ink onto the field fill and ink', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-text-primary': '1 2 3' }, root);
+
+    expect(root.style.getPropertyValue('--field-fill')).toBe('20 21 22');
+    expect(root.style.getPropertyValue('--field-text')).toBe('1 2 3');
+  });
+
   it('keeps the switch knob of a legacy theme on the surface it repainted', () => {
     const root = document.documentElement;
 

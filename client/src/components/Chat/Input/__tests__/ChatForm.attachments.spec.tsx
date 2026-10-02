@@ -11,14 +11,33 @@ import { QueryKeys, FileSources, EModelEndpoint } from 'librechat-data-provider'
 import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
 import type { TFile, TFileUpload, TConversation } from 'librechat-data-provider';
 import type { ChatFormValues, TAskFunction } from '~/common';
+import type { TranslationKeys } from '~/hooks/useLocalize';
 import { getDraft, getPendingDraftId, setDraft } from '~/utils';
 import ChatForm, { toRestoredComposerFile } from '../ChatForm';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
+import * as FileContainer from '../Files/FileContainer';
 import store from '~/store';
 
 const mockUpload = jest.fn();
 const mockAsk = jest.fn();
+
+// Production keeps `t` stable between language changes; the global test double does not.
+jest.mock('react-i18next', () => {
+  const actual = jest.requireActual<typeof import('react-i18next')>('react-i18next');
+  const t = (key: TranslationKeys, options?: import('i18next').TOptions) =>
+    jest.requireActual<typeof import('~/locales/i18n')>('~/locales/i18n').default.t(key, options);
+  return {
+    ...actual,
+    useTranslation: () => ({
+      t,
+      i18n: {
+        ...jest.requireActual<typeof import('~/locales/i18n')>('~/locales/i18n').default,
+        changeLanguage: jest.fn(),
+      },
+    }),
+  };
+});
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -448,6 +467,31 @@ describe('ChatForm attachments', () => {
     expect(sendButton()).toBeEnabled();
     expect(textarea).toHaveValue('hi');
   }, 20000);
+
+  test('does not redraw an attached document on each keystroke', async () => {
+    mockUpload.mockImplementation((body: FormData) =>
+      Promise.resolve({
+        ...uploadResponse,
+        filename: 'report.pdf',
+        type: 'application/pdf',
+        temp_file_id: body.get('file_id') as string,
+      }),
+    );
+    const { container } = renderComposer();
+    await attach(container, new File(['document'], 'report.pdf', { type: 'application/pdf' }));
+    expect(await screen.findByRole('button', { name: 'report.pdf' })).toBeVisible();
+    const textarea = screen.getByTestId('text-input');
+    await userEvent.click(textarea);
+    const preview = jest.spyOn(FileContainer, 'default');
+
+    await userEvent.type(textarea, 'read this document');
+
+    // Allow the upload cache to reconcile once, not once per keystroke.
+    expect(preview.mock.calls.length).toBeLessThanOrEqual(1);
+    await userEvent.click(sendButton());
+    expect(mockAsk).toHaveBeenCalledWith({ text: 'read this document' }, expect.any(Object));
+    expect(textarea).toHaveValue('');
+  });
 
   /**
    * The composer is the app's busiest surface: every keystroke already re-renders
