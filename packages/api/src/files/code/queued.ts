@@ -100,7 +100,7 @@ export function planCodeFileUploads({
 
   const destinations = createCodeDestinationSet();
   const liveNames = new Map<string, string>();
-  for (const candidate of routeContexts) {
+  const reserveLiveFiles = (candidate: ProvisionToolContext): void => {
     const candidateQueuedIds = new Set(
       candidate.provisionState?.codeEnvFiles.map((file) => file.file_id),
     );
@@ -110,9 +110,15 @@ export function planCodeFileUploads({
         getCodeEnvRefForProfile(file.metadata, route)?.sandboxFilename ??
         candidate.provisionState?.codeEnvDestinations?.get(file.file_id) ??
         resolveSandboxFilename(file.filename, file.type);
-      reserveCodeDestination(destinations, name);
-      liveNames.set(file.file_id, name);
+      if (reserveCodeDestination(destinations, name) && !liveNames.has(file.file_id)) {
+        liveNames.set(file.file_id, name);
+      }
     }
+  };
+  // Foreign live paths can be reused only after this agent's immutable mounts claim theirs.
+  reserveLiveFiles(context);
+  for (const candidate of routeContexts) {
+    if (candidate !== context) reserveLiveFiles(candidate);
   }
   for (const file of context.pendingProvisionedCodeFiles ?? []) {
     claimCodeDestination(destinations, file.name, file.id);

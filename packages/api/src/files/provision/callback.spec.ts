@@ -141,22 +141,27 @@ describe('createProvisionFilesCallback', () => {
     },
   );
 
-  it.each([
-    ['parent', 'data.csv', 'data.csv', false],
-    ['child', 'data.csv', 'data.csv', false],
-    ['parent', 'data', 'data/input.csv', false],
-    ['child', 'data', 'data/input.csv', false],
-    ['parent', 'data/input.csv', 'data', false],
-    ['child', 'data/input.csv', 'data', false],
-    ['parent', 'data.csv', 'data.csv', true],
-    ['child', 'data.csv', 'data.csv', true],
-    ['parent', 'data', 'data/input.csv', true],
-    ['child', 'data', 'data/input.csv', true],
-    ['parent', 'data/input.csv', 'data', true],
-    ['child', 'data/input.csv', 'data', true],
-  ])(
-    'keeps both %s-first live mounts (%s) and frozen uploads (%s) through injection, retry=%s',
-    async (firstAgentId, liveName, uploadName, retry) => {
+  it.each(
+    [
+      ['data.csv', 'data.csv'],
+      ['data', 'data/input.csv'],
+      ['data/input.csv', 'data'],
+    ].flatMap(([liveName, uploadName]) =>
+      ['parent', 'child'].flatMap((firstAgentId) =>
+        [false, true].flatMap((retry) =>
+          [false, true].map((parentProvisioned) => ({
+            firstAgentId,
+            liveName,
+            uploadName,
+            retry,
+            parentProvisioned,
+          })),
+        ),
+      ),
+    ),
+  )(
+    'keeps $firstAgentId-first mounts ($liveName) and uploads ($uploadName), retry=$retry, parentProvisioned=$parentProvisioned',
+    async ({ firstAgentId, liveName, uploadName, retry, parentProvisioned }) => {
       const shared = makeFile({ file_id: 'shared', filename: uploadName });
       const parent: CodeFileAgent = {
         id: 'parent',
@@ -187,22 +192,27 @@ describe('createProvisionFilesCallback', () => {
         provisionState: state([{ ...shared }], [], [live.file_id]),
         tool_resources: { execute_code: { files: [live] } },
       };
+      const { provisionFiles, provisionToCodeEnv, agentToolContexts } = buildHarness({
+        contexts: [[parent.id, parent]],
+      });
+      const provisioned = new Map<string, Awaited<ReturnType<typeof provisionFiles>>>();
+      if (parentProvisioned) {
+        provisioned.set(parent.id, await provisionFiles([Constants.EXECUTE_CODE], parent.id));
+        expect(child.provisionState?.codeEnvFiles[0].metadata?.codeEnvRefs).toBeUndefined();
+      }
+      agentToolContexts.set(child.id, child);
       prepareQueuedCodeFileContext(child, [parent, child], req.user?.id, true);
       const childPath = child.provisionState?.codeEnvDestinations?.get(shared.file_id);
       expect(childPath).toBeDefined();
       expect(childPath).not.toBe(parentPath);
       expect(child.dynamicToolContextMap?.queued_code_files).toContain(`/mnt/data/${childPath}`);
 
-      const { provisionFiles, provisionToCodeEnv } = buildHarness({
-        contexts: [
-          [parent.id, parent],
-          [child.id, child],
-        ],
-      });
       if (retry) provisionToCodeEnv.mockRejectedValueOnce(new Error('Transient upload failure'));
-      const provisioned = new Map<string, Awaited<ReturnType<typeof provisionFiles>>>();
-      for (const id of [firstAgentId, firstAgentId === 'parent' ? 'child' : 'parent']) {
-        if (retry && id === firstAgentId) {
+      const order = parentProvisioned
+        ? [child.id]
+        : [firstAgentId, firstAgentId === parent.id ? child.id : parent.id];
+      for (const id of order) {
+        if (retry && id === order[0]) {
           await expect(provisionFiles([Constants.EXECUTE_CODE], id)).rejects.toThrow(
             'Failed to provision',
           );
@@ -211,7 +221,7 @@ describe('createProvisionFilesCallback', () => {
         provisioned.set(id, await provisionFiles([Constants.EXECUTE_CODE], id));
       }
       if (retry) {
-        provisioned.set(firstAgentId, await provisionFiles([Constants.EXECUTE_CODE], firstAgentId));
+        provisioned.set(order[0], await provisionFiles([Constants.EXECUTE_CODE], order[0]));
       }
       expect(provisioned.get(parent.id)?.[0].name).toBe(parentPath);
       expect(provisioned.get(child.id)?.[0].name).toBe(childPath);
