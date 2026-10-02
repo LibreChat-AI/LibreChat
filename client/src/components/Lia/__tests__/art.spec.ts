@@ -105,12 +105,26 @@ describe("Lia's pixel art", () => {
     }
   });
 
-  it('draws every built-in screen across its whole run', () => {
-    for (const name of BUILTIN_SCREENS) {
-      for (const p of [0, 0.2, 0.35, 0.5, 1]) {
-        expect(paint((c) => drawScreen(c, name, p * 2000, p, BASE)).length).toBeGreaterThan(0);
-      }
-    }
+  it('draws every built-in screen as its own picture, distinct from the face', () => {
+    const draw = (name: string, p: number) =>
+      paint((c) => drawScreen(c, name, p * 2000, p, BASE))
+        .map((r) => r.key)
+        .join('|');
+    const face = draw('face', 0.6);
+    const screens = [...BUILTIN_SCREENS].map((name) => draw(name, 0.6));
+    expect(new Set(screens).size).toBe(BUILTIN_SCREENS.size);
+    expect(screens).not.toContain(face);
+  });
+
+  it('advances the progress screens as their step runs', () => {
+    const draw = (name: string, p: number) =>
+      paint((c) => drawScreen(c, name, p * 2000, p, BASE))
+        .map((r) => r.key)
+        .join('|');
+    expect(draw('loading', 0.2)).not.toBe(draw('loading', 0.9));
+    const boot = [0.2, 0.35, 0.6, 1].map((p) => draw('boot', p));
+    expect(new Set(boot).size).toBe(boot.length);
+    expect(draw('boot', 1).endsWith(draw('face', 0))).toBe(true);
   });
 
   it('describes every pose as a small offset', () => {
