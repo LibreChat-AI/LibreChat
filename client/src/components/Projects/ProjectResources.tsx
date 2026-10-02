@@ -153,28 +153,33 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
     fetchNextPage,
     refetch: refetchFiles,
   } = availableFilesQuery;
-  /** The project and search whose last error came from loading a further page, so Retry
-   *  fetches that page again rather than refetching what is already listed. It lapses
-   *  once the query recovers, and never carries over to another project or search. */
+  /** The projects and searches whose last error came from loading a further page, so Retry
+   *  fetches that page again rather than refetching what is already listed. Each query
+   *  keeps its own marker until that same query recovers. */
   const pageQueryKey = `${project._id}\u0000${deferredPickerSearch}`;
-  const [failedPageKey, setFailedPageKey] = useState<string | null>(null);
-  if (failedPageKey != null && !isFilesError) {
-    setFailedPageKey(null);
+  const [failedPageKeys, setFailedPageKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const nextPageFailed = failedPageKeys.has(pageQueryKey);
+  if (nextPageFailed && !isFilesError) {
+    const next = new Set(failedPageKeys);
+    next.delete(pageQueryKey);
+    setFailedPageKeys(next);
   }
-  const nextPageFailed = failedPageKey === pageQueryKey;
-  /** The query a settling page request is checked against, so a request started for an
-   *  earlier project or search never rewrites the current query's marker. */
-  const activePageQueryKeyRef = useRef(pageQueryKey);
-  useEffect(() => {
-    activePageQueryKeyRef.current = pageQueryKey;
-  }, [pageQueryKey]);
   const loadNextPage = () => {
     const requestKey = pageQueryKey;
-    void fetchNextPage().then((result) => {
-      if (requestKey === activePageQueryKeyRef.current) {
-        setFailedPageKey(result.isError ? requestKey : null);
-      }
-    });
+    void fetchNextPage().then((result) =>
+      setFailedPageKeys((previous) => {
+        if (result.isError === previous.has(requestKey)) {
+          return previous;
+        }
+        const next = new Set(previous);
+        if (result.isError) {
+          next.add(requestKey);
+        } else {
+          next.delete(requestKey);
+        }
+        return next;
+      }),
+    );
   };
   const uploadFile = useUploadFileMutation();
   const addFile = useAddProjectFileMutation();

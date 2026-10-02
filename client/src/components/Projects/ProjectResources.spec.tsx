@@ -444,6 +444,46 @@ describe('ProjectResources', () => {
     expect(mockRefetch).not.toHaveBeenCalled();
   });
 
+  it('keeps a search page failure after visiting another search', async () => {
+    const fetchNextPage = jest.fn(async () => {
+      mockAvailableFilesState = { ...mockAvailableFilesState, isError: true };
+      return { isError: true };
+    });
+    mockAvailableFilesState = {
+      ...mockAvailableFilesState,
+      data: {
+        pages: [
+          {
+            files: [{ ...uploadedFile, file_id: 'first-id', filename: 'first.txt' }] as TFile[],
+            nextCursor: null,
+          },
+        ],
+      },
+      hasNextPage: true,
+      fetchNextPage,
+    };
+    const view = renderResources();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add files' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Choose an existing file' }));
+    await user.click(await screen.findByRole('button', { name: 'Load more' }));
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+
+    /* Another search loads fine; coming back finds the first search's page still missing. */
+    const search = screen.getByRole('searchbox', { name: 'Search files' });
+    await user.type(search, 'other');
+    mockAvailableFilesState = { ...mockAvailableFilesState, isError: false };
+    view.rerender(<ProjectResources project={project} />);
+    /* Back on the first search, whose query still reports the failed page. */
+    mockAvailableFilesState = { ...mockAvailableFilesState, isError: true };
+    await user.clear(search);
+    view.rerender(<ProjectResources project={project} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Retry' }));
+    expect(fetchNextPage).toHaveBeenCalledTimes(2);
+    expect(mockRefetch).not.toHaveBeenCalled();
+  });
+
   it('refetches the listed files when a refresh of them fails', async () => {
     const fetchNextPage = jest.fn();
     mockAvailableFilesState = {

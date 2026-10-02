@@ -126,6 +126,47 @@ test.describe('project dialogs', () => {
     await expect(renamedTrigger).toBeFocused();
   });
 
+  test('a pending save keeps the Edit project dialog open and reports a failure @scenario:project-edit-dialog-holds-while-saving', async ({
+    page,
+  }) => {
+    const project = await createProject(page, 'E2E Edit Saving');
+    let releaseSave: () => void = () => undefined;
+    const saveHeld = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    await page.route(
+      (url) => url.pathname === `/api/projects/${project.id}`,
+      async (route) => {
+        if (route.request().method() !== 'PATCH') {
+          await route.fallback();
+          return;
+        }
+        await saveHeld;
+        await fulfillJson(route, 500, { error: 'save failed' });
+      },
+    );
+    await page.goto('/projects', { timeout: 10000 });
+    const card = page.locator('article').filter({ hasText: project.name });
+    await card.getByRole('button', { name: 'More options', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Edit project', exact: true }).click();
+
+    const dialog = page.getByRole('dialog', { name: 'Edit project' });
+    const nameInput = dialog.getByRole('textbox', { name: 'Project name', exact: true });
+    const draft = `${project.name} draft`;
+    await nameInput.fill(draft);
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+
+    /* Neither Escape nor a backdrop click dismisses the dialog while the save is pending. */
+    await page.keyboard.press('Escape');
+    await page.mouse.click(5, 5);
+    await expect(dialog).toBeVisible();
+
+    releaseSave();
+    await expect(page.getByText('Failed to rename project')).toBeVisible();
+    await expect(dialog).toBeVisible();
+    await expect(nameInput).toHaveValue(draft);
+  });
+
   test('a filter with no matches shows the search empty state @scenario:project-picker-filtered-empty-state', async ({
     page,
   }) => {

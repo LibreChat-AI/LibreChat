@@ -19,6 +19,9 @@ export type ProjectEditorProps = {
   layout?: 'workspace' | 'dialog';
   inputRef?: RefObject<HTMLInputElement>;
   initialField?: 'name' | 'description';
+  /** A host that outlives the editor, such as a dialog, passes its own mutation so the
+   *  save settles (and reports) even if the editor unmounts first. */
+  updateProject?: ReturnType<typeof useUpdateProjectMutation>;
 };
 
 type ProjectEditorForm = {
@@ -32,9 +35,11 @@ export default function ProjectEditor({
   layout = 'workspace',
   inputRef,
   initialField = 'name',
+  updateProject: hostUpdateProject,
 }: ProjectEditorProps) {
   const localize = useLocalize();
-  const updateProject = useUpdateProjectMutation();
+  const ownUpdateProject = useUpdateProjectMutation();
+  const updateProject = hostUpdateProject ?? ownUpdateProject;
   const { data: startupConfig } = useGetStartupConfig();
   const descriptionLimit =
     startupConfig?.projects?.maxDescriptionLength ?? MAX_CHAT_PROJECT_DESCRIPTION_LENGTH;
