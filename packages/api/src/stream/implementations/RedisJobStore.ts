@@ -4302,6 +4302,18 @@ export class RedisJobStore implements IJobStoreV2 {
       // Pass event string directly - GraphEvents values are lowercase strings
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       aggregateContent({ event: event.event as any, data: event.data as any });
+
+      // The SDK aggregator rebuilds tool calls from known fields only, so the
+      // server-stamped executor is copied back from the stored completion.
+      if (event.event === 'on_run_step_completed') {
+        const completed = (event.data as { result?: Agents.ToolEndEvent }).result;
+        const executor = completed?.tool_call?.executor;
+        const index = completed?.id != null ? replayedStepIndices.get(completed.id) : undefined;
+        const part = index != null ? contentParts[index] : undefined;
+        if (executor != null && part?.type === ContentTypes.TOOL_CALL && part.tool_call) {
+          part.tool_call.executor = executor;
+        }
+      }
     }
 
     const reasoningIndices = new Set([

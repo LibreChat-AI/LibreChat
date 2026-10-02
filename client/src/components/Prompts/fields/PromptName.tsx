@@ -107,7 +107,7 @@ const PromptName: React.FC<Props> = ({ name, isLoading = false, isError = false,
           setIsEditing(true);
         }
       }}
-      className="h-8 min-w-0 flex-1 cursor-text truncate pl-2 text-left text-base font-semibold text-text-primary transition-colors hover:text-text-secondary focus:outline-none"
+      className="text-text-primary hover:text-text-secondary h-8 min-w-0 flex-1 cursor-text truncate pl-2 text-left text-base font-semibold transition-colors focus:outline-hidden"
       aria-label={localize('com_ui_edit') + ': ' + (newName ?? '')}
     >
       {newName}
@@ -131,7 +131,7 @@ const PromptName: React.FC<Props> = ({ name, isLoading = false, isError = false,
           onKeyDown={handleKeyDown}
           onBlur={saveName}
           disabled={isLoading}
-          className="h-8 min-w-0 flex-1 rounded-md border border-transparent bg-transparent pl-2 pr-0 text-base font-semibold text-text-primary outline-none focus:border-border-medium focus:outline-none disabled:opacity-60"
+          className="text-text-primary focus:border-border-medium h-8 min-w-0 flex-1 rounded-md border border-transparent bg-transparent pr-0 pl-2 text-base font-semibold disabled:opacity-60"
           aria-label={localize('com_ui_name')}
         />
       ) : (
@@ -140,25 +140,25 @@ const PromptName: React.FC<Props> = ({ name, isLoading = false, isError = false,
       <div className="ml-1.5 flex shrink-0 items-center justify-center">
         {saveStatus === 'saving' && (
           <Loader2
-            className="size-4 animate-spin text-text-secondary"
+            className="text-text-secondary size-4 animate-spin"
             aria-label={localize('com_ui_saving')}
           />
         )}
         {saveStatus === 'saved' && (
           <Check
-            className="size-4 text-status-success transition-opacity duration-300"
+            className="text-status-success size-4 transition-opacity duration-300"
             aria-label={localize('com_ui_saved')}
           />
         )}
         {saveStatus === 'error' && (
           <X
-            className="size-4 text-text-destructive transition-opacity duration-300"
+            className="text-text-destructive size-4 transition-opacity duration-300"
             aria-label={localize('com_ui_error')}
           />
         )}
         {saveStatus === 'idle' && !isEditing && (
           <Pencil
-            className="size-3.5 text-text-secondary opacity-0 transition-opacity group-hover/title:opacity-100"
+            className="text-text-secondary size-3.5 opacity-0 transition-opacity group-hover/title:opacity-100"
             aria-hidden="true"
           />
         )}

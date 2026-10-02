@@ -3,6 +3,7 @@ import { AppService, getTenantId, tenantStorage, SYSTEM_TENANT_ID } from '@libre
 import type { AppConfig } from '@librechat/data-schemas';
 import {
   createAppConfigService,
+  createMessageBudgetReader,
   _resetOverrideStrictCache,
   getAppConfigOptionsFromUser,
 } from './service';
@@ -702,6 +703,127 @@ describe('createAppConfigService', () => {
       expect(config.modelSpecs?.list?.[0]?.preset?.agent_id).toBe('agent_abc');
     });
 
+    it('leaves unknown colors out of a theme a DB override supplies', async () => {
+      const deps = createDeps({
+        getApplicableConfigs: jest.fn().mockResolvedValue([
+          {
+            priority: 10,
+            isActive: true,
+            overrides: {
+              interface: {
+                theme: {
+                  version: 1,
+                  name: 'override',
+                  modes: {
+                    light: {
+                      colors: { 'rgb-surface-primary': '1 2 3', 'surface-future': '4 5 6' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ]),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      const config = await getAppConfig({ role: 'USER' });
+
+      expect(config.interfaceConfig?.theme).toEqual({
+        version: 1,
+        name: 'override',
+        modes: { light: { colors: { 'rgb-surface-primary': '1 2 3' } } },
+      });
+      expect(config.interfaceConfig?.modelSelect).toBe(true);
+    });
+
+    it.each([true, false])(
+      'preserves tenant isolation through a theme override (valid: %s), including cache hits',
+      async (valid) => {
+        const custom = [
+          { name: 'Global', baseURL: 'https://global.example' },
+          { name: 'Private', tenantId: 'owner-tenant', baseURL: 'https://private.example' },
+        ];
+        const base = {
+          interfaceConfig: { theme: 'clickhouse' },
+          endpoints: { custom },
+          config: { endpoints: { custom } },
+        };
+        const deps = createDeps({
+          loadBaseConfig: jest.fn().mockResolvedValue(base),
+          getApplicableConfigs: jest.fn().mockResolvedValue([
+            {
+              priority: 10,
+              isActive: true,
+              overrides: {
+                interface: {
+                  theme: {
+                    version: 1,
+                    name: 'override',
+                    modes: {
+                      light: {
+                        colors: {
+                          'rgb-surface-primary': valid ? '1 2 3' : '300 16 32',
+                          'surface-future': '4 5 6',
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          ]),
+        });
+        const { getAppConfig } = createAppConfigService(deps);
+        for (const tenantId of ['other-tenant', 'owner-tenant', 'other-tenant']) {
+          const config = await getAppConfig({ role: 'USER', tenantId });
+          const names = tenantId === 'owner-tenant' ? ['Global', 'Private'] : ['Global'];
+          expect(config.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual(names);
+          expect(config.config.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual(names);
+          expect(config.interfaceConfig?.theme).toEqual(
+            valid
+              ? {
+                  version: 1,
+                  name: 'override',
+                  modes: { light: { colors: { 'rgb-surface-primary': '1 2 3' } } },
+                }
+              : 'clickhouse',
+          );
+        }
+        expect(custom).toHaveLength(2);
+        expect(base.interfaceConfig.theme).toBe('clickhouse');
+        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it('keeps the base theme when a DB override supplies an invalid one', async () => {
+      const deps = createDeps({
+        loadBaseConfig: jest
+          .fn()
+          .mockResolvedValue({ interfaceConfig: { modelSelect: true, theme: 'clickhouse' } }),
+        getApplicableConfigs: jest.fn().mockResolvedValue([
+          {
+            priority: 10,
+            isActive: true,
+            overrides: {
+              interface: {
+                theme: {
+                  version: 1,
+                  name: 'override',
+                  modes: { dark: { colors: { 'rgb-surface-primary': '300 16 32' } } },
+                },
+              },
+            },
+          },
+        ]),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      const config = await getAppConfig({ role: 'USER' });
+
+      expect(config.interfaceConfig?.theme).toBe('clickhouse');
+    });
+
     it('caches empty result — does not re-query DB on second call', async () => {
       const deps = createDeps({ getApplicableConfigs: jest.fn().mockResolvedValue([]) });
       const { getAppConfig } = createAppConfigService(deps);
@@ -1283,5 +1405,35 @@ describe('getAppConfigOptionsFromUser', () => {
       idOnTheSource: undefined,
       tenantId: 'tenant-a',
     });
+  });
+});
+
+describe('message App budget reader composition', () => {
+  it('fails closed before the host supplies the base config reader', async () => {
+    const reader = createMessageBudgetReader();
+    await expect(reader.getBudget()).rejects.toThrow('not been initialized');
+  });
+
+  it('reads deployment-only values lazily and observes reconfiguration without caching', async () => {
+    const reader = createMessageBudgetReader();
+    const getConfig = jest
+      .fn()
+      .mockResolvedValue({ mcpAppSandbox: { maxPersistedMessageBytes: 2 * 1024 * 1024 } });
+    reader.initialize(getConfig);
+    expect(getConfig).not.toHaveBeenCalled();
+    expect(await reader.getBudget()).toBe(2 * 1024 * 1024);
+    expect(getConfig).toHaveBeenLastCalledWith({ baseOnly: true });
+    getConfig.mockResolvedValue({ mcpAppSandbox: { maxPersistedMessageBytes: 4 * 1024 * 1024 } });
+    expect(await reader.getBudget()).toBe(4 * 1024 * 1024);
+    getConfig.mockRejectedValue(new Error('configuration unavailable'));
+    await expect(reader.getBudget()).rejects.toThrow('configuration unavailable');
+  });
+
+  it('keeps independent hosts isolated and leaves an omitted limit to the storage default', async () => {
+    const a = createMessageBudgetReader();
+    const b = createMessageBudgetReader();
+    a.initialize(jest.fn().mockResolvedValue({}));
+    expect(await a.getBudget()).toBeUndefined();
+    await expect(b.getBudget()).rejects.toThrow('not been initialized');
   });
 });

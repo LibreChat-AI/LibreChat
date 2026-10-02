@@ -51,7 +51,7 @@ export function ModelSpecItem({ spec, isSelected, posInSet, setSize }: ModelSpec
         )}
       >
         {showIconInMenu && (
-          <div className="flex-shrink-0">
+          <div className="shrink-0">
             <SpecIcon
               currentSpec={spec}
               endpointsConfig={endpointsConfig}
@@ -70,7 +70,7 @@ export function ModelSpecItem({ spec, isSelected, posInSet, setSize }: ModelSpec
         onClick={handleFavoriteClick}
         aria-label={isFavorite ? localize('com_ui_unpin') : localize('com_ui_pin')}
         className={cn(
-          'rounded-md p-1 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring-primary',
+          'hover:bg-surface-hover focus-visible:ring-ring-primary rounded-md p-1 focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset',
           isFavorite
             ? 'visible'
             : // Visible by default so it's tappable on touch (no hover to
@@ -81,12 +81,12 @@ export function ModelSpecItem({ spec, isSelected, posInSet, setSize }: ModelSpec
               'group-focus-within:visible group-hover:visible group-data-[active-item]:visible [@media(hover:hover)]:invisible',
         )}
       >
-        <MorphIcon icon={isFavorite ? PinOff : Pin} className="h-4 w-4 text-text-secondary" />
+        <MorphIcon icon={isFavorite ? PinOff : Pin} className="text-text-secondary h-4 w-4" />
       </button>
       {isSelected && (
         <>
           <CheckCircle2
-            className="size-4 shrink-0 self-center text-text-primary"
+            className="text-text-primary size-4 shrink-0 self-center"
             aria-hidden="true"
           />
           <VisuallyHidden>{localize('com_a11y_selected')}</VisuallyHidden>

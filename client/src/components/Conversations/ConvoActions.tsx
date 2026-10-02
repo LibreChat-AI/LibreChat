@@ -11,6 +11,7 @@ export type ConvoActionsProps = {
   title: string | null;
   isPinned?: boolean;
   isArchived?: boolean;
+  isUnseen?: boolean;
   isActiveConvo: boolean;
   isShiftHeld?: boolean;
   isPopoverActive: boolean;
@@ -91,7 +92,7 @@ function ConvoActions({
       variant="ghost"
       aria-label={localize('com_nav_convo_menu_options')}
       data-testid="convo-options-trigger"
-      className="size-9 text-text-secondary"
+      className="text-text-secondary size-9"
       onClick={(event) => {
         event.stopPropagation();
         handleOpenChange(true);

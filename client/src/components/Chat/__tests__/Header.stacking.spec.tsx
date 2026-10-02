@@ -18,6 +18,8 @@ jest.mock('librechat-data-provider', () => ({
   EModelEndpoint: { agents: 'agents' },
   PermissionTypes: { BOOKMARKS: 'bookmarks', MULTI_CONVO: 'multi_convo', TEMPORARY_CHAT: 'temp' },
   Permissions: { USE: 'use' },
+  isForcedTemporaryRetention:
+    jest.requireActual('librechat-data-provider').isForcedTemporaryRetention,
 }));
 jest.mock('~/data-provider', () => ({ useGetStartupConfig: () => ({ data: undefined }) }));
 jest.mock('~/hooks', () => ({ useHasAccess: () => false }));

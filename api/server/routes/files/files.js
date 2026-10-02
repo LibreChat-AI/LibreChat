@@ -5,6 +5,7 @@ const {
   logAxiosError,
   getSafeErrorMetadata,
   getApprovalTtlMs,
+  handleFileListRequest,
   refreshS3FileUrls,
   handleFilesUsageRequest,
   buildDeleteFilesResponse,
@@ -24,9 +25,7 @@ const {
   resolveDownloadPath,
 } = require('@librechat/api');
 const {
-  Time,
   isUUID,
-  CacheKeys,
   FileSources,
   ResourceType,
   EModelEndpoint,
@@ -55,8 +54,8 @@ const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { getRoleByName } = require('~/models');
 const { checkPermission } = require('~/server/services/PermissionService');
 const { cleanFileName, getContentDisposition } = require('~/server/utils/files');
-const { getLogStores } = require('~/cache');
 const { Readable } = require('stream');
+const { getLogStores } = require('~/cache');
 const db = require('~/models');
 
 const router = express.Router();
@@ -71,23 +70,23 @@ const AGENT_TOOL_RESOURCE_KEYS = new Set([
 const isAgentToolResourceKey = (toolResource) =>
   typeof toolResource === 'string' && AGENT_TOOL_RESOURCE_KEYS.has(toolResource);
 
+/** Register the list endpoint as a thin adapter around the shared file-list policy. */
 router.get('/', async (req, res) => {
   try {
-    const appConfig = req.config;
-    const files = await db.getFiles({ user: req.user.id });
-    if (appConfig.fileStrategy === FileSources.s3) {
-      try {
-        const cache = getLogStores(CacheKeys.S3_EXPIRY_INTERVAL);
-        const alreadyChecked = await cache.get(req.user.id);
-        if (!alreadyChecked) {
-          await refreshS3FileUrls(files, db.batchUpdateFiles);
-          await cache.set(req.user.id, true, Time.THIRTY_MINUTES);
-        }
-      } catch (error) {
-        logger.warn('[/files] Error refreshing S3 file URLs:', error);
-      }
-    }
-    res.status(200).send(files);
+    const responseFiles = await handleFileListRequest({
+      userId: req.user.id,
+      rawLimit: req.query.limit,
+      fileStrategy: req.config?.fileStrategy,
+      maxLimit: req.config?.fileListLimit,
+      dependencies: {
+        getFiles: db.getFiles,
+        batchUpdateFiles: db.batchUpdateFiles,
+        refreshS3FileUrls,
+        getLogStores,
+        logger,
+      },
+    });
+    res.status(200).send(responseFiles);
   } catch (error) {
     logger.error('[/files] Error getting files:', error);
     res.status(400).json({ message: 'Error in request', error: error.message });

@@ -1,11 +1,12 @@
 import '@testing-library/jest-dom';
+import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { render, screen } from '@testing-library/react';
 import type { ThemeDefinition } from '../theme/types';
 import type { MeterSegment } from './SegmentedMeter';
 import { resolveTheme, validateThemeDefinition, THEME_VERSION } from '../theme/registry';
 import { applyResolvedTheme, clearAppliedTheme } from '../theme/utils/applyTheme';
 import { SegmentedMeter, MeterSwatch, SERIES_SLOT_COUNT } from './SegmentedMeter';
-import { createTailwindColors } from '../theme/utils/createTailwindColors';
 
 const segments: MeterSegment[] = [
   { id: 'a', value: 500, slot: 1, outlined: true },
@@ -216,7 +217,7 @@ describe('reference theme', () => {
     expect(markup).not.toMatch(/#[0-9a-f]{3,8}\b/i);
     expect(markup).not.toMatch(/\brgba?\((?!var\()/);
 
-    const colours = createTailwindColors();
+    const tokens = readFileSync(join(__dirname, '../theme/tokens.css'), 'utf8');
     const meter = screen.getByTestId('meter');
     const slotOf = (el: Element) => /\bbg-series-(\d)\b/.exec(el.className)?.[1];
 
@@ -224,7 +225,7 @@ describe('reference theme', () => {
       const slot = slotOf(el) ?? /\bbg-series-(\d)\/25\b/.exec(el.className)?.[1];
       expect(slot).toBeDefined();
       /** The utility the mark wears resolves to the variable the theme just set. */
-      expect(colours[`series-${slot}`]).toBe(`rgb(var(--series-${slot}) / <alpha-value>)`);
+      expect(tokens).toContain(`--color-series-${slot}: rgb(var(--series-${slot}));`);
     });
   });
 });

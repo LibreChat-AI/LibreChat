@@ -1,5 +1,6 @@
 import { Schema } from 'mongoose';
 import { SCHEDULE_CRON_MAX_LENGTH } from 'librechat-data-provider';
+import { scheduledMCPEnrollmentSchema } from 'librechat-data-provider';
 import type { IScheduleDocument } from '~/types/schedule';
 
 /** `cadence` is a nested path rather than a subdocument, so a validator on
@@ -103,6 +104,12 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
     tools: {
       type: [String],
       default: undefined,
+    },
+    mcpConsent: {
+      type: Schema.Types.Mixed,
+      default: undefined,
+      validate: (value: import('librechat-data-provider').ScheduledMCPEnrollment) =>
+        scheduledMCPEnrollmentSchema.safeParse(value).success,
     },
     cron: {
       type: String,

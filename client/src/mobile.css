@@ -1,3 +1,8 @@
+/* `@apply` needs the theme in scope, and this file is a separate entry point imported by
+ * main.jsx rather than an `@import` of style.css. `@reference` loads that theme without
+ * emitting its CSS a second time. */
+@reference './style.css';
+
 .hover-button.active {
   display: block;
   visibility: visible;
@@ -22,7 +27,7 @@
 
 @media (max-width: 767px) {
   .nav {
-    width: calc(100% - 10px)  ;
+    width: calc(100% - 10px);
     transition: all 0.15s;
   }
 
@@ -49,11 +54,21 @@
 }
 
 @keyframes tuning {
-  0% { transform: rotate(30deg); }
-  25% { transform: rotate(110deg); }
-  50% { transform: rotate(-40deg); }
-  75% { transform: rotate(80deg) }
-  100% { transform: rotate(30deg) }
+  0% {
+    transform: rotate(30deg);
+  }
+  25% {
+    transform: rotate(110deg);
+  }
+  50% {
+    transform: rotate(-40deg);
+  }
+  75% {
+    transform: rotate(80deg);
+  }
+  100% {
+    transform: rotate(30deg);
+  }
 }
 
 .rotate {
@@ -65,7 +80,8 @@
 }
 
 @keyframes slowPulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 1;
   }
   50% {
@@ -128,25 +144,52 @@
 }
 
 @keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  10%, 30%, 50%, 70%, 90% { transform: translateX(-3px); }
-  20%, 40%, 60%, 80% { transform: translateX(3px); }
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  10%,
+  30%,
+  50%,
+  70%,
+  90% {
+    transform: translateX(-3px);
+  }
+  20%,
+  40%,
+  60%,
+  80% {
+    transform: translateX(3px);
+  }
 }
 
 .shake {
-  animation: shake 0.5s cubic-bezier(.36,.07,.19,.97) both;
+  animation: shake 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
 }
 
 .cm-content:focus {
   outline: none !important;
 }
 
-p.whitespace-pre-wrap a, li a {
+/* `p.whitespace-pre-wrap a` (0,1,2) outranked a utility under v3 too, so it stays unlayered and
+ * keeps doing so. `li a` is two element selectors: a class beat it under v3, and unlayered under
+ * v4's layers it would beat every utility instead — `no-underline` on a link inside a list stopped
+ * working. Layered, it loses to a utility again and still styles an unclassed list link. */
+p.whitespace-pre-wrap a {
   color: #0066cc;
   text-decoration: underline;
   font-weight: bold;
 }
 
-.dark p.whitespace-pre-wrap a, .dark li a {
+@layer base {
+  li a {
+    color: #0066cc;
+    text-decoration: underline;
+    font-weight: bold;
+  }
+}
+
+.dark p.whitespace-pre-wrap a,
+.dark li a {
   color: #52a0ff;
 }

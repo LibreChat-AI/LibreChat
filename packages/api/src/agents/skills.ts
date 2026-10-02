@@ -440,6 +440,8 @@ export interface InjectSkillCatalogParams {
   workspaceOperations?: ReadonlySet<CodeWorkspaceOperation>;
   /** Deployment ceiling advertised on attached Bash tool definitions. */
   workspaceCommandTimeoutMaxMs?: number;
+  workspaceCommandTimeoutDefaultMs?: number;
+  workspaceReadFileDefaultLines?: number;
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
   /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
   workspaceLinkedWorktrees?: boolean;
@@ -678,6 +680,8 @@ export async function injectSkillCatalog(
     workspaceTools,
     workspaceOperations,
     workspaceCommandTimeoutMaxMs,
+    workspaceCommandTimeoutDefaultMs,
+    workspaceReadFileDefaultLines,
     workspaceEnvironment,
     workspaceLinkedWorktrees,
     userId,
@@ -865,6 +869,8 @@ export async function injectSkillCatalog(
     workspaceTools: workspaceTools === true,
     workspaceOperations,
     workspaceCommandTimeoutMaxMs,
+    workspaceCommandTimeoutDefaultMs,
+    workspaceReadFileDefaultLines,
     workspaceEnvironment,
     workspaceLinkedWorktrees,
   });

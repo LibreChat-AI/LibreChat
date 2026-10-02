@@ -4,7 +4,7 @@ export function areToolCallArgsComplete(args: ToolCallArgs): boolean {
   if (typeof args === 'object' && args !== null) {
     return true;
   }
-  if (typeof args !== 'string' || args.trim().length === 0) {
+  if (typeof args !== 'string' || !args.trimEnd().endsWith('}')) {
     return false;
   }
   try {

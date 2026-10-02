@@ -1,3 +1,4 @@
+import { disabledFillClasses } from './theme';
 import { cn } from './utils';
 
 /**
@@ -35,9 +36,10 @@ export const composerSubmitClasses = (): string =>
   cn(
     'flex items-center justify-center',
     'size-theme-control touch:size-theme-control-touch',
-    'rounded-theme-control-round bg-text-primary p-theme-compact text-text-primary',
+    'rounded-theme-control-round bg-surface-inverted p-theme-compact text-text-inverted',
     'outline-offset-4 transition-all duration-theme-normal',
     'disabled:cursor-not-allowed disabled:text-text-secondary disabled:opacity-10',
+    disabledFillClasses,
   );
 
 /**
@@ -50,8 +52,11 @@ export const composerSubmitClasses = (): string =>
  */
 export const composerControlClasses = (): string =>
   cn(
-    'group relative inline-flex items-center justify-center gap-theme-compact',
+    'group relative inline-flex items-center justify-center gap-theme-control-gap',
     'h-theme-control rounded-theme-control-round border border-border-medium',
-    'bg-transparent text-sm font-medium text-text-primary shadow-sm transition-all',
-    'hover:bg-surface-hover hover:shadow-md active:shadow-inner',
+    'bg-transparent text-sm font-medium text-text-primary transition-all',
+    /** No elevation: a row of raised pills inside the composer competes with the
+     *  composer itself. The edge stays, because a fill alone against the composer
+     *  surface is under 1.2:1 and would leave the control with no visible boundary. */
+    'hover:bg-surface-hover',
   );

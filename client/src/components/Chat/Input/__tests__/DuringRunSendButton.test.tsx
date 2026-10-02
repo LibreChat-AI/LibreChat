@@ -40,12 +40,14 @@ const steeringStub = ({
   pausedOnApproval = false,
   canSteer = true,
   canControlGeneration = true,
-}: StubOptions) =>
+  steerInterruptsByDefault = false,
+}: StubOptions & { steerInterruptsByDefault?: boolean }) =>
   ({
     effectiveAction: canSteer ? 'steer' : 'queue',
     canSteer,
     canControlGeneration,
     pausedOnApproval,
+    steerInterruptsByDefault,
     interruptSteer: mockInterruptSteer,
     steerFromComposer: mockSteerFromComposer,
     queueFromComposer: mockQueueFromComposer,
@@ -55,9 +57,11 @@ const steeringStub = ({
 function Harness({
   steering,
   isNewConversation,
+  enterToSend,
 }: {
   steering: SteeringControls;
   isNewConversation: boolean;
+  enterToSend: boolean;
 }) {
   const methods = useForm<{ text: string }>({ defaultValues: { text: TEXT } });
   return (
@@ -67,6 +71,7 @@ function Harness({
       isNewConversation={isNewConversation}
       getText={() => TEXT}
       onConsumed={mockOnConsumed}
+      enterToSend={enterToSend}
     />
   );
 }
@@ -91,13 +96,15 @@ function openMenu(options: MenuOptions = {}) {
   render(
     <RecoilRoot
       initializeState={({ set }) => {
-        set(store.steerInterruptsByDefault, enterInterrupts);
-        set(store.enterToSend, enterToSend);
         set(store.shortcutsEnabled, shortcutsEnabled);
         set(store.customShortcuts, customShortcuts);
       }}
     >
-      <Harness steering={steeringStub(stub)} isNewConversation={isNewConversation} />
+      <Harness
+        steering={steeringStub({ ...stub, steerInterruptsByDefault: enterInterrupts })}
+        enterToSend={enterToSend}
+        isNewConversation={isNewConversation}
+      />
     </RecoilRoot>,
   );
   expect(

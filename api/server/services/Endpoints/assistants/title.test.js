@@ -32,6 +32,17 @@ describe('assistants addTitle content policy', () => {
     jest.clearAllMocks();
   });
 
+  it('skips the title provider, cache, and save for a normalized temporary request', async () => {
+    await addTitle(
+      { user: { id: 'user-1' }, body: { isTemporary: true } },
+      { text: 'temporary input', responseText: 'response', conversationId: 'conversation-1' },
+    );
+
+    expect(mockInitializeClient).not.toHaveBeenCalled();
+    expect(mockCache.set).not.toHaveBeenCalled();
+    expect(mockSaveConvo).not.toHaveBeenCalled();
+  });
+
   it('replaces a blocked generated title before caching or saving it', async () => {
     const create = jest.fn().mockResolvedValue({
       choices: [{ message: { content: 'BLOCKED-GENERATED-TITLE' } }],

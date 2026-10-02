@@ -44,6 +44,43 @@ describe('mergeConfigOverrides', () => {
     expect(mergeConfigOverrides(baseConfig, undefined as unknown as IConfig[])).toBe(baseConfig);
   });
 
+  it('replaces an inline interface theme whole instead of merging two definitions', () => {
+    const base = {
+      interfaceConfig: {
+        theme: {
+          version: 1,
+          name: 'base',
+          modes: {
+            light: { colors: { 'rgb-surface-primary': '255 255 255' } },
+            dark: { colors: { 'rgb-surface-primary': '0 0 0' } },
+          },
+          brands: { 'provider-openai': '#19C37D' },
+        },
+      },
+    } as unknown as AppConfig;
+    const override = {
+      version: 1,
+      name: 'principal',
+      modes: { light: { colors: { 'rgb-surface-primary': '240 240 240' } } },
+    };
+
+    const result = mergeConfigOverrides(base, [fakeConfig({ interface: { theme: override } }, 10)]);
+
+    expect(result.interfaceConfig?.theme).toEqual(override);
+  });
+
+  it('lets a bundled theme name override an inline base theme', () => {
+    const base = {
+      interfaceConfig: { theme: { version: 1, name: 'base', modes: {} } },
+    } as unknown as AppConfig;
+
+    const result = mergeConfigOverrides(base, [
+      fakeConfig({ interface: { theme: 'clickhouse' } }, 10),
+    ]);
+
+    expect(result.interfaceConfig?.theme).toBe('clickhouse');
+  });
+
   it('does not allow DB overrides or tombstones to weaken base-only filters', () => {
     const base = {
       filters: {
@@ -73,6 +110,35 @@ describe('mergeConfigOverrides', () => {
     ];
 
     expect(mergeConfigOverrides(base, configs).filters).toEqual(base.filters);
+  });
+
+  it('keeps MCP App sandbox limits at deployment scope', () => {
+    const base = {
+      mcpAppSandbox: {
+        url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+        maxSourcesPerDirective: 64,
+        maxSerializedLength: 8192,
+        maxAdmissionRequestsPerMinute: 480,
+        maxPersistedMessageBytes: 123456,
+      },
+    } as unknown as AppConfig;
+    const configs = [
+      fakeConfig(
+        {
+          mcpAppSandbox: {
+            url: 'https://user-sandbox.example.com/api/mcp/sandbox',
+            maxSourcesPerDirective: 128,
+            maxSerializedLength: 16384,
+            maxAdmissionRequestsPerMinute: 960,
+            maxPersistedMessageBytes: 200000,
+          },
+        },
+        10,
+        ['mcpAppSandbox.url', 'mcpAppSandbox.maxAdmissionRequestsPerMinute'],
+      ),
+    ];
+
+    expect(mergeConfigOverrides(base, configs).mcpAppSandbox).toEqual(base.mcpAppSandbox);
   });
 
   it('applies tenant-wide Langfuse settings only from the base principal', () => {

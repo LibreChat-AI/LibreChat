@@ -49,11 +49,14 @@ for (const autoExpandTools of [false, true]) {
 
     await page.goto(NEW_CHAT_PATH);
     await selectMockEndpoint(page, { label: 'Mock Provider F', model: 'mock-model-f' });
-    await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-    const server = page.getByRole('menuitemcheckbox', { name: /E2E Memory/ });
+    await page.getByRole('button', { name: 'Attach and tools' }).click();
+    const palette = page.getByRole('dialog', { name: 'Attach and tools' });
+    const server = palette.getByRole('button', { name: /^E2E Memory\b/ });
+    await expect(server).toBeVisible({ timeout: 20_000 });
     await server.click();
-    await expect(server).toHaveAttribute('aria-checked', 'true');
+    await expect(server).toHaveAttribute('aria-pressed', 'true');
     await page.keyboard.press('Escape');
+    await expect(page.getByRole('listitem', { name: 'E2E Memory', exact: true })).toBeVisible();
     expect((await sendMessage(page, `E2E_ACTIVITY_PROSE_REPLY:${label}`)).ok()).toBeTruthy();
 
     const intro = messagesView(page).locator('.message-content p').filter({ hasText: INTRO });

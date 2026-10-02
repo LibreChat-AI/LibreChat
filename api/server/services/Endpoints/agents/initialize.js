@@ -6,6 +6,7 @@ const {
   resolveAdmittedCodeEnvironmentDecision,
   createConcurrencyLimiter,
   loadSkillStates,
+  resolveInitializationProjectContext,
   initializeAgent,
   primeInvokedSkillsForProfiles,
   validateAgentModel,
@@ -23,9 +24,10 @@ const {
   collectCodeExecutionProfileRoutes,
   getLazySubagentConfigId,
   resolveCodeExecutionContext,
-  resolveCodeExecutionWorkspaceContext,
+  resolveCodeExecutionWorkspaceSelections,
   optsOutOfAttachedCodeEnvironment,
   isImplicitStatefulCodeRouteAvailable,
+  resolveCodeExecutionWorkspaceContext,
   createStatefulCodeEnvironmentPolicyError,
   buildSubagentThreadTaskConfig,
   backgroundCompletionWakeupsEnabled,
@@ -444,6 +446,7 @@ const initializeClientWithProvider = async ({
     // is composed with this authoritative job signal by the handler.
     runSignal: signal,
     foregroundRunId,
+    attachedCommandStepIds: new Set(),
     ordinaryToolCancellation: ordinaryToolCancellationEnabled,
     backgroundCompletionResultMaxChars,
     loadTools: async (
@@ -587,6 +590,15 @@ const initializeClientWithProvider = async ({
   /** @type {Array<import('librechat-data-provider').TTokenUsageEvent>} */
   const usageEmitSink = [];
 
+  const chatProjectContextPromise = resolveInitializationProjectContext(
+    { req, endpointOption, conversationId, conversationPromise: requestConversationPromise },
+    {
+      getConvo: db.getConvo,
+      getChatProject: db.getChatProject,
+      getProjectFiles: db.getProjectFiles,
+    },
+  );
+
   const [
     memoryAvailable,
     accessibleSkillIds,
@@ -595,6 +607,7 @@ const initializeClientWithProvider = async ({
     { skillStates, defaultActiveOnShare },
     { primaryAgent, modelsConfig },
     requestConversation,
+    chatProjectContext,
     toolRoleGrants,
   ] = await Promise.all([
     memoryAvailablePromise,
@@ -604,10 +617,13 @@ const initializeClientWithProvider = async ({
     skillStatesPromise,
     validatedPrimaryAgentPromise,
     requestConversationPromise,
+    chatProjectContextPromise,
     toolRoleGrantsPromise,
   ]);
   /** Preserve the owner-scoped fallback for loaders that share this request. */
   req.resolvedConversation = requestConversation;
+  req.chatProjectContext = chatProjectContext;
+  req.chatProjectContextEnabled = true;
   const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
     await resolveAdmittedCodeEnvironmentDecision({
       appConfig,
@@ -700,7 +716,6 @@ const initializeClientWithProvider = async ({
       primaryAgent.skills = resolvedSkillIds.map((id) => id.toString());
     }
   }
-
   const primaryScopedSkillIds = resolveAgentScopedSkillIds({
     agent: primaryAgent,
     accessibleSkillIds,
@@ -720,9 +735,9 @@ const initializeClientWithProvider = async ({
     skillsCapabilityEnabled,
     ephemeralSkillsToggle,
   });
-
   const primaryConfig = await initializeAgent(
     {
+      useChatProjectContext: true,
       req,
       res,
       loadTools,
@@ -749,6 +764,7 @@ const initializeClientWithProvider = async ({
       signal,
     },
     {
+      getProjectFiles: db.getProjectFiles,
       getFiles: db.getFiles,
       getUserKey: db.getUserKey,
       getMessages: db.getMessages,
@@ -841,6 +857,7 @@ const initializeClientWithProvider = async ({
       checkPermission,
       logViolation,
       db: {
+        getProjectFiles: db.getProjectFiles,
         getFiles: db.getFiles,
         getUserKey: db.getUserKey,
         getMessages: db.getMessages,
@@ -1125,6 +1142,13 @@ const initializeClientWithProvider = async ({
           statefulSessions: statefulCodeSessions,
           environment: statefulCodeEnvironment,
           environmentId: agent.code_environment_id,
+          environmentIds: agent.code_environment_ids,
+          allowEnvironmentSelection:
+            appConfig.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+          workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+            conversation: admittedConversation,
+            request: runtimeRequestBody,
+          }),
           environments: configuredCodeEnvironments,
           userId,
           agentId: agent.id,
@@ -1326,6 +1350,7 @@ const initializeClientWithProvider = async ({
           signal: context.signal,
         },
         {
+          getProjectFiles: db.getProjectFiles,
           getFiles: db.getFiles,
           getUserKey: db.getUserKey,
           getMessages: db.getMessages,

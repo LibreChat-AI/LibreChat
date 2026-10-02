@@ -1,6 +1,13 @@
 import { SettingsTabValues } from 'librechat-data-provider';
 import type { SettingEntry } from './types';
 import {
+  unseenTabBadgeAtom,
+  replyNotificationsAtom,
+  replyNotificationSoundAtom,
+  unlockReplyNotificationSound,
+  requestReplyNotificationPermission,
+} from '~/hooks';
+import {
   TextToSpeechSwitch,
   VoiceDropdown,
   CacheTTSSwitch,
@@ -37,12 +44,15 @@ import ChatDirection from '../SettingsTabs/Chat/ChatDirection';
 import { DeleteCache } from '../SettingsTabs/Data/DeleteCache';
 import { ManageFiles } from '../SettingsTabs/Data/ManageFiles';
 import { smoothStreamingAtom } from '~/store/smoothStreaming';
+import ChangeEmail from '../SettingsTabs/Account/ChangeEmail';
 import { RevokeKeys } from '../SettingsTabs/Data/RevokeKeys';
 import { ClearChats } from '../SettingsTabs/Data/ClearChats';
 import { TokenCredits, AutoRefill } from './BillingControls';
 import AdminPanel from '../SettingsTabs/General/AdminPanel';
+import { showComposerTipsAtom } from '~/store/composerTips';
 import SharedLinks from '../SettingsTabs/Data/SharedLinks';
 import ImageResize from '../SettingsTabs/Chat/ImageResize';
+import Passkeys from '../SettingsTabs/Account/Passkeys';
 import { showThinkingAtom } from '~/store/showThinking';
 import ProviderKeys from '../SettingsTabs/ProviderKeys';
 import { autoScrollAtom } from '~/store/autoScroll';
@@ -138,6 +148,17 @@ export const registry: SettingEntry[] = [
     }),
   },
   {
+    id: 'showComposerTips',
+    tab: GENERAL,
+    section: 'layout',
+    labelKey: 'com_nav_composer_tips',
+    Component: toggleControl({
+      stateAtom: showComposerTipsAtom,
+      localizationKey: 'com_nav_composer_tips',
+      switchId: 'showComposerTips',
+    }),
+  },
+  {
     id: 'showScrollButton',
     tab: GENERAL,
     section: 'layout',
@@ -168,6 +189,60 @@ export const registry: SettingEntry[] = [
     labelKey: 'com_nav_chat_title_in_tab',
     keywords: ['tab', 'title', 'browser', 'window'],
     Component: ChatTitleInTab,
+  },
+  // General · Notifications
+  {
+    id: 'unseenTabBadge',
+    tab: GENERAL,
+    section: 'notifications',
+    show: (ctx) => ctx.replyTabBadgeAllowed,
+    labelKey: 'com_nav_unseen_tab_badge',
+    Component: toggleControl({
+      stateAtom: unseenTabBadgeAtom,
+      localizationKey: 'com_nav_unseen_tab_badge',
+      switchId: 'unseenTabBadge',
+      hoverCardText: 'com_nav_info_unseen_tab_badge',
+    }),
+  },
+  {
+    id: 'replyNotifications',
+    tab: GENERAL,
+    section: 'notifications',
+    show: (ctx) => ctx.replyNotificationsAllowed,
+    labelKey: 'com_nav_reply_notifications',
+    Component: toggleControl({
+      stateAtom: replyNotificationsAtom,
+      localizationKey: 'com_nav_reply_notifications',
+      switchId: 'replyNotifications',
+      hoverCardText: 'com_nav_info_reply_notifications',
+      /* The toggle click is the user gesture browsers require before asking for
+         desktop-notification permission. */
+      onCheckedChange: (value) => {
+        if (value) {
+          requestReplyNotificationPermission();
+        }
+      },
+    }),
+  },
+  {
+    id: 'replyNotificationSound',
+    tab: GENERAL,
+    section: 'notifications',
+    show: (ctx) => ctx.replyNotificationSoundAllowed,
+    labelKey: 'com_nav_reply_notification_sound',
+    Component: toggleControl({
+      stateAtom: replyNotificationSoundAtom,
+      localizationKey: 'com_nav_reply_notification_sound',
+      switchId: 'replyNotificationSound',
+      hoverCardText: 'com_nav_info_reply_notification_sound',
+      /* Browsers only let an audio output open behind a user gesture, and alerts fire while
+         the tab is unfocused; this click is the gesture that unlocks it. */
+      onCheckedChange: (value) => {
+        if (value) {
+          unlockReplyNotificationSound();
+        }
+      },
+    }),
   },
   // General · Accessibility
   {
@@ -709,13 +784,22 @@ export const registry: SettingEntry[] = [
     labelKey: 'com_ui_settings_label_avatar',
     Component: Avatar,
   },
+  {
+    id: 'changeEmail',
+    tab: ACCOUNT,
+    section: 'profile',
+    labelKey: 'com_ui_settings_label_change_email',
+    keywords: ['email', 'address', 'account'],
+    show: (ctx) => ctx.isLocalProvider && ctx.emailEnabled && ctx.allowEmailChange,
+    Component: ChangeEmail,
+  },
   // Account · Security
   {
     id: 'twoFactor',
     tab: ACCOUNT,
     section: 'security',
     labelKey: 'com_ui_settings_label_2fa',
-    show: (ctx) => ctx.isLocalProvider,
+    show: (ctx) => ctx.isTwoFactorPolicyProvider,
     Component: EnableTwoFactorItem,
   },
   {
@@ -723,8 +807,17 @@ export const registry: SettingEntry[] = [
     tab: ACCOUNT,
     section: 'security',
     labelKey: 'com_ui_settings_label_backup_codes',
-    show: (ctx) => ctx.isLocalProvider && ctx.twoFactorEnabled,
+    show: (ctx) => ctx.isTwoFactorPolicyProvider && ctx.twoFactorEnabled,
     Component: BackupCodesItem,
+  },
+  {
+    id: 'passkeys',
+    tab: ACCOUNT,
+    section: 'security',
+    labelKey: 'com_ui_passkeys',
+    keywords: ['passkey', 'webauthn', 'fido', 'security key', 'passwordless'],
+    show: (ctx) => ctx.passkeyLoginEnabled,
+    Component: Passkeys,
   },
   // Account · Billing
   {

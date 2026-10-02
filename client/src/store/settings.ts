@@ -62,7 +62,7 @@ const localStorageAtoms = {
 
   // Chat settings
   enterToSend: atomWithLocalStorage('enterToSend', true),
-  /** What Enter does while a run is generating: steer (inject mid-run) or queue (send after). */
+  /** The action Enter uses while a reply is generating. */
   duringRunDefaultAction: atomWithLocalStorage<'steer' | 'queue'>(
     'duringRunDefaultAction',
     'steer',

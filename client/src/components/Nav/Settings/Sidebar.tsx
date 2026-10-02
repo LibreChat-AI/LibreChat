@@ -29,7 +29,7 @@ export default function Sidebar({
     <div className="flex w-full flex-col gap-3 md:w-[230px]">
       <div className="relative">
         <Search
-          className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-text-tertiary"
+          className="text-text-tertiary pointer-events-none absolute top-1/2 left-2 h-4 w-4 -translate-y-1/2"
           aria-hidden="true"
         />
         <input
@@ -45,14 +45,14 @@ export default function Sidebar({
           }}
           placeholder={localize('com_ui_settings_search_placeholder')}
           aria-label={localize('com_ui_settings_search_placeholder')}
-          className="w-full rounded-lg bg-surface-secondary py-2 pl-8 pr-8 text-sm text-text-primary focus-visible:outline-none"
+          className="bg-surface-secondary text-text-primary w-full rounded-lg py-2 pr-8 pl-8 text-sm focus-visible:outline-hidden"
         />
         {query.length > 0 && (
           <button
             type="button"
             onClick={() => onQueryChange('')}
             aria-label={localize('com_ui_clear_search')}
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+            className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary absolute top-1/2 right-1.5 -translate-y-1/2 rounded-md p-1 transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
           >
             <X className="h-4 w-4" aria-hidden="true" />
           </button>
@@ -69,8 +69,8 @@ export default function Sidebar({
               value={tab.id}
               onClick={() => onSelectTab(tab.id)}
               className={cn(
-                'flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-sm text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary md:py-2',
-                'radix-state-active:bg-surface-tertiary radix-state-active:text-text-primary',
+                'text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary rounded-theme-control flex items-center justify-between gap-2 px-3 py-2.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset md:py-2',
+                'data-[state=active]:bg-surface-tertiary data-[state=active]:text-text-primary',
               )}
             >
               <span className="flex items-center gap-2">
@@ -78,10 +78,7 @@ export default function Sidebar({
                 <span className="whitespace-nowrap">{localize(tab.labelKey)}</span>
               </span>
               {showChevron && (
-                <ChevronRight
-                  className="h-4 w-4 flex-shrink-0 text-text-tertiary"
-                  aria-hidden="true"
-                />
+                <ChevronRight className="text-text-tertiary h-4 w-4 shrink-0" aria-hidden="true" />
               )}
             </Tabs.Trigger>
           ))}

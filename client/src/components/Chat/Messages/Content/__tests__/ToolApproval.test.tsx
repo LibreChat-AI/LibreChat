@@ -114,16 +114,15 @@ describe('ToolApproval', () => {
     }
   });
 
-  test('invalid edit JSON replaces the field border rather than doubling it', () => {
+  test('invalid edit JSON marks the field invalid and names the error', () => {
     renderCards(<ToolApproval approval={approval(['edit'])} toolCallId="call-1" args={{ a: 1 }} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     const field = screen.getByRole('textbox', { name: 'Edit' });
     fireEvent.change(field, { target: { value: '{' } });
 
-    expect(field).toHaveClass('border-red-500');
-    expect(field).not.toHaveClass('border-border-xheavy');
-    expect(screen.getByText('Invalid JSON')).toBeInTheDocument();
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(field).toHaveAccessibleDescription('Invalid JSON');
   });
 
   test('multiple paused calls share one Submit that requires every decision', () => {

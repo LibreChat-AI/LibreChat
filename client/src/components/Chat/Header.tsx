@@ -6,6 +6,7 @@ import {
   Constants,
   PermissionTypes,
   Permissions,
+  isForcedTemporaryRetention,
 } from 'librechat-data-provider';
 import { OpenSidebar, PresetsMenu, NewChat, HeaderMenu } from './Menus';
 import { TemporaryChat, TemporaryChatIndicator } from './TemporaryChat';
@@ -66,6 +67,10 @@ function Header({
     permissionType: PermissionTypes.TEMPORARY_CHAT,
     permission: Permissions.USE,
   });
+  /** An administrator-enforced mode is not a role grant, so it is overlaid here rather than
+   *  written into the role's stored permissions; the control is read-only either way. */
+  const showTemporaryChat =
+    hasAccessToTemporaryChat === true || isForcedTemporaryRetention(interfaceConfig.retentionMode);
 
   /** Child threads are view-only records of their parent's run and have no trace of their own. */
   const trace = useTraceControl({
@@ -81,7 +86,7 @@ function Header({
   return (
     /* The composer review is in a z-10 stacking context. Keep header controls
        above it when a tall review reaches the top of a short viewport. */
-    <div className="absolute top-0 z-20 flex h-[52px] w-full items-center gap-2 bg-gradient-to-b from-presentation via-presentation/70 to-transparent p-2 font-semibold text-text-primary md:from-presentation/80 md:via-presentation/50 2xl:from-presentation/0 2xl:via-transparent">
+    <div className="from-surface-primary-alt via-surface-primary-alt/70 text-text-primary md:from-surface-primary-alt/80 md:via-surface-primary-alt/50 2xl:from-surface-primary-alt/0 absolute top-0 z-20 flex h-[52px] w-full items-center gap-2 bg-gradient-to-b to-transparent p-2 font-semibold 2xl:via-transparent">
       <div className="flex flex-shrink-0 items-center md:hidden">
         <OpenSidebar testId="header-open-sidebar-button" />
       </div>
@@ -111,8 +116,8 @@ function Header({
         )}
       </div>
 
-      <div className={cn('flex flex-shrink-0 items-center gap-2', hiddenBehindNav)}>
-        {hasAccessToTemporaryChat === true && <TemporaryChatIndicator />}
+      <div className={cn('flex shrink-0 items-center gap-2', hiddenBehindNav)}>
+        {showTemporaryChat && <TemporaryChatIndicator />}
         {!isNewChat && <NewChat className="md:hidden" />}
         {!isNewChat && parentConversationId == null && (
           <BackgroundTasksButton
@@ -125,7 +130,7 @@ function Header({
         <div className="hidden items-center gap-2 md:flex">
           {trace.show && <TraceButton onClick={trace.open} />}
           <ExportAndShareMenu isSharedButtonEnabled={startupConfig?.sharedLinksEnabled ?? false} />
-          {hasAccessToTemporaryChat === true && <TemporaryChat />}
+          {showTemporaryChat && <TemporaryChat />}
         </div>
       </div>
     </div>

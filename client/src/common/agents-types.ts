@@ -52,6 +52,7 @@ export type AgentForm = {
   stateful_code_environment?: StatefulCodeEnvironment;
   /** Operator-configured managed or attached execution environment. */
   code_environment_id?: string | null;
+  code_environment_ids?: string[];
   code_workspace_id?: string;
   repositoryInstructions?: 'prefer' | 'defer' | 'off';
   /** Git authorship applied to sandboxed commands for this agent. */
@@ -64,6 +65,9 @@ export type AgentForm = {
   [AgentCapabilities.artifacts]?: ArtifactModes | string;
   recursion_limit?: number;
   support_contact?: SupportContact;
+  conversation_starters?: string[];
+  /** Unsent starter text; builder-only, never sent to the API. */
+  conversation_starter_draft?: string;
   category: string;
   // Avatar management fields
   avatar_file?: File | null;

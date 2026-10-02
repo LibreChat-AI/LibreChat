@@ -36,6 +36,23 @@ authenticated shell, sends one real prompt, reloads the resulting conversation, 
 the conversation created by that run through LibreChat's authenticated API. Keep deterministic
 provider behavior and destructive database fixtures in the mock profile instead.
 
+## Email Delivery
+
+The registered-email flow has a dedicated profile because enabling SMTP changes registration into a verification-required workflow. It starts a disposable local SMTP mailbox, verifies the setup account from the delivered message, and then tests the Settings → Account email change, verification link, notifications to both addresses, and login with the new address:
+
+```sh
+npm run e2e:email-change
+```
+
+The disabled-mode profile verifies that `ALLOW_EMAIL_CHANGE=false` hides the Account control,
+rejects both request and confirmation endpoints, and sends no email:
+
+```sh
+npm run e2e:email-change:disabled
+```
+
+Override `E2E_SMTP_PORT` or `E2E_MAILBOX_PORT` if ports 1025 or 8025 are already in use. The mailbox binds only to `127.0.0.1` and is discarded with the test process.
+
 ## Stream Stores and Shards
 
 The mock profile uses the in-memory generation stream store by default. To exercise the same browser scenarios through a real Redis job store and pub/sub transport, start Redis on port 6379 and run:
