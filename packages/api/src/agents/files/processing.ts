@@ -86,7 +86,12 @@ export function createHostEditProcessor(workerPath: string): {
         }
       }
       const deadline = performance.now() + limits.timeoutMs;
-      const slot = acquire();
+      let slot: EditWorkerSlot;
+      try {
+        slot = acquire();
+      } catch {
+        throw new HostEditError('File edit processing failed. Nothing was written.');
+      }
       active++;
       const job: HostEditJob = {
         content,

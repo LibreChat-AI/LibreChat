@@ -47,7 +47,7 @@ describe('host-side file edit limits', () => {
     expect(agentsEndpointSchema.parse({}).hostFileEdits).toBeUndefined();
     expect(agentsEndpointSchema.parse({ hostFileEdits: {} }).hostFileEdits).toEqual({
       maxEdits: 100,
-      maxWorkBytes: 33554432,
+      maxWorkBytes: 67108864,
       maxOccurrences: 100000,
       timeoutMs: 2000,
       maxConcurrent: 2,

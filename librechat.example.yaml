@@ -701,7 +701,7 @@ endpoints:
   #   # Host-side skill/sandbox edits, not attached-worker edits. Over-budget calls write nothing.
   #   hostFileEdits:
   #     maxEdits: 100
-  #     maxWorkBytes: 33554432  # cumulative matching/reconstruction bytes
+  #     maxWorkBytes: 67108864  # cumulative matching/reconstruction bytes
   #     maxOccurrences: 100000 # cumulative occurrences across every edit/pass
   #     timeoutMs: 2000       # terminate an overlong worker job
   #     maxConcurrent: 2      # per API process; no waiting queue

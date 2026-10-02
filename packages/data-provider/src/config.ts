@@ -1408,7 +1408,7 @@ export const hostFileEditLimitsSchema = z
       .int()
       .min(1024)
       .max(256 * 1024 * 1024)
-      .default(32 * 1024 * 1024),
+      .default(64 * 1024 * 1024),
     maxOccurrences: z.number().int().min(1).max(1_000_000).default(100_000),
     timeoutMs: z.number().int().min(100).max(10_000).default(2000),
     maxConcurrent: z.number().int().min(1).max(8).default(2),

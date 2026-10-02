@@ -149,6 +149,7 @@ import { applyHostTextEdits } from './files/processing';
 import { deleteSkillWithRetry } from '~/skills/cleanup';
 import { resolveDownloadPath } from '~/storage/path';
 import { parseFrontmatter } from '../skills/import';
+import { HostEditError } from './files/matching';
 import { cleanCodeToolOutput } from './cleanup';
 import { primeSkillFiles } from './skillFiles';
 import { instrumentPtcToolMap } from './ptc';
@@ -4172,6 +4173,12 @@ async function handleSandboxCreateFileCall({
   });
 }
 
+function hostEditFailure(tc: ToolCallRequest, error: unknown): ToolExecuteResult {
+  if (error instanceof HostEditError) return errorResult(tc, error.message);
+  logger.warn('[file_authoring] Host edit processing failed', getSafeErrorMetadata(error));
+  return errorResult(tc, 'File edit processing failed. Nothing was written.');
+}
+
 async function handleSandboxEditFileCall({
   tc,
   options,
@@ -4232,7 +4239,7 @@ async function handleSandboxEditFileCall({
     );
   } catch (error) {
     if (signal?.aborted) throw error;
-    return errorResult(tc, error instanceof Error ? error.message : 'Failed to edit file');
+    return hostEditFailure(tc, error);
   }
   signal?.throwIfAborted();
   if (Buffer.byteLength(edited.content, 'utf8') > MAX_AUTHORING_BYTES) {
@@ -4473,7 +4480,7 @@ async function handleEditFileCall(
     );
   } catch (error) {
     if (signal?.aborted) throw error;
-    return errorResult(tc, error instanceof Error ? error.message : 'Failed to edit file');
+    return hostEditFailure(tc, error);
   }
   signal?.throwIfAborted();
   if (Buffer.byteLength(edited.content, 'utf8') > MAX_AUTHORING_BYTES) {

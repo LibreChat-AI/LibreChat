@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks';
-import { applyTextEdits } from './files/matching';
+import { applyTextEdits, HostEditError } from './files/matching';
+import * as hostEditProcessing from './files/processing';
 jest.mock('./prewarm', () => ({
   markSandboxReady: jest.fn(),
 }));
@@ -5646,6 +5647,56 @@ describe('createToolExecuteHandler', () => {
       },
     );
 
+    it.each(['SKILL.md', 'references/a.md'])(
+      'sanitizes operational edit failures before exposing %s results',
+      async (file) => {
+        const updateSkill = jest.fn();
+        const saveSkillFileContent = jest.fn();
+        const handler = makeAuthoringHandler({
+          getSkillByName: jest.fn(async () => ({
+            _id: SKILL_ID,
+            name: 'bounded-skill',
+            body: 'ax',
+            fileCount: 1,
+            version: 1,
+          })),
+          getSkillFileByPath: jest.fn(async () => ({
+            content: 'ax',
+            isBinary: false,
+            bytes: 2,
+            mimeType: 'text/markdown',
+            filepath: '/tmp/a.md',
+            file_id: 'revision-1',
+            source: 'local',
+            relativePath: 'references/a.md',
+          })),
+          updateSkill,
+          saveSkillFileContent,
+        });
+        const process = jest
+          .spyOn(hostEditProcessing, 'applyHostTextEdits')
+          .mockImplementationOnce(() => {
+            throw new Error('PRIVATE-STARTUP /operator/absolute/edit-worker.cjs');
+          });
+        try {
+          const [result] = await invokeHandler(handler, [
+            {
+              id: 'failed_startup',
+              name: 'edit_file',
+              args: { path: `skills/bounded-skill/${file}`, old_text: 'a', new_text: 'b' },
+            },
+          ]);
+          expect(result.errorMessage).toBe('File edit processing failed. Nothing was written.');
+          expect(JSON.stringify(result)).not.toContain('PRIVATE-STARTUP');
+          expect(JSON.stringify(result)).not.toContain('/operator/absolute');
+          expect(updateSkill).not.toHaveBeenCalled();
+          expect(saveSkillFileContent).not.toHaveBeenCalled();
+        } finally {
+          process.mockRestore();
+        }
+      },
+    );
+
     it('honors deployment work limits across alternating edits, including contraction', async () => {
       const saveSkillFileContent = jest.fn();
       const handler = makeAuthoringHandler(
@@ -6050,6 +6101,90 @@ describe('createToolExecuteHandler', () => {
         expect(writeSandboxFile).not.toHaveBeenCalled();
       } finally {
         clock.mockRestore();
+      }
+    });
+
+    it('supports an ordinary exact sandbox edit at the authoring size limit with omitted limits', async () => {
+      const content =
+        'start\n' + ('x'.repeat(1023) + '\n').repeat(10239) + 'x'.repeat(1014) + '\nend';
+      expect(Buffer.byteLength(content)).toBe(10 * 1024 * 1024);
+      const writeSandboxFile = jest.fn(async (_params: { content: string }) => ({
+        stdout: 'written',
+      }));
+      const handler = makeSandboxAuthoringHandler({
+        readSandboxFile: jest.fn(async () => ({ content })),
+        writeSandboxFile,
+      });
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'authoring_limit',
+          name: 'edit_file',
+          args: { path: '/mnt/data/large.txt', old_text: 'start', new_text: 'begin' },
+        },
+      ]);
+      expect(result.status).toBe('success');
+      expect(writeSandboxFile).toHaveBeenCalledTimes(1);
+      expect(writeSandboxFile.mock.calls[0][0].content.startsWith('begin\n')).toBe(true);
+      expect(Buffer.byteLength(writeSandboxFile.mock.calls[0][0].content)).toBe(10 * 1024 * 1024);
+    });
+
+    it.each([false, true])(
+      'sanitizes sandbox processing failures, asynchronous=%s',
+      async (asynchronous) => {
+        const writeSandboxFile = jest.fn();
+        const handler = makeSandboxAuthoringHandler({
+          readSandboxFile: jest.fn(async () => ({ content: 'ax' })),
+          writeSandboxFile,
+        });
+        const process = jest
+          .spyOn(hostEditProcessing, 'applyHostTextEdits')
+          .mockImplementationOnce(() => {
+            const error = new Error('PRIVATE-STARTUP /operator/absolute/edit-worker.cjs');
+            if (asynchronous) return Promise.reject(error);
+            throw error;
+          });
+        try {
+          const [result] = await invokeHandler(handler, [
+            {
+              id: 'failed_startup',
+              name: 'edit_file',
+              args: { path: '/mnt/data/a.txt', old_text: 'a', new_text: 'b' },
+            },
+          ]);
+          expect(result.errorMessage).toBe('File edit processing failed. Nothing was written.');
+          expect(JSON.stringify(result)).not.toContain('PRIVATE-STARTUP');
+          expect(writeSandboxFile).not.toHaveBeenCalled();
+        } finally {
+          process.mockRestore();
+        }
+      },
+    );
+
+    it('preserves host-controlled edit diagnostics', async () => {
+      const writeSandboxFile = jest.fn();
+      const handler = makeSandboxAuthoringHandler({
+        readSandboxFile: jest.fn(async () => ({ content: 'ax' })),
+        writeSandboxFile,
+      });
+      const process = jest
+        .spyOn(hostEditProcessing, 'applyHostTextEdits')
+        .mockRejectedValueOnce(
+          new HostEditError(
+            'File edit occurrence budget exceeded; narrow the replacements. Nothing was written.',
+          ),
+        );
+      try {
+        const [result] = await invokeHandler(handler, [
+          {
+            id: 'safe_edit_error',
+            name: 'edit_file',
+            args: { path: '/mnt/data/a.txt', old_text: 'a', new_text: 'b' },
+          },
+        ]);
+        expect(result.errorMessage).toContain('occurrence budget exceeded');
+        expect(writeSandboxFile).not.toHaveBeenCalled();
+      } finally {
+        process.mockRestore();
       }
     });
 

@@ -41,6 +41,17 @@ describe('bounded host edit workers', () => {
     );
   });
 
+  it.each([9, 10])(
+    'supports an ordinary exact edit of a %i MiB file with omitted limits',
+    async (mib) => {
+      const content = 'start\n' + 'x'.repeat(mib * 1024 * 1024 - 10) + '\nend';
+      const result = await processor.apply(content, [{ old_text: 'start', new_text: 'begin' }]);
+      expect(Buffer.byteLength(result.content)).toBe(mib * 1024 * 1024);
+      expect(result.content.startsWith('begin\n')).toBe(true);
+      expect(result.strategies).toEqual(['exact']);
+    },
+  );
+
   it('bounds every intermediate result, even when a later edit would shrink it', async () => {
     await expect(
       processor.apply(
@@ -86,6 +97,31 @@ describe('bounded host edit workers', () => {
 
 describe('worker lifecycle', () => {
   const fixture = path.join(__dirname, '__fixtures__', 'edit-worker.cjs');
+
+  it('sanitizes synchronous thread creation failures without consuming admission', async () => {
+    const processor = createHostEditProcessor(fixture);
+    const startup = jest
+      .spyOn(
+        jest.requireActual<typeof import('node:worker_threads')>('node:worker_threads'),
+        'Worker',
+      )
+      .mockImplementationOnce(() => {
+        throw new Error('PRIVATE-STARTUP /operator/absolute/edit-worker.cjs');
+      });
+    try {
+      await expect(processor.apply('ready', [edit], { maxConcurrent: 1 })).rejects.toThrow(
+        /^File edit processing failed\. Nothing was written\.$/,
+      );
+      startup.mockRestore();
+      await expect(processor.apply('ready', [edit], { maxConcurrent: 1 })).resolves.toEqual({
+        content: 'ready',
+        strategies: [],
+      });
+    } finally {
+      startup.mockRestore();
+      await processor.close();
+    }
+  });
 
   it('has no queue and releases capacity only after cancellation terminates the worker', async () => {
     const processor = createHostEditProcessor(fixture);
