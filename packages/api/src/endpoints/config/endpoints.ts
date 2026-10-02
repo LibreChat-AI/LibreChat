@@ -1,6 +1,7 @@
 import {
   AuthType,
   CODE_APPROVAL_MODES,
+  DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES,
   EModelEndpoint,
   isAgentsEndpoint,
   orderEndpointsConfig,
@@ -102,6 +103,14 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
       const clientStatefulCodeSessions = statefulCodeSessions
         ? {
             allowedEnvironments: statefulCodeSessions.allowedEnvironments,
+            ...(statefulCodeSessions.allowEnvironmentSelection === true
+              ? {
+                  allowEnvironmentSelection: true,
+                  maxEnvironmentChoices:
+                    statefulCodeSessions.maxEnvironmentChoices ??
+                    DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES,
+                }
+              : {}),
             approvalsEnabled: toolApproval?.enabled !== false,
             approvalModes,
             environments: statefulCodeSessions.environments

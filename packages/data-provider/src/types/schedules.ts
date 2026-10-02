@@ -125,6 +125,7 @@ export type TScheduleLastRun = {
 };
 
 export type TSchedule = {
+  hasMCPConsent?: boolean;
   id: string;
   user: string;
   name: string;
@@ -171,6 +172,7 @@ export type TScheduleRun = {
  *  per-principal `interface.schedules` resolution the write handlers and the fire
  *  path enforce, so the form can never offer a choice the server would refuse. */
 export type TScheduleLimits = {
+  mcpConsent?: boolean;
   maxPerUser: number;
   /** Served with the list so the dialog can refuse a cadence the floor would reject
    *  rather than surfacing it as a 400 after submit. */

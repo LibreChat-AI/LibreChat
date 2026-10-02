@@ -1,6 +1,11 @@
+import { stripAgentIdSuffix } from '../agents/identity';
+
 export const CODE_WORKSPACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 /** Protocol-v1 ceiling enforced by the worker and Code API. */
 export const CODE_WORKSPACE_MAX_COUNT = 32;
+/** Wire/storage safety ceiling; deployments may set a lower per-agent choice limit. */
+export const MAX_AGENT_CODE_ENVIRONMENT_CHOICES = 128;
+export const DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES = 32;
 /** API/client protocol for immutable conversation-owned environment decisions. */
 export const CODE_ENVIRONMENT_DECISION_VERSION = 1 as const;
 /** API/client protocol for an owner's explicit move of a sealed environment decision. */
@@ -122,6 +127,8 @@ export function isCodeWorkspaceEnvironment(
 export interface CodeWorkspaceSelection {
   environmentId: string;
   workspaceId: string;
+  /** Explicit graph-agent ownership of a chat machine choice; absent on legacy selections. */
+  agentIds?: string[];
 }
 
 export function isCodeEnvironmentMode(value: unknown): value is CodeEnvironmentMode {
@@ -140,11 +147,21 @@ export function isCodeWorkspaceSelection(value: unknown): value is CodeWorkspace
   }
   const selection = value as Record<string, unknown>;
   return (
-    Object.keys(selection).every((key) => key === 'environmentId' || key === 'workspaceId') &&
+    Object.keys(selection).every((key) =>
+      ['environmentId', 'workspaceId', 'agentIds'].includes(key),
+    ) &&
     typeof selection.environmentId === 'string' &&
     CODE_WORKSPACE_ID_PATTERN.test(selection.environmentId) &&
     typeof selection.workspaceId === 'string' &&
-    CODE_WORKSPACE_ID_PATTERN.test(selection.workspaceId)
+    CODE_WORKSPACE_ID_PATTERN.test(selection.workspaceId) &&
+    (selection.agentIds === undefined ||
+      (Array.isArray(selection.agentIds) &&
+        selection.agentIds.length > 0 &&
+        selection.agentIds.length <= MAX_AGENT_CODE_ENVIRONMENT_CHOICES &&
+        selection.agentIds.every(
+          (id) => typeof id === 'string' && CODE_WORKSPACE_ID_PATTERN.test(id),
+        ) &&
+        new Set(selection.agentIds).size === selection.agentIds.length))
   );
 }
 
@@ -152,11 +169,74 @@ export function isCodeWorkspaceSelection(value: unknown): value is CodeWorkspace
 export function isCodeWorkspaceSelections(value: unknown): value is CodeWorkspaceSelection[] {
   if (!Array.isArray(value)) return false;
   const environmentIds = new Set<string>();
+  const agentIds = new Set<string>();
   return value.every((selection) => {
     if (!isCodeWorkspaceSelection(selection) || environmentIds.has(selection.environmentId)) {
       return false;
     }
     environmentIds.add(selection.environmentId);
+    for (const id of selection.agentIds ?? []) {
+      if (agentIds.has(id)) return false;
+      agentIds.add(id);
+      if (agentIds.size > MAX_AGENT_CODE_ENVIRONMENT_CHOICES) return false;
+    }
     return true;
   });
+}
+
+/** Stable decision serialization includes ownership so replay cannot change an agent's route. */
+export function canonicalizeCodeWorkspaceSelections(
+  selections: CodeWorkspaceSelection[],
+): CodeWorkspaceSelection[] {
+  return selections
+    .map(({ environmentId, workspaceId, agentIds }) => ({
+      environmentId,
+      workspaceId,
+      ...(agentIds == null ? {} : { agentIds: [...agentIds].sort() }),
+    }))
+    .sort((left, right) => left.environmentId.localeCompare(right.environmentId));
+}
+
+/** Resolves an agent's default or its chat-owned machine choice. Callers still authorize the
+ * resolved ID against their principal-scoped environment list and verify live capabilities. */
+export function resolveCodeEnvironmentSelection({
+  environmentId,
+  environmentIds,
+  agentId,
+  allowSelection,
+  selections,
+}: {
+  environmentId?: string | null;
+  environmentIds?: readonly string[];
+  agentId?: string | null;
+  allowSelection?: boolean;
+  selections?: unknown;
+}): { valid: true; environmentId?: string | null } | { valid: false } {
+  if (selections == null) return { valid: true, environmentId };
+  if (!isCodeWorkspaceSelections(selections)) return { valid: false };
+  if (selections.length === 0) return { valid: true, environmentId };
+  /** Ownership is persisted under the saved agent ID, not the parallel actor's runtime ID.
+   * Check it before feature gates so revoked routes cannot silently revert to the default. */
+  const stableAgentId = agentId == null ? undefined : stripAgentIdSuffix(agentId);
+  const owned =
+    stableAgentId == null
+      ? undefined
+      : selections.find((selection) => selection.agentIds?.includes(stableAgentId));
+  if (owned != null) {
+    if (owned.environmentId === environmentId) return { valid: true, environmentId };
+    return allowSelection === true && environmentIds?.includes(owned.environmentId)
+      ? { valid: true, environmentId: owned.environmentId }
+      : { valid: false };
+  }
+  if (!allowSelection) return { valid: true, environmentId };
+  const allowed = new Set(environmentIds ?? []);
+  if (environmentId) allowed.add(environmentId);
+  const matches = selections.filter((selection) => allowed.has(selection.environmentId));
+  /** A graph may need an alternative for a different agent. Preserve this agent's explicit
+   * default when present; without it, require exactly one allowed target rather than guessing. */
+  const selectedDefault = matches.find((selection) => selection.environmentId === environmentId);
+  if (selectedDefault != null) return { valid: true, environmentId };
+  const legacy = matches.filter((selection) => selection.agentIds == null);
+  if (legacy.length !== 1) return { valid: false };
+  return { valid: true, environmentId: legacy[0].environmentId };
 }

@@ -4,7 +4,11 @@ import type { AgentSubagentGraph } from './types/agents';
 import type { SearchResultData } from './types/web';
 import type { FunctionTool } from './types/tools';
 import type { TFile } from './types/files';
-import { CODE_ENVIRONMENT_MODES, CODE_WORKSPACE_ID_PATTERN } from './code/workspace';
+import {
+  CODE_ENVIRONMENT_MODES,
+  CODE_WORKSPACE_ID_PATTERN,
+  MAX_AGENT_CODE_ENVIRONMENT_CHOICES,
+} from './code/workspace';
 import { userSubmittedMessageFieldPathSchema } from './filters';
 import { TFeedback, feedbackSchema } from './feedback';
 import { CODE_APPROVAL_MODES } from './code/approval';
@@ -423,6 +427,7 @@ export const defaultAgentFormValues = {
   [Tools.memory]: false,
   stateful_code_environment: 'user' as const,
   code_environment_id: undefined as string | null | undefined,
+  code_environment_ids: [] as string[],
   code_workspace_id: undefined as string | undefined,
   repositoryInstructions: undefined as 'prefer' | 'defer' | 'off' | undefined,
   category: 'general',
@@ -1195,6 +1200,11 @@ export const tConversationSchema = z.object({
         .object({
           environmentId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
           workspaceId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
+          agentIds: z
+            .array(z.string().regex(CODE_WORKSPACE_ID_PATTERN))
+            .min(1)
+            .max(MAX_AGENT_CODE_ENVIRONMENT_CHOICES)
+            .optional(),
         })
         .strict(),
     )
