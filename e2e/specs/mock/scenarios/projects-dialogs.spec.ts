@@ -218,10 +218,10 @@ test.describe('project dialogs', () => {
     await expect(picker).toBeHidden();
     await expect(page.getByRole('menu')).toHaveCount(0);
     await expect(page.getByRole('menuitem', { name: 'Choose from your files' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Add files', exact: true })).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
+    const addFiles = page.getByRole('button', { name: 'Add files', exact: true });
+    await expect(addFiles).toHaveAttribute('aria-expanded', 'false');
+    /* With the menu gone, focus returns to the button that opened it. */
+    await expect(addFiles).toBeFocused();
   });
 
   test('project pages share the chat landing background @scenario:project-pages-match-landing-background', async ({
