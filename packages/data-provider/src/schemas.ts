@@ -452,6 +452,8 @@ export const defaultAgentFormValues = {
     | undefined,
   /** Memory partition: 'agent' isolates memories per (user, agent); default shared pool */
   memory_scope: undefined as MemoryScope | undefined,
+  /** Usage billing owner; legacy/default behavior charges the invoking user. */
+  billing_mode: undefined as AgentBillingMode | undefined,
 };
 
 export const ImageVisionTool: FunctionTool = {
@@ -1030,6 +1032,12 @@ export const tMessageSchema = z.object({
  * isolated per (user, agent) so the agent only sees its own memories.
  */
 export enum MemoryScope {
+  user = 'user',
+  agent = 'agent',
+}
+
+/** Determines whether an agent's usage is charged to the invoking user or the agent. */
+export enum AgentBillingMode {
   user = 'user',
   agent = 'agent',
 }

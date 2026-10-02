@@ -162,6 +162,11 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
       enum: ['user', 'agent'],
       default: undefined,
     },
+    billing_mode: {
+      type: String,
+      enum: ['user', 'agent'],
+      default: 'user',
+    },
     tenantId: {
       type: String,
       index: true,
