@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { OGDialog, OGDialogTitle, OGDialogHeader, OGDialogContent } from '@librechat/client';
 import type { TChatProject } from 'librechat-data-provider';
 import type { ComponentProps } from 'react';
@@ -21,12 +22,14 @@ export default function ProjectEditDialog({
   const localize = useLocalize();
   /** Owned here, so a save in flight settles with its toast; the dialog stays open meanwhile. */
   const updateProject = useUpdateProjectMutation();
-  const isBusy = updateProject.isLoading;
+  const savingRef = useRef(false);
+  /** Read at event time: the submit marks the ref before the loading state renders. */
+  const isBusy = () => savingRef.current || updateProject.isLoading;
   return (
     <OGDialog
       open={open}
       onOpenChange={(next) => {
-        if (next || !isBusy) {
+        if (next || !isBusy()) {
           onOpenChange(next);
         }
       }}
@@ -36,12 +39,12 @@ export default function ProjectEditDialog({
         className="w-11/12 max-w-md"
         showCloseButton={false}
         onEscapeKeyDown={(event) => {
-          if (isBusy) {
+          if (isBusy()) {
             event.preventDefault();
           }
         }}
         onInteractOutside={(event) => {
-          if (isBusy) {
+          if (isBusy()) {
             event.preventDefault();
           }
         }}
@@ -55,6 +58,7 @@ export default function ProjectEditDialog({
             project={project}
             layout="dialog"
             updateProject={updateProject}
+            savingRef={savingRef}
             onDone={() => onOpenChange(false)}
           />
         ) : null}

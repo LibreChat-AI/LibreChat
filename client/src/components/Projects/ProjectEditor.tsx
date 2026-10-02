@@ -22,6 +22,9 @@ export type ProjectEditorProps = {
   /** A host that outlives the editor, such as a dialog, passes its own mutation so the
    *  save settles (and reports) even if the editor unmounts first. */
   updateProject?: ReturnType<typeof useUpdateProjectMutation>;
+  /** Set from the moment a save is submitted until it settles; a host reads it to refuse
+   *  dismissal before the mutation's own loading state has rendered. */
+  savingRef?: MutableRefObject<boolean>;
 };
 
 type ProjectEditorForm = {
@@ -36,6 +39,7 @@ export default function ProjectEditor({
   inputRef,
   initialField = 'name',
   updateProject: hostUpdateProject,
+  savingRef,
 }: ProjectEditorProps) {
   const localize = useLocalize();
   const ownUpdateProject = useUpdateProjectMutation();
@@ -44,7 +48,8 @@ export default function ProjectEditor({
   const descriptionLimit =
     startupConfig?.projects?.maxDescriptionLength ?? MAX_CHAT_PROJECT_DESCRIPTION_LENGTH;
   const { showToast } = useToastContext();
-  const isSavingRef = useRef(false);
+  const ownSavingRef = useRef(false);
+  const isSavingRef = savingRef ?? ownSavingRef;
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const {
     register,
