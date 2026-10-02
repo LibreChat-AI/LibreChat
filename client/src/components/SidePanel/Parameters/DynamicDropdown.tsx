@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { OptionTypes } from 'librechat-data-provider';
 import { Label, HoverCard, HoverCardTrigger, SelectDropDown } from '@librechat/client';
 import type { DynamicSettingProps } from 'librechat-data-provider';
+import type { Option } from '~/common';
 import { TranslationKeys, useLocalize, useParameterEffects } from '~/hooks';
 import { useChatContext } from '~/Providers';
 import OptionHover from './OptionHover';
@@ -17,6 +18,7 @@ function DynamicDropdown({
   setOption,
   optionType,
   options,
+  items,
   // type: _type,
   readonly = false,
   showLabel = true,
@@ -40,7 +42,8 @@ function DynamicDropdown({
     return conversation?.[settingKey] ?? defaultValue;
   }, [conversation, defaultValue, optionType, settingKey, inputValue]);
 
-  const handleChange = (value: string) => {
+  const handleChange = (option: string | Option) => {
+    const value = typeof option === 'string' ? option : String(option.value ?? '');
     if (optionType === OptionTypes.Custom) {
       // TODO: custom logic, add to payload but not to conversation
       setInputValue(value);
@@ -59,9 +62,12 @@ function DynamicDropdown({
     preventDelayedUpdate: true,
   });
 
-  if (!options || options.length === 0) {
+  const availableValues = items ?? options ?? [];
+  if (availableValues.length === 0) {
     return null;
   }
+
+  const selectedOption = items?.find((item) => item.value === selectedValue) ?? selectedValue;
 
   return (
     <div
@@ -91,9 +97,9 @@ function DynamicDropdown({
             showLabel={false}
             emptyTitle={true}
             disabled={readonly}
-            value={selectedValue}
+            value={selectedOption}
             setValue={handleChange}
-            availableValues={options}
+            availableValues={availableValues}
             containerClassName="w-full"
             className="py-1.5"
             id={`${settingKey}-dynamic-dropdown`}

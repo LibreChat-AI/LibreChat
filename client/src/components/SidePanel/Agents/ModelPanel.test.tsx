@@ -5,11 +5,12 @@ import React from 'react';
 import { FormProvider, useForm } from 'react-hook-form';
 import { fireEvent, render, waitFor } from '@testing-library/react';
 import { Providers, EModelEndpoint, agentParamSettings } from 'librechat-data-provider';
-import type { TStartupConfig } from 'librechat-data-provider';
+import type { TEndpointsConfig, TStartupConfig } from 'librechat-data-provider';
 import type { UseFormReturn } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 import ModelPanel from './ModelPanel';
 
+let mockEndpointsConfig: TEndpointsConfig = {};
 const mockStartupConfig = jest.fn<Partial<TStartupConfig>, []>(() => ({}));
 
 jest.mock('@librechat/client', () => ({
@@ -25,6 +26,7 @@ jest.mock('@librechat/client', () => ({
     items,
     selectId,
     selectedValue,
+    displayValue,
     selectPlaceholder,
     setValue,
   }: {
@@ -33,14 +35,16 @@ jest.mock('@librechat/client', () => ({
     items: Array<{ label: string; value: string }>;
     selectId?: string;
     selectedValue: string;
+    displayValue?: string;
     selectPlaceholder?: string;
     setValue: (value: string) => void;
   }) => (
     <div>
       <button id={selectId} type="button" disabled={disabled} aria-label={ariaLabel}>
-        {selectedValue || selectPlaceholder}
+        {displayValue || selectedValue || selectPlaceholder}
       </button>
       <span data-testid={`${ariaLabel}-selected`}>{selectedValue}</span>
+      <span data-testid={`${ariaLabel}-display`}>{displayValue}</span>
       <span data-testid={`${ariaLabel}-placeholder`}>{selectPlaceholder}</span>
       {items.map((item) => (
         <button
@@ -62,7 +66,7 @@ jest.mock('~/components/SidePanel/Parameters/components', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetEndpointsQuery: () => ({ data: {} }),
+  useGetEndpointsQuery: () => ({ data: mockEndpointsConfig }),
   useGetStartupConfig: () => ({ data: mockStartupConfig() }),
 }));
 
@@ -77,6 +81,7 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/utils', () => ({
   cn: (...classes: Array<string | false | undefined>) => classes.filter(Boolean).join(' '),
+  getModelLabel: jest.requireActual('~/utils/endpoints').getModelLabel,
 }));
 
 function TestForm({
@@ -126,7 +131,26 @@ function TestForm({
 describe('ModelPanel', () => {
   beforeEach(() => {
     localStorage.clear();
+    mockEndpointsConfig = {};
     mockStartupConfig.mockReturnValue({});
+  });
+
+  it('displays a configured model label while retaining the model id', () => {
+    mockEndpointsConfig = {
+      custom: { order: 0, modelLabels: { 'custom-model': ' Custom Model ' } },
+    };
+    const { getByTestId } = render(
+      <TestForm
+        defaultProvider="custom"
+        defaultModel="custom-model"
+        models={{ custom: ['custom-model'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByTestId('com_ui_model-display')).toHaveTextContent('Custom Model');
+    expect(getByTestId('com_ui_model-selected')).toHaveTextContent('custom-model');
+    expect(getByTestId('com_ui_model-custom-model')).toHaveTextContent('Custom Model');
   });
 
   it('disables model selection until the model catalogue is ready', () => {

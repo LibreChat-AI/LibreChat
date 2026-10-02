@@ -1129,6 +1129,15 @@ endpoints:
       # The label displayed for the AI model in messages.
       modelDisplayLabel: 'Mistral' # Default is "AI" when not set.
 
+      # Display labels for this endpoint's models, keyed by model id. Presentational
+      # only: the id is still what is selected, stored and sent to the provider, and
+      # a model with no entry here renders its id. An entry for a model this endpoint
+      # does not serve is simply never shown, so one map can cover several
+      # deployments that each serve a subset.
+      # modelLabels:
+      #   mistral-tiny: 'Mistral Tiny'
+      #   mistral-small: 'Mistral Small'
+
       # Add additional parameters to the request. Default params will be overwritten.
       # addParams:
       # safe_prompt: true # This field is specific to Mistral AI: https://docs.mistral.ai/api/

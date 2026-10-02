@@ -8,6 +8,7 @@ import type { Endpoint } from '~/common';
 import { useModelSelectorContext } from '../ModelSelectorContext';
 import { CustomMenuItem as MenuItem } from '../CustomMenu';
 import useActiveItem from '../useActiveItem';
+import { getModelName } from '../utils';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -49,20 +50,8 @@ function EndpointModelItemComponent({
 
   const { ref: itemRef, isActive } = useActiveItem<HTMLDivElement>();
 
-  let modelName = modelId;
   const avatarUrl = endpoint?.modelIcons?.[modelId ?? ''] || null;
-
-  // Use custom names if available
-  if (endpoint && modelId && isAgentsEndpoint(endpoint.value) && endpoint.agentNames?.[modelId]) {
-    modelName = endpoint.agentNames[modelId];
-  } else if (
-    endpoint &&
-    modelId &&
-    isAssistantsEndpoint(endpoint.value) &&
-    endpoint.assistantNames?.[modelId]
-  ) {
-    modelName = endpoint.assistantNames[modelId];
-  }
+  const modelName = getModelName(endpoint, modelId) ?? modelId;
 
   const handleFavoriteClick = (e: React.MouseEvent) => {
     e.stopPropagation();

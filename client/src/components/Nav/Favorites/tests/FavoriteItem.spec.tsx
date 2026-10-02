@@ -1,5 +1,5 @@
 import { render, screen, fireEvent } from '@testing-library/react';
-import type { Agent, TModelSpec } from 'librechat-data-provider';
+import type { Agent, TEndpointsConfig, TModelSpec } from 'librechat-data-provider';
 import type { FavoriteModel } from '~/store/favorites';
 import FavoriteItem from '../FavoriteItem';
 
@@ -48,6 +48,9 @@ const baseAgent: Agent = {
 } as unknown as Agent;
 
 const baseModel: FavoriteModel = { model: 'gpt-5', endpoint: 'openai' };
+const endpointsConfig: TEndpointsConfig = {
+  openai: { order: 0, modelLabels: { 'gpt-5': 'GPT-5' } },
+};
 
 const baseSpec: TModelSpec = {
   name: 'my-spec',
@@ -88,6 +91,22 @@ describe('FavoriteItem', () => {
       render(<FavoriteItem type="model" item={baseModel} />);
       expect(screen.getByText('gpt-5')).toBeInTheDocument();
       expect(screen.getByTestId('minimal-icon')).toBeInTheDocument();
+    });
+
+    it('renders the configured model label while retaining the model id for selection', () => {
+      const onSelectEndpoint = jest.fn();
+      render(
+        <FavoriteItem
+          type="model"
+          item={baseModel}
+          endpointsConfig={endpointsConfig}
+          onSelectEndpoint={onSelectEndpoint}
+        />,
+      );
+
+      expect(screen.getByText('GPT-5')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('favorite-item'));
+      expect(onSelectEndpoint).toHaveBeenCalledWith('openai', { model: 'gpt-5' });
     });
 
     it('has aria-label formatted as "<model> (com_ui_model)"', () => {

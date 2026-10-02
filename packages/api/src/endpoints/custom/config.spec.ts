@@ -83,3 +83,17 @@ describe('loadCustomEndpointsConfig – user credential prompts', () => {
     );
   });
 });
+
+describe('loadCustomEndpointsConfig – model labels', () => {
+  it('passes a declared label map to the client', () => {
+    const config = loadCustomEndpointsConfig([
+      {
+        ...baseEndpoint,
+        name: 'Claude',
+        modelLabels: { 'claude-sonnet-4-5': 'Sonnet 4.5' },
+      },
+    ] as unknown as TCustomEndpoints);
+
+    expect(config?.['Claude']?.modelLabels).toEqual({ 'claude-sonnet-4-5': 'Sonnet 4.5' });
+  });
+});

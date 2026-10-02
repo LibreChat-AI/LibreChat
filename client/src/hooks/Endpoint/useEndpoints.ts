@@ -119,6 +119,7 @@ export const useEndpoints = ({
 
   const mappedEndpoints: Endpoint[] = useMemo(() => {
     return filteredEndpoints.reduce<Endpoint[]>((acc, ep) => {
+      const modelLabels = getEndpointField(endpointsConfig, ep, 'modelLabels');
       const hasModels =
         (ep === EModelEndpoint.agents && ((agents?.length ?? 0) > 0 || showAgentMarketplace)) ||
         (ep === EModelEndpoint.assistants && assistants?.length > 0) ||
@@ -135,6 +136,7 @@ export const useEndpoints = ({
         value: ep,
         label: alternateName[ep] || ep,
         hasModels,
+        modelLabels,
         icon: createEndpointIcon(ep, resolveProviderIcon({ endpoint: ep, endpointsConfig })),
       };
 

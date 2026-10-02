@@ -1,6 +1,6 @@
 import { memo, useState, useRef, useEffect } from 'react';
 import { AutoSizer, List } from 'react-virtualized';
-import { EModelEndpoint } from 'librechat-data-provider';
+import { EModelEndpoint, getEndpointField } from 'librechat-data-provider';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
 import { Input, Spinner, useCombobox } from '@librechat/client';
 import type { RecoilState } from 'recoil';
@@ -10,7 +10,7 @@ import useInitPopoverInput from '~/hooks/Input/useInitPopoverInput';
 import useSelectMention from '~/hooks/Input/useSelectMention';
 import { useAssistantsMapContext } from '~/Providers';
 import useMentions from '~/hooks/Input/useMentions';
-import { removeCharIfLast } from '~/utils';
+import { getModelLabel, removeCharIfLast } from '~/utils';
 import MentionItem from './MentionItem';
 
 const ROW_HEIGHT = 44;
@@ -106,9 +106,11 @@ function MentionContent({
       setActiveIndex(0);
       inputRef.current?.focus();
     } else if (mention.type === 'endpoint') {
+      const modelLabels = getEndpointField(endpointsConfig, mention.value, 'modelLabels');
       const models = (modelsConfig?.[mention.value || ''] ?? []).map((model) => ({
-        value: mention.value,
-        label: model,
+        value: model,
+        label: getModelLabel(modelLabels, model) ?? model,
+        endpoint: mention.value,
         type: 'model',
       }));
 
