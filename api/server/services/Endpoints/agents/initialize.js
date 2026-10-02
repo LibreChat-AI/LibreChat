@@ -43,7 +43,7 @@ const {
   encodeAndFormatVideos,
   extractFileContext,
   createScheduleUpstreamTokenProviderResolver,
-  prepareScheduleMCPExecution,
+  initializeWithScheduleMCPExecution,
 } = require('@librechat/api');
 const {
   ResourceType,
@@ -1924,7 +1924,7 @@ function createInitializeClient(dependencies = {}) {
       params.signal,
       params.scheduledTokenContext,
     );
-    await prepareScheduleMCPExecution(
+    return initializeWithScheduleMCPExecution(
       {
         req: params.req,
         context: require('~/server/services/MCPRequestContext').getMCPRequestContext(
@@ -1935,8 +1935,8 @@ function createInitializeClient(dependencies = {}) {
         restoredJob: params.scheduleJobIdentity,
       },
       () => require('~/server/services/Schedules/consent'),
+      () => initializeClientWithProvider({ ...params, upstreamTokenProviderResolver }),
     );
-    return initializeClientWithProvider({ ...params, upstreamTokenProviderResolver });
   };
 }
 

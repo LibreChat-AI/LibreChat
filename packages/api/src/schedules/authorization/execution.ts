@@ -12,7 +12,7 @@ import { ScheduleMCPConsentError } from './service';
 
 export interface ScheduledMCPInvocation {
   readonly authorize: (input: {
-    user?: IUser;
+    user?: { id: string; tenantId?: string };
     serverName: string;
     serverConfig: ParsedServerConfig;
     toolName: string;

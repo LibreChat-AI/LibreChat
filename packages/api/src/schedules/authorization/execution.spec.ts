@@ -285,3 +285,22 @@ it('installs an independent ceiling for root, child, handoff, and lazy tools wit
   });
   expect(await call('query_mcp_warehouse', 'handoff')).toEqual({});
 });
+
+it('refuses a consent deadline crossed while the final database admission is in flight', async () => {
+  const f = await executionFixture();
+  jest.mocked(f.storage.admitScheduleMCPConsent).mockImplementationOnce(async () => {
+    f.expire();
+    return true;
+  });
+  await expect(
+    f
+      .invocation()
+      .authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.config,
+        toolName: 'query',
+        loadTools: async () => catalog(),
+      }),
+  ).rejects.toMatchObject({ failure: { reason: 'consent_expired', automaticReplay: false } });
+});

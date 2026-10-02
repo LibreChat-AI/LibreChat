@@ -350,6 +350,8 @@ export function createScheduleMCPConsentService(
         if (now() >= latest.consent.absoluteExpiresAtMs) return denial('consent_expired');
         return denial('binding_mismatch');
       }
+      if (options.signal?.aborted) return { state: 'cancelled' };
+      if (now() >= consent.absoluteExpiresAtMs) return denial('consent_expired');
       return {
         state: 'authorized',
         consentId: consent.id,

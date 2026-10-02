@@ -4,7 +4,6 @@ import {
   scheduledMCPReadOnlyPolicySchema,
 } from 'librechat-data-provider';
 import type { ScheduledMCPIdentity, ScheduledMCPReadOnlyPolicy } from 'librechat-data-provider';
-import type { IUser } from '@librechat/data-schemas';
 import type { RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { ScheduleMCPEnrollmentDeps } from './enrollment';
 import type { ScheduledTokenContext } from '../context';
@@ -15,7 +14,9 @@ import { getAppConfigOptionsFromUser } from '~/app/service';
 import { createScheduleMCPConsentHost } from './host';
 import { ScheduledMCPPolicyError } from './policy';
 
-type RuntimeRequest = Parameters<typeof readScheduleFireContext>[0] & { user: IUser };
+type RuntimeRequest = Parameters<typeof readScheduleFireContext>[0] & {
+  user: { id: string; tenantId?: string };
+};
 
 export function createScheduleMCPRuntimeHost(
   deps: Omit<
@@ -118,4 +119,14 @@ export async function prepareScheduleMCPExecution(
 ): Promise<void> {
   if (!isScheduleFireRequest(input.req)) return;
   await getHost().prepare(input);
+}
+
+/** Ordinary startup keeps its original synchronous admission of independent reads. */
+export function initializeWithScheduleMCPExecution<T>(
+  input: Parameters<ReturnType<typeof createScheduleMCPRuntimeHost>['prepare']>[0],
+  getHost: () => Pick<ReturnType<typeof createScheduleMCPRuntimeHost>, 'prepare'>,
+  initialize: () => Promise<T>,
+): Promise<T> {
+  if (!isScheduleFireRequest(input.req)) return initialize();
+  return getHost().prepare(input).then(initialize);
 }
