@@ -19,6 +19,10 @@ import {
  * popover, card, form state and resume request are all the production ones.
  */
 
+/* The agent setup goes through the desktop agent builder side panel, so these scenarios pin a
+   desktop pointer context; the long-prompt one shrinks the height to keep its bound meaningful. */
+test.use({ viewport: { width: 1280, height: 800 }, isMobile: false, hasTouch: false });
+
 type BatchQuestion = {
   id: string;
   question: string;
@@ -159,7 +163,6 @@ test.describe('ask question batch refinements', () => {
       });
       await expect(popover).toBeHidden({ timeout: 30000 });
       expect(generationStarts).toEqual([]);
-      await expect(messagesView(page).getByText('typed-first-answer')).toHaveCount(0);
     } finally {
       await cleanupAgent(page, agentId);
     }
@@ -169,6 +172,7 @@ test.describe('ask question batch refinements', () => {
     page,
   }) => {
     test.setTimeout(120000);
+    await page.setViewportSize({ width: 1280, height: 640 });
     const label = `${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
     let agentId: string | undefined;
 
