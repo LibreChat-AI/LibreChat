@@ -1041,3 +1041,108 @@ describe('measured tool timing replay provenance', () => {
     },
   );
 });
+
+describe('covered timing metadata reconciliation', () => {
+  const lifecycle = (identity: 'task' | 'invocation', invocation = 'generation-a') => {
+    const event = (
+      sequence: number,
+      phase: SubagentUpdateEvent['phase'],
+      data: SubagentUpdateEvent['data'],
+    ) =>
+      update({
+        subagentRunId: 'event-task',
+        activityEventId:
+          identity === 'task'
+            ? `covered-timing:${sequence}`
+            : `event-task:${invocation}:${sequence}`,
+        activitySequence: identity === 'task' ? sequence : undefined,
+        phase,
+        data,
+      });
+    return [
+      event(0, 'run_step', {
+        id: 'step',
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [{ id: 'tool', name: 'search', args: { query: 'release notes' } }],
+        },
+      }),
+      event(1, 'tool_preparation', { id: 'step', toolCallId: 'tool', observed_at: 1_000 }),
+      event(2, 'tool_calls_dispatched', {
+        dispatched_at: 3_000,
+        toolCalls: [{ id: 'tool', stepId: 'step' }],
+      }),
+      event(3, 'run_step_completed', {
+        result: {
+          id: 'step',
+          completed_at: 8_000,
+          tool_call: { id: 'tool', output: 'found', progress: 1 },
+        },
+      }),
+    ];
+  };
+  it.each(['task', 'invocation'] as const)(
+    'restores discarded %s timing from every partial suffix',
+    (identity) => {
+      const full = lifecycle(identity);
+      const expected = reduceSubagentProgress(null, full, 'detached', false);
+      for (const start of [1, 2, 3]) {
+        let progress = reduceSubagentProgress(null, full.slice(start), 'detached', false);
+        expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolExecutionDurationMs');
+        const original = JSON.stringify(progress);
+        const repaired = reduceSubagentReplay(progress, full, false);
+        expect(JSON.stringify(progress)).toBe(original);
+        progress = repaired;
+        expect(progress?.contentParts).toEqual(expected?.contentParts);
+        expect(progress?.contentParts[0]).toMatchObject({
+          tool_call: { toolPreparationDurationMs: 2_000, toolExecutionDurationMs: 5_000 },
+        });
+        progress = reduceSubagentReplay(progress, full, false);
+        expect(progress?.contentParts).toEqual(expected?.contentParts);
+        const next = {
+          ...full[3],
+          activityEventId: identity === 'task' ? 'covered-timing:4' : `event-task:generation-a:4`,
+          activitySequence: identity === 'task' ? 4 : undefined,
+          phase: 'message_delta' as const,
+          data: { delta: { content: [{ type: 'text', text: 'after' }] } },
+        };
+        progress = reduceSubagentProgress(progress, [next], 'detached', false);
+        expect(progress?.contentParts[0]).toEqual(expected?.contentParts[0]);
+        expect(progress?.contentParts[1]).toEqual({ type: 'text', text: 'after' });
+      }
+    },
+  );
+  it('does not borrow stamps from another event-child resume with reused tool and step IDs', () => {
+    const a = lifecycle('invocation', 'generation-a');
+    const b = lifecycle('invocation', 'generation-b');
+    b[2] = { ...b[2], data: { dispatched_at: 5_000, toolCalls: [{ id: 'tool', stepId: 'step' }] } };
+    let progress = reduceSubagentProgress(null, [...a.slice(2), ...b.slice(2)], 'detached', false);
+    progress = reduceSubagentReplay(progress, a, false);
+    const invocations = progress?.legacyReplayInvocations ?? [];
+    expect(invocations[0].progress.contentParts[0]).toMatchObject({
+      tool_call: { toolExecutionDurationMs: 5_000 },
+    });
+    expect(invocations[1].progress.contentParts[0]).not.toHaveProperty(
+      'tool_call.toolExecutionDurationMs',
+    );
+    progress = reduceSubagentReplay(progress, b, false);
+    expect(progress?.legacyReplayInvocations?.[1].progress.contentParts[0]).toMatchObject({
+      tool_call: { toolExecutionDurationMs: 3_000 },
+    });
+  });
+  it('does not repair timing from another step or a post-completion handoff', () => {
+    const full = lifecycle('task');
+    const mismatched = {
+      ...full[2],
+      data: { dispatched_at: 3_000, toolCalls: [{ id: 'tool', stepId: 'wrong-step' }] },
+    };
+    const late = { ...full[2], activitySequence: 4, activityEventId: 'covered-timing:4' };
+    const original = reduceSubagentProgress(null, [full[3], late], 'detached', false);
+    const progress = reduceSubagentReplay(
+      original,
+      [full[0], full[1], mismatched, full[3], late],
+      false,
+    );
+    expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolExecutionDurationMs');
+  });
+});

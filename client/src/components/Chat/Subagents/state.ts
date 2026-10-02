@@ -18,6 +18,7 @@ import type {
   SubagentTickerState,
 } from '~/utils/subagentContent';
 import {
+  reconcileSubagentToolTimings,
   foldSubagentEvent,
   foldSubagentEventIntoTicker,
   initSubagentAggregatorState,
@@ -1158,6 +1159,24 @@ function foldLegacyInvocations(
     }
   }
   if (replay) {
+    const byInvocation = new Map<string, SubagentUpdateEvent[]>();
+    for (const event of events) {
+      const invocation = eventLegacyOrdinal(event)!.invocation;
+      const group = byInvocation.get(invocation);
+      if (group == null) byInvocation.set(invocation, [event]);
+      else group.push(event);
+    }
+    for (const entry of invocations) {
+      const lifecycle = byInvocation.get(entry.invocation);
+      if (lifecycle != null)
+        entry.progress = reconcileReplayTiming(
+          entry.progress,
+          lifecycle.filter(
+            (event) =>
+              eventLegacyOrdinal(event)!.ordinal <= (entry.progress.lastActivitySequence ?? -1),
+          ),
+        );
+    }
     const anchored = (previous?.legacyReplayInvocations ?? []).map((entry) => entry.invocation);
     for (let index = 0; index < order.length; index++) {
       const invocation = order[index];
@@ -1201,6 +1220,41 @@ function foldLegacyInvocations(
     coverage: invocations.every((entry) => entry.progress.coverage === 'complete')
       ? 'complete'
       : 'suffix',
+  };
+}
+
+function reconcileReplayTiming(
+  progress: SubagentProgress,
+  events: SubagentUpdateEvent[],
+): SubagentProgress {
+  const observed = events.filter(
+    (event) =>
+      event.subagentRunId === progress.subagentRunId &&
+      (event.activitySequence == null ||
+        event.activitySequence <= (progress.lastActivitySequence ?? -1)),
+  );
+  const parts = reconcileSubagentToolTimings(progress.contentParts, observed);
+  const segments = progress.replaySegments?.map((segment) => {
+    const updated = reconcileReplayTiming(segment.progress, events);
+    return updated === segment.progress ? segment : { ...segment, progress: updated };
+  });
+  const segmentsChanged =
+    segments?.some((segment, index) => segment !== progress.replaySegments?.[index]) ?? false;
+  if (parts === progress.contentParts && !segmentsChanged) return progress;
+  if (segmentsChanged)
+    return foldReplaySegments(
+      { ...progress, replaySegments: segments },
+      [],
+      progress.pendingSequencedEvents ?? [],
+    );
+  const bounded =
+    parts === progress.contentParts
+      ? { parts, state: progress.aggregatorState }
+      : boundContentParts(parts, progress.aggregatorState);
+  return {
+    ...progress,
+    contentParts: bounded.parts,
+    aggregatorState: bounded.state,
   };
 }
 
@@ -1272,8 +1326,9 @@ export function reduceSubagentReplay(
     } else if (events.every((event) => eventLegacyOrdinal(event) != null))
       return foldLegacyInvocations(base, events, base.pendingSequencedEvents ?? [], true);
   }
-  const progress = reduceSubagentProgress(base, events, 'detached', parentOpen);
-  if (progress == null) return previous;
+  const folded = reduceSubagentProgress(base, events, 'detached', parentOpen);
+  if (folded == null) return previous;
+  const progress = reconcileReplayTiming(folded, events);
   const missing = sameRun ? previous?.activityReplayFrom : undefined;
   if (parentOpen || missing == null || (progress.lastActivitySequence ?? -1) < missing)
     return progress;

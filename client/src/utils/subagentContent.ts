@@ -1,5 +1,5 @@
 import { ContentTypes, ToolCallTypes, getToolTimingDurations } from 'librechat-data-provider';
-import type { SubagentUpdateEvent } from 'librechat-data-provider';
+import type { SubagentUpdateEvent, ToolTimingStamps } from 'librechat-data-provider';
 
 /**
  * Client-side helpers for rendering the live `SubagentCall` UI while
@@ -469,6 +469,93 @@ export function foldSubagentEvent(
   }
 
   return { parts, state };
+}
+
+/** Replay metadata is idempotent even when the associated event was observed before
+ * its tool part existed. Recover only stamps, never append content or reopen tools. */
+export function reconcileSubagentToolTimings(
+  parts: SubagentContentPart[],
+  events: SubagentUpdateEvent[],
+): SubagentContentPart[] {
+  const stamps = new Map<string, ToolTimingStamps & { completed?: true }>();
+  const valid = (at: number | undefined): at is number =>
+    typeof at === 'number' && Number.isFinite(at) && at >= 0;
+  const key = (id: string, step: string) => JSON.stringify([id, step]);
+  const record = (
+    id: string | undefined,
+    step: string | undefined,
+    field: keyof ToolTimingStamps,
+    at: number | undefined,
+  ) => {
+    if (!id || !step || !valid(at)) return;
+    const identity = key(id, step);
+    const current = stamps.get(identity) ?? {};
+    /** A later handoff is not part of the measured invocation after its completion. */
+    if (current.completed) return;
+    const old = current[field];
+    current[field] = old == null ? at : Math.min(old, at);
+    stamps.set(identity, current);
+  };
+  for (const event of events) {
+    if (event.phase === 'tool_preparation') {
+      const data = event.data as ToolPreparationData | undefined;
+      record(data?.toolCallId, data?.id, 'observedAt', data?.observed_at);
+    } else if (event.phase === 'tool_calls_dispatched') {
+      const data = event.data as ToolDispatchData | undefined;
+      for (const call of data?.toolCalls ?? [])
+        record(call.id, call.stepId, 'dispatchedAt', data?.dispatched_at);
+    } else if (event.phase === 'run_step_completed') {
+      const result = (event.data as RunStepCompletedData | undefined)?.result;
+      const id = result?.tool_call?.id;
+      const step = result?.id;
+      record(id, step, 'completedAt', result?.completed_at);
+      if (id && step) {
+        const identity = key(id, step);
+        const current = stamps.get(identity) ?? {};
+        current.completed = true;
+        stamps.set(identity, current);
+      }
+    }
+  }
+  if (stamps.size === 0) return parts;
+  let next = parts;
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    if (part.type !== ContentTypes.TOOL_CALL || !part.tool_call.stepId) continue;
+    const recovered = stamps.get(key(part.tool_call.id, part.tool_call.stepId));
+    if (recovered == null) continue;
+    const existing = part.tool_call;
+    const earliest = (old: number | undefined, at: number | undefined) => {
+      if (old == null) return at;
+      return at == null ? old : Math.min(old, at);
+    };
+    const observedAt = earliest(existing.toolPreparationStartedAt, recovered.observedAt);
+    const dispatchedAt = earliest(existing.toolDispatchedAt, recovered.dispatchedAt);
+    const completedAt = existing.toolCompletedAt ?? recovered.completedAt;
+    const durations = getToolTimingDurations({ observedAt, dispatchedAt, completedAt });
+    if (
+      observedAt === existing.toolPreparationStartedAt &&
+      dispatchedAt === existing.toolDispatchedAt &&
+      completedAt === existing.toolCompletedAt &&
+      (durations.toolPreparationDurationMs == null ||
+        durations.toolPreparationDurationMs === existing.toolPreparationDurationMs) &&
+      (durations.toolExecutionDurationMs == null ||
+        durations.toolExecutionDurationMs === existing.toolExecutionDurationMs)
+    )
+      continue;
+    if (next === parts) next = parts.slice();
+    next[index] = {
+      ...part,
+      tool_call: {
+        ...existing,
+        ...(observedAt == null ? {} : { toolPreparationStartedAt: observedAt }),
+        ...(dispatchedAt == null ? {} : { toolDispatchedAt: dispatchedAt }),
+        ...(completedAt == null ? {} : { toolCompletedAt: completedAt }),
+        ...durations,
+      },
+    };
+  }
+  return next;
 }
 
 /**
