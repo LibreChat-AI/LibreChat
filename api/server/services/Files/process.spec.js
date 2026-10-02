@@ -206,7 +206,7 @@ jest.mock('@librechat/api', () => {
    * `filterFile` hands in.
    */
   const isAdmissibleUploadType = jest.fn(
-    ({ mimeType, fileConfig, endpointMimeTypes, admitParserTypes }) => {
+    ({ mimeType, fileConfig, endpointMimeTypes, admitParserTypes, toolResource }) => {
       const checkType = fileConfig.checkType;
       if (checkType == null) {
         return false;
@@ -215,7 +215,9 @@ jest.mock('@librechat/api', () => {
         return true;
       }
       const parserMimeTypes = fileConfig.documentParser?.supportedMimeTypes;
-      return admitParserTypes && parserMimeTypes != null
+      const reachesParser =
+        admitParserTypes === true || toolResource === 'context' || toolResource === 'ocr';
+      return reachesParser && parserMimeTypes != null
         ? checkType(mimeType, parserMimeTypes)
         : false;
     },
@@ -4436,9 +4438,12 @@ describe('filterFile', () => {
     });
   });
 
-  it('admits a parser-named MIME for a context upload', () => {
-    expect(() => filterFile({ req: makeFilterReq(EToolResources.context) })).not.toThrow();
-  });
+  it.each([EToolResources.context, EToolResources.ocr])(
+    'admits a parser-named MIME for a %s upload',
+    (toolResource) => {
+      expect(() => filterFile({ req: makeFilterReq(toolResource) })).not.toThrow();
+    },
+  );
 
   it.each([
     ['a different tool resource', 'file_search'],

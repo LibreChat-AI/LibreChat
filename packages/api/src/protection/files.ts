@@ -444,15 +444,17 @@ export function planDocumentExtraction(
  * runs while the file part is still streaming, so it cannot see a `tool_resource` sent
  * after the file and admits parser types unscoped (`admitParserTypes: true`); the only
  * thing it lets through is a temporary file the next gate deletes. `filterFile` has the
- * complete body and scopes the parser list to the context path, the only one that reaches
- * the parser.
+ * complete body and passes its `toolResource`, which scopes the parser list to the context
+ * path, the only one that reaches the parser. Legacy `ocr` is the same path under its old
+ * name: routing promotes it to `context`, so admission does too.
  */
 export function isAdmissibleUploadType(input: {
   readonly mimeType: string;
   readonly fileConfig: FileConfig;
   /** The endpoint's own allowlist, already resolved by the caller. */
   readonly endpointMimeTypes: RegexLike[] | undefined;
-  readonly admitParserTypes: boolean;
+  readonly admitParserTypes?: boolean;
+  readonly toolResource?: string | null;
 }): boolean {
   const checkType = input.fileConfig.checkType;
   if (checkType == null) {
@@ -462,7 +464,11 @@ export function isAdmissibleUploadType(input: {
     return true;
   }
   const parserMimeTypes = input.fileConfig.documentParser?.supportedMimeTypes;
-  return input.admitParserTypes && parserMimeTypes != null
+  const reachesParser =
+    input.admitParserTypes === true ||
+    input.toolResource === EToolResources.context ||
+    input.toolResource === EToolResources.ocr;
+  return reachesParser && parserMimeTypes != null
     ? checkType(input.mimeType, parserMimeTypes)
     : false;
 }

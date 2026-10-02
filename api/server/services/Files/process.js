@@ -1883,7 +1883,7 @@ function filterFile({ req, image, isAvatar, endpoint: endpointOverride }) {
     mimeType: file.mimetype,
     fileConfig,
     endpointMimeTypes: endpointFileConfig.supportedMimeTypes,
-    admitParserTypes: req.body?.tool_resource === EToolResources.context,
+    toolResource: req.body?.tool_resource,
   });
 
   if (!isSupportedMimeType) {

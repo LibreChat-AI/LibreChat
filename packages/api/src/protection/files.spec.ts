@@ -345,6 +345,27 @@ describe('file content inspection policy', () => {
     ).toBe(false);
   });
 
+  it.each([
+    [EToolResources.context, true],
+    [EToolResources.ocr, true],
+    [EToolResources.file_search, false],
+    [undefined, false],
+  ])('scopes an operator parser type to the %s tool resource: %s', (toolResource, admitted) => {
+    const vendorDocx = 'application/vnd.vendor.word';
+    const fileConfig = mergeFileConfig({
+      documentParser: { supportedMimeTypes: [`^${vendorDocx.replace(/[.+]/g, '\\$&')}$`] },
+    });
+
+    expect(
+      isAdmissibleUploadType({
+        mimeType: vendorDocx,
+        fileConfig,
+        endpointMimeTypes: [/^application\/pdf$/],
+        toolResource,
+      }),
+    ).toBe(admitted);
+  });
+
   it('defers transcript fail-close only to STT-supported non-assistant context uploads', () => {
     expect(
       canInspectUploadTranscriptAfterProcessing({
