@@ -1146,3 +1146,195 @@ describe('covered timing metadata reconciliation', () => {
     expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolExecutionDurationMs');
   });
 });
+
+describe('message-step phase replay provenance', () => {
+  const identity = (
+    sequence: number,
+    mode: 'task' | 'invocation',
+    invocation = 'generation-a',
+  ) => ({
+    subagentRunId: 'event-task',
+    activityEventId:
+      mode === 'task' ? `message-phase:${sequence}` : `event-task:${invocation}:${sequence}`,
+    activitySequence: mode === 'task' ? sequence : undefined,
+  });
+  const declaration = (
+    phase: 'commentary' | 'final_answer',
+    mode: 'task' | 'invocation',
+    step = 'message',
+    invocation = 'generation-a',
+  ) =>
+    update({
+      ...identity(0, mode, invocation),
+      phase: 'run_step',
+      data: { id: step, stepDetails: { type: 'message_creation', message_creation: { phase } } },
+    });
+  const text = (
+    sequence: number,
+    value: string,
+    mode: 'task' | 'invocation',
+    step = 'message',
+    invocation = 'generation-a',
+  ) =>
+    update({
+      ...identity(sequence, mode, invocation),
+      phase: 'message_delta',
+      data: { id: step, delta: { content: [{ type: 'text', text: value }] } },
+    });
+  it.each(['task', 'invocation'] as const)(
+    'recovers %s phase before continuing a Markdown span',
+    (mode) => {
+      for (const phase of ['commentary', 'final_answer'] as const) {
+        const start = declaration(phase, mode);
+        const first = text(1, '**release', mode);
+        const last = text(2, ' notes**', mode);
+        let progress = reduceSubagentProgress(null, [first], 'detached', false);
+        expect(progress?.contentParts[0]).toEqual({
+          type: 'text',
+          text: '**release',
+          stepId: 'message',
+        });
+        const original = JSON.stringify(progress);
+        const repaired = reduceSubagentReplay(progress, [start, first], false);
+        expect(JSON.stringify(progress)).toBe(original);
+        progress = repaired;
+        expect(progress?.contentParts).toEqual([
+          { type: 'text', text: '**release', stepId: 'message', phase },
+        ]);
+        progress = reduceSubagentReplay(progress, [start, first], false);
+        progress = reduceSubagentProgress(progress, [last], 'detached', false);
+        expect(progress?.contentParts).toEqual([
+          { type: 'text', text: '**release notes**', stepId: 'message', phase },
+        ]);
+        expect(progress?.contentParts).toEqual(
+          reduceSubagentProgress(null, [start, first, last], 'detached', false)?.contentParts,
+        );
+      }
+    },
+  );
+  it('repairs a phase split already displayed before reconnect and rebases a following tool', () => {
+    const start = declaration('commentary', 'task');
+    const first = text(1, '**release', 'task');
+    const last = {
+      ...text(2, ' notes**', 'task'),
+      data: {
+        id: 'message',
+        delta: { content: [{ type: 'text', text: ' notes**', phase: 'commentary' }] },
+      },
+    };
+    const tool = update({
+      ...identity(3, 'task'),
+      phase: 'run_step',
+      data: {
+        id: 'tool-step',
+        stepDetails: { type: 'tool_calls', tool_calls: [{ id: 'tool', name: 'search', args: {} }] },
+      },
+    });
+    let progress = reduceSubagentProgress(null, [first, last, tool], 'detached', false);
+    expect(progress?.contentParts).toHaveLength(3);
+    progress = reduceSubagentReplay(progress, [start, first, last, tool], false);
+    expect(progress?.contentParts).toHaveLength(2);
+    expect(progress?.contentParts[0]).toEqual({
+      type: 'text',
+      text: '**release notes**',
+      phase: 'commentary',
+      stepId: 'message',
+    });
+    expect(progress?.aggregatorState.toolCallIndexById.tool).toBe(1);
+    progress = reduceSubagentProgress(
+      progress,
+      [
+        update({
+          ...identity(4, 'task'),
+          phase: 'run_step_completed',
+          data: {
+            result: { id: 'tool-step', tool_call: { id: 'tool', output: 'done', progress: 1 } },
+          },
+        }),
+      ],
+      'detached',
+      false,
+    );
+    expect(progress?.contentParts[1]).toMatchObject({ tool_call: { output: 'done', progress: 1 } });
+  });
+  it('keeps independent message steps and explicit phases separate', () => {
+    const a = text(1, 'A', 'task', 'a');
+    const b = text(2, 'B', 'task', 'b');
+    let progress = reduceSubagentProgress(null, [a, b], 'detached', false);
+    expect(progress?.contentParts).toHaveLength(2);
+    progress = reduceSubagentReplay(
+      progress,
+      [declaration('commentary', 'task', 'a'), a, b],
+      false,
+    );
+    expect(progress?.contentParts).toEqual([
+      { type: 'text', text: 'A', stepId: 'a', phase: 'commentary' },
+      { type: 'text', text: 'B', stepId: 'b' },
+    ]);
+    const explicit = {
+      ...a,
+      data: { id: 'a', delta: { content: [{ type: 'text', text: 'A', phase: 'final_answer' }] } },
+    };
+    const explicitProgress = reduceSubagentReplay(
+      reduceSubagentProgress(null, [explicit], 'detached', false),
+      [declaration('commentary', 'task', 'a'), explicit],
+      false,
+    );
+    expect(explicitProgress?.contentParts[0]).toMatchObject({ phase: 'final_answer' });
+  });
+  it('recovers historical phase without reviving a closed message-step map', () => {
+    const start = declaration('commentary', 'task');
+    const first = text(1, 'first', 'task');
+    const close = update({
+      ...identity(2, 'task'),
+      phase: 'run_step_closed',
+      data: { id: 'message' },
+    });
+    const progress = reduceSubagentReplay(
+      reduceSubagentProgress(null, [first, close], 'detached', false),
+      [start, first, close],
+      false,
+    );
+    expect(progress?.contentParts[0]).toMatchObject({ phase: 'commentary', stepId: 'message' });
+    expect(progress?.aggregatorState.messagePhaseByStepId).not.toHaveProperty('message');
+  });
+  it('scopes recovered phase to its event-child invocation when step IDs are reused', () => {
+    const a = text(1, 'A', 'invocation', 'message', 'generation-a');
+    const b = text(1, 'B', 'invocation', 'message', 'generation-b');
+    let progress = reduceSubagentProgress(null, [a, b], 'detached', false);
+    progress = reduceSubagentReplay(
+      progress,
+      [declaration('commentary', 'invocation', 'message', 'generation-a'), a],
+      false,
+    );
+    expect(progress?.legacyReplayInvocations?.[0].progress.contentParts[0]).toMatchObject({
+      phase: 'commentary',
+    });
+    expect(progress?.legacyReplayInvocations?.[1].progress.contentParts[0]).not.toHaveProperty(
+      'phase',
+    );
+    expect(progress?.contentParts).toEqual([
+      { type: 'text', text: 'A', stepId: 'message', phase: 'commentary' },
+      { type: 'text', text: 'B', stepId: 'message' },
+    ]);
+    progress = reduceSubagentReplay(
+      progress,
+      [declaration('final_answer', 'invocation', 'message', 'generation-b'), b],
+      false,
+    );
+    expect(progress?.legacyReplayInvocations?.[1].progress.contentParts[0]).toMatchObject({
+      phase: 'final_answer',
+    });
+  });
+  it('includes text provenance in the existing retention budgets', () => {
+    const parts = Array.from({ length: 110 }, (_, i) =>
+      text(i + 1, 'x'.repeat(1_000), 'task', `message-${i}`),
+    );
+    const progress = reduceSubagentProgress(null, parts, 'detached', false);
+    expect(progress?.contentParts.length).toBeLessThanOrEqual(100);
+    expect(
+      new TextEncoder().encode(JSON.stringify(progress?.contentParts)).byteLength,
+    ).toBeLessThanOrEqual(65_536);
+    expect(progress?.contentParts.at(-1)).toMatchObject({ stepId: 'message-109' });
+  });
+});

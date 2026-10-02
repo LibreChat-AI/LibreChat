@@ -18,6 +18,7 @@ import type {
   SubagentTickerState,
 } from '~/utils/subagentContent';
 import {
+  reconcileSubagentMessagePhases,
   reconcileSubagentToolTimings,
   foldSubagentEvent,
   foldSubagentEventIntoTicker,
@@ -868,9 +869,12 @@ export function reduceSubagentProgress(
 function prependSubagentReplay(
   previous: SubagentProgress,
   prefix: SubagentProgress,
+  inheritMessagePhases = true,
 ): SubagentProgress {
   let parts = prefix.contentParts;
-  let state = prefix.aggregatorState;
+  let state = inheritMessagePhases
+    ? prefix.aggregatorState
+    : { ...prefix.aggregatorState, messagePhaseByStepId: {}, idlessTextPhase: undefined };
   const indices = new Map<number, number>();
   for (let index = 0; index < previous.contentParts.length; index++) {
     const part = previous.contentParts[index];
@@ -884,7 +888,10 @@ function prependSubagentReplay(
     };
     if (part.type === ContentTypes.TEXT) {
       event.phase = 'message_delta';
-      event.data = { delta: { content: [part] } };
+      event.data = {
+        ...(part.stepId == null ? {} : { id: part.stepId }),
+        delta: { content: [part] },
+      };
     } else if (part.type === ContentTypes.THINK) {
       event.phase = 'reasoning_delta';
       event.data = { delta: { content: [part] } };
@@ -949,10 +956,12 @@ function prependSubagentReplay(
   }
   const bounded = boundContentParts(parts, {
     ...previous.aggregatorState,
-    messagePhaseByStepId: {
-      ...prefix.aggregatorState.messagePhaseByStepId,
-      ...previous.aggregatorState.messagePhaseByStepId,
-    },
+    messagePhaseByStepId: inheritMessagePhases
+      ? {
+          ...prefix.aggregatorState.messagePhaseByStepId,
+          ...previous.aggregatorState.messagePhaseByStepId,
+        }
+      : previous.aggregatorState.messagePhaseByStepId,
     openTextIdx:
       previous.aggregatorState.openTextIdx == null
         ? null
@@ -1208,7 +1217,7 @@ function foldLegacyInvocations(
   while (invocations.length > MAX_LIVE_ACTIVITY_ITEMS) invocations.shift();
   let projection: SubagentProgress = invocations[invocations.length - 1].progress;
   for (let index = invocations.length - 2; index >= 0; index--)
-    projection = prependSubagentReplay(projection, invocations[index].progress);
+    projection = prependSubagentReplay(projection, invocations[index].progress, false);
   return {
     ...projection,
     ...acceptedOmissions(previous, accepted),
@@ -1233,14 +1242,24 @@ function reconcileReplayTiming(
       (event.activitySequence == null ||
         event.activitySequence <= (progress.lastActivitySequence ?? -1)),
   );
-  const parts = reconcileSubagentToolTimings(progress.contentParts, observed);
+  const phased = reconcileSubagentMessagePhases(
+    progress.contentParts,
+    progress.aggregatorState,
+    observed,
+  );
+  const parts = reconcileSubagentToolTimings(phased.parts, observed);
   const segments = progress.replaySegments?.map((segment) => {
     const updated = reconcileReplayTiming(segment.progress, events);
     return updated === segment.progress ? segment : { ...segment, progress: updated };
   });
   const segmentsChanged =
     segments?.some((segment, index) => segment !== progress.replaySegments?.[index]) ?? false;
-  if (parts === progress.contentParts && !segmentsChanged) return progress;
+  if (
+    parts === progress.contentParts &&
+    phased.state === progress.aggregatorState &&
+    !segmentsChanged
+  )
+    return progress;
   if (segmentsChanged)
     return foldReplaySegments(
       { ...progress, replaySegments: segments },
@@ -1249,8 +1268,8 @@ function reconcileReplayTiming(
     );
   const bounded =
     parts === progress.contentParts
-      ? { parts, state: progress.aggregatorState }
-      : boundContentParts(parts, progress.aggregatorState);
+      ? { parts, state: phased.state }
+      : boundContentParts(parts, phased.state);
   return {
     ...progress,
     contentParts: bounded.parts,

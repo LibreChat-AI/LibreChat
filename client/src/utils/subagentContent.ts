@@ -82,7 +82,12 @@ type ReasoningDeltaData = {
 type ErrorData = { message?: string };
 
 type AssistantTextPhase = 'commentary' | 'final_answer';
-type TextPart = { type: ContentTypes.TEXT; text: string; phase?: AssistantTextPhase };
+type TextPart = {
+  type: ContentTypes.TEXT;
+  text: string;
+  phase?: AssistantTextPhase;
+  stepId?: string;
+};
 type ThinkPart = { type: ContentTypes.THINK; think: string };
 type ToolCallPart = {
   type: ContentTypes.TOOL_CALL;
@@ -223,7 +228,10 @@ export function foldSubagentEvent(
     if (afterThinkClose.openTextIdx != null) {
       const idx = afterThinkClose.openTextIdx;
       const existing = parts[idx] as TextPart;
-      if ((existing.phase ?? null) === (phase ?? null)) {
+      if (
+        (existing.phase ?? null) === (phase ?? null) &&
+        (existing.stepId ?? null) === (stepId || null)
+      ) {
         const next = parts.slice();
         next[idx] = { ...existing, text: existing.text + chunk };
         return { parts: next, state: afterThinkClose };
@@ -235,6 +243,7 @@ export function foldSubagentEvent(
       type: ContentTypes.TEXT,
       text: chunk,
       ...(phase == null ? {} : { phase }),
+      ...(typeof stepId === 'string' && stepId !== '' ? { stepId } : {}),
     });
     return { parts: next, state: { ...afterThinkClose, openTextIdx: newIdx } };
   }
@@ -469,6 +478,103 @@ export function foldSubagentEvent(
   }
 
   return { parts, state };
+}
+
+/** Recover phase metadata by the retained message step, then repair adjacent Markdown
+ * runs split by late phase discovery. The declaration is historical; closed steps stay retired. */
+export function reconcileSubagentMessagePhases(
+  parts: SubagentContentPart[],
+  state: SubagentAggregatorState,
+  events: SubagentUpdateEvent[],
+): { parts: SubagentContentPart[]; state: SubagentAggregatorState } {
+  const phases = new Map<string, AssistantTextPhase>();
+  const closed = new Set<string>();
+  for (const event of events) {
+    if (event.phase === 'run_step') {
+      const data = event.data as RunStepData | undefined;
+      const phase = data?.stepDetails?.message_creation?.phase;
+      if (
+        data?.id &&
+        data.stepDetails?.type === 'message_creation' &&
+        (phase === 'commentary' || phase === 'final_answer')
+      )
+        phases.set(data.id, phase);
+    } else if (event.phase === 'run_step_closed') {
+      const id = (event.data as RunStepClosedData | undefined)?.id;
+      if (id) closed.add(id);
+    }
+  }
+  if (phases.size === 0 && closed.size === 0) return { parts, state };
+  let next = parts;
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    if (part.type !== ContentTypes.TEXT || part.phase != null || !part.stepId) continue;
+    const phase = phases.get(part.stepId);
+    if (phase == null) continue;
+    if (next === parts) next = parts.slice();
+    next[index] = { ...part, phase };
+  }
+  let messagePhaseByStepId = state.messagePhaseByStepId;
+  for (const [id, phase] of phases) {
+    if (closed.has(id) || messagePhaseByStepId[id] === phase) continue;
+    if (messagePhaseByStepId === state.messagePhaseByStepId)
+      messagePhaseByStepId = { ...messagePhaseByStepId };
+    messagePhaseByStepId[id] = phase;
+  }
+  for (const id of closed) {
+    if (!(id in messagePhaseByStepId)) continue;
+    if (messagePhaseByStepId === state.messagePhaseByStepId)
+      messagePhaseByStepId = { ...messagePhaseByStepId };
+    delete messagePhaseByStepId[id];
+  }
+  /** Never combine different message steps or cross a tool/reasoning boundary. */
+  const joins = next.some((part, index) => {
+    const previous = next[index - 1];
+    return (
+      part.type === ContentTypes.TEXT &&
+      part.stepId != null &&
+      previous?.type === ContentTypes.TEXT &&
+      previous.stepId === part.stepId &&
+      previous.phase === part.phase
+    );
+  });
+  if (!joins)
+    return {
+      parts: next,
+      state:
+        messagePhaseByStepId === state.messagePhaseByStepId
+          ? state
+          : { ...state, messagePhaseByStepId },
+    };
+  const merged: SubagentContentPart[] = [];
+  const indices: number[] = [];
+  for (const part of next) {
+    const previous = merged[merged.length - 1];
+    if (
+      part.type === ContentTypes.TEXT &&
+      part.stepId != null &&
+      previous?.type === ContentTypes.TEXT &&
+      previous.stepId === part.stepId &&
+      previous.phase === part.phase
+    )
+      merged[merged.length - 1] = { ...previous, text: previous.text + part.text };
+    else merged.push(part);
+    indices.push(merged.length - 1);
+  }
+  return {
+    parts: merged,
+    state: {
+      ...state,
+      messagePhaseByStepId,
+      openTextIdx: state.openTextIdx == null ? null : (indices[state.openTextIdx] ?? null),
+      openThinkIdx: state.openThinkIdx == null ? null : (indices[state.openThinkIdx] ?? null),
+      toolCallIndexById: Object.fromEntries(
+        merged.flatMap((part, index) =>
+          part.type === ContentTypes.TOOL_CALL ? [[part.tool_call.id, index]] : [],
+        ),
+      ),
+    },
+  };
 }
 
 /** Replay metadata is idempotent even when the associated event was observed before
