@@ -1,11 +1,14 @@
 import React from 'react';
 import { act, render, renderHook } from '@testing-library/react';
-import { QueryKeys, ContentTypes } from 'librechat-data-provider';
+import { QueryKeys, Constants, ContentTypes } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import type { TConversation, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
+import type { JotaiStore } from 'test/harness';
 import { ChatContext } from '~/Providers/ChatContext';
 import { useChat, useChatActions } from '../facade';
+import { IsolatedAtomStore } from 'test/harness';
+import { resumeRequestsAtom } from '../resume';
 
 const userMessage: TMessage = {
   messageId: 'user-1',
@@ -637,6 +640,104 @@ describe('useChat', () => {
     expect(contract.stopGenerating).toHaveBeenCalledTimes(1);
   });
 
+  it('sends an AI SDK user message as the ask call it describes', () => {
+    const contract = createContract();
+    const { result } = renderChat(contract);
+
+    result.current.sendMessage(
+      {
+        parts: [
+          { type: 'text', text: 'Hel' },
+          { type: 'text', text: 'lo' },
+        ],
+        metadata: { parentMessageId: 'user-1' },
+      },
+      { isRegenerate: false },
+    );
+
+    expect(contract.ask).toHaveBeenCalledWith(
+      { text: 'Hello', parentMessageId: 'user-1' },
+      { isRegenerate: false },
+    );
+  });
+
+  it('attaches an AI SDK message with a null parent at the root', () => {
+    const contract = createContract();
+    const { result } = renderChat(contract);
+
+    result.current.sendMessage({
+      parts: [{ type: 'text', text: 'From the top' }],
+      metadata: { parentMessageId: null },
+    });
+
+    expect(contract.ask).toHaveBeenCalledWith(
+      { text: 'From the top', parentMessageId: Constants.NO_PARENT },
+      undefined,
+    );
+  });
+
+  it('reports a refused send to the caller', () => {
+    const contract = createContract({ ask: jest.fn(() => false as const) });
+    const { result } = renderChat(contract);
+
+    expect(result.current.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] })).toBe(false);
+  });
+
+  it('rejects stop when the stop request fails', async () => {
+    const failure = new Error('abort failed');
+    const contract = createContract({
+      isSubmitting: true,
+      stopGenerating: jest.fn(() => Promise.reject(failure)),
+    });
+    const { result } = renderChat(contract);
+
+    await expect(result.current.stop()).rejects.toBe(failure);
+  });
+
+  /** Renders `useChat` under its own atom store, seeded with another pane's pending request. */
+  const renderChatWithRequests = (contract: ChatContract) => {
+    let atoms: JotaiStore | undefined;
+    const queryClient = new QueryClient();
+    const view = renderHook(() => useChat(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>
+          <IsolatedAtomStore
+            seed={(store) => {
+              atoms = store;
+              store.set(resumeRequestsAtom, new Set(['convo-2']));
+            }}
+          >
+            <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+          </IsolatedAtomStore>
+        </QueryClientProvider>
+      ),
+    });
+    const pending = () => [...(atoms?.get(resumeRequestsAtom) ?? [])];
+    return { ...view, pending };
+  };
+
+  it('requests a resume of the chat it reads', async () => {
+    const { result, pending } = renderChatWithRequests(createContract());
+
+    await result.current.resumeStream();
+    await result.current.resumeStream();
+
+    expect(pending()).toEqual(['convo-2', 'convo-1']);
+  });
+
+  it('requests no resume for a chat that has no conversation yet', async () => {
+    const { result, pending } = renderChatWithRequests(
+      createContract({
+        messagesKey: 'new',
+        conversation: { conversationId: 'new' } as TConversation,
+      }),
+    );
+
+    await expect(result.current.resumeStream()).resolves.toBeUndefined();
+    expect(result.current.id).toBe('new');
+    expect(pending()).toEqual(['convo-2']);
+  });
+
   it('writes UI messages back onto the stored messages', () => {
     const answered = response({
       text: 'Hello',
@@ -716,7 +817,8 @@ describe('useChatActions', () => {
   it('forwards its actions to the contract', () => {
     const { result, contract } = renderActions([userMessage, response()]);
 
-    expect(result.current.sendMessage).toBe(contract.ask);
+    result.current.sendMessage({ text: 'Hello' });
+    expect(contract.ask).toHaveBeenCalledWith({ text: 'Hello' }, undefined);
     expect(result.current.stop).toBe(contract.stopGenerating);
     result.current.regenerate();
     expect(contract.regenerate).toHaveBeenCalledWith({

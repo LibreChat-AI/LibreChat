@@ -172,6 +172,9 @@ export enum MutationKeys {
   updateSkillNode = 'updateSkillNode',
   deleteSkillNode = 'deleteSkillNode',
   updateSkillNodeContent = 'updateSkillNodeContent',
+  /** Artifact code save, keyed so the editor pane can see a save started by
+   *  another instance of itself — the pane is remounted when it changes hosts. */
+  editArtifact = 'editArtifact',
   convoPin = 'convoPin',
   archiveAllConversations = 'archiveAllConversations',
   createSchedule = 'createSchedule',

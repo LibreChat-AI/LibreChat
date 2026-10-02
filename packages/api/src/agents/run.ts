@@ -46,6 +46,7 @@ import type {
   AgentSubagentGraph,
   ReasoningResponseKey,
   SummarizationConfig,
+  TurnFileConsumers,
 } from 'librechat-data-provider';
 import type { AppConfig, IAgentFadingTier, IUser } from '@librechat/data-schemas';
 import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
@@ -61,6 +62,7 @@ import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { SubagentUsageEvent } from '~/agents/usage';
+import type { ProvisionState } from '~/agents/resources';
 import type { RunFileSession } from './files/session';
 import type { RunFadingTiers } from './fading';
 import type * as t from '~/types';
@@ -117,6 +119,7 @@ import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
+import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -419,6 +422,8 @@ export function shouldReplayReasoningContent(
 }
 
 type RunAgent = Omit<Agent, 'tools'> & {
+  provisionState?: ProvisionState;
+  fileConsumers?: TurnFileConsumers;
   azureOptions?: t.AzureOptions;
   tools?: GenericTool[];
   maxContextTokens?: number;
@@ -2319,7 +2324,29 @@ export async function createRun({
   /** Admin kill switch for the ask tool — see {@link isAskUserQuestionAdminDisabled}. */
   const askToolAdminDisabled = isAskUserQuestionAdminDisabled(appConfig);
 
+  // Independently initialized agents must reserve the same live paths before advertising uploads.
+  const codeFileAgents = new Map<string, RunAgent>();
+  const visitedCodeFileAgents = new Set<string>();
+  const pendingCodeFileAgents: Array<RunAgent | null | undefined> = [...agents];
+  for (let index = 0; index < pendingCodeFileAgents.length; index++) {
+    const agent = pendingCodeFileAgents[index];
+    if (!agent?.id || codeFileAgents.has(agent.id)) continue;
+    codeFileAgents.set(agent.id, agent);
+    visitedCodeFileAgents.add(agent.id);
+    enqueueSubagentChildren(agent, pendingCodeFileAgents, visitedCodeFileAgents, false, false);
+  }
+  for (const agent of codeFileAgents.values()) {
+    prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id);
+  }
+
+  const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
   const buildAgentInput = (agent: RunAgent, opts: { isSubagent?: boolean } = {}): AgentInputs => {
+    if (!preparedCodeFileAgents.has(agent)) {
+      if (agent.provisionState) agent.provisionState.codeEnvDestinations = undefined;
+      codeFileAgents.set(agent.id, agent);
+      prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id, true);
+      preparedCodeFileAgents.add(agent);
+    }
     const isSubagent = opts.isSubagent === true;
     if (runFilesActive) {
       for (const { memberConfigs } of agent.subagentGraphConfigs ?? []) {

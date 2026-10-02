@@ -5,6 +5,8 @@ const { CacheKeys, SystemRoles } = require('librechat-data-provider');
 const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
 const {
   isEnabled,
+  isTokenRetired,
+  continueAfterBearerRetirement,
   findOpenIDUser,
   getOpenIdEmail,
   getOpenIdIssuer,
@@ -18,7 +20,6 @@ const {
   getHttpsProxyAgent,
   isAccessTokenJwt,
   math,
-  isTokenIssuedBeforeCredentialChange,
 } = require('@librechat/api');
 const { updateUser, findUser, isAgentTriggerPrincipalActive } = require('~/models');
 const getLogStores = require('~/cache/getLogStores');
@@ -196,96 +197,101 @@ const openIdJwtLogin = (openIdConfig) => {
         }
 
         if (user) {
-          if (isTokenIssuedBeforeCredentialChange(payload, user)) {
-            logger.warn(
-              '[openIdJwtLogin] openId JwtStrategy => token predates the last credential change: ' +
-                payload?.sub,
-            );
-            done(null, false);
-            return;
-          }
-          user.id = user._id.toString();
-          if (!(await runAsSystem(() => isAgentTriggerPrincipalActive(user.id)))) {
-            done(null, false, {
-              message: 'Account deletion is in progress',
-              code: 'ACCOUNT_DELETION_IN_PROGRESS',
-            });
-            return;
-          }
-          /** Absent on the full doc means local user; null skips getUserPrincipals' fallback lookup */
-          user.idOnTheSource ??= null;
+          return await continueAfterBearerRetirement(
+            user,
+            { issuedAt: payload?.iat },
+            'openidJwt',
+            payload?.sub,
+            done,
+            (message) => logger.warn(message),
+            async () => {
+              user.id = user._id.toString();
+              if (!(await runAsSystem(() => isAgentTriggerPrincipalActive(user.id)))) {
+                done(null, false, {
+                  message: 'Account deletion is in progress',
+                  code: 'ACCOUNT_DELETION_IN_PROGRESS',
+                });
+                return;
+              }
+              /** Absent on the full doc means local user; null skips getUserPrincipals' fallback lookup */
+              user.idOnTheSource ??= null;
 
-          const updateData = {};
-          if (migration) {
-            updateData.provider = 'openid';
-            updateData.openidId = payload?.sub;
-            if (openidIssuer) {
-              updateData.openidIssuer = openidIssuer;
-            }
-          }
-          if (!user.role) {
-            user.role = SystemRoles.USER;
-            updateData.role = user.role;
-          }
+              const updateData = {};
+              if (migration) {
+                updateData.provider = 'openid';
+                updateData.openidId = payload?.sub;
+                if (openidIssuer) {
+                  updateData.openidIssuer = openidIssuer;
+                }
+              }
+              if (!user.role) {
+                user.role = SystemRoles.USER;
+                updateData.role = user.role;
+              }
 
-          if (Object.keys(updateData).length > 0) {
-            await updateUser(user.id, updateData);
-          }
+              if (Object.keys(updateData).length > 0) {
+                await updateUser(user.id, updateData);
+              }
 
-          if (authUserCacheStore && authUserCacheKey) {
-            if (Object.keys(updateData).length > 0) {
-              await invalidateCachedAuthUserDoc(authUserCacheStore, {
-                userId: user.id,
-                cacheKey: authUserCacheKey,
-              });
-            } else if (!servedCachedUser && isUserInAuthCacheScope(user, authUserCacheScope)) {
-              await setCachedAuthUserDoc(authUserCacheStore, authUserCacheKey, user);
-            }
-          }
+              if (authUserCacheStore && authUserCacheKey) {
+                if (Object.keys(updateData).length > 0) {
+                  await invalidateCachedAuthUserDoc(authUserCacheStore, {
+                    userId: user.id,
+                    cacheKey: authUserCacheKey,
+                  });
+                } else if (!servedCachedUser && isUserInAuthCacheScope(user, authUserCacheScope)) {
+                  await setCachedAuthUserDoc(authUserCacheStore, authUserCacheKey, user);
+                }
+              }
 
-          /** Read tokens from session (server-side) to avoid large cookie issues */
-          const sessionTokens = req.session?.openidTokens;
-          let accessToken = sessionTokens?.accessToken;
-          let idToken = sessionTokens?.idToken;
-          let refreshToken = sessionTokens?.refreshToken;
+              /** Read tokens from session (server-side) to avoid large cookie issues */
+              const sessionTokens = req.session?.openidTokens;
+              let accessToken = sessionTokens?.accessToken;
+              let idToken = sessionTokens?.idToken;
+              let refreshToken = sessionTokens?.refreshToken;
 
-          /** Fallback to cookies for backward compatibility */
-          if (!accessToken || !refreshToken || !idToken) {
-            accessToken = accessToken || parsedCookies.openid_access_token;
-            idToken = idToken || parsedCookies.openid_id_token;
-            refreshToken = refreshToken || parsedCookies.refreshToken;
-          }
+              /** Fallback to cookies for backward compatibility */
+              if (!accessToken || !refreshToken || !idToken) {
+                accessToken = accessToken || parsedCookies.openid_access_token;
+                idToken = idToken || parsedCookies.openid_id_token;
+                refreshToken = refreshToken || parsedCookies.refreshToken;
+              }
 
-          /**
-           * The raw bearer only stands in for a missing stored access token when it is
-           * identifiable as one. It cleared this strategy's audience check, but an ID token
-           * clears the same check, and an ID token used as the OBO assertion is rejected by the
-           * IdP (Entra answers `AADSTS240002`). An unrecognised token is left unset so
-           * `isOpenIDTokenValid` fails closed with an actionable error instead.
-           */
-          let reusableRawToken;
-          if (!accessToken) {
-            reusableRawToken = isAccessTokenJwt(rawToken, payload, audienceConfig)
-              ? rawToken
-              : undefined;
-            if (!reusableRawToken) {
-              /** Per-request on the reuse path, so the actionable warning is left to the consumer that actually needs the credential */
-              logger.debug(
-                '[openIdJwtLogin] No stored OpenID access token, and the request bearer is not identifiable as one; leaving it unset',
-              );
-            }
-          }
+              /**
+               * The raw bearer only stands in for a missing stored access token when it is
+               * identifiable as one. It cleared this strategy's audience check, but an ID token
+               * clears the same check, and an ID token used as the OBO assertion is rejected by the
+               * IdP (Entra answers `AADSTS240002`). An unrecognised token is left unset so
+               * `isOpenIDTokenValid` fails closed with an actionable error instead.
+               */
+              let reusableRawToken;
+              if (!accessToken) {
+                reusableRawToken = isAccessTokenJwt(rawToken, payload, audienceConfig)
+                  ? rawToken
+                  : undefined;
+                if (!reusableRawToken) {
+                  /** Per-request on the reuse path, so the actionable warning is left to the consumer that actually needs the credential */
+                  logger.debug(
+                    '[openIdJwtLogin] No stored OpenID access token, and the request bearer is not identifiable as one; leaving it unset',
+                  );
+                }
+              }
 
-          const resolvedAccessToken = accessToken || reusableRawToken;
-          user.federatedTokens = {
-            access_token: resolvedAccessToken,
-            id_token: idToken,
-            refresh_token: refreshToken,
-            expires_at:
-              resolvedAccessToken === rawToken ? payload.exp : decodeJwtExpiry(resolvedAccessToken),
-          };
+              const resolvedAccessToken = accessToken || reusableRawToken;
+              user.federatedTokens = {
+                access_token: resolvedAccessToken,
+                id_token: idToken,
+                refresh_token: refreshToken,
+                expires_at:
+                  resolvedAccessToken === rawToken
+                    ? payload.exp
+                    : decodeJwtExpiry(resolvedAccessToken),
+              };
 
-          done(null, user);
+              done(null, user);
+            },
+            isTokenRetired,
+          );
         } else {
           logger.warn(
             '[openIdJwtLogin] openId JwtStrategy => no user found with the sub claims: ' +

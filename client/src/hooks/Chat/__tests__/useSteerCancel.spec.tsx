@@ -4,7 +4,7 @@ import { RecoilRoot, useRecoilValue } from 'recoil';
 import { act, renderHook } from '@testing-library/react';
 import { ReasoningEffort } from 'librechat-data-provider';
 import type { RestoreToComposer } from '~/Providers/ComposerRestoreContext';
-import type { PendingSteer } from '~/store/families';
+import type { PendingSteer } from '~/hooks/Chat/queue';
 import {
   ComposerRestoreProvider,
   useComposerRestoreHost,

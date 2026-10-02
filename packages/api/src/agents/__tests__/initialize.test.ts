@@ -4861,6 +4861,107 @@ describe('initializeAgent — authorized run file snapshots', () => {
     return result;
   }
 
+  it.each([undefined, 'Extracted document contents'])(
+    'advertises a queued file before tool execution with extracted text %p',
+    async (text) => {
+      const { agent, req, loadTools, db } = setup();
+      if (req.config == null) throw new Error('Missing test configuration');
+      req.config.fileConfig = {
+        endpoints: {
+          [EModelEndpoint.openAI]: {
+            defaultLLMDeliveryPath: { overrides: { 'application/pdf': 'text' } },
+          },
+        },
+      };
+      loadTools.mockResolvedValue({ toolDefinitions: [{ name: Tools.execute_code }] });
+      const file = inputFile({ filename: 'report.pdf', text });
+      const result = await initializeAgent(
+        {
+          req,
+          agent,
+          loadTools,
+          authorizedRunFiles: [file],
+          allowedProviders: new Set([Providers.OPENAI]),
+          codeEnvAvailable: true,
+        },
+        db,
+      );
+
+      expect(result.dynamicToolContextMap?.queued_code_files).toContain('/mnt/data/report.pdf');
+      expect(result.dynamicToolContextMap?.queued_code_files).toContain('read or edit');
+      expect(result.dynamicToolContextMap?.queued_code_files).not.toContain(file.filepath);
+      expect(result.provisionState?.codeEnvDestinations?.get(file.file_id)).toBe('report.pdf');
+      expect(result.provisionState?.codeEnvFiles).toHaveLength(1);
+      expect(result.requestAttachments[0].llmDeliveryPath).toBe('text');
+      expect(result.requestAttachments[0].text).toBe(text);
+      expect(db.getConvoFiles).not.toHaveBeenCalled();
+      expect(db.getToolFilesByIds).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not advertise code paths when code execution is disabled', async () => {
+    const { agent, req, loadTools, db } = setup();
+    const result = await initializeAgent(
+      {
+        req,
+        agent,
+        loadTools,
+        authorizedRunFiles: [inputFile()],
+        allowedProviders: new Set([Providers.OPENAI]),
+        codeEnvAvailable: false,
+      },
+      db,
+    );
+    expect(result.fileConsumers?.executeCode).toBe(false);
+    expect(result.dynamicToolContextMap?.queued_code_files).toBeUndefined();
+  });
+
+  it.each([undefined, 'Extracted document contents'])(
+    'advertises an earlier upload after code is toggled back on with extracted text %p',
+    async (text) => {
+      const { agent, req, loadTools, db } = setup();
+      agent.tools = [Tools.execute_code];
+      const params = {
+        req,
+        agent,
+        loadTools,
+        allowedProviders: new Set([Providers.OPENAI]),
+        codeEnvAvailable: true,
+      };
+      await initializeAgent({ ...params, authorizedRunFiles: [] }, db);
+
+      const file = inputFile({ filename: 'report.pdf', text });
+      agent.tools = [];
+      const disabled = await initializeAgent({ ...params, authorizedRunFiles: [file] }, db);
+      expect(disabled.fileConsumers?.executeCode).toBe(false);
+      expect(disabled.dynamicToolContextMap?.queued_code_files).toBeUndefined();
+      expect(disabled.provisionState?.codeEnvFiles ?? []).toEqual([]);
+
+      agent.tools = [Tools.execute_code];
+      (db.getConvoFiles as jest.Mock).mockResolvedValue([file.file_id]);
+      (db.getFiles as jest.Mock).mockResolvedValue([file]);
+      const getDeferredProvisionFiles = jest.fn().mockResolvedValue([file]);
+      const getMessages = jest.fn().mockResolvedValue([{ messageId: 'upload-turn' }]);
+      mockGetThreadData.mockReturnValueOnce({ fileIds: [file.file_id] });
+      const enabled = await initializeAgent(
+        { ...params, conversationId: 'conv-1', parentMessageId: 'upload-turn' },
+        { ...db, getMessages, getDeferredProvisionFiles },
+      );
+
+      expect(enabled.fileConsumers?.executeCode).toBe(true);
+      expect(enabled.requestAttachments).toEqual([]);
+      expect(enabled.dynamicToolContextMap?.queued_code_files).toContain('/mnt/data/report.pdf');
+      expect(enabled.provisionState?.codeEnvFiles.map((entry) => entry.file_id)).toEqual([
+        file.file_id,
+      ]);
+      expect(getDeferredProvisionFiles).toHaveBeenCalledWith(
+        [file.file_id],
+        expect.anything(),
+        expect.objectContaining({ code: true, hydrateProvisioned: true }),
+      );
+    },
+  );
+
   it('reuses current inputs without reading parent history or counting their usage again', async () => {
     const { agent, req, loadTools, db } = setup();
     const file = inputFile();

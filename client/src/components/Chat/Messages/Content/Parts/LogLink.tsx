@@ -1,8 +1,8 @@
 import React from 'react';
 import { FileSources, sharedFileDownload } from 'librechat-data-provider';
 import { getDownloadFilename, isHttpDownloadTarget, triggerDownload } from '~/utils';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useCodeOutputDownload, useFileDownload } from '~/data-provider';
-import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import useLocalize from '~/hooks/useLocalize';
 import { useShareContext } from '~/Providers';
 

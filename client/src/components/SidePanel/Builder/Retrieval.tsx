@@ -49,7 +49,7 @@ export default function Retrieval({
                 checked={field.value}
                 disabled={isDisabled}
                 onCheckedChange={field.onChange}
-                className="relative float-left mr-2 inline-flex h-4 w-4 cursor-pointer"
+                className="relative float-left mr-2 inline-flex cursor-pointer"
                 value={field.value.toString()}
                 aria-labelledby={Capabilities.retrieval}
               />

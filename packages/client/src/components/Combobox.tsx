@@ -80,9 +80,9 @@ export default function ComboboxComponent({
         <SelectTrigger
           aria-label={ariaLabel}
           className={cn(
-            'flex items-center gap-2 [&_svg]:h-4 [&_svg]:w-4 [&_svg]:shrink-0 [&>span]:line-clamp-1 [&>span]:flex [&>span]:w-full [&>span]:items-center [&>span]:gap-1 [&>span]:truncate',
+            '[&_svg]:size-theme-icon flex items-center gap-2 [&_svg]:shrink-0 [&>span]:line-clamp-1 [&>span]:flex [&>span]:w-full [&>span]:items-center [&>span]:gap-1 [&>span]:truncate',
             isCollapsed
-              ? 'flex h-9 w-9 shrink-0 items-center justify-center p-0 [&>span]:w-auto [&>svg]:hidden'
+              ? 'size-theme-control min-h-theme-target min-w-theme-target flex shrink-0 items-center justify-center p-0 [&>span]:w-auto [&>svg]:hidden'
               : '',
             'bg-surface-secondary text-text-primary hover:bg-surface-hover focus-visible:ring-focus-control focus-visible:ring-2',
           )}
@@ -156,11 +156,11 @@ export default function ComboboxComponent({
                     >
                       <span className="absolute right-2 flex h-3.5 w-3.5 items-center justify-center">
                         <RadixSelect.ItemIndicator>
-                          <CheckIcon className="h-4 w-4" />
+                          <CheckIcon className="size-theme-icon" />
                         </RadixSelect.ItemIndicator>
                       </span>
                       <RadixSelect.ItemText>
-                        <div className="[&_svg]:text-text-primary flex items-center justify-center gap-3 [&_svg]:h-4 [&_svg]:w-4 [&_svg]:shrink-0">
+                        <div className="[&_svg]:text-text-primary [&_svg]:size-theme-icon flex items-center justify-center gap-3 [&_svg]:shrink-0">
                           <div className="assistant-item overflow-hidden rounded-full">
                             {icon && icon}
                           </div>

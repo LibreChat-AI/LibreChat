@@ -1,8 +1,14 @@
 import { logger } from '@librechat/data-schemas';
-import { ResourceType, PermissionBits, hasPermissions } from 'librechat-data-provider';
+import {
+  ResourceType,
+  PermissionBits,
+  hasPermissions,
+  TWO_FACTOR_ENROLLMENT_REQUIRED_CODE,
+} from 'librechat-data-provider';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { IUser } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
+import { isTwoFactorEnrollmentRequired } from '~/auth/twoFactor';
 import { getRemoteAgentPermissions } from './service';
 
 export interface ApiKeyAuthDependencies {
@@ -12,6 +18,7 @@ export interface ApiKeyAuthDependencies {
   } | null>;
   findUser: (query: { _id: string | Types.ObjectId }) => Promise<IUser | null>;
   isPrincipalActive: (userId: string) => Promise<boolean>;
+  enrollmentRequired?: typeof isTwoFactorEnrollmentRequired;
 }
 
 export interface RemoteAgentAccessDependencies {
@@ -104,6 +111,16 @@ export function createRequireApiKeyAuth(deps: ApiKeyAuthDependencies) {
             message: 'Account deletion is in progress',
             type: 'invalid_request_error',
             code: 'account_deletion_in_progress',
+          },
+        });
+      }
+      /** A key outlives the enforcement switch, so it waits on enrollment like the owner's session. */
+      if ((deps.enrollmentRequired ?? isTwoFactorEnrollmentRequired)(user)) {
+        return res.status(403).json({
+          error: {
+            message: 'Two-factor authentication must be enabled for this account',
+            type: 'permission_error',
+            code: TWO_FACTOR_ENROLLMENT_REQUIRED_CODE,
           },
         });
       }

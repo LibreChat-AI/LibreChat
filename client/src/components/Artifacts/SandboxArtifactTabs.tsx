@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react/unstyled';
 import type { editor } from 'monaco-editor';
 import type { Artifact } from '~/common';
 import { useGetSharedStartupConfig, useGetStartupConfig } from '~/data-provider';
 import useArtifactProps from '~/hooks/Artifacts/useArtifactProps';
+import { useArtifactCode } from '~/Providers/EditorContext';
 import { ArtifactCodeEditor } from './ArtifactCodeEditor';
-import { useCodeState } from '~/Providers/EditorContext';
 import { ArtifactPreview } from './ArtifactPreview';
 import { useShareContext } from '~/Providers';
 
@@ -19,7 +19,6 @@ export default function SandboxArtifactTabs({
   previewRef: React.MutableRefObject<SandpackPreviewRef>;
   isSharedConvo?: boolean;
 }) {
-  const { currentCode, setCurrentCode } = useCodeState();
   const { shareId } = useShareContext();
   const shouldUseSharedConfig =
     isSharedConvo === true && typeof shareId === 'string' && shareId.length > 0;
@@ -29,21 +28,13 @@ export default function SandboxArtifactTabs({
   });
   const resolvedStartupConfig = shouldUseSharedConfig ? sharedStartupConfig : startupConfig;
   const monacoRef = useRef<editor.IStandaloneCodeEditor | null>(null);
-  const lastIdRef = useRef<string | null>(null);
 
-  /* The reset lands only after commit, so the render that switches artifacts
-   * still sees the previous artifact's editor text. */
-  const hasCurrentArtifactCode = lastIdRef.current === artifact.id;
-
-  useEffect(() => {
-    if (artifact.id !== lastIdRef.current) {
-      setCurrentCode(undefined);
-    }
-    lastIdRef.current = artifact.id;
-  }, [artifact.id, setCurrentCode]);
+  /* The buffer belongs to whichever artifact last wrote it, so a pane that
+   * remounted for another host keeps this artifact's unsaved text; a copy
+   * another artifact displaced is just as much this artifact's text. */
+  const editedCode = useArtifactCode(artifact.id);
 
   const { files, fileKey, template, sharedProps, deriveFiles } = useArtifactProps({ artifact });
-  const editedCode = hasCurrentArtifactCode ? currentCode : undefined;
 
   /* An artifact whose preview entry is derived from its source needs the whole
    * set rebuilt from the editor text; `ArtifactPreview` can only swap the file

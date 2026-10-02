@@ -9,8 +9,9 @@ import MarketplaceRoute from '../Marketplace';
 const mockClearAllConversations = jest.fn();
 const mockClearMessagesCache = jest.fn();
 
-jest.mock('~/hooks', () => ({
-  useChatHelpers: jest.fn(() => ({})),
+jest.mock('~/hooks/Chat/useChatHelpers', () => ({
+  __esModule: true,
+  default: jest.fn(() => ({})),
 }));
 
 jest.mock('~/utils/messages', () => ({

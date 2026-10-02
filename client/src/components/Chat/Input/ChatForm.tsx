@@ -353,9 +353,10 @@ const ChatForm = memo(function ChatForm({
   );
   /** The chip's actions hide while a replacement upload or inline move is in flight, so the
    * same original cannot be acted on twice. */
+  const { isActionPending } = pastedTextEdit;
   const isPasteActionPending = useCallback(
-    (file: ExtendedFile) => pastedTextEdit.isActionPending(file.file_id),
-    [pastedTextEdit],
+    (file: ExtendedFile) => isActionPending(file.file_id),
+    [isActionPending],
   );
 
   const { submitMessage, submitPrompt } = useSubmitMessage();

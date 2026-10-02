@@ -12,6 +12,7 @@ import { validateEmail, cn } from '~/utils';
 import Instructions from './Instructions';
 import FileContext from './FileContext';
 import AgentAvatar from './AgentAvatar';
+import Starters from './Starters';
 import { Panel } from '~/common';
 
 const fieldClass = 'h-9';
@@ -154,6 +155,9 @@ export default function AgentConfig() {
           <FileContext agent_id={agent_id} files={contextFiles} />
         </div>
       )}
+
+      {/* CONVERSATION STARTERS */}
+      <Starters />
 
       {/* SUPPORT CONTACT */}
       <div className="mb-3 flex flex-col">

@@ -3,6 +3,8 @@ import { render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
 
 let mockMessagesKey = 'convo-1';
+let mockMaximizeChatSpace = false;
+let mockFlatThread = false;
 
 jest.mock('jotai', () => ({
   ...jest.requireActual('jotai'),
@@ -46,7 +48,7 @@ jest.mock('~/hooks/Messages/useThreadRows', () => ({
 }));
 
 jest.mock('~/components/Chat/Subagents/surface', () => ({
-  useChatSurface: () => ({ showScrollButton: false, maximizeChatSpace: false }),
+  useChatSurface: () => ({ showScrollButton: false, maximizeChatSpace: mockMaximizeChatSpace }),
 }));
 
 jest.mock('~/store/autoScroll', () => ({ autoScrollAtom: {} }));
@@ -56,7 +58,9 @@ jest.mock('~/store', () => ({
 }));
 
 jest.mock('../Thread', () => ({
-  FLAT_THREAD: false,
+  get FLAT_THREAD() {
+    return mockFlatThread;
+  },
   ThreadList: () => <div data-testid="flat-thread" />,
 }));
 
@@ -67,8 +71,12 @@ jest.mock('../MultiMessage', () => ({
 
 jest.mock('../Content/Parts/PendingSteers', () => ({
   __esModule: true,
-  default: ({ conversationId }: { conversationId: string }) => (
-    <div data-testid="pending-steers" data-conversation-id={conversationId} />
+  default: ({ conversationId, fullWidth }: { conversationId: string; fullWidth: boolean }) => (
+    <div
+      data-testid="pending-steers"
+      data-conversation-id={conversationId}
+      data-full-width={String(fullWidth)}
+    />
   ),
 }));
 
@@ -101,6 +109,8 @@ const messageTree = [
 describe('MessagesView pending steers', () => {
   beforeEach(() => {
     mockMessagesKey = 'convo-1';
+    mockMaximizeChatSpace = false;
+    mockFlatThread = false;
   });
 
   it('keeps the failed-steer surface mounted in the recursive renderer', () => {
@@ -109,6 +119,29 @@ describe('MessagesView pending steers', () => {
     expect(screen.getByTestId('multi-message')).toBeInTheDocument();
     expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-conversation-id', 'convo-1');
     expect(screen.queryByTestId('flat-thread')).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])(
+    'passes the host chat width preference (%s) to pending steers',
+    (fullWidth) => {
+      mockMaximizeChatSpace = fullWidth;
+      render(<MessagesView messagesTree={messageTree} messages={messageTree} />);
+
+      expect(screen.getByTestId('pending-steers')).toHaveAttribute(
+        'data-full-width',
+        String(fullWidth),
+      );
+    },
+  );
+
+  it('passes the full-width preference in the flat renderer too', () => {
+    mockMaximizeChatSpace = true;
+    mockFlatThread = true;
+    render(<MessagesView messagesTree={messageTree} messages={messageTree} />);
+
+    expect(screen.getByTestId('flat-thread')).toBeInTheDocument();
+    expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-full-width', 'true');
+    expect(screen.queryByTestId('multi-message')).not.toBeInTheDocument();
   });
 
   it('keys the pending surface to the rendered tree, not the lagging context', () => {
