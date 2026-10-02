@@ -45,7 +45,7 @@ const SummaryContent = memo(({ children, meta }: { children: React.ReactNode; me
   return (
     <div className="border-border-medium bg-surface-tertiary text-text-secondary relative rounded-3xl border p-4 pb-10">
       {meta && <span className="text-text-secondary mb-1 block text-xs">{meta}</span>}
-      <p className={cn('leading-[26px] whitespace-pre-wrap', fontSize)}>{children}</p>
+      <p className={cn('leading-6.5 whitespace-pre-wrap', fontSize)}>{children}</p>
     </div>
   );
 });
