@@ -145,16 +145,22 @@ test.describe('UI scale layout', () => {
         };
       });
 
-    await withStoredScale(page, MIN_SCALE);
+    /* Written into the live page and reloaded rather than seeded by init
+       scripts: two init scripts writing the same key run in no defined order. */
+    const reloadAtScale = async (scale: number) => {
+      await page.evaluate((value) => {
+        window.localStorage.setItem('uiScale', JSON.stringify(value));
+      }, scale);
+      await page.reload({ timeout: 15000 });
+      await expect(composer).toBeVisible({ timeout: 20000 });
+      await expectRootFontPx(page, BASE_FONT_PX * scale);
+    };
+
     await page.goto('/c/new', { timeout: 10000 });
-    await expect(composer).toBeVisible({ timeout: 20000 });
-    await expectRootFontPx(page, BASE_FONT_PX * MIN_SCALE);
+    await reloadAtScale(MIN_SCALE);
     const small = await measure();
 
-    await withStoredScale(page, MAX_SCALE);
-    await page.reload({ timeout: 15000 });
-    await expect(composer).toBeVisible({ timeout: 20000 });
-    await expectRootFontPx(page, BASE_FONT_PX * MAX_SCALE);
+    await reloadAtScale(MAX_SCALE);
     const large = await measure();
 
     /* The height is set from the scale in JS; padding left in px would outgrow
