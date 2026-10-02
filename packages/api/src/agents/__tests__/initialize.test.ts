@@ -34,6 +34,7 @@ jest.mock('@librechat/agents', () => ({
 
 import { Providers } from '@librechat/agents';
 import { createHash } from 'node:crypto';
+import { logger } from '@librechat/data-schemas';
 import { createRepositoryInstructionLoader } from '../../code/instructions';
 import {
   Tools,
@@ -5235,6 +5236,10 @@ describe('initializeAgent — authorized run file snapshots', () => {
 describe('initializeAgent — provider-native web search role gate', () => {
   const OPENAI_SEARCH = { type: 'web_search' };
 
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   const roleWithWebSearch = (use: boolean) =>
     jest.fn().mockResolvedValue({
       name: 'USER',
@@ -5316,6 +5321,34 @@ describe('initializeAgent — provider-native web search role gate', () => {
     const result = await run({ getRoleByName: roleWithWebSearch(false) });
 
     expect(result.tools).not.toContainEqual(OPENAI_SEARCH);
+  });
+
+  it('keeps native search when the external pipeline capability is disabled', async () => {
+    const getRoleByName = roleWithWebSearch(true);
+    const result = await run({
+      getRoleByName,
+      params: {
+        req: {
+          ...roleGatedReq(),
+          config: { endpoints: { agents: { capabilities: [AgentCapabilities.file_search] } } },
+        } as ServerRequest,
+      },
+    });
+
+    expect(result.tools).toContainEqual(OPENAI_SEARCH);
+    expect(getRoleByName).toHaveBeenCalledTimes(1);
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('Restore the role grant'));
+  });
+
+  it('explains a blocked native request even when the caller supplies the denial', async () => {
+    const result = await run({
+      params: { resolveWebSearchGrant: jest.fn().mockResolvedValue(false) },
+    });
+
+    expect(result.tools).not.toContainEqual(OPENAI_SEARCH);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('removing interface.webSearch does not reset stored permissions'),
+    );
   });
 
   it('reads no role when the built config turns no native search on', async () => {

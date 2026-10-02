@@ -3198,6 +3198,7 @@
   "com_ui_wakeup_task_finished": "Background task finished",
   "com_ui_wakeup_tasks_finished": "{{0}} background tasks finished",
   "com_ui_wakeup_view_activity": "View activity",
+  "com_ui_native_web_search_denied": "Your role does not allow web search, including provider-native search. Ask an administrator to enable your Web Search permission.",
   "com_ui_web_search": "Web Search",
   "com_ui_web_search_cohere_key": "Enter Cohere API Key",
   "com_ui_web_search_firecrawl_url": "Firecrawl API URL (optional)",
