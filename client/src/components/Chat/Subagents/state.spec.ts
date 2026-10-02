@@ -936,3 +936,108 @@ describe('cumulative omission receipts independent of projection eviction', () =
     },
   );
 });
+
+describe('measured tool timing replay provenance', () => {
+  const events = (identity: 'task' | 'invocation', completedAt = 8_000, completedStep = 'step') => {
+    const event = (
+      sequence: number,
+      phase: SubagentUpdateEvent['phase'],
+      data: SubagentUpdateEvent['data'],
+    ) =>
+      update({
+        subagentRunId: 'event-task',
+        activityEventId:
+          identity === 'task' ? `timing:${sequence}` : `event-task:timing-invocation:${sequence}`,
+        activitySequence: identity === 'task' ? sequence : undefined,
+        phase,
+        data,
+      });
+    return [
+      event(0, 'run_step', {
+        id: 'step',
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [{ id: 'tool', name: 'search', args: { query: 'release notes' } }],
+        },
+      }),
+      event(1, 'tool_preparation', { id: 'step', toolCallId: 'tool', observed_at: 1_000 }),
+      event(2, 'tool_calls_dispatched', {
+        dispatched_at: 3_000,
+        toolCalls: [{ id: 'tool', stepId: 'step' }],
+      }),
+      event(3, 'run_step_completed', {
+        result: {
+          id: completedStep,
+          completed_at: completedAt,
+          tool_call: { id: 'tool', output: 'found', progress: 1 },
+        },
+      }),
+    ];
+  };
+  it.each(['task', 'invocation'] as const)(
+    'restores preparation and execution intervals from %s prefix replay',
+    (identity) => {
+      const lifecycle = events(identity);
+      const chronological = reduceSubagentProgress(null, lifecycle, 'detached', false);
+      let progress = reduceSubagentProgress(null, [lifecycle[3]], 'detached', false);
+      expect(progress?.contentParts[0]).toMatchObject({
+        tool_call: { stepId: 'step', toolCompletedAt: 8_000 },
+      });
+      expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolPreparationDurationMs');
+      expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolExecutionDurationMs');
+      const before = JSON.stringify(progress);
+      progress = reduceSubagentReplay(progress, lifecycle, false);
+      expect(progress?.contentParts).toEqual(chronological?.contentParts);
+      expect(progress?.contentParts[0]).toMatchObject({
+        tool_call: { toolPreparationDurationMs: 2_000, toolExecutionDurationMs: 5_000 },
+      });
+      expect(before).toContain('"toolCompletedAt":8000');
+      progress = reduceSubagentReplay(progress, lifecycle, false);
+      expect(progress?.contentParts).toEqual(chronological?.contentParts);
+    },
+  );
+  it.each(['task', 'invocation'] as const)(
+    'keeps %s timing context through partial backfill and interior gap recovery',
+    (identity) => {
+      const lifecycle = events(identity);
+      let progress = reduceSubagentProgress(null, [lifecycle[3]], 'detached', false);
+      progress = reduceSubagentReplay(progress, lifecycle.slice(0, 2), false);
+      expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolExecutionDurationMs');
+      progress = reduceSubagentReplay(progress, lifecycle, false);
+      expect(progress?.contentParts[0]).toMatchObject({
+        tool_call: { toolPreparationDurationMs: 2_000, toolExecutionDurationMs: 5_000 },
+      });
+      expect(progress?.contentParts).toEqual(
+        reduceSubagentProgress(null, lifecycle, 'detached', false)?.contentParts,
+      );
+    },
+  );
+  it.each(['task', 'invocation'] as const)(
+    'does not present another step completion as measured %s intervals',
+    (identity) => {
+      const lifecycle = events(identity, 8_000, 'other-step');
+      const progress = reduceSubagentReplay(
+        reduceSubagentProgress(null, [lifecycle[3]], 'detached', false),
+        lifecycle,
+        false,
+      );
+      expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolPreparationDurationMs');
+      expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolExecutionDurationMs');
+    },
+  );
+  it.each([NaN, Infinity, -1, 2_000])(
+    'rejects invalid or clock-skewed completion %s instead of inventing elapsed time',
+    (at) => {
+      const lifecycle = events('task', at);
+      const progress = reduceSubagentReplay(
+        reduceSubagentProgress(null, [lifecycle[3]], 'detached', false),
+        lifecycle,
+        false,
+      );
+      expect(progress?.contentParts[0]).toMatchObject({
+        tool_call: { toolPreparationDurationMs: 2_000 },
+      });
+      expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolExecutionDurationMs');
+    },
+  );
+});

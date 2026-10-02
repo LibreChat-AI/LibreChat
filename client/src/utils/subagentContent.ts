@@ -100,6 +100,7 @@ type ToolCallPart = {
     stepId?: string;
     toolPreparationStartedAt?: number;
     toolDispatchedAt?: number;
+    toolCompletedAt?: number;
     toolPreparationDurationMs?: number;
     toolExecutionDurationMs?: number;
   };
@@ -371,6 +372,15 @@ export function foldSubagentEvent(
     const existingIdx = state.toolCallIndexById[tc.id];
     if (existingIdx != null) {
       const existing = parts[existingIdx] as ToolCallPart;
+      const completedAt = data?.result?.completed_at;
+      const completion =
+        existing.tool_call.stepId != null &&
+        data?.result?.id === existing.tool_call.stepId &&
+        typeof completedAt === 'number' &&
+        Number.isFinite(completedAt) &&
+        completedAt >= 0
+          ? { toolCompletedAt: completedAt }
+          : {};
       const timings =
         data?.result?.id === existing.tool_call.stepId
           ? getToolTimingDurations({
@@ -383,6 +393,7 @@ export function foldSubagentEvent(
         type: ContentTypes.TOOL_CALL,
         tool_call: {
           ...existing.tool_call,
+          ...completion,
           ...timings,
           ...(tc.name
             ? {
@@ -413,6 +424,16 @@ export function foldSubagentEvent(
       type: ContentTypes.TOOL_CALL,
       tool_call: {
         id: tc.id,
+        ...(typeof data?.result?.id === 'string' && data.result.id !== ''
+          ? {
+              stepId: data.result.id,
+              ...(typeof data.result.completed_at === 'number' &&
+              Number.isFinite(data.result.completed_at) &&
+              data.result.completed_at >= 0
+                ? { toolCompletedAt: data.result.completed_at }
+                : {}),
+            }
+          : {}),
         name: tc.name ?? '',
         args: stringifyArgs(tc.args),
         ...(tc.args == null ? { argsUnavailable: true } : {}),

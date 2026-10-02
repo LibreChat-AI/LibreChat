@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { atomFamily } from 'jotai/utils';
 import { atom, useAtomValue, useStore } from 'jotai';
-import { ContentTypes } from 'librechat-data-provider';
+import { ContentTypes, getToolTimingDurations } from 'librechat-data-provider';
 import type {
   PartMetadata,
   SubagentControlReceipt,
@@ -900,21 +900,47 @@ function prependSubagentReplay(
       target = state.toolCallIndexById[part.tool_call.id];
       const prefixTool = parts[target];
       parts = parts.slice();
+      const sameStep =
+        prefixTool.type === ContentTypes.TOOL_CALL &&
+        prefixTool.tool_call.stepId != null &&
+        prefixTool.tool_call.stepId === part.tool_call.stepId;
+      const tool = {
+        ...(prefixTool.type === ContentTypes.TOOL_CALL ? prefixTool.tool_call : {}),
+        ...part.tool_call,
+        ...(part.tool_call.argsUnavailable &&
+        prefixTool.type === ContentTypes.TOOL_CALL &&
+        !prefixTool.tool_call.argsUnavailable
+          ? { args: prefixTool.tool_call.args, argsUnavailable: undefined }
+          : {}),
+        ...(part.tool_call.nameUnavailable &&
+        prefixTool.type === ContentTypes.TOOL_CALL &&
+        !prefixTool.tool_call.nameUnavailable
+          ? { name: prefixTool.tool_call.name, nameUnavailable: undefined }
+          : {}),
+      };
+      /** Inputs can backfill by tool identity; measured times require the exact step. */
+      if (!sameStep) {
+        for (const key of [
+          'toolPreparationStartedAt',
+          'toolDispatchedAt',
+          'toolCompletedAt',
+          'toolPreparationDurationMs',
+          'toolExecutionDurationMs',
+        ] as const) {
+          const stamp = part.tool_call[key];
+          if (stamp == null) delete tool[key];
+          else tool[key] = stamp;
+        }
+      }
       parts[target] = {
         ...part,
         tool_call: {
-          ...(prefixTool.type === ContentTypes.TOOL_CALL ? prefixTool.tool_call : {}),
-          ...part.tool_call,
-          ...(part.tool_call.argsUnavailable &&
-          prefixTool.type === ContentTypes.TOOL_CALL &&
-          !prefixTool.tool_call.argsUnavailable
-            ? { args: prefixTool.tool_call.args, argsUnavailable: undefined }
-            : {}),
-          ...(part.tool_call.nameUnavailable &&
-          prefixTool.type === ContentTypes.TOOL_CALL &&
-          !prefixTool.tool_call.nameUnavailable
-            ? { name: prefixTool.tool_call.name, nameUnavailable: undefined }
-            : {}),
+          ...tool,
+          ...getToolTimingDurations({
+            observedAt: tool.toolPreparationStartedAt,
+            dispatchedAt: tool.toolDispatchedAt,
+            completedAt: tool.toolCompletedAt,
+          }),
         },
       };
     } else target = part.type === ContentTypes.TEXT ? state.openTextIdx! : state.openThinkIdx!;
