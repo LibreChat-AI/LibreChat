@@ -2461,6 +2461,22 @@ describe('Agent Methods', () => {
       expect((await revertAgentVersion({ id: agentId }, 0))?.code_workspace_id).toBeUndefined();
     });
 
+    test('restores machine selection opt-in and clears it when restoring an older version', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      await createAgent({
+        id: agentId,
+        provider: 'test',
+        model: 'test-model',
+        author: new mongoose.Types.ObjectId(),
+      });
+      await updateAgent({ id: agentId }, { code_environment_ids: ['runtime-vm'] });
+      await updateAgent({ id: agentId }, { code_environment_ids: [] });
+      expect((await revertAgentVersion({ id: agentId }, 1))?.code_environment_ids).toEqual([
+        'runtime-vm',
+      ]);
+      expect((await revertAgentVersion({ id: agentId }, 0))?.code_environment_ids).toBeUndefined();
+    });
+
     test('should handle parameter objects correctly', async () => {
       const agentId = `agent_${uuidv4()}`;
       const authorId = new mongoose.Types.ObjectId();

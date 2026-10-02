@@ -178,7 +178,7 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
       token,
       method: 'POST',
       body: {
-        name: `Native ${worker.environmentId}`,
+        name: 'Lia',
         provider: 'Acceptance',
         model: 'acceptance',
         instructions: 'Run exactly the requested tool.',
@@ -342,8 +342,8 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
       expect(ordinaryDecision.codeEnvironmentMode).toBe('without_attached');
       expect(ordinaryDecision.codeWorkspaces ?? []).toEqual([]);
       await page.getByTestId('model-selector-button').click();
-      await page.locator('#model-search').fill(`Native ${a.environmentId}`);
-      await page.getByRole('option', { name: new RegExp(`Native ${a.environmentId}`) }).click();
+      await page.locator('#model-search').fill('Lia');
+      await page.getByRole('option', { name: 'Lia', exact: true }).click();
       await expect(page).toHaveURL(new RegExp(`/c/${conversationId}$`));
       await expect(page.getByTestId('code-workspace')).toContainText('No workspace');
       expect(await chat('Continue without granting workspace access.')).toBe(conversationId);
@@ -351,9 +351,7 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
         codeEnvironmentMode: 'without_attached',
       });
       await page.reload();
-      await expect(page.getByTestId('model-selector-button')).toContainText(
-        `Native ${a.environmentId}`,
-      );
+      await expect(page.getByTestId('model-selector-button')).toContainText('Lia');
       await expect(page.getByTestId('code-workspace')).toContainText('No workspace');
       await page.getByTestId('code-workspace').click();
       await page.getByRole('menuitem', { name: /^Attach / }).click();
@@ -437,15 +435,61 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
 
     const b = await startWorker('b');
     await select(b);
-    expect(await turn('read')).toMatch(/could not be read|not found/i);
+    expect(await turn('read')).toMatch(/could not be read|not found|INVALID_PATH/i);
     expect(await readdir(b.root)).not.toContain('proof.txt');
     expect(await turn('create', 'Approve')).toContain('Created workspace/proof.txt');
     expect(await readFile(path.join(b.root, 'proof.txt'), 'utf8')).toBe('native-original');
     expect(await readFile(path.join(a.root, 'proof.txt'), 'utf8')).toBe('native-edited');
 
+    /** One agent can start independent chats on only its explicitly permitted machines. */
+    const updated = await requestJson<{
+      id: string;
+      code_environment_id: string;
+      code_environment_ids: string[];
+    }>(page, {
+      path: `/api/agents/${coding.id}`,
+      token,
+      method: 'PATCH',
+      body: { code_environment_ids: [b.environmentId] },
+    });
+    expect(updated.code_environment_id).toBe(a.environmentId);
+    expect(updated.code_environment_ids).toEqual([b.environmentId]);
+    await page.goto(`/c/new?agent_id=${encodeURIComponent(coding.id)}`);
+    await expect(page.getByTestId('code-workspace')).toContainText('Acceptance a');
+    await page.getByTestId('code-workspace').click();
+    await page.getByRole('menuitem', { name: 'Acceptance b', exact: true }).click();
+    await page
+      .locator(`[data-code-environment-id="${b.environmentId}"]`)
+      .getByRole('menuitemradio', { name: /workspace/ })
+      .click();
+    await expect(page.getByTestId('code-workspace')).toContainText('Acceptance b');
+    selectedWorker = b;
+    expect(await turn('read')).toContain('native-original');
+    const runtimeChat = new URL(page.url()).pathname.slice(3);
+    expect((await readDecision(runtimeChat)).codeWorkspaces).toEqual([
+      { environmentId: b.environmentId, workspaceId: 'primary' },
+    ]);
+    await page.reload();
+    expect((await readDecision(runtimeChat)).codeWorkspaces).toEqual([
+      { environmentId: b.environmentId, workspaceId: 'primary' },
+    ]);
+    expect(await turn('read')).toContain('native-original');
+    await page.goto(`/c/new?agent_id=${encodeURIComponent(coding.id)}`);
+    await expect(page.getByTestId('code-workspace')).toContainText('Acceptance a');
+    selectedWorker = a;
+    expect(await turn('read')).toContain('native-edited');
+    const applicationChat = new URL(page.url()).pathname.slice(3);
+    expect(applicationChat).not.toBe(runtimeChat);
+    expect((await readDecision(applicationChat)).codeWorkspaces).toEqual([
+      { environmentId: a.environmentId, workspaceId: 'primary' },
+    ]);
+    /** Return to the sealed runtime chat to exercise offline failure with no default fallback. */
+    await page.goto(`/c/${runtimeChat}`);
+    selectedWorker = b;
+    await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
     await stop(b.child);
     const offline = await turn('offline', 'Approve');
-    expect(offline).toMatch(/failed|offline|unavailable|could not|not ready/i);
+    expect(offline).toMatch(/failed|offline|unavailable|could not|not ready|ASSIGNMENT_EXPIRED/i);
     expect(offline).not.toMatch(/Created workspace\/offline/);
     expect(await readdir(a.root)).not.toContain('offline.txt');
     expect(await readdir(b.root)).not.toContain('offline.txt');
@@ -461,6 +505,9 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
         crossTurnEdit: true,
         rejectedWriteAbsent: true,
         twoWorkerIsolation: true,
+        sameAgentMachineAllowlist: true,
+        independentChatMachineSelections: true,
+        restoredMachineSelection: true,
         offlineFailsClosed: true,
       }),
       contentType: 'application/json',

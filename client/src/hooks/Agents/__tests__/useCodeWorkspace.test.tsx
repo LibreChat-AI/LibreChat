@@ -43,6 +43,94 @@ const conversation = (codeWorkspaces?: TConversation['codeWorkspaces']): TConver
   }) as TConversation;
 
 describe('useCodeWorkspace', () => {
+  describe('per-chat machines', () => {
+    function enableChoices() {
+      const config = mockAgentsConfig().agentsConfig;
+      config.statefulCodeSessions.allowEnvironmentSelection = true;
+      config.statefulCodeSessions.environments.push({
+        id: 'runtime-vm',
+        name: 'Runtime VM',
+        type: 'attached',
+      });
+      config.statefulCodeSessions.environments.push({
+        id: 'unlisted-vm',
+        name: 'Unlisted',
+        type: 'attached',
+      });
+      mockAgentPermissions().agent.code_environment_ids = ['runtime-vm'];
+      return config;
+    }
+
+    it('offers authorized alternatives without querying their status or blocking the default', () => {
+      enableChoices();
+      const { result } = renderHook(() => useCodeWorkspace(conversation()));
+      expect(result.current.canSubmit).toBe(true);
+      expect(result.current.machineOptions?.map(({ id }) => id)).toEqual([
+        'personal-vm',
+        'runtime-vm',
+      ]);
+      expect(mockStatus).toHaveBeenLastCalledWith(['personal-vm'], true, {
+        notifyOnChangeProps: ['data', 'isLoading', 'isError'],
+      });
+    });
+
+    it('keeps two simultaneous chats independent and preserves the restored selection', () => {
+      enableChoices();
+      mockStatus.mockImplementation((ids: string[]) =>
+        ids.map((id) => ({
+          data: {
+            environmentId: id,
+            status: 'ready',
+            workspaces: [{ id: 'project-a', name: 'Project A' }],
+          },
+        })),
+      );
+      const selected = [{ environmentId: 'runtime-vm', workspaceId: 'project-a' }];
+      const first = renderHook(() => useCodeWorkspace(conversation(selected)));
+      const second = renderHook(() => useCodeWorkspace(conversation()));
+      expect(first.result.current.resolveSubmission()).toEqual({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: selected,
+      });
+      expect(second.result.current.selections?.[0].environmentId).toBe('personal-vm');
+      const restored = renderHook(() =>
+        useCodeWorkspace({
+          ...conversation(selected),
+          conversationId: 'saved',
+          codeEnvironmentMode: 'attached',
+        }),
+      );
+      expect(restored.result.current.canSubmit).toBe(true);
+      expect(restored.result.current.machineOptions).toBeUndefined();
+    });
+
+    it.each(['deployment', 'agent'])(
+      'retains fixed binding when the %s opt-in is disabled',
+      (gate) => {
+        const config = enableChoices();
+        if (gate === 'deployment') config.statefulCodeSessions.allowEnvironmentSelection = false;
+        else mockAgentPermissions().agent.code_environment_ids = [];
+        const { result } = renderHook(() => useCodeWorkspace(conversation()));
+        expect(result.current.machineOptions).toBeUndefined();
+        expect(result.current.selections?.[0].environmentId).toBe('personal-vm');
+      },
+    );
+
+    it('fails closed on an inaccessible or ambiguous selected machine', () => {
+      enableChoices();
+      for (const selected of [
+        [{ environmentId: 'other-users-vm', workspaceId: 'primary' }],
+        [{ environmentId: 'unlisted-vm', workspaceId: 'primary' }],
+        [
+          { environmentId: 'runtime-vm', workspaceId: 'primary' },
+          { environmentId: 'personal-vm', workspaceId: 'project-a' },
+        ],
+      ]) {
+        const { result } = renderHook(() => useCodeWorkspace(conversation(selected)));
+        expect(result.current.canSubmit).toBe(false);
+      }
+    });
+  });
   beforeEach(() => {
     mockPreference.mockReset();
     mockRememberPreference.mockReset();

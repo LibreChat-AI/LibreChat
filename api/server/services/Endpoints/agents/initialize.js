@@ -1141,6 +1141,11 @@ const initializeClientWithProvider = async ({
           statefulSessions: statefulCodeSessions,
           environment: statefulCodeEnvironment,
           environmentId: agent.code_environment_id,
+          environmentIds: agent.code_environment_ids,
+          allowEnvironmentSelection:
+            appConfig.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+          workspaceSelections:
+            admittedConversation?.codeWorkspaces ?? runtimeRequestBody?.codeWorkspaces,
           environments: configuredCodeEnvironments,
           userId,
           agentId: agent.id,

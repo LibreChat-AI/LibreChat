@@ -33,7 +33,7 @@ BYOM_WORKSPACE_TRANSITIONS=true BYOM_CODE_REPO=/absolute/path/to/code-interprete
 
 This enables the decision protocol and attach/detach policy only in the disposable test app.
 
-The `Native Workspace Acceptance` workflow runs this transition variant on a hosted macOS
+The `Native Workspace Acceptance` workflow runs both variants on a hosted macOS
 runner when the harness changes in a `dev` pull request. It pins the Code API/worker revision
 and uses the native Seatbelt policy unchanged. It does not upload identities, raw logs or
 browser state. This proves the macOS journey only; Linux and WSL2 require their own native run.
@@ -57,6 +57,15 @@ do not relax that policy to make the test pass.
 8. Stopping B produces a persisted tool failure, not success or fallback to A.
 9. Selecting **Full access** runs commands and physically creates a file without
    approval prompts, survives reload, and can switch back to **Ask before changes**.
+10. Giving one agent an explicit additional-machine list lets new chats select worker B,
+    persist that choice across reload, and still start on default worker A in a separate chat.
+    Both chats read different physical files. An offline B never falls back to A.
+
+The disposable fixture enables `endpoints.agents.statefulCodeSessions.allowEnvironmentSelection`
+and the environment-decision protocol. Production deployments keep fixed-agent routing unless
+that opt-in is enabled and the agent has a nonempty `code_environment_ids` list. The default
+`code_environment_id` is implicitly allowed; every additional machine still requires the user's
+own access and current worker capabilities. This does not move an existing chat between machines.
 
 Assertions inspect **tool outputs**, not echoed arguments or the model's final prose.
 The default hosted Code API URL is deliberately pointed at an invalid local route,

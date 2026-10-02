@@ -160,3 +160,27 @@ export function isCodeWorkspaceSelections(value: unknown): value is CodeWorkspac
     return true;
   });
 }
+
+/** Resolves an agent's default or its chat-owned machine choice. Callers still authorize the
+ * resolved ID against their principal-scoped environment list and verify live capabilities. */
+export function resolveCodeEnvironmentSelection({
+  environmentId,
+  environmentIds,
+  allowSelection,
+  selections,
+}: {
+  environmentId?: string | null;
+  environmentIds?: readonly string[];
+  allowSelection?: boolean;
+  selections?: unknown;
+}): { valid: true; environmentId?: string | null } | { valid: false } {
+  if (!allowSelection || selections == null) return { valid: true, environmentId };
+  if (!isCodeWorkspaceSelections(selections)) return { valid: false };
+  if (selections.length === 0) return { valid: true, environmentId };
+  const allowed = new Set(environmentIds ?? []);
+  if (environmentId) allowed.add(environmentId);
+  const matches = selections.filter((selection) => allowed.has(selection.environmentId));
+  // Do not guess when a graph names two of this agent's allowed machines.
+  if (matches.length !== 1) return { valid: false };
+  return { valid: true, environmentId: matches[0].environmentId };
+}

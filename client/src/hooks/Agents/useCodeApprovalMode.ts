@@ -5,8 +5,15 @@ import {
   isEphemeralAgentId,
   getAllowedCodeApprovalModes,
   CODE_APPROVAL_MODES,
+  resolveCodeEnvironmentSelection,
 } from 'librechat-data-provider';
-import type { Agent, TAgentsMap, TConfig, TPublicCodeEnvironment } from 'librechat-data-provider';
+import type {
+  Agent,
+  TAgentsMap,
+  TConfig,
+  TPublicCodeEnvironment,
+  CodeWorkspaceSelection,
+} from 'librechat-data-provider';
 import type { CodeApprovalMode, TConversation } from 'librechat-data-provider';
 import { useCodeApprovalModePreference } from './codeApprovalPreference';
 import useAgentToolPermissions from './useAgentToolPermissions';
@@ -45,8 +52,20 @@ export default function useCodeApprovalMode(
           (agent) =>
             agent.stateful_code_sessions === true && agent.tools?.includes(Tools.execute_code),
         )
-        .map((agent) => findExecutionEnvironment(agent, environments)),
-    [environments, reachable],
+        .map((agent) =>
+          findExecutionEnvironment(
+            agent,
+            environments,
+            statefulCodeSessions?.allowEnvironmentSelection,
+            conversation?.codeWorkspaces,
+          ),
+        ),
+    [
+      environments,
+      reachable,
+      statefulCodeSessions?.allowEnvironmentSelection,
+      conversation?.codeWorkspaces,
+    ],
   );
   const attachedEnvironments = useMemo(
     () =>
@@ -106,10 +125,28 @@ export default function useCodeApprovalMode(
 export function findExecutionEnvironment(
   agent: Agent,
   environments?: TPublicCodeEnvironment[],
+  allowEnvironmentSelection?: boolean,
+  selections?: CodeWorkspaceSelection[],
 ): TPublicCodeEnvironment | undefined {
-  return agent.code_environment_id
+  const defaultEnvironment = agent.code_environment_id
     ? environments?.find((candidate) => candidate.id === agent.code_environment_id)
     : environments?.find((candidate) => candidate.default === true);
+  const allowSelection =
+    allowEnvironmentSelection === true &&
+    (agent.code_environment_ids?.length ?? 0) > 0 &&
+    (defaultEnvironment?.type === 'attached' ||
+      (defaultEnvironment == null && Boolean(agent.code_environment_id)));
+  const selection = resolveCodeEnvironmentSelection({
+    environmentId: agent.code_environment_id ?? defaultEnvironment?.id,
+    environmentIds: agent.code_environment_ids,
+    allowSelection,
+    selections,
+  });
+  if (!selection.valid) return undefined;
+  const resolved = selection.environmentId
+    ? environments?.find((candidate) => candidate.id === selection.environmentId)
+    : defaultEnvironment;
+  return allowSelection && resolved?.type !== 'attached' ? undefined : resolved;
 }
 
 export function collectReachableAgents(

@@ -415,6 +415,9 @@ export const agentSubagentsSchema: z.ZodOptional<z.ZodType<AgentSubagentsConfig>
 
 /** Base agent schema with all common fields */
 const agentCodeEnvironmentIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
+const agentCodeEnvironmentIdsSchema: z.ZodArray<z.ZodString> = z.array(
+  agentCodeEnvironmentIdSchema,
+);
 const agentGitIdentityUpdateSchema: z.ZodType<AgentGitIdentity | null | undefined> =
   agentGitIdentitySchema.nullable();
 
@@ -507,6 +510,7 @@ export const agentBaseSchema: z.ZodObject<
     stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
     stateful_code_environment: z.ZodOptional<z.ZodEnum<['user', 'agent-user', 'conversation']>>;
     code_environment_id: z.ZodOptional<z.ZodString>;
+    code_environment_ids: z.ZodOptional<typeof agentCodeEnvironmentIdsSchema>;
     code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
     repositoryInstructions: z.ZodOptional<z.ZodEnum<['prefer', 'defer', 'off']>>;
     git_identity: typeof agentGitIdentitySchema;
@@ -585,6 +589,7 @@ export const agentBaseSchema: z.ZodObject<
   stateful_code_sessions: z.boolean().optional(),
   stateful_code_environment: z.enum(['user', 'agent-user', 'conversation']).optional(),
   code_environment_id: agentCodeEnvironmentIdSchema.optional(),
+  code_environment_ids: agentCodeEnvironmentIdsSchema.optional(),
   code_workspace_id: agentCodeWorkspaceIdSchema.optional(),
   repositoryInstructions: z.enum(['prefer', 'defer', 'off']).optional(),
   git_identity: agentGitIdentitySchema,
@@ -686,6 +691,7 @@ export const agentCreateSchema: z.ZodObject<
     stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
     stateful_code_environment: z.ZodOptional<z.ZodEnum<['user', 'agent-user', 'conversation']>>;
     code_environment_id: z.ZodOptional<z.ZodString>;
+    code_environment_ids: z.ZodOptional<typeof agentCodeEnvironmentIdsSchema>;
     git_identity: typeof agentGitIdentitySchema;
     code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
     repositoryInstructions: z.ZodOptional<z.ZodEnum<['prefer', 'defer', 'off']>>;
@@ -823,6 +829,7 @@ export const agentUpdateSchema: z.ZodObject<
     stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
     stateful_code_environment: z.ZodOptional<z.ZodEnum<['user', 'agent-user', 'conversation']>>;
     code_environment_id: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    code_environment_ids: z.ZodOptional<typeof agentCodeEnvironmentIdsSchema>;
     code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
     repositoryInstructions: z.ZodOptional<z.ZodEnum<['prefer', 'defer', 'off']>>;
     git_identity: typeof agentGitIdentityUpdateSchema;

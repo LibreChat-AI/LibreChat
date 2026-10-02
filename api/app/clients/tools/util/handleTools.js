@@ -385,6 +385,13 @@ const loadTools = async ({
             statefulSessions,
             environment: agent?.stateful_code_environment,
             environmentId: agent?.code_environment_id,
+            environmentIds: agent?.code_environment_ids,
+            allowEnvironmentSelection:
+              options.req?.config?.endpoints?.agents?.statefulCodeSessions
+                ?.allowEnvironmentSelection,
+            workspaceSelections:
+              options.req?.resolvedConversation?.codeWorkspaces ??
+              options.req?.body?.codeWorkspaces,
             environments:
               options.req?.config?.endpoints?.agents?.statefulCodeSessions?.environments,
             userId: user,

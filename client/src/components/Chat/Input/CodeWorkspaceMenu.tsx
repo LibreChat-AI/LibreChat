@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { Check, ChevronDown, Folder, FolderSync, FolderX, RefreshCw } from 'lucide-react';
 import { TooltipAnchor, composerControlClasses, useToastContext } from '@librechat/client';
+import { Check, ChevronDown, Folder, FolderSync, FolderX, RefreshCw, Monitor } from 'lucide-react';
 import type { CodeWorkspaceSelection, TConversation } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type {
@@ -14,6 +14,7 @@ import {
   useCodeWorkspaceRefresh,
   useMoveConversationCodeEnvironmentMutation,
   useReconcileConversationCodeEnvironmentMutation,
+  useCodeEnvironmentStatusQueries,
 } from '~/data-provider';
 import {
   cn,
@@ -120,7 +121,7 @@ function EnvironmentWorkspaces({
 }) {
   const localize = useLocalize();
   return (
-    <div>
+    <div data-code-environment-id={environment.id}>
       <Ariakit.MenuHeading render={<div />} className={headingClasses}>
         {environment.name ?? environment.id}
       </Ariakit.MenuHeading>
@@ -190,6 +191,23 @@ export default function CodeWorkspaceMenu({
   const { showToast } = useToastContext();
   const menuStore = Ariakit.useMenuStore({ focusLoop: true, placement: 'top-start' });
   const isOpen = menuStore.useState('open');
+  const [machineId, setMachineId] = useState<string | null>(null);
+  const machine = workspace.machineOptions?.find(
+    ({ id }) =>
+      id === machineId && !workspace.environments.some(({ environment }) => environment.id === id),
+  );
+  const machineQueries = useCodeEnvironmentStatusQueries(
+    machine ? [machine.id] : [],
+    isOpen && machine != null && !workspace.locked,
+  );
+  const machineQuery = machineQueries[0];
+  const machineStatus = machineQuery?.data;
+  const machineReady =
+    machine != null &&
+    machineStatus?.environmentId === machine.id &&
+    machineStatus.status === 'ready' &&
+    machineStatus.workspaces != null &&
+    machineStatus.operations != null;
   const moveMutation = useMoveConversationCodeEnvironmentMutation(setConversation);
   const reconcileMutation = useReconcileConversationCodeEnvironmentMutation(setConversation);
   const { refresh, isRefreshing } = useCodeWorkspaceRefresh();
@@ -232,7 +250,9 @@ export default function CodeWorkspaceMenu({
       if (current == null) return current;
       const retained = (current.codeWorkspaces ?? workspace.selections ?? []).filter(
         ({ environmentId }) =>
-          environmentIds.has(environmentId) && environmentId !== selection.environmentId,
+          environmentIds.has(environmentId) &&
+          environmentId !== selection.environmentId &&
+          !workspace.machineOptions?.some(({ id }) => id === environmentId),
       );
       return {
         ...current,
@@ -310,6 +330,9 @@ export default function CodeWorkspaceMenu({
     });
   } else if (label == null) {
     label = labelKey ? localize(labelKey) : localize('com_ui_code_workspace_choose');
+  }
+  if (onlyDescriptor && (workspace.machineOptions?.length ?? 0) > 1) {
+    label = `${onlyEnvironment?.environment.name ?? onlyEnvironment?.environment.id} · ${label}`;
   }
   const Icon =
     workspace.mode === 'without_attached' ||
@@ -512,6 +535,63 @@ export default function CodeWorkspaceMenu({
                 onSelect={selectWorkspace}
               />
             ))}
+            {workspace.machineOptions?.some(({ id }) => !environmentIds.has(id)) && (
+              <>
+                <Ariakit.MenuSeparator className="border-border-light my-1 h-0 w-full border-t" />
+                <Ariakit.MenuHeading render={<div />} className={headingClasses}>
+                  {localize('com_ui_code_environment_choose_machine')}
+                </Ariakit.MenuHeading>
+                {workspace.machineOptions
+                  ?.filter(({ id }) => !environmentIds.has(id))
+                  .map((candidate) => (
+                    <Ariakit.MenuItem
+                      key={candidate.id}
+                      hideOnClick={false}
+                      className={menuItemClasses(machineId === candidate.id)}
+                      onClick={() => setMachineId(candidate.id)}
+                    >
+                      <Monitor
+                        className="text-text-secondary mt-0.5 size-4 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span className="text-text-primary min-w-0 flex-1 truncate text-left text-sm">
+                        {candidate.name ?? candidate.id}
+                      </span>
+                    </Ariakit.MenuItem>
+                  ))}
+                {machine != null &&
+                  (machineReady ? (
+                    <EnvironmentWorkspaces
+                      environment={machine}
+                      workspaces={machineStatus?.workspaces ?? []}
+                      emptyLabel={localize('com_ui_code_workspace_unavailable')}
+                      hideOnClick={true}
+                      isSelected={() => false}
+                      onSelect={selectWorkspace}
+                    />
+                  ) : (
+                    <Ariakit.MenuItem
+                      hideOnClick={false}
+                      className={menuItemClasses()}
+                      disabled={machineQuery?.isLoading}
+                      aria-busy={machineQuery?.isLoading}
+                      onClick={() => void machineQuery?.refetch()}
+                    >
+                      <RefreshCw
+                        className="text-text-secondary mt-0.5 size-4 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span role="status" className="text-text-secondary text-sm">
+                        {localize(
+                          machineQuery?.isLoading
+                            ? 'com_ui_code_workspace_loading'
+                            : 'com_ui_code_workspace_unavailable',
+                        )}
+                      </span>
+                    </Ariakit.MenuItem>
+                  ))}
+              </>
+            )}
           </>
         )}
         <Ariakit.MenuSeparator className="border-border-light my-1 h-0 w-full border-t" />

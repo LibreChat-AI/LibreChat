@@ -20,6 +20,7 @@ import {
   HoverCardTrigger,
   CircleHelpIcon,
   Input,
+  Checkbox,
 } from '@librechat/client';
 import type { StatefulCodeEnvironment } from 'librechat-data-provider';
 import type { AgentForm } from '~/common';
@@ -58,6 +59,7 @@ export default function CodeSettings() {
   const codeEnabled = watch(AgentCapabilities.execute_code);
   const environment = watch('stateful_code_environment') ?? 'user';
   const codeEnvironmentId = watch('code_environment_id');
+  const additionalMachines = watch('code_environment_ids') ?? [];
   const workspaceId = watch('code_workspace_id') ?? '';
   const configuredEnvironments = agentsConfig?.statefulCodeSessions?.allowedEnvironments;
   const executionEnvironments = agentsConfig?.statefulCodeSessions?.environments ?? [];
@@ -210,6 +212,48 @@ export default function CodeSettings() {
               <p className="text-text-tertiary text-xs">
                 {localize('com_nav_info_code_environment')}
               </p>
+              {agentsConfig?.statefulCodeSessions?.allowEnvironmentSelection === true &&
+                effectiveExecutionEnvironment?.type === 'attached' && (
+                  <div className="space-y-1">
+                    <p className="text-text-secondary text-sm font-medium">
+                      {localize('com_ui_code_environment_per_chat')}
+                    </p>
+                    <p className="text-text-tertiary text-xs">
+                      {localize('com_ui_code_environment_per_chat_info')}
+                    </p>
+                    {executionEnvironments
+                      .filter(({ type }) => type === 'attached')
+                      .map((candidate) => {
+                        const isDefault = candidate.id === effectiveExecutionEnvironment.id;
+                        const id = `code-machine-${candidate.id}`;
+                        return (
+                          <div key={candidate.id} className="flex items-center gap-2">
+                            <Checkbox
+                              id={id}
+                              aria-label={candidate.name}
+                              checked={isDefault || additionalMachines.includes(candidate.id)}
+                              disabled={isDefault}
+                              onCheckedChange={(checked) =>
+                                setValue(
+                                  'code_environment_ids',
+                                  checked === true
+                                    ? [...new Set([...additionalMachines, candidate.id])]
+                                    : additionalMachines.filter((value) => value !== candidate.id),
+                                  { shouldDirty: true },
+                                )
+                              }
+                            />
+                            <label htmlFor={id} className="text-text-secondary text-sm">
+                              {candidate.name}
+                              {isDefault
+                                ? ` (${localize('com_ui_code_environment_default_machine')})`
+                                : ''}
+                            </label>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
             </>
           )}
           <label

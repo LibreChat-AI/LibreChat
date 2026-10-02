@@ -1584,6 +1584,11 @@ export async function initializeAgent(
     statefulSessions: effectiveStatefulSessions,
     environment: statefulCodeEnvironment,
     environmentId: agent.code_environment_id,
+    environmentIds: agent.code_environment_ids,
+    allowEnvironmentSelection:
+      appConfig?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+    workspaceSelections:
+      runtime.resolvedConversation?.codeWorkspaces ?? requestBody?.codeWorkspaces,
     environments: configuredCodeEnvironments,
     userId: requestFileOwnerId,
     agentId: agent.id,

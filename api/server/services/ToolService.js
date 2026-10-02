@@ -885,6 +885,11 @@ async function loadToolDefinitionsWrapper({
         agent.stateful_code_sessions === true,
       environment: agent.stateful_code_environment,
       environmentId: agent.code_environment_id,
+      environmentIds: agent.code_environment_ids,
+      allowEnvironmentSelection:
+        req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+      workspaceSelections:
+        req.resolvedConversation?.codeWorkspaces ?? runtimeRequestBody?.codeWorkspaces,
       environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
       userId: req.user.id,
       agentId: agent.id,
@@ -1800,6 +1805,11 @@ async function loadAgentTools({
       statefulSessions: statefulCodeSessions,
       environment: agent.stateful_code_environment,
       environmentId: agent.code_environment_id,
+      environmentIds: agent.code_environment_ids,
+      allowEnvironmentSelection:
+        req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+      workspaceSelections:
+        req.resolvedConversation?.codeWorkspaces ?? runtimeRequestBody?.codeWorkspaces,
       environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
       userId: req.user.id,
       agentId: agent.id,
@@ -2232,6 +2242,11 @@ async function loadToolsForExecution({
     statefulSessions: statefulCodeSessions,
     environment: agent?.stateful_code_environment,
     environmentId: agent?.code_environment_id,
+    environmentIds: agent?.code_environment_ids,
+    allowEnvironmentSelection:
+      req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+    workspaceSelections:
+      req.resolvedConversation?.codeWorkspaces ?? runtimeRequestBody?.codeWorkspaces,
     environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
     userId: req.user.id,
     agentId: agent?.id,

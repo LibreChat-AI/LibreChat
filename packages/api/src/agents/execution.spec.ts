@@ -17,6 +17,104 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 describe('resolveCodeExecutionContext', () => {
+  describe('per-chat attached machines', () => {
+    const environments = ['application-vm', 'runtime-vm'].map((id) => ({
+      id,
+      name: id,
+      type: 'attached' as const,
+      owner: 'deployment' as const,
+      baseURL: `https://${id}.example.com/v1`,
+      workerId: `worker-${id}`,
+      configSchema: {
+        permissions: {
+          commandExecution: { allowed: ['ask' as const, 'deny' as const], default: 'ask' as const },
+        },
+      },
+      settings: {
+        permissions: {
+          commandExecution: id === 'runtime-vm' ? ('deny' as const) : ('ask' as const),
+        },
+      },
+    }));
+    const params = {
+      statefulSessions: true,
+      environmentId: 'application-vm',
+      environments,
+      userId: 'user-1',
+      agentId: 'lia',
+      conversationId: 'chat-runtime',
+      allowEnvironmentSelection: true,
+      environmentIds: ['runtime-vm'],
+      workspaceSelections: [{ environmentId: 'runtime-vm', workspaceId: 'primary' }],
+    };
+
+    it('routes the same agent independently per chat, including policy and session partitions', () => {
+      const runtime = resolveCodeExecutionContext(params);
+      const application = resolveCodeExecutionContext({
+        ...params,
+        conversationId: 'chat-application',
+        workspaceSelections: [{ environmentId: 'application-vm', workspaceId: 'primary' }],
+      });
+      expect(runtime).toMatchObject({
+        environmentId: 'runtime-vm',
+        bridgeWorkerId: 'worker-runtime-vm',
+        baseUrl: 'https://runtime-vm.example.com/v1',
+        codeEnvironmentSettings: environments[1].settings,
+      });
+      expect(application.environmentId).toBe('application-vm');
+      expect(application.codeEnvironmentSettings?.permissions?.commandExecution).toBe('ask');
+      expect(runtime.codeEnvironmentSettings?.permissions?.commandExecution).toBe('deny');
+      expect(runtime.executionRouteKey).not.toBe(application.executionRouteKey);
+      expect(runtime.codeSessionKey).not.toBe(application.codeSessionKey);
+      expect(runtime.conversationWorkspaceInstanceId).not.toBe(
+        application.conversationWorkspaceInstanceId,
+      );
+    });
+
+    it.each(['allowEnvironmentSelection', 'environmentIds'] as const)(
+      'retains fixed routing when %s is disabled',
+      (gate) => {
+        expect(
+          resolveCodeExecutionContext({
+            ...params,
+            ...(gate === 'allowEnvironmentSelection'
+              ? { allowEnvironmentSelection: false }
+              : { environmentIds: [] }),
+          }).environmentId,
+        ).toBe('application-vm');
+      },
+    );
+
+    it('rejects routes outside the authorized config instead of falling back', () => {
+      expect(() =>
+        resolveCodeExecutionContext({ ...params, environments: [environments[0]] }),
+      ).toThrow('not configured');
+    });
+
+    it('rejects ambiguous selections and attempts to select managed execution', () => {
+      expect(() =>
+        resolveCodeExecutionContext({
+          ...params,
+          workspaceSelections: [
+            ...params.workspaceSelections,
+            { environmentId: 'application-vm', workspaceId: 'primary' },
+          ],
+        }),
+      ).toThrow('The selected attached workspace is invalid.');
+      expect(() =>
+        resolveCodeExecutionContext({
+          ...params,
+          environments: [environments[0], { ...environments[1], type: 'managed' }],
+        }),
+      ).toThrow('does not advertise selectable workspaces');
+    });
+
+    it('can choose another authorized machine when the old default has disappeared', () => {
+      expect(
+        resolveCodeExecutionContext({ ...params, environments: [environments[1]] }).environmentId,
+      ).toBe('runtime-vm');
+    });
+  });
   const originalStatefulUrl = process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
 
   afterEach(() => {

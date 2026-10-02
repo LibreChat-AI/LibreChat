@@ -92,6 +92,84 @@ function renderMenu(ui: React.ReactElement) {
 }
 
 describe('CodeWorkspaceMenu', () => {
+  test('loads only a chosen allowed machine and replaces the draft selection', async () => {
+    const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+    const read = jest.spyOn(dataService, 'getCodeEnvironmentStatus').mockResolvedValue({
+      environmentId: alternate.id,
+      status: 'ready',
+      operations: ['read_file'],
+      workspaces: [{ id: 'runtime', name: 'Runtime Project' }],
+    });
+    const setter = jest.fn();
+    renderMenu(
+      <CodeWorkspaceMenu
+        setConversation={setter}
+        workspace={workspace({ machineOptions: [environment, alternate] })}
+        disabled={false}
+      />,
+    );
+    expect(read).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    expect(read).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Runtime VM' }));
+    await userEvent.click(await screen.findByRole('menuitemradio', { name: /Runtime Project/ }));
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith(alternate.id);
+    const next = setter.mock.calls[0][0]({
+      ...conversation,
+      codeWorkspaces: [{ environmentId: environment.id, workspaceId: 'project-a' }],
+    });
+    expect(next.codeWorkspaces).toEqual([{ environmentId: alternate.id, workspaceId: 'runtime' }]);
+    read.mockRestore();
+  });
+
+  test('offers a sole allowed alternative when the original default is no longer accessible', async () => {
+    const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+    renderMenu(
+      <CodeWorkspaceMenu
+        setConversation={jest.fn()}
+        workspace={workspace({
+          state: 'unavailable',
+          environments: [],
+          machineOptions: [alternate],
+        })}
+        disabled={false}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    expect(screen.getByRole('menuitem', { name: 'Runtime VM' })).toBeVisible();
+  });
+
+  test('offers retry for an offline alternative without losing the current workspace', async () => {
+    const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+    const read = jest
+      .spyOn(dataService, 'getCodeEnvironmentStatus')
+      .mockResolvedValueOnce({ environmentId: alternate.id, status: 'offline' })
+      .mockResolvedValue({
+        environmentId: alternate.id,
+        status: 'ready',
+        operations: ['read_file'],
+        workspaces: [{ id: 'runtime', name: 'Runtime Project' }],
+      });
+    const setter = jest.fn();
+    renderMenu(
+      <CodeWorkspaceMenu
+        setConversation={setter}
+        workspace={workspace({ machineOptions: [environment, alternate] })}
+        disabled={false}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Runtime VM' }));
+    const retry = await screen.findByRole('menuitem', {
+      name: 'com_ui_code_workspace_unavailable',
+    });
+    expect(setter).not.toHaveBeenCalled();
+    await userEvent.click(retry);
+    expect(await screen.findByRole('menuitemradio', { name: /Runtime Project/ })).toBeVisible();
+    expect(read).toHaveBeenCalledTimes(2);
+    read.mockRestore();
+  });
   test('explains a failed reconciliation and retries without permitting workspace changes', async () => {
     const store = createStore();
     const request = {

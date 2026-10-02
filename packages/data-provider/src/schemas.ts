@@ -423,6 +423,7 @@ export const defaultAgentFormValues = {
   [Tools.memory]: false,
   stateful_code_environment: 'user' as const,
   code_environment_id: undefined as string | null | undefined,
+  code_environment_ids: [] as string[],
   code_workspace_id: undefined as string | undefined,
   repositoryInstructions: undefined as 'prefer' | 'defer' | 'off' | undefined,
   category: 'general',

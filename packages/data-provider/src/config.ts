@@ -1506,6 +1506,9 @@ export const agentsEndpointSchema = baseEndpointSchema
       statefulCodeSessions: z
         .object({
           allowedEnvironments: z.array(z.enum(STATEFUL_CODE_ENVIRONMENTS)).min(1),
+          /** Allow agents with a machine allowlist to use a chat-owned machine instead of their default.
+           * Enable after every API replica supports per-chat machine routing. */
+          allowEnvironmentSelection: z.boolean().optional(),
           /** Server-only personal worker enrollment policy. Effective principal
            * policy may tighten, but never raise, the deployment ceiling. */
           principalWorkers: z

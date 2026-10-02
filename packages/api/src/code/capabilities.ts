@@ -1,13 +1,12 @@
 import { logger } from '@librechat/data-schemas';
-import { ErrorTypes, isCodeWorkspaceSelections } from 'librechat-data-provider';
-import type {
-  CodeWorkspaceSelection,
-  CodeWorkspaceSelectionErrorReason,
-} from 'librechat-data-provider';
+import { isCodeWorkspaceSelections } from 'librechat-data-provider';
+import type { CodeWorkspaceSelection } from 'librechat-data-provider';
 import type { CodeEnvironmentConfig, CodeExecutionContext } from '~/agents/execution';
 import type { createAppConfigService } from '~/app/service';
 import type { CodeBridgeWorkerStatus } from './bridge';
 export type { CodeWorkspaceSelectionErrorReason } from 'librechat-data-provider';
+export { CodeWorkspaceSelectionError } from './errors';
+import { CodeWorkspaceSelectionError } from './errors';
 import {
   CodeBridgeStatusError,
   createCodeBridgeStatusPoller,
@@ -17,34 +16,6 @@ import {
 export type CodeCapabilityConfigLoader = ReturnType<typeof createAppConfigService>['getAppConfig'];
 
 const pollWorkerStatus = createCodeBridgeStatusPoller();
-
-function codeWorkspaceSelectionErrorMessage(reason: CodeWorkspaceSelectionErrorReason): string {
-  switch (reason) {
-    case 'required':
-      return 'Choose an attached workspace before using this agent.';
-    case 'invalid':
-      return 'The selected attached workspace is invalid.';
-    case 'worker_unavailable':
-      return 'The attached code environment is unavailable. Reconnect the machine and try again.';
-    case 'unsupported':
-      return 'The attached code environment does not advertise selectable workspaces. Update the LibreChat Code worker and try again.';
-    case 'missing':
-      return 'The selected workspace is no longer registered on this machine. Restore the previous registration or start a new conversation.';
-    case 'locked':
-      return 'This conversation already has a different code environment decision.';
-  }
-}
-
-export class CodeWorkspaceSelectionError extends Error {
-  readonly code: ErrorTypes.CODE_WORKSPACE_UNAVAILABLE = ErrorTypes.CODE_WORKSPACE_UNAVAILABLE;
-  readonly status: number = 409;
-  readonly statusCode: number = 409;
-
-  constructor(public readonly reason: CodeWorkspaceSelectionErrorReason) {
-    super(codeWorkspaceSelectionErrorMessage(reason));
-    this.name = 'CodeWorkspaceSelectionError';
-  }
-}
 
 function canonicalWorkspaceSelections(
   selections: CodeWorkspaceSelection[],

@@ -7,6 +7,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { AgentForm } from '~/common';
 import CodeSettings from '../Code/Settings';
 const mockWorkspaceStatusQueries = jest.fn();
+const mockMachineChoicesEnabled = jest.fn();
 jest.mock('~/data-provider', () => ({
   useCodeEnvironmentStatusQueries: () => mockWorkspaceStatusQueries(),
 }));
@@ -18,13 +19,18 @@ jest.mock('~/hooks', () => ({
     agentsConfig: {
       capabilities: ['stateful_code_sessions'],
       statefulCodeSessions: {
-        environments: [{ id: 'byom', name: 'My machine', type: 'attached', default: true }],
+        allowEnvironmentSelection: mockMachineChoicesEnabled(),
+        environments: [
+          { id: 'byom', name: 'My machine', type: 'attached', default: true },
+          { id: 'runtime', name: 'Runtime machine', type: 'attached' },
+        ],
       },
     },
   }),
 }));
 
 beforeEach(() => {
+  mockMachineChoicesEnabled.mockReturnValue(false);
   mockWorkspaceStatusQueries.mockReturnValue([
     {
       data: {
@@ -71,10 +77,32 @@ function IdentityForm({
       <output data-testid="identity">{JSON.stringify(methods.watch('git_identity'))}</output>
       <output data-testid="workspace-default">{methods.watch('code_workspace_id')}</output>
       <output data-testid="machine-default">{methods.watch('code_environment_id')}</output>
+      <output data-testid="machine-allowlist">
+        {JSON.stringify(methods.watch('code_environment_ids'))}
+      </output>
       <output data-testid="repository-mode">{methods.watch('repositoryInstructions')}</output>
     </FormProvider>
   );
 }
+
+test('defines an explicit machine allowlist without changing the default, and permits clearing it', () => {
+  mockMachineChoicesEnabled.mockReturnValue(true);
+  render(<IdentityForm />);
+  const alternative = screen.getByRole('checkbox', { name: 'Runtime machine' });
+  expect(alternative).not.toBeChecked();
+  expect(screen.getByRole('checkbox', { name: /My machine/ })).toBeChecked();
+  expect(screen.getByRole('checkbox', { name: /My machine/ })).toBeDisabled();
+  fireEvent.click(alternative);
+  expect(screen.getByTestId('machine-allowlist')).toHaveTextContent('["runtime"]');
+  expect(screen.getByTestId('machine-default')).toBeEmptyDOMElement();
+  fireEvent.click(alternative);
+  expect(screen.getByTestId('machine-allowlist')).toHaveTextContent('[]');
+});
+
+test('does not offer machine choices when the deployment has not enabled them', () => {
+  render(<IdentityForm />);
+  expect(screen.queryByRole('checkbox', { name: 'Runtime machine' })).not.toBeInTheDocument();
+});
 
 test('repository instruction mode defaults to prefer and retains an explicit off choice', async () => {
   HTMLElement.prototype.scrollIntoView = jest.fn();

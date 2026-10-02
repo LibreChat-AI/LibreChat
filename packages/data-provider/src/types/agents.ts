@@ -1040,6 +1040,9 @@ export type Agent = {
   stateful_code_environment?: StatefulCodeEnvironment;
   /** Operator-configured managed or attached stateful execution environment. */
   code_environment_id?: string | null;
+  /** Additional attached machines new chats may choose; the saved ID remains the default.
+   * This allowlist never grants the user access to a machine. */
+  code_environment_ids?: string[];
   /** Default attached workspace for new chats; empty means no agent default. */
   code_workspace_id?: string;
   repositoryInstructions?: 'prefer' | 'defer' | 'off';
@@ -1106,6 +1109,7 @@ export type AgentCreateParams = {
   | 'stateful_code_sessions'
   | 'stateful_code_environment'
   | 'code_environment_id'
+  | 'code_environment_ids'
   | 'code_workspace_id'
   | 'repositoryInstructions'
   | 'artifacts'
@@ -1142,6 +1146,7 @@ export type AgentUpdateParams = {
   | 'stateful_code_sessions'
   | 'stateful_code_environment'
   | 'code_environment_id'
+  | 'code_environment_ids'
   | 'git_identity'
   | 'code_workspace_id'
   | 'repositoryInstructions'

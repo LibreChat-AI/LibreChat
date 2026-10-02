@@ -164,6 +164,7 @@ try {
         toolApproval: { enabled: true, mode: 'bypass' },
         statefulCodeSessions: {
           allowedEnvironments: ['conversation'],
+          allowEnvironmentSelection: true,
           ...(workspaceTransitions && {
             conversationMoves: { enabled: true, allowAttachDetach: true },
           }),
@@ -216,7 +217,7 @@ try {
     CODEAPI_JWT_KID: 'acceptance',
     CODEAPI_JWT_SINGLE_TENANT_ID: 'acceptance',
     BYOM_ENROLLMENT_TOKEN: adminToken,
-    ...(workspaceTransitions && { CODE_ENVIRONMENT_DECISION_VERSION: '1' }),
+    CODE_ENVIRONMENT_DECISION_VERSION: '1',
     /** Deliberately unusable: accidental default routing must fail, never hit production. */
     LIBRECHAT_CODE_BASEURL: `${appURL}/forbidden-default-codeapi`,
     LIBRECHAT_CODE_BASEURL_STATEFUL: codeURL,

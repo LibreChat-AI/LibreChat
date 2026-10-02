@@ -102,6 +102,9 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
       const clientStatefulCodeSessions = statefulCodeSessions
         ? {
             allowedEnvironments: statefulCodeSessions.allowedEnvironments,
+            ...(statefulCodeSessions.allowEnvironmentSelection === true
+              ? { allowEnvironmentSelection: true }
+              : {}),
             approvalsEnabled: toolApproval?.enabled !== false,
             approvalModes,
             environments: statefulCodeSessions.environments
