@@ -2565,6 +2565,7 @@ export async function runCheckBackgroundTask(params: {
                   conversationId,
                   messageId: task.messageId,
                   claimId: existingClaim.claimId,
+                  ...(existingClaim.batchId != null && { batchId: existingClaim.batchId }),
                   ...(existingClaim.kind === 'manual'
                     ? {
                         kind: 'manual' as const,
@@ -2867,6 +2868,7 @@ export async function runCheckBackgroundTask(params: {
             conversationId,
             messageId: claimedResult.messageId,
             claimId: existingClaim.claimId,
+            ...(existingClaim.batchId != null && { batchId: existingClaim.batchId }),
             ...(existingClaim.kind === 'manual'
               ? {
                   kind: 'manual' as const,

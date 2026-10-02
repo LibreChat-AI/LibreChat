@@ -338,3 +338,6 @@ even when a custom store cannot read historical claims after job cleanup.
 Exact durable replays read the current claim without rewriting its handoff proof.
 Applied followers finish interrupted owner proof copying before they settle, including
 retired roots removed from the delivery queue.
+
+Manual polls carry the observed physical batch ID through recovery. A released owner’s
+late projection is cleared by that exact ID; successor epochs and manual claims remain owned.

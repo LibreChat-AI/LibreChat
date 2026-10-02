@@ -1214,3 +1214,266 @@ it('repairs native started-fence confirmation from an applied follower after a r
     await methods.getAgentBackgroundToolResultClaim({ ...owner(key), taskId: 'two' }),
   ).toMatchObject({ appliedAt: expect.any(Date) });
 });
+
+it.each([
+  ['local', false],
+  ['reconstructed', false],
+  ['local', true],
+  ['reconstructed', true],
+] as const)(
+  'recovers a released physical projection through a %s poll after successor retirement %s',
+  async (pollPath, replaceOwner) => {
+    const root = await ready('stale-task');
+    const key = getAgentTriggerIdempotencyKey(root);
+    const scope = owner(key);
+    await project('stale-task');
+    const old = await methods.claimAgentBackgroundToolResultBatch({
+      ...scope,
+      limit: 8,
+      maxMetadataChars: 16000,
+    });
+    if (old.status !== 'acquired') throw new Error('Expected predecessor batch');
+    let pause: () => void = () => undefined;
+    let resume: () => void = () => undefined;
+    const paused = new Promise<void>((resolve) => {
+      pause = resolve;
+    });
+    const barrier = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const Message = mongoose.models.Message;
+    const update = Message.findOneAndUpdate.bind(Message);
+    const lateProjection = jest
+      .spyOn(Message, 'findOneAndUpdate')
+      .mockImplementationOnce((...args) => {
+        const query = update(...args);
+        const execute = query.exec.bind(query);
+        jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+          pause();
+          await barrier;
+          return execute();
+        });
+        return query;
+      });
+    const delayed = methods.claimBackgroundToolResults({
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      taskId: 'stale-task',
+      kind: 'wakeup',
+      claimId: key,
+      batchId: old.batchId,
+      limit: 1,
+    });
+    await paused;
+    expect(
+      await methods.releaseAgentBackgroundToolResultClaims({
+        ...scope,
+        claimId: key,
+        batchId: old.batchId,
+      }),
+    ).toBe(true);
+    if (replaceOwner) {
+      const successor = await methods.claimAgentBackgroundToolResultBatch({
+        ...scope,
+        limit: 8,
+        maxMetadataChars: 16000,
+      });
+      if (successor.status !== 'acquired') throw new Error('Expected successor batch');
+      expect(successor.batchId).not.toBe(old.batchId);
+      expect(
+        await methods.releaseAgentBackgroundToolResultClaims({
+          ...scope,
+          claimId: key,
+          batchId: successor.batchId,
+        }),
+      ).toBe(true);
+    }
+    expect(
+      await methods.retireAgentTriggerDelivery({
+        deliveryKey: key,
+        sourceId: BACKGROUND_TOOL_COMPLETION_SOURCE,
+        reason: 'unadmitted owner retired',
+        settledAt: new Date(),
+        onlyIfUnclaimed: true,
+      }),
+    ).toBe(true);
+    resume();
+    await expect(delayed).resolves.toMatchObject({ status: 'acquired' });
+    lateProjection.mockRestore();
+    expect(await methods.getAgentBackgroundToolResultBatch(scope)).toBeNull();
+
+    // A broad logical-owner release would also erase these unrelated claims.
+    await project('other-epoch');
+    await project('manual-task');
+    await methods.claimBackgroundToolResults({
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      taskId: 'other-epoch',
+      kind: 'wakeup',
+      claimId: key,
+      batchId: 'unrelated-epoch',
+      limit: 1,
+    });
+    await claimBackgroundToolResult(methods, methods.getAgentBackgroundToolResultClaim, {
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      taskId: 'manual-task',
+      kind: 'manual',
+      claimId: key,
+    });
+    if (pollPath === 'local') {
+      const created = backgroundTaskRegistry.create({
+        taskId: 'stale-task',
+        userId,
+        conversationId,
+        messageId: parentMessageId,
+        toolCallId: 'stale-task',
+        toolName: 'tool',
+      });
+      if ('atCapacity' in created) throw new Error('Unexpected capacity');
+      backgroundTaskRegistry.complete(userId, conversationId, created.task.id, {
+        content: 'durable-stale-task',
+      });
+      backgroundTaskRegistry.markCompletionWakeup(userId, conversationId, created.task.id);
+    }
+    const store = new InMemoryJobStore({ ttlAfterComplete: 0 });
+    const manager = new GenerationJobManagerClass();
+    manager.configure({
+      jobStore: store,
+      eventTransport: new InMemoryEventTransport(),
+      isRedis: false,
+    });
+    manager.initialize();
+    try {
+      const release = jest.fn(methods.releaseBackgroundToolResultClaims);
+      const recover = createBackgroundToolDeadClaimRecovery(
+        async (deliveryKey, sourceId, reason, options) =>
+          methods.retireAgentTriggerDelivery({
+            deliveryKey,
+            sourceId,
+            reason,
+            settledAt: new Date(),
+            ...options,
+          }),
+        release,
+        async () => null,
+        ({ userId, conversationId, claimId }) =>
+          manager.fenceGenerationClaimForRecovery(userId, claimId, conversationId, conversationId),
+        methods.releaseAgentBackgroundToolResultClaims,
+        methods,
+        (...args) => manager.getGenerationAdmissionEvidence(...args),
+      );
+      const recoverDeadBackgroundToolClaim = jest.fn(recover);
+      const polled = JSON.parse(
+        await runCheckBackgroundTask({
+          userId,
+          conversationId,
+          args: { background_task_id: 'stale-task' },
+          toolCallId: 'stale-poll',
+          runId: 'recovery-run',
+          generationId: 'recovery-generation',
+          claimBackgroundToolResult: (input) =>
+            claimBackgroundToolResult(methods, methods.getAgentBackgroundToolResultClaim, input),
+          recoverDeadBackgroundToolClaim,
+        }),
+      );
+      expect(polled).toMatchObject({ status: 'completed', result: 'durable-stale-task' });
+      expect(recoverDeadBackgroundToolClaim).toHaveBeenCalledWith(
+        expect.objectContaining({ claimId: key, batchId: old.batchId }),
+      );
+      expect(release).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'wakeup', claimId: key, batchId: old.batchId }),
+      );
+      for (const [taskId, claim] of [
+        ['other-epoch', { kind: 'wakeup', claimId: key, batchId: 'unrelated-epoch' }],
+        ['manual-task', { kind: 'manual', claimId: key, receiptReconciled: true }],
+      ] as const) {
+        expect(
+          await methods.claimBackgroundToolResults({
+            userId,
+            conversationId,
+            messageId: parentMessageId,
+            taskId,
+            kind: 'wakeup',
+            claimId: 'probe',
+          }),
+        ).toMatchObject({ status: 'claimed', claim });
+      }
+    } finally {
+      await manager.destroy();
+    }
+  },
+);
+
+it('does not release a stale epoch while a successor receipt batch owns the logical delivery', async () => {
+  const root = await ready('stale-task');
+  const key = getAgentTriggerIdempotencyKey(root);
+  const scope = owner(key);
+  await project('stale-task');
+  const old = await methods.claimAgentBackgroundToolResultBatch({
+    ...scope,
+    limit: 8,
+    maxMetadataChars: 16000,
+  });
+  if (old.status !== 'acquired') throw new Error('Expected predecessor');
+  await methods.releaseAgentBackgroundToolResultClaims({
+    ...scope,
+    claimId: key,
+    batchId: old.batchId,
+  });
+  const successor = await methods.claimAgentBackgroundToolResultBatch({
+    ...scope,
+    limit: 8,
+    maxMetadataChars: 16000,
+  });
+  if (successor.status !== 'acquired') throw new Error('Expected successor');
+  await methods.claimBackgroundToolResults({
+    userId,
+    conversationId,
+    messageId: parentMessageId,
+    taskId: 'stale-task',
+    kind: 'wakeup',
+    claimId: key,
+    batchId: successor.batchId,
+    limit: 1,
+  });
+  const release = jest.fn(methods.releaseBackgroundToolResultClaims);
+  const retire = jest.fn(async () => true);
+  const fence = jest.fn(async () => 'fenced' as const);
+  const recover = createBackgroundToolDeadClaimRecovery(
+    retire,
+    release,
+    async () => null,
+    fence,
+    methods.releaseAgentBackgroundToolResultClaims,
+    methods,
+  );
+  expect(
+    await recover({
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      claimId: key,
+      batchId: old.batchId,
+    }),
+  ).toBe(false);
+  expect(retire).not.toHaveBeenCalled();
+  expect(fence).not.toHaveBeenCalled();
+  expect(release).not.toHaveBeenCalled();
+  expect(
+    await methods.getAgentBackgroundToolResultClaim({ ...scope, taskId: 'stale-task' }),
+  ).toMatchObject({ batchId: successor.batchId });
+  expect(
+    await methods.claimBackgroundToolResults({
+      userId,
+      conversationId,
+      messageId: parentMessageId,
+      taskId: 'stale-task',
+      kind: 'manual',
+      claimId: 'probe',
+    }),
+  ).toMatchObject({ status: 'claimed', claim: { claimId: key, batchId: successor.batchId } });
+});

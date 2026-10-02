@@ -1186,6 +1186,7 @@ export function createBackgroundToolDeadClaimRecovery(
       allowMissingMessage: true,
       kind: 'wakeup',
       claimId,
+      ...(receiptBatchId != null && { batchId: receiptBatchId }),
     });
   };
 }
