@@ -25,19 +25,12 @@ export const ADDED_AGENT_ID = 'added_agent';
  * request: the endpoint's schema, then its model spec's preset. This keeps
  * provider settings such as `useResponsesApi` and reasoning options.
  */
-async function parseAddedConversation(
+function parseAddedConversation(
   conversation: TConversation & { endpoint: string },
   appConfig: AppConfig | undefined,
-  getEndpointsConfig: LoadAddedAgentDeps['getEndpointsConfig'],
-): Promise<Record<string, unknown> | null> {
+  endpointsConfig: TEndpointsConfig | undefined,
+): Record<string, unknown> | null {
   const { endpoint, endpointType, spec } = conversation;
-  /** Optional for built-in endpoints; the primary request also parses on without it. */
-  let endpointsConfig: TEndpointsConfig | undefined;
-  try {
-    endpointsConfig = await getEndpointsConfig?.();
-  } catch (err) {
-    logger.error('[loadAddedAgent] Error fetching endpoints config', err);
-  }
   const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
   const parsedBody = parseCompactConvo({
     endpoint: endpoint as EModelEndpoint,
@@ -70,14 +63,16 @@ async function parseAddedConversation(
   }).parsedBody;
 }
 
-export interface LoadAddedAgentDeps extends LoadAgentDeps {
-  /** Resolves `customParams.defaultParamsEndpoint` for custom endpoints, as the
-   *  primary request's parser does. Omitted, custom endpoints parse as `custom`. */
-  getEndpointsConfig?: () => Promise<TEndpointsConfig | undefined>;
-}
+export type LoadAddedAgentDeps = LoadAgentDeps;
 
 interface LoadAddedAgentParams {
-  req: { user?: { id?: string; role?: string }; config?: Record<string, unknown> };
+  req: {
+    user?: { id?: string; role?: string };
+    config?: Record<string, unknown>;
+    /** Loaded by `buildEndpointOption` for this request; resolves a custom
+     *  endpoint's `defaultParamsEndpoint` without loading it again. */
+    endpointsConfig?: TEndpointsConfig;
+  };
   conversation: TConversation | null;
   primaryAgent?: Agent | null;
 }
@@ -120,10 +115,10 @@ export async function loadAddedAgent(
   }
 
   const agentReq = req as LoadAgentParams['req'];
-  const parsedBody = await parseAddedConversation(
+  const parsedBody = parseAddedConversation(
     { ...conversation, endpoint },
     agentReq.config,
-    deps.getEndpointsConfig,
+    req.endpointsConfig,
   );
   /** Same request-only fields `buildOptions` keeps out of the primary's parameters. */
   const {

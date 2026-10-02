@@ -8,6 +8,7 @@ import type {
   AgentModelParameters,
   TEphemeralAgent,
   TConversation,
+  TEndpointsConfig,
 } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { LoadAgentParams, LoadAgentDeps } from '../load';
@@ -1228,30 +1229,14 @@ describe('loadAgent', () => {
       expect(result?.model_parameters).toEqual({ useResponsesApi: true });
     });
 
-    test('still loads when the endpoints config cannot be resolved', async () => {
-      const getEndpointsConfig = jest.fn().mockRejectedValue(new Error('config unavailable'));
-
-      const result = await loadAddedAgent(
-        { req: { user: { id: 'user123' }, config: appConfig }, conversation: responsesConvo },
-        { ...deps, getEndpointsConfig },
-      );
-
-      expect(getEndpointsConfig).toHaveBeenCalledTimes(1);
-      expect(result?.model_parameters).toEqual({
-        useResponsesApi: true,
-        reasoning_effort: 'high',
-        temperature: 0.4,
-      });
-    });
-
-    test('parses custom endpoints with their resolved default params endpoint', async () => {
-      const getEndpointsConfig = jest.fn().mockResolvedValue({
+    test("parses custom endpoints with the request's endpoints config", async () => {
+      const endpointsConfig = {
         Claude: { customParams: { defaultParamsEndpoint: 'anthropic' } },
-      });
+      } as unknown as TEndpointsConfig;
 
       const result = await loadAddedAgent(
         {
-          req: { user: { id: 'user123' }, config: appConfig },
+          req: { user: { id: 'user123' }, config: appConfig, endpointsConfig },
           conversation: {
             endpoint: 'Claude',
             endpointType: 'custom',
@@ -1260,10 +1245,9 @@ describe('loadAgent', () => {
             thinkingBudget: 4000,
           } as unknown as TConversation,
         },
-        { ...deps, getEndpointsConfig },
+        deps,
       );
 
-      expect(getEndpointsConfig).toHaveBeenCalledTimes(1);
       expect(result?.model_parameters).toMatchObject({ thinking: true, thinkingBudget: 4000 });
     });
   });
