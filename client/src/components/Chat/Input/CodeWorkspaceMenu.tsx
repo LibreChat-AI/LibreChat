@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { Fragment, useId, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { TooltipAnchor, composerControlClasses, useToastContext } from '@librechat/client';
 import { Check, ChevronDown, Folder, FolderSync, FolderX, RefreshCw, Monitor } from 'lucide-react';
@@ -118,6 +118,8 @@ function EnvironmentWorkspaces({
   hideOnClick,
   isSelected,
   onSelect,
+  checkout,
+  allowCheckoutSelection = false,
 }: {
   environment: CodeWorkspaceEnvironmentResult['environment'];
   requiredBy?: CodeWorkspaceEnvironmentResult['requiredBy'];
@@ -126,6 +128,8 @@ function EnvironmentWorkspaces({
   hideOnClick: boolean;
   isSelected: (workspaceId: string) => boolean;
   onSelect: (selection: CodeWorkspaceSelection) => void;
+  checkout?: CodeWorkspaceSelection['checkout'];
+  allowCheckoutSelection?: boolean;
 }) {
   const localize = useLocalize();
   return (
@@ -146,47 +150,101 @@ function EnvironmentWorkspaces({
       {workspaces.map((descriptor) => {
         const selected = isSelected(descriptor.id);
         return (
-          <Ariakit.MenuItemRadio
-            key={descriptor.id}
-            name={`codeWorkspace:${environment.id}`}
-            value={descriptor.id}
-            checked={selected}
-            hideOnClick={hideOnClick}
-            onChange={() => onSelect({ environmentId: environment.id, workspaceId: descriptor.id })}
-            className={menuItemClasses(selected)}
-          >
-            <Folder className="text-text-secondary mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            <div className="min-w-0 flex-1 text-left">
-              <div className="text-text-primary truncate text-sm font-medium">
-                {descriptor.name ?? descriptor.id}
+          <Fragment key={descriptor.id}>
+            <Ariakit.MenuItemRadio
+              key={descriptor.id}
+              name={`codeWorkspace:${environment.id}`}
+              value={descriptor.id}
+              checked={selected}
+              hideOnClick={hideOnClick}
+              onChange={() =>
+                onSelect({ environmentId: environment.id, workspaceId: descriptor.id })
+              }
+              className={menuItemClasses(selected)}
+            >
+              <Folder className="text-text-secondary mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              <div className="min-w-0 flex-1 text-left">
+                <div className="text-text-primary truncate text-sm font-medium">
+                  {descriptor.name ?? descriptor.id}
+                </div>
+                {descriptor.name && (
+                  <p className="text-text-secondary truncate text-xs">{descriptor.id}</p>
+                )}
+                {descriptor.instructions !== undefined && (
+                  <p className="text-text-secondary truncate text-xs">
+                    {descriptor.instructions.length === 0
+                      ? localize('com_ui_repository_instructions_none')
+                      : descriptor.instructions
+                          .map(
+                            (file) =>
+                              `${file.path} · ${(file.bytes / 1024).toFixed(1)} KB${file.truncated ? ` · ${localize('com_ui_repository_instructions_truncated')}` : ''}`,
+                          )
+                          .join(', ')}
+                  </p>
+                )}
+                {(descriptor.environment?.repo || descriptor.environment?.ref) && (
+                  <p className="text-text-secondary truncate text-xs">
+                    {[descriptor.environment.repo, descriptor.environment.ref]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </p>
+                )}
               </div>
-              {descriptor.name && (
-                <p className="text-text-secondary truncate text-xs">{descriptor.id}</p>
+              {selected && (
+                <Check className="text-text-primary mt-0.5 size-4 shrink-0" aria-hidden="true" />
               )}
-              {descriptor.instructions !== undefined && (
-                <p className="text-text-secondary truncate text-xs">
-                  {descriptor.instructions.length === 0
-                    ? localize('com_ui_repository_instructions_none')
-                    : descriptor.instructions
-                        .map(
-                          (file) =>
-                            `${file.path} · ${(file.bytes / 1024).toFixed(1)} KB${file.truncated ? ` · ${localize('com_ui_repository_instructions_truncated')}` : ''}`,
-                        )
-                        .join(', ')}
-                </p>
+            </Ariakit.MenuItemRadio>
+            {selected &&
+              allowCheckoutSelection &&
+              environment.configSchema?.workspaces?.allowCheckoutSelection === true &&
+              descriptor.workspaceInstances?.includes('git_worktree') && (
+                <>
+                  <Ariakit.MenuHeading render={<div />} className={headingClasses}>
+                    {localize('com_ui_code_checkout_mode')}
+                  </Ariakit.MenuHeading>
+                  {(['isolated', 'source'] as const).map((mode) => (
+                    <Ariakit.MenuItemRadio
+                      key={mode}
+                      name={`codeCheckout:${environment.id}`}
+                      value={mode}
+                      checked={(checkout ?? 'isolated') === mode}
+                      hideOnClick={true}
+                      className={menuItemClasses((checkout ?? 'isolated') === mode)}
+                      onChange={() =>
+                        onSelect({
+                          environmentId: environment.id,
+                          workspaceId: descriptor.id,
+                          checkout: mode,
+                        })
+                      }
+                    >
+                      <div className="min-w-0 flex-1 text-left">
+                        <div className="text-text-primary text-sm font-medium">
+                          {localize(
+                            mode === 'isolated'
+                              ? 'com_ui_code_checkout_isolated'
+                              : 'com_ui_code_checkout_source',
+                          )}
+                        </div>
+                        <p className="text-text-secondary text-xs">
+                          {localize(
+                            mode === 'isolated'
+                              ? 'com_ui_code_checkout_isolated_info'
+                              : 'com_ui_code_checkout_source_info',
+                          )}
+                        </p>
+                      </div>
+                      {(checkout ?? 'isolated') === mode && (
+                        <Check
+                          className="text-text-primary mt-0.5 size-4 shrink-0"
+                          aria-hidden="true"
+                        />
+                      )}
+                    </Ariakit.MenuItemRadio>
+                  ))}
+                </>
               )}
-              {(descriptor.environment?.repo || descriptor.environment?.ref) && (
-                <p className="text-text-secondary truncate text-xs">
-                  {[descriptor.environment.repo, descriptor.environment.ref]
-                    .filter(Boolean)
-                    .join(' · ')}
-                </p>
-              )}
-            </div>
-            {selected && (
-              <Check className="text-text-primary mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            )}
-          </Ariakit.MenuItemRadio>
+          </Fragment>
         );
       })}
     </div>
@@ -389,6 +447,9 @@ export default function CodeWorkspaceMenu({
   if (onlyDescriptor && (workspace.machineOptions?.length ?? 0) > 1) {
     label = `${onlyEnvironment?.environment.name ?? onlyEnvironment?.environment.id} · ${label}`;
   }
+  if (onlyEnvironment?.selected?.checkout != null) {
+    label = `${label} · ${localize(onlyEnvironment.selected.checkout === 'isolated' ? 'com_ui_code_checkout_isolated' : 'com_ui_code_checkout_source')}`;
+  }
   const Icon =
     workspace.mode === 'without_attached' ||
     workspace.state === 'missing' ||
@@ -448,12 +509,12 @@ export default function CodeWorkspaceMenu({
               aria-label={`${label}. ${recovery}. ${localize('com_ui_retry')}`}
               aria-describedby={requirements.length > 0 ? requirementsId : undefined}
               aria-busy={isRefreshing}
-              className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')}
+              className={cn(composerControlClasses(), 'min-w-0 max-w-full px-2.5')}
             />
           }
         >
           <Icon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-          <span role="status" className="max-w-[16rem] min-w-0 truncate">
+          <span role="status" className="min-w-0 max-w-[16rem] truncate">
             {label}
           </span>
           <RefreshCw className="text-text-secondary size-3 shrink-0" aria-hidden="true" />
@@ -491,7 +552,7 @@ export default function CodeWorkspaceMenu({
               }
               className={cn(
                 composerControlClasses(),
-                'md:px-theme-control-x max-w-full min-w-0 px-2.5',
+                'min-w-0 max-w-full px-2.5 md:px-theme-control-x',
                 isOpen && 'bg-surface-hover',
                 buttonDisabled && 'cursor-not-allowed opacity-50',
               )}
@@ -499,7 +560,7 @@ export default function CodeWorkspaceMenu({
           }
         >
           <ButtonIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-          <span className="max-w-[12rem] min-w-0 truncate">{buttonLabel}</span>
+          <span className="min-w-0 max-w-[12rem] truncate">{buttonLabel}</span>
           <ChevronDown
             className={cn(
               'text-text-secondary size-3 shrink-0 transition-transform',
@@ -515,7 +576,7 @@ export default function CodeWorkspaceMenu({
         gutter={8}
         unmountOnHide={true}
         className={cn(
-          'z-50 flex max-w-[min(360px,calc(100vw-2rem))] min-w-[280px] flex-col rounded-xl',
+          'z-50 flex min-w-[280px] max-w-[min(360px,calc(100vw-2rem))] flex-col rounded-xl',
           'border-border-light bg-presentation max-h-[var(--popover-available-height)] overflow-y-auto border p-1.5 shadow-lg',
           'origin-bottom opacity-0 transition-[opacity,transform] duration-200 ease-out',
           'data-[enter]:scale-100 data-[enter]:opacity-100',
@@ -632,6 +693,8 @@ export default function CodeWorkspaceMenu({
                     workspace.mode === 'attached' && workspaceId === selected?.workspaceId
                   }
                   onSelect={selectWorkspace}
+                  checkout={selected?.checkout}
+                  allowCheckoutSelection={!workspace.locked}
                 />
               ),
             )}

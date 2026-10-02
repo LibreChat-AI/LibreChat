@@ -1,7 +1,26 @@
-import { resolveCodeEnvironmentSelection } from './workspace';
+import {
+  resolveCodeEnvironmentSelection,
+  isCodeWorkspaceSelection,
+  canonicalizeCodeWorkspaceSelections,
+} from './workspace';
 import { appendAgentIdSuffix } from '../agents/identity';
 
 describe('chat machine selection', () => {
+  it.each(['source', 'isolated'] as const)(
+    'validates and retains the %s checkout in the sealed identity',
+    (checkout) => {
+      const selection = { environmentId: 'vm', workspaceId: 'repo', checkout };
+      expect(isCodeWorkspaceSelection(selection)).toBe(true);
+      expect(canonicalizeCodeWorkspaceSelections([selection])).toEqual([selection]);
+    },
+  );
+
+  it.each([null, 'automatic', 'invalid', {}, 1])('rejects an invalid checkout: %j', (checkout) => {
+    expect(isCodeWorkspaceSelection({ environmentId: 'vm', workspaceId: 'repo', checkout })).toBe(
+      false,
+    );
+  });
+
   const defaultId = 'application-vm';
   const selections = [{ environmentId: 'runtime-vm', workspaceId: 'primary' }];
 

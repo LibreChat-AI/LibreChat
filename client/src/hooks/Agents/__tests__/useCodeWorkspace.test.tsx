@@ -43,6 +43,69 @@ const conversation = (codeWorkspaces?: TConversation['codeWorkspaces']): TConver
   }) as TConversation;
 
 describe('useCodeWorkspace', () => {
+  it.each([
+    { enabled: false, capable: true },
+    { enabled: true, capable: false },
+  ])('blocks a restored isolation choice when support disappears: %j', ({ enabled, capable }) => {
+    mockAgentsConfig().agentsConfig.statefulCodeSessions.environments[0].configSchema = {
+      workspaces: { allowCheckoutSelection: enabled },
+    };
+    mockStatus.mockReturnValue([
+      {
+        data: {
+          environmentId: 'personal-vm',
+          status: 'ready',
+          workspaces: [
+            { id: 'project-a', ...(capable ? { workspaceInstances: ['git_worktree'] } : {}) },
+          ],
+        },
+      },
+    ]);
+    const selected = [
+      { environmentId: 'personal-vm', workspaceId: 'project-a', checkout: 'isolated' as const },
+    ];
+    const { result } = renderHook(() =>
+      useCodeWorkspace({
+        ...conversation(selected),
+        conversationId: 'saved',
+        codeEnvironmentMode: 'attached',
+      }),
+    );
+    expect(result.current.canSubmit).toBe(false);
+    expect(result.current.resolveSubmission(selected)).toBeUndefined();
+  });
+
+  it.each(['source', 'isolated'] as const)(
+    'retains %s checkout through submission and restored-session resolution',
+    (checkout) => {
+      mockAgentsConfig().agentsConfig.statefulCodeSessions.environments[0].configSchema = {
+        workspaces: { allowCheckoutSelection: true },
+      };
+      mockStatus.mockReturnValue([
+        {
+          data: {
+            environmentId: 'personal-vm',
+            status: 'ready',
+            workspaces: [{ id: 'project-a', workspaceInstances: ['git_worktree'] }],
+          },
+        },
+      ]);
+      const selection = [{ environmentId: 'personal-vm', workspaceId: 'project-a', checkout }];
+      const { result, rerender } = renderHook(
+        ({ saved }) =>
+          useCodeWorkspace({
+            ...conversation(selection),
+            conversationId: saved ? 'saved' : 'new',
+            codeEnvironmentMode: 'attached',
+          }),
+        { initialProps: { saved: false } },
+      );
+      expect(result.current.resolveSubmission(selection)?.codeWorkspaces).toEqual(selection);
+      rerender({ saved: true });
+      expect(result.current.resolveSubmission(selection)?.codeWorkspaces).toEqual(selection);
+    },
+  );
+
   describe('per-chat machines', () => {
     function enableChoices() {
       const config = mockAgentsConfig().agentsConfig;

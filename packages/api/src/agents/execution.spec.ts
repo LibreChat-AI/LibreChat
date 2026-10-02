@@ -770,6 +770,17 @@ describe('stateful code approval target binding', () => {
       { environmentId: 'environment-a', workspaceId: 'project-a', agentIds: ['agent-a'] },
     ]);
   });
+
+  it.each(['source', 'isolated'] as const)(
+    'retains the %s checkout when stripping live capabilities',
+    (checkout) => {
+      const selected = context();
+      selected.codeWorkspace!.checkout = checkout;
+      expect(getCodeWorkspaceSelections([selected])).toEqual([
+        { environmentId: 'environment-a', workspaceId: 'project-a', checkout },
+      ]);
+    },
+  );
 });
 
 describe('codeExecutionAuthHeaders', () => {

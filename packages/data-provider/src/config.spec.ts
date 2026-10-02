@@ -965,6 +965,9 @@ describe('attached code environment user config schema', () => {
 
   it.each([
     [{ linkedWorktrees: true }, true],
+    [{ allowCheckoutSelection: true }, true],
+    [{ allowCheckoutSelection: false }, true],
+    [{ allowCheckoutSelection: 'yes' }, false],
     [{ linkedWorktrees: 'yes' }, false],
     [{ linkedWorktrees: true, subdirectories: true }, false],
   ])('validates the linked worktree lane toggle %p', (workspaces, valid) => {

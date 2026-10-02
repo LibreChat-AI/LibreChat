@@ -101,6 +101,64 @@ function renderMenu(ui: React.ReactElement) {
 }
 
 describe('CodeWorkspaceMenu', () => {
+  test.each(['source', 'isolated'] as const)(
+    'saves an explicit %s checkout choice before sending',
+    async (checkout) => {
+      const selected = { environmentId: environment.id, workspaceId: 'project-a' };
+      const graph = workspace({
+        environments: [
+          {
+            environment: {
+              ...environment,
+              configSchema: { workspaces: { allowCheckoutSelection: true } },
+            },
+            state: 'ready',
+            workspaces: [{ id: 'project-a', workspaceInstances: ['git_worktree'] }],
+            selected: { ...selected, checkout: checkout === 'source' ? 'isolated' : 'source' },
+          },
+        ],
+      });
+      const setConversation = jest.fn();
+      renderMenu(
+        <CodeWorkspaceMenu setConversation={setConversation} workspace={graph} disabled={false} />,
+      );
+      await userEvent.click(screen.getByTestId('code-workspace'));
+      await userEvent.click(
+        screen.getByRole('menuitemradio', {
+          name: new RegExp(
+            checkout === 'source' ? 'com_ui_code_checkout_source' : 'com_ui_code_checkout_isolated',
+          ),
+        }),
+      );
+      expect(setConversation.mock.calls[0][0](conversation)).toMatchObject({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [{ ...selected, checkout }],
+      });
+    },
+  );
+
+  test.each([
+    { enabled: false, capable: true },
+    { enabled: true, capable: false },
+  ])('hides checkout controls without policy and capability: %j', async ({ enabled, capable }) => {
+    const graph = workspace();
+    graph.environments[0].environment = {
+      ...environment,
+      configSchema: { workspaces: { allowCheckoutSelection: enabled } },
+    };
+    graph.environments[0].workspaces = [
+      {
+        id: 'project-a',
+        ...(capable ? { workspaceInstances: ['git_worktree'] as ['git_worktree'] } : {}),
+      },
+    ];
+    renderMenu(
+      <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
+    );
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    expect(screen.queryByText('com_ui_code_checkout_mode')).not.toBeInTheDocument();
+  });
+
   test('explains the missing reviewer workspace while the selected primary workspace is ready', async () => {
     const reviewerMachine = { ...environment, id: 'reviewer-vm', name: 'Danny Skynet Trusted VM' };
     const graph = workspace({ state: 'choose', canSubmit: false });

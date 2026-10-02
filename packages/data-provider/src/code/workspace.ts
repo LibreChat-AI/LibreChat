@@ -30,6 +30,7 @@ export const CODE_WORKSPACE_OPERATIONS = [
   'execute_command',
 ] as const;
 export const CODE_WORKSPACE_INSTANCE_TYPES = ['git_worktree'] as const;
+export const CODE_WORKSPACE_CHECKOUT_MODES = ['source', 'isolated'] as const;
 /** Scheduling scopes a worker can admit beneath one registered root. */
 export const CODE_WORKSPACE_SCOPES = ['git_linked_worktree'] as const;
 export const CODE_WORKSPACE_SELECTION_ERROR_REASONS = [
@@ -127,8 +128,25 @@ export function isCodeWorkspaceEnvironment(
 export interface CodeWorkspaceSelection {
   environmentId: string;
   workspaceId: string;
+  /** Omitted preserves the worker's legacy automatic isolation policy. */
+  checkout?: (typeof CODE_WORKSPACE_CHECKOUT_MODES)[number];
   /** Explicit graph-agent ownership of a chat machine choice; absent on legacy selections. */
   agentIds?: string[];
+}
+
+/** Explicit isolation never falls back to shared files when a capability or policy disappears. */
+export function isCodeWorkspaceCheckoutAvailable(
+  selection: Pick<CodeWorkspaceSelection, 'checkout'>,
+  workspace: Pick<CodeWorkspaceDescriptor, 'workspaceInstances'> | undefined,
+  allowSelection: boolean,
+): boolean {
+  return (
+    selection.checkout == null ||
+    (allowSelection &&
+      workspace != null &&
+      (selection.checkout === 'source' ||
+        workspace.workspaceInstances?.includes('git_worktree') === true))
+  );
 }
 
 export function isCodeEnvironmentMode(value: unknown): value is CodeEnvironmentMode {
@@ -148,12 +166,15 @@ export function isCodeWorkspaceSelection(value: unknown): value is CodeWorkspace
   const selection = value as Record<string, unknown>;
   return (
     Object.keys(selection).every((key) =>
-      ['environmentId', 'workspaceId', 'agentIds'].includes(key),
+      ['environmentId', 'workspaceId', 'agentIds', 'checkout'].includes(key),
     ) &&
     typeof selection.environmentId === 'string' &&
     CODE_WORKSPACE_ID_PATTERN.test(selection.environmentId) &&
     typeof selection.workspaceId === 'string' &&
     CODE_WORKSPACE_ID_PATTERN.test(selection.workspaceId) &&
+    (selection.checkout === undefined ||
+      selection.checkout === 'source' ||
+      selection.checkout === 'isolated') &&
     (selection.agentIds === undefined ||
       (Array.isArray(selection.agentIds) &&
         selection.agentIds.length > 0 &&
@@ -189,9 +210,10 @@ export function canonicalizeCodeWorkspaceSelections(
   selections: CodeWorkspaceSelection[],
 ): CodeWorkspaceSelection[] {
   return selections
-    .map(({ environmentId, workspaceId, agentIds }) => ({
+    .map(({ environmentId, workspaceId, agentIds, checkout }) => ({
       environmentId,
       workspaceId,
+      ...(checkout == null ? {} : { checkout }),
       ...(agentIds == null ? {} : { agentIds: [...agentIds].sort() }),
     }))
     .sort((left, right) => left.environmentId.localeCompare(right.environmentId));

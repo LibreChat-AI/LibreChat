@@ -92,6 +92,7 @@ export function getCodeWorkspaceSelections(
     selections.set(workspace.environmentId, {
       environmentId: workspace.environmentId,
       workspaceId: workspace.workspaceId,
+      ...(workspace.checkout == null ? {} : { checkout: workspace.checkout }),
       ...(workspace.agentIds == null ? {} : { agentIds: [...workspace.agentIds] }),
     });
   }
