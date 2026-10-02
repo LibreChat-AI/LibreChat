@@ -157,6 +157,15 @@ describe('resolveCodeExecutionContext', () => {
       expect(resolveCodeExecutionContext(unset).environmentId).toBe('runtime-vm');
     });
 
+    it('retains fixed routing when the deployment turns the decision protocol off', () => {
+      process.env.CODE_ENVIRONMENT_DECISION_VERSION = '0';
+      try {
+        expect(resolveCodeExecutionContext(params).environmentId).toBe('application-vm');
+      } finally {
+        delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+      }
+    });
+
     it.each(['allowEnvironmentSelection', 'environmentIds'] as const)(
       'retains fixed routing when %s is disabled',
       (gate) => {

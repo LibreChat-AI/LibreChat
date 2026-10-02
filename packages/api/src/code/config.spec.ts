@@ -2,6 +2,7 @@ import { EModelEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
   isImplicitStatefulCodeRouteAvailable,
+  isCodeEnvironmentSelectionEnabled,
   mergeAccessibleCodeEnvironments,
   resolveCodeEnvironmentDecisionVersion,
   resolveCodeEnvironmentMoveVersion,
@@ -83,6 +84,18 @@ describe('resolveCodeEnvironmentMoveVersion', () => {
     expect(resolveCodeEnvironmentMoveVersion(undefined)).toBeUndefined();
     expect(resolveCodeEnvironmentMoveCapabilities({} as AppConfig)).toEqual({});
     expect(resolveCodeEnvironmentMoveCapabilities(undefined)).toEqual({});
+  });
+});
+
+describe('isCodeEnvironmentSelectionEnabled', () => {
+  it.each([
+    [undefined, undefined, true],
+    [true, '1', true],
+    [false, undefined, false],
+    [undefined, '0', false],
+    [true, '0', false],
+  ])('flag %p with decision version %p resolves to %p', (flag, version, expected) => {
+    expect(isCodeEnvironmentSelectionEnabled(flag, version)).toBe(expected);
   });
 });
 

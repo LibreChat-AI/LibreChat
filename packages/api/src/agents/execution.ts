@@ -1,10 +1,7 @@
 import { createHash } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
 import { Constants, getCodeBaseURL } from '@librechat/agents';
-import {
-  resolveCodeEnvironmentSelection,
-  isCodeEnvironmentSelectionAllowed,
-} from 'librechat-data-provider';
+import { resolveCodeEnvironmentSelection } from 'librechat-data-provider';
 import type {
   Agents,
   CodeWorkspaceOperation,
@@ -16,6 +13,7 @@ import type {
   TAgentsEndpoint,
 } from 'librechat-data-provider';
 import type { WorkspaceEditFileFeature } from '~/code/edits';
+import { isCodeEnvironmentSelectionEnabled } from '~/code/protocol';
 import { CodeWorkspaceSelectionError } from '~/code/errors';
 
 export const CODE_API_EXPECTED_PROFILE_HEADER = 'X-CodeAPI-Expected-Profile';
@@ -354,7 +352,8 @@ export function resolveCodeExecutionContext(params: {
   userId?: string | null;
   agentId?: string | null;
   conversationId?: string | null;
-  /** Deployment ceiling (on unless `false`) and a persisted agent machine allowlist are both required. */
+  /** Deployment ceiling (on unless `false` or the decision protocol is off) and a persisted
+   *  agent machine allowlist are both required. */
   allowEnvironmentSelection?: boolean;
   environmentIds?: readonly string[];
   workspaceSelections?: unknown;
@@ -375,7 +374,7 @@ export function resolveCodeExecutionContext(params: {
       (params.environmentId ? candidate.id === params.environmentId : candidate.default === true),
   );
   const allowSelection =
-    isCodeEnvironmentSelectionAllowed(params.allowEnvironmentSelection) &&
+    isCodeEnvironmentSelectionEnabled(params.allowEnvironmentSelection) &&
     (params.environmentIds?.length ?? 0) > 0 &&
     (defaultEnvironment?.type === 'attached' ||
       (defaultEnvironment == null && Boolean(params.environmentId)));

@@ -342,6 +342,29 @@ describe('createEndpointsConfigService', () => {
       },
     );
 
+    it('does not advertise machine selection when the decision protocol is off', async () => {
+      process.env.CODE_ENVIRONMENT_DECISION_VERSION = '0';
+      try {
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest.fn().mockResolvedValue(
+            appConfig({
+              endpoints: { [EModelEndpoint.agents]: { statefulCodeSessions: {} } },
+            }),
+          ),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+        expect(
+          result?.[EModelEndpoint.agents]?.statefulCodeSessions?.allowEnvironmentSelection,
+        ).toBeUndefined();
+      } finally {
+        delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+      }
+    });
+
     it.each([
       [{ enabled: true }, ['ask']],
       [{ enabled: true, mode: 'default' }, ['ask']],

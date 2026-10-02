@@ -2,7 +2,6 @@ import {
   AuthType,
   CODE_APPROVAL_MODES,
   DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES,
-  isCodeEnvironmentSelectionAllowed,
   EModelEndpoint,
   isAgentsEndpoint,
   orderEndpointsConfig,
@@ -13,6 +12,7 @@ import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest, TCustomEndpointsConfig } from '~/types';
 import type { GetAppConfigOptions } from '~/app/service';
 import { loadCustomEndpointsConfig as defaultLoadCustomEndpoints } from '~/endpoints/custom';
+import { isCodeEnvironmentSelectionEnabled } from '~/code/protocol';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { getResponsesApiRouting } from './responses';
 
@@ -104,7 +104,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
       const clientStatefulCodeSessions = statefulCodeSessions
         ? {
             allowedEnvironments: statefulCodeSessions.allowedEnvironments,
-            ...(isCodeEnvironmentSelectionAllowed(statefulCodeSessions.allowEnvironmentSelection)
+            ...(isCodeEnvironmentSelectionEnabled(statefulCodeSessions.allowEnvironmentSelection)
               ? {
                   allowEnvironmentSelection: true,
                   maxEnvironmentChoices:
