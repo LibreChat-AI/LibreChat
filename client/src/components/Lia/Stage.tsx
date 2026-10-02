@@ -30,18 +30,30 @@ const KEYWORDS: Readonly<Record<string, string>> = {
 /** Where the caret sits inside a textarea, measured with a hidden mirror element. */
 function caretPoint(textarea: HTMLTextAreaElement, mirror: HTMLDivElement, origin: DOMRect) {
   const style = getComputedStyle(textarea);
+  /* Everything that moves text inside the box, so wrapping and right-to-left text match. */
   for (const prop of [
+    'direction',
+    'textAlign',
+    'textIndent',
+    'textTransform',
     'fontFamily',
     'fontSize',
+    'fontStyle',
     'fontWeight',
+    'fontVariant',
     'lineHeight',
     'letterSpacing',
+    'wordSpacing',
+    'tabSize',
+    'wordBreak',
     'paddingLeft',
     'paddingRight',
     'paddingTop',
   ] as const) {
     mirror.style[prop] = style[prop];
   }
+  /* clientWidth includes padding and excludes borders, so size the mirror's border box to it. */
+  mirror.style.boxSizing = 'border-box';
   mirror.style.width = `${textarea.clientWidth}px`;
   mirror.textContent = textarea.value.slice(0, textarea.selectionEnd);
   const marker = document.createElement('span');
@@ -397,11 +409,9 @@ export default function Stage({
       <canvas
         ref={canvasRef}
         data-testid="lia"
-        title={
-          activity
-            ? localize('com_ui_lia_doing', { 0: localize(activity as TranslationKeys) })
-            : undefined
-        }
+        title={localize('com_ui_lia_doing', {
+          0: localize((activity ?? 'com_ui_lia_act_idle') as TranslationKeys),
+        })}
         className="pointer-events-auto absolute top-0 left-0 z-[5] cursor-pointer [image-rendering:pixelated]"
         style={{
           width: GRID_W * SCALE,

@@ -9,6 +9,7 @@ describe('Lia speech', () => {
       ...ACTIONS.map((a) => a.label),
       ...EXPRESSIONS.map((e) => e.label),
       'com_ui_lia_doing',
+      'com_ui_lia_act_idle',
     ];
     for (const label of labels) {
       expect({ label, present: label in en }).toEqual({ label, present: true });
