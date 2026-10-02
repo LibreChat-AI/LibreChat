@@ -1,7 +1,12 @@
 const express = require('express');
-const { createGetPromptCategoriesHandler } = require('@librechat/api');
+const { PermissionTypes, Permissions } = require('librechat-data-provider');
+const { checkAccess, createGetPromptCategoriesHandler } = require('@librechat/api');
 const { requireJwtAuth, configMiddleware } = require('~/server/middleware');
-const { getPromptGroupAccessContext, getDistinctPromptGroupCategories } = require('~/models');
+const {
+  getRoleByName,
+  getPromptGroupAccessContext,
+  getDistinctPromptGroupCategories,
+} = require('~/models');
 
 const router = express.Router();
 
@@ -12,6 +17,14 @@ router.get(
   createGetPromptCategoriesHandler({
     getPromptGroupAccessContext,
     getDistinctPromptGroupCategories,
+    canUsePrompts: (req) =>
+      checkAccess({
+        req,
+        user: req.user,
+        permissionType: PermissionTypes.PROMPTS,
+        permissions: [Permissions.USE],
+        getRoleByName,
+      }),
   }),
 );
 

@@ -8,6 +8,8 @@ const {
   AccessRoleIds,
   PrincipalType,
   PermissionBits,
+  PermissionTypes,
+  Permissions,
 } = require('librechat-data-provider');
 let mockBaseConfig = {};
 
@@ -74,7 +76,11 @@ beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
 
-  const { AccessRole, User } = require('~/db/models');
+  const { AccessRole, User, Role } = require('~/db/models');
+  await Role.create({
+    name: 'NO_PROMPTS',
+    permissions: { [PermissionTypes.PROMPTS]: { [Permissions.USE]: false } },
+  });
   await AccessRole.create({
     accessRoleId: AccessRoleIds.PROMPTGROUP_OWNER,
     name: 'Owner',
@@ -86,6 +92,7 @@ beforeAll(async () => {
     a: await User.create({ name: 'A', email: 'a@example.com', role: SystemRoles.USER }),
     b: await User.create({ name: 'B', email: 'b@example.com', role: SystemRoles.USER }),
     hr: await User.create({ name: 'HR', email: 'hr@example.com', role: 'HR' }),
+    noPrompts: await User.create({ name: 'NP', email: 'np@example.com', role: 'NO_PROMPTS' }),
   };
   models = require('~/models');
 
@@ -167,6 +174,35 @@ describe('GET /api/categories', () => {
     currentUser = users.a;
     const forA = await request(app).get('/api/categories');
     expect(forA.body).toContainEqual({ value: 'A-Private', label: 'A-Private', custom: true });
+  });
+
+  it('serves configured categories only to a user without prompt-use permission', async () => {
+    mockBaseConfig = {
+      prompts: {
+        categories: { allowCustom: true, enableDefaultCategories: false, list: [{ value: 'hr' }] },
+      },
+    };
+    const { grantPermission } = require('~/server/services/PermissionService');
+    const { group } = await models.createPromptGroup({
+      prompt: { prompt: 'text', type: 'text' },
+      group: { name: 'shared group', category: 'Stored' },
+      author: users.noPrompts._id.toString(),
+      authorName: users.noPrompts.name,
+    });
+    await grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: users.noPrompts._id,
+      resourceType: ResourceType.PROMPTGROUP,
+      resourceId: group._id,
+      accessRoleId: AccessRoleIds.PROMPTGROUP_OWNER,
+      grantedBy: users.noPrompts._id,
+    });
+
+    currentUser = users.noPrompts;
+    const denied = await request(app).get('/api/categories');
+    expect(denied.status).toBe(200);
+    expect(denied.body).toEqual([{ value: 'hr', label: 'hr' }]);
+    expect(models.getDistinctPromptGroupCategories).not.toHaveBeenCalled();
   });
 
   it('no reads when off: custom categories disabled', async () => {

@@ -118,8 +118,11 @@ describe('createGetPromptCategoriesHandler', () => {
     res.status.mockReturnValue(res);
     return res;
   };
-  const makeReq = (prompts?: TPromptsConfig) =>
-    ({ config: { prompts }, user: { id: 'u1', role: 'USER' } }) as unknown as ServerRequest;
+  const makeReq = (prompts?: TPromptsConfig, filters?: unknown) =>
+    ({
+      config: { prompts, filters },
+      user: { id: 'u1', role: 'USER' },
+    }) as unknown as ServerRequest;
 
   it('makes no reads when custom categories are off', async () => {
     const getPromptGroupAccessContext = jest.fn();
@@ -128,6 +131,7 @@ describe('createGetPromptCategoriesHandler', () => {
     await createGetPromptCategoriesHandler({
       getPromptGroupAccessContext,
       getDistinctPromptGroupCategories,
+      canUsePrompts: jest.fn().mockResolvedValue(true),
     })(makeReq(), res as unknown as Response);
     expect(getPromptGroupAccessContext).not.toHaveBeenCalled();
     expect(getDistinctPromptGroupCategories).not.toHaveBeenCalled();
@@ -142,6 +146,7 @@ describe('createGetPromptCategoriesHandler', () => {
     await createGetPromptCategoriesHandler({
       getPromptGroupAccessContext,
       getDistinctPromptGroupCategories,
+      canUsePrompts: jest.fn().mockResolvedValue(true),
     })(
       makeReq({ categories: { allowCustom: true, enableDefaultCategories: false } }),
       res as unknown as Response,
@@ -154,12 +159,58 @@ describe('createGetPromptCategoriesHandler', () => {
     expect(res.send).toHaveBeenCalledWith([{ value: 'alpha', label: 'alpha', custom: true }]);
   });
 
+  it('returns configured categories only, with no stored reads, without prompt-use permission', async () => {
+    const getPromptGroupAccessContext = jest.fn();
+    const getDistinctPromptGroupCategories = jest.fn();
+    const res = makeRes();
+    await createGetPromptCategoriesHandler({
+      getPromptGroupAccessContext,
+      getDistinctPromptGroupCategories,
+      canUsePrompts: jest.fn().mockResolvedValue(false),
+    })(
+      makeReq({
+        categories: {
+          allowCustom: true,
+          enableDefaultCategories: false,
+          list: [{ value: 'hr' }],
+        },
+      }),
+      res as unknown as Response,
+    );
+    expect(getPromptGroupAccessContext).not.toHaveBeenCalled();
+    expect(getDistinctPromptGroupCategories).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.send).toHaveBeenCalledWith([{ value: 'hr', label: 'hr' }]);
+  });
+
+  it('omits stored categories blocked by the current prompt content policy', async () => {
+    const res = makeRes();
+    const filters = {
+      prompts: {
+        pii: {
+          starterPatterns: [],
+          customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-[A-Z]+' }],
+        },
+      },
+    };
+    await createGetPromptCategoriesHandler({
+      getPromptGroupAccessContext: jest.fn().mockResolvedValue({ accessibleIds: ['a'] }),
+      getDistinctPromptGroupCategories: jest.fn().mockResolvedValue(['PRIVATE-TEAM', 'alpha']),
+      canUsePrompts: jest.fn().mockResolvedValue(true),
+    })(
+      makeReq({ categories: { allowCustom: true, enableDefaultCategories: false } }, filters),
+      res as unknown as Response,
+    );
+    expect(res.send).toHaveBeenCalledWith([{ value: 'alpha', label: 'alpha', custom: true }]);
+  });
+
   it('responds 500 with a fixed message and no error text', async () => {
     const getPromptGroupAccessContext = jest.fn().mockRejectedValue(new Error('secret db text'));
     const res = makeRes();
     await createGetPromptCategoriesHandler({
       getPromptGroupAccessContext,
       getDistinctPromptGroupCategories: jest.fn(),
+      canUsePrompts: jest.fn().mockResolvedValue(true),
     })(makeReq({ categories: { allowCustom: true } }), res as unknown as Response);
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.send).toHaveBeenCalledWith({ message: 'Failed to retrieve categories' });

@@ -3,6 +3,7 @@ import { defaultPromptCategories } from 'librechat-data-provider';
 import type { TCategory, TPromptsConfig } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
+import { projectStoredPromptGroup } from './protection';
 
 type CategoryEntry = {
   value: string;
@@ -17,6 +18,8 @@ type CategoryHandlerDeps<TIds> = {
     role?: string;
   }) => Promise<{ accessibleIds: TIds }>;
   getDistinctPromptGroupCategories: (accessibleIds: TIds) => Promise<string[]>;
+  /** Whether the requester holds the prompt-use permission required to discover stored categories. */
+  canUsePrompts: (req: ServerRequest) => Promise<boolean>;
 };
 
 const normalize = (value: string): string => value.trim().toLowerCase();
@@ -84,12 +87,15 @@ export function createGetPromptCategoriesHandler<TIds>(
     try {
       const config = req.config?.prompts;
       let customValues: string[] = [];
-      if (config?.categories?.allowCustom === true) {
+      if (config?.categories?.allowCustom === true && (await deps.canUsePrompts(req))) {
         const { accessibleIds } = await deps.getPromptGroupAccessContext({
           userId: req.user?.id ?? '',
           role: req.user?.role,
         });
-        customValues = await deps.getDistinctPromptGroupCategories(accessibleIds);
+        const stored = await deps.getDistinctPromptGroupCategories(accessibleIds);
+        customValues = stored.filter(
+          (category) => projectStoredPromptGroup({ category }, req.config?.filters) != null,
+        );
       }
       res.status(200).send(resolvePromptCategories(config, customValues));
     } catch (error) {
