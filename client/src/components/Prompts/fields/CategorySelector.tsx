@@ -167,7 +167,7 @@ const CategorySelector: React.FC<CategorySelectorProps> = ({
     <Ariakit.MenuButton
       ref={triggerRef}
       className={cn(
-        'relative inline-flex h-9 items-center justify-between rounded-xl border border-border-medium bg-transparent px-3 text-sm text-text-primary transition-all duration-200 ease-in-out hover:bg-surface-hover hover:text-text-primary focus:ring-2 focus:ring-ring-primary',
+        'border-border-medium text-text-primary hover:bg-surface-hover hover:text-text-primary focus:ring-ring-primary relative inline-flex h-9 items-center justify-between rounded-xl border bg-transparent px-3 text-sm transition-all duration-200 ease-in-out focus:ring-2',
         'gap-2 sm:w-fit',
         className,
       )}
@@ -218,7 +218,7 @@ const CategorySelector: React.FC<CategorySelectorProps> = ({
           : t('com_ui_create_category', { 0: trimmed })}
       </Button>
       {invalidReason && (
-        <span id={reasonId} className="text-sm text-text-secondary">
+        <span id={reasonId} className="text-text-secondary text-sm">
           {invalidReason}
         </span>
       )}
