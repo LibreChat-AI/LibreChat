@@ -157,19 +157,19 @@ function AssistantToolsDialog({
       }}
     >
       <OGDialogContent
-        className="gap-0 overflow-hidden overflow-y-auto bg-surface-dialog p-0 text-left max-sm:h-full sm:mx-7 sm:my-8 sm:max-w-2xl lg:max-w-5xl xl:max-w-7xl"
+        className="bg-surface-dialog gap-0 overflow-hidden overflow-y-auto p-0 text-left max-sm:h-full sm:mx-7 sm:my-8 sm:max-w-2xl lg:max-w-5xl xl:max-w-7xl"
         style={{ minHeight: '610px' }}
       >
         <div>
-          <div className="flex items-center justify-between border-b-[1px] border-border-medium px-4 pb-4 pt-5 sm:p-6">
+          <div className="border-border-medium flex items-center justify-between border-b-[1px] px-4 pt-5 pb-4 sm:p-6">
             <div className="flex items-center">
               <div className="text-center sm:text-left">
-                <OGDialogTitle className="text-lg font-medium leading-6 text-text-primary">
+                <OGDialogTitle className="text-lg leading-6 font-medium">
                   {isAgentTools
                     ? localize('com_nav_tool_dialog_agents')
                     : localize('com_nav_tool_dialog')}
                 </OGDialogTitle>
-                <OGDialogDescription className="text-sm text-text-secondary">
+                <OGDialogDescription className="text-text-secondary text-sm">
                   {localize('com_nav_tool_dialog_description')}
                 </OGDialogDescription>
               </div>
@@ -192,14 +192,14 @@ function AssistantToolsDialog({
           <div className="p-4 sm:p-6 sm:pt-4">
             <div className="mt-4 flex flex-col gap-4">
               <div className="flex items-center justify-center space-x-4">
-                <Search className="h-6 w-6 text-text-tertiary" aria-hidden="true" />
+                <Search className="text-text-tertiary h-6 w-6" aria-hidden="true" />
                 <Input
                   type="text"
                   value={searchValue}
                   onChange={handleSearch}
                   placeholder={localize('com_nav_tool_search')}
                   aria-label={localize('com_nav_tool_search')}
-                  className="w-64 rounded border border-border-medium bg-transparent px-2 py-1 text-text-primary focus:outline-none"
+                  className="border-border-medium text-text-primary w-64 rounded border bg-transparent px-2 py-1"
                 />
               </div>
               <div

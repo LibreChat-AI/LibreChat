@@ -26,7 +26,7 @@ export default function Section({
           aria-expanded={open}
           aria-controls={listId}
           onClick={() => setOpen((value) => !value)}
-          className="flex min-w-0 flex-1 items-center gap-1 rounded text-sm text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+          className="text-text-secondary hover:text-text-primary focus-visible:ring-ring-primary flex min-w-0 flex-1 items-center gap-1 rounded text-sm focus-visible:ring-2 focus-visible:outline-none"
         >
           <span>{label}</span>
           <span className="tabular-nums">{count}</span>

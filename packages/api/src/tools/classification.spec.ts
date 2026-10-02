@@ -637,6 +637,9 @@ describe('classification.ts', () => {
               environmentType: 'attached',
               environmentId: 'attached',
               bridgeWorkerId: workerId,
+              codeEnvironmentConfigSchema: {
+                limits: { defaultCommandTimeoutMs: 60_000, maxCommandTimeoutMs: 80_000 },
+              },
               ...(selected
                 ? {
                     codeWorkspace: {
@@ -670,6 +673,26 @@ describe('classification.ts', () => {
               result.toolDefinitions.find((tool) => tool.name === 'run_tools_with_bash')
                 ?.description,
             ).toContain('selected persistent workspace');
+            const definition = result.toolDefinitions.find(
+              (tool) => tool.name === 'run_tools_with_bash',
+            );
+            expect(definition?.parameters).toMatchObject({
+              properties: {
+                code: { description: expect.stringContaining('ATTACHED WORKSPACE EXECUTION') },
+                timeout: {
+                  default: 60_000,
+                  description: expect.stringContaining('Configured cap: 80000 milliseconds'),
+                },
+              },
+            });
+            expect(definition?.parameters?.properties?.code?.description).toContain(
+              '${LIBRECHAT_CODE_DATA_DIR:-/mnt/data}',
+            );
+            if (!definitionsOnly) {
+              expect(
+                result.additionalTools.find((tool) => tool.name === 'run_tools_with_bash')?.schema,
+              ).toEqual(definition?.parameters);
+            }
           } else expect(fetchSpy).not.toHaveBeenCalled();
         } finally {
           fetchSpy.mockRestore();

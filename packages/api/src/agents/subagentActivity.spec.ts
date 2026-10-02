@@ -1,6 +1,8 @@
 import { EventEmitter } from 'node:events';
+import { createServer, get } from 'node:http';
 import type { IConversation, IMessage } from '@librechat/data-schemas';
 import type { SubagentUpdateEvent } from '@librechat/agents';
+import type { AddressInfo } from 'node:net';
 import type { Response } from 'express';
 import type { SubagentActivityEnvelope, SubagentActivityUpdateEvent } from './subagentActivity';
 import type { IEventTransport } from '~/stream/interfaces/IJobStore';
@@ -666,7 +668,7 @@ describe('subagent activity stream authorization', () => {
     expect(transport.handlers.size).toBe(0);
   });
 
-  it('closes a slow SSE consumer instead of buffering later activity', async () => {
+  it('waits for drain before sending buffered activity and the terminal event', async () => {
     const transport = new TestTransport();
     const stream = new SubagentActivityStream(transport);
     const handler = createSubagentActivityStreamHandler(
@@ -688,7 +690,108 @@ describe('subagent activity stream authorization', () => {
     await handler(request(), res);
     await stream.publish(threadId, taskId, update());
 
+    await stream.publish(threadId, taskId, update({ label: 'buffered' }));
+    await stream.complete(threadId, taskId, 'completed');
+    expect(res.end).not.toHaveBeenCalled();
+    expect(res.chunks.join('')).not.toContain('buffered');
+    (res.write as jest.Mock).mockImplementation((chunk: string) => {
+      res.chunks.push(chunk);
+      return true;
+    });
+    res.emit('drain');
+    expect(res.chunks.join('')).toContain('buffered');
+    expect(res.chunks.join('')).toContain('"status":"completed"');
     expect(res.end).toHaveBeenCalledTimes(1);
+    expect(res.listenerCount('drain')).toBe(0);
     expect(transport.handlers.size).toBe(0);
+  });
+
+  it('closes an over-budget blocked reader so it can recover through replay', async () => {
+    const transport = new TestTransport();
+    const stream = new SubagentActivityStream(transport);
+    const handler = createSubagentActivityStreamHandler(
+      {
+        getConvoOwnership: jest.fn().mockResolvedValue(parent),
+        getSubagentThreadForParent: jest.fn().mockResolvedValue(child),
+        getMessages: jest.fn().mockResolvedValue([]),
+      },
+      stream,
+    );
+    const res = response();
+    (res.write as jest.Mock).mockImplementation((chunk: string) => {
+      res.chunks.push(chunk);
+      return false;
+    });
+    await handler(request(), res);
+    for (let index = 0; index < 110; index++) await stream.publish(threadId, taskId, update());
+    expect(res.end).toHaveBeenCalledTimes(1);
+    expect(res.listenerCount('drain')).toBe(0);
+    expect(transport.handlers.size).toBe(0);
+  });
+
+  it('streams a full snapshot and concurrent buffered frames through actual HTTP backpressure', async () => {
+    const unsubscribe = jest.fn();
+    const activity = (sequence: number, text: string): SubagentActivityEnvelope => ({
+      event: 'on_subagent_update',
+      data: update({ activitySequence: sequence, data: { text } }),
+    });
+    const handler = createSubagentActivityStreamHandler(
+      {
+        getConvoOwnership: jest.fn().mockResolvedValue(parent),
+        getSubagentThreadForParent: jest.fn().mockResolvedValue(child),
+        getMessages: jest.fn().mockResolvedValue([]),
+      },
+      {
+        subscribe: (_thread, _task, subscriber) => ({
+          unsubscribe,
+          ready: Promise.resolve().then(() => {
+            subscriber.onEvent({
+              event: 'subagent_activity_replay',
+              data: [activity(0, 'x'.repeat(52_000))],
+            });
+            for (let sequence = 1; sequence <= 4; sequence++)
+              subscriber.onEvent(activity(sequence, 'y'.repeat(10_000)));
+            subscriber.onDone?.({ final: true, subagentActivity: true, status: 'completed' });
+          }),
+        }),
+      },
+    );
+    let backpressure = 0;
+    const server = createServer((req, res) => {
+      const write = res.write.bind(res);
+      jest.spyOn(res, 'write').mockImplementation((...args: Parameters<typeof res.write>) => {
+        const accepted = write(...args);
+        if (!accepted) backpressure++;
+        return accepted;
+      });
+      Object.assign(req, { params: request().params, user: request().user });
+      void handler(req as ServerRequest, res as Response).catch(() => res.destroy());
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const chunks: string[] = [];
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const client = get(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, (res) => {
+          res.setEncoding('utf8');
+          res.on('data', (chunk: string) => chunks.push(chunk));
+          res.on('end', resolve);
+          res.on('error', reject);
+        });
+        client.on('error', reject);
+      });
+      expect(backpressure).toBeGreaterThan(0);
+      const frames = chunks
+        .join('')
+        .split('\n\n')
+        .filter((frame) => frame.startsWith('data: '))
+        .map((frame) => JSON.parse(frame.slice(6)));
+      expect(frames[0].data[0].data.activitySequence).toBe(0);
+      expect(frames.slice(1, 5).map((frame) => frame.data.activitySequence)).toEqual([1, 2, 3, 4]);
+      expect(frames[5]).toMatchObject({ final: true, status: 'completed' });
+      expect(unsubscribe).toHaveBeenCalled();
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

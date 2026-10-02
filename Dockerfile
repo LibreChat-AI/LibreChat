@@ -1,4 +1,4 @@
-# v0.8.8-rc4
+# v0.8.8
 
 # Base node image
 FROM node:24.16.0-alpine AS node
@@ -56,6 +56,7 @@ RUN \
 
 COPY --chown=node:node . .
 
+ARG VITE_MCP_SANDBOX_URL=
 RUN \
     # React client build with configurable memory
     NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}" npm run frontend && \

@@ -1,7 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import type { TStartupConfig } from 'librechat-data-provider';
-import { REDIRECT_PARAM, hasStoredRedirect } from '~/utils';
+import {
+  DEFAULT_APP_TITLE,
+  setDocumentTitle,
+  getPostLoginRedirect,
+  isRequiredTwoFactorSetupRoute,
+} from '~/utils';
 import { TranslationKeys, useLocalize } from '~/hooks';
 import { useGetStartupConfig } from '~/data-provider';
 import AuthLayout from '~/components/Auth/AuthLayout';
@@ -12,6 +17,7 @@ const headerMap: Record<string, TranslationKeys> = {
   '/forgot-password': 'com_auth_reset_password',
   '/reset-password': 'com_auth_reset_password',
   '/login/2fa': 'com_auth_verify_your_identity',
+  '/login/2fa/setup': 'com_auth_two_factor_setup_required',
 };
 
 export default function StartupLayout({ isAuthenticated }: { isAuthenticated?: boolean }) {
@@ -29,21 +35,35 @@ export default function StartupLayout({ isAuthenticated }: { isAuthenticated?: b
   const navigate = useNavigate();
   const location = useLocation();
 
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+
+  /**
+   * Only an already-authenticated arrival is this layout's to redirect. When authentication
+   * completes while an auth route is mounted, the auth context has already consumed the pending
+   * destination and navigated there; re-resolving it here would find nothing left and replace that
+   * destination with `/c/new`. Mandatory enrollment is the one arrival that stays put: the user
+   * holding a setup token is authenticated precisely until they enroll, so sending them on would
+   * bounce them straight back out of the screen the server is demanding they complete.
+   */
   useEffect(() => {
-    if (isAuthenticated) {
-      const hasPendingRedirect =
-        new URLSearchParams(window.location.search).has(REDIRECT_PARAM) || hasStoredRedirect();
-      if (!hasPendingRedirect) {
-        navigate('/c/new', { replace: true });
-      }
+    if (!isAuthenticated || isRequiredTwoFactorSetupRoute()) {
+      return;
     }
+    const destination =
+      getPostLoginRedirect(new URLSearchParams(window.location.search)) ?? '/c/new';
+    navigateRef.current(destination, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only by design; see comment above
+  }, []);
+
+  useEffect(() => {
     if (data) {
       setStartupConfig(data);
     }
-  }, [isAuthenticated, navigate, data]);
+  }, [data]);
 
   useEffect(() => {
-    document.title = startupConfig?.appTitle || 'LibreChat';
+    setDocumentTitle(startupConfig?.appTitle || DEFAULT_APP_TITLE, true);
   }, [startupConfig?.appTitle]);
 
   useEffect(() => {

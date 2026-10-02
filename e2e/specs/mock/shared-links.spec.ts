@@ -57,8 +57,8 @@ type PublicSharedPayload = {
 const randomSuffix = () => `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 
 async function uploadProviderFile(page: Page, fixture: UploadFixture) {
-  await page.getByRole('button', { name: 'Attach File Options' }).click();
-  const uploadOption = page.getByText('Upload to Provider', { exact: true });
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  const uploadOption = page.getByRole('button', { name: 'Upload to Provider', exact: true });
   await expect(uploadOption).toBeVisible();
 
   const fileChooserPromise = page.waitForEvent('filechooser');

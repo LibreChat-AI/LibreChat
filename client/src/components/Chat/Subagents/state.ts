@@ -67,6 +67,8 @@ export interface SubagentProgress {
   firstActivitySequence?: number;
   /** Bounded future frames waiting for an earlier sequence at the parent/detached handoff. */
   pendingSequencedEvents?: SubagentUpdateEvent[];
+  /** Earliest rejected host sequence. A detached reader requests replay after parent close. */
+  activityReplayFrom?: number;
   /** Whether the folded events cover the run from its beginning or only the
    *  forward-only suffix observed after opening a detached task stream. */
   coverage?: 'complete' | 'suffix';
@@ -625,6 +627,7 @@ const foldAcceptedSubagentEvents = (
     contentParts,
     aggregatorState,
     tickerState,
+    activityReplayFrom: previous?.activityReplayFrom,
     firstActivitySequence:
       previous?.subagentRunId === last.subagentRunId
         ? (previous.firstActivitySequence ??
@@ -648,6 +651,9 @@ const foldAcceptedSubagentEvents = (
 export function closeParentSubagentProgress(
   previous: SubagentProgress | null,
 ): SubagentProgress | null {
+  if (previous?.activityReplayFrom != null) {
+    return previous;
+  }
   if (previous?.pendingSequencedEvents == null || previous.pendingSequencedEvents.length === 0) {
     return previous;
   }
@@ -689,6 +695,7 @@ export function reduceSubagentProgress(
     pending.map((event) => event.activitySequence).filter(validActivitySequence),
   );
   const directEvents: SubagentUpdateEvent[] = [];
+  let replayFrom = sameRun ? previous?.activityReplayFrom : undefined;
   let expected = lastActivitySequence == null ? 0 : lastActivitySequence + 1;
   if (!waitForEarlierSequences && lastActivitySequence == null) {
     const firstSequence = [...pending, ...orderedEvents]
@@ -734,6 +741,8 @@ export function reduceSubagentProgress(
       ) {
         pending.push(event);
         pendingSequences.add(sequence);
+      } else {
+        replayFrom = Math.min(replayFrom ?? sequence, sequence);
       }
     } else {
       if (key != null) seen.add(key);
@@ -745,5 +754,7 @@ export function reduceSubagentProgress(
     expected = pending[0].activitySequence;
     drainPending();
   }
-  return foldAcceptedSubagentEvents(previous, directEvents, source, pending);
+  const progress = foldAcceptedSubagentEvents(previous, directEvents, source, pending);
+  if (progress == null || replayFrom === progress.activityReplayFrom) return progress;
+  return { ...progress, activityReplayFrom: replayFrom };
 }

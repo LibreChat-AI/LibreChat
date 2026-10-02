@@ -49,11 +49,13 @@ jest.mock('~/Providers', () => {
     ChatContext: Context,
     AddedChatContext: Context,
     ChatFormProvider: Passthrough,
+    ComposerRestoreProvider: Passthrough,
     useFileMapContext: () => new Map(),
   };
 });
 
 jest.mock('~/data-provider', () => ({
+  useProjectQuery: () => ({ data: undefined }),
   useGetMessagesByConvoId: () => ({
     data: [{ messageId: 'message-1' }],
     isLoading: false,
@@ -102,22 +104,6 @@ describe('ChatView child-thread execution identity', () => {
     mockConversation = {
       conversationId: 'child-thread',
       title: 'Graph child',
-      subagentThread: {
-        parentConversationId: 'parent-thread',
-      },
-    };
-
-    render(<ChatView />);
-
-    expect(screen.queryByTestId('chat-form')).not.toBeInTheDocument();
-    expect(screen.getByRole('note')).toHaveTextContent('com_ui_subagent_thread_read_only');
-    expect(screen.getByTestId('header')).toHaveAttribute('data-read-only', 'true');
-  });
-
-  it('keeps a saved-agent child view-only after it settles', () => {
-    mockConversation = {
-      conversationId: 'child-thread',
-      title: 'Saved agent child',
       subagentThread: {
         parentConversationId: 'parent-thread',
       },

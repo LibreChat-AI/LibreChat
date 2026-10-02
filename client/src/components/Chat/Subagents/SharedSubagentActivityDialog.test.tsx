@@ -58,18 +58,25 @@ jest.mock('./SubagentConversation', () => ({
       trigger: { summary: string };
       activity: { items: Array<{ type: string; text?: string }> };
     }>;
-  }) => (
-    <div data-testid="subagent-conversation">
-      {turns.map((turn) => (
-        <div key={turn.taskId}>
-          {turn.trigger.summary}
-          {turn.activity.items.map((item, index) => (
-            <span key={index}>{item.text ?? item.type}</span>
-          ))}
-        </div>
-      ))}
-    </div>
-  ),
+  }) => {
+    const { MessageSurfaceContext } = jest.requireActual('~/components/Chat/Messages/ui/surface');
+    return (
+      <MessageSurfaceContext.Consumer>
+        {(surface: string) => (
+          <div data-testid="subagent-conversation" data-message-surface={surface}>
+            {turns.map((turn) => (
+              <div key={turn.taskId}>
+                {turn.trigger.summary}
+                {turn.activity.items.map((item, index) => (
+                  <span key={index}>{item.text ?? item.type}</span>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </MessageSurfaceContext.Consumer>
+    );
+  },
 }));
 
 const persistedContent = (text: string): TMessageContentParts[] => [
@@ -132,6 +139,10 @@ describe('SharedSubagentActivityDialog', () => {
     fireEvent.click(trigger);
 
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-message-surface',
+      'bg-surface-dialog',
+    );
     expect(screen.getByText('Shared review complete.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(trigger).toHaveFocus());

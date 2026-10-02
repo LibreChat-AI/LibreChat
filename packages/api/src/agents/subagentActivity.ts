@@ -420,8 +420,81 @@ const notFound = (res: Response): void => {
   res.status(404).json({ error: 'Conversation not found' });
 };
 
-const writeSse = (res: Response, value: unknown): boolean =>
-  !res.writableEnded && res.write(`data: ${JSON.stringify(value)}\n\n`);
+/** Node accepts a write that returns false. Hold later frames until drain instead of
+ * closing a healthy socket. Queued activity has the same resource budget as replay. */
+function createActivityWriter(res: Response, onClose: () => void) {
+  const pending: Array<{ frame: string; bytes: number }> = [];
+  let pendingBytes = 0;
+  let blocked = false;
+  let ending = false;
+  let stopped = false;
+  let terminal: string | undefined;
+  const dispose = () => {
+    stopped = true;
+    pending.length = 0;
+    pendingBytes = 0;
+    terminal = undefined;
+    res.off('drain', flush);
+  };
+  const finish = () => {
+    dispose();
+    onClose();
+    if (!res.writableEnded && !res.destroyed) res.end();
+  };
+  const write = (frame: string) => {
+    if (res.writableEnded || res.destroyed) {
+      dispose();
+      onClose();
+      return;
+    }
+    blocked = !res.write(frame);
+  };
+  function flush(): void {
+    if (stopped) return;
+    blocked = false;
+    while (pending.length > 0 && !blocked && !stopped) {
+      const next = pending.shift()!;
+      pendingBytes -= next.bytes;
+      write(next.frame);
+    }
+    if (blocked || stopped || pending.length > 0) return;
+    if (terminal != null) {
+      const frame = terminal;
+      terminal = undefined;
+      write(frame);
+    }
+    if (ending && !blocked && !stopped) finish();
+  }
+  res.on('drain', flush);
+  return {
+    dispose,
+    isEnding: () => ending,
+    send: (value: unknown, final = false): void => {
+      if (stopped || ending) return;
+      const frame = `data: ${JSON.stringify(value)}\n\n`;
+      if (final) {
+        ending = true;
+        terminal = frame;
+      } else {
+        const bytes = Buffer.byteLength(frame, 'utf8');
+        if (
+          pending.length >= SUBAGENT_ACTIVITY_LIMITS.items ||
+          pendingBytes + bytes > SUBAGENT_ACTIVITY_LIMITS.bytes
+        ) {
+          /** A stalled reader cannot allocate unbounded memory; reconnect replays Redis. */
+          finish();
+          return;
+        }
+        pending.push({ frame, bytes });
+        pendingBytes += bytes;
+      }
+      if (!blocked) flush();
+    },
+    heartbeat: (): void => {
+      if (!stopped && !ending && !blocked) write(': keep-alive\n\n');
+    },
+  };
+}
 
 /** Event-bound children use a private binding id as their internal tool-call
  * identity. Keep that delivery identity behind the parent-authorized API
@@ -478,6 +551,7 @@ export function createSubagentActivityStreamHandler(
     let closed = req.destroyed || res.destroyed;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     let subscription: SubagentActivitySubscription | undefined;
+    let writer: ReturnType<typeof createActivityWriter> | undefined;
     const dispose = () => {
       if (heartbeat != null) clearInterval(heartbeat);
       subscription?.unsubscribe();
@@ -485,6 +559,7 @@ export function createSubagentActivityStreamHandler(
     const close = () => {
       closed = true;
       dispose();
+      writer?.dispose();
     };
     req.once('aborted', close);
     res.once('close', close);
@@ -522,39 +597,27 @@ export function createSubagentActivityStreamHandler(
       res.setHeader('X-Accel-Buffering', 'no');
       res.flushHeaders?.();
 
-      heartbeat = setInterval(() => {
-        if (!res.writableEnded && !res.write(': keep-alive\n\n')) {
-          close();
-          res.end();
-        }
-      }, HEARTBEAT_MS);
+      writer = createActivityWriter(res, close);
+      heartbeat = setInterval(() => writer?.heartbeat(), HEARTBEAT_MS);
       heartbeat.unref?.();
       try {
         subscription = stream.subscribe(threadId, taskId, {
           onEvent: (event) => {
-            if (
-              !writeSse(
-                res,
-                publicActivityEnvelope(
-                  event,
-                  threadId,
-                  lineage?.parentToolCallId?.startsWith('event-binding:') === true,
-                ),
-              )
-            ) {
-              close();
-              res.end();
-            }
+            writer?.send(
+              publicActivityEnvelope(
+                event,
+                threadId,
+                lineage?.parentToolCallId?.startsWith('event-binding:') === true,
+              ),
+            );
           },
           onDone: (event) => {
-            close();
-            writeSse(res, event);
-            res.end();
+            dispose();
+            writer?.send(event, true);
           },
           onError: () => {
-            close();
-            writeSse(res, { error: 'Subagent activity stream unavailable' });
-            res.end();
+            dispose();
+            writer?.send({ error: 'Subagent activity stream unavailable' }, true);
           },
         });
         await subscription.ready;
@@ -564,23 +627,25 @@ export function createSubagentActivityStreamHandler(
         dispose();
         throw error;
       }
-      if (closed || res.destroyed) return;
-      const durableTerminal = await terminalTaskStatus(deps, userId, threadId, taskId, tenantId);
-      if (closed || res.destroyed) return;
-      if (durableTerminal != null) {
-        close();
-        writeSse(res, {
-          final: true,
-          subagentActivity: true,
-          status: durableTerminal,
-        });
-        res.end();
+      if (closed || res.destroyed || writer.isEnding()) {
+        dispose();
         return;
       }
-      if (!writeSse(res, { ready: true })) {
-        close();
-        res.end();
+      const durableTerminal = await terminalTaskStatus(deps, userId, threadId, taskId, tenantId);
+      if (closed || res.destroyed || writer.isEnding()) return;
+      if (durableTerminal != null) {
+        dispose();
+        writer.send(
+          {
+            final: true,
+            subagentActivity: true,
+            status: durableTerminal,
+          },
+          true,
+        );
+        return;
       }
+      writer.send({ ready: true });
     } catch (error) {
       if (closed || res.destroyed) return;
       logger.error('[subagentActivity] Failed to open child activity stream', error);
@@ -588,8 +653,8 @@ export function createSubagentActivityStreamHandler(
         res.status(500).json({ error: 'Failed to open subagent activity stream' });
         return;
       }
-      writeSse(res, { error: 'Subagent activity stream unavailable' });
-      res.end();
+      dispose();
+      writer?.send({ error: 'Subagent activity stream unavailable' }, true);
     }
   };
 }

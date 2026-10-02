@@ -10,9 +10,9 @@ import {
 import type { AgentToolOptions, MCPOptions } from 'librechat-data-provider';
 import type { ParsedServerConfig } from '~/mcp/types';
 import type { RequestBody } from '~/types';
+import { isApiKeyHeaderOverridden, isGeneratedUserApiKeyVariable } from './headers';
 import { isDirectOpenIDBearerRecoveryEnabled } from '~/mcp/openid';
 import { ALLOWED_BODY_FIELDS, isPluginSourced } from '~/utils/env';
-import { isApiKeyHeaderOverridden } from './headers';
 import { isEnabled } from '~/utils/common';
 
 export const mcpToolPattern: RegExp = new RegExp(`^.+${Constants.mcp_delimiter}.+$`);
@@ -296,12 +296,18 @@ function requiredCustomUserVars(config: UserScopedConnectionConfig): string[] {
   const keys = Object.keys(config.customUserVars ?? {});
   if (
     config.apiKey?.source !== 'user' ||
-    !isApiKeyHeaderOverridden(config.apiKey, config.requestHeaders) ||
-    placeholderBearingFields(config).some((value) => hasPlaceholder(value, /\{\{MCP_API_KEY\}\}/))
+    !isApiKeyHeaderOverridden(config.apiKey, config.requestHeaders)
   ) {
     return keys;
   }
-  return keys.filter((key) => key !== 'MCP_API_KEY');
+  const fields = placeholderBearingFields(config);
+  return keys.filter((key) => {
+    if (!isGeneratedUserApiKeyVariable(key)) {
+      return true;
+    }
+    const pattern = new RegExp(`\\{\\{${key}\\}\\}`);
+    return fields.some((value) => hasPlaceholder(value, pattern));
+  });
 }
 
 /** Checks the effective chat requirements, without weakening catalog-only credentials. */

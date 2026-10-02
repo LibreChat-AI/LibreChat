@@ -38,7 +38,7 @@ const MenuItem: FC<MenuItemProps> = ({
       aria-label={title}
       data-testid="chat-menu-item"
       className={cn(
-        'group m-1.5 flex cursor-pointer gap-2 rounded px-5 py-2.5 !pr-3 text-sm !opacity-100 hover:bg-surface-hover focus:ring-0 radix-disabled:pointer-events-none radix-disabled:opacity-50 md:min-w-[240px]',
+        'group hover:bg-surface-hover m-1.5 flex cursor-pointer gap-2 rounded px-5 py-2.5 !pr-3 text-sm !opacity-100 focus:ring-0 data-[disabled]:pointer-events-none data-[disabled]:opacity-50 md:min-w-[240px]',
         className || '',
       )}
       tabIndex={0} // Change to 0 to make it focusable
@@ -59,7 +59,7 @@ const MenuItem: FC<MenuItemProps> = ({
             {icon != null ? icon : null}
             <div className={cn('truncate', textClassName)}>
               {title}
-              <div className="text-token-text-tertiary">{description}</div>
+              <div className="text-text-tertiary">{description}</div>
             </div>
           </div>
         </div>

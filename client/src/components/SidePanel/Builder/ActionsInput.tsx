@@ -217,7 +217,7 @@ export default function ActionsInput({
         <div className="mb-1 flex flex-wrap items-center justify-between gap-4">
           <label
             htmlFor="example-schema"
-            className="text-token-text-primary whitespace-nowrap font-medium"
+            className="text-text-primary font-medium whitespace-nowrap"
           >
             {localize('com_ui_schema')}
           </label>
@@ -226,7 +226,7 @@ export default function ActionsInput({
             <select
               id="example-schema"
               onChange={(e) => console.log(e.target.value)}
-              className="border-token-border-medium h-8 min-w-[100px] rounded-lg border bg-transparent px-2 py-0 text-sm"
+              className="border-border-medium h-8 min-w-[100px] rounded-lg border bg-transparent px-2 py-0 text-sm"
             >
               <option value="label">{localize('com_ui_examples')}</option>
               <option value="0">Weather (JSON)</option>
@@ -236,7 +236,7 @@ export default function ActionsInput({
           </div>
           */}
         </div>
-        <div className="border-token-border-medium mb-4 w-full overflow-hidden rounded-lg border bg-surface-primary ring-0 hover:border-border-heavy">
+        <div className="border-border-medium bg-surface-primary hover:border-border-heavy mb-4 w-full overflow-hidden rounded-lg border ring-0">
           <div className="relative">
             <textarea
               id="schemaInput"
@@ -244,12 +244,12 @@ export default function ActionsInput({
               onChange={handleInputChange}
               spellCheck="false"
               placeholder={localize('com_ui_enter_openapi_schema')}
-              className="text-token-text-primary block h-96 w-full bg-transparent p-2 font-mono text-xs outline-none focus:ring-1 focus:ring-border-light"
+              className="text-text-primary focus:ring-border-light block h-96 w-full bg-transparent p-2 font-mono text-xs outline-hidden focus:ring-1"
             />
             {/* TODO: format input button */}
           </div>
           {validationResult && validationResult.message !== 'OpenAPI spec is valid.' && (
-            <div className="border-token-border-light border-t p-2 text-text-destructive">
+            <div className="border-border-light text-text-destructive border-t p-2">
               {validationResult.message.split('\n').map((line: string, i: number) => (
                 <div key={i}>{line}</div>
               ))}
@@ -260,7 +260,7 @@ export default function ActionsInput({
       {!!data && (
         <div className="my-2">
           <div className="flex items-center">
-            <label className="text-token-text-primary block font-medium">
+            <label className="text-text-primary block font-medium">
               {localize('com_assistants_available_actions')}
             </label>
           </div>
@@ -270,15 +270,15 @@ export default function ActionsInput({
       <div className="relative my-1">
         <ActionCallback action_id={action?.action_id} />
         <div className="mb-1.5 flex items-center">
-          <label className="text-token-text-primary block font-medium">
+          <label className="text-text-primary block font-medium">
             {localize('com_ui_privacy_policy_url')}
           </label>
         </div>
-        <div className="border-token-border-medium flex h-9 w-full rounded-lg border bg-surface-primary hover:border-border-heavy">
+        <div className="border-border-medium bg-surface-primary hover:border-border-heavy flex h-9 w-full rounded-lg border">
           <input
             type="text"
             placeholder="https://api.example-weather-app.com/privacy"
-            className="flex-1 rounded-lg bg-transparent px-3 py-1.5 text-sm outline-none placeholder:text-text-secondary-alt focus:ring-1 focus:ring-border-light"
+            className="placeholder:text-text-secondary-alt focus:ring-border-light flex-1 rounded-lg bg-transparent px-3 py-1.5 text-sm outline-hidden focus:ring-1"
           />
         </div>
       </div>
@@ -286,7 +286,7 @@ export default function ActionsInput({
         <button
           disabled={!functions || !functions.length}
           onClick={saveAction}
-          className="mt-1 flex min-w-[100px] items-center justify-center rounded bg-surface-submit px-4 py-2 font-semibold text-text-on-status hover:bg-surface-submit-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-text-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface-primary disabled:opacity-50"
+          className="bg-surface-submit text-text-on-status hover:bg-surface-submit-hover focus-visible:ring-text-primary focus-visible:ring-offset-surface-primary mt-1 flex min-w-[100px] items-center justify-center rounded px-4 py-2 font-semibold focus:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50"
           type="button"
         >
           {submitContext()}

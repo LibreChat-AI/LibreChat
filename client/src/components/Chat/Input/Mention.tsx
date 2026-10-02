@@ -181,11 +181,11 @@ function MentionContent({
 
   return (
     <div className="absolute bottom-28 z-10 w-full space-y-2">
-      <div className="popover border-token-border-light rounded-2xl border bg-surface-secondary p-2 shadow-lg">
+      <div className="popover border-border-light bg-surface-secondary rounded-2xl border p-2 shadow-lg">
         <Input
           ref={initInputRef}
           placeholder={localize(placeholder)}
-          className="mb-1 h-auto w-full rounded-none border-0 bg-surface-secondary p-2 text-sm text-text-primary focus:outline-none"
+          className="bg-surface-secondary text-text-primary mb-1 h-auto w-full rounded-none border-0 p-2 text-sm"
           autoComplete="off"
           value={searchValue}
           onKeyDown={(e) => {
@@ -235,7 +235,7 @@ function MentionContent({
           }}
         />
         {open && isLoading && matches.length === 0 && (
-          <div className="flex h-32 items-center justify-center text-text-primary">
+          <div className="text-text-primary flex h-32 items-center justify-center">
             <Spinner />
           </div>
         )}

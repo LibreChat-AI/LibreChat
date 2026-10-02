@@ -550,15 +550,9 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       }
       const composerText = e.currentTarget.value;
       if (composerText.trim().length > 0) {
-        // The composer IS the free-form answer box: Enter submits the typed
-        // text (before useTextarea's submitting-lock can swallow it). Not for
-        // a batch, which answers in its card — its Enter belongs to the normal
-        // send path, so leave the event untouched rather than preventDefault
-        // an event we are about to decline.
-        if (e.key === 'Enter' && !e.shiftKey && !batchMode) {
-          e.preventDefault();
-          return submitText(composerText);
-        }
+        /* Typed answers follow the shared composer binding resolver. ChatForm
+           keeps that path live during a single-question pause, so Enter-to-send,
+           its inverse modifier, and a customized submit chord stay consistent. */
         return false;
       }
       /**
@@ -611,12 +605,10 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       active,
       options,
       selected,
-      batchMode,
       multiSelect,
       popoverVisible,
       canSubmit,
       submit,
-      submitText,
       toggleChecked,
       collapse,
       setSelected,

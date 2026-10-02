@@ -1,6 +1,6 @@
 {
   "name": "@librechat/client",
-  "version": "0.4.79",
+  "version": "0.4.82",
   "description": "React components for LibreChat",
   "repository": {
     "type": "git",
@@ -21,7 +21,9 @@
       }
     },
     "./tailwind-preset": "./tailwind.preset.cjs",
+    "./theme.css": "./dist/tokens.css",
     "./style.css": "./dist/style.css",
+    "./fonts/*": "./dist/fonts/*",
     "./package.json": "./package.json"
   },
   "files": [
@@ -71,7 +73,7 @@
     "@tanstack/react-virtual": "^3.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "dompurify": "^3.4.0",
+    "dompurify": "^3.4.16",
     "framer-motion": "^12.40.0",
     "i18next": "^24.2.2 || ^25.3.2",
     "i18next-browser-languagedetector": "^8.2.0",
@@ -89,7 +91,9 @@
     "react-i18next": "^15.4.0 || ^15.6.0",
     "react-resizable-panels": "^4.7.4",
     "react-textarea-autosize": "^8.4.0",
-    "tailwind-merge": "^1.9.1"
+    "tailwind-merge": "^3.7.0",
+    "tailwindcss": "^4.3.3",
+    "tailwindcss-animate": "^1.0.5"
   },
   "devDependencies": {
     "@babel/core": "^7.28.5",
@@ -98,7 +102,7 @@
     "@babel/preset-typescript": "^7.28.5",
     "@tanstack/react-query": "^4.28.0",
     "@tanstack/react-table": "^8.21.3",
-    "@tanstack/react-virtual": "^3.13.13",
+    "@tanstack/react-virtual": "3.13.23",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^14.0.0",
     "@tsdown/css": "^0.22.2",
@@ -121,8 +125,8 @@
     "react-dom": "^18.2.0",
     "react-i18next": "^15.4.0",
     "rimraf": "^6.1.3",
-    "tailwindcss": "^3.4.1",
-    "tailwindcss-radix": "^2.8.0",
+    "tailwindcss": "^4.3.3",
+    "tailwindcss-animate": "^1.0.5",
     "tsdown": "^0.22.2",
     "typescript": "^5.9.3"
   }

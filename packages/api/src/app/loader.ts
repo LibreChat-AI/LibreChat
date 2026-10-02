@@ -14,6 +14,7 @@ import {
 } from 'librechat-data-provider';
 import type { TCustomConfig, TEndpoint } from 'librechat-data-provider';
 import type { ZodIssue } from 'zod';
+import { checkConfigTheme } from './theme';
 
 type CustomParams = NonNullable<TEndpoint['customParams']>;
 type CustomParamDefinition = NonNullable<CustomParams['paramDefinitions']>[number];
@@ -154,6 +155,21 @@ function isRemoteConfigPath(configPath: string): boolean {
   return /^https?:\/\//.test(configPath);
 }
 
+function reportThemeCheck(configPath: string, errors: string[], warnings: string[]): void {
+  if (errors.length > 0) {
+    logger.warn(
+      `Ignoring interface.theme in ${configPath}; the default theme applies instead:\n` +
+        errors.map((error) => `- ${error}`).join('\n'),
+    );
+  }
+  if (warnings.length > 0) {
+    logger.warn(
+      `interface.theme in ${configPath} names tokens this version ignores:\n` +
+        warnings.map((warning) => `- ${warning}`).join('\n'),
+    );
+  }
+}
+
 /** Creates one process-local custom-config reader. */
 export function createCustomConfigLoader({
   defaultConfigPath,
@@ -241,6 +257,10 @@ export function createCustomConfigLoader({
           );
         }
       }
+
+      const themeCheck = checkConfigTheme(loadedConfig);
+      loadedConfig = themeCheck.config;
+      reportThemeCheck(configPath, themeCheck.errors, themeCheck.warnings);
 
       setMaxSubagents(getConfiguredMaxSubagents(loadedConfig));
       const result = configSchema.strict().safeParse(loadedConfig);

@@ -29,10 +29,12 @@ test('keeps uploaded user images on the right side of a wider message bubble', a
   await page.goto(NEW_CHAT_PATH);
   await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
-  await page.getByRole('button', { name: 'Attach File Options' }).click();
-  const chooser = page.waitForEvent('filechooser');
-  await page.getByText('Upload to Provider').click();
-  const fileChooser = await chooser;
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  const palette = page.getByRole('dialog', { name: 'Attach and tools' });
+  const [fileChooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    palette.getByRole('button', { name: 'Upload to Provider', exact: true }).click(),
+  ]);
   const upload = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === '/api/files/images' &&

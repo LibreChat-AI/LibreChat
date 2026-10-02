@@ -150,6 +150,58 @@ describe('buildEndpointOption - defaultParamsEndpoint parsing', () => {
     expect(parsedResult.temperature).toBe(0.7);
   });
 
+  describe('request-scoped reasoning override wiring', () => {
+    it('passes an accepted override through to model_parameters', async () => {
+      mockGetEndpointsConfig.mockResolvedValue({});
+      mockAgentBuildOptions.mockReturnValueOnce({
+        endpoint: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-5.1', reasoning_effort: 'low' },
+        agent: Promise.resolve({ provider: EModelEndpoint.openAI, model: 'gpt-5.1' }),
+      });
+      const req = createReq(
+        {
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-5.1',
+          reasoningOverride: { key: 'reasoning_effort', value: 'high' },
+        },
+        { modelSpecs: null },
+      );
+      req.baseUrl = '/api/agents/chat';
+      const next = jest.fn();
+
+      await buildEndpointOption(req, createRes(), next);
+
+      expect(req.body.endpointOption.model_parameters.reasoning_effort).toBe('high');
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('turns a rejected override into an error response without calling next', async () => {
+      mockGetEndpointsConfig.mockResolvedValue({});
+      mockAgentBuildOptions.mockReturnValueOnce({
+        endpoint: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-5.1', reasoning_effort: 'low' },
+        agent: Promise.resolve({ provider: EModelEndpoint.openAI, model: 'gpt-5.1' }),
+      });
+      const req = createReq(
+        {
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-5.1',
+          reasoningOverride: { key: 'effort', value: 'high' },
+        },
+        { modelSpecs: null },
+      );
+      req.baseUrl = '/api/agents/chat';
+      const res = createRes();
+      const next = jest.fn();
+      const { handleError } = require('@librechat/api');
+
+      await buildEndpointOption(req, res, next);
+
+      expect(handleError).toHaveBeenCalledWith(res, { text: 'Invalid reasoning override' });
+      expect(next).not.toHaveBeenCalled();
+    });
+  });
+
   it('should strip bedrock region from custom endpoint without defaultParamsEndpoint', async () => {
     mockGetEndpointsConfig.mockResolvedValue({
       MyEndpoint: {

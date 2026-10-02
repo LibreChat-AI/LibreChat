@@ -1,7 +1,7 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { render, screen } from '@testing-library/react';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
+import { act, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   Constants,
@@ -11,8 +11,9 @@ import {
   type TMessage,
 } from 'librechat-data-provider';
 import {
-  MessagesViewContext,
-  type MessagesViewContextValue,
+  MessagesOperationsContext,
+  MessagesSubmittingContext,
+  type MessagesOperations,
 } from '~/Providers/MessagesViewContext';
 import { hasCopyableText } from '~/hooks/Messages/useCopyToClipboard';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
@@ -62,27 +63,28 @@ function renderHoverButtons({
   const { container } = render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot initializeState={initializeState}>
-        <MessagesViewContext.Provider
-          value={{ getMessages: () => thread } as unknown as MessagesViewContextValue}
+        <MessagesOperationsContext.Provider
+          value={{ getMessages: () => thread } as unknown as MessagesOperations}
         >
-          <MemoryRouter>
-            <HoverButtons
-              index={0}
-              isLast={isLast}
-              isEditing={false}
-              message={message}
-              conversation={targetConversation}
-              isSubmitting={isSubmitting}
-              enterEdit={jest.fn()}
-              regenerate={jest.fn()}
-              handleContinue={jest.fn()}
-              copyToClipboard={jest.fn()}
-              getCanCopy={getCanCopy}
-              latestMessageId={latestMessageId}
-              handleFeedback={handleFeedback}
-            />
-          </MemoryRouter>
-        </MessagesViewContext.Provider>
+          <MessagesSubmittingContext.Provider value={isSubmitting}>
+            <MemoryRouter>
+              <HoverButtons
+                index={0}
+                isLast={isLast}
+                isEditing={false}
+                message={message}
+                conversation={targetConversation}
+                enterEdit={jest.fn()}
+                regenerate={jest.fn()}
+                handleContinue={jest.fn()}
+                copyToClipboard={jest.fn()}
+                getCanCopy={getCanCopy}
+                latestMessageId={latestMessageId}
+                handleFeedback={handleFeedback}
+              />
+            </MemoryRouter>
+          </MessagesSubmittingContext.Provider>
+        </MessagesOperationsContext.Provider>
       </RecoilRoot>
     </QueryClientProvider>,
   );
@@ -530,6 +532,76 @@ describe('HoverButtons edit affordance', () => {
 
     expect(container.querySelector(`#edit-${compactionMessage.messageId}`)).not.toBeNull();
     expect(screen.getByTestId('regenerate-generation-button')).toBeEnabled();
+  });
+});
+
+/**
+ * The row above these controls no longer re-renders when a send starts or settles,
+ * so the rerun gate has to follow the pane's submission state on its own.
+ */
+describe('HoverButtons submission state', () => {
+  const assistantMessage = {
+    ...userMessage,
+    messageId: 'assistant-earlier',
+    parentMessageId: userMessage.messageId,
+    isCreatedByUser: false,
+    text: 'An earlier answer',
+  } as TMessage;
+
+  let setSubmitting: (value: boolean) => void = () => undefined;
+  /** Holds the pane's submission state; the toolbar element itself never changes. */
+  function SubmittingHost({ children }: { children: React.ReactNode }) {
+    const [submitting, setState] = React.useState(false);
+    setSubmitting = setState;
+    return (
+      <MessagesSubmittingContext.Provider value={submitting}>
+        {children}
+      </MessagesSubmittingContext.Provider>
+    );
+  }
+
+  it('withholds and restores rerun on a settled row as a send starts and ends', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const buttons = (
+      <HoverButtons
+        index={0}
+        isLast={true}
+        isEditing={false}
+        message={assistantMessage}
+        conversation={conversation}
+        enterEdit={jest.fn()}
+        regenerate={jest.fn()}
+        handleContinue={jest.fn()}
+        copyToClipboard={jest.fn()}
+        getCanCopy={() => true}
+        latestMessageId="assistant-latest"
+      />
+    );
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RecoilRoot initializeState={({ set }) => set(store.textToSpeech, false)}>
+          <MessagesOperationsContext.Provider
+            value={
+              {
+                getMessages: () => [userMessage, assistantMessage],
+              } as unknown as MessagesOperations
+            }
+          >
+            <MemoryRouter>
+              <SubmittingHost>{buttons}</SubmittingHost>
+            </MemoryRouter>
+          </MessagesOperationsContext.Provider>
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId('regenerate-generation-button')).toBeInTheDocument();
+
+    act(() => setSubmitting(true));
+    expect(screen.queryByTestId('regenerate-generation-button')).toBeNull();
+
+    act(() => setSubmitting(false));
+    expect(screen.getByTestId('regenerate-generation-button')).toBeInTheDocument();
   });
 });
 

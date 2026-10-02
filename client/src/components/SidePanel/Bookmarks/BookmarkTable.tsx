@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useId, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { Button, FilterInput, OGDialogTrigger, TooltipAnchor } from '@librechat/client';
 import type { ConversationTagsResponse, TConversationTag } from 'librechat-data-provider';
 import { BookmarkContext, useBookmarkContext } from '~/Providers/BookmarkContext';
 import { BookmarkEditDialog } from '~/components/Bookmarks';
+import { PanelContent, PanelHeader } from '~/components/ui';
 import BookmarkCardSkeleton from './BookmarkCardSkeleton';
-import { PanelContent } from '~/components/ui';
 import BookmarkList from './BookmarkList';
 import { useLocalize } from '~/hooks';
 
@@ -20,6 +20,7 @@ const removeDuplicates = (bookmarks: TConversationTag[]) => {
 
 const BookmarkTable = ({ isLoading = false }: { isLoading?: boolean }) => {
   const localize = useLocalize();
+  const headingId = useId();
   const [rows, setRows] = useState<ConversationTagsResponse>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
@@ -46,40 +47,41 @@ const BookmarkTable = ({ isLoading = false }: { isLoading?: boolean }) => {
 
   return (
     <BookmarkContext.Provider value={{ bookmarks }}>
-      <div
-        role="region"
-        aria-label={localize('com_ui_bookmarks')}
-        className="flex min-h-0 flex-1 flex-col"
-      >
-        {/* Sticky header: filter + create */}
-        <div className="flex shrink-0 items-center gap-2 px-3 pb-2">
-          <FilterInput
-            inputId="bookmarks-filter"
-            label={localize('com_ui_bookmarks_filter')}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            containerClassName="flex-1"
-          />
-          <BookmarkEditDialog context="BookmarkTable" open={createOpen} setOpen={setCreateOpen}>
-            <OGDialogTrigger asChild>
-              <TooltipAnchor
-                description={localize('com_ui_bookmarks_new')}
-                side="bottom"
-                render={
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="size-9 shrink-0 bg-transparent"
-                    aria-label={localize('com_ui_bookmarks_new')}
-                    onClick={() => setCreateOpen(true)}
-                  >
-                    <Plus className="size-4" aria-hidden="true" />
-                  </Button>
-                }
-              />
-            </OGDialogTrigger>
-          </BookmarkEditDialog>
-        </div>
+      <div role="region" aria-labelledby={headingId} className="flex min-h-0 flex-1 flex-col">
+        {/* Sticky header: title, create, filter */}
+        <PanelHeader
+          title={localize('com_ui_bookmarks')}
+          titleId={headingId}
+          action={
+            <BookmarkEditDialog context="BookmarkTable" open={createOpen} setOpen={setCreateOpen}>
+              <OGDialogTrigger asChild>
+                <TooltipAnchor
+                  description={localize('com_ui_bookmarks_new')}
+                  side="bottom"
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 shrink-0"
+                      aria-label={localize('com_ui_bookmarks_new')}
+                      onClick={() => setCreateOpen(true)}
+                    >
+                      <Plus className="size-4" aria-hidden="true" />
+                    </Button>
+                  }
+                />
+              </OGDialogTrigger>
+            </BookmarkEditDialog>
+          }
+          search={
+            <FilterInput
+              inputId="bookmarks-filter"
+              label={localize('com_ui_bookmarks_filter')}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          }
+        />
 
         {/* Only the list scrolls */}
         <PanelContent

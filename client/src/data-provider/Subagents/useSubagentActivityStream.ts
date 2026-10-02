@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { SSE } from 'sse.js';
+import { selectAtom } from 'jotai/utils';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, StepEvents, apiBaseUrl } from 'librechat-data-provider';
@@ -52,6 +53,14 @@ export default function useSubagentActivityStream(
     selection.event?.progressKey ?? selection.toolCallId,
     selection.partIndex,
   );
+  const replayFrom = useAtomValue(
+    useMemo(
+      () =>
+        selectAtom(subagentProgressByToolCallId(key), (progress) => progress?.activityReplayFrom),
+      [key],
+    ),
+  );
+  const reconnectRef = useRef<(() => void) | undefined>();
   const setProgress = useSetAtom(subagentProgressByToolCallId(key));
   const parentStreamOpen = useAtomValue(subagentParentStreamOpenByToolCallId(key));
   const setParentStreamOpen = useSetAtom(subagentParentStreamOpenByToolCallId(key));
@@ -66,6 +75,10 @@ export default function useSubagentActivityStream(
       setProgress(closeParentSubagentProgress);
     }
   }, [parentStreamOpen, setProgress]);
+
+  useEffect(() => {
+    if (replayFrom != null && !parentStreamOpen) reconnectRef.current?.();
+  }, [replayFrom, parentStreamOpen]);
 
   useEffect(() => {
     if (!selection.isSubmitting) return;
@@ -149,10 +162,40 @@ export default function useSubagentActivityStream(
               firstSequence != null &&
               firstSequence < previous.firstActivitySequence;
             const base = sameRun && !addsEarlierActivity ? previous : null;
-            return (
-              reduceSubagentProgress(base, events, 'detached', parentStreamOpenRef.current) ??
-              previous
+            const progress = reduceSubagentProgress(
+              base,
+              events,
+              'detached',
+              parentStreamOpenRef.current,
             );
+            if (progress == null) return previous;
+            const missing = previous?.activityReplayFrom;
+            if (
+              !parentStreamOpenRef.current &&
+              missing != null &&
+              (progress.lastActivitySequence ?? -1) >= missing
+            ) {
+              /** Redis can evict the rejected prefix during a long foreground stream.
+               * Preserve displayed parts and explicitly count the unavailable range. */
+              return {
+                ...progress,
+                activityReplayFrom: undefined,
+                droppedCount:
+                  (progress.droppedCount ?? 0) +
+                  Math.max(
+                    0,
+                    (firstSequence ?? missing) -
+                      Math.max(missing, (base?.lastActivitySequence ?? -1) + 1) -
+                      (base?.pendingSequencedEvents ?? []).filter(
+                        (event) =>
+                          event.activitySequence != null &&
+                          event.activitySequence >= missing &&
+                          event.activitySequence < (firstSequence ?? missing),
+                      ).length,
+                  ),
+              };
+            }
+            return progress;
           });
           retryAttempt = 0;
           return;
@@ -184,21 +227,26 @@ export default function useSubagentActivityStream(
               },
             ],
             'detached',
-            parentStreamOpenRef.current,
+            parentStreamOpenRef.current || previous?.activityReplayFrom != null,
           ),
         );
       });
       next.addEventListener('error', () => {
-        if (stream !== next || disposed || terminal || retryTimer != null) return;
-        closeCurrent();
-        const delay = Math.min(INITIAL_RECONNECT_MS * 2 ** retryAttempt, MAX_RECONNECT_MS);
-        retryAttempt += 1;
-        retryTimer = setTimeout(connect, delay);
+        if (stream === next) reconnect();
       });
     };
 
+    const reconnect = () => {
+      if (disposed || terminal || retryTimer != null) return;
+      closeCurrent();
+      const delay = Math.min(INITIAL_RECONNECT_MS * 2 ** retryAttempt, MAX_RECONNECT_MS);
+      retryAttempt += 1;
+      retryTimer = setTimeout(connect, delay);
+    };
+    reconnectRef.current = reconnect;
     connect();
     return () => {
+      if (reconnectRef.current === reconnect) reconnectRef.current = undefined;
       disposed = true;
       if (retryTimer != null) clearTimeout(retryTimer);
       closeCurrent();

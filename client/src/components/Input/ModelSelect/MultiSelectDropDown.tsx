@@ -81,7 +81,7 @@ function MultiSelectDropDown({
             <>
               <ListboxButton
                 className={cn(
-                  'relative flex w-full cursor-default flex-col rounded-md border border-border-light bg-surface-secondary py-2 pl-3 pr-10 text-left focus:outline-none focus:ring-0 focus:ring-offset-0 sm:text-sm',
+                  'border-border-light bg-surface-secondary relative flex w-full cursor-default flex-col rounded-md border py-2 pr-10 pl-3 text-left focus:ring-0 focus:ring-offset-0 focus:outline-hidden sm:text-sm',
                   className ?? '',
                 )}
                 id={excludeIds[0]}
@@ -91,7 +91,7 @@ function MultiSelectDropDown({
                 {' '}
                 {showLabel && (
                   <Label
-                    className={cn('block text-xs text-text-secondary', labelClassName)}
+                    className={cn('text-text-secondary block text-xs', labelClassName)}
                     id={excludeIds[1]}
                     data-headlessui-state=""
                   >
@@ -101,12 +101,12 @@ function MultiSelectDropDown({
                 <span className="inline-flex w-full truncate" id={excludeIds[2]}>
                   <span
                     className={cn(
-                      'flex h-6 items-center gap-1 truncate text-sm text-text-primary',
+                      'text-text-primary flex h-6 items-center gap-1 truncate text-sm',
                       !showLabel ? 'text-xs' : '',
                     )}
                   >
                     {!showLabel && title.length > 0 && (
-                      <span className="text-xs text-text-secondary">{title}:</span>
+                      <span className="text-text-secondary text-xs">{title}:</span>
                     )}
                     <span className="flex h-6 items-center gap-1 truncate">
                       <div className="flex gap-1">
@@ -120,12 +120,12 @@ function MultiSelectDropDown({
                               <img
                                 src={v.icon}
                                 alt={`${v} logo`}
-                                className="h-full w-full rounded-sm bg-surface-fixed"
+                                className="bg-surface-fixed h-full w-full rounded-sm"
                               />
                             ) : (
-                              <Wrench className="h-full w-full rounded-sm bg-surface-fixed" />
+                              <Wrench className="bg-surface-fixed h-full w-full rounded-sm" />
                             )}
-                            <div className="absolute inset-0 rounded-sm ring-1 ring-inset ring-border-light" />
+                            <div className="ring-border-light absolute inset-0 rounded-sm ring-1 ring-inset" />
                           </div>
                         ))}
                       </div>
@@ -140,7 +140,7 @@ function MultiSelectDropDown({
                     viewBox="0 0 24 24"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    className="h-4 w-4 text-text-tertiary"
+                    className="text-text-tertiary h-4 w-4"
                     height="1em"
                     width="1em"
                     xmlns="http://www.w3.org/2000/svg"
@@ -161,7 +161,7 @@ function MultiSelectDropDown({
                 <ListboxOptions
                   ref={menuRef}
                   className={cn(
-                    'absolute z-50 mt-2 max-h-60 w-full overflow-auto rounded bg-surface-secondary text-base text-xs ring-1 ring-border-light focus:outline-none dark:last:border-0 md:w-[100%]',
+                    'bg-surface-secondary ring-border-light absolute z-50 mt-2 max-h-60 w-full overflow-auto rounded text-base text-xs ring-1 focus:outline-hidden md:w-[100%] dark:last:border-0',
                     optionsClassName,
                   )}
                 >
@@ -175,7 +175,7 @@ function MultiSelectDropDown({
                       <ListboxOption
                         key={i}
                         value={option[optionValueKey]}
-                        className="group relative flex h-[42px] cursor-pointer select-none items-center overflow-hidden border-b border-border-light pl-3 pr-9 text-text-primary last:border-0 hover:bg-surface-hover"
+                        className="group border-border-light text-text-primary hover:bg-surface-hover relative flex h-[42px] cursor-pointer items-center overflow-hidden border-b pr-9 pl-3 select-none last:border-0"
                       >
                         <span className="flex items-center gap-1.5 truncate">
                           {!option.isButton && (
@@ -185,30 +185,30 @@ function MultiSelectDropDown({
                                   <img
                                     src={option.icon}
                                     alt={`${option.name} logo`}
-                                    className="h-full w-full rounded-sm bg-surface-fixed"
+                                    className="bg-surface-fixed h-full w-full rounded-sm"
                                   />
                                 ) : (
-                                  <Wrench className="h-full w-full rounded-sm bg-surface-fixed" />
+                                  <Wrench className="bg-surface-fixed h-full w-full rounded-sm" />
                                 )}
-                                <div className="absolute inset-0 rounded-sm ring-1 ring-inset ring-border-light"></div>
+                                <div className="ring-border-light absolute inset-0 rounded-sm ring-1 ring-inset"></div>
                               </div>
                             </span>
                           )}
                           <span
                             className={cn(
-                              'flex h-6 items-center gap-1 text-text-primary',
+                              'text-text-primary flex h-6 items-center gap-1',
                               selected ? 'font-semibold' : '',
                             )}
                           >
                             {option.name}
                           </span>
                           {option.isButton && (
-                            <span className="absolute inset-y-0 right-0 flex items-center pr-3 text-text-primary">
+                            <span className="text-text-primary absolute inset-y-0 right-0 flex items-center pr-3">
                               <ArrowRight />
                             </span>
                           )}
                           {selected && !option.isButton && (
-                            <span className="absolute inset-y-0 right-0 flex items-center pr-3 text-text-primary">
+                            <span className="text-text-primary absolute inset-y-0 right-0 flex items-center pr-3">
                               <CheckMark />
                             </span>
                           )}

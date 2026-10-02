@@ -1,5 +1,11 @@
 import { loadDefaultInterface } from '@librechat/data-schemas';
-import { SystemRoles, Permissions, PermissionTypes, roleDefaults } from 'librechat-data-provider';
+import {
+  SystemRoles,
+  Permissions,
+  roleDefaults,
+  RetentionMode,
+  PermissionTypes,
+} from 'librechat-data-provider';
 import type { TConfigDefaults, TCustomConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import { updateInterfacePermissions } from './permissions';
@@ -202,6 +208,36 @@ describe('updateInterfacePermissions - permissions', () => {
       expectedPermissionsForAdmin,
       null,
     );
+  });
+
+  it('does not rewrite a stored TEMPORARY_CHAT permission when retentionMode is ephemeral', async () => {
+    const config = {
+      interface: {
+        retentionMode: RetentionMode.EPHEMERAL,
+        temporaryChat: false,
+      },
+    };
+    const configDefaults = { interface: {} } as TConfigDefaults;
+    const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+    const appConfig = { config, interfaceConfig } as unknown as AppConfig;
+
+    await updateInterfacePermissions({
+      appConfig,
+      getRoleByName: mockGetRoleByName,
+      updateAccessPermissions: mockUpdateAccessPermissions,
+    });
+
+    /** The forced mode is overlaid where the control is rendered; persisting it here would
+     *  survive a later return to `temporary` and silently grant access the operator removed. */
+    for (const role of [SystemRoles.USER, SystemRoles.ADMIN]) {
+      expect(mockUpdateAccessPermissions).toHaveBeenCalledWith(
+        role,
+        expect.objectContaining({
+          [PermissionTypes.TEMPORARY_CHAT]: { [Permissions.USE]: false },
+        }),
+        null,
+      );
+    }
   });
 
   it('should call updateAccessPermissions with false when permission types are false', async () => {

@@ -567,6 +567,84 @@ describe('useSubagentActivityStream', () => {
     expect(result.current.progress?.pendingSequencedEvents).toBeUndefined();
   });
 
+  it.each([6, 104])(
+    'recovers a full pending buffer with retained replay starting at %s',
+    (snapshotStart) => {
+      jest.useFakeTimers();
+      const active = { ...selection, isSubmitting: true };
+      const { result, unmount } = renderHook(
+        () => {
+          const key = subagentProgressKey(
+            active.parentMessageId,
+            active.toolCallId,
+            active.partIndex,
+          );
+          useSubagentActivityStream(active);
+          return {
+            progress: useAtomValue(subagentProgressByToolCallId(key)),
+            setProgress: useSetAtom(subagentProgressByToolCallId(key)),
+            closeParent: useSetAtom(subagentParentStreamOpenByToolCallId(key)),
+          };
+        },
+        { wrapper },
+      );
+      const event = (sequence: number) => ({
+        event: StepEvents.ON_SUBAGENT_UPDATE,
+        data: {
+          runId: 'parent',
+          subagentRunId: 'child',
+          subagentType: 'researcher',
+          subagentAgentId: 'agent-1',
+          parentToolCallId: active.toolCallId,
+          activityEventId: `task:${sequence}`,
+          activitySequence: sequence,
+          phase: 'message_delta' as const,
+          timestamp: '2026-09-29T00:00:00.000Z',
+          data: { delta: { content: [{ type: 'text', text: `${sequence},` }] } },
+        },
+      });
+      act(() =>
+        streams[0].emit('message', {
+          event: 'subagent_activity_replay',
+          data: Array.from({ length: 100 }, (_, i) => event(i + 2)),
+        }),
+      );
+      for (let seq = 102; seq <= 105; seq++) act(() => streams[0].emit('message', event(seq)));
+      expect(result.current.progress?.pendingSequencedEvents).toHaveLength(100);
+      expect(result.current.progress?.activityReplayFrom).toBe(102);
+      act(() =>
+        result.current.setProgress((previous) =>
+          reduceSubagentProgress(previous, [event(0).data, event(1).data], 'parent', true),
+        ),
+      );
+      expect(result.current.progress?.lastActivitySequence).toBe(101);
+      act(() => result.current.closeParent(false));
+      expect(streams[0].close).toHaveBeenCalledTimes(1);
+      act(() => jest.advanceTimersByTime(500));
+      expect(streams).toHaveLength(2);
+      act(() =>
+        streams[1].emit('message', {
+          event: 'subagent_activity_replay',
+          data: Array.from({ length: 106 - snapshotStart }, (_, i) => event(i + snapshotStart)),
+        }),
+      );
+      expect(result.current.progress?.lastActivitySequence).toBe(105);
+      expect(result.current.progress?.activityReplayFrom).toBeUndefined();
+      expect(result.current.progress?.droppedCount).toBe(Math.max(0, snapshotStart - 102));
+      expect(result.current.progress?.contentParts).toEqual([
+        {
+          type: 'text',
+          text: Array.from({ length: 106 }, (_, i) => i)
+            .filter((i) => i < 102 || i >= snapshotStart)
+            .map((i) => `${i},`)
+            .join(''),
+        },
+      ]);
+      unmount();
+      jest.useRealTimers();
+    },
+  );
+
   it('reconnects with bounded backoff after a transient stream error', () => {
     jest.useFakeTimers();
     const { unmount } = renderHook(() => useSubagentActivityStream(selection), { wrapper });

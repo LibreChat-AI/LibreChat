@@ -182,7 +182,7 @@ function Timeline({
             onViewChange(null);
           }
         }}
-        className="relative h-[60px] cursor-crosshair touch-none select-none overflow-hidden rounded-lg border border-border-light bg-surface-primary-alt focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+        className="border-border-light bg-surface-primary-alt focus-visible:ring-ring-primary relative h-[60px] cursor-crosshair touch-none overflow-hidden rounded-lg border select-none focus-visible:ring-2 focus-visible:outline-hidden"
       >
         <svg className="absolute inset-0 h-full w-full" aria-hidden="true">
           {model.turns.map((turn) => (
@@ -230,17 +230,17 @@ function Timeline({
         {selection && (
           <>
             <div
-              className="pointer-events-none absolute inset-y-0 left-0 bg-presentation/60"
+              className="bg-presentation/60 pointer-events-none absolute inset-y-0 left-0"
               style={{ width: percent(selection.from) }}
             />
             <div
-              className="pointer-events-none absolute inset-y-0 right-0 bg-presentation/60"
+              className="bg-presentation/60 pointer-events-none absolute inset-y-0 right-0"
               style={{ width: percent(1 - selection.to) }}
             />
             <div
               data-testid="trace-overview-selection"
               className={cn(
-                'pointer-events-none absolute inset-y-0 border-x-2 border-border-xheavy',
+                'border-border-xheavy pointer-events-none absolute inset-y-0 border-x-2',
                 draft != null && 'border-dashed',
               )}
               style={{
@@ -252,7 +252,7 @@ function Timeline({
         )}
       </div>
       <div
-        className="flex justify-between text-[11px] tabular-nums text-text-secondary"
+        className="text-text-secondary flex justify-between text-[11px] tabular-nums"
         aria-hidden="true"
       >
         {TICKS.map((fraction) => (

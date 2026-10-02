@@ -31,6 +31,7 @@ import { useChatFormContext, useUploadModalContext } from '~/Providers';
 import useComposerBindings from '~/hooks/Input/useComposerBindings';
 import useFileUploadRouter from '~/hooks/Files/useFileUploadRouter';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useGetSender from '~/hooks/Conversations/useGetSender';
 import useUploadOptions from '~/hooks/Files/useUploadOptions';
 import { useInteractionHealthCheck } from '~/data-provider';
@@ -51,6 +52,7 @@ export default function useTextarea({
   allowSubmitWhileGenerating = false,
   onDuringRunModifier,
   answerModeActive = false,
+  enterToSend,
 }: {
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
   submitButtonRef: React.RefObject<HTMLButtonElement>;
@@ -64,6 +66,8 @@ export default function useTextarea({
   onDuringRunModifier?: (kind: 'other' | 'interrupt' | 'preempt') => void;
   /** Keeps pasted text inline while the composer is answering a paused question. */
   answerModeActive?: boolean;
+  /** Host-owned: whether Enter sends. The hint advertises the same value. */
+  enterToSend: boolean;
 }) {
   const localize = useLocalize();
   const getSender = useGetSender();
@@ -82,8 +86,7 @@ export default function useTextarea({
   const { openModal } = useUploadModalContext();
   const assistantMap = useAssistantsMapContext();
   const checkHealth = useInteractionHealthCheck();
-  const enterToSend = useRecoilValue(store.enterToSend);
-  const saveDrafts = useRecoilValue(store.saveDrafts);
+  const { saveDrafts } = useChatSettings();
   const pasteLongTextAsFile = useRecoilValue(store.pasteLongTextAsFile);
   const { shortcutsEnabled, submitOverride, yieldedChords } = useComposerBindings();
 
@@ -154,12 +157,20 @@ export default function useTextarea({
    *  navigation that resolves its record before moving the route. */
   useEffect(() => {
     const text = pendingComposerText ?? '';
-    if (text === '' || !insertComposerText(text)) {
+    if (text === '') {
+      return;
+    }
+    /* A reclaimed steer must not overwrite a draft the user typed while the
+     * cancel request was in flight. Keep both messages distinct when the
+     * composer already owns text; an empty composer receives the exact steer. */
+    const currentText = textAreaRef.current?.value ?? '';
+    const handoffText = currentText.length > 0 ? `\n${text}` : text;
+    if (!insertComposerText(handoffText)) {
       return;
     }
 
     setPendingComposerText(undefined);
-  }, [insertComposerText, pendingComposerText, setPendingComposerText]);
+  }, [insertComposerText, pendingComposerText, setPendingComposerText, textAreaRef]);
 
   useEffect(() => {
     const currentValue = textAreaRef.current?.value ?? '';

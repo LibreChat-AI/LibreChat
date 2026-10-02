@@ -18,6 +18,7 @@ const mockStartupConfig: TStartupConfig = {
   githubLoginEnabled: true,
   googleLoginEnabled: true,
   openidLoginEnabled: true,
+  passkeyLoginEnabled: false,
   appleLoginEnabled: false,
   openidLabel: 'Test OpenID',
   openidImageUrl: 'http://test-server.com',
@@ -40,6 +41,7 @@ const mockStartupConfig: TStartupConfig = {
   sharedLinksEnabled: true,
   publicSharedLinksEnabled: true,
   allowAccountDeletion: true,
+  allowEmailChange: true,
 };
 
 const setup = ({

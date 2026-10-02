@@ -1,10 +1,10 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useId } from 'react';
 import { Plus } from 'lucide-react';
 import { matchSorter } from 'match-sorter';
 import { SystemRoles, PermissionTypes, Permissions } from 'librechat-data-provider';
 import {
   Button,
-  Checkbox,
+  CheckboxGlyph,
   Dropdown,
   FilterInput,
   TooltipAnchor,
@@ -17,8 +17,8 @@ import {
   useMemoriesQuery,
   useGetUserQuery,
 } from '~/data-provider';
+import { PanelFooter, PanelContent, PanelHeader } from '~/components/ui';
 import { useLocalize, useAuthContext, useHasAccess } from '~/hooks';
-import { PanelFooter, PanelContent } from '~/components/ui';
 import MemoryCardSkeleton from './MemoryCardSkeleton';
 import MemoryCreateDialog from './MemoryCreateDialog';
 import MemoryUsageBadge from './MemoryUsageBadge';
@@ -32,6 +32,7 @@ const PARTITION_PERSONAL = 'personal';
 
 export default function MemoryPanel() {
   const localize = useLocalize();
+  const headingId = useId();
   const { user } = useAuthContext();
   const { data: userData } = useGetUserQuery();
   const { data: memData, isLoading } = useMemoriesQuery();
@@ -137,7 +138,7 @@ export default function MemoryPanel() {
     return (
       <div className="flex h-full w-full items-center justify-center p-4">
         <div className="text-center">
-          <p className="text-sm text-text-secondary">{localize('com_ui_no_read_access')}</p>
+          <p className="text-text-secondary text-sm">{localize('com_ui_no_read_access')}</p>
         </div>
       </div>
     );
@@ -149,21 +150,15 @@ export default function MemoryPanel() {
   return (
     <div
       role="region"
-      aria-label={localize('com_ui_memories')}
+      aria-labelledby={headingId}
       className="flex h-full w-full flex-col overflow-hidden pt-2"
     >
-      {/* Sticky header: filter, partition, usage + toggle */}
-      <div className="shrink-0 space-y-2 px-3 pb-2">
-        {/* Header: Filter + Create Button */}
-        <div className="flex items-center gap-2">
-          <FilterInput
-            inputId="memory-search"
-            label={localize('com_ui_memories_filter')}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            containerClassName="flex-1"
-          />
-          {hasCreateAccess && (
+      {/* Sticky header: title, create, filter, partition, usage + toggle */}
+      <PanelHeader
+        title={localize('com_ui_memories')}
+        titleId={headingId}
+        action={
+          hasCreateAccess && (
             <MemoryCreateDialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
               <OGDialogTrigger asChild>
                 <TooltipAnchor
@@ -171,9 +166,9 @@ export default function MemoryPanel() {
                   side="bottom"
                   render={
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       size="icon"
-                      className="size-9 shrink-0 bg-transparent"
+                      className="size-8 shrink-0"
                       aria-label={localize('com_ui_create_memory')}
                       onClick={() => setCreateDialogOpen(true)}
                     >
@@ -183,9 +178,17 @@ export default function MemoryPanel() {
                 />
               </OGDialogTrigger>
             </MemoryCreateDialog>
-          )}
-        </div>
-
+          )
+        }
+        search={
+          <FilterInput
+            inputId="memory-search"
+            label={localize('com_ui_memories_filter')}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        }
+      >
         {/* Partition filter (only when agent-scoped memories exist) */}
         {partitionOptions && (
           <Dropdown
@@ -225,19 +228,15 @@ export default function MemoryPanel() {
                 aria-pressed={referenceSavedMemories}
                 disabled={updateMemoryPreferencesMutation.isLoading}
               >
-                <Checkbox
-                  checked={referenceSavedMemories}
-                  tabIndex={-1}
-                  aria-hidden="true"
-                  aria-label={localize('com_ui_use_memory')}
-                  className="pointer-events-none"
-                />
+                {/* The button owns the state through `aria-pressed`; this is the
+                    mark, not a second control inside it. */}
+                <CheckboxGlyph checked={referenceSavedMemories} />
                 {localize('com_ui_use_memory')}
               </Button>
             )}
           </div>
         )}
-      </div>
+      </PanelHeader>
 
       {/* Only the list scrolls */}
       <PanelContent isLoading={isLoading} skeleton={<MemoryCardSkeleton />} className="px-3 pb-3">

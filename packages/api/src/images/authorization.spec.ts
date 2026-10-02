@@ -69,11 +69,20 @@ function signOpenIdUser(userId: string, refreshToken: string): string {
 }
 
 describe('createImageAuthorizationMiddleware', () => {
+  const originalEnforcement = process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+  afterAll(() => {
+    if (originalEnforcement === undefined) {
+      delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+    } else {
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = originalEnforcement;
+    }
+  });
   let deps: ImageAuthorizationDeps;
   let response: Response;
   let next: jest.MockedFunction<NextFunction>;
 
   beforeEach(() => {
+    process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'false';
     process.env.JWT_REFRESH_SECRET = 'image-authorization-secret';
     deps = createDeps();
     response = createResponse();
@@ -92,6 +101,130 @@ describe('createImageAuthorizationMiddleware', () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(deps.findSession).toHaveBeenCalledWith({ userId: VIEWER_ID, refreshToken: token });
+  });
+
+  describe('required enrollment and credential retirement', () => {
+    const originalEnforcement = process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+
+    afterEach(() => {
+      if (originalEnforcement === undefined) {
+        delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+      } else {
+        process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = originalEnforcement;
+      }
+    });
+
+    it.each(['local', 'ldap', undefined])(
+      'refuses an unenrolled %s viewer without an extra owner read',
+      async (provider) => {
+        process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+        (deps.getUserById as jest.Mock).mockResolvedValue({ provider, twoFactorEnabled: false });
+        const middleware = createImageAuthorizationMiddleware({}, deps);
+
+        await middleware(
+          createRequest(`/images/${VIEWER_ID}/private.png`, `refreshToken=${signUser(VIEWER_ID)}`),
+          response,
+          next,
+        );
+
+        expect(next).not.toHaveBeenCalled();
+        expect(response.status).toHaveBeenCalledWith(403);
+        expect(deps.getUserById).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(['local', 'openid', 'legacy-openid'])(
+      'dates a %s credential against both account cutoffs',
+      async (kind) => {
+        const issuedAtMs = Date.now();
+        const refreshToken =
+          kind === 'local'
+            ? jwt.sign({ id: VIEWER_ID, issuedAtMs }, process.env.JWT_REFRESH_SECRET as string, {
+                expiresIn: '1h',
+              })
+            : 'provider-refresh';
+        const marker = jwt.sign(
+          {
+            id: VIEWER_ID,
+            issuedAtMs,
+            ...(kind === 'openid'
+              ? { refreshTokenHash: createHash('sha256').update(refreshToken).digest('base64url') }
+              : {}),
+          },
+          process.env.JWT_REFRESH_SECRET as string,
+          { expiresIn: '1h' },
+        );
+        (deps.isOpenIdReuseEnabled as jest.Mock).mockReturnValue(kind !== 'local');
+        const cookie =
+          kind === 'local'
+            ? `refreshToken=${refreshToken}`
+            : `refreshToken=${refreshToken}; token_provider=openid; openid_user_id=${marker}`;
+        const req = Object.assign(createRequest(`/images/${VIEWER_ID}/private.png`, cookie), {
+          session: { openidTokens: { refreshToken } },
+        });
+        const middleware = createImageAuthorizationMiddleware({}, deps);
+
+        for (const field of ['twoFactorEnrolledAt', 'credentialsChangedAt']) {
+          (deps.getUserById as jest.Mock).mockResolvedValue({
+            [field]: new Date(issuedAtMs + 1),
+            twoFactorEnabled: true,
+          });
+          await middleware(req, response, next);
+          expect(next).not.toHaveBeenCalled();
+          expect(response.status).toHaveBeenCalledWith(403);
+        }
+        (deps.getUserById as jest.Mock).mockResolvedValue({
+          twoFactorEnrolledAt: new Date(issuedAtMs - 1),
+          credentialsChangedAt: new Date(issuedAtMs - 1),
+          twoFactorEnabled: true,
+        });
+        await middleware(req, response, next);
+        expect(next).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('checks the authenticated viewer rather than the image owner and preserves public access', async () => {
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+      (deps.getUserById as jest.Mock).mockImplementation(async (id: string) => ({
+        role: 'USER',
+        tenantId: 'tenant-a',
+        provider: 'local',
+        twoFactorEnabled: id === OWNER_ID,
+      }));
+      (deps.getAgent as jest.Mock).mockResolvedValue({ _id: AGENT_DB_ID });
+      (deps.hasPermission as jest.Mock).mockResolvedValue(false);
+      const middleware = createImageAuthorizationMiddleware({}, deps);
+      const req = createRequest(AGENT_PATH, `refreshToken=${signUser(VIEWER_ID)}`);
+      await middleware(req, response, next);
+      expect(next).not.toHaveBeenCalled();
+      expect(deps.getUserPrincipals).not.toHaveBeenCalled();
+      expect(deps.getUserById).toHaveBeenCalledTimes(2);
+
+      (deps.hasPermission as jest.Mock).mockResolvedValue(true);
+      await middleware(req, response, next);
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(deps.hasPermission).toHaveBeenLastCalledWith(
+        [{ principalType: 'public' }],
+        expect.anything(),
+        AGENT_DB_ID,
+        expect.anything(),
+      );
+    });
+
+    it('keeps federated users exempt from the enrollment policy', async () => {
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+      (deps.getUserById as jest.Mock).mockResolvedValue({
+        provider: 'openid',
+        twoFactorEnabled: false,
+      });
+      const middleware = createImageAuthorizationMiddleware({}, deps);
+      await middleware(
+        createRequest(`/images/${VIEWER_ID}/private.png`, `refreshToken=${signUser(VIEWER_ID)}`),
+        response,
+        next,
+      );
+      expect(next).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('rejects a signed refresh token whose session was revoked', async () => {
@@ -368,9 +501,9 @@ describe('createImageAuthorizationMiddleware', () => {
     expect(deps.getUserById).toHaveBeenNthCalledWith(
       1,
       OWNER_ID,
-      'role tenantId idOnTheSource avatar',
+      'role tenantId idOnTheSource avatar provider twoFactorEnabled twoFactorEnrolledAt credentialsChangedAt',
     );
-    expect(deps.getUserById).toHaveBeenNthCalledWith(2, VIEWER_ID, 'tenantId');
+    expect(deps.getUserById).toHaveBeenCalledTimes(2);
   });
 
   it('denies the stored user avatar to a viewer from another tenant', async () => {

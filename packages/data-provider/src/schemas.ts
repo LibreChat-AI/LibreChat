@@ -357,6 +357,37 @@ export const eThinkingLevelSchema = z.nativeEnum(ThinkingLevel);
 export const eReasoningModeSchema = z.nativeEnum(ReasoningMode);
 export const eReasoningContextSchema = z.nativeEnum(ReasoningContext);
 
+export const reasoningOverrideSchema = z.discriminatedUnion('key', [
+  z
+    .object({
+      key: z.literal('reasoning_effort'),
+      value: eReasoningEffortSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal('effort'),
+      value: eAnthropicEffortSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal('thinkingLevel'),
+      value: eThinkingLevelSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal('thinkingBudget'),
+      /* No fixed ceiling: an operator's paramDefinitions may widen the range,
+         and the request is checked against the resolved range server-side. */
+      value: z.number().int().min(-1).max(Number.MAX_SAFE_INTEGER),
+    })
+    .strict(),
+]);
+
+export type TReasoningOverride = z.infer<typeof reasoningOverrideSchema>;
+
 export const defaultAssistantFormValues = {
   assistant: '',
   id: '',
@@ -399,6 +430,7 @@ export const defaultAgentFormValues = {
     name: '',
     email: '',
   },
+  conversation_starters: [] as string[],
   /** Optional allowlist. Only applies when `skills_enabled === true`.
    *  Empty/undefined + enabled = full catalog; non-empty + enabled = narrow to ids. */
   skills: undefined as string[] | undefined,
@@ -988,6 +1020,8 @@ export const tMessageSchema = z.object({
    * request time and counted in the user message token count.
    */
   quotes: z.array(z.string()).optional(),
+  /** Request-scoped reasoning selection that produced this user turn. */
+  reasoningOverride: reasoningOverrideSchema.optional(),
 });
 
 /**
@@ -1034,8 +1068,30 @@ export type MemoryArtifact = {
 export type UIResource = {
   resourceId: string;
   uri: string;
+  name?: string;
   mimeType?: string;
   text?: string;
+  serverName?: string;
+  toolName?: string;
+  /** Opaque server-issued binding required for executable MCP App callbacks. */
+  serverBinding?: string;
+  structuredContent?: Record<string, unknown>;
+  content?: unknown[];
+  csp?: {
+    connectDomains?: string[];
+    resourceDomains?: string[];
+    frameDomains?: string[];
+    baseUriDomains?: string[];
+  };
+  permissions?: {
+    camera?: Record<string, never>;
+    microphone?: Record<string, never>;
+    geolocation?: Record<string, never>;
+    clipboardWrite?: Record<string, never>;
+  };
+  toolArgs?: Record<string, unknown>;
+  isError?: boolean;
+  resultMeta?: Record<string, unknown>;
   [key: string]: unknown;
 };
 
@@ -1179,6 +1235,14 @@ export const tConversationSchema = z.object({
   chatProjectId: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  /** Set only when an assistant message is persisted; drives the unseen-reply indicator. */
+  lastResponseAt: z.string().optional(),
+  /** Durable messageId of the assistant reply named by `lastResponseAt`. */
+  lastResponseMessageId: z.string().optional(),
+  /** True only while `lastResponseAt` is the synthetic marker from "mark unread". */
+  lastResponseIsManual: z.boolean().optional(),
+  /** Set when the user has the newest message on screen; compared against `lastResponseAt`. */
+  lastSeenAt: z.string().optional(),
   /* Files */
   resendFiles: z.boolean().optional(),
   file_ids: z.array(z.string()).optional(),
@@ -1243,6 +1307,12 @@ export const tPresetSchema = tConversationSchema
     createdAt: true,
     updatedAt: true,
     title: true,
+    /* Runtime unseen-reply state must not ride into presets: applying one would stamp
+       stale timestamps back onto conversations. */
+    lastResponseAt: true,
+    lastResponseMessageId: true,
+    lastResponseIsManual: true,
+    lastSeenAt: true,
   })
   .merge(
     z.object({
