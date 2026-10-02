@@ -14,6 +14,7 @@ import type { TConversation, TMessage, GroupedConversations } from 'librechat-da
 import type { InvalidateQueryFilters } from '@tanstack/react-query';
 import type { InfiniteData, Query } from '@tanstack/react-query';
 import { isTemporaryConversation } from './conversation';
+import { getSessionPrincipal } from './session';
 
 /**
  * A conversation is unseen when a reply landed after the user last caught up with it.
@@ -1462,7 +1463,73 @@ export function findConvoInAllQueries(
   )?.convo;
 }
 
-const removedRunningQueries = new WeakSet<Query>();
+type RunningRemovalState = {
+  owner?: string;
+  all: boolean;
+  removed: Set<string>;
+  visible: Set<string>;
+};
+
+const removedRunningQueries = new WeakMap<QueryClient, RunningRemovalState>();
+
+function runningRemovalState(queryClient: QueryClient): RunningRemovalState {
+  const owner = getSessionPrincipal();
+  const existing = removedRunningQueries.get(queryClient);
+  if (existing) {
+    if (existing.owner !== owner) {
+      existing.owner = owner;
+      existing.all = false;
+      existing.removed.clear();
+      existing.visible.clear();
+    }
+    return existing;
+  }
+  const state: RunningRemovalState = {
+    owner,
+    all: false,
+    removed: new Set(),
+    visible: new Set(),
+  };
+  removedRunningQueries.set(queryClient, state);
+  const cache = queryClient.getQueryCache();
+  cache.subscribe((event) => {
+    if (event.type === 'removed' && cache.getAll().length === 0) {
+      state.all = false;
+      state.removed.clear();
+      state.visible.clear();
+    }
+  });
+  return state;
+}
+
+function runningWasRemoved(queryClient: QueryClient, conversationId: string): boolean {
+  const existing = removedRunningQueries.get(queryClient);
+  if (
+    !existing ||
+    (!existing.removed.has(conversationId) &&
+      (!existing.all || existing.visible.has(conversationId)))
+  ) {
+    return false;
+  }
+  const state = runningRemovalState(queryClient);
+  return state.removed.has(conversationId) || (state.all && !state.visible.has(conversationId));
+}
+
+/** Records explicit removal independently of whether a Running query exists. */
+export function markRunningRemoval(queryClient: QueryClient, conversationId?: string): void {
+  const state = runningRemovalState(queryClient);
+  if (conversationId === undefined) {
+    state.all = true;
+    state.removed.clear();
+    state.visible.clear();
+    return;
+  }
+  if (state.all) {
+    state.visible.delete(conversationId);
+  } else {
+    state.removed.add(conversationId);
+  }
+}
 
 /** Accepts only the current server result; a visible result releases a removal fence. */
 export function acceptRunningConversation(
@@ -1474,10 +1541,19 @@ export function acceptRunningConversation(
   if (!query || query.state.data !== conversation) {
     return false;
   }
-  if (conversation.isArchived !== true && !isTemporaryConversation(conversation)) {
-    removedRunningQueries.delete(query);
+  if (conversation.isArchived === true || isTemporaryConversation(conversation)) {
+    markRunningRemoval(queryClient, conversationId);
+    return false;
   }
-  return !removedRunningQueries.has(query);
+  const existing = removedRunningQueries.get(queryClient);
+  if (existing) {
+    const state = runningRemovalState(queryClient);
+    state.removed.delete(conversationId);
+    if (state.all) {
+      state.visible.add(conversationId);
+    }
+  }
+  return true;
 }
 
 export function updateConvoInAllQueries(
@@ -1488,8 +1564,7 @@ export function updateConvoInAllQueries(
 ) {
   const runningKey = [QueryKeys.runningConversation, conversationId];
   const runningState = queryClient.getQueryState<TConversation | null>(runningKey);
-  const runningQuery = runningState && queryClient.getQueryCache().find(runningKey);
-  const removed = runningQuery != null && removedRunningQueries.has(runningQuery);
+  const removed = runningState != null && runningWasRemoved(queryClient, conversationId);
   const cached =
     !removed && runningState && runningState.data == null
       ? findConvoInAllQueries(queryClient, conversationId)
@@ -1628,10 +1703,7 @@ export function updateConvoInAllQueries(
 // Remove
 export function removeConvoFromAllQueries(queryClient: QueryClient, conversationId: string) {
   const runningKey = [QueryKeys.runningConversation, conversationId];
-  const query = queryClient.getQueryCache().find(runningKey);
-  if (query) {
-    removedRunningQueries.add(query);
-  }
+  markRunningRemoval(queryClient, conversationId);
   void queryClient.cancelQueries({ queryKey: runningKey, exact: true });
   updatePinnedConvosQuery(queryClient, conversationId, () => null);
   queryClient.setQueryData<TConversation | null>(runningKey, (current) =>

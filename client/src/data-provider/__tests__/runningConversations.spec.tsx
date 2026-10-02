@@ -5,15 +5,16 @@ import { QueryKeys, dataService, setTokenHeader } from 'librechat-data-provider'
 import type { TConversation, TSharedLinkGetResponse } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
+  findConvoInAllQueries,
+  markRunningRemoval,
+  removeConvoFromAllQueries,
+  updateConvoInAllQueries,
+} from '~/utils/convos';
+import {
   useArchiveConvoMutation,
   useUpdateConversationMutation,
   useArchiveAllConversationsMutation,
 } from '../mutations';
-import {
-  findConvoInAllQueries,
-  removeConvoFromAllQueries,
-  updateConvoInAllQueries,
-} from '~/utils/convos';
 import { useAssignConversationToProjectMutation } from '../Projects/mutations';
 import { useRunningConversationsQuery } from '../queries';
 
@@ -301,6 +302,60 @@ describe('useRunningConversationsQuery', () => {
     expect(getConversationById).toHaveBeenCalledTimes(2);
   });
 
+  it.each(['single', 'all'] as const)(
+    'fences %s archive before a Running query is created',
+    async (mode) => {
+      const ordinary = record({ chatProjectId: null });
+      queryClient.setQueryData([QueryKeys.allConversations], {
+        pages: [{ conversations: [ordinary], nextCursor: null }],
+        pageParams: [undefined],
+      });
+      queryClient.setQueryData([QueryKeys.conversation, 'c1'], ordinary);
+      const navigation = deferred<TConversation>();
+      const running = deferred<TConversation>();
+      getConversationById
+        .mockReturnValueOnce(navigation.promise)
+        .mockReturnValueOnce(running.promise);
+      jest
+        .mocked(dataService.archiveConversation)
+        .mockResolvedValue({ ...ordinary, isArchived: true });
+      jest.mocked(dataService.archiveAllConversations).mockResolvedValue({ archivedCount: 1 });
+      const { result, rerender } = renderHook(
+        ({ ids }: { ids: string[] }) => ({
+          rows: useRunningConversationsQuery(ids),
+          archive: useArchiveConvoMutation(),
+          archiveAll: useArchiveAllConversationsMutation(),
+        }),
+        { wrapper, initialProps: { ids: [] } },
+      );
+      expect(queryClient.getQueryState([QueryKeys.runningConversation, 'c1'])).toBeUndefined();
+      const refresh = queryClient
+        .fetchQuery([QueryKeys.conversation, 'c1'], () => dataService.getConversationById('c1'))
+        .then((data) =>
+          updateConvoInAllQueries(queryClient, 'c1', (row) => ({ ...row, model: data.model })),
+        )
+        .catch(() => undefined);
+      await waitFor(() => expect(getConversationById).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        if (mode === 'single') {
+          await result.current.archive.mutateAsync({ conversationId: 'c1', isArchived: true });
+        } else {
+          await result.current.archiveAll.mutateAsync();
+        }
+      });
+      rerender({ ids: ['c1'] });
+      await waitFor(() => expect(getConversationById).toHaveBeenCalledTimes(2));
+      await act(async () => {
+        navigation.resolve(ordinary);
+        await refresh;
+      });
+      expect(queryClient.getQueryData([QueryKeys.runningConversation, 'c1'])).toBeUndefined();
+      expect(getConversationById.mock.calls[1][1]?.aborted).toBe(false);
+      await act(async () => running.resolve({ ...ordinary, isArchived: true }));
+      await waitFor(() => expect(result.current.rows[0]?.isArchived).toBe(true));
+    },
+  );
+
   it('keeps a removed initial row absent until a fresh visible record arrives', async () => {
     const initial = deferred<TConversation>();
     getConversationById
@@ -346,6 +401,74 @@ describe('useRunningConversationsQuery', () => {
     ).toBe(true);
     await waitFor(() => expect(result.current[0]?.isArchived).toBe(true));
   });
+
+  it.each([{ isArchived: true }, { isTemporary: true }, { expiredAt: '2026-12-31T00:00:00.000Z' }])(
+    'keeps invisible server records from being revived by local state: %j',
+    async (visibility) => {
+      const invisible = record(visibility);
+      getConversationById.mockResolvedValue(invisible);
+      const { result } = renderHook(() => useRunningConversationsQuery(['c1']), { wrapper });
+      await waitFor(() => expect(result.current).toHaveLength(1));
+      expect(queryClient.getQueryData([QueryKeys.conversation, 'c1'])).toBeUndefined();
+      act(() => updateConvoInAllQueries(queryClient, 'c1', () => record()));
+      expect(
+        queryClient.getQueryData<TConversation>([QueryKeys.runningConversation, 'c1']),
+      ).toMatchObject(visibility);
+    },
+  );
+
+  it.each(['single', 'all'] as const)(
+    'releases a %s removal only after a visible server result',
+    async (mode) => {
+      const pending = deferred<TConversation>();
+      queryClient.setQueryData([QueryKeys.conversation, 'c1'], record());
+      if (mode === 'single') {
+        markRunningRemoval(queryClient, 'c1');
+      } else {
+        markRunningRemoval(queryClient);
+      }
+      getConversationById.mockReturnValue(pending.promise);
+      const { result } = renderHook(() => useRunningConversationsQuery(['c1']), { wrapper });
+      await waitFor(() => expect(getConversationById).toHaveBeenCalledTimes(1));
+      act(() =>
+        updateConvoInAllQueries(queryClient, 'c1', (row) => ({ ...row, title: 'Stale update' })),
+      );
+      expect(queryClient.getQueryData([QueryKeys.runningConversation, 'c1'])).toBeUndefined();
+      await act(async () => pending.resolve(record({ title: 'Restored' })));
+      await waitFor(() => expect(result.current[0]?.title).toBe('Restored'));
+      act(() =>
+        updateConvoInAllQueries(queryClient, 'c1', (row) => ({ ...row, title: 'Current update' })),
+      );
+      await waitFor(() => expect(result.current[0]?.title).toBe('Current update'));
+    },
+  );
+
+  it.each(['cache-clear', 'new-account'] as const)(
+    'does not retain removal state across %s',
+    async (reset) => {
+      const signIn = (id: string) =>
+        setTokenHeader(`header.${btoa(JSON.stringify({ id }))}.signature`);
+      signIn('old-user');
+      queryClient.setQueryData([QueryKeys.conversation, 'c1'], record());
+      markRunningRemoval(queryClient, 'c1');
+      if (reset === 'cache-clear') {
+        queryClient.clear();
+      } else {
+        signIn('new-user');
+      }
+      queryClient.setQueryData([QueryKeys.conversation, 'c1'], record());
+      const pending = deferred<TConversation>();
+      getConversationById.mockReturnValue(pending.promise);
+      const { result } = renderHook(() => useRunningConversationsQuery(['c1']), { wrapper });
+      await waitFor(() => expect(getConversationById).toHaveBeenCalledTimes(1));
+      act(() =>
+        updateConvoInAllQueries(queryClient, 'c1', (row) => ({ ...row, title: 'Current session' })),
+      );
+      await waitFor(() => expect(result.current[0]?.title).toBe('Current session'));
+      await act(async () => pending.resolve(record()));
+      expect(result.current[0]?.title).toBe('Current session');
+    },
+  );
 
   it('uses the newest running row when reading cached reply state', () => {
     queryClient.setQueryData([QueryKeys.conversation, 'c1'], record());

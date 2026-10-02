@@ -12,6 +12,7 @@ import {
   logger,
   /* Conversations */
   addConvoToAllQueries,
+  markRunningRemoval,
   findPinnedConversation,
   findConvoInAllQueries,
   findConversationInInfinite,
@@ -182,6 +183,7 @@ export const useArchiveAllConversationsMutation = (
   const { onSuccess, onError, ..._options } = options || {};
 
   const reconcileCaches = () => {
+    markRunningRemoval(queryClient);
     void queryClient.cancelQueries([QueryKeys.runningConversation]);
     queryClient.setQueriesData<t.TConversation | null>([QueryKeys.runningConversation], null);
     queryClient.invalidateQueries([QueryKeys.runningConversation]);
