@@ -264,7 +264,6 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           mockReq.body = { code_environment_ids: ['another-users-vm'] };
           await updateAgentHandler(mockReq, mockRes);
         } else if (ingress === 'duplicate') {
-          jest.spyOn(db, 'getActions').mockResolvedValueOnce([]);
           await duplicateAgentHandler(mockReq, mockRes);
         } else {
           mockReq.body = { version_index: 0 };
