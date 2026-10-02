@@ -3531,11 +3531,12 @@ describe('initializeAgent — execute_code capability expansion', () => {
     );
   });
 
-  it('keeps legacy opt-out classification until the deployment protocol is enabled', async () => {
+  it('keeps legacy opt-out classification when the deployment opts out of the protocol', async () => {
     const { agent, req, res, loadTools, db } = createMocks();
     agent.tools = [Tools.execute_code];
     agent.stateful_code_sessions = true;
     delete agent.code_environment_id;
+    process.env.CODE_ENVIRONMENT_DECISION_VERSION = '0';
     process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = 'https://stateful-code.example.com/v1/';
     req.config = {
       endpoints: {
@@ -3568,6 +3569,7 @@ describe('initializeAgent — execute_code capability expansion', () => {
       expect(result.codeEnvAvailable).toBe(false);
       expect(result.statefulCodeSessions).toBe(false);
     } finally {
+      delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
       delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
     }
   });

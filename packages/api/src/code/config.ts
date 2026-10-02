@@ -26,13 +26,15 @@ type StatefulCodeConfig = NonNullable<
 type CodeEnvironmentConfig = NonNullable<NonNullable<StatefulCodeConfig>['environments']>[number];
 
 /**
- * Resolves the deployment-wide browser protocol gate. The exact version match
- * keeps older and future wire shapes on the legacy-safe path.
+ * Resolves the deployment-wide browser protocol gate. Unset or blank advertises the supported
+ * version, so per-chat machine choice works without a second opt-in. Any other value than the
+ * exact version — `0` to opt out, or an older or future wire shape — keeps the legacy-safe path.
  */
 export function resolveCodeEnvironmentDecisionVersion(
   configuredVersion?: string,
 ): typeof CODE_ENVIRONMENT_DECISION_VERSION | undefined {
-  return configuredVersion === String(CODE_ENVIRONMENT_DECISION_VERSION)
+  const version = configuredVersion?.trim() ?? '';
+  return version === '' || version === String(CODE_ENVIRONMENT_DECISION_VERSION)
     ? CODE_ENVIRONMENT_DECISION_VERSION
     : undefined;
 }
