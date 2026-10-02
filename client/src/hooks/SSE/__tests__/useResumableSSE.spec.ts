@@ -1162,7 +1162,7 @@ describe('useResumableSSE', () => {
     { codeEnvironmentMode: 'without_attached' as const },
   ])('caches the acknowledged code decision for navigation: %j', async (decision) => {
     const submission = {
-      ...buildSubmission({ conversation: { conversationId: Constants.NEW_CONVO } }),
+      ...buildSubmission({ conversation: { conversationId: String(Constants.NEW_CONVO) } }),
       ...decision,
     };
     const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));

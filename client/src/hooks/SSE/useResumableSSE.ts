@@ -582,8 +582,8 @@ const buildOptimisticConversation = (
     submission.initialResponse?.messageId,
   ].filter((messageId): messageId is string => typeof messageId === 'string' && messageId !== '');
 
-  return {
-    ...withSubmittedCodeDecision(submission.conversation, submission),
+  const conversation = {
+    ...submission.conversation,
     conversationId,
     endpoint: submission.conversation.endpoint ?? null,
     title: submission.conversation.title ?? 'New Chat',
@@ -596,6 +596,7 @@ const buildOptimisticConversation = (
      * when true, leaving the legacy `expiredAt` inference untouched otherwise. */
     ...(submission.isTemporary === true ? { isTemporary: true } : {}),
   } as TConversation;
+  return withSubmittedCodeDecision(conversation, submission)!;
 };
 
 const hydrateSubmissionMessages = (
