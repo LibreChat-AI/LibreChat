@@ -45,13 +45,11 @@ export default function useMessageActions(props: TMessageActions) {
     index,
     regenerate,
     conversation,
-    latestMessageId,
-    latestMessageDepth,
     handleContinue,
     feedbackEnabled,
-    // NOTE: isSubmitting is intentionally NOT destructured here.
-    // chatContext.isSubmitting is a getter backed by a ref — destructuring
-    // would capture a one-time snapshot. Always access via chatContext.isSubmitting.
+    // NOTE: isSubmitting, latestMessageId and latestMessageDepth are intentionally
+    // NOT destructured here. They are getters backed by a ref — destructuring
+    // would capture a one-time snapshot. Rows render them from their own props.
   } = chatContext;
 
   const getAddedConvo = useGetAddedConvo();
@@ -205,8 +203,6 @@ export default function useMessageActions(props: TMessageActions) {
     handleFeedback: feedbackEnabled ? handleFeedback : undefined,
     handleContinue,
     copyToClipboard,
-    latestMessageId,
     regenerateMessage,
-    latestMessageDepth,
   };
 }

@@ -8841,7 +8841,7 @@ class GenerationJobManagerClass {
       contextUsage,
       // Carry the live pending approval in the resume contract so a reloading /
       // cross-replica client can rebuild the prompt from resumeState. Client-safe
-      // projection: the stored record's resumeContext/requestFingerprint stay server-only.
+      // projection: projectContextKey, resumeContext, and requestFingerprint stay server-only.
       pendingAction:
         verifiedJob.status === 'requires_action' && !isPendingActionStale(verifiedJob)
           ? toClientPendingAction(verifiedJob.pendingAction)

@@ -2,7 +2,7 @@ import React from 'react';
 import * as Ariakit from '@ariakit/react';
 import type * as t from '~/common';
 import { usePopoverZIndex } from './OriginalDialog';
-import { cn } from '~/utils';
+import { cn, disabledInkClasses } from '~/utils';
 import './Dropdown.css';
 
 interface DropdownProps {
@@ -102,7 +102,7 @@ const Menu: React.FC<MenuProps> = ({
         .map((item, index) => {
           const { subItems } = item;
           if (item.separate === true) {
-            return <Ariakit.MenuSeparator key={index} className="my-1 h-px border-border-medium" />;
+            return <Ariakit.MenuSeparator key={index} className="border-border-medium my-1 h-px" />;
           }
           if (subItems && subItems.length > 0) {
             return (
@@ -112,7 +112,8 @@ const Menu: React.FC<MenuProps> = ({
               >
                 <Ariakit.MenuButton
                   className={cn(
-                    'group flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-3.5 text-sm text-text-primary outline-none hover:bg-surface-hover focus:bg-surface-hover md:px-2.5 md:py-2',
+                    'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',
+                    disabledInkClasses,
                     itemClassName,
                   )}
                   disabled={item.disabled}
@@ -147,7 +148,8 @@ const Menu: React.FC<MenuProps> = ({
               key={`${keyPrefix ?? ''}${index}-${item.id ?? ''}`}
               id={item.id}
               className={cn(
-                'group flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-3.5 text-sm text-text-primary outline-none hover:bg-surface-hover focus:bg-surface-hover md:px-2.5 md:py-2',
+                'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',
+                disabledInkClasses,
                 itemClassName,
                 item.className,
               )}
@@ -178,7 +180,7 @@ const Menu: React.FC<MenuProps> = ({
               )}
               {item.label}
               {item.kbd != null && (
-                <kbd className="ml-auto hidden font-sans text-xs text-text-tertiary group-hover:inline group-focus:inline">
+                <kbd className="text-text-tertiary ml-auto hidden font-sans text-xs group-hover:inline group-focus:inline">
                   ⌘{item.kbd}
                 </kbd>
               )}

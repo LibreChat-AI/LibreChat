@@ -31,9 +31,12 @@ export const DisablePhase: React.FC<DisablePhaseProps> = ({ onDisable, isDisabli
   const [useBackup, setUseBackup] = useState(false);
 
   return (
-    <motion.div {...fadeAnimation} className="space-y-8">
+    <motion.div {...fadeAnimation} className="text-text-primary space-y-8">
       <div className="flex justify-center">
         <InputOTP
+          aria-label={localize(
+            useBackup ? 'com_ui_use_backup_code' : 'com_ui_2fa_verification_required',
+          )}
           value={token}
           onChange={setToken}
           maxLength={useBackup ? 8 : 6}
@@ -81,7 +84,7 @@ export const DisablePhase: React.FC<DisablePhaseProps> = ({ onDisable, isDisabli
         type="button"
         variant="link"
         onClick={() => setUseBackup(!useBackup)}
-        className="h-auto p-0 text-sm text-text-primary hover:underline"
+        className="text-text-primary h-auto p-0 text-sm hover:underline"
       >
         {useBackup ? localize('com_ui_use_2fa_code') : localize('com_ui_use_backup_code')}
       </Button>

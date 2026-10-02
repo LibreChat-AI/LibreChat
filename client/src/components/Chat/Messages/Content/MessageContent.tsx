@@ -48,7 +48,7 @@ const ErrorBox = ({
     role="alert"
     aria-live="assertive"
     className={cn(
-      'rounded-xl border border-status-error-border bg-status-error-subtle p-3 text-sm text-text-secondary',
+      'border-status-error-border bg-status-error-subtle text-text-secondary rounded-xl border p-3 text-sm',
       className,
     )}
   >
@@ -69,7 +69,8 @@ const ConnectionError = ({ message }: { message?: TMessage }) => {
           <Alert
             variant="error"
             icon={false}
-            className="mt-2 text-text-secondary shadow-sm transition-all"
+            elevation="raised"
+            className="text-text-secondary mt-2 transition-all"
           >
             {localize('com_ui_error_connection')}
           </Alert>

@@ -1,6 +1,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { apiBaseUrl, EModelEndpoint } from 'librechat-data-provider';
 import type { Agents, TMessage, TEphemeralAgent, TPendingSteer } from 'librechat-data-provider';
+import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { postGenerationRequest } from './protocol';
 
 export interface AbortStreamParams {
@@ -48,12 +49,13 @@ export const abortStream = async (params: AbortStreamParams): Promise<AbortStrea
 };
 
 /**
- * React Query mutation hook for aborting a generation stream.
+ * React Query mutation hook for aborting a generation stream, through the host's transport.
  * Use this when the user explicitly clicks the stop button.
  */
 export function useAbortStreamMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: abortStream,
+    mutationFn: transport.abort,
   });
 }
 
@@ -220,10 +222,12 @@ export const steerMessage = async (params: SteerMessageParams): Promise<SteerMes
   );
 };
 
-/** React Query mutation hook for steering; the injection arrives on the SSE. */
+/** React Query mutation hook for steering, through the host's transport; the injection
+ *  arrives on the SSE. */
 export function useSteerMessageMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: steerMessage,
+    mutationFn: transport.steer,
   });
 }
 
@@ -255,8 +259,9 @@ export const cancelSteerMessage = async (
 };
 
 export function useCancelSteerMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: cancelSteerMessage,
+    mutationFn: transport.cancelSteer,
   });
 }
 
@@ -288,7 +293,8 @@ export const armSteerMessage = async (params: ArmSteerParams): Promise<ArmSteerR
 };
 
 export function useArmSteerMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: armSteerMessage,
+    mutationFn: transport.armSteer,
   });
 }

@@ -60,6 +60,7 @@ jest.mock('~/utils', () => ({
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
   logger: { error: jest.fn() },
   setDocumentTitle: jest.fn(),
+  isConversationUnseen: () => false,
 }));
 
 jest.mock('../ConvoOptions', () => ({

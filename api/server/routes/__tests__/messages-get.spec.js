@@ -59,6 +59,7 @@ jest.mock('@librechat/api', () => {
     extractChatContent,
     extractFeedbackContent: jest.fn(() => []),
     extractStoredMessageContent,
+    applyForcedRetention: jest.fn(),
     contentFilterBlockResponse,
     getContentTraversalFragments,
     isContentTraversalLimitError,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtom } from 'jotai';
 import { OGDialog, OGDialogContent, OGDialogHeader, OGDialogTitle } from '@librechat/client';
+import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import { SubagentActivityScrollSurface } from './SubagentActivity';
 import SubagentConversation from './SubagentConversation';
 import { adaptLivePersistedActivity } from './adapters';
@@ -63,28 +64,30 @@ export default function SharedSubagentActivityDialog({ shareId }: { shareId?: st
         className="flex h-[min(90vh,48rem)] w-11/12 max-w-3xl flex-col gap-0 overflow-hidden p-0"
         onCloseAutoFocus={restoreTriggerFocus}
       >
-        <OGDialogHeader className="shrink-0 border-b border-border-light px-5 py-4 pr-14">
+        <OGDialogHeader className="border-border-light shrink-0 border-b px-5 py-4 pr-14">
           <OGDialogTitle className="truncate text-left text-base" title={activity.title}>
             {activity.title}
           </OGDialogTitle>
         </OGDialogHeader>
-        <SubagentActivityScrollSurface padded={false}>
-          <SubagentConversation
-            turns={[
-              {
-                taskId:
-                  selection == null
-                    ? 'shared-subagent'
-                    : `${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${selection.partIndex}`,
-                trigger: {
-                  kind: 'parent_dispatch',
-                  summary: selection?.prompt ?? '',
+        <MessageSurfaceContext.Provider value="bg-surface-dialog">
+          <SubagentActivityScrollSurface padded={false}>
+            <SubagentConversation
+              turns={[
+                {
+                  taskId:
+                    selection == null
+                      ? 'shared-subagent'
+                      : `${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${selection.partIndex}`,
+                  trigger: {
+                    kind: 'parent_dispatch',
+                    summary: selection?.prompt ?? '',
+                  },
+                  activity,
                 },
-                activity,
-              },
-            ]}
-          />
-        </SubagentActivityScrollSurface>
+              ]}
+            />
+          </SubagentActivityScrollSurface>
+        </MessageSurfaceContext.Provider>
       </OGDialogContent>
     </OGDialog>
   );

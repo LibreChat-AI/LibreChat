@@ -93,6 +93,8 @@ export class MCPConnectionFactory {
   protected readonly allowedAddresses?: string[] | null;
   protected readonly ephemeralConnection: boolean;
   protected readonly directBearerRecoveryEnabled: boolean;
+  protected readonly capabilityProfile: t.BasicConnectionOptions['capabilityProfile'];
+  protected readonly operationLimits: t.BasicConnectionOptions['operationLimits'];
 
   // OAuth-related properties (only set when useOAuth is true)
   protected readonly userId?: string;
@@ -411,6 +413,7 @@ export class MCPConnectionFactory {
 
     let connection: MCPConnection | null = null;
     let oauthHandler: (() => void) | null = null;
+    let rejectionRecorded: Promise<void> | undefined;
     if (shouldAttemptAuthenticatedDiscovery) {
       connection = new MCPConnection({
         serverName: this.serverName,
@@ -420,6 +423,8 @@ export class MCPConnectionFactory {
         useSSRFProtection: this.useSSRFProtection,
         allowedAddresses: this.allowedAddresses,
         ephemeralConnection: this.ephemeralConnection,
+        ...(this.capabilityProfile && { capabilityProfile: this.capabilityProfile }),
+        ...(this.operationLimits && { operationLimits: this.operationLimits }),
         ...(this.directBearerRecoveryEnabled && { directBearerRecoveryEnabled: true }),
       });
 
@@ -428,6 +433,7 @@ export class MCPConnectionFactory {
           `${this.logPrefix} [Discovery] OAuth required; skipping URL generation in discovery mode`,
         );
         oauthRequired = true;
+        rejectionRecorded = this.recordRejectedOAuthAuthorization(oauthTokens?.credential_set_id);
         connection?.emit('oauthFailed', new Error('OAuth required during tool discovery'));
       };
 
@@ -441,10 +447,16 @@ export class MCPConnectionFactory {
         if (await connection.isConnected(abortSignal)) {
           const snapshot = await connection.fetchOrderedToolsSnapshot(this.deadlineMs, abortSignal);
           connection.removeListener('oauthRequired', oauthHandler);
+          const rejectedOAuth = this.useOAuth && snapshot.authenticationError != null;
+          if (rejectedOAuth) {
+            await this.waitForDiscoveryRejection(
+              this.recordRejectedOAuthAuthorization(oauthTokens?.credential_set_id),
+            );
+          }
           return {
             tools: snapshot.complete ? snapshot.tools : null,
             connection,
-            oauthRequired: false,
+            oauthRequired: rejectedOAuth,
             oauthUrl: null,
             ...(snapshot.authenticationError != null && {
               authenticationError: snapshot.authenticationError,
@@ -463,6 +475,7 @@ export class MCPConnectionFactory {
        *  discovery never holds two concurrent connects to the same server. */
       connection.removeListener('oauthRequired', oauthHandler);
       await this.disposeQuietly(connection);
+      await this.waitForDiscoveryRejection(rejectionRecorded);
       connection = null;
       oauthHandler = null;
     }
@@ -579,6 +592,8 @@ export class MCPConnectionFactory {
       useSSRFProtection: this.useSSRFProtection,
       allowedAddresses: this.allowedAddresses,
       ephemeralConnection: this.ephemeralConnection,
+      ...(this.capabilityProfile && { capabilityProfile: this.capabilityProfile }),
+      ...(this.operationLimits && { operationLimits: this.operationLimits }),
     });
 
     unauthConnection.on('oauthRequired', () => {
@@ -630,6 +645,8 @@ export class MCPConnectionFactory {
     this.directBearerRecoveryEnabled = isDirectOpenIDBearerRecoveryEnabled(
       basic.directBearerSourceConfig ?? basic.serverConfig,
     );
+    this.capabilityProfile = basic.capabilityProfile;
+    this.operationLimits = basic.operationLimits;
     this.connectionTimeout = options?.connectionTimeout;
     this.deadlineMs = options?.deadlineMs;
     this.onOAuthCredentialsChanged = options?.onOAuthCredentialsChanged;
@@ -643,12 +660,12 @@ export class MCPConnectionFactory {
     this.logPrefix = options?.user ? `[MCP][User: ${options.user.id}]` : '[MCP]';
 
     this.user = options?.user;
+    this.userId = options?.user?.id;
     this.upstreamTokenProvider = options?.upstreamTokenProvider;
     this.upstreamTokenProviderResolver = options?.upstreamTokenProviderResolver;
 
     if (options != null && 'useOAuth' in options) {
       this.useOAuth = true;
-      this.userId = options.user?.id;
       this.flowManager = options.flowManager;
       this.tokenMethods = options.tokenMethods;
       this.oauthStart = options.oauthStart;
@@ -772,6 +789,8 @@ export class MCPConnectionFactory {
       useSSRFProtection: this.useSSRFProtection,
       allowedAddresses: this.allowedAddresses,
       ephemeralConnection: this.ephemeralConnection,
+      ...(this.capabilityProfile && { capabilityProfile: this.capabilityProfile }),
+      ...(this.operationLimits && { operationLimits: this.operationLimits }),
       ...(this.directBearerRecoveryEnabled && {
         directBearerRecoveryEnabled: true,
       }),
@@ -1203,7 +1222,8 @@ export class MCPConnectionFactory {
    * would hand back stale tokens on a subsequent 401 (e.g. when the freshly
    * minted token is revoked before its local expiry). Caching only the
    * in-flight promise means every fresh 401 after settlement triggers a
-   * fresh redemption.
+   * fresh redemption. Token storage owns rejection persistence inside the
+   * common flight shared with expired-token loading.
    */
   protected async attemptSilentTokenRefresh(
     rejectedCredentialSetId?: string | null,
@@ -1743,6 +1763,34 @@ export class MCPConnectionFactory {
     connection.emit('oauthFailed', error);
   }
 
+  /** Cancellation ends discovery's wait, never the generation-guarded persistence operation. */
+  private async waitForDiscoveryRejection(pending?: Promise<void>): Promise<void> {
+    if (!pending) return;
+    const recorded = await waitUntilDeadline(pending, this.deadlineMs, this.signal);
+    if (!recorded.settled) this.onDiscoveryDetached?.(pending);
+  }
+
+  private async recordRejectedOAuthAuthorization(credentialSetId?: string | null): Promise<void> {
+    if (!credentialSetId || !this.tokenMethods?.findToken || !this.tokenMethods.updateToken) {
+      return;
+    }
+    try {
+      await this.runWithCapturedTenant(() =>
+        MCPTokenStorage.markAuthorizationRejected({
+          userId: this.userId!,
+          serverName: this.serverName,
+          credentialSetId,
+          findToken: this.tokenMethods!.findToken!,
+          updateToken: this.tokenMethods!.updateToken!,
+          flowManager: this.flowManager,
+          persistenceWaitTimeoutMs: this.serverConfig.oauthPersistenceWaitTimeout,
+        }),
+      );
+    } catch (error) {
+      logger.warn(`${this.logPrefix} Failed to record upstream OAuth rejection`, error);
+    }
+  }
+
   /** Sets up OAuth event handlers for the connection */
   protected handleOAuthEvents(
     connection: MCPConnection,
@@ -1766,6 +1814,11 @@ export class MCPConnectionFactory {
           return;
         }
         logger.info(`${this.logPrefix} Cached connection requires a live OAuth request handler`);
+        await this.recordRejectedOAuthAuthorization(
+          data.rejectedCredentialSetId !== undefined
+            ? data.rejectedCredentialSetId
+            : connection.getOAuthCredentialSetId(),
+        );
         connection.emit('oauthFailed', new Error('OAuth reauthentication required'));
         return;
       }
@@ -1788,6 +1841,7 @@ export class MCPConnectionFactory {
       }
 
       if (isRequestRecovery && recoveryPhase === 'terminal') {
+        await this.recordRejectedOAuthAuthorization(rejectedCredentialSetId);
         logger.warn(`${this.logPrefix} OAuth recovery phase budget exhausted`);
         connection.emit('oauthFailed', new Error('OAuth recovery phase budget exhausted'));
         return;
@@ -1835,6 +1889,8 @@ export class MCPConnectionFactory {
           }
         }
       }
+
+      await this.recordRejectedOAuthAuthorization(rejectedCredentialSetId);
 
       if (isRequestRecovery) {
         recoveryPhase = 'terminal';

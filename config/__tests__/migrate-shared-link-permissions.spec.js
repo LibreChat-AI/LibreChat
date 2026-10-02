@@ -1,6 +1,7 @@
 jest.mock('../connect', () => jest.fn().mockResolvedValue(true));
 jest.mock('@librechat/api', () => ({
   ensureRequiredCollectionsExist: jest.fn().mockResolvedValue(undefined),
+  createMessageBudgetReader: jest.fn(() => ({ initialize: jest.fn(), getBudget: jest.fn() })),
   matchModelName: jest.fn(),
   findMatchingPattern: jest.fn(),
 }));

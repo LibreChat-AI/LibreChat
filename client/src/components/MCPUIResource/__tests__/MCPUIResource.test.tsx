@@ -16,6 +16,9 @@ jest.mock('~/Providers', () => ({
   useOptionalMessagesConversation: jest.fn(),
   useOptionalMessagesOperations: jest.fn(),
 }));
+jest.mock('~/Providers/MCPAppsPolicyContext', () => ({
+  useMCPAppsPolicy: () => ({ enabled: true, legacyHtmlEnabled: true }),
+}));
 jest.mock('~/hooks', () => ({ useLocalize: jest.fn() }));
 jest.mock('~/utils', () => ({ handleUIAction: jest.fn() }));
 

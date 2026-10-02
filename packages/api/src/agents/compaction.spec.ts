@@ -17,6 +17,7 @@ import {
   getSummaryPartText,
   markCompactionOutcome,
   resolveFailedTurnContent,
+  resolveCheckpointMessage,
   restoreCompactionSemanticIndex,
   restoreCompactionSemanticIndexSnapshot,
   stripUnusableSummaryParts,
@@ -243,6 +244,76 @@ describe('resolveFailedTurnContent', () => {
     ['a request with no body', undefined],
   ])('leaves %s with its text-only shape', (_label, requestBody) => {
     expect(resolveFailedTurnContent(requestBody, 'Something failed')).toEqual({});
+  });
+});
+
+describe('resolveCheckpointMessage', () => {
+  const summaryPart = {
+    type: ContentTypes.SUMMARY,
+    content: [{ type: ContentTypes.TEXT, text: 'Earlier context' }],
+    boundary: completedBoundary,
+    tokenCount: 7,
+  };
+
+  it('keeps the parts a response produced after its summary', () => {
+    const trailingText = { type: ContentTypes.TEXT, text: 'Answer after summarizing' };
+    const message = {
+      messageId: 'response',
+      tokenCount: 90,
+      content: [{ type: ContentTypes.TEXT, text: 'Before summarizing' }, summaryPart, trailingText],
+    };
+
+    const resolved = resolveCheckpointMessage(message);
+
+    expect(resolved).toEqual({ messageId: 'response', content: [summaryPart, trailingText] });
+    expect(resolved?.tokenCount).toBeUndefined();
+  });
+
+  it('starts at the last usable summary', () => {
+    const between = { type: ContentTypes.TEXT, text: 'Between summaries' };
+    const after = { type: ContentTypes.TEXT, text: 'After the latest' };
+    const latest = {
+      ...summaryPart,
+      content: [{ type: ContentTypes.TEXT, text: 'Latest context' }],
+    };
+
+    expect(resolveCheckpointMessage({ content: [summaryPart, between, latest, after] })).toEqual({
+      content: [latest, after],
+    });
+  });
+
+  it('keeps the parts after a completed summary when a later one failed', () => {
+    const after = { type: ContentTypes.TEXT, text: 'After the completed summary' };
+    const failed = { ...summaryPart, failed: true };
+
+    expect(resolveCheckpointMessage({ content: [summaryPart, after, failed] })).toEqual({
+      content: [summaryPart, after, failed],
+    });
+  });
+
+  it('returns the row itself when it already starts at its summary', () => {
+    const message = { content: [summaryPart], tokenCount: 12 };
+
+    expect(resolveCheckpointMessage(message)).toBe(message);
+  });
+
+  it('replaces the whole row for a legacy summary field', () => {
+    expect(
+      resolveCheckpointMessage({ summary: 'Legacy', summaryTokenCount: 4, tokenCount: 30 }),
+    ).toEqual({
+      summary: 'Legacy',
+      summaryTokenCount: 4,
+      role: 'system',
+      content: [{ type: ContentTypes.TEXT, text: 'Legacy' }],
+      tokenCount: 4,
+    });
+  });
+
+  it('is null for a row that is no checkpoint', () => {
+    expect(resolveCheckpointMessage({ content: [{ ...summaryPart, failed: true }] })).toBeNull();
+    expect(
+      resolveCheckpointMessage({ content: [{ type: ContentTypes.TEXT, text: 'x' }] }),
+    ).toBeNull();
   });
 });
 

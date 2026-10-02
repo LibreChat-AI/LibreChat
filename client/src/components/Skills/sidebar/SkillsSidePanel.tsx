@@ -49,15 +49,11 @@ export default function SkillsSidePanel({ className }: SkillsSidePanelProps) {
   return (
     <div
       className={cn(
-        'flex h-full w-full flex-col overflow-hidden border-r border-border-light pt-2',
+        'border-border-light flex h-full w-full flex-col overflow-hidden border-r pt-2',
         className,
       )}
     >
-      <FilterSkills
-        className="shrink-0 px-3 pb-2"
-        searchTerm={searchTerm}
-        onSearchChange={(e) => setSearchTerm(e.target.value)}
-      />
+      <FilterSkills searchTerm={searchTerm} onSearchChange={(e) => setSearchTerm(e.target.value)} />
 
       {/* Only the list scrolls */}
       <PanelContent

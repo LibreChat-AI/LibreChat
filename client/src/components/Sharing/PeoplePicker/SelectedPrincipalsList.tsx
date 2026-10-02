@@ -43,7 +43,7 @@ export default function SelectedPrincipalsList({
   if (principles.length === 0) {
     return (
       <div className={`space-y-3 ${className}`}>
-        <div className="rounded-lg border border-dashed border-border-medium py-8 text-center text-text-secondary">
+        <div className="border-border-medium text-text-secondary rounded-lg border border-dashed py-8 text-center">
           <Users className="mx-auto mb-2 h-8 w-8 opacity-50" aria-hidden="true" />
           <p className="mt-1 text-xs">{localize('com_ui_search_above_to_add_all')}</p>
         </div>
@@ -70,14 +70,14 @@ export default function SelectedPrincipalsList({
           return (
             <div
               key={`${shareKey}-principalList`}
-              className="flex flex-col gap-3 rounded-xl border border-border-light bg-transparent p-3 sm:flex-row sm:items-center sm:justify-between"
+              className="border-border-light flex flex-col gap-3 rounded-xl border bg-transparent p-3 sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="flex min-w-0 flex-1 items-center gap-3">
                 <PrincipalAvatar principal={share} size="md" />
 
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium">{displayName}</div>
-                  <div className="flex items-center gap-1 text-xs text-text-secondary">
+                  <div className="text-text-secondary flex items-center gap-1 text-xs">
                     <span>{subtitle}</span>
                     {share.source === 'entra' && (
                       <>
@@ -89,7 +89,7 @@ export default function SelectedPrincipalsList({
                 </div>
               </div>
 
-              <div className="flex w-full flex-shrink-0 items-center justify-end gap-2 sm:w-auto">
+              <div className="flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto">
                 {showInsightsAccess && onInsightsAccessChange && (
                   <div className="mr-auto flex items-center gap-2 sm:mr-1">
                     <Checkbox
@@ -100,7 +100,7 @@ export default function SelectedPrincipalsList({
                       }
                       aria-label={localize('com_ui_view_agent_insights')}
                     />
-                    <span className="whitespace-nowrap text-sm text-text-secondary">
+                    <span className="text-text-secondary text-sm whitespace-nowrap">
                       {localize('com_ui_view_agent_insights')}
                     </span>
                     <TooltipAnchor
@@ -118,7 +118,7 @@ export default function SelectedPrincipalsList({
                   </div>
                 )}
                 {lockOwner ? (
-                  <span className="px-3 py-2 text-sm font-medium text-text-secondary">
+                  <span className="text-text-secondary px-3 py-2 text-sm font-medium">
                     {localize('com_ui_role_owner')}
                   </span>
                 ) : (
@@ -138,7 +138,7 @@ export default function SelectedPrincipalsList({
                   <Button
                     variant="outline"
                     onClick={() => onRemoveHandler(shareKey)}
-                    className="h-9 w-9 p-0 hover:border-status-error-border hover:bg-status-error-subtle hover:text-text-destructive"
+                    className="hover:border-status-error-border hover:bg-status-error-subtle hover:text-text-destructive h-9 w-9 p-0"
                     aria-label={localize('com_ui_remove_user', { 0: displayName })}
                   >
                     <X className="h-4 w-4" aria-hidden="true" />

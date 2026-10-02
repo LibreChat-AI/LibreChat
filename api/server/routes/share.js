@@ -60,6 +60,10 @@ const configMiddleware = require('~/server/middleware/config/app');
 const { getAppConfig } = require('~/server/services/Config/app');
 const router = express.Router();
 const sharedLinkConfigMiddleware = createSharedLinkConfigMiddleware({ getAppConfig });
+const sharedStartupConfigMiddleware = createSharedLinkConfigMiddleware({
+  getAppConfig,
+  failClosed: true,
+});
 
 const getSharedLangfuseSessionUrl = createSharedLangfuseSessionResolver({
   getHeldCapabilities,
@@ -346,7 +350,7 @@ if (allowSharedLinks) {
     '/:shareId/config',
     optionalJwtAuth,
     canAccessSharedLink,
-    sharedLinkConfigMiddleware,
+    sharedStartupConfigMiddleware,
     (req, res) => {
       try {
         const payload = buildSharedLinkStartupPayload(req.config);

@@ -38,7 +38,7 @@ const headingClasses = 'px-2.5 py-1.5 text-xs font-medium text-text-secondary';
 const menuItemClasses = (selected = false) =>
   cn(
     'group flex w-full cursor-pointer items-start gap-3 rounded-lg px-2.5 py-2',
-    'outline-none transition-colors duration-theme-fast',
+    'outline-hidden transition-colors duration-theme-fast',
     'hover:bg-surface-hover data-[active-item]:bg-surface-hover',
     selected && 'bg-surface-active-alt',
   );
@@ -125,7 +125,7 @@ function EnvironmentWorkspaces({
         {environment.name ?? environment.id}
       </Ariakit.MenuHeading>
       {workspaces.length === 0 && (
-        <div className="px-2.5 py-2 text-sm text-text-secondary">{emptyLabel}</div>
+        <div className="text-text-secondary px-2.5 py-2 text-sm">{emptyLabel}</div>
       )}
       {workspaces.map((descriptor) => {
         const selected = isSelected(descriptor.id);
@@ -139,16 +139,16 @@ function EnvironmentWorkspaces({
             onChange={() => onSelect({ environmentId: environment.id, workspaceId: descriptor.id })}
             className={menuItemClasses(selected)}
           >
-            <Folder className="mt-0.5 size-4 shrink-0 text-text-secondary" aria-hidden="true" />
+            <Folder className="text-text-secondary mt-0.5 size-4 shrink-0" aria-hidden="true" />
             <div className="min-w-0 flex-1 text-left">
-              <div className="truncate text-sm font-medium text-text-primary">
+              <div className="text-text-primary truncate text-sm font-medium">
                 {descriptor.name ?? descriptor.id}
               </div>
               {descriptor.name && (
-                <p className="truncate text-xs text-text-secondary">{descriptor.id}</p>
+                <p className="text-text-secondary truncate text-xs">{descriptor.id}</p>
               )}
               {descriptor.instructions !== undefined && (
-                <p className="truncate text-xs text-text-secondary">
+                <p className="text-text-secondary truncate text-xs">
                   {descriptor.instructions.length === 0
                     ? localize('com_ui_repository_instructions_none')
                     : descriptor.instructions
@@ -160,7 +160,7 @@ function EnvironmentWorkspaces({
                 </p>
               )}
               {(descriptor.environment?.repo || descriptor.environment?.ref) && (
-                <p className="truncate text-xs text-text-secondary">
+                <p className="text-text-secondary truncate text-xs">
                   {[descriptor.environment.repo, descriptor.environment.ref]
                     .filter(Boolean)
                     .join(' · ')}
@@ -168,7 +168,7 @@ function EnvironmentWorkspaces({
               )}
             </div>
             {selected && (
-              <Check className="mt-0.5 size-4 shrink-0 text-text-primary" aria-hidden="true" />
+              <Check className="text-text-primary mt-0.5 size-4 shrink-0" aria-hidden="true" />
             )}
           </Ariakit.MenuItemRadio>
         );
@@ -205,7 +205,7 @@ export default function CodeWorkspaceMenu({
     const pending = status === 'pending';
     return (
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <span role="status" className="text-xs text-text-secondary">
+        <span role="status" className="text-text-secondary text-xs">
           {localize(
             pending
               ? 'com_ui_code_workspace_reconciling'
@@ -337,15 +337,15 @@ export default function CodeWorkspaceMenu({
             onClick={() => void refresh()}
             aria-label={`${label}. ${recovery}. ${localize('com_ui_retry')}`}
             aria-busy={isRefreshing}
-            className={cn(composerControlClasses(), 'min-w-0 max-w-full px-2.5')}
+            className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')}
           />
         }
       >
-        <Icon className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
-        <span role="status" className="min-w-0 max-w-[16rem] truncate">
+        <Icon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+        <span role="status" className="max-w-[16rem] min-w-0 truncate">
           {label}
         </span>
-        <RefreshCw className="size-3 shrink-0 text-text-secondary" aria-hidden="true" />
+        <RefreshCw className="text-text-secondary size-3 shrink-0" aria-hidden="true" />
       </TooltipAnchor>
     );
   }
@@ -374,18 +374,18 @@ export default function CodeWorkspaceMenu({
             }
             className={cn(
               composerControlClasses(),
-              'min-w-0 max-w-full px-2.5 md:px-theme-normal',
+              'md:px-theme-control-x max-w-full min-w-0 px-2.5',
               isOpen && 'bg-surface-hover',
               buttonDisabled && 'cursor-not-allowed opacity-50',
             )}
           />
         }
       >
-        <ButtonIcon className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
-        <span className="min-w-0 max-w-[12rem] truncate">{buttonLabel}</span>
+        <ButtonIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+        <span className="max-w-[12rem] min-w-0 truncate">{buttonLabel}</span>
         <ChevronDown
           className={cn(
-            'size-3 shrink-0 text-text-secondary transition-transform',
+            'text-text-secondary size-3 shrink-0 transition-transform',
             isOpen && 'rotate-180',
           )}
           aria-hidden="true"
@@ -396,8 +396,8 @@ export default function CodeWorkspaceMenu({
         gutter={8}
         unmountOnHide={true}
         className={cn(
-          'z-50 flex min-w-[280px] max-w-[min(360px,calc(100vw-2rem))] flex-col rounded-xl',
-          'max-h-[var(--popover-available-height)] overflow-y-auto border border-border-light bg-presentation p-1.5 shadow-lg',
+          'z-50 flex max-w-[min(360px,calc(100vw-2rem))] min-w-[280px] flex-col rounded-xl',
+          'border-border-light bg-presentation max-h-[var(--popover-available-height)] overflow-y-auto border p-1.5 shadow-lg',
           'origin-bottom opacity-0 transition-[opacity,transform] duration-200 ease-out',
           'data-[enter]:scale-100 data-[enter]:opacity-100',
           'scale-95 data-[leave]:scale-95 data-[leave]:opacity-0',
@@ -408,7 +408,7 @@ export default function CodeWorkspaceMenu({
             <Ariakit.MenuHeading render={<div />} className={headingClasses}>
               {transitionText.label}
             </Ariakit.MenuHeading>
-            <p className="px-2.5 pb-2 text-xs text-text-secondary">{transitionText.info}</p>
+            <p className="text-text-secondary px-2.5 pb-2 text-xs">{transitionText.info}</p>
             {transition.targets.map((target) => (
               <EnvironmentWorkspaces
                 key={target.environment.id}
@@ -425,7 +425,7 @@ export default function CodeWorkspaceMenu({
                 }
               />
             ))}
-            <Ariakit.MenuSeparator className="my-1 h-0 w-full border-t border-border-light" />
+            <Ariakit.MenuSeparator className="border-border-light my-1 h-0 w-full border-t" />
             {offersMove && (
               <Ariakit.MenuItem
                 disabled={disabled || !moveReady || moveMutation.isLoading}
@@ -436,8 +436,8 @@ export default function CodeWorkspaceMenu({
                   'items-center aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
                 )}
               >
-                <ConfirmIcon className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
-                <span className="min-w-0 flex-1 truncate text-left text-sm font-medium text-text-primary">
+                <ConfirmIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+                <span className="text-text-primary min-w-0 flex-1 truncate text-left text-sm font-medium">
                   {transitionText.label}
                 </span>
               </Ariakit.MenuItem>
@@ -454,14 +454,14 @@ export default function CodeWorkspaceMenu({
                 )}
               >
                 <FolderX
-                  className="mt-0.5 size-4 shrink-0 text-text-secondary"
+                  className="text-text-secondary mt-0.5 size-4 shrink-0"
                   aria-hidden="true"
                 />
                 <div className="min-w-0 flex-1 text-left">
-                  <div className="truncate text-sm font-medium text-text-primary">
+                  <div className="text-text-primary truncate text-sm font-medium">
                     {localize('com_ui_code_workspace_detach')}
                   </div>
-                  <p className="text-xs text-text-secondary">
+                  <p className="text-text-secondary text-xs">
                     {localize('com_ui_code_workspace_detach_info')}
                   </p>
                 </div>
@@ -483,19 +483,19 @@ export default function CodeWorkspaceMenu({
                 className={menuItemClasses(workspace.mode === 'without_attached')}
               >
                 <FolderX
-                  className="mt-0.5 size-4 shrink-0 text-text-secondary"
+                  className="text-text-secondary mt-0.5 size-4 shrink-0"
                   aria-hidden="true"
                 />
                 <div className="min-w-0 flex-1 text-left">
-                  <div className="truncate text-sm font-medium text-text-primary">
+                  <div className="text-text-primary truncate text-sm font-medium">
                     {localize('com_ui_code_workspace_without_attached')}
                   </div>
-                  <p className="text-xs text-text-secondary">
+                  <p className="text-text-secondary text-xs">
                     {localize('com_ui_code_workspace_without_attached_info')}
                   </p>
                 </div>
                 {workspace.mode === 'without_attached' && (
-                  <Check className="mt-0.5 size-4 shrink-0 text-text-primary" aria-hidden="true" />
+                  <Check className="text-text-primary mt-0.5 size-4 shrink-0" aria-hidden="true" />
                 )}
               </Ariakit.MenuItemRadio>
             )}
@@ -514,7 +514,7 @@ export default function CodeWorkspaceMenu({
             ))}
           </>
         )}
-        <Ariakit.MenuSeparator className="my-1 h-0 w-full border-t border-border-light" />
+        <Ariakit.MenuSeparator className="border-border-light my-1 h-0 w-full border-t" />
         <Ariakit.MenuItem
           disabled={buttonDisabled || isRefreshing}
           hideOnClick={false}
@@ -525,8 +525,8 @@ export default function CodeWorkspaceMenu({
             'items-center aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
           )}
         >
-          <RefreshCw className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
-          <span className="text-sm font-medium text-text-primary">
+          <RefreshCw className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+          <span className="text-text-primary text-sm font-medium">
             {localize('com_ui_refresh')}
           </span>
         </Ariakit.MenuItem>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import debounce from 'lodash/debounce';
+import { SetterOrUpdater } from 'recoil';
 import { Constants } from 'librechat-data-provider';
-import { SetterOrUpdater, useRecoilValue } from 'recoil';
 import type { TFile } from 'librechat-data-provider';
 import type { PendingTextAttachmentDraft } from '~/utils';
 import type { ExtendedFile } from '~/common';
@@ -25,9 +25,9 @@ import {
 } from '~/utils';
 import { isPastedTextFileMarked, markPastedTextFile } from '~/utils/files';
 import { hasInFlightUpload } from '~/hooks/Files/useFileHandling';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useChatFormContext } from '~/Providers';
 import { useGetFiles } from '~/data-provider';
-import store from '~/store';
 
 export const useAutoSave = ({
   index = 0,
@@ -54,7 +54,7 @@ export const useAutoSave = ({
 }) => {
   // setting for auto-save
   const { setValue } = useChatFormContext();
-  const saveDrafts = useRecoilValue<boolean>(store.saveDrafts);
+  const { saveDrafts } = useChatSettings();
   const pendingDraftId = getPendingDraftId(index);
   const conversationDraftId =
     _conversationId === Constants.NEW_CONVO ? getNewConversationDraftId(index) : _conversationId;

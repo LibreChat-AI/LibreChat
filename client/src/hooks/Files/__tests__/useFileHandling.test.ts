@@ -94,12 +94,14 @@ jest.mock('@librechat/client', () => ({
 jest.mock('recoil', () => ({
   ...jest.requireActual('recoil'),
   useSetRecoilState: jest.fn(() => jest.fn()),
-  useRecoilValue: jest.fn(() => mockIsTemporary),
+}));
+
+jest.mock('~/Providers/ChatSettingsContext', () => ({
+  useChatSettings: () => ({ isTemporary: mockIsTemporary }),
 }));
 
 jest.mock('~/store', () => ({
   __esModule: true,
-  default: { isTemporary: { key: 'isTemporary' } },
   ephemeralAgentByConvoId: jest.fn(() => ({ key: 'mock' })),
 }));
 

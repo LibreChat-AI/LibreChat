@@ -1,6 +1,28 @@
 import type { WorkspaceToolRequest } from './workspace';
 import type { CodeBridgeFetch } from './bridge';
-import { executeWorkspaceTool, WorkspaceToolHttpError } from './workspace';
+import {
+  executeWorkspaceTool,
+  WorkspaceToolHttpError,
+  resolveAttachedWorkspaceReadFileLines,
+} from './workspace';
+
+describe('attached read window defaults', () => {
+  test('preserves the legacy read window unless configured', () => {
+    expect(resolveAttachedWorkspaceReadFileLines()).toBe(200);
+    expect(resolveAttachedWorkspaceReadFileLines({ limits: {} })).toBe(200);
+    expect(resolveAttachedWorkspaceReadFileLines({ limits: { defaultReadFileLines: 500 } })).toBe(
+      500,
+    );
+    expect(resolveAttachedWorkspaceReadFileLines({ limits: { defaultReadFileLines: 1 } })).toBe(1);
+  });
+
+  test.each([0, -1, 1.5, 501, NaN, Infinity])(
+    'falls back safely for an invalid read window %s',
+    (defaultReadFileLines) => {
+      expect(resolveAttachedWorkspaceReadFileLines({ limits: { defaultReadFileLines } })).toBe(200);
+    },
+  );
+});
 
 describe('workspace admission feedback', () => {
   test('forwards a valid conversation workspace instance unchanged', async () => {

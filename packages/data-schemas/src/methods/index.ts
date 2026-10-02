@@ -1,3 +1,12 @@
+import type {
+  FileMethods,
+  FileOwnerScope,
+  AvailableProjectFileRecord,
+  AvailableProjectFilesOptions,
+  AvailableProjectFilesResult,
+  ProjectFileRecord,
+  ProjectFilesOptions,
+} from './file';
 import type { RoleMethods, RoleDeps } from './role';
 import {
   createOpenIDRefreshFlightMethods,
@@ -12,11 +21,12 @@ import {
   type RefreshTokenBridgeMethods,
 } from './refreshTokenBridge';
 import { createSessionMethods, DEFAULT_REFRESH_TOKEN_EXPIRY, type SessionMethods } from './session';
+import { createPasskeyMethods, type PasskeyMethods } from './passkey';
 import { createUserMethods, DEFAULT_SESSION_EXPIRY, type UserMethods } from './user';
-import { createFileMethods, type FileMethods, type FileOwnerScope } from './file';
 import { createTokenMethods, type TokenMethods } from './token';
 import { createRoleMethods, RoleConflictError } from './role';
 import { createKeyMethods, type KeyMethods } from './key';
+import { createFileMethods } from './file';
 /* Memories */
 import { createMemoryMethods, type MemoryMethods } from './memory';
 /* Tool Favorites */
@@ -219,6 +229,7 @@ export {
 export { AUDIT_SCHEMA_VERSION, MAX_AUDIT_EXPORT_ROWS, MAX_AUDIT_LOG_LIMIT, MAX_AUDIT_VERIFY_ROWS };
 export { MAX_TOOL_FAVORITES };
 export { AgentTriggerDeliveryConflictError };
+export { AGENT_OWNER_CONTACT_RESOLVED_FIELD, AgentSortCursorError } from './agent';
 export {
   AgentQueuedTurnCapacityError,
   AgentQueuedTurnConflictError,
@@ -230,6 +241,7 @@ export type AllMethods = UserMethods &
   TokenMethods &
   RefreshTokenBridgeMethods &
   OpenIDRefreshFlightMethods &
+  PasskeyMethods &
   RoleMethods &
   KeyMethods &
   FileMethods &
@@ -284,6 +296,8 @@ export interface CreateMethodsDeps {
   removeAllPermissions?: (params: { resourceType: string; resourceId: unknown }) => Promise<void>;
   /** Returns a cache store for the given key. From getLogStores. */
   getCache?: RoleDeps['getCache'];
+  /** Resolves only the base deployment's aggregate MCP App persistence limit. */
+  getMCPAppMessageBudget?: () => Promise<number | undefined>;
   /** Recognizes agent skill IDs supplied by an external, non-database registry. */
   isExternalSkillId?: AgentDeps['isExternalSkillId'];
 }
@@ -316,7 +330,9 @@ export function createMethods(
     createStructuredTransaction: transactionMethods.createStructuredTransaction,
   });
 
-  const messageMethods = createMessageMethods(mongoose);
+  const messageMethods = createMessageMethods(mongoose, {
+    getMCPAppMessageBudget: deps.getMCPAppMessageBudget,
+  });
 
   const agentQueuedTurnMethods = createAgentQueuedTurnMethods(mongoose);
   const agentTriggerDeliveryMethods = createAgentTriggerDeliveryMethods(mongoose, {
@@ -460,6 +476,7 @@ export function createMethods(
     ...createTokenMethods(mongoose),
     ...createRefreshTokenBridgeMethods(mongoose),
     ...createOpenIDRefreshFlightMethods(mongoose),
+    ...createPasskeyMethods(mongoose),
     ...roleMethods,
     ...createKeyMethods(mongoose),
     ...createFileMethods(mongoose),
@@ -510,17 +527,30 @@ export function createMethods(
   };
 }
 
+export {
+  InvalidAvailableProjectFilesCursorError,
+  parseAvailableProjectFilesCursor,
+  MAX_AVAILABLE_PROJECT_FILES_LIMIT,
+  DEFAULT_AVAILABLE_PROJECT_FILES_LIMIT,
+} from './file';
+
 export type {
   UserMethods,
+  PasskeyMethods,
   SessionMethods,
   TokenMethods,
   RefreshTokenBridgeMethods,
   OpenIDRefreshFlightMethods,
   RoleMethods,
   KeyMethods,
+  MemoryMethods,
   FileMethods,
   FileOwnerScope,
-  MemoryMethods,
+  AvailableProjectFileRecord,
+  AvailableProjectFilesOptions,
+  AvailableProjectFilesResult,
+  ProjectFileRecord,
+  ProjectFilesOptions,
   ToolFavoriteMethods,
   AgentCategoryMethods,
   AgentApiKeyMethods,

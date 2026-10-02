@@ -24,54 +24,54 @@ export interface ItemIcon {
 const BUILTIN_ICONS: Record<string, ItemIcon> = {
   execute_code: {
     Icon: Code,
-    colorClass: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
+    colorClass: 'bg-series-7/15 text-series-7',
   },
   web_search: {
     Icon: Globe,
-    colorClass: 'bg-blue-500/15 text-blue-600 dark:text-blue-300',
+    colorClass: 'bg-series-1/15 text-series-1',
   },
   artifacts: {
     Icon: Sparkles,
-    colorClass: 'bg-purple-500/15 text-purple-600 dark:text-purple-300',
+    colorClass: 'bg-series-6/15 text-series-6',
   },
   context: {
     Icon: FileText,
-    colorClass: 'bg-amber-500/15 text-amber-600 dark:text-amber-300',
+    colorClass: 'bg-series-4/15 text-series-4',
   },
   file_search: {
     Icon: FileSearch,
-    colorClass: 'bg-pink-500/15 text-pink-600 dark:text-pink-300',
+    colorClass: 'bg-series-5/15 text-series-5',
   },
   memory: {
     Icon: Brain,
-    colorClass: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300',
+    colorClass: 'bg-series-8/15 text-series-8',
   },
   ask_user_question: {
     Icon: MessageCircleQuestion,
-    colorClass: 'bg-teal-500/15 text-teal-600 dark:text-teal-300',
+    colorClass: 'bg-series-3/15 text-series-3',
   },
 };
 
 const KIND_FALLBACK_ICONS: Record<AgentItem['kind'], ItemIcon> = {
   builtin: {
     Icon: Layers,
-    colorClass: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
+    colorClass: 'bg-series-7/15 text-series-7',
   },
   tool: {
     Icon: Wrench,
-    colorClass: 'bg-sky-500/15 text-sky-600 dark:text-sky-300',
+    colorClass: 'bg-series-1/15 text-series-1',
   },
   mcp: {
     Icon: Server,
-    colorClass: 'bg-violet-500/15 text-violet-600 dark:text-violet-300',
+    colorClass: 'bg-series-6/15 text-series-6',
   },
   skill: {
     Icon: Zap,
-    colorClass: 'bg-amber-500/15 text-amber-600 dark:text-amber-300',
+    colorClass: 'bg-series-4/15 text-series-4',
   },
   action: {
     Icon: Workflow,
-    colorClass: 'bg-rose-500/15 text-rose-600 dark:text-rose-300',
+    colorClass: 'bg-series-2/15 text-series-2',
   },
 };
 
