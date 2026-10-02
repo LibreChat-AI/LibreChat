@@ -67,26 +67,41 @@ function parseAddedConversation({
   modelSpec?: TModelSpec;
   enforce: boolean;
   endpointsConfig?: TEndpointsConfig;
-}): Record<string, unknown> | null {
-  const { endpoint, endpointType } = conversation;
+}):
+  | { ok: true; parsedBody: Record<string, unknown> | null }
+  | { ok: false; error: 'unknown-endpoint' } {
+  const { endpoint } = conversation;
+  /** The client derives the primary's `endpointType` from the endpoints config
+   *  but sends the added conversation as stored, which may lack it. */
+  const endpointType = conversation.endpointType ?? endpointsConfig?.[endpoint]?.type;
   const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
-  const parsedBody = parseCompactConvo({
-    endpoint: endpoint as EModelEndpoint,
-    endpointType,
-    conversation,
-    defaultParamsEndpoint,
-  });
-  if (!parsedBody || !modelSpec) {
-    return parsedBody;
+  let parsedBody: Record<string, unknown> | null;
+  try {
+    parsedBody = parseCompactConvo({
+      endpoint: endpoint as EModelEndpoint,
+      endpointType,
+      conversation,
+      defaultParamsEndpoint,
+    });
+  } catch {
+    /** Thrown only when no schema serves the endpoint; the primary request
+     *  rejects the same input in `buildEndpointOption`. */
+    return { ok: false, error: 'unknown-endpoint' };
   }
-  return applyModelSpecPreset({
-    modelSpec,
-    parsedBody,
-    endpoint,
-    endpointType,
-    defaultParamsEndpoint,
-    includePresetDefaults: enforce,
-  }).parsedBody;
+  if (!parsedBody || !modelSpec) {
+    return { ok: true, parsedBody };
+  }
+  return {
+    ok: true,
+    parsedBody: applyModelSpecPreset({
+      modelSpec,
+      parsedBody,
+      endpoint,
+      endpointType,
+      defaultParamsEndpoint,
+      includePresetDefaults: enforce,
+    }).parsedBody,
+  };
 }
 
 export type LoadAddedAgentDeps = LoadAgentDeps;
@@ -148,12 +163,16 @@ export async function loadAddedAgent(
     return null;
   }
   const { modelSpec } = specResult;
-  const parsedBody = parseAddedConversation({
+  const parseResult = parseAddedConversation({
     conversation: { ...conversation, endpoint },
     modelSpec,
     enforce: modelSpecs?.enforce === true,
     endpointsConfig: req.endpointsConfig,
   });
+  if (!parseResult.ok) {
+    logger.warn(`[loadAddedAgent] Added conversation refused: ${parseResult.error}`);
+    return null;
+  }
   /** Same request-only fields `buildOptions` keeps out of the primary's parameters. */
   const {
     spec: _spec,
@@ -161,7 +180,7 @@ export async function loadAddedAgent(
     agent_id: _agentId,
     chatProjectId: _chatProjectId,
     ...model_parameters
-  } = parsedBody ?? {};
+  } = parseResult.parsedBody ?? {};
   /** An ephemeral primary already resolved the shared badge selections. */
   const tools =
     primaryAgent && isEphemeralAgentId(primaryAgent.id) && Array.isArray(primaryAgent.tools)

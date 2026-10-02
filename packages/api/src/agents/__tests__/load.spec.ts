@@ -1251,6 +1251,41 @@ describe('loadAgent', () => {
       expect(result?.model_parameters).toMatchObject({ thinking: true, thinkingBudget: 4000 });
     });
 
+    test('fills a missing custom endpointType from the request endpoints config', async () => {
+      const endpointsConfig = {
+        Claude: { type: 'custom', customParams: { defaultParamsEndpoint: 'anthropic' } },
+      } as unknown as TEndpointsConfig;
+
+      const result = await loadAddedAgent(
+        {
+          req: { user: { id: 'user123' }, config: appConfig, endpointsConfig },
+          conversation: {
+            endpoint: 'Claude',
+            model: 'claude-sonnet',
+            thinking: true,
+            thinkingBudget: 4000,
+          } as unknown as TConversation,
+        },
+        deps,
+      );
+
+      expect(result?.provider).toBe('Claude');
+      expect(result?.model_parameters).toMatchObject({ thinking: true, thinkingBudget: 4000 });
+    });
+
+    test('refuses an endpoint no schema or endpoints config serves', async () => {
+      const result = await loadAddedAgent(
+        {
+          req: { user: { id: 'user123' }, config: appConfig, endpointsConfig: {} },
+          conversation: { endpoint: 'openai', model: 'gpt-4' } as unknown as TConversation,
+        },
+        deps,
+      );
+
+      expect(result).toBeNull();
+      expect(mockGetMCPServerTools).not.toHaveBeenCalled();
+    });
+
     describe('model spec rules', () => {
       const lunaSpec = {
         name: 'luna',
