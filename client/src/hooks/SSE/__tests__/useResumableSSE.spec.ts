@@ -94,6 +94,7 @@ const mockQueryClient = {
   invalidateQueries: mockInvalidateQueries,
   removeQueries: mockRemoveQueries,
   cancelQueries: mockCancelQueries,
+  getQueryState: mockBackingQueryClient.getQueryState.bind(mockBackingQueryClient),
   getQueryCache: () => ({
     findAll: mockFindAll,
     getAll: mockQueryCache.getAll.bind(mockQueryCache),

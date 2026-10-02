@@ -9,8 +9,8 @@ import {
   removeConvoFromAllQueries,
   updateConvoInAllQueries,
 } from '~/utils/convos';
+import { useUpdateConversationMutation, useArchiveAllConversationsMutation } from '../mutations';
 import { useAssignConversationToProjectMutation } from '../Projects/mutations';
-import { useArchiveAllConversationsMutation } from '../mutations';
 import { useRunningConversationsQuery } from '../queries';
 
 jest.mock('librechat-data-provider', () => {
@@ -23,6 +23,7 @@ jest.mock('librechat-data-provider', () => {
       getSharedLink: jest.fn(),
       assignConversationToProject: jest.fn(),
       archiveAllConversations: jest.fn(),
+      updateConversation: jest.fn(),
     },
   };
 });
@@ -138,6 +139,74 @@ describe('useRunningConversationsQuery', () => {
       await refetch;
     });
     await waitFor(() => expect(result.current[0]?.title).toBe('Renamed'));
+  });
+
+  it.each(['pending', 'missing'] as const)(
+    'shows a renamed pin immediately with a %s Running row',
+    async (state) => {
+      const initial = deferred<TConversation>();
+      const newerReply = '2026-01-03T00:00:00.000Z';
+      queryClient.setQueryData([QueryKeys.pinnedConversations], {
+        conversations: [record({ pinned: true, isShared: true })],
+      });
+      if (state === 'pending') {
+        getConversationById.mockReturnValue(initial.promise);
+      } else {
+        getConversationById.mockRejectedValueOnce(notFound());
+      }
+      jest
+        .mocked(dataService.updateConversation)
+        .mockResolvedValue(record({ title: 'Renamed', pinned: true, lastResponseAt: newerReply }));
+      const { result } = renderHook(
+        () => ({
+          rows: useRunningConversationsQuery(['c1']),
+          rename: useUpdateConversationMutation('c1'),
+        }),
+        { wrapper },
+      );
+      await waitFor(() => expect(getConversationById).toHaveBeenCalledTimes(1));
+      if (state === 'missing') {
+        await waitFor(() =>
+          expect(queryClient.getQueryData([QueryKeys.runningConversation, 'c1'])).toBeNull(),
+        );
+      }
+      expect(result.current.rows).toEqual([]);
+
+      await act(async () => {
+        await result.current.rename.mutateAsync({ conversationId: 'c1', title: 'Renamed' });
+      });
+      await waitFor(() =>
+        expect(result.current.rows[0]).toMatchObject({
+          title: 'Renamed',
+          pinned: true,
+          isShared: true,
+          lastResponseAt: newerReply,
+        }),
+      );
+      expect(getConversationById).toHaveBeenCalledTimes(1);
+
+      await act(async () => initial.resolve(record()));
+      expect(result.current.rows[0]?.title).toBe('Renamed');
+    },
+  );
+
+  it('restarts an interrupted initial fetch when no local row is available', async () => {
+    const initial = deferred<TConversation>();
+    getConversationById.mockReturnValueOnce(initial.promise).mockResolvedValue(record());
+    const { result } = renderHook(() => useRunningConversationsQuery(['c1']), { wrapper });
+    await waitFor(() => expect(getConversationById).toHaveBeenCalledTimes(1));
+
+    act(() => updateConvoInAllQueries(queryClient, 'c1', (row) => ({ ...row, title: 'Changed' })));
+    await waitFor(() => expect(getConversationById).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current).toHaveLength(1));
+    await act(async () => initial.resolve(record({ title: 'Stale' })));
+    expect(result.current[0]?.title).not.toBe('Stale');
+  });
+
+  it('does not create a Running query just because an unrelated cached chat changes', () => {
+    queryClient.setQueryData([QueryKeys.conversation, 'c1'], record());
+    updateConvoInAllQueries(queryClient, 'c1', (row) => ({ ...row, title: 'Changed' }));
+    expect(queryClient.getQueryState([QueryKeys.runningConversation, 'c1'])).toBeUndefined();
   });
 
   it('preserves sidebar flags and read state when replacing a running row', async () => {

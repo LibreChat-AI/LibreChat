@@ -1468,16 +1468,30 @@ export function updateConvoInAllQueries(
   moveToTop = false,
 ) {
   const runningKey = [QueryKeys.runningConversation, conversationId];
+  const runningState = queryClient.getQueryState<TConversation | null>(runningKey);
+  const cached =
+    runningState && runningState.data == null
+      ? findConvoInAllQueries(queryClient, conversationId)
+      : undefined;
+  const cachedPin = cached && findPinnedConversation(queryClient, conversationId);
+  const initialRow =
+    cached && cachedPin
+      ? { ...cached, pinned: cachedPin.pinned, isShared: cachedPin.isShared ?? cached.isShared }
+      : cached;
+  const restartInitialFetch =
+    runningState?.fetchStatus === 'fetching' && runningState.data == null && !initialRow;
+
   void queryClient.cancelQueries({ queryKey: runningKey, exact: true });
   queryClient.setQueryData<TConversation>([QueryKeys.conversation, conversationId], (current) =>
     current ? updater(current) : current,
   );
   queryClient.setQueryData<TConversation | null>(runningKey, (current) => {
-    if (!current) {
+    const previous = current ?? initialRow;
+    if (!previous) {
       return current;
     }
-    const next = preserveReadState(preserveListFlags(updater(current), current), current);
-    return moveToTop && next.updatedAt === current.updatedAt
+    const next = preserveReadState(preserveListFlags(updater(previous), previous), previous);
+    return moveToTop && next.updatedAt === previous.updatedAt
       ? { ...next, updatedAt: new Date().toISOString() }
       : next;
   });
@@ -1577,6 +1591,9 @@ export function updateConvoInAllQueries(
       /* Inactive variants are only marked stale: they refresh when something mounts them. */
       queryClient.invalidateQueries({ queryKey: query.queryKey, refetchType: 'active' });
     }
+  }
+  if (restartInitialFetch) {
+    void queryClient.invalidateQueries({ queryKey: runningKey, exact: true });
   }
 }
 
