@@ -1300,7 +1300,12 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   const droppedNotice =
     (progress?.droppedCount ?? 0) > 0 ? (
       <div role="status" className="text-text-secondary px-4 py-2 text-sm">
-        {localize('com_ui_subagent_activity_dropped', { count: progress!.droppedCount! })}
+        {localize(
+          progress!.droppedCount === 1
+            ? 'com_ui_subagent_activity_dropped_one'
+            : 'com_ui_subagent_activity_dropped',
+          { count: progress!.droppedCount! },
+        )}
       </div>
     ) : null;
   let activityPanel: ReactNode;
