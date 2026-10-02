@@ -36,7 +36,6 @@ describe('chat machine selection', () => {
     [
       [{ environmentId: 'runtime-vm', workspaceId: '' }],
       [...selections, ...selections],
-      [...selections, { environmentId: defaultId, workspaceId: 'primary' }],
       { environmentId: 'runtime-vm' },
     ].map((invalid) => ({ invalid })),
   )('rejects malformed or ambiguous choices', ({ invalid }) => {
@@ -46,6 +45,28 @@ describe('chat machine selection', () => {
         allowSelection: true,
         selections: invalid,
         environmentIds: ['runtime-vm'],
+      }),
+    ).toEqual({ valid: false });
+  });
+
+  it('preserves the selected default when another graph agent needs an allowed alternative', () => {
+    expect(
+      resolveCodeEnvironmentSelection({
+        environmentId: defaultId,
+        environmentIds: ['runtime-vm'],
+        allowSelection: true,
+        selections: [...selections, { environmentId: defaultId, workspaceId: 'primary' }],
+      }),
+    ).toEqual({ valid: true, environmentId: defaultId });
+  });
+
+  it('rejects multiple allowed non-default machines without guessing', () => {
+    expect(
+      resolveCodeEnvironmentSelection({
+        environmentId: defaultId,
+        environmentIds: ['runtime-vm', 'another-vm'],
+        allowSelection: true,
+        selections: [...selections, { environmentId: 'another-vm', workspaceId: 'primary' }],
       }),
     ).toEqual({ valid: false });
   });
