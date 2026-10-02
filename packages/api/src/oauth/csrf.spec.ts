@@ -38,6 +38,7 @@ describe('OAuth browser binding cookie paths', () => {
     { domainServer: 'https://server.example/', basePath: '' },
     { domainServer: 'https://server.example/chat', basePath: '/chat' },
     { domainServer: 'https://server.example/chat/', basePath: '/chat' },
+    { domainServer: 'https://server.example/chat///', basePath: '/chat' },
     { domainServer: 'https://server.example/apps/librechat', basePath: '/apps/librechat' },
   ])(
     'issues and clears cookies under $basePath for $domainServer',

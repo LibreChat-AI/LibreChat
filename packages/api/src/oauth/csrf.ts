@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import type { Request, Response, NextFunction } from 'express';
+import { getOAuthCallbackUrl } from './url';
 import { isEnabled } from '~/utils/common';
 
 export const OAUTH_CSRF_COOKIE = 'oauth_csrf';
@@ -141,8 +142,7 @@ function getOAuthCookiePath(cookiePath: string): string {
     return cookiePath;
   }
   try {
-    const basePath = new URL(domainServer).pathname.replace(/\/$/, '');
-    return `${basePath}${cookiePath}`;
+    return new URL(getOAuthCallbackUrl(domainServer, cookiePath)).pathname;
   } catch {
     return cookiePath;
   }
