@@ -188,7 +188,7 @@ describe('file content inspection policy', () => {
   /**
    * The upload route runs whatever this returns, so precedence and escalation are the
    * behavior: a configured text service takes the document away from the parser, and an
-   * operator alias — a type only their parser list names — still reaches OCR, because
+   * operator alias (a type only their parser list names) still reaches OCR, because
    * the alias resolves to a type OCR does advertise.
    */
   it('selects the extraction engines an agent context upload runs', () => {

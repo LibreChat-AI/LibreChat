@@ -25,8 +25,8 @@ const initialize = async () => {
   router.use(uaParser);
 
   /* Per-request staging: two uploads of the same filename by the same user otherwise
-   * share one temporary path, and every stage that reopens it — the archive guard, the
-   * parser child, storage, the cleanup that deletes it — can read or remove bytes that
+   * share one temporary path, and every stage that reopens it (the archive guard, the
+   * parser child, storage, the cleanup that deletes it) can read or remove bytes that
    * belong to the other request. */
   const upload = await createMulterInstance({ uniqueTempPath: true });
   router.post('/speech/stt', upload.single('audio'), restoreTenantContextFromReq);

@@ -65,8 +65,8 @@ export class ParserOutputLimitError extends Error {
 /**
  * A parser read the document and it held no extractable text: every engine reports this
  * by returning nothing, and every caller refuses the empty extraction rather than
- * storing it. Coded because the upload router treats it as an outcome — the case a
- * configured OCR service exists for — while a genuine parser failure keeps surfacing as
+ * storing it. Coded because the upload router treats it as an outcome (the case a
+ * configured OCR service exists for) while a genuine parser failure keeps surfacing as
  * itself. Defined here, beside the other parse-boundary refusal, so both engines and
  * the dispatcher can throw it without importing each other.
  */

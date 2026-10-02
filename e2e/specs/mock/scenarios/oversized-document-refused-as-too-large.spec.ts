@@ -3,7 +3,7 @@ import { DOCX_MIME, openLegacyComposer, uploadAsText } from './documents.helpers
 
 /**
  * The parser reads the whole document into memory, so an input above its 15MB ceiling is
- * refused before any engine is handed the bytes — and refused as "too large" (413), not
+ * refused before any engine is handed the bytes, and refused as "too large" (413), not
  * as a server error the user cannot act on.
  */
 test('a document above the parser size limit is refused as too large @scenario:oversized-document-refused-as-too-large', async ({

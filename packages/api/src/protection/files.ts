@@ -401,7 +401,7 @@ export interface DocumentExtractionPlan {
  * Both engines can be selected: the parser reads what it can and a configured OCR
  * service covers what it could not, which is how a part-scanned document comes back
  * whole. An operator who adds a type to the parser's list gets the same escalation,
- * which is why the alias resolved from the filename is offered to the OCR gate too —
+ * which is why the alias resolved from the filename is offered to the OCR gate too:
  * the declared type of such an upload is by definition not one OCR advertises.
  */
 export function planDocumentExtraction(

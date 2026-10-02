@@ -764,7 +764,7 @@ describe('pdf-inspector local parser', () => {
 
   /* The cap bounds request time, not what the document is, so a deployment willing to
    * spend longer on a mostly-scanned PDF can probe further instead of reporting those
-   * pages as needing OCR — which a strict inspection policy would refuse outright. */
+   * pages as needing OCR, which a strict inspection policy would refuse outright. */
   test('probes further when the configured recovery ceiling is raised', async () => {
     const flooded = Array.from({ length: 900 }, (_, page) => ({ page, markdown: '' }));
     mockPdfjs.pageText = Object.fromEntries(

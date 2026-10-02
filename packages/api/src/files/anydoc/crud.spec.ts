@@ -397,7 +397,7 @@ describe('parseWithAnydoc', () => {
      * The upload route stages a document under its sanitized filename, so two concurrent
      * uploads of the same name share one path. The guard reads the buffer in memory and
      * the child reads a path, so without a private copy the second request's bytes would
-     * be what anydoc converts and what gets persisted — the bytes this guard never saw.
+     * be what anydoc converts and what gets persisted: the bytes this guard never saw.
      */
     test('parses the bytes the guard validated, not whatever replaced them', async () => {
       const stagedPath = path.join(fixtures, 'anydoc-staged-collision.docx');
