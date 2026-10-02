@@ -116,7 +116,7 @@ it('does not extend the deadline when an admission is recorded', async () => {
     (await storage.readScheduleMCPConsent(identity))?.enrollment?.consents[0].absoluteExpiresAtMs,
   ).toBe(grant.consents[0].absoluteExpiresAtMs);
 });
-it('rejects expired consent using database time even when the caller clock is stale', async () => {
+it('rejects expired consent at the storage write boundary', async () => {
   const grant = enrollment();
   grant.consents[0].grantedAtMs = Date.now() - 5000;
   grant.consents[0].absoluteExpiresAtMs = Date.now() - 1000;
@@ -198,4 +198,18 @@ it('rejects credential-bearing or mismatched records at the persistence boundary
   const secret = enrollment();
   Object.assign(secret.consents[0].resource, { accessToken: 'do-not-store' });
   await expect(confirm(null, secret)).rejects.toThrow();
+});
+
+it('uses only classic update operators for confirmation, revocation and admission', async () => {
+  const update = jest.spyOn(mongoose.models.Schedule, 'updateOne');
+  await confirm();
+  await admit();
+  await storage.revokeScheduleMCPConsent(identity, 'grant-1');
+  for (const call of update.mock.calls) {
+    const [filter, operation] = Array.from(call);
+    expect(Array.isArray(operation)).toBe(false);
+    expect(JSON.stringify(filter)).not.toContain('$$NOW');
+    expect(JSON.stringify(operation)).not.toContain('$$NOW');
+    expect(Object.keys(operation!)).toEqual(['$set']);
+  }
 });

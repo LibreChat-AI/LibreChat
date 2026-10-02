@@ -125,6 +125,7 @@ export type TScheduleLastRun = {
 };
 
 export type TSchedule = {
+  hasMCPConsent?: boolean;
   id: string;
   user: string;
   name: string;

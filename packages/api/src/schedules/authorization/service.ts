@@ -162,7 +162,28 @@ export function createScheduleMCPConsentService(
       return { state: 'unsupported', revision: null, expiresAtMs: null, targets: [], offer: null };
     }
     if (allowed && limits.enabled && deps.resolveEnrollment) {
-      targets = canonicalTargets(await deps.resolveEnrollment(identity, options));
+      let resolved: readonly ScheduledMCPTarget[];
+      try {
+        resolved = await deps.resolveEnrollment(identity, options);
+      } catch (error) {
+        if (!(error instanceof ScheduleMCPConsentError) || !enrollment) throw error;
+        return {
+          state: 'changed',
+          revision: enrollment.revision,
+          expiresAtMs,
+          targets,
+          offer: null,
+        };
+      }
+      if (resolved.length === 0)
+        return {
+          state: enrollment ? 'changed' : 'unsupported',
+          revision: enrollment?.revision ?? null,
+          expiresAtMs,
+          targets,
+          offer: null,
+        };
+      targets = canonicalTargets(resolved);
       const digest = createHash('sha256')
         .update(JSON.stringify({ identity, configRevision: snapshot.configRevision, targets }))
         .digest('hex');

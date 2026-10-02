@@ -6,6 +6,7 @@ const {
   generateCheckAccess,
   createSchedulesHandlers,
   createScheduleMCPConsentHost,
+  createScheduleMCPEnrollmentResolver,
 } = require('@librechat/api');
 const { requireJwtAuth, configMiddleware, messageIpLimiter } = require('~/server/middleware');
 const {
@@ -88,6 +89,19 @@ const handlers = createSchedulesHandlers({
 });
 
 const consentHost = createScheduleMCPConsentHost({
+  resolveEnrollment: createScheduleMCPEnrollmentResolver({
+    findUser: (id) => methods.findUser({ _id: id }),
+    getAppConfig: require('~/server/services/Config/app').getAppConfig,
+    resolveGraphAccess: (user) =>
+      methods.resolveAgentGraphAccess({
+        userId: user.id,
+        role: user.role,
+        idOnTheSource: user.idOnTheSource,
+      }),
+    getNodes: methods.getAgentGraphNodes,
+    getServers: (user, config) =>
+      require('~/config').getMCPServersRegistry().getAllServerConfigs(user.id, config, user.role),
+  }),
   methods,
   getLimits,
   findUser: (id) => methods.findUser({ _id: id }),

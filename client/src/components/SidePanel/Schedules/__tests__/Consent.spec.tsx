@@ -146,3 +146,31 @@ it('reports a stale confirmation and reloads the current offer', async () => {
   expect(await screen.findByText('com_ui_schedule_consent_error')).toBeVisible();
   await waitFor(() => expect(dataService.getScheduleMCPConsent).toHaveBeenCalledTimes(2));
 });
+
+it('keeps persisted inspection and revocation when CREATE is removed, without offering confirmation', async () => {
+  const active = {
+    ...view,
+    state: 'active' as const,
+    revision: 'grant',
+    expiresAtMs: Date.now() + 60_000,
+  };
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(active);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <Consent
+        canConfirm={false}
+        id="schedule"
+        name="Digest"
+        onOpenChange={jest.fn()}
+        triggerRef={createRef()}
+      />
+    </QueryClientProvider>,
+  );
+  expect(
+    await screen.findByRole('button', { name: 'com_ui_schedule_consent_revoke' }),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole('button', { name: 'com_ui_schedule_consent_confirm' }),
+  ).not.toBeInTheDocument();
+});

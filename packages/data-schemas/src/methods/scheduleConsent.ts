@@ -33,7 +33,9 @@ export interface ScheduleMCPConsentStorage {
 
 export function createScheduleMCPConsentStorage(
   mongoose: typeof import('mongoose'),
+  options: { now?: () => number } = {},
 ): ScheduleMCPConsentStorage {
+  const now = options.now ?? Date.now;
   const model = (): Model<IScheduleDocument> =>
     mongoose.models.Schedule as Model<IScheduleDocument>;
   const scope = (identity: ScheduledMCPIdentity) => ({
@@ -86,19 +88,13 @@ export function createScheduleMCPConsentStorage(
         )
       )
         throw new Error('Invalid scheduled MCP enrollment binding');
+      if (enrollment.consents.some((consent) => consent.absoluteExpiresAtMs <= now())) return false;
       const result = await model().updateOne(
         {
           ...scope(input.identity),
           ...configFilter(input.expectedConfigRevision),
           ...revisionFilter(input.expectedRevision),
           agent_id: input.identity.agentId,
-          // Expiry is checked against database time at the atomic confirmation boundary.
-          $expr: {
-            $gt: [
-              { $literal: Math.min(...enrollment.consents.map((c) => c.absoluteExpiresAtMs)) },
-              { $toLong: '$$NOW' },
-            ],
-          },
         },
         { $set: { mcpConsent: enrollment } },
         { runValidators: true },
@@ -106,31 +102,29 @@ export function createScheduleMCPConsentStorage(
       return result.matchedCount === 1;
     },
     async revokeScheduleMCPConsent(identity, revision) {
+      const snapshot = await model()
+        .findOne({ ...scope(identity), ...revisionFilter(revision) })
+        .select('mcpConsent')
+        .read('primary')
+        .lean();
+      const parsed = scheduledMCPEnrollmentSchema.safeParse(snapshot?.mcpConsent);
+      if (!parsed.success) return false;
       const revokedRevision = randomUUID();
-      const result = await model().updateOne({ ...scope(identity), ...revisionFilter(revision) }, [
-        {
-          $set: {
-            'mcpConsent.revision': { $literal: revokedRevision },
-            'mcpConsent.consents': {
-              $map: {
-                input: {
-                  $cond: [{ $isArray: '$mcpConsent.consents' }, '$mcpConsent.consents', []],
-                },
-                as: 'consent',
-                in: {
-                  $mergeObjects: [
-                    '$$consent',
-                    {
-                      revision: { $literal: revokedRevision },
-                      revokedAtMs: { $ifNull: ['$$consent.revokedAtMs', { $toLong: '$$NOW' }] },
-                    },
-                  ],
-                },
-              },
-            },
-          },
-        },
-      ]);
+      const revokedAtMs = now();
+      const enrollment = {
+        ...parsed.data,
+        revision: revokedRevision,
+        consents: parsed.data.consents.map((consent) => ({
+          ...consent,
+          revision: revokedRevision,
+          revokedAtMs: consent.revokedAtMs ?? revokedAtMs,
+        })),
+      };
+      const result = await model().updateOne(
+        { ...scope(identity), ...revisionFilter(revision) },
+        { $set: { mcpConsent: enrollment } },
+        { runValidators: true },
+      );
       return result.matchedCount === 1;
     },
     async admitScheduleMCPConsent(input) {
@@ -144,24 +138,16 @@ export function createScheduleMCPConsentStorage(
           'mcpConsent.consents': {
             $elemMatch: { id: input.consentId, revision: input.revision, revokedAtMs: null },
           },
-          $expr: {
-            $allElementsTrue: [
-              {
-                $map: {
-                  input: {
-                    $cond: [{ $isArray: '$mcpConsent.consents' }, '$mcpConsent.consents', []],
-                  },
-                  as: 'consent',
-                  in: {
-                    $and: [
-                      { $eq: ['$$consent.revokedAtMs', null] },
-                      { $gt: ['$$consent.absoluteExpiresAtMs', { $toLong: '$$NOW' }] },
-                    ],
-                  },
+          'mcpConsent.consents.0': { $exists: true },
+          $nor: [
+            {
+              'mcpConsent.consents': {
+                $elemMatch: {
+                  $or: [{ revokedAtMs: { $ne: null } }, { absoluteExpiresAtMs: { $lte: now() } }],
                 },
               },
-            ],
-          },
+            },
+          ],
         },
         { $set: { 'mcpConsent.revision': input.revision } },
         { timestamps: false },

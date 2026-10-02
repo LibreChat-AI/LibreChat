@@ -24,11 +24,13 @@ const messageKeys = {
 } as const;
 
 export default function Consent({
+  canConfirm = true,
   id,
   name,
   onOpenChange,
   triggerRef,
 }: {
+  canConfirm?: boolean;
   id: string;
   name: string;
   onOpenChange: (open: boolean) => void;
@@ -128,7 +130,7 @@ export default function Consent({
                     </li>
                   ))}
                 </ul>
-                {data.offer && (
+                {canConfirm && data.offer && (
                   <>
                     <Label htmlFor={inputId}>{localize('com_ui_schedule_consent_hours')}</Label>
                     <Input

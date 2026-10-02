@@ -52,6 +52,11 @@ export const scheduledMCPResourceSchema = z
     scopes: z.array(identifier).max(128),
   })
   .strict();
+export const scheduledMCPResourceBindingSchema = scheduledMCPResourceSchema.omit({
+  serverName: true,
+  configurationRevision: true,
+});
+export type ScheduledMCPResourceBinding = z.infer<typeof scheduledMCPResourceBindingSchema>;
 export type ScheduledMCPResource = z.infer<typeof scheduledMCPResourceSchema>;
 export type ScheduledMCPCredentialMode = ScheduledMCPResource['credentialMode'];
 

@@ -297,6 +297,7 @@ export function toWireSchedule(
 ): WireSchedule {
   return {
     id: schedule.id,
+    ...(schedule.mcpConsent && { hasMCPConsent: true }),
     user: schedule.user,
     name: schedule.name,
     prompt: schedule.prompt,

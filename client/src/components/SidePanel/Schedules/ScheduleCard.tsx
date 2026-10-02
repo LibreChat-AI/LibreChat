@@ -278,9 +278,11 @@ export default function ScheduleCard({ schedule, projectName, consentEnabled }: 
     };
   }, [schedule.enabled, schedule.nextRunAt, i18n.language, hour12, localize]);
 
+  const canInspectConsent = consentEnabled || schedule.hasMCPConsent === true;
+
   const dropdownItems = useMemo(
     () => [
-      ...(consentEnabled
+      ...(canInspectConsent
         ? [
             {
               label: localize('com_ui_schedule_consent_title'),
@@ -294,37 +296,41 @@ export default function ScheduleCard({ schedule, projectName, consentEnabled }: 
             },
           ]
         : []),
-      {
-        label: localize('com_ui_schedule_run_now'),
-        onClick: handleRunNow,
-        hideOnClick: false,
-        disabled: runSchedule.isLoading,
-        icon: runSchedule.isLoading ? (
-          <Spinner className="size-4" />
-        ) : (
-          <Play className="icon-sm text-text-primary mr-2" aria-hidden="true" />
-        ),
-      },
-      {
-        label: localize('com_ui_edit'),
-        onClick: () => setEditOpen(true),
-        icon: <Pencil className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
-        ariaHasPopup: 'dialog' as const,
-        hideOnClick: false,
-        ref: editButtonRef,
-        render: (props) => <button {...props} />,
-      },
-      {
-        label: localize('com_ui_delete'),
-        onClick: () => setDeleteOpen(true),
-        icon: <Trash className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
-        ariaHasPopup: 'dialog' as const,
-        hideOnClick: false,
-        ref: deleteButtonRef,
-        render: (props) => <button {...props} />,
-      },
+      ...(canWrite
+        ? [
+            {
+              label: localize('com_ui_schedule_run_now'),
+              onClick: handleRunNow,
+              hideOnClick: false,
+              disabled: runSchedule.isLoading,
+              icon: runSchedule.isLoading ? (
+                <Spinner className="size-4" />
+              ) : (
+                <Play className="icon-sm text-text-primary mr-2" aria-hidden="true" />
+              ),
+            },
+            {
+              label: localize('com_ui_edit'),
+              onClick: () => setEditOpen(true),
+              icon: <Pencil className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+              ariaHasPopup: 'dialog' as const,
+              hideOnClick: false,
+              ref: editButtonRef,
+              render: (props) => <button {...props} />,
+            },
+            {
+              label: localize('com_ui_delete'),
+              onClick: () => setDeleteOpen(true),
+              icon: <Trash className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+              ariaHasPopup: 'dialog' as const,
+              hideOnClick: false,
+              ref: deleteButtonRef,
+              render: (props) => <button {...props} />,
+            },
+          ]
+        : []),
     ],
-    [localize, handleRunNow, runSchedule.isLoading, consentEnabled],
+    [localize, handleRunNow, runSchedule.isLoading, canInspectConsent, canWrite],
   );
 
   const lastRunConvoId = schedule.lastRun?.conversationId;
@@ -374,20 +380,22 @@ export default function ScheduleCard({ schedule, projectName, consentEnabled }: 
                 {localize('com_ui_schedule_last_run')}
               </Link>
             )}
-            {canWrite && (
+            {(canWrite || canInspectConsent) && (
               /* Not the collapsible slot other rows use: this panel's rows end at
                  the sidebar's resize handle, and a slot collapsed to zero width
                  puts the switch's clickable point outside the panel entirely,
                  under that handle, where no hover can ever reveal it. The menu
                  trigger still fades in on row hover by itself. */
               <div className="flex shrink-0 items-center gap-2">
-                <Switch
-                  checked={schedule.enabled}
-                  onCheckedChange={handleToggle}
-                  disabled={updateSchedule.isLoading}
-                  aria-label={`${localize('com_ui_schedule_enabled')}: ${schedule.name}`}
-                  className="shrink-0"
-                />
+                {canWrite && (
+                  <Switch
+                    checked={schedule.enabled}
+                    onCheckedChange={handleToggle}
+                    disabled={updateSchedule.isLoading}
+                    aria-label={`${localize('com_ui_schedule_enabled')}: ${schedule.name}`}
+                    className="shrink-0"
+                  />
+                )}
                 <DropdownPopup
                   portal={true}
                   menuId={menuId}
@@ -429,6 +437,7 @@ export default function ScheduleCard({ schedule, projectName, consentEnabled }: 
       </div>
       {consentOpen && (
         <Consent
+          canConfirm={canWrite}
           id={schedule.id}
           name={schedule.name}
           onOpenChange={setConsentOpen}

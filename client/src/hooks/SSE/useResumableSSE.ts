@@ -97,6 +97,7 @@ import useEventHandlers, {
 } from './useEventHandlers';
 import { drainAfterAbortByIndex, queuedMessagesByConvoId, runEndByIndex } from '~/hooks/Chat/queue';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { withSubmittedCodeDecision } from '~/hooks/Agents/codeDecision';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { liveAppliedSteerIdsAtom } from '~/store/steer';
@@ -581,7 +582,7 @@ const buildOptimisticConversation = (
     submission.initialResponse?.messageId,
   ].filter((messageId): messageId is string => typeof messageId === 'string' && messageId !== '');
 
-  return {
+  const conversation = {
     ...submission.conversation,
     conversationId,
     endpoint: submission.conversation.endpoint ?? null,
@@ -595,6 +596,7 @@ const buildOptimisticConversation = (
      * when true, leaving the legacy `expiredAt` inference untouched otherwise. */
     ...(submission.isTemporary === true ? { isTemporary: true } : {}),
   } as TConversation;
+  return withSubmittedCodeDecision(conversation, submission)!;
 };
 
 const hydrateSubmissionMessages = (
