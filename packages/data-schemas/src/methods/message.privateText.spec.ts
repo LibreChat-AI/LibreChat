@@ -20,6 +20,7 @@ beforeAll(async () => {
   server = await MongoMemoryServer.create();
   Object.assign(mongoose.models, createModels(mongoose));
   await mongoose.connect(server.getUri());
+  await mongoose.models.Message.createIndexes();
 });
 afterAll(async () => {
   await mongoose.disconnect();
@@ -162,6 +163,7 @@ it('inserts a missing Stop prerequisite once without overwriting a stored or con
         },
       ),
     ]);
+    expect(await mongoose.models.Message.countDocuments({ messageId: concurrentId })).toBe(1);
     const concurrent = await mongoose.models.Message.findOne({ messageId: concurrentId })
       .select('+privateText')
       .lean();
