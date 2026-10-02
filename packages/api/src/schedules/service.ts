@@ -1,6 +1,9 @@
-import { DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS } from 'librechat-data-provider';
 import { logger, runAsSystem, tenantStorage, isRuntimeDisabled } from '@librechat/data-schemas';
 import { getRefillEligibilityDate, Permissions, PermissionTypes } from 'librechat-data-provider';
+import {
+  DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
+  isScheduleMCPAuthorizationFailure,
+} from 'librechat-data-provider';
 import type { ScheduleMethods, AppConfig, IBalance, IChatProject } from '@librechat/data-schemas';
 import type { TCheckpointerConfig } from 'librechat-data-provider';
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
@@ -929,7 +932,7 @@ export function createSchedulesService(
       ) {
         // Cleared to settle: no Stop owns the run, it acknowledged, or its owner is past
         // the stale cutoff and is presumed dead (the bounded recovery path).
-        return state?.mcp?.filter((item) => item.detail === 'unattended_auth_required') ?? [];
+        return state?.mcp?.filter(isScheduleMCPAuthorizationFailure) ?? [];
       }
       if (Date.now() >= deadline) {
         // Still an UNACKNOWLEDGED, FRESH Stop. The poll budget expiring proves nothing about

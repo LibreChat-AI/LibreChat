@@ -2104,6 +2104,13 @@ Please follow these instructions when using tools from the respective MCP server
           logger.debug(`${logPrefix}[${toolName}] Tool call cancelled by user abort`);
           throw error;
         }
+        if (scheduledMCPInvocation && error instanceof MCPAuthenticationRejectedError) {
+          throw new ScheduledMCPPolicyError(
+            'credential_rejected',
+            serverName,
+            scheduledMCPInvocation.agentId,
+          );
+        }
         // Log with context and re-throw or handle as needed
         logger.error(`${logPrefix}[${toolName}] Tool call failed`, error);
         // Rethrowing allows the caller (createMCPTool) to handle the final user message

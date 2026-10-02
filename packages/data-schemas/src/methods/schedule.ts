@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { getScheduleMCPDisabledReason } from 'librechat-data-provider';
+import {
+  getScheduleMCPDisabledReason,
+  isScheduleMCPAuthorizationFailure,
+  scheduledMCPFailureReasonSchema,
+} from 'librechat-data-provider';
 import type { ScheduleRunStatus, ScheduleDisabledReason } from 'librechat-data-provider';
 import type { Model, Types, AnyBulkWriteOperation } from 'mongoose';
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
@@ -1538,8 +1542,19 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       params.status === 'success' ||
       params.status === 'error' ||
       params.status === 'skipped_balance';
-    const incomingFailure =
-      canOverride && params.mcp?.some((item) => item.detail === 'unattended_auth_required');
+    const incomingFailure = canOverride && params.mcp?.some(isScheduleMCPAuthorizationFailure);
+    const receiptPredicates = [
+      { 'mcp.detail': 'unattended_auth_required' },
+      {
+        mcp: {
+          $elemMatch: {
+            reason: { $in: scheduledMCPFailureReasonSchema.options },
+            status: { $ne: 'ready' },
+            automaticReplay: false,
+          },
+        },
+      },
+    ];
     const authError =
       params.status === 'error' && params.error
         ? params.error
@@ -1574,7 +1589,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       .findOneAndUpdate(
         {
           ...runFilter,
-          ...(canOverride ? { 'mcp.detail': { $ne: 'unattended_auth_required' } } : {}),
+          ...(canOverride ? { $nor: receiptPredicates } : {}),
         },
         terminalUpdate(
           incomingFailure ? 'error' : params.status,
@@ -1590,7 +1605,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     if (settled == null && canOverride) {
       settled = await ScheduleRun()
         .findOneAndUpdate(
-          { ...runFilter, 'mcp.detail': 'unattended_auth_required' },
+          { ...runFilter, $or: receiptPredicates },
           terminalUpdate('error', authError, false),
           { new: false },
         )

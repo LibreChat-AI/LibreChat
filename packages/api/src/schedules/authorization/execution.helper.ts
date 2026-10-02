@@ -116,8 +116,7 @@ export async function executionFixture(
   });
   const factory = createScheduleMCPExecution({
     storage,
-    authority: service.authority,
-    getReadOnlyPolicy: async () => policy,
+    loadAuthorization: async () => ({ authority: service.authority, policy }),
   });
   const execution = (await factory.resolve(identity, stage))!;
   return {

@@ -1,4 +1,4 @@
-const { createScheduleMCPRuntimeHost, createScheduleLimitsResolver } = require('@librechat/api');
+const { createScheduleMCPRuntimeHost } = require('@librechat/api');
 const { getMCPServersRegistry } = require('~/config');
 const { getAppConfig } = require('~/server/services/Config/app');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
@@ -7,7 +7,6 @@ const methods = require('~/models');
 
 module.exports = createScheduleMCPRuntimeHost({
   methods,
-  getLimits: createScheduleLimitsResolver(getAppConfig),
   findUser: (id) => methods.findUser({ _id: id }),
   getRoleByName: methods.getRoleByName,
   canViewAgent: async (agentId, user) => (await resolveAgentFireAccess(agentId, user)) === 'ok',

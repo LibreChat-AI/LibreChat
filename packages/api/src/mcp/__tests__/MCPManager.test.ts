@@ -994,10 +994,42 @@ describe('MCPManager', () => {
       expect(request).not.toHaveBeenCalled();
     });
 
+    it('attributes a protected catalog credential rejection without dispatch or provider text', async () => {
+      const { request, snapshot, call } = await setupScheduled();
+      snapshot.mockResolvedValue({
+        tools: [],
+        complete: false,
+        authenticationError: Object.assign(new Error('Bearer PRIVATE'), { status: 401 }),
+      });
+      let failure: unknown;
+      try {
+        await call('child');
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({
+        failure: {
+          reason: 'credential_rejected',
+          status: 'mcp_reauth_required',
+          automaticReplay: false,
+        },
+        outcomes: [expect.objectContaining({ agentId: 'child' })],
+      });
+      expect(String(failure)).not.toContain('PRIVATE');
+      expect(request).not.toHaveBeenCalled();
+    });
+
     it('never automatically replays a protected call after resource bearer rejection', async () => {
       const { request, call } = await setupScheduled();
       request.mockRejectedValue(Object.assign(new Error('HTTP 401'), { status: 401 }));
-      await expect(call()).rejects.toBeInstanceOf(MCPAuthenticationRejectedError);
+      await expect(call()).rejects.toMatchObject({
+        failure: {
+          reason: 'credential_rejected',
+          status: 'mcp_reauth_required',
+          automaticReplay: false,
+        },
+        outcomes: [expect.objectContaining({ agentId: 'root' })],
+      });
       expect(request).toHaveBeenCalledTimes(1);
     });
   });

@@ -11,6 +11,7 @@ import { createScheduleMCPExecution, scheduledMCPIdentity } from './execution';
 import { readScheduleFireContext, isScheduleFireRequest } from '../trigger';
 import { createScheduleMCPEnrollmentResolver } from './enrollment';
 import { getAppConfigOptionsFromUser } from '~/app/service';
+import { createScheduleLimitsResolver } from '../service';
 import { createScheduleMCPConsentHost } from './host';
 import { ScheduledMCPPolicyError } from './policy';
 
@@ -21,7 +22,7 @@ type RuntimeRequest = Parameters<typeof readScheduleFireContext>[0] & {
 export function createScheduleMCPRuntimeHost(
   deps: Omit<
     Parameters<typeof createScheduleMCPConsentHost>[0],
-    'resolveEnrollment' | 'checkToolPolicy'
+    'resolveEnrollment' | 'checkToolPolicy' | 'getLimits'
   > & {
     enrollment: ScheduleMCPEnrollmentDeps;
   },
@@ -35,49 +36,75 @@ export function createScheduleMCPRuntimeHost(
     restoredJob?: { scheduleId?: string };
   }) => Promise<void>;
 } {
-  const resolveEnrollment = createScheduleMCPEnrollmentResolver(deps.enrollment);
-  const getReadOnlyPolicy = async (
-    identity: ScheduledMCPIdentity,
-  ): Promise<Record<string, ScheduledMCPReadOnlyPolicy> | undefined> => {
-    const user = await deps.findUser(identity.ownerId);
-    if (!user || (user.tenantId ?? null) !== identity.tenantId) return;
-    user.id = identity.ownerId;
-    const config = await deps.enrollment.getAppConfig({
-      ...getAppConfigOptionsFromUser(user),
-      failClosed: true,
+  function createEvaluation(enrollment: ScheduleMCPEnrollmentDeps) {
+    const resolveEnrollment = createScheduleMCPEnrollmentResolver(enrollment);
+    const getReadOnlyPolicy = async (
+      identity: ScheduledMCPIdentity,
+    ): Promise<Record<string, ScheduledMCPReadOnlyPolicy> | undefined> => {
+      const user = await enrollment.findUser(identity.ownerId);
+      if (!user || (user.tenantId ?? null) !== identity.tenantId) return;
+      user.id = identity.ownerId;
+      const config = await enrollment.getAppConfig({
+        ...getAppConfigOptionsFromUser(user),
+        failClosed: true,
+      });
+      const schedules = config?.interfaceConfig?.schedules;
+      const configured =
+        typeof schedules === 'object' ? schedules.mcpConsent?.readOnlyPolicy : undefined;
+      if (!configured) return;
+      const policy: Record<string, ScheduledMCPReadOnlyPolicy> = {};
+      for (const [name, value] of Object.entries(configured)) {
+        const parsed = scheduledMCPReadOnlyPolicySchema.safeParse(value);
+        if (parsed.success) policy[name] = parsed.data;
+      }
+      return policy;
+    };
+    const consent = createScheduleMCPConsentHost({
+      ...deps,
+      findUser: enrollment.findUser,
+      getLimits: createScheduleLimitsResolver((options = {}) => enrollment.getAppConfig(options)),
+      resolveEnrollment,
+      checkToolPolicy: async (request) => {
+        const policy = (await getReadOnlyPolicy(request.identity))?.[request.resource.serverName];
+        if (!policy) return false;
+        return request.selection.tools.every(
+          (selection) =>
+            Object.keys(policy.tools).filter(
+              (name) =>
+                name === selection ||
+                stripServerNamePrefix(name, normalizeServerName(request.resource.serverName)) ===
+                  selection,
+            ).length === 1,
+        );
+      },
     });
-    const schedules = config?.interfaceConfig?.schedules;
-    const configured =
-      typeof schedules === 'object' ? schedules.mcpConsent?.readOnlyPolicy : undefined;
-    if (!configured) return;
-    const policy: Record<string, ScheduledMCPReadOnlyPolicy> = {};
-    for (const [name, value] of Object.entries(configured)) {
-      const parsed = scheduledMCPReadOnlyPolicySchema.safeParse(value);
-      if (parsed.success) policy[name] = parsed.data;
-    }
-    return policy;
-  };
-  const consent = createScheduleMCPConsentHost({
-    ...deps,
-    resolveEnrollment,
-    checkToolPolicy: async (request) => {
-      const policy = (await getReadOnlyPolicy(request.identity))?.[request.resource.serverName];
-      if (!policy) return false;
-      return request.selection.tools.every(
-        (selection) =>
-          Object.keys(policy.tools).filter(
-            (name) =>
-              name === selection ||
-              stripServerNamePrefix(name, normalizeServerName(request.resource.serverName)) ===
-                selection,
-          ).length === 1,
-      );
-    },
-  });
+    return { consent, getReadOnlyPolicy };
+  }
+  const { consent } = createEvaluation(deps.enrollment);
   const execution = createScheduleMCPExecution({
     storage: deps.methods,
-    authority: consent.service.authority,
-    getReadOnlyPolicy,
+    async loadAuthorization(identity) {
+      // Private to this attempt. No resolved principal, config or allow decision survives it.
+      const principal = deps.findUser(identity.ownerId).then((user) => {
+        if (!user || (user.tenantId ?? null) !== identity.tenantId) return null;
+        user.id = identity.ownerId;
+        return user;
+      });
+      const effectiveConfig = principal.then((user) =>
+        user
+          ? deps.enrollment.getAppConfig({ ...getAppConfigOptionsFromUser(user), failClosed: true })
+          : undefined,
+      );
+      const baseConfig = deps.enrollment.getAppConfig({ baseOnly: true, failClosed: true });
+      const [user, config, base] = await Promise.all([principal, effectiveConfig, baseConfig]);
+      const evaluation = createEvaluation({
+        ...deps.enrollment,
+        findUser: async () => user,
+        getAppConfig: async (options) => (options?.baseOnly ? base : config),
+      });
+      const policy = await evaluation.getReadOnlyPolicy(identity);
+      return { authority: evaluation.consent.service.authority, policy };
+    },
   });
   return {
     consent,

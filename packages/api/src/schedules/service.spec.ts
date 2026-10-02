@@ -835,6 +835,44 @@ describe('scheduled OBO tool failure settlement', () => {
     );
   });
 
+  it.each(['consent_revoked', 'tool_policy_denied', 'credential_rejected'] as const)(
+    'settles a handled %s tool denial as an error with the durable diagnosis',
+    async (reason) => {
+      const { service, methods } = setup();
+      const error = new ScheduledMCPPolicyError(reason, 'Graph', 'child');
+      const input = {
+        error,
+        streamId: 'c1',
+        jobCreatedAt: 42,
+        userId: 'owner',
+        serverName: 'Graph',
+      };
+      await expect(
+        recordScheduledMCPToolAuthFailure(input, () => service.recordMCPToolAuthFailure),
+      ).resolves.toBe(true);
+      methods.getScheduleRunAbortState.mockResolvedValue({
+        status: 'started',
+        mcp: error.outcomes,
+      });
+      await expect(
+        service.recordScheduleOutcome({
+          scheduleId: 's1',
+          scheduledFor: occurrence,
+          status: 'success',
+          conversationId: 'c1',
+          streamId: 'c1',
+          jobCreatedAt: 42,
+        }),
+      ).resolves.toBe(true);
+      expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error', mcp: error.outcomes }),
+      );
+      expect(
+        jest.requireMock('../stream/GenerationJobManager').GenerationJobManager.updateMetadata,
+      ).toHaveBeenCalledWith('c1', expect.objectContaining({ scheduleOutcome: 'error' }), 42);
+    },
+  );
+
   it('records a typed tool failure only for the matching scheduled generation and owner', async () => {
     const { service, methods, store } = setup();
     const source = new OboTokenResolutionError('missing_upstream_provider', 'No credentials');

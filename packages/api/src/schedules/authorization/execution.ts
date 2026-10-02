@@ -11,6 +11,7 @@ import { getScheduledMCPConfigurationRevision } from './configuration';
 import { ScheduleMCPConsentError } from './service';
 
 export interface ScheduledMCPInvocation {
+  readonly agentId?: string;
   readonly authorize: (input: {
     user?: { id: string; tenantId?: string };
     serverName: string;
@@ -46,10 +47,11 @@ export function getScheduleMCPExecution(
 
 export interface ScheduleMCPExecutionDeps {
   storage: ScheduleMCPConsentStorage;
-  authority: ScheduledMCPAuthority;
-  getReadOnlyPolicy: (
-    identity: ScheduledMCPIdentity,
-  ) => Promise<Record<string, ScheduledMCPReadOnlyPolicy> | undefined>;
+  /** Fresh for each call; only this attempt may reuse its principal/configuration. */
+  loadAuthorization: (identity: ScheduledMCPIdentity) => Promise<{
+    authority: ScheduledMCPAuthority;
+    policy?: Record<string, ScheduledMCPReadOnlyPolicy>;
+  }>;
 }
 
 export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
@@ -84,6 +86,7 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
       stage,
       bind(agentId: string | undefined, selectionName: string): ScheduledMCPInvocation {
         return Object.freeze({
+          agentId,
           async authorize({
             user,
             serverName,
@@ -123,20 +126,20 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
               selectionName !== stripServerNamePrefix(toolName, normalizeServerName(serverName))
             )
               deny('tool_policy_denied');
-            const [policy, catalog] = await Promise.all([
-              deps.getReadOnlyPolicy(capturedIdentity),
+            const [evaluation, catalog] = await Promise.all([
+              deps.loadAuthorization(capturedIdentity),
               loadTools(),
             ]);
             signal?.throwIfAborted();
+            if (catalog.authenticationError != null) deny('credential_rejected');
             const definitions = catalog.tools.filter((tool: Tool) => tool.name === toolName);
             if (
               !catalog.complete ||
-              catalog.authenticationError != null ||
               definitions.length !== 1 ||
-              !isScheduledMCPToolReadOnly(definitions[0], policy?.[serverName])
+              !isScheduledMCPToolReadOnly(definitions[0], evaluation.policy?.[serverName])
             )
               deny('tool_policy_denied');
-            const authorization = await deps.authority.authorize(
+            const authorization = await evaluation.authority.authorize(
               {
                 identity: capturedIdentity,
                 resource: resource!,

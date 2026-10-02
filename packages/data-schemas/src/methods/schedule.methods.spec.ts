@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { scheduledMCPFailureReasonSchema } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import type {
   ISchedule,
@@ -3076,12 +3077,37 @@ describe('scheduled MCP tool failure receipt', () => {
   });
 });
 
-describe('scheduled MCP receipt settlement', () => {
-  const failure = {
+describe.each([
+  {
     server: 'Graph',
     status: 'mcp_configuration_missing' as const,
     detail: 'unattended_auth_required' as const,
-  };
+  },
+  {
+    server: 'Graph',
+    agentId: 'child',
+    status: 'mcp_reauth_required' as const,
+    reason: scheduledMCPFailureReasonSchema.enum.consent_revoked,
+    recovery: 'authorize' as const,
+    automaticReplay: false as const,
+  },
+  {
+    server: 'Graph',
+    agentId: 'child',
+    status: 'mcp_permission_denied' as const,
+    reason: scheduledMCPFailureReasonSchema.enum.tool_policy_denied,
+    recovery: 'configure' as const,
+    automaticReplay: false as const,
+  },
+  {
+    server: 'Graph',
+    agentId: 'child',
+    status: 'mcp_reauth_required' as const,
+    reason: scheduledMCPFailureReasonSchema.enum.credential_rejected,
+    recovery: 'authorize' as const,
+    automaticReplay: false as const,
+  },
+])('scheduled MCP receipt settlement: $reason', (failure) => {
   const ready = { server: 'Graph', status: 'ready' as const };
 
   it.each(['success', 'skipped_balance', 'error'] as const)(
@@ -3094,6 +3120,7 @@ describe('scheduled MCP receipt settlement', () => {
         scheduledFor,
         conversationId: 'c1',
         server: 'Graph',
+        outcome: failure,
       };
       await methods.insertScheduleRun(
         runData(schedule, {
@@ -3127,7 +3154,7 @@ describe('scheduled MCP receipt settlement', () => {
       expect(result).toMatchObject({ status: 'error', bookkept: true, mcp: [ready, failure] });
       expect(card.lastRun).toMatchObject({ status: 'error', mcp: [ready, failure] });
       expect(card.enabled).toBe(false);
-      expect(card.disabledReason).toBe('mcp_configuration_missing');
+      expect(card.disabledReason).toBe(failure.status);
       expect(card.failureCount).toBe(1);
       expect(card.balanceSkipCount).toBe(0);
       expect(card.lastRun?.error).toBe(
@@ -3154,6 +3181,7 @@ describe('scheduled MCP receipt settlement', () => {
         scheduledFor,
         conversationId: 'c1',
         server: 'Graph',
+        outcome: failure,
       }),
       methods.recordRunOutcome({
         scheduleId: schedule.id,
@@ -3165,7 +3193,7 @@ describe('scheduled MCP receipt settlement', () => {
     const run = await getRun(schedule.id, scheduledFor);
     const card = await getSchedule(schedule.id);
     expect(run.status).toBe(recorded ? 'error' : 'success');
-    expect(card.disabledReason).toBe(recorded ? 'mcp_configuration_missing' : undefined);
+    expect(card.disabledReason).toBe(recorded ? failure.status : undefined);
     expect(card.lastRun?.status).toBe(run.status);
   });
 
@@ -3200,6 +3228,7 @@ describe('scheduled MCP receipt settlement', () => {
       scheduledFor,
       conversationId: 'c1',
       server: 'Graph',
+      outcome: failure,
     });
     await Schedule.updateOne({ id: schedule.id }, { $inc: { configRevision: 1 } });
 
@@ -3223,6 +3252,7 @@ describe('scheduled MCP receipt settlement', () => {
       scheduledFor,
       conversationId: 'c1',
       server: 'Graph',
+      outcome: failure,
     });
     const firstWrite = jest
       .spyOn(Schedule, 'updateOne')
@@ -3253,7 +3283,7 @@ describe('scheduled MCP receipt settlement', () => {
     expect((await getRun(schedule.id, scheduledFor)).bookkept).toBe(true);
     expect(await getSchedule(schedule.id)).toMatchObject({
       enabled: false,
-      disabledReason: 'mcp_configuration_missing',
+      disabledReason: failure.status,
       failureCount: 1,
     });
   });

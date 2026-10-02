@@ -17,6 +17,7 @@ async function setup() {
         create: true,
         mcpConsent: {
           enabled: true,
+          maxLifetimeHours: 24,
           resources: {
             warehouse: {
               url: 'https://resource.example/mcp',
@@ -52,7 +53,13 @@ async function setup() {
       }) as IRole,
   );
   const findUser = jest.fn(async () => fixture.user);
-  const getAppConfig = jest.fn(async () => config);
+  const getAppConfig = jest.fn(
+    async (
+      _options?: Parameters<
+        Parameters<typeof createScheduleMCPRuntimeHost>[0]['enrollment']['getAppConfig']
+      >[0],
+    ) => config,
+  );
   const getNodes = jest.fn(async (ids: string[]) =>
     ids.map((id) => ({
       id,
@@ -67,18 +74,6 @@ async function setup() {
   const resolveGraphAccess = jest.fn(async () => ({}) as AgentGraphAccessContext);
   const host = createScheduleMCPRuntimeHost({
     methods: { ...fixture.storage, getScheduleById: jest.fn(async () => row) },
-    getLimits: jest.fn(async () => ({
-      enabled: true,
-      maxPerUser: 10,
-      minIntervalMinutes: 1,
-      autoDisableAfterFailures: 3,
-      admissionConcurrency: 3,
-      fireConcurrency: 3,
-      mcpPreflightConcurrency: 3,
-      mcpPreflightTimeoutMs: 1000,
-      requireProject: false,
-      mcpConsent: { enabled: true, maxLifetimeHours: 24 },
-    })) as Parameters<typeof createScheduleMCPRuntimeHost>[0]['getLimits'],
     findUser,
     getRoleByName,
     canViewAgent: async () => true,
@@ -145,6 +140,8 @@ async function setup() {
     preflight,
     connect,
     getRoleByName,
+    findUser,
+    getAppConfig,
     setCandidates: (names: string[]) => {
       candidates = names;
     },
@@ -305,3 +302,67 @@ it.each([null, false, 0, ''])(
     expect(getScheduleMCPExecution(f.context)).toBeUndefined();
   },
 );
+
+it('loads one fresh principal and configuration pair per authorization, not per phase', async () => {
+  const f = await setup();
+  await f.host.prepare({ req: f.req, context: f.context });
+  const call = () =>
+    bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: f.serverConfig,
+      toolName: 'query',
+      loadTools: async () => ({ tools: [readTool], complete: true }),
+    });
+  for (let round = 0; round < 2; round++) {
+    f.findUser.mockClear();
+    f.getAppConfig.mockClear();
+    await call();
+    expect(f.findUser).toHaveBeenCalledTimes(1);
+    expect(f.getAppConfig).toHaveBeenCalledTimes(2);
+    expect(f.getAppConfig).toHaveBeenCalledWith({ baseOnly: true, failClosed: true });
+    expect(f.getAppConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'owner', failClosed: true }),
+    );
+  }
+  f.getRoleByName.mockResolvedValue({ permissions: {} } as IRole);
+  await expect(call()).rejects.toMatchObject({ failure: { reason: 'rbac_denied' } });
+});
+
+it('reuses the captured configuration and preserves the global stop on later calls', async () => {
+  const f = await setup();
+  await f.host.prepare({ req: f.req, context: f.context });
+  const call = () =>
+    bindScheduledMCPInvocation(f.context, 'child', 'query')!.authorize({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: f.serverConfig,
+      toolName: 'query',
+      loadTools: async () => ({ tools: [readTool], complete: true }),
+    });
+  await call();
+  f.getAppConfig.mockImplementation(async (options) =>
+    options?.baseOnly
+      ? ({ ...f.config, interfaceConfig: { schedules: false } } as AppConfig)
+      : f.config,
+  );
+  await expect(call()).rejects.toMatchObject({ failure: { reason: 'provider_missing' } });
+});
+
+it('does not share an authority snapshot across concurrent attempts', async () => {
+  const f = await setup();
+  await f.host.prepare({ req: f.req, context: f.context });
+  f.findUser.mockClear();
+  f.getAppConfig.mockClear();
+  const call = (agentId: string) =>
+    bindScheduledMCPInvocation(f.context, agentId, 'query')!.authorize({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: f.serverConfig,
+      toolName: 'query',
+      loadTools: async () => ({ tools: [readTool], complete: true }),
+    });
+  await Promise.all([call('root'), call('child')]);
+  expect(f.findUser).toHaveBeenCalledTimes(2);
+  expect(f.getAppConfig).toHaveBeenCalledTimes(4);
+});
