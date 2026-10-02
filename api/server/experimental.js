@@ -50,6 +50,7 @@ const {
   configureAgentEventRuntime,
   GenerationJobManager,
   createAgentEventTerminalHandler,
+  startIndexSyncScheduler,
   startCodeEnvironmentLifecycleReconciler,
   waitForKeyvRedisClient,
   createCodeApiUploadRegistry,
@@ -451,9 +452,18 @@ if (cluster.isMaster) {
     startCodeEnvironmentLifecycleReconciler({ mongoose });
 
     /** Background index sync (non-blocking) */
-    indexSync().catch((err) => {
-      logger.error(`[Worker ${process.pid}][indexSync] Background sync failed:`, err);
-    });
+    if (isEnabled(process.env.SEARCH) && !isEnabled(process.env.MEILI_NO_SYNC)) {
+      const indexSyncScheduler = startIndexSyncScheduler({
+        run: (reason, signal) => indexSync({ quiet: reason === 'periodic', signal }),
+        onError: (err) => {
+          logger.error(`[Worker ${process.pid}][indexSync] Background sync failed:`, err);
+        },
+      });
+      registerShutdownTask('Meilisearch index sync', () => indexSyncScheduler.stop(), {
+        phase: 'pre-drain',
+        priority: 200,
+      });
+    }
 
     // This entrypoint deliberately does not arm the schedule engine, but DELETE stays
     // open — so soft-deleted rows still accrue with no reconciler to erase them. Start

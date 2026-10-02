@@ -61,6 +61,10 @@ export * from './mcp/oauth/OAuthReconnectionManager';
 export * from './crypto';
 /* Flow */
 export * from './flow/manager';
+/* Cluster */
+export * from './cluster';
+/* Search */
+export * from './search';
 /* Middleware */
 export * from './middleware';
 /* Security */

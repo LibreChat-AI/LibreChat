@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 const { MongoMemoryServer } = require('mongodb-memory-server');
-const { batchResetMeiliFlags } = require('./utils');
+const {
+  batchResetMeiliFlags,
+  getMeiliRebuildState,
+  requestMeiliRebuild,
+  markMeiliRebuildSyncing,
+  completeMeiliRebuild,
+} = require('./utils');
 
 describe('batchResetMeiliFlags', () => {
   let mongoServer;
@@ -63,6 +69,7 @@ describe('batchResetMeiliFlags', () => {
 
       const updatedDocs = await testCollection.find({ _meiliIndex: false }).toArray();
       expect(updatedDocs).toHaveLength(3);
+      expect(updatedDocs.every((doc) => doc._meiliIndexAttempted === true)).toBe(true);
 
       const notUpdatedDocs = await testCollection.find({ _meiliIndex: true }).toArray();
       expect(notUpdatedDocs).toHaveLength(0);
@@ -189,6 +196,63 @@ describe('batchResetMeiliFlags', () => {
       expect(updatedDocs).toHaveLength(5);
     });
 
+    it('keeps an interrupted forced rebuild mandatory when the remainder drops below threshold', async () => {
+      process.env.MEILI_SYNC_BATCH_SIZE = '250';
+      process.env.MEILI_SYNC_DELAY_MS = '0';
+      const docs = Array.from({ length: 1001 }, () => ({
+        _id: new mongoose.Types.ObjectId(),
+        expiredAt: null,
+        _meiliIndex: true,
+      }));
+      await testCollection.insertMany(docs);
+
+      await batchResetMeiliFlags(testCollection);
+      await testCollection.updateMany(
+        { _id: { $in: docs.slice(0, 1000).map((doc) => doc._id) } },
+        { $set: { _meiliIndex: true } },
+      );
+
+      const pendingRemainder = await testCollection.countDocuments({
+        _meiliIndex: { $ne: true },
+        _meiliIndexAttempted: true,
+      });
+      expect(pendingRemainder).toBe(1);
+    });
+
+    it('resumes a partially failed reset and eventually marks every document pending', async () => {
+      process.env.MEILI_SYNC_BATCH_SIZE = '2';
+      process.env.MEILI_SYNC_DELAY_MS = '0';
+      await testCollection.insertMany(
+        Array.from({ length: 5 }, () => ({
+          _id: new mongoose.Types.ObjectId(),
+          expiredAt: null,
+          _meiliIndex: true,
+        })),
+      );
+      let updateCalls = 0;
+      const interruptedCollection = {
+        collectionName: testCollection.collectionName,
+        find: (...args) => testCollection.find(...args),
+        updateMany: (...args) => {
+          updateCalls += 1;
+          if (updateCalls === 2) {
+            return Promise.reject(new Error('reset interrupted'));
+          }
+          return testCollection.updateMany(...args);
+        },
+      };
+
+      await expect(batchResetMeiliFlags(interruptedCollection)).rejects.toThrow(
+        'reset interrupted',
+      );
+      await expect(batchResetMeiliFlags(testCollection)).resolves.toBe(3);
+
+      const resetDocuments = await testCollection
+        .find({ _meiliIndex: false, _meiliIndexAttempted: true })
+        .toArray();
+      expect(resetDocuments).toHaveLength(5);
+    });
+
     it('should handle large datasets with small batch sizes', async () => {
       process.env.MEILI_SYNC_BATCH_SIZE = '10';
 
@@ -222,6 +286,32 @@ describe('batchResetMeiliFlags', () => {
       const result = await batchResetMeiliFlags(testCollection);
 
       expect(result).toBe(1000);
+    });
+  });
+
+  describe('durable rebuild state', () => {
+    it('persists reset and sync phases until the matching generation completes', async () => {
+      const stateCollection = mongoose.connection.db.collection('test_meili_rebuild_state');
+      await stateCollection.deleteMany({});
+
+      const resetting = await requestMeiliRebuild(stateCollection, 'messages');
+      expect(await getMeiliRebuildState(stateCollection, 'messages')).toMatchObject({
+        generation: resetting.generation,
+        phase: 'resetting',
+      });
+
+      const sameGeneration = await requestMeiliRebuild(stateCollection, 'messages');
+      expect(sameGeneration.generation).toBe(resetting.generation);
+
+      const syncing = await markMeiliRebuildSyncing(
+        stateCollection,
+        'messages',
+        resetting.generation,
+      );
+      expect(syncing).toMatchObject({ generation: resetting.generation, phase: 'syncing' });
+
+      await completeMeiliRebuild(stateCollection, 'messages', resetting.generation);
+      await expect(getMeiliRebuildState(stateCollection, 'messages')).resolves.toBeNull();
     });
   });
 

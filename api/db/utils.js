@@ -1,14 +1,37 @@
+const crypto = require('crypto');
 const { logger, buildRetentionVisibilityFilter } = require('@librechat/data-schemas');
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms, signal) =>
+  new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason instanceof Error ? signal.reason : new Error('Meili reset cancelled'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+
+const throwIfAborted = (signal) => {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('Meili reset cancelled');
+  }
+};
 
 /**
  * Batch update documents in chunks to avoid timeouts on weak instances
  * @param {mongoose.Collection} collection - MongoDB collection
+ * @param {{signal?: AbortSignal}} options - Reset options
  * @returns {Promise<number>} - Total modified count
  * @throws {Error} - Throws if database operations fail (e.g., network issues, connection loss, permission problems)
  */
-async function batchResetMeiliFlags(collection) {
+async function batchResetMeiliFlags(collection, options = {}) {
   const DEFAULT_BATCH_SIZE = 1000;
 
   let BATCH_SIZE = parseEnvInt('MEILI_SYNC_BATCH_SIZE', DEFAULT_BATCH_SIZE);
@@ -25,6 +48,7 @@ async function batchResetMeiliFlags(collection) {
 
   try {
     while (hasMore) {
+      throwIfAborted(options.signal);
       const docs = await collection
         .find(
           { ...buildRetentionVisibilityFilter(), _meiliIndex: { $ne: false } },
@@ -32,6 +56,7 @@ async function batchResetMeiliFlags(collection) {
         )
         .limit(BATCH_SIZE)
         .toArray();
+      throwIfAborted(options.signal);
 
       if (docs.length === 0) {
         break;
@@ -40,8 +65,9 @@ async function batchResetMeiliFlags(collection) {
       const ids = docs.map((doc) => doc._id);
       const result = await collection.updateMany(
         { _id: { $in: ids } },
-        { $set: { _meiliIndex: false } },
+        { $set: { _meiliIndex: false, _meiliIndexAttempted: true } },
       );
+      throwIfAborted(options.signal);
 
       totalModified += result.modifiedCount;
       process.stdout.write(
@@ -53,7 +79,7 @@ async function batchResetMeiliFlags(collection) {
       }
 
       if (hasMore && BATCH_DELAY_MS > 0) {
-        await sleep(BATCH_DELAY_MS);
+        await sleep(BATCH_DELAY_MS, options.signal);
       }
     }
 
@@ -62,6 +88,67 @@ async function batchResetMeiliFlags(collection) {
     throw new Error(
       `Failed to batch reset Meili flags for collection '${collection.collectionName}' after processing ${totalModified} documents: ${error.message}`,
     );
+  }
+}
+
+async function getMeiliRebuildState(collection, indexName, options = {}) {
+  throwIfAborted(options.signal);
+  const state = await collection.findOne({ _id: indexName });
+  throwIfAborted(options.signal);
+  return state;
+}
+
+async function requestMeiliRebuild(collection, indexName, options = {}) {
+  throwIfAborted(options.signal);
+  const existing = await getMeiliRebuildState(collection, indexName, options);
+  if (existing?.phase === 'resetting') {
+    return existing;
+  }
+
+  const now = new Date();
+  const state = await collection.findOneAndUpdate(
+    { _id: indexName },
+    {
+      $set: {
+        generation: crypto.randomUUID(),
+        phase: 'resetting',
+        updatedAt: now,
+      },
+      $setOnInsert: { createdAt: now },
+    },
+    {
+      upsert: true,
+      returnDocument: 'after',
+      includeResultMetadata: false,
+    },
+  );
+  throwIfAborted(options.signal);
+  return state;
+}
+
+async function markMeiliRebuildSyncing(collection, indexName, generation, options = {}) {
+  throwIfAborted(options.signal);
+  const result = await collection.findOneAndUpdate(
+    { _id: indexName, generation, phase: 'resetting' },
+    { $set: { phase: 'syncing', updatedAt: new Date() } },
+    {
+      returnDocument: 'after',
+      includeResultMetadata: false,
+    },
+  );
+  throwIfAborted(options.signal);
+  if (!result) {
+    throw new Error(`Meili rebuild generation changed while resetting ${indexName}`);
+  }
+  return result;
+}
+
+async function completeMeiliRebuild(collection, indexName, generation, options = {}) {
+  throwIfAborted(options.signal);
+  const result = await collection.deleteOne({ _id: indexName, generation, phase: 'syncing' });
+  throwIfAborted(options.signal);
+  if (result.deletedCount !== 1) {
+    throw new Error(`Meili rebuild generation changed while completing ${indexName}`);
   }
 }
 
@@ -90,4 +177,8 @@ function parseEnvInt(varName, defaultValue) {
 
 module.exports = {
   batchResetMeiliFlags,
+  getMeiliRebuildState,
+  requestMeiliRebuild,
+  markMeiliRebuildSyncing,
+  completeMeiliRebuild,
 };

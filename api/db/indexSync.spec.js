@@ -16,9 +16,22 @@ const mockLogger = {
 
 const mockMeiliHealth = jest.fn();
 const mockMeiliIndex = jest.fn();
+const mockCreateIndex = jest.fn();
+const mockWaitForTask = jest.fn();
+const mockMeiliSearch = jest.fn(() => ({
+  health: mockMeiliHealth,
+  index: mockMeiliIndex,
+  createIndex: mockCreateIndex,
+  waitForTask: mockWaitForTask,
+}));
 const mockBatchResetMeiliFlags = jest.fn();
+const mockGetMeiliRebuildState = jest.fn();
+const mockRequestMeiliRebuild = jest.fn();
+const mockMarkMeiliRebuildSyncing = jest.fn();
+const mockCompleteMeiliRebuild = jest.fn();
 const mockIsEnabled = jest.fn();
-const mockGetLogStores = jest.fn();
+const mockRunDistributedJob = jest.fn();
+const mockWaitForMeiliTask = jest.fn();
 
 // Create mock models that will be reused
 const createMockModel = (collectionName) => ({
@@ -38,23 +51,26 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('meilisearch', () => ({
-  MeiliSearch: jest.fn(() => ({
-    health: mockMeiliHealth,
-    index: mockMeiliIndex,
-  })),
+  MeiliSearchTimeOutError: class MeiliSearchTimeOutError extends Error {},
+  MeiliSearch: mockMeiliSearch,
 }));
 
 jest.mock('./utils', () => ({
-  batchResetMeiliFlags: mockBatchResetMeiliFlags,
+  batchResetMeiliFlags: (collection) => mockBatchResetMeiliFlags(collection),
+  getMeiliRebuildState: mockGetMeiliRebuildState,
+  requestMeiliRebuild: mockRequestMeiliRebuild,
+  markMeiliRebuildSyncing: mockMarkMeiliRebuildSyncing,
+  completeMeiliRebuild: mockCompleteMeiliRebuild,
 }));
 
 jest.mock('@librechat/api', () => ({
   isEnabled: mockIsEnabled,
-  FlowStateManager: jest.fn(),
-}));
-
-jest.mock('~/cache', () => ({
-  getLogStores: mockGetLogStores,
+  MEILI_HTTP_REQUEST_TIMEOUT_MS: 10_000,
+  MEILI_INDEX_SYNC_INTERVAL_MS: 60_000,
+  MEILI_INDEX_SYNC_LEASE_MS: 180_000,
+  MEILI_INDEX_SYNC_REFRESH_MS: 60_000,
+  runDistributedJob: mockRunDistributedJob,
+  waitForMeiliTask: mockWaitForMeiliTask,
 }));
 
 // Set environment before module load
@@ -67,6 +83,8 @@ describe('performSync() - syncThreshold logic', () => {
   const ORIGINAL_ENV = process.env;
   let Message;
   let Conversation;
+  let rebuildStates;
+  let rebuildGeneration;
 
   beforeAll(() => {
     Message = createMockModel('messages');
@@ -97,16 +115,56 @@ describe('performSync() - syncThreshold logic', () => {
 
     // Mock isEnabled
     mockIsEnabled.mockImplementation((val) => val === 'true' || val === true);
+    mockRunDistributedJob.mockImplementation((_collection, _jobId, handler) =>
+      handler(new AbortController().signal),
+    );
+    mockWaitForMeiliTask.mockImplementation(
+      async (client, taskUid, operation, _isTimeout, options) => {
+        const task = await client.waitForTask(taskUid, { timeOutMs: 10_000, intervalMs: 100 });
+        const isTaskSuccessful = options?.isTaskSuccessful?.(task) ?? task.status === 'succeeded';
+        if (!isTaskSuccessful) {
+          throw new Error(`${operation} task ${taskUid} ended with ${task.status}`);
+        }
+      },
+    );
 
     // Mock MeiliSearch client responses
     mockMeiliHealth.mockResolvedValue({ status: 'available' });
+    mockCreateIndex.mockResolvedValue({ taskUid: 2 });
+    mockWaitForTask.mockResolvedValue({ status: 'succeeded' });
     mockMeiliIndex.mockReturnValue({
       getSettings: jest.fn().mockResolvedValue({ filterableAttributes: ['user'] }),
-      updateSettings: jest.fn().mockResolvedValue({}),
+      updateSettings: jest.fn().mockResolvedValue({ taskUid: 1 }),
       search: jest.fn().mockResolvedValue({ hits: [] }),
     });
 
     mockBatchResetMeiliFlags.mockResolvedValue(undefined);
+    rebuildStates = new Map();
+    rebuildGeneration = 0;
+    mockGetMeiliRebuildState.mockImplementation(async (_collection, indexName) =>
+      rebuildStates.get(indexName),
+    );
+    mockRequestMeiliRebuild.mockImplementation(async (_collection, indexName) => {
+      const existing = rebuildStates.get(indexName);
+      if (existing?.phase === 'resetting') {
+        return existing;
+      }
+      const state = {
+        _id: indexName,
+        generation: `generation-${++rebuildGeneration}`,
+        phase: 'resetting',
+      };
+      rebuildStates.set(indexName, state);
+      return state;
+    });
+    mockMarkMeiliRebuildSyncing.mockImplementation(async (_collection, indexName, generation) => {
+      const state = { _id: indexName, generation, phase: 'syncing' };
+      rebuildStates.set(indexName, state);
+      return state;
+    });
+    mockCompleteMeiliRebuild.mockImplementation(async (_collection, indexName) => {
+      rebuildStates.delete(indexName);
+    });
   });
 
   afterEach(() => {
@@ -116,6 +174,285 @@ describe('performSync() - syncThreshold logic', () => {
   afterAll(() => {
     mongoose.models.Message = originalMessageModel;
     mongoose.models.Conversation = originalConversationModel;
+  });
+
+  test('skips synchronization when another replica completed the distributed job', async () => {
+    mockRunDistributedJob.mockResolvedValue(undefined);
+
+    const indexSync = require('./indexSync');
+    await indexSync();
+
+    expect(mockMeiliHealth).not.toHaveBeenCalled();
+  });
+
+  test('configures a finite HTTP timeout and renewable distributed job lease', async () => {
+    Message.getSyncProgress.mockResolvedValue({
+      totalProcessed: 0,
+      totalDocuments: 0,
+      isComplete: true,
+    });
+    Conversation.getSyncProgress.mockResolvedValue({
+      totalProcessed: 0,
+      totalDocuments: 0,
+      isComplete: true,
+    });
+
+    const indexSync = require('./indexSync');
+    await indexSync();
+
+    expect(mockMeiliSearch).toHaveBeenCalledWith({
+      host: 'http://localhost:7700',
+      apiKey: 'test-key',
+      timeout: 10_000,
+    });
+    expect(mockRunDistributedJob).toHaveBeenCalledWith(
+      expect.anything(),
+      'meili-index-sync',
+      expect.any(Function),
+      expect.objectContaining({
+        cancellationGraceMs: 25_000,
+        completionTtlMs: 60_000,
+        leaseMs: 180_000,
+        onLeaseLost: expect.any(Function),
+        refreshMs: 60_000,
+      }),
+    );
+    expect(mockRunDistributedJob.mock.calls[0][3]).not.toHaveProperty('timeoutMs');
+  });
+
+  test('propagates synchronization failures to the distributed job coordinator', async () => {
+    Message.getSyncProgress.mockRejectedValueOnce(new Error('sync failed'));
+
+    const indexSync = require('./indexSync');
+
+    await expect(indexSync()).rejects.toThrow('sync failed');
+    expect(mockLogger.error).toHaveBeenCalledWith('[indexSync] error', expect.any(Error));
+  });
+
+  test('propagates failed settings tasks to the distributed job coordinator', async () => {
+    mockMeiliIndex.mockReturnValue({
+      getSettings: jest.fn().mockResolvedValue({ filterableAttributes: [] }),
+      updateSettings: jest.fn().mockResolvedValue({ taskUid: 17 }),
+      search: jest.fn().mockResolvedValue({ hits: [] }),
+    });
+    mockWaitForTask.mockResolvedValue({ status: 'failed' });
+
+    const indexSync = require('./indexSync');
+
+    await expect(indexSync()).rejects.toThrow('messages settings task 17 ended with failed');
+    expect(mockBatchResetMeiliFlags).not.toHaveBeenCalled();
+    expect(mockWaitForMeiliTask).toHaveBeenCalledWith(
+      expect.anything(),
+      17,
+      'messages settings',
+      expect.any(Function),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  test('propagates failed orphan-deletion tasks to the distributed job coordinator', async () => {
+    const deleteDocuments = jest.fn().mockResolvedValue({ taskUid: 23 });
+    mockMeiliIndex.mockReturnValue({
+      getSettings: jest.fn().mockResolvedValue({ filterableAttributes: ['user'] }),
+      updateSettings: jest.fn(),
+      search: jest.fn().mockResolvedValue({ hits: [{ messageId: 'legacy-document' }] }),
+      deleteDocuments,
+    });
+    mockWaitForTask.mockResolvedValue({ status: 'canceled' });
+
+    const indexSync = require('./indexSync');
+
+    await expect(indexSync()).rejects.toThrow('messages cleanup task 23 ended with canceled');
+    expect(deleteDocuments).toHaveBeenCalledWith(['legacy-document']);
+  });
+
+  test('does not skip orphaned documents after deleting a full search page', async () => {
+    const firstPageIds = Array.from({ length: 1000 }, (_, index) => `legacy-${index}`);
+    const deleteDocuments = jest
+      .fn()
+      .mockResolvedValueOnce({ taskUid: 31 })
+      .mockResolvedValueOnce({ taskUid: 32 });
+    const search = jest
+      .fn()
+      .mockResolvedValueOnce({ hits: [{ messageId: firstPageIds[0] }] })
+      .mockResolvedValueOnce({ hits: [] })
+      .mockResolvedValueOnce({ hits: firstPageIds.map((messageId) => ({ messageId })) })
+      .mockResolvedValueOnce({ hits: [{ messageId: 'legacy-final' }] })
+      .mockResolvedValueOnce({ hits: [] });
+    mockMeiliIndex.mockReturnValue({
+      getSettings: jest.fn().mockResolvedValue({ filterableAttributes: ['user'] }),
+      updateSettings: jest.fn(),
+      search,
+      deleteDocuments,
+    });
+    Message.getSyncProgress.mockResolvedValue({
+      totalProcessed: 1,
+      totalDocuments: 1,
+      isComplete: true,
+    });
+    Conversation.getSyncProgress.mockResolvedValue({
+      totalProcessed: 1,
+      totalDocuments: 1,
+      isComplete: true,
+    });
+
+    const indexSync = require('./indexSync');
+    await indexSync();
+
+    expect(search).toHaveBeenNthCalledWith(4, '', { limit: 1000, offset: 0 });
+    expect(deleteDocuments).toHaveBeenNthCalledWith(1, firstPageIds);
+    expect(deleteDocuments).toHaveBeenNthCalledWith(2, ['legacy-final']);
+  });
+
+  test('fails orphan cleanup when a legacy hit lacks the configured primary key', async () => {
+    mockMeiliIndex.mockReturnValue({
+      getSettings: jest.fn().mockResolvedValue({ filterableAttributes: ['user'] }),
+      updateSettings: jest.fn(),
+      search: jest.fn().mockResolvedValue({ hits: [{ id: 'wrong-key' }] }),
+      deleteDocuments: jest.fn(),
+    });
+
+    const indexSync = require('./indexSync');
+
+    await expect(indexSync()).rejects.toThrow(
+      '[indexSync] Cannot clean messages document without messageId',
+    );
+  });
+
+  test('fails orphan cleanup when a completed deletion does not advance the page', async () => {
+    const stalledPage = Array.from({ length: 1000 }, (_, index) => ({
+      messageId: `legacy-${index}`,
+    }));
+    const deleteDocuments = jest.fn().mockResolvedValue({ taskUid: 41 });
+    const search = jest
+      .fn()
+      .mockResolvedValueOnce({ hits: [{ messageId: stalledPage[0].messageId }] })
+      .mockResolvedValueOnce({ hits: [] })
+      .mockResolvedValue({ hits: stalledPage });
+    mockMeiliIndex.mockReturnValue({
+      getSettings: jest.fn().mockResolvedValue({ filterableAttributes: ['user'] }),
+      updateSettings: jest.fn(),
+      search,
+      deleteDocuments,
+    });
+
+    const indexSync = require('./indexSync');
+
+    await expect(indexSync()).rejects.toThrow('[indexSync] messages cleanup made no progress');
+    expect(deleteDocuments).toHaveBeenCalledTimes(1);
+  });
+
+  test('rebuilds only messages when the provider confirms the messages index is missing', async () => {
+    const missingIndexError = Object.assign(new Error('Index not found'), {
+      code: 'index_not_found',
+    });
+    mockMeiliIndex.mockImplementation((indexName) => ({
+      getSettings:
+        indexName === 'messages'
+          ? jest.fn().mockRejectedValue(missingIndexError)
+          : jest.fn().mockResolvedValue({ filterableAttributes: ['user'] }),
+      updateSettings: jest.fn().mockResolvedValue({ taskUid: 3 }),
+      search: jest.fn().mockResolvedValue({ hits: [] }),
+    }));
+    Message.getSyncProgress.mockResolvedValue({
+      totalProcessed: 1,
+      totalDocuments: 1,
+      isComplete: true,
+    });
+    Conversation.getSyncProgress.mockResolvedValue({
+      totalProcessed: 1,
+      totalDocuments: 1,
+      isComplete: true,
+    });
+    Message.syncWithMeili.mockResolvedValue(undefined);
+    mockWaitForTask
+      .mockResolvedValueOnce({
+        status: 'failed',
+        error: { code: 'index_already_exists' },
+      })
+      .mockResolvedValue({ status: 'succeeded' });
+
+    const indexSync = require('./indexSync');
+    await indexSync();
+
+    expect(mockBatchResetMeiliFlags).toHaveBeenCalledTimes(1);
+    expect(mockBatchResetMeiliFlags).toHaveBeenCalledWith(Message.collection);
+    expect(mockCreateIndex).toHaveBeenCalledWith('messages', { primaryKey: 'messageId' });
+    expect(mockCreateIndex).not.toHaveBeenCalledWith('convos', expect.anything());
+    expect(Message.syncWithMeili).toHaveBeenCalledTimes(1);
+    expect(Conversation.syncWithMeili).not.toHaveBeenCalled();
+  });
+
+  test('rebuilds only conversations when the provider confirms the convos index is missing', async () => {
+    const missingIndexError = Object.assign(new Error('Index not found'), {
+      code: 'index_not_found',
+    });
+    mockMeiliIndex.mockImplementation((indexName) => ({
+      getSettings:
+        indexName === 'convos'
+          ? jest.fn().mockRejectedValue(missingIndexError)
+          : jest.fn().mockResolvedValue({ filterableAttributes: ['user'] }),
+      updateSettings: jest.fn().mockResolvedValue({ taskUid: 3 }),
+      search: jest.fn().mockResolvedValue({ hits: [] }),
+    }));
+    Message.getSyncProgress.mockResolvedValue({
+      totalProcessed: 1,
+      totalDocuments: 1,
+      isComplete: true,
+    });
+    Conversation.getSyncProgress.mockResolvedValue({
+      totalProcessed: 1,
+      totalDocuments: 1,
+      isComplete: true,
+    });
+    Conversation.syncWithMeili.mockResolvedValue(undefined);
+
+    const indexSync = require('./indexSync');
+    await indexSync();
+
+    expect(mockBatchResetMeiliFlags).toHaveBeenCalledTimes(1);
+    expect(mockBatchResetMeiliFlags).toHaveBeenCalledWith(Conversation.collection);
+    expect(mockCreateIndex).toHaveBeenCalledWith('convos', { primaryKey: 'conversationId' });
+    expect(mockCreateIndex).not.toHaveBeenCalledWith('messages', expect.anything());
+    expect(Message.syncWithMeili).not.toHaveBeenCalled();
+    expect(Conversation.syncWithMeili).toHaveBeenCalledTimes(1);
+  });
+
+  test('propagates non-provider index inspection errors without resetting acknowledgements', async () => {
+    const inspectionError = new Error('Meilisearch connection failed');
+    mockMeiliIndex.mockReturnValue({
+      getSettings: jest.fn().mockRejectedValue(inspectionError),
+      updateSettings: jest.fn(),
+      search: jest.fn(),
+    });
+
+    const indexSync = require('./indexSync');
+
+    await expect(indexSync()).rejects.toThrow(inspectionError);
+    expect(mockBatchResetMeiliFlags).not.toHaveBeenCalled();
+    expect(Message.syncWithMeili).not.toHaveBeenCalled();
+    expect(Conversation.syncWithMeili).not.toHaveBeenCalled();
+  });
+
+  test('keeps healthy periodic checks quiet without resetting or synchronizing', async () => {
+    Message.getSyncProgress.mockResolvedValue({
+      totalProcessed: 100,
+      totalDocuments: 100,
+      isComplete: true,
+    });
+    Conversation.getSyncProgress.mockResolvedValue({
+      totalProcessed: 50,
+      totalDocuments: 50,
+      isComplete: true,
+    });
+
+    const indexSync = require('./indexSync');
+    await indexSync({ quiet: true });
+
+    expect(mockBatchResetMeiliFlags).not.toHaveBeenCalled();
+    expect(Message.syncWithMeili).not.toHaveBeenCalled();
+    expect(Conversation.syncWithMeili).not.toHaveBeenCalled();
+    expect(mockLogger.info).not.toHaveBeenCalled();
   });
 
   test('triggers sync when unindexed messages exceed syncThreshold', async () => {
@@ -360,11 +697,10 @@ describe('performSync() - syncThreshold logic', () => {
     );
   });
 
-  test('triggers message sync when settingsUpdated even if below syncThreshold', async () => {
-    // Arrange: Only 50 unindexed messages (< 1000 threshold), but settings were updated
+  test('resets and synchronizes only messages when message settings change', async () => {
     Message.getSyncProgress.mockResolvedValue({
       totalProcessed: 100,
-      totalDocuments: 150, // 50 unindexed
+      totalDocuments: 150,
       isComplete: false,
     });
 
@@ -376,11 +712,16 @@ describe('performSync() - syncThreshold logic', () => {
 
     Message.syncWithMeili.mockResolvedValue(undefined);
 
-    // Mock settings update scenario
-    mockMeiliIndex.mockReturnValue({
-      getSettings: jest.fn().mockResolvedValue({ filterableAttributes: [] }), // No user field
-      updateSettings: jest.fn().mockResolvedValue({}),
-      search: jest.fn().mockResolvedValue({ hits: [] }),
+    mockMeiliIndex.mockImplementation((indexName) => {
+      const settings =
+        indexName === 'messages'
+          ? { filterableAttributes: [] }
+          : { filterableAttributes: ['user'] };
+      return {
+        getSettings: jest.fn().mockResolvedValue(settings),
+        updateSettings: jest.fn().mockResolvedValue({ taskUid: 1 }),
+        search: jest.fn().mockResolvedValue({ hits: [] }),
+      };
     });
 
     process.env.MEILI_SYNC_THRESHOLD = '1000';
@@ -389,22 +730,20 @@ describe('performSync() - syncThreshold logic', () => {
     const indexSync = require('./indexSync');
     await indexSync();
 
-    // Assert: Flags were reset due to settings update
     expect(mockBatchResetMeiliFlags).toHaveBeenCalledWith(Message.collection);
-    expect(mockBatchResetMeiliFlags).toHaveBeenCalledWith(Conversation.collection);
+    expect(mockBatchResetMeiliFlags).not.toHaveBeenCalledWith(Conversation.collection);
 
-    // Assert: Message sync triggered despite being below threshold (50 < 1000)
     expect(Message.syncWithMeili).toHaveBeenCalledTimes(1);
+    expect(Conversation.syncWithMeili).not.toHaveBeenCalled();
     expect(mockLogger.info).toHaveBeenCalledWith(
-      '[indexSync] Settings updated. Forcing full re-sync to reindex with new configuration...',
+      '[indexSync] Resetting messages for the pending index rebuild...',
     );
     expect(mockLogger.info).toHaveBeenCalledWith(
       '[indexSync] Starting message sync (50 unindexed)',
     );
   });
 
-  test('triggers conversation sync when settingsUpdated even if below syncThreshold', async () => {
-    // Arrange: Messages complete, conversations have 50 unindexed (< 1000 threshold), but settings were updated
+  test('resets and synchronizes only conversations when conversation settings change', async () => {
     Message.getSyncProgress.mockResolvedValue({
       totalProcessed: 100,
       totalDocuments: 100,
@@ -419,11 +758,14 @@ describe('performSync() - syncThreshold logic', () => {
 
     Conversation.syncWithMeili.mockResolvedValue(undefined);
 
-    // Mock settings update scenario
-    mockMeiliIndex.mockReturnValue({
-      getSettings: jest.fn().mockResolvedValue({ filterableAttributes: [] }), // No user field
-      updateSettings: jest.fn().mockResolvedValue({}),
-      search: jest.fn().mockResolvedValue({ hits: [] }),
+    mockMeiliIndex.mockImplementation((indexName) => {
+      const settings =
+        indexName === 'convos' ? { filterableAttributes: [] } : { filterableAttributes: ['user'] };
+      return {
+        getSettings: jest.fn().mockResolvedValue(settings),
+        updateSettings: jest.fn().mockResolvedValue({ taskUid: 1 }),
+        search: jest.fn().mockResolvedValue({ hits: [] }),
+      };
     });
 
     process.env.MEILI_SYNC_THRESHOLD = '1000';
@@ -432,19 +774,18 @@ describe('performSync() - syncThreshold logic', () => {
     const indexSync = require('./indexSync');
     await indexSync();
 
-    // Assert: Flags were reset due to settings update
-    expect(mockBatchResetMeiliFlags).toHaveBeenCalledWith(Message.collection);
+    expect(mockBatchResetMeiliFlags).not.toHaveBeenCalledWith(Message.collection);
     expect(mockBatchResetMeiliFlags).toHaveBeenCalledWith(Conversation.collection);
 
-    // Assert: Conversation sync triggered despite being below threshold (50 < 1000)
+    expect(Message.syncWithMeili).not.toHaveBeenCalled();
     expect(Conversation.syncWithMeili).toHaveBeenCalledTimes(1);
     expect(mockLogger.info).toHaveBeenCalledWith(
-      '[indexSync] Settings updated. Forcing full re-sync to reindex with new configuration...',
+      '[indexSync] Resetting conversations for the pending index rebuild...',
     );
     expect(mockLogger.info).toHaveBeenCalledWith('[indexSync] Starting convos sync (50 unindexed)');
   });
 
-  test('triggers both message and conversation sync when settingsUpdated even if both below syncThreshold', async () => {
+  test('resets both collections when both index settings change', async () => {
     // Arrange: Set threshold before module load
     process.env.MEILI_SYNC_THRESHOLD = '1000';
 
@@ -467,7 +808,7 @@ describe('performSync() - syncThreshold logic', () => {
     // Mock settings update scenario
     mockMeiliIndex.mockReturnValue({
       getSettings: jest.fn().mockResolvedValue({ filterableAttributes: [] }), // No user field
-      updateSettings: jest.fn().mockResolvedValue({}),
+      updateSettings: jest.fn().mockResolvedValue({ taskUid: 1 }),
       search: jest.fn().mockResolvedValue({ hits: [] }),
     });
 
@@ -483,12 +824,154 @@ describe('performSync() - syncThreshold logic', () => {
     expect(Message.syncWithMeili).toHaveBeenCalledTimes(1);
     expect(Conversation.syncWithMeili).toHaveBeenCalledTimes(1);
     expect(mockLogger.info).toHaveBeenCalledWith(
-      '[indexSync] Settings updated. Forcing full re-sync to reindex with new configuration...',
+      '[indexSync] Resetting messages for the pending index rebuild...',
+    );
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      '[indexSync] Resetting conversations for the pending index rebuild...',
     );
     expect(mockLogger.info).toHaveBeenCalledWith(
       '[indexSync] Starting message sync (50 unindexed)',
     );
     expect(mockLogger.info).toHaveBeenCalledWith('[indexSync] Starting convos sync (50 unindexed)');
+  });
+
+  test('persists a message rebuild when a later settings check fails before reset', async () => {
+    let messagesSettingsNeedUpdate = true;
+    let failConversationCheck = true;
+    mockMeiliIndex.mockImplementation((indexName) => ({
+      getSettings: jest.fn().mockImplementation(async () => {
+        if (indexName === 'convos' && failConversationCheck) {
+          throw new Error('conversation settings unavailable');
+        }
+        return {
+          filterableAttributes:
+            indexName === 'messages' && messagesSettingsNeedUpdate ? [] : ['user'],
+        };
+      }),
+      updateSettings: jest.fn().mockResolvedValue({ taskUid: 1 }),
+      search: jest.fn().mockResolvedValue({ hits: [] }),
+    }));
+    Message.getSyncProgress.mockResolvedValue({
+      totalProcessed: 0,
+      totalDocuments: 50,
+      pendingIndexing: 50,
+      isComplete: false,
+    });
+    Conversation.getSyncProgress.mockResolvedValue({
+      totalProcessed: 50,
+      totalDocuments: 50,
+      pendingIndexing: 0,
+      isComplete: true,
+    });
+    Message.syncWithMeili.mockResolvedValue(undefined);
+
+    const indexSync = require('./indexSync');
+    await expect(indexSync()).rejects.toThrow('conversation settings unavailable');
+
+    expect(rebuildStates.get('messages')).toMatchObject({ phase: 'resetting' });
+    expect(mockBatchResetMeiliFlags).not.toHaveBeenCalled();
+
+    messagesSettingsNeedUpdate = false;
+    failConversationCheck = false;
+    await expect(indexSync()).resolves.toEqual({ messagesSync: true, convosSync: false });
+
+    expect(mockBatchResetMeiliFlags).toHaveBeenCalledTimes(1);
+    expect(mockBatchResetMeiliFlags).toHaveBeenCalledWith(Message.collection);
+    expect(mockCompleteMeiliRebuild).toHaveBeenCalledWith(
+      expect.anything(),
+      'messages',
+      'generation-1',
+      expect.anything(),
+    );
+    expect(rebuildStates.has('messages')).toBe(false);
+  });
+
+  test('retries a partially failed reset before starting the affected rebuild', async () => {
+    let messagesSettingsNeedUpdate = true;
+    mockMeiliIndex.mockImplementation((indexName) => ({
+      getSettings: jest.fn().mockImplementation(async () => ({
+        filterableAttributes:
+          indexName === 'messages' && messagesSettingsNeedUpdate ? [] : ['user'],
+      })),
+      updateSettings: jest.fn().mockResolvedValue({ taskUid: 1 }),
+      search: jest.fn().mockResolvedValue({ hits: [] }),
+    }));
+    Message.getSyncProgress.mockResolvedValue({
+      totalProcessed: 0,
+      totalDocuments: 1001,
+      pendingIndexing: 1001,
+      isComplete: false,
+    });
+    Conversation.getSyncProgress.mockResolvedValue({
+      totalProcessed: 50,
+      totalDocuments: 50,
+      pendingIndexing: 0,
+      isComplete: true,
+    });
+    Message.syncWithMeili.mockResolvedValue(undefined);
+    mockBatchResetMeiliFlags
+      .mockRejectedValueOnce(new Error('reset interrupted'))
+      .mockResolvedValueOnce(undefined);
+
+    const indexSync = require('./indexSync');
+    await expect(indexSync()).rejects.toThrow('reset interrupted');
+
+    expect(rebuildStates.get('messages')).toMatchObject({ phase: 'resetting' });
+    expect(mockMarkMeiliRebuildSyncing).not.toHaveBeenCalled();
+
+    messagesSettingsNeedUpdate = false;
+    await expect(indexSync()).resolves.toEqual({ messagesSync: true, convosSync: false });
+
+    expect(mockBatchResetMeiliFlags).toHaveBeenCalledTimes(2);
+    expect(mockMarkMeiliRebuildSyncing).toHaveBeenCalledTimes(1);
+    expect(Message.syncWithMeili).toHaveBeenCalledTimes(1);
+    expect(mockCompleteMeiliRebuild).toHaveBeenCalledTimes(1);
+    expect(rebuildStates.has('messages')).toBe(false);
+  });
+
+  test('resumes a forced rebuild after interruption leaves a below-threshold remainder', async () => {
+    let messagesSettingsNeedUpdate = true;
+    mockMeiliIndex.mockImplementation((indexName) => ({
+      getSettings: jest.fn().mockImplementation(async () => ({
+        filterableAttributes:
+          indexName === 'messages' && messagesSettingsNeedUpdate ? [] : ['user'],
+      })),
+      updateSettings: jest.fn().mockResolvedValue({ taskUid: 1 }),
+      search: jest.fn().mockResolvedValue({ hits: [] }),
+    }));
+    Message.getSyncProgress
+      .mockResolvedValueOnce({
+        totalProcessed: 0,
+        totalDocuments: 1001,
+        pendingIndexing: 1001,
+        isComplete: false,
+      })
+      .mockResolvedValueOnce({
+        totalProcessed: 1000,
+        totalDocuments: 1001,
+        pendingIndexing: 1,
+        isComplete: false,
+      });
+    Conversation.getSyncProgress.mockResolvedValue({
+      totalProcessed: 50,
+      totalDocuments: 50,
+      pendingIndexing: 0,
+      isComplete: true,
+    });
+    Message.syncWithMeili
+      .mockRejectedValueOnce(new Error('interrupted rebuild'))
+      .mockResolvedValueOnce(undefined);
+
+    const indexSync = require('./indexSync');
+    await expect(indexSync()).rejects.toThrow('interrupted rebuild');
+
+    messagesSettingsNeedUpdate = false;
+    await expect(indexSync()).resolves.toEqual({ messagesSync: true, convosSync: false });
+
+    expect(mockBatchResetMeiliFlags).toHaveBeenCalledTimes(1);
+    expect(mockBatchResetMeiliFlags).toHaveBeenCalledWith(Message.collection);
+    expect(Message.syncWithMeili).toHaveBeenCalledTimes(2);
+    expect(mockLogger.info).toHaveBeenCalledWith('[indexSync] Starting message sync (1 unindexed)');
   });
 
   test('forces sync when zero documents indexed (reset scenario) even if below threshold', async () => {
@@ -629,5 +1112,38 @@ describe('performSync() - syncThreshold logic', () => {
       '[indexSync] Message reconciliation failed; continuing with conversations:',
       cleanupError,
     );
+  });
+
+  test('does not start conversation progress reads after message reconciliation is cancelled', async () => {
+    const cancellationError = new Error('index sync cancelled');
+    const controller = new AbortController();
+    mockRunDistributedJob.mockImplementation((_collection, _jobId, handler) =>
+      handler(controller.signal),
+    );
+    Message.getSyncProgress.mockResolvedValue({
+      totalProcessed: 0,
+      totalDocuments: 1001,
+      pendingIndexing: 1001,
+      isComplete: false,
+    });
+    Message.syncWithMeili.mockImplementation(async () => {
+      controller.abort(cancellationError);
+      throw cancellationError;
+    });
+    Conversation.getSyncProgress.mockResolvedValue({
+      totalProcessed: 50,
+      totalDocuments: 50,
+      isComplete: true,
+    });
+
+    const indexSync = require('./indexSync');
+    await expect(indexSync()).rejects.toBe(cancellationError);
+
+    expect(Conversation.getSyncProgress).not.toHaveBeenCalled();
+    expect(mockLogger.error).not.toHaveBeenCalledWith(
+      '[indexSync] Message reconciliation failed; continuing with conversations:',
+      cancellationError,
+    );
+    expect(mockLogger.error).not.toHaveBeenCalledWith('[indexSync] error', cancellationError);
   });
 });

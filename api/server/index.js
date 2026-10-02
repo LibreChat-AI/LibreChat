@@ -57,6 +57,7 @@ const {
   configureAgentEventRuntime,
   createAgentEventTerminalHandler,
   createScheduleWriteGate,
+  startIndexSyncScheduler,
   startCodeEnvironmentLifecycleReconciler,
   waitForKeyvRedisClient,
   warnOnUnreachableDeliveryPaths,
@@ -197,9 +198,18 @@ const startServer = async () => {
 
   logger.info('Connected to MongoDB');
   startCodeEnvironmentLifecycleReconciler({ mongoose });
-  indexSync().catch((err) => {
-    logger.error('[indexSync] Background sync failed:', err);
-  });
+  if (isEnabled(process.env.SEARCH) && !isEnabled(process.env.MEILI_NO_SYNC)) {
+    const indexSyncScheduler = startIndexSyncScheduler({
+      run: (reason, signal) => indexSync({ quiet: reason === 'periodic', signal }),
+      onError: (err) => {
+        logger.error('[indexSync] Background sync failed:', err);
+      },
+    });
+    registerShutdownTask('Meilisearch index sync', () => indexSyncScheduler.stop(), {
+      phase: 'pre-drain',
+      priority: 200,
+    });
+  }
 
   app.disable('x-powered-by');
   app.set('trust proxy', trusted_proxy);

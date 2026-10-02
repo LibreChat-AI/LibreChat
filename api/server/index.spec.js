@@ -188,6 +188,19 @@ describe('Startup readiness wiring', () => {
     expect(shutdownRegistrationIndex).toBeLessThan(listenIndex);
   });
 
+  it('stops and drains the index sync scheduler during pre-drain shutdown', () => {
+    const schedulerIndex = source.indexOf('const indexSyncScheduler = startIndexSyncScheduler');
+    const registrationIndex = source.indexOf(
+      "registerShutdownTask('Meilisearch index sync', () => indexSyncScheduler.stop()",
+    );
+
+    expect(schedulerIndex).toBeGreaterThan(-1);
+    expect(registrationIndex).toBeGreaterThan(schedulerIndex);
+    expect(source.slice(registrationIndex, registrationIndex + 180)).toContain(
+      "phase: 'pre-drain'",
+    );
+  });
+
   it('registers background task draining with the graceful shutdown coordinator', () => {
     const registrationIndex = source.indexOf('registerBackgroundTaskShutdown({');
     const listenIndex = source.indexOf('const server = app.listen');
@@ -198,7 +211,6 @@ describe('Startup readiness wiring', () => {
       'interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs',
     );
   });
-
   it('configures HTTP timeouts before graceful shutdown handling', () => {
     const listenIndex = source.indexOf('const server = app.listen');
     const timeoutConfigIndex = source.indexOf('configureServerTimeouts(server);');
