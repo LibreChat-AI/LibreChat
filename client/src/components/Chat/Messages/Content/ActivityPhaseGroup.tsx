@@ -1,10 +1,11 @@
-import { memo, useId, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { ContentTypes } from 'librechat-data-provider';
 import { Check, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { CSSProperties, ReactNode } from 'react';
+import type { RailHover } from './rail';
 import {
   useLocalize,
   useExpandCollapse,
@@ -19,6 +20,7 @@ import {
   LIVE_ACTIVITY_THROTTLE_MS,
   LIVE_REASONING_HOLD_MS,
 } from './live';
+import { FoldRail, RailGlyph, FoldHeaderContext, revealFoldHeader, useRailHover } from './rail';
 import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
@@ -29,6 +31,7 @@ import { getActivityLabelText } from '~/utils/activityLabels';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { sandboxStartingByToolCallId } from '~/store';
+import { MessageSurfaceContext } from '../ui/surface';
 import useClockFormat from '~/hooks/useClockFormat';
 import { cn, getMessageTimestamp } from '~/utils';
 import { StackedToolIcons } from './ToolOutput';
@@ -272,6 +275,7 @@ function LivePhaseHeader({
   detailId,
   attachments,
   onAnnounce,
+  railHover,
 }: {
   parts: ReadonlyArray<TMessageContentParts | undefined>;
   animate: boolean;
@@ -283,6 +287,7 @@ function LivePhaseHeader({
   detailId: string;
   attachments?: TAttachment[];
   onAnnounce: (text: string) => void;
+  railHover: RailHover;
 }) {
   const localize = useLocalize();
   const mcpIconMap = useMCPIconMap();
@@ -358,28 +363,30 @@ function LivePhaseHeader({
 
   return (
     <>
-      {iconNames.length === 0 ? (
-        /** A span that is only reasoning so far has no tool to show; it takes
-         *  the glyph the reasoning row itself uses. */
-        <span
-          className={cn(ROW_GLYPH_SLOT, 'text-text-primary animate-pulse')}
-          aria-hidden="true"
-          data-testid="live-phase-thinking"
-        >
-          <Lightbulb size={14} />
-        </span>
-      ) : (
-        <span className={ROW_GLYPH_SLOT} aria-hidden="true">
-          <StackedToolIcons
-            toolNames={iconNames}
-            mcpIconMap={mcpIconMap}
-            maxIcons={SPAN_ICONS}
-            sourceDomains={sourceDomains}
-            status={getOutcomeStatus(activity.outcome)}
-            isAnimating
-          />
-        </span>
-      )}
+      <RailGlyph hover={railHover}>
+        {iconNames.length === 0 ? (
+          /** A span that is only reasoning so far has no tool to show; it takes
+           *  the glyph the reasoning row itself uses. */
+          <span
+            className={cn(ROW_GLYPH_SLOT, 'text-text-primary animate-pulse')}
+            aria-hidden="true"
+            data-testid="live-phase-thinking"
+          >
+            <Lightbulb size={14} />
+          </span>
+        ) : (
+          <span className={ROW_GLYPH_SLOT} aria-hidden="true">
+            <StackedToolIcons
+              toolNames={iconNames}
+              mcpIconMap={mcpIconMap}
+              maxIcons={SPAN_ICONS}
+              sourceDomains={sourceDomains}
+              status={getOutcomeStatus(activity.outcome)}
+              isAnimating
+            />
+          </span>
+        )}
+      </RailGlyph>
       {/** The multiplier counts the line it is printed next to, so it travels
        *  with that line instead of sitting out at the row's right edge beside
        *  the chevron, where it read as a property of the row. `Create File ×2`
@@ -548,6 +555,7 @@ export default function ActivityPhaseGroup({
   spanParts?: ReadonlyArray<TMessageContentParts | undefined>;
   onExpansionChange?: (expanded: boolean) => void;
 }) {
+  const messageSurface = useContext(MessageSurfaceContext);
   const isLive = liveParts != null;
   const label = getActivityLabelText(labelPart);
   const hasFailure = labelPart.status === 'failed' || labelPart.status === 'partial';
@@ -584,6 +592,9 @@ export default function ActivityPhaseGroup({
   const [isExpanded, setIsExpanded] = useState(foldsIn);
   const [isSettled, setIsSettled] = useState(!foldsIn);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  const railHover = useRailHover();
+  const railScope = useMemo(() => ({ header: headerRef, expanded: isExpanded }), [isExpanded]);
   const panelId = useId();
   const lineId = useId();
   const comboId = useId();
@@ -661,6 +672,16 @@ export default function ActivityPhaseGroup({
     onExpansionChange?.(!isExpanded);
     setIsExpanded(!isExpanded);
   }, [mountBody, isExpanded, onExpansionChange]);
+
+  /** The rail stays drawn while the panel animates shut, so a second click on
+   *  it must not reopen what the first one closed. */
+  const handleRailCollapse = useCallback(() => {
+    if (!isExpanded) {
+      return;
+    }
+    revealFoldHeader(rootRef.current, headerRef.current);
+    handleToggle();
+  }, [isExpanded, handleToggle]);
 
   /** One click to the error from a closed card: open the card the way a
    *  toggle would, then ask every failed row below to open its own panel. */
@@ -795,11 +816,12 @@ export default function ActivityPhaseGroup({
         {announcement}
       </span>
       <div
+        ref={headerRef}
         style={headerStyle}
         /** Pinned while open, so a run long enough to scroll keeps its name
          *  at the top of the viewport. The containing block is this card, so
          *  the header stops pinning where its own rows end. */
-        className={cn(isExpanded && 'bg-presentation sticky top-0 z-[1]')}
+        className={cn(isExpanded && 'sticky top-0 z-[1]', isExpanded && messageSurface)}
       >
         <div className="flex items-center gap-2 overflow-hidden">
           <button
@@ -839,14 +861,17 @@ export default function ActivityPhaseGroup({
                 detailId={detailId}
                 attachments={attachments}
                 onAnnounce={setAnnouncement}
+                railHover={railHover}
               />
             ) : (
               <>
-                {outcomeParts != null && !hasFailure ? (
-                  <SpanGlyph parts={outcomeParts} attachments={attachments} />
-                ) : (
-                  <PhaseGlyph failed={hasFailure} />
-                )}
+                <RailGlyph hover={railHover}>
+                  {outcomeParts != null && !hasFailure ? (
+                    <SpanGlyph parts={outcomeParts} attachments={attachments} />
+                  ) : (
+                    <PhaseGlyph failed={hasFailure} />
+                  )}
+                </RailGlyph>
                 <PhaseLabel text={label} failed={hasFailure} animate={smoothStreaming} />
               </>
             )}
@@ -871,9 +896,12 @@ export default function ActivityPhaseGroup({
       >
         {shouldRenderBody && (
           <div className={cn('overflow-hidden', FOLD_RAIL_CLASSES)} ref={expandRef}>
-            <FailedRevealContext.Provider value={revealValue}>
-              {children}
-            </FailedRevealContext.Provider>
+            <FoldRail hover={railHover} expanded={isExpanded} onCollapse={handleRailCollapse} />
+            <FoldHeaderContext.Provider value={railScope}>
+              <FailedRevealContext.Provider value={revealValue}>
+                {children}
+              </FailedRevealContext.Provider>
+            </FoldHeaderContext.Provider>
           </div>
         )}
       </div>

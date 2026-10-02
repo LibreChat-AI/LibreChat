@@ -5,7 +5,7 @@ import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import type { TMessage, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { StreamStatusResponse } from '~/data-provider/SSE/queries';
-import type { QueuedMessage, RunEnd } from '~/store/families';
+import type { QueuedMessage, RunEnd } from '~/hooks/Chat/queue';
 import type { RevealedQueuedTurn } from '~/store/steer';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { streamStatusQueryKey } from '~/data-provider/SSE/queries';

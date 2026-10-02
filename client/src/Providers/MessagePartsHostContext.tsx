@@ -14,7 +14,7 @@ import type {
   MessagePartsUserTextPreferences,
   MessagePartMessage,
   MessagePartsHost,
-} from './contract';
+} from '~/hooks/Chat/contract';
 import type { Artifact } from '~/common';
 import {
   liveAppliedSteerFamily,

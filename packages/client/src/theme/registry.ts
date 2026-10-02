@@ -118,12 +118,13 @@ export function primaryButtonFallbacks(colors: IThemeRGB): IThemeRGB {
   };
 }
 
-/** Inks split out of the primary one: dialog titles, badge labels and the default avatar's glyph
- *  were all set in it. */
+/** Inks split out of the primary one: dialog titles, badge labels, the default avatar's glyph and
+ *  a field's typed value were all set in it. */
 export const primaryInkRoles: ReadonlyArray<keyof IThemeRGB> = [
   'rgb-dialog-title',
   'rgb-badge-label',
   'rgb-avatar-text',
+  'rgb-field-text',
 ];
 
 /** A theme that repaints the primary ink keeps the inks split out of it on it, unless it names them. */
@@ -180,6 +181,7 @@ export const themeAppearanceProperties: Readonly<
   fieldHeight: '--theme-field-height',
   fieldPaddingY: '--theme-field-padding-y',
   fieldFocusStyle: '--theme-field-focus-style',
+  fieldFillStyle: '--theme-field-fill-style',
   focusRingWidth: '--theme-focus-ring-width',
   focusRingOffset: '--theme-focus-ring-offset',
   labelSize: '--theme-label-size',
@@ -255,6 +257,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   fieldHeight: '2.5rem',
   fieldPaddingY: '0.5rem',
   fieldFocusStyle: 'ring',
+  fieldFillStyle: 'transparent',
   focusRingWidth: '2px',
   focusRingOffset: '2px',
   labelSize: '0.875rem',
@@ -507,7 +510,9 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
   const baseColors = mode === 'dark' ? darkTheme : defaultTheme;
   const definition = theme.modes[mode];
   const customColors = knownColors(definition?.colors);
-  const composerHoverFallback =
+  /** Each fallback is typed as one `IThemeRGB`, not a `{ role } | {}` union: the colors below
+   *  spread them all, and every union spread would double the type checker's work. */
+  const composerHoverFallback: IThemeRGB =
     customColors?.['rgb-surface-composer-hover'] === undefined &&
     customColors?.['rgb-surface-hover'] !== undefined
       ? { 'rgb-surface-composer-hover': customColors['rgb-surface-hover'] }
@@ -522,7 +527,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     mode === 'dark'
       ? customColors?.['rgb-presentation']
       : customColors?.['rgb-surface-primary-alt'];
-  const codeSurfaceFallback =
+  const codeSurfaceFallback: IThemeRGB =
     customColors?.['rgb-surface-code'] === undefined && codeSurfaceSource !== undefined
       ? { 'rgb-surface-code': codeSurfaceSource }
       : {};
@@ -535,7 +540,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     mode === 'dark'
       ? customColors?.['rgb-surface-primary-alt']
       : customColors?.['rgb-surface-chat'];
-  const codeBodyFallback =
+  const codeBodyFallback: IThemeRGB =
     customColors?.['rgb-surface-code-body'] === undefined && codeBodySource !== undefined
       ? { 'rgb-surface-code-body': codeBodySource }
       : {};
@@ -547,12 +552,12 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
    * sweep alongside custom text still gets it by naming the stop, the way
    * `rgb-surface-composer-hover` opts out of its own fallback above.
    */
-  const shimmerBaseFallback =
+  const shimmerBaseFallback: IThemeRGB =
     customColors?.['rgb-shimmer-base'] === undefined &&
     customColors?.['rgb-text-primary'] !== undefined
       ? { 'rgb-shimmer-base': customColors['rgb-text-primary'] }
       : {};
-  const textMutedFallback =
+  const textMutedFallback: IThemeRGB =
     customColors?.['rgb-text-muted'] === undefined &&
     customColors?.['rgb-text-tertiary'] !== undefined
       ? { 'rgb-text-muted': customColors['rgb-text-tertiary'] }
@@ -565,7 +570,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
   const proseLinkSource =
     customColors?.['rgb-link'] ??
     (mode === 'dark' ? customColors?.['rgb-text-primary'] : undefined);
-  const proseLinkFallback =
+  const proseLinkFallback: IThemeRGB =
     customColors?.['rgb-link-prose'] === undefined && proseLinkSource !== undefined
       ? { 'rgb-link-prose': proseLinkSource }
       : {};
@@ -577,11 +582,11 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     mode === 'dark'
       ? customColors?.['rgb-surface-tertiary']
       : customColors?.['rgb-surface-secondary'];
-  const avatarPlaceholderFallback =
+  const avatarPlaceholderFallback: IThemeRGB =
     customColors?.['rgb-avatar-placeholder'] === undefined && avatarPlaceholderSource !== undefined
       ? { 'rgb-avatar-placeholder': avatarPlaceholderSource }
       : {};
-  const chartWidgetSurfaceFallback =
+  const chartWidgetSurfaceFallback: IThemeRGB =
     customColors?.['rgb-chart-widget-surface'] === undefined &&
     customColors?.['rgb-surface-primary'] !== undefined
       ? { 'rgb-chart-widget-surface': customColors['rgb-surface-primary'] }
@@ -590,36 +595,43 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
    * The thumb was painted `surface-primary` before it had a role, so a theme that repaints that
    * surface keeps the knob it drew against its tracks.
    */
-  const switchThumbFallback =
+  const switchThumbFallback: IThemeRGB =
     customColors?.['rgb-switch-thumb'] === undefined &&
     customColors?.['rgb-surface-primary'] !== undefined
       ? { 'rgb-switch-thumb': customColors['rgb-surface-primary'] }
       : {};
+  /** A field fill only shows under `fieldFillStyle: 'fill'`, on the theme's own canvas by default. */
+  const fieldFillFallback: IThemeRGB =
+    customColors?.['rgb-field-fill'] === undefined &&
+    customColors?.['rgb-surface-primary'] !== undefined
+      ? { 'rgb-field-fill': customColors['rgb-surface-primary'] }
+      : {};
   /** Table column names were `text-secondary` before they had a role. */
-  const tableHeaderTextFallback =
+  const tableHeaderTextFallback: IThemeRGB =
     customColors?.['rgb-table-header-text'] === undefined &&
     customColors?.['rgb-text-secondary'] !== undefined
       ? { 'rgb-table-header-text': customColors['rgb-text-secondary'] }
       : {};
   /** Self-sticking table headers were the dialog surface before they had a role. */
-  const tableHeaderFillFallback =
+  const tableHeaderFillFallback: IThemeRGB =
     customColors?.['rgb-table-header-fill'] === undefined &&
     customColors?.['rgb-surface-dialog'] !== undefined
       ? { 'rgb-table-header-fill': customColors['rgb-surface-dialog'] }
       : {};
-  const chartWidgetStrokeFallback =
+  const chartWidgetStrokeFallback: IThemeRGB =
     customColors?.['rgb-chart-widget-stroke'] === undefined &&
     customColors?.['rgb-border-light'] !== undefined
       ? { 'rgb-chart-widget-stroke': customColors['rgb-border-light'] }
       : {};
   const borderControlSource =
     customColors != null ? controlBorderFallback(customColors) : undefined;
-  const borderControlFallback =
+  const borderControlFallback: IThemeRGB =
     borderControlSource !== undefined ? { 'rgb-border-control': borderControlSource } : {};
-  const focusFallback = customColors != null ? focusFallbacks(customColors) : {};
-  const pressedFallback = customColors != null ? pressedFallbacks(customColors) : {};
-  const primaryButtonFallback = customColors != null ? primaryButtonFallbacks(customColors) : {};
-  const primaryInks = customColors != null ? primaryInkFallbacks(customColors) : {};
+  const focusFallback: IThemeRGB = customColors != null ? focusFallbacks(customColors) : {};
+  const pressedFallback: IThemeRGB = customColors != null ? pressedFallbacks(customColors) : {};
+  const primaryButtonFallback: IThemeRGB =
+    customColors != null ? primaryButtonFallbacks(customColors) : {};
+  const primaryInks: IThemeRGB = customColors != null ? primaryInkFallbacks(customColors) : {};
   /**
    * Slot 8 arrived after the seven-slot scale shipped, so a stored or
    * environment theme that paints its own scale cannot name it. Filling the
@@ -638,7 +650,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     ([1, 2, 3, 4, 5, 6, 7] as const).some(
       (slot) => customColors[`rgb-series-${slot}`] !== undefined,
     );
-  const seriesEightFallback =
+  const seriesEightFallback: IThemeRGB =
     customColors?.['rgb-series-8'] === undefined && ownsSeriesScale
       ? {
           'rgb-series-8': customColors?.['rgb-text-secondary'] ?? baseColors['rgb-text-secondary'],
@@ -657,7 +669,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
    */
   const ownsMarkSurroundings =
     customColors != null && MARK_NEIGHBOURHOOD.some((token) => customColors[token] !== undefined);
-  const verifiedFallback =
+  const verifiedFallback: IThemeRGB =
     ownsMarkSurroundings && customColors?.['rgb-status-verified'] === undefined
       ? {
           'rgb-status-verified':
@@ -682,6 +694,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
       ...switchThumbFallback,
+      ...fieldFillFallback,
       ...tableHeaderTextFallback,
       ...tableHeaderFillFallback,
       ...borderControlFallback,

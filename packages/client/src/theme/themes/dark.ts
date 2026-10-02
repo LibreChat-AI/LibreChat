@@ -83,6 +83,8 @@ export const darkTheme: IThemeRGB = {
   'rgb-border-destructive': '239 68 68', // #ef4444 (red-500)
   'rgb-border-control': '33 33 33', // #212121 (gray-800), the stock field edge
   'rgb-border-field-focus': '236 236 236', // #ececec (gray-100, matching focus-control)
+  'rgb-field-fill': '13 13 13', // #0d0d0d (gray-900, matching surface-primary)
+  'rgb-field-text': '236 236 236', // #ececec (gray-100, matching text-primary)
   'rgb-surface-disabled': '47 47 47', // #2f2f2f (gray-700)
   'rgb-text-disabled': '153 150 150', // #999696 (gray-400)
   'rgb-border-disabled': '57 57 57', // #393939 (gray-650)
@@ -132,6 +134,14 @@ export const darkTheme: IThemeRGB = {
   'rgb-illustration-subtle': '175 193 255', // #afc1ff
   'rgb-illustration': '121 137 255', // #7989ff
   'rgb-illustration-strong': '60 70 255', // #3c46ff
+  'rgb-file-document': '255 85 136', // #ff5588
+  'rgb-file-sheet': '16 163 127', // #10a37f
+  'rgb-file-code': '255 110 60', // #ff6e3c
+  'rgb-file-artifact': '45 48 92', // #2d305c
+  'rgb-file-audio': '255 107 53', // #ff6b35
+  'rgb-file-video': '139 92 246', // #8b5cf6
+  'rgb-file-generic': '0 0 255', // #0000ff
+  'rgb-file-ink': '255 255 255', // #ffffff
 
   /** Code syntax highlighting, measured against the `surface-code` fill. The
    *  comment and meta values are the flattened equivalents of the alpha-blended

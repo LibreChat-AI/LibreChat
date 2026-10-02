@@ -22,6 +22,7 @@ import { useShareContext } from '~/Providers/ShareContext';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { parseSubagentBackgroundHandle } from './handle';
 import { isError } from '../ToolOutput/OutputRenderer';
+import { useToolPreparation } from '../preparation';
 import { useAgentsMapContext } from '~/Providers';
 import { useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup } from './Attachment';
@@ -267,10 +268,12 @@ export default function SubagentCall({
   /** Model-authored live label (subagent carries `intent` natively); wins
    *  over the generic verb, never over error/cancellation framing. */
   const intent = useToolCallIntent(args);
+  const preparationText = useToolPreparation();
   const getHeaderText = () => {
     if (hasError) return localize('com_ui_subagent_errored');
     if (cancelled) return localize('com_ui_subagent_cancelled');
     if (detachedStatusUnknown) return localize('com_ui_subagent_activity');
+    if (running && preparationText != null) return preparationText;
     if (intent != null) return intent;
     if (running) return localize('com_ui_subagent_running');
     return localize('com_ui_subagent_complete');

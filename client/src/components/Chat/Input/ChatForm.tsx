@@ -48,6 +48,7 @@ import {
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
 import useComposerRestore from '~/hooks/Input/useComposerRestore';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
 import AskUserQuestionPopover from './AskUserQuestionPopover';
@@ -199,7 +200,7 @@ const ChatForm = memo(function ChatForm({
   const chatDirection = useRecoilValue(store.chatDirection);
   const automaticPlayback = useRecoilValue(store.automaticPlayback);
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
-  const isTemporary = useRecoilValue(store.isTemporary);
+  const { isTemporary } = useChatSettings();
 
   const [showStopButton, setShowStopButton] = useRecoilState(store.showStopButtonByIndex(index));
   const plusPopoverAtom = useMemo(() => store.showPlusPopoverFamily(index), [index]);
@@ -352,9 +353,10 @@ const ChatForm = memo(function ChatForm({
   );
   /** The chip's actions hide while a replacement upload or inline move is in flight, so the
    * same original cannot be acted on twice. */
+  const { isActionPending } = pastedTextEdit;
   const isPasteActionPending = useCallback(
-    (file: ExtendedFile) => pastedTextEdit.isActionPending(file.file_id),
-    [pastedTextEdit],
+    (file: ExtendedFile) => isActionPending(file.file_id),
+    [isActionPending],
   );
 
   const { submitMessage, submitPrompt } = useSubmitMessage();

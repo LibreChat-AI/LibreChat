@@ -1,9 +1,9 @@
 import { useTranslation } from 'react-i18next';
 import { isReportableRunStepDuration } from 'librechat-data-provider';
-import type { PtcTraceEntry } from '~/hooks/Chat/contract';
 import type { TranslationKeys } from '~/hooks';
+import type { PtcTraceEntry } from '~/common';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { cn, parseToolName, getRunStepDurationLabels } from '~/utils';
-import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import { useMCPServerNames } from '~/hooks/MCP';
 import useFollowScroll from './useFollowScroll';
 import { useLocalize } from '~/hooks';

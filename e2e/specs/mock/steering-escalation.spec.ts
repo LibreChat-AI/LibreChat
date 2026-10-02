@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { mkdirSync } from 'node:fs';
+import path from 'node:path';
 import type { Page, Response } from '@playwright/test';
 import {
   MOCK_ENDPOINTS,
@@ -141,56 +143,121 @@ test.describe('escalating waiting messages to an interrupt', () => {
     await expect(queuedRows(page)).toHaveCount(0);
   });
 
-  test('waiting steer bubble arms in place via POST /chat/steer/arm and seals mid-stream', async ({
-    page,
-  }) => {
-    test.setTimeout(150000);
-    const label = uniqueLabel('bubble-arm');
-    const steerText = `Armed waiting steer ${label}`;
+  for (const fullWidth of [false, true]) {
+    test(`waiting steer bubble arms in place via POST /chat/steer/arm and seals mid-stream (${fullWidth ? 'full' : 'default'} width)`, async ({
+      page,
+    }) => {
+      test.setTimeout(150000);
+      const label = uniqueLabel('bubble-arm');
+      const steerText = `Armed waiting steer ${label}`;
 
-    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
-    await establishConversation(page, `bubble-arm-setup-${label}`);
+      await page.addInitScript((value) => {
+        localStorage.setItem('maximizeChatSpace', JSON.stringify(value));
+      }, fullWidth);
+      await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+      await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+      await establishConversation(page, `bubble-arm-setup-${label}`);
 
-    const run = await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
-    expect(run.ok()).toBeTruthy();
-    await expect(messagesView(page).getByText('chunk-010')).toBeVisible({ timeout: 15000 });
+      const run = await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
+      expect(run.ok()).toBeTruthy();
+      await expect(messagesView(page).getByText('chunk-010')).toBeVisible({ timeout: 15000 });
 
-    // An ORDINARY steer (plain Enter, preference off): with no tool boundary
-    // in this stream it stays acknowledged-and-waiting as a bubble.
-    await typeDuringRun(page, steerText);
-    const [steerResponse] = await Promise.all([
-      page.waitForResponse(isSteerRequest, { timeout: 15000 }),
-      messageInput(page).press('Enter'),
-    ]);
-    expect(steerResponse.status()).toBe(202);
-    expect(((await steerResponse.json()) as { preempt?: boolean }).preempt).toBeFalsy();
-    const bubble = inFlightSteers(page).filter({ hasText: steerText });
-    await expect(bubble).toBeVisible({ timeout: 10000 });
+      // An ORDINARY steer (plain Enter, preference off): with no tool boundary
+      // in this stream it stays acknowledged-and-waiting as a bubble.
+      await typeDuringRun(page, steerText);
+      const [steerResponse] = await Promise.all([
+        page.waitForResponse(isSteerRequest, { timeout: 15000 }),
+        messageInput(page).press('Enter'),
+      ]);
+      expect(steerResponse.status()).toBe(202);
+      expect(((await steerResponse.json()) as { preempt?: boolean }).preempt).toBeFalsy();
+      const bubble = inFlightSteers(page).filter({ hasText: steerText });
+      await expect(bubble).toBeVisible({ timeout: 10000 });
+      await expect(bubble.getByTestId('steer-receipt')).toHaveAttribute(
+        'data-receipt-state',
+        'delivered',
+      );
 
-    // Escalate via the bubble's always-visible arrow control: ONE atomic
-    // in-place arm.
-    const [armResponse] = await Promise.all([
-      page.waitForResponse(isArmRequest, { timeout: 15000 }),
-      bubble.getByTestId('steer-escalate-now').click(),
-    ]);
-    expect(armResponse.status()).toBe(200);
-    expect(((await armResponse.json()) as { armed?: boolean }).armed).toBe(true);
+      for (const width of [1520, 1024, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        const captureDir = process.env.E2E_CAPTURE_DIR;
+        if (captureDir) {
+          mkdirSync(captureDir, { recursive: true });
+          await page.screenshot({
+            path: path.join(
+              captureDir,
+              `pending-steer-${fullWidth ? 'full' : 'default'}-${width}.png`,
+            ),
+            animations: 'disabled',
+          });
+        }
+        await expect(bubble.getByText(/^Sending/)).toHaveCount(0);
+        await expect(
+          bubble.getByRole('button', { name: 'Queue for after the response' }),
+        ).toBeEnabled();
+        const cancel = bubble.getByRole('button', { name: 'Cancel', exact: true });
+        const bubbleBox = await bubble.locator('.user-turn').boundingBox();
+        const cancelBox = await cancel.boundingBox();
+        if (bubbleBox == null || cancelBox == null) {
+          throw new Error('The pending steer bubble and its controls must have measurable bounds.');
+        }
+        await expect
+          .poll(
+            async () => {
+              const messageBounds = await messageTurns(page)
+                .first()
+                .evaluate((row) => {
+                  const box = row.getBoundingClientRect();
+                  const style = getComputedStyle(row);
+                  return {
+                    left: box.left + parseFloat(style.paddingLeft),
+                    right: box.right - parseFloat(style.paddingRight),
+                  };
+                });
+              const part = await bubble.getByTestId('steer-part').boundingBox();
+              if (part == null) return Infinity;
+              return Math.max(
+                Math.abs(part.x - messageBounds.left),
+                Math.abs(part.x + part.width - messageBounds.right),
+              );
+            },
+            { message: 'Pending steers must match the ordinary message column bounds' },
+          )
+          .toBeLessThan(2);
+        expect(
+          Math.abs(cancelBox.x + cancelBox.width - bubbleBox.x - bubbleBox.width),
+        ).toBeLessThan(2);
+        expect(cancelBox.y).toBeGreaterThanOrEqual(bubbleBox.y + bubbleBox.height);
+        expect(await cancel.locator('..').evaluate((row) => getComputedStyle(row).flexWrap)).toBe(
+          'wrap',
+        );
+      }
+      await page.setViewportSize({ width: 1280, height: 900 });
 
-    // The stream can consume the armed steer before the HTTP response arrives.
-    // Whether waiting or already applied, it must no longer offer escalation.
-    await expect(bubble.getByTestId('steer-escalate-now')).toHaveCount(0);
+      // Escalate via the bubble's always-visible arrow control: ONE atomic
+      // in-place arm.
+      const [armResponse] = await Promise.all([
+        page.waitForResponse(isArmRequest, { timeout: 15000 }),
+        bubble.getByTestId('steer-escalate-now').click(),
+      ]);
+      expect(armResponse.status()).toBe(200);
+      expect(((await armResponse.json()) as { armed?: boolean }).armed).toBe(true);
 
-    // The armed steer seals mid-stream and injects with no tool boundary.
-    await expect(appliedSteerParts(page).filter({ hasText: steerText })).toHaveCount(1, {
-      timeout: 90000,
+      // The stream can consume the armed steer before the HTTP response arrives.
+      // Whether waiting or already applied, it must no longer offer escalation.
+      await expect(bubble.getByTestId('steer-escalate-now')).toHaveCount(0);
+
+      // The armed steer seals mid-stream and injects with no tool boundary.
+      await expect(appliedSteerParts(page).filter({ hasText: steerText })).toHaveCount(1, {
+        timeout: 90000,
+      });
+      await expect(inFlightSteers(page)).toHaveCount(0);
+      await expect(messagesView(page).getByText(SLOW_REPLY_LAST_CHUNK)).toHaveCount(0);
+      await expect(messagesView(page).getByText('chunk-010')).toBeVisible();
+      await expectModelContinuation(page, label, steerText);
+      await expect(messageTurns(page)).toHaveCount(4);
     });
-    await expect(inFlightSteers(page)).toHaveCount(0);
-    await expect(messagesView(page).getByText(SLOW_REPLY_LAST_CHUNK)).toHaveCount(0);
-    await expect(messagesView(page).getByText('chunk-010')).toBeVisible();
-    await expectModelContinuation(page, label, steerText);
-    await expect(messageTurns(page)).toHaveCount(4);
-  });
+  }
 
   test('always-interrupt toggle in a waiting row menu makes plain Enter preempt', async ({
     page,

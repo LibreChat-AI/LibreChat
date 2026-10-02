@@ -101,6 +101,11 @@ export interface IThemeRGB {
   /** A field's edge while it holds focus, under `fieldFocusStyle: 'border'`; follows
    *  `rgb-focus-control` when a theme omits it. */
   'rgb-border-field-focus'?: string;
+  /** A field's fill, painted only under `fieldFillStyle: 'fill'`; follows `rgb-surface-primary`
+   *  when a theme omits it. */
+  'rgb-field-fill'?: string;
+  /** A field's typed value; follows `rgb-text-primary` when a theme omits it. */
+  'rgb-field-text'?: string;
   /** Disabled fill, ink and edge. Painted only under the `fill` disabled style. */
   'rgb-surface-disabled'?: string;
   'rgb-text-disabled'?: string;
@@ -156,6 +161,15 @@ export interface IThemeRGB {
   'rgb-illustration-subtle'?: string;
   'rgb-illustration'?: string;
   'rgb-illustration-strong'?: string;
+  /** File-type tiles: one fill per kind of file and the ink of the glyph drawn on them. */
+  'rgb-file-document'?: string;
+  'rgb-file-sheet'?: string;
+  'rgb-file-code'?: string;
+  'rgb-file-artifact'?: string;
+  'rgb-file-audio'?: string;
+  'rgb-file-video'?: string;
+  'rgb-file-generic'?: string;
+  'rgb-file-ink'?: string;
 
   /**
    * Code syntax highlighting. Declared here rather than left as literals in the
@@ -278,6 +292,8 @@ export interface IThemeVariables {
   '--border-destructive': string;
   '--border-control': string;
   '--border-field-focus': string;
+  '--field-fill': string;
+  '--field-text': string;
   '--surface-disabled': string;
   '--text-disabled': string;
   '--border-disabled': string;
@@ -310,6 +326,14 @@ export interface IThemeVariables {
   '--illustration-subtle': string;
   '--illustration': string;
   '--illustration-strong': string;
+  '--file-document': string;
+  '--file-sheet': string;
+  '--file-code': string;
+  '--file-artifact': string;
+  '--file-audio': string;
+  '--file-video': string;
+  '--file-generic': string;
+  '--file-ink': string;
 
   '--syntax-text': string;
   '--syntax-comment': string;
@@ -406,6 +430,8 @@ export interface IThemeColors {
   'border-destructive'?: string;
   'border-control'?: string;
   'border-field-focus'?: string;
+  'field-fill'?: string;
+  'field-text'?: string;
   'surface-disabled'?: string;
   'text-disabled'?: string;
   'border-disabled'?: string;
@@ -438,6 +464,14 @@ export interface IThemeColors {
   'illustration-subtle'?: string;
   illustration?: string;
   'illustration-strong'?: string;
+  'file-document'?: string;
+  'file-sheet'?: string;
+  'file-code'?: string;
+  'file-artifact'?: string;
+  'file-audio'?: string;
+  'file-video'?: string;
+  'file-generic'?: string;
+  'file-ink'?: string;
 
   'series-1'?: string;
   'series-2'?: string;
@@ -501,6 +535,8 @@ export interface IThemeAppearance {
   /** The field's vertical padding, which has to leave its line room inside `fieldHeight`. */
   fieldPaddingY: string;
   fieldFocusStyle: 'ring' | 'border';
+  /** `transparent` leaves a field on the surface it sits on; `fill` paints it `field-fill`. */
+  fieldFillStyle: 'transparent' | 'fill';
   /** The keyboard focus outline's width and its offset from the element's edge, apart from the
    *  heavier outline the contrast modes keep. */
   focusRingWidth: string;

@@ -1670,7 +1670,7 @@ describe('ContentParts — live activity fold', () => {
   const intentCall = (id: string, intent: string, output = ''): TMessageContentParts =>
     ({
       type: ContentTypes.TOOL_CALL,
-      [ContentTypes.TOOL_CALL]: { id, name: 'lookup', args: `{"intent":"${intent}`, output },
+      [ContentTypes.TOOL_CALL]: { id, name: 'lookup', args: JSON.stringify({ intent }), output },
     }) as unknown as TMessageContentParts;
 
   const liveHeader = () =>
@@ -1690,6 +1690,46 @@ describe('ContentParts — live activity fold', () => {
     expect(liveHeader()).toHaveTextContent('Querying the graph');
     expect(screen.queryByTestId('tool-call')).toBeNull();
     expect(screen.queryByRole('button', { name: /^Running 2 actions/ })).toBeNull();
+  });
+
+  it('keeps the folded status preparing until measured dispatch, then restores its intent', () => {
+    jest.useFakeTimers();
+    const frame = (args: string, toolDispatchedAt?: number) => (
+      <RecoilRoot>
+        <ContentParts
+          {...liveProps}
+          content={[
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: {
+                id: 't1',
+                name: 'lookup',
+                args,
+                output: '',
+                toolPreparationStartedAt: 100,
+                toolDispatchedAt,
+              },
+            },
+          ]}
+        />
+      </RecoilRoot>
+    );
+    const { rerender } = render(frame('{"intent":"Querying the graph","query":"SELECT'));
+    const card = screen.getByTestId('activity-phase-card');
+    expect(liveHeader()).toHaveTextContent('com_ui_tool_preparing');
+    expect(liveHeader()).not.toHaveTextContent('Querying the graph');
+    rerender(frame('{"intent":"Querying the graph","query":"SELECT 1"}'));
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(liveHeader()).toHaveTextContent('com_ui_tool_preparing');
+    rerender(frame('{"intent":"Querying the graph","query":"SELECT 1"}', 200));
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(screen.getByTestId('activity-phase-card')).toBe(card);
+    expect(liveHeader()).toHaveTextContent('Querying the graph');
+    expect(liveHeader()).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('folds from the very first call so the block never changes shape as calls arrive', () => {

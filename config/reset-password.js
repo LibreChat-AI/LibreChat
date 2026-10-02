@@ -2,6 +2,7 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const readline = require('readline');
 const mongoose = require('mongoose');
+const { createPasswordResetUpdate } = require('@librechat/api');
 const { createModels, createMethods } = require('@librechat/data-schemas');
 const { User, Passkey, Session } = createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
@@ -67,11 +68,8 @@ const resetPassword = async () => {
      */
     const updated = await methods.updateUser(
       user._id.toString(),
-      {
-        password: hashedPassword,
-        /** Access tokens minted before this stamp stop verifying */
-        credentialsChangedAt: new Date(),
-      },
+      /** Stamps credentialsChangedAt and drops any staged enrollment, as the web reset does. */
+      createPasswordResetUpdate(hashedPassword),
       {},
       { preserveExpiresAt: true },
     );

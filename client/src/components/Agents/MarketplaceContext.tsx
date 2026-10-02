@@ -1,6 +1,5 @@
 import React from 'react';
-import { ChatContext } from '~/Providers';
-import { useChatHelpers } from '~/hooks';
+import { ChatProvider } from '~/hooks/Chat/provider';
 
 /**
  * Minimal marketplace provider that provides only what SidePanel actually needs
@@ -38,12 +37,8 @@ export function useMarketplaceHost(): MarketplaceHost {
   return host;
 }
 
-export const MarketplaceProvider: React.FC<MarketplaceProviderProps> = ({ children, host }) => {
-  const chatHelpers = useChatHelpers(0, 'new');
-
-  return (
-    <ChatContext.Provider value={chatHelpers}>
-      <MarketplaceHostContext.Provider value={host}>{children}</MarketplaceHostContext.Provider>
-    </ChatContext.Provider>
-  );
-};
+export const MarketplaceProvider: React.FC<MarketplaceProviderProps> = ({ children, host }) => (
+  <ChatProvider index={0} conversationId="new">
+    <MarketplaceHostContext.Provider value={host}>{children}</MarketplaceHostContext.Provider>
+  </ChatProvider>
+);

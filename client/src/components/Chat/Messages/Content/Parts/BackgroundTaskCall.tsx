@@ -9,6 +9,7 @@ import { toolPanelSpacingClassName } from '../disclosure';
 import { ToolIcon, OutputRenderer } from '../ToolOutput';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import BackgroundTaskCard from '../BackgroundTaskCard';
+import { useToolPreparation } from '../preparation';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
 import { useToolCallIntent } from './intent';
@@ -45,6 +46,7 @@ export default function BackgroundTaskCall({
   const mcpIconMap = useMCPIconMap();
   const mcpServerNames = useMCPServerNames();
   const intent = useToolCallIntent(args);
+  const preparationText = useToolPreparation();
   const display = useMemo(() => parseBackgroundTaskOutput(output), [output]);
   const input = useMemo(() => {
     if (typeof args === 'string') {
@@ -96,7 +98,7 @@ export default function BackgroundTaskCall({
 
   let announcedText = finishedText;
   if (phase === 'running') {
-    announcedText = localize('com_ui_background_tasks_checking');
+    announcedText = preparationText ?? localize('com_ui_background_tasks_checking');
   } else if (phase === 'failed' && (noticeText == null || outcome !== 'failed')) {
     announcedText =
       display?.kind === 'list'

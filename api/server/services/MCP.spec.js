@@ -863,6 +863,48 @@ describe('tests for the new helper functions used by the MCP connection status e
       });
     });
 
+    it('does not report rejected stored credentials as connected after the OAuth flow is gone', async () => {
+      const { findToken } = require('~/models');
+      const credentialSetId = 'rejected-generation';
+      mockGetOAuthReconnectionManager.mockReturnValue({ isReconnecting: jest.fn(() => false) });
+      mockGetFlowStateManager.mockReturnValue({ getFlowState: jest.fn(() => null) });
+      mockGetLogStores.mockReturnValue({});
+      findToken.mockImplementation(async ({ type }) => {
+        if (type === 'mcp_oauth_client') {
+          return {
+            token: 'enc:{"client_id":"dynamic-client"}',
+            metadata: {
+              credential_set_id: credentialSetId,
+              rejected_credential_set_id: credentialSetId,
+              authorization_endpoint: 'https://auth.example.com/authorize',
+              token_endpoint: 'https://auth.example.com/token',
+              server_url: 'https://mcp.example.com/',
+              client_source: 'dynamic',
+            },
+          };
+        }
+        return {
+          expiresAt: new Date(Date.now() + 60000),
+          metadata: { credential_set_id: credentialSetId },
+        };
+      });
+
+      const result = await getServerConnectionStatus(
+        mockUserId,
+        mockServerName,
+        { ...mockConfig, url: 'https://mcp.example.com/' },
+        new Map(),
+        new Map(),
+        new Set([mockServerName]),
+      );
+
+      expect(result).toEqual({
+        requiresOAuth: true,
+        connectionState: 'disconnected',
+        authorizationState: 'needs_authorization',
+      });
+    });
+
     it('should derive runtime-detected OAuth readiness from bound token storage', async () => {
       const appConnections = new Map();
       const userConnections = new Map();

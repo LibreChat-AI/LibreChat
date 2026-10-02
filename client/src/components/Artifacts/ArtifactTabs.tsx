@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef } from 'react';
+import { lazy, Suspense, useRef } from 'react';
 import { Spinner } from '@librechat/client';
 import * as Tabs from '@radix-ui/react-tabs';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react/unstyled';
@@ -6,8 +6,8 @@ import type { editor } from 'monaco-editor';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
 import { MermaidRenderer } from '~/components/Messages/Content/Mermaid/Mermaid';
 import { MERMAID_ARTIFACT_TYPE, type Artifact } from '~/common/artifacts';
+import { useArtifactCode } from '~/Providers/EditorContext';
 import { ArtifactCodeEditor } from './ArtifactCodeEditor';
-import { useCodeState } from '~/Providers/EditorContext';
 import { useLocalize } from '~/hooks';
 
 const SandboxArtifactTabs = lazy(() => import('./SandboxArtifactTabs'));
@@ -39,24 +39,14 @@ function MermaidArtifactTabs({
   onMermaidExportReady,
 }: Omit<ArtifactTabsProps, 'previewRef'>) {
   const localize = useLocalize();
-  const { currentCode, setCurrentCode } = useCodeState();
+  const editedCode = useArtifactCode(artifact.id);
   const monacoRef = useRef<editor.IStandaloneCodeEditor | null>(null);
-  const lastIdRef = useRef<string | null>(null);
 
-  /* The reset below only lands after commit, so on the render that switches
-   * artifacts `currentCode` still holds the previous artifact's editor text.
-   * Ignore it until the reset catches up, or the freshly keyed renderer would
-   * mount showing (and exporting) the diagram we just navigated away from. */
-  const hasCurrentArtifactCode = lastIdRef.current === artifact.id;
-
-  useEffect(() => {
-    if (artifact.id !== lastIdRef.current) {
-      setCurrentCode(undefined);
-    }
-    lastIdRef.current = artifact.id;
-  }, [artifact.id, setCurrentCode]);
-
-  const content = (hasCurrentArtifactCode ? currentCode : undefined) ?? artifact.content ?? '';
+  /* The buffer belongs to whichever artifact last wrote it: a freshly keyed
+   * renderer must not show (or export) the diagram we navigated away from,
+   * while a pane that remounted for another host keeps its unsaved text and a
+   * displaced copy is just as much this artifact's own. */
+  const content = editedCode ?? artifact.content ?? '';
   const isReadOnly = isSharedConvo === true || artifact.index == null;
 
   return (

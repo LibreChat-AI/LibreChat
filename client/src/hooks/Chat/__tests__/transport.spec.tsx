@@ -1,8 +1,9 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { RecoilRoot, useRecoilValue } from 'recoil';
-import { QueryKeys } from 'librechat-data-provider';
+import { useAtomValue, getDefaultStore } from 'jotai';
+import { QueryKeys, request } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type {
   TEnqueueAgentQueuedTurnRequest,
@@ -12,14 +13,22 @@ import type {
   ChatTransportRequest,
 } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
+import type { StreamStatusResponse } from '~/data-provider';
+import type { ChatContract } from '~/hooks/Chat/contract';
 import type { Transport } from '~/hooks/Chat/contract';
-import type { PendingSteer } from '~/store/families';
+import type { PendingSteer } from '~/hooks/Chat/queue';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
+import { ChatContext, useChatContext } from '~/Providers/ChatContext';
+import { startupConfigKey } from '~/data-provider/Endpoints/queries';
 import { useSteerReclaim } from '~/hooks/Chat/useSteerCancel';
 import useSteerEscalate from '~/hooks/Chat/useSteerEscalate';
 import useResumableSSE from '~/hooks/SSE/useResumableSSE';
+import useResumeOnLoad from '~/hooks/SSE/useResumeOnLoad';
 import useChatHelpers from '~/hooks/Chat/useChatHelpers';
+import { resumeRequestsAtom } from '~/hooks/Chat/resume';
 import useSteering from '~/hooks/Chat/useSteering';
+import { useChat } from '~/hooks/Chat/facade';
 import useSSE from '~/hooks/SSE/useSSE';
 import store from '~/store';
 
@@ -172,10 +181,12 @@ const renderSteering = (transport: Transport) =>
         sendNow: jest.fn(),
         stopGenerating: jest.fn(),
       }),
-      queue: useRecoilValue(store.queuedMessagesByConvoId('convo-1')),
+      queue: useAtomValue(queuedMessagesByConvoId('convo-1')),
     }),
     { wrapper: createWrapper(transport, seedSteerableRun, seedLiveBranch) },
   );
+
+beforeEach(() => resetQueueFamilies());
 
 describe('chat transport boundary', () => {
   describe('send (agents)', () => {
@@ -486,6 +497,191 @@ describe('chat transport boundary', () => {
       await waitFor(() => expect(fake.transport.enqueue).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(result.current.queue[0]?.server).toBeUndefined());
       expect(result.current.queue).toEqual([expect.objectContaining({ text: 'hold me here' })]);
+    });
+  });
+
+  describe('resume', () => {
+    /** The host builds the pane's chat contract, as the chat view does. */
+    function ChatHost({ children }: { children: React.ReactNode }) {
+      const helpers: ChatContract = useChatHelpers(0, 'convo-1');
+      return <ChatContext.Provider value={helpers}>{children}</ChatContext.Provider>;
+    }
+
+    /** The resume-on-load path and the stream hook a chat view mounts, read through `useChat`. */
+    const useResumablePane = () => {
+      const helpers = useChatContext();
+      useResumeOnLoad('convo-1', helpers.getMessages, 0, true);
+      const submission = useRecoilValue(store.submissionByIndex(0));
+      useResumableSSE(submission, helpers, false, 0);
+      const showConversation = useSetRecoilState(store.conversationByIndex(0));
+      return { ...useChat(), showConversation };
+    };
+
+    const seedConversation = ({ set }: MutableSnapshot) =>
+      set(store.conversationByIndex(0), {
+        conversationId: 'convo-1',
+        endpoint: 'agents',
+      } as TConversation);
+
+    let status: StreamStatusResponse;
+    /** A running job as the status route reports it, with the turn it answers. */
+    const runningStatus = (): StreamStatusResponse => ({
+      active: true,
+      streamId: 'convo-1',
+      status: 'running',
+      createdAt: 2000,
+      generationProtocolVersion: 2,
+      resumeState: {
+        runSteps: [],
+        aggregatedContent: [],
+        userMessage: {
+          messageId: 'msg-1',
+          parentMessageId: '00000000-0000-0000-0000-000000000000',
+          conversationId: 'convo-1',
+          text: 'Hello',
+        },
+        responseMessageId: 'resp-1',
+        conversationId: 'convo-1',
+      } as StreamStatusResponse['resumeState'],
+    });
+    const statusReads = () =>
+      (request.get as jest.Mock).mock.calls.filter(([url]) => String(url).includes('/status/'))
+        .length;
+
+    beforeEach(() => {
+      status = { active: false };
+      /** The status read is the server's answer to "is anything running"; the stream itself
+       *  comes from the fake transport. */
+      jest
+        .spyOn(request, 'get')
+        .mockImplementation(async (url: string) =>
+          url.includes('/api/agents/chat/status/') ? status : [],
+        );
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    /** Resume waits for the startup config, which decides a rebuilt turn's retention. */
+    const seedStartupConfig = (queryClient: QueryClient) => {
+      queryClient.setQueryData(startupConfigKey(false), {});
+      /** The turn the running generation answers, as history holds it on reload. */
+      queryClient.setQueryData([QueryKeys.messages, 'convo-1'], [buildSubmission().userMessage]);
+    };
+
+    const renderPane = (
+      transport: Transport,
+      seed: (snapshot: MutableSnapshot) => void = seedConversation,
+    ) => {
+      const Wrapper = createWrapper(transport, seed, seedStartupConfig);
+      return renderHook(useResumablePane, {
+        wrapper: ({ children }) => (
+          <Wrapper>
+            <ChatHost>{children}</ChatHost>
+          </Wrapper>
+        ),
+      });
+    };
+
+    it('reattaches to a running generation through the host transport', async () => {
+      const fake = createFakeTransport();
+      const { result } = renderPane(fake.transport);
+      await waitFor(() => expect(statusReads()).toBe(1));
+      expect(fake.streams).toHaveLength(0);
+
+      status = runningStatus();
+      await act(async () => {
+        await result.current.resumeStream();
+      });
+
+      await waitFor(() => expect(fake.streams).toHaveLength(1));
+      expect(fake.transport.stream).toHaveBeenCalledWith({ token: 'test-token' });
+      expect(fake.streams[0].url).toContain('/api/agents/chat/stream/convo-1');
+      expect(fake.streams[0].url).toContain('resume=true');
+      expect(fake.streams[0].url).toContain('generationCreatedAt=2000');
+      expect(fake.transport.start).not.toHaveBeenCalled();
+    });
+
+    it('re-reads the status and stays detached when nothing is running', async () => {
+      const fake = createFakeTransport();
+      const { result } = renderPane(fake.transport);
+      await waitFor(() => expect(statusReads()).toBe(1));
+
+      await act(async () => {
+        await result.current.resumeStream();
+      });
+
+      await waitFor(() => expect(statusReads()).toBe(2));
+      expect(fake.streams).toHaveLength(0);
+      expect(result.current.status).toBe('ready');
+    });
+
+    it('holds a request until the pane has loaded the conversation the route names', async () => {
+      const store$ = getDefaultStore();
+      const fake = createFakeTransport();
+      /** The pane still shows the Assistants conversation it is navigating away from. */
+      const { result } = renderPane(fake.transport, ({ set }) =>
+        set(store.conversationByIndex(0), {
+          conversationId: 'assistants-convo',
+          endpoint: 'assistants',
+        } as TConversation),
+      );
+      status = runningStatus();
+
+      await act(async () => {
+        await result.current.resumeStream();
+      });
+      expect([...store$.get(resumeRequestsAtom)]).toEqual(['convo-1']);
+      expect(fake.streams).toHaveLength(0);
+
+      act(() =>
+        result.current.showConversation({
+          conversationId: 'convo-1',
+          endpoint: 'agents',
+        } as TConversation),
+      );
+
+      await waitFor(() => expect(fake.streams).toHaveLength(1));
+      expect(fake.streams[0].url).toContain('resume=true');
+      expect([...store$.get(resumeRequestsAtom)]).toEqual([]);
+    });
+
+    it("answers its own conversation's request and leaves another pane's pending", async () => {
+      const store = getDefaultStore();
+      const fake = createFakeTransport();
+      const { result } = renderPane(fake.transport);
+      await waitFor(() => expect(statusReads()).toBe(1));
+
+      await act(async () => {
+        /** Another pane asks in the same tick, before any effect runs. */
+        store.set(resumeRequestsAtom, (pending) => new Set(pending).add('convo-2'));
+        await result.current.resumeStream();
+      });
+
+      await waitFor(() => expect(statusReads()).toBe(2));
+      expect([...store.get(resumeRequestsAtom)]).toEqual(['convo-2']);
+      store.set(resumeRequestsAtom, new Set<string>());
+    });
+
+    it('reports a reattached stream that fails as an error', async () => {
+      const fake = createFakeTransport();
+      const { result } = renderPane(fake.transport);
+      await waitFor(() => expect(statusReads()).toBe(1));
+      status = runningStatus();
+      await act(async () => {
+        await result.current.resumeStream();
+      });
+      await waitFor(() => expect(fake.streams).toHaveLength(1));
+
+      /** The run ends with the error, and the teardown re-reads the status to confirm it. */
+      status = { active: false, status: 'error', createdAt: 2000, generationProtocolVersion: 2 };
+      act(() =>
+        fake.streams[0].options.onEvent({ type: 'error', data: { message: 'Generation failed' } }),
+      );
+
+      await waitFor(() => expect(result.current.status).toBe('error'));
+      expect(result.current.error?.message).toContain('Generation failed');
     });
   });
 });

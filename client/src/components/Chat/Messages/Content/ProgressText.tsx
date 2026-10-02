@@ -6,6 +6,7 @@ import { Button, disclosureChevronVariants } from '@librechat/client';
 import { isReportableRunStepDuration } from 'librechat-data-provider';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { cn, getRunStepDurationLabels } from '~/utils';
+import { useToolPreparation } from './preparation';
 import CancelledIcon from './CancelledIcon';
 import { useFailedReveal } from './reveal';
 import { ElapsedTimer } from '../Elapsed';
@@ -25,9 +26,10 @@ const contentClass =
  *  sits under a header and in the gutter when it stands alone, so a failure
  *  is findable by shape before its text is read. A pseudo-element rather than
  *  a border: the row's content is absolutely positioned against the padding
- *  box, so a border would push it and change the row's geometry. */
+ *  box, so a border would push it and change the row's geometry. It lies over
+ *  the rail's hit area, so it lets the pointer through to the rail. */
 const failedStripeClass =
-  "before:absolute before:-left-3 before:top-0 before:h-full before:w-0.5 before:rounded-full before:bg-status-error before:content-['']";
+  "before:pointer-events-none before:absolute before:-left-3 before:top-0 before:h-full before:w-0.5 before:rounded-full before:bg-status-error before:content-['']";
 
 const Wrapper = ({
   popover,
@@ -109,6 +111,7 @@ export default function ProgressText({
   const localize = useLocalize();
   /** For locale-aware decimal formatting of the sub-10s duration value. */
   const { i18n } = useTranslation();
+  const preparationText = useToolPreparation();
   const isRunning = phase === 'running';
   /** A server-authored phase stamp is an identity, not a browser clock origin.
    * On reconnect we can only time from local receipt, never infer cross-host skew. */
@@ -149,7 +152,7 @@ export default function ProgressText({
   /** Every branch below reads `phase`, so the label, the icon, the shimmer,
    *  the failure suffix and the duration cannot disagree about what state
    *  the card is in. */
-  const text = isRunning ? (authText ?? inProgressText) : finishedText;
+  const text = isRunning ? (authText ?? preparationText ?? inProgressText) : finishedText;
   const icon = phase === 'cancelled' ? <CancelledIcon /> : (iconProp ?? null);
   const showShimmer = isRunning;
   const errorSuffix = phase === 'failed' ? localize('com_ui_tool_failed') : undefined;

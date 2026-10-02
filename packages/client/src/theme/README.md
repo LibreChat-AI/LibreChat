@@ -301,6 +301,7 @@ function MyComponent() {
 - `bg-surface-code` - Code block chrome: toolbar, output and result switcher
 - `bg-surface-code-body` - Code block pane behind the highlighted code
 - `fill-illustration-subtle`, `fill-illustration`, `fill-illustration-strong` - The three tones of in-app artwork, such as the file drop zone's illustration
+- `fill-file-document`, `fill-file-sheet`, `fill-file-code`, `fill-file-artifact`, `fill-file-audio`, `fill-file-video`, `fill-file-generic` - File-type tile fills; `stroke-file-ink` and `fill-file-ink` draw the glyph on them
 - `bg-surface-qr` - Backdrop behind a QR code, kept light in every mode so it scans
 
 ### Border Colors
@@ -357,6 +358,11 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - Keyboard focus outline - The global `:focus-visible` outline is drawn in
   `focus-outline`, `focusRingWidth` wide and `focusRingOffset` off the edge (2px
   each by default). The contrast modes keep their own 3px outline.
+- `bg-field-fill` / `text-field-text` - A form field's fill and typed value. The
+  ink follows `text-primary` and the fill follows `surface-primary` when a theme
+  names those and not these. Fields stay clear unless the theme's
+  `fieldFillStyle` appearance role is `fill` (the default is `transparent`),
+  read from the nearest themed root through the `theme-field-fill:` variant.
 - `border-border-field-focus` - A form field's edge while it holds focus, under
   `fieldFocusStyle: border`. Follows `focus-control` when a theme names only that.
 - Form fields and labels - `h-theme-field` (`fieldHeight`) sizes `Input`, `Dropdown`

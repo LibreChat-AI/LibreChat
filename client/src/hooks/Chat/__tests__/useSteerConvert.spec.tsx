@@ -1,8 +1,9 @@
 import React from 'react';
-import { getDefaultStore } from 'jotai';
 import { act, renderHook } from '@testing-library/react';
-import { RecoilRoot, useRecoilValue, useSetRecoilState, type MutableSnapshot } from 'recoil';
+import { getDefaultStore, useAtomValue, useSetAtom } from 'jotai';
+import { RecoilRoot, useRecoilValue, type MutableSnapshot } from 'recoil';
 import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import useSteerConvert from '../useSteerConvert';
 import store from '~/store';
 
@@ -34,11 +35,11 @@ function setup(initialize?: (snapshot: MutableSnapshot) => void) {
   );
   return renderHook(
     () => {
-      const setQueue = useSetRecoilState(store.queuedMessagesByConvoId(CONVO_ID));
+      const setQueue = useSetAtom(queuedMessagesByConvoId(CONVO_ID));
       return {
         convert: useSteerConvert(),
         chips: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
-        queue: useRecoilValue(store.queuedMessagesByConvoId(CONVO_ID)),
+        queue: useAtomValue(queuedMessagesByConvoId(CONVO_ID)),
         applied: useRecoilValue(store.appliedSteerIdsByConvoId(CONVO_ID)),
         // Mirrors `useQueueDrain` dequeuing the head item after auto-send.
         drainQueue: () => setQueue((prev) => prev.slice(1)),
@@ -47,6 +48,8 @@ function setup(initialize?: (snapshot: MutableSnapshot) => void) {
     { wrapper },
   );
 }
+
+beforeEach(() => resetQueueFamilies());
 
 describe('useSteerConvert', () => {
   beforeEach(() => {
@@ -141,7 +144,7 @@ describe('useSteerConvert', () => {
     };
     const after = { id: 'queue-after', text: 'still queued', createdAt: 20 };
     const { result } = setup(({ set }) => {
-      set(store.queuedMessagesByConvoId(CONVO_ID), [after]);
+      getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [after]);
       set(store.pendingSteersByConvoId(CONVO_ID), [
         {
           steerId: 'server-replacement-id',
@@ -200,7 +203,9 @@ describe('useSteerConvert', () => {
       clientRequestId: 'attempt',
       createdAt: 1,
     };
-    const { result } = setup(({ set }) => set(store.queuedMessagesByConvoId(CONVO_ID), [item]));
+    const { result } = setup(() =>
+      getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [item]),
+    );
     act(() =>
       result.current.convert(CONVO_ID, [{ steerId: 'source', text: 'original words' }], {
         generationProtocolVersion: 1,
@@ -253,7 +258,7 @@ describe('useSteerConvert', () => {
     };
     const after = { id: 'queue-after-race', text: 'after', createdAt: 20 };
     const { result } = setup(({ set }) => {
-      set(store.queuedMessagesByConvoId(CONVO_ID), [after]);
+      getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [after]);
       set(store.pendingSteersByConvoId(CONVO_ID), [
         {
           steerId: 'local-correlation-id',
@@ -336,8 +341,8 @@ describe('useSteerConvert', () => {
   });
 
   it('keeps interrupt front-inserts ahead of chronologically older steers', () => {
-    const { result } = setup(({ set }) => {
-      set(store.queuedMessagesByConvoId(CONVO_ID), [
+    const { result } = setup(() => {
+      getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [
         { id: 'urgent', text: 'interrupt message', createdAt: 100, priority: true },
       ]);
     });
@@ -357,7 +362,7 @@ describe('useSteerConvert', () => {
         { steerId: 'srv-late', text: 'converted', status: 'pending' as const, createdAt: 9 },
       ]);
       // As if the user had dragged the newest message to the front.
-      set(store.queuedMessagesByConvoId(CONVO_ID), [
+      getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [
         { id: 'm3', text: 'third, promoted', createdAt: 3 },
         { id: 'm1', text: 'first', createdAt: 1 },
         { id: 'm2', text: 'second', createdAt: 2 },
@@ -374,7 +379,7 @@ describe('useSteerConvert', () => {
       set(store.pendingSteersByConvoId(CONVO_ID), [
         { steerId: 'srv-early', text: 'accepted first', status: 'pending' as const, createdAt: 1 },
       ]);
-      set(store.queuedMessagesByConvoId(CONVO_ID), [
+      getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [
         { id: 'later', text: 'queued afterwards', createdAt: 5 },
       ]);
     });

@@ -109,9 +109,10 @@ test.describe('theme control spacing', () => {
 
     /** `button.basic.space.x` and `button.basic.space.gap`. */
     expect(await spacing(chip)).toEqual({ paddingLeft: '16px', paddingRight: '16px', gap: '8px' });
-    /** Message bubbles and the send button keep the shared spacing roles. */
+    /** Message bubbles keep `spaceNormal`, which Click UI's `spaces.3` matches, and the compact
+     *  spacing takes `spaces.2`. */
     expect(await bubblePadding(page)).toBe('12px');
-    expect(await probeStyle(page, 'p-theme-compact', 'padding-top')).toBe('6px');
+    expect(await probeStyle(page, 'p-theme-compact', 'padding-top')).toBe('8px');
 
     await leaveTemporaryChat(page);
   });

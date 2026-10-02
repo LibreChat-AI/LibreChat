@@ -387,3 +387,47 @@ describe('radius, font and shadow scales', () => {
     expect(defaultAppearance.elevationSurface).toBe(defaultAppearance.shadowLg);
   });
 });
+
+describe('Click UI spaces drawn by Tailwind steps', () => {
+  /** The steps of Click UI's `spaces` scale that no spacing role carries, each with the Tailwind
+   *  spacing step the application draws at the same size. */
+  const steps = {
+    'spaces.0': 0,
+    'spaces.1': 1,
+    'spaces.4': 4,
+    'spaces.5': 6,
+    'spaces.6': 8,
+    'spaces.7': 10,
+    'spaces.8': 16,
+  };
+
+  it('compiles each step to the Click UI space of the same size in every mode', async () => {
+    const snapshot = require('./themes/clickui.json');
+    const css = (
+      await generateApplication(Object.values(steps).map((step) => `p-${step}`))
+    ).replace(/\s+/g, ' ');
+    const base = /--spacing: ([0-9.]+)rem;/.exec(css)?.[1];
+
+    expect(base).toBe('0.25');
+    /** The size the last `.p-N` rule draws, in rem: `0px`, the base step, or a multiple of it. */
+    const drawn = (step) => {
+      const rules = [...css.matchAll(new RegExp(`\\.p-${step} \\{ padding: ([^;]+); \\}`, 'g'))];
+      const value = rules.at(-1)?.[1];
+      if (value === '0px') {
+        return 0;
+      }
+      if (value === 'var(--spacing)') {
+        return Number(base);
+      }
+      const multiple = /^calc\(var\(--spacing\) \* ([0-9.]+)\)$/.exec(value ?? '')?.[1];
+      return multiple === undefined ? undefined : Number(multiple) * Number(base);
+    };
+    Object.entries(steps).forEach(([token, step]) => {
+      ['light', 'dark'].forEach((mode) => {
+        const source = snapshot[mode][token];
+        const rem = source === '0' ? 0 : parseFloat(source);
+        expect([token, mode, drawn(step)]).toEqual([token, mode, rem]);
+      });
+    });
+  });
+});

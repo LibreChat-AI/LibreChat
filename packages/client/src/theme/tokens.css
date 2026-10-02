@@ -29,6 +29,14 @@
   --color-illustration-subtle: rgb(var(--illustration-subtle));
   --color-illustration: rgb(var(--illustration));
   --color-illustration-strong: rgb(var(--illustration-strong));
+  --color-file-document: rgb(var(--file-document));
+  --color-file-sheet: rgb(var(--file-sheet));
+  --color-file-code: rgb(var(--file-code));
+  --color-file-artifact: rgb(var(--file-artifact));
+  --color-file-audio: rgb(var(--file-audio));
+  --color-file-video: rgb(var(--file-video));
+  --color-file-generic: rgb(var(--file-generic));
+  --color-file-ink: rgb(var(--file-ink));
   --color-presentation: rgb(var(--presentation));
   --color-accent-primary: rgb(var(--accent-primary));
   --color-accent-primary-hover: rgb(var(--accent-primary-hover));
@@ -112,6 +120,9 @@
   --color-border-control: rgb(var(--border-control));
   /* Falls back to the focus ring color, for a stylesheet that predates it. */
   --color-border-field-focus: rgb(var(--border-field-focus, var(--focus-control)));
+  /* Follow the canvas and the primary ink, for a stylesheet that predates them. */
+  --color-field-fill: rgb(var(--field-fill, var(--surface-primary)));
+  --color-field-text: rgb(var(--field-text, var(--text-primary)));
   --color-border-disabled: rgb(var(--border-disabled));
 
   /* status */
@@ -238,5 +249,15 @@
     &:is(:root *) {
       @slot;
     }
+  }
+}
+
+/* A theme whose `fieldFillStyle` is `fill` paints its fields in `field-fill` instead of leaving
+ * them on the surface they sit on, read like the focus style from the nearest themed root. The
+ * default `transparent` style, and a browser without style queries, keep the fields clear. The
+ * fill carries a single class's weight, so a hover, open or disabled fill still paints over it. */
+@custom-variant theme-field-fill {
+  @container style(--theme-field-fill-style: fill) {
+    @slot;
   }
 }

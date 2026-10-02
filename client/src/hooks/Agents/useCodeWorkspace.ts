@@ -265,6 +265,8 @@ export default function useCodeWorkspace(
   const statuses = useCodeEnvironmentStatusQueries(
     attachedEnvironments.map(({ id }) => id),
     required && selectionMetadataComplete,
+    // Poll progress is not workspace state; keep unchanged refreshes off the send path.
+    { notifyOnChangeProps: ['data', 'isLoading', 'isError'] },
   );
   const storedSelections = conversation?.codeWorkspaces;
   const attachedEnvironmentIds = useMemo(

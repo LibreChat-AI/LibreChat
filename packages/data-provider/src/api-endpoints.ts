@@ -585,6 +585,10 @@ export const feedback = (conversationId: string, messageId: string) =>
 
 // Two-Factor Endpoints
 export const enableTwoFactor = () => `${BASE_URL}/api/auth/2fa/enable`;
+export const enableTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup`;
+export const confirmTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/confirm`;
+export const acknowledgeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/acknowledge`;
+export const finalizeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/finalize`;
 export const verifyTwoFactor = () => `${BASE_URL}/api/auth/2fa/verify`;
 export const confirmTwoFactor = () => `${BASE_URL}/api/auth/2fa/confirm`;
 export const disableTwoFactor = () => `${BASE_URL}/api/auth/2fa/disable`;
