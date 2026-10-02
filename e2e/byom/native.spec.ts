@@ -343,7 +343,9 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
       expect(ordinaryDecision.codeWorkspaces ?? []).toEqual([]);
       await page.getByTestId('model-selector-button').click();
       await page.locator('#model-search').fill('Lia');
-      await page.getByRole('option', { name: 'Lia', exact: true }).click();
+      const codingOption = page.getByRole('option', { name: /^Lia\b/ });
+      await expect(codingOption).toBeVisible({ timeout: 30_000 });
+      await codingOption.click();
       await expect(page).toHaveURL(new RegExp(`/c/${conversationId}$`));
       await expect(page.getByTestId('code-workspace')).toContainText('No workspace');
       expect(await chat('Continue without granting workspace access.')).toBe(conversationId);
