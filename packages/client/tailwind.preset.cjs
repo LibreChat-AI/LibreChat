@@ -23,12 +23,31 @@ module.exports = {
         /** The Button's default and `sm` heights. */
         'theme-button': 'var(--theme-button-height, 2.5rem)',
         'theme-button-sm': 'var(--theme-button-height-sm, 2.25rem)',
-        /** A form field's height. */
+        'theme-button-xs': 'var(--theme-button-height-xs, 1.75rem)',
+        'theme-button-lg': 'var(--theme-button-height-lg, 2.75rem)',
+        'theme-button-compact': 'var(--theme-button-height-compact, 2rem)',
+        /** A form field's height, and the large `title` field's. */
         'theme-field': 'var(--theme-field-height, 2.5rem)',
+        'theme-field-lg': 'var(--theme-field-height-lg, 3rem)',
+        /** WCAG 2.5.8's 24px target minimum, fixed so a theme can draw controls larger, never
+         *  smaller. */
+        'theme-target': '24px',
         /** A header cell: the table's vertical cell space on both sides of one text line. */
         'theme-table-head': 'calc(var(--theme-table-cell-space-y, 1rem) * 2 + 1rem)',
         /** A compact header: half the cell space on both sides of a text-sm line. */
         'theme-table-head-compact': 'calc(var(--theme-table-cell-space-y, 1rem) + 1.25rem)',
+      },
+      minHeight: {
+        /** WCAG 2.5.8's 24px target minimum, fixed so a theme can draw controls larger, never
+         *  smaller. */
+        'theme-target': '24px',
+      },
+      minWidth: {
+        /** WCAG 2.5.8's 24px target minimum, fixed so a theme can draw controls larger, never
+         *  smaller. */
+        'theme-target': '24px',
+        /** The narrowest a tab trigger draws. */
+        'theme-tab': 'var(--theme-tab-min-width, 100px)',
       },
       width: {
         /** Never narrower than the track is tall, so the knob always has somewhere to travel. */
@@ -39,6 +58,14 @@ module.exports = {
         'theme-compact': 'var(--theme-space-compact, 0.375rem)',
         'theme-normal': 'var(--theme-space-normal, 0.75rem)',
         'theme-control': 'var(--theme-control-height, 2.25rem)',
+        /** Square sizes: icon buttons as wide as their row is tall, the checkbox, and icons. */
+        'theme-button': 'var(--theme-button-height, 2.5rem)',
+        'theme-button-xs': 'var(--theme-button-height-xs, 1.75rem)',
+        'theme-icon-button-sm': 'var(--theme-icon-button-size-sm, 2rem)',
+        'theme-checkbox': 'var(--theme-checkbox-size, 1rem)',
+        'theme-icon': 'var(--theme-icon-size, 1rem)',
+        'theme-icon-md': 'var(--theme-icon-size-md, 1.25rem)',
+        'theme-icon-lg': 'var(--theme-icon-size-lg, 1.5rem)',
         /** A theme-sized control's inline padding and gap, falling back to the shared spacing it
          *  read before, for a stylesheet that predates the roles. */
         'theme-control-x': 'var(--theme-control-padding-x, var(--theme-space-normal, 0.75rem))',
@@ -51,7 +78,8 @@ module.exports = {
         /**
          * The comfortable tap target (2.75rem / 44px), held against the theme's
          * own control height with `max()` so a theme that already draws larger
-         * controls is never shrunk on a phone. Pair it with `touch:`.
+         * controls is never shrunk on a phone. Pair it
+         * with `touch:`.
          */
         'theme-control-touch': 'max(var(--theme-control-height, 2.25rem), 2.75rem)',
         /** The switch knob inside the track's 2px border, in px so it holds at any root size,

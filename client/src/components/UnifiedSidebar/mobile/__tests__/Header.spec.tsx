@@ -52,9 +52,18 @@ const links = [] as NavLink[];
 
 describe('mobile drawer header', () => {
   it('claims the close identity while the drawer is open', () => {
-    render(<Header links={links} expanded={true} onClose={jest.fn()} onNewChat={jest.fn()} />, {
-      wrapper: MemoryRouter,
-    });
+    render(
+      <Header
+        links={links}
+        expanded={true}
+        onClose={jest.fn()}
+        onNewChat={jest.fn()}
+        switchToHistory={true}
+      />,
+      {
+        wrapper: MemoryRouter,
+      },
+    );
 
     const close = screen.getByTestId('close-sidebar-button');
     expect(close).toHaveAttribute('id', 'close-sidebar-button');
@@ -67,9 +76,18 @@ describe('mobile drawer header', () => {
    * would find one sitting off-viewport and act on it.
    */
   it('gives up that identity once closed', () => {
-    render(<Header links={links} expanded={false} onClose={jest.fn()} onNewChat={jest.fn()} />, {
-      wrapper: MemoryRouter,
-    });
+    render(
+      <Header
+        links={links}
+        expanded={false}
+        onClose={jest.fn()}
+        onNewChat={jest.fn()}
+        switchToHistory={true}
+      />,
+      {
+        wrapper: MemoryRouter,
+      },
+    );
 
     expect(screen.queryByTestId('close-sidebar-button')).not.toBeInTheDocument();
     expect(document.getElementById('close-sidebar-button')).toBeNull();
@@ -77,9 +95,18 @@ describe('mobile drawer header', () => {
 
   /** The only close control while open, so its binding must be discoverable here. */
   it('advertises the toggle shortcut on the close control', () => {
-    render(<Header links={links} expanded={true} onClose={jest.fn()} onNewChat={jest.fn()} />, {
-      wrapper: MemoryRouter,
-    });
+    render(
+      <Header
+        links={links}
+        expanded={true}
+        onClose={jest.fn()}
+        onNewChat={jest.fn()}
+        switchToHistory={true}
+      />,
+      {
+        wrapper: MemoryRouter,
+      },
+    );
 
     expect(screen.getByTestId('close-sidebar-button')).toHaveAttribute(
       'aria-keyshortcuts',
@@ -88,9 +115,18 @@ describe('mobile drawer header', () => {
   });
 
   it('keeps the closed drawer out of the tab order', () => {
-    render(<Header links={links} expanded={false} onClose={jest.fn()} onNewChat={jest.fn()} />, {
-      wrapper: MemoryRouter,
-    });
+    render(
+      <Header
+        links={links}
+        expanded={false}
+        onClose={jest.fn()}
+        onNewChat={jest.fn()}
+        switchToHistory={true}
+      />,
+      {
+        wrapper: MemoryRouter,
+      },
+    );
 
     expect(screen.getByLabelText('com_nav_close_sidebar')).toHaveAttribute('tabindex', '-1');
   });
@@ -103,22 +139,45 @@ describe('mobile drawer header', () => {
    */
   it('moves focus to the toggle when the drawer opens', () => {
     const { rerender } = render(
-      <Header links={links} expanded={false} onClose={jest.fn()} onNewChat={jest.fn()} />,
+      <Header
+        links={links}
+        expanded={false}
+        onClose={jest.fn()}
+        onNewChat={jest.fn()}
+        switchToHistory={true}
+      />,
       {
         wrapper: MemoryRouter,
       },
     );
     expect(document.activeElement).toBe(document.body);
 
-    rerender(<Header links={links} expanded={true} onClose={jest.fn()} onNewChat={jest.fn()} />);
+    rerender(
+      <Header
+        links={links}
+        expanded={true}
+        onClose={jest.fn()}
+        onNewChat={jest.fn()}
+        switchToHistory={true}
+      />,
+    );
 
     expect(document.activeElement).toBe(screen.getByTestId('close-sidebar-button'));
   });
 
   it('never steals focus while closed', () => {
-    render(<Header links={links} expanded={false} onClose={jest.fn()} onNewChat={jest.fn()} />, {
-      wrapper: MemoryRouter,
-    });
+    render(
+      <Header
+        links={links}
+        expanded={false}
+        onClose={jest.fn()}
+        onNewChat={jest.fn()}
+        switchToHistory={true}
+      />,
+      {
+        wrapper: MemoryRouter,
+      },
+    );
 
     expect(document.activeElement).toBe(document.body);
   });
@@ -130,7 +189,13 @@ describe('mobile drawer header', () => {
    */
   it('leads the row with the shared header-action toggle', () => {
     const { container } = render(
-      <Header links={links} expanded={true} onClose={jest.fn()} onNewChat={jest.fn()} />,
+      <Header
+        links={links}
+        expanded={true}
+        onClose={jest.fn()}
+        onNewChat={jest.fn()}
+        switchToHistory={true}
+      />,
       {
         wrapper: MemoryRouter,
       },
@@ -146,9 +211,18 @@ describe('mobile drawer header', () => {
    *  switcher because it means the same thing whichever panel is showing, which
    *  is exactly why it no longer repeats under each panel's contents. */
   it('carries new chat in the strip, and not the marketplace', () => {
-    render(<Header links={links} expanded={true} onClose={jest.fn()} onNewChat={jest.fn()} />, {
-      wrapper: MemoryRouter,
-    });
+    render(
+      <Header
+        links={links}
+        expanded={true}
+        onClose={jest.fn()}
+        onNewChat={jest.fn()}
+        switchToHistory={true}
+      />,
+      {
+        wrapper: MemoryRouter,
+      },
+    );
 
     expect(screen.getByTestId('nav-new-chat-fab')).toBeInTheDocument();
     expect(screen.queryByTestId('nav-agents-marketplace-button')).not.toBeInTheDocument();

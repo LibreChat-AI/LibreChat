@@ -64,6 +64,9 @@ export type AgentForm = {
   [AgentCapabilities.artifacts]?: ArtifactModes | string;
   recursion_limit?: number;
   support_contact?: SupportContact;
+  conversation_starters?: string[];
+  /** Unsent starter text; builder-only, never sent to the API. */
+  conversation_starter_draft?: string;
   category: string;
   // Avatar management fields
   avatar_file?: File | null;

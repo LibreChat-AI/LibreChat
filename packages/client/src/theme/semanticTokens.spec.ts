@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import type { IThemeAppearance, IThemeRGB } from './types';
 import { clickHouseDarkTheme, clickHouseLightTheme, clickHouseTheme } from './themes/clickhouse';
 import { highContrastDarkTheme, highContrastLightTheme } from './themes/highContrast';
+import { fieldControl } from '../components/Field';
 import { defaultTheme } from './themes/default';
 import { defaultAppearance } from './registry';
 import { darkTheme } from './themes/dark';
@@ -126,6 +127,16 @@ describe('shared field and dropdown interaction styles', () => {
     expect(field).not.toMatch(/\bborder-border-(?:light|medium)\b/);
     expect(field).toMatch(/focus-visible:ring-2/);
     expect(field).toMatch(/focus-visible:ring-focus-control/);
+    /** The fill and ink classes the field-fill e2e scenarios probe in the browser. */
+    expect(fieldControl.split(' ')).toEqual(
+      expect.arrayContaining([
+        'lc-field',
+        'bg-transparent',
+        'text-field-text',
+        'theme-field-fill:bg-field-fill',
+        'theme-field-fill:disabled:hover:bg-field-fill',
+      ]),
+    );
 
     const composers: Array<[string, RegExp]> = [
       ['Input.tsx', /\bfieldControl\b/],

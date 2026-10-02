@@ -1,4 +1,5 @@
 import { useRef, useMemo, useCallback, useSyncExternalStore } from 'react';
+import { useStore } from 'jotai';
 import { hashQueryKey, useQueryClient } from '@tanstack/react-query';
 import {
   QueryKeys,
@@ -7,23 +8,50 @@ import {
   fromUIMessage,
   toUIMessage,
 } from 'librechat-data-provider';
-import type { TMessage, UIMessage, TAttachment, UIMappingOptions } from 'librechat-data-provider';
+import type {
+  TMessage,
+  UIMessage,
+  UITextPart,
+  TAttachment,
+  UIMappingOptions,
+  UIMessageMetadata,
+} from 'librechat-data-provider';
 import type { QueryCacheNotifyEvent } from '@tanstack/react-query';
+import type { TAskProps, TOptions } from '~/common';
 import type { ChatContract } from './contract';
-import type { TAskFunction } from '~/common';
 import { isMemoryFailureOutput } from '~/components/Chat/Messages/Content/Parts/MemoryCall';
 import { getToolMeta } from '~/components/Chat/Messages/Content/outcome';
 import { useChatContext } from '~/Providers/ChatContext';
 import { isEmptyContentPart } from '~/utils/messages';
+import { resumeRequestsAtom } from './resume';
 import { mapAttachments } from '~/utils/map';
 
 /** AI SDK `ChatStatus`. */
 export type ChatStatus = 'submitted' | 'streaming' | 'ready' | 'error';
 
 /**
+ * A user turn in the AI SDK's `sendMessage` shape: its text parts, plus the message it attaches
+ * under. It goes to the facade's own chat, as AI SDK `useChat` does, so it names no conversation.
+ * File parts are left out because the turn takes its files from the composer, not the message.
+ */
+export type SendMessageInput = {
+  parts: UITextPart[];
+  metadata?: Partial<Pick<UIMessageMetadata, 'parentMessageId'>>;
+};
+
+/**
+ * Submits a turn. Takes the contract's `ask` arguments, or a user message in the AI SDK shape,
+ * which is sent as the `ask` call it describes; `{ text }` is already both.
+ */
+export type SendMessage = (
+  message: TAskProps | SendMessageInput,
+  options?: TOptions,
+) => false | void;
+
+/**
  * The `useChat` surface of `@ai-sdk/react@4.0.117` (`UseChatHelpers`), over LibreChat's chat
- * contract. Members the contract cannot back (`resumeStream`, `addToolOutput`, `clearError`)
- * are left out rather than stubbed.
+ * contract. Members the contract cannot back (`addToolOutput`, `clearError`) are left out rather
+ * than stubbed.
  */
 export type UseChatHelpers = {
   /** The conversation the messages are read from (the contract's `messagesKey`); AI SDK's chat id. */
@@ -33,11 +61,19 @@ export type UseChatHelpers = {
   status: ChatStatus;
   /** Set when the latest message is an error; LibreChat reports errors as messages. */
   error: Error | undefined;
-  /** Submits a turn: the contract's `ask`, called with the same arguments. */
-  sendMessage: TAskFunction;
+  /** Submits a turn through the contract's `ask`; see {@link SendMessage}. */
+  sendMessage: SendMessage;
   /** Regenerates the response to `messageId`, or the latest message of the branch. */
   regenerate: (options?: { messageId?: string }) => void;
   stop: () => Promise<void>;
+  /**
+   * Reattaches this chat to its running generation, if the server has one. The request is
+   * answered by the resume-on-load path the chat view mounts for its pane, which checks the
+   * stream status and attaches through the host transport. It resolves once requested. It does
+   * nothing for a new chat or one already attached, and a request for a conversation no chat view
+   * shows waits until one does.
+   */
+  resumeStream: () => Promise<void>;
   /**
    * Writes messages back to the cache, keeping the stored fields the UI view omits. A message
    * with no stored counterpart joins the active conversation under the message before it, or
@@ -312,8 +348,42 @@ const findLatest = (stored: TMessage[] | undefined, latestMessageId: string | un
 /** The `useChat` members that need no message list. */
 export type ChatActions = Pick<
   UseChatHelpers,
-  'id' | 'status' | 'sendMessage' | 'regenerate' | 'stop'
+  'id' | 'status' | 'sendMessage' | 'regenerate' | 'stop' | 'resumeStream'
 >;
+
+/** `ask` arguments for a `sendMessage` call, which may carry an AI SDK user message. */
+const toAskProps = (message: TAskProps | SendMessageInput): TAskProps => {
+  if (!('parts' in message)) {
+    return message;
+  }
+  const { parentMessageId } = message.metadata ?? {};
+  return {
+    text: message.parts.map((part) => part.text).join(''),
+    /** A root message's view carries a `null` parent, which `ask` would read as "append to the
+     *  branch tail"; the turn asked to attach at the root. */
+    ...(parentMessageId !== undefined && {
+      parentMessageId: parentMessageId ?? Constants.NO_PARENT,
+    }),
+  };
+};
+
+/** `sendMessage` and `resumeStream` for the chat `id`, shared by `useChat` and `useChatActions`. */
+function useTurnActions(ask: ChatContract['ask'], id?: string) {
+  const jotaiStore = useStore();
+  const sendMessage = useCallback<SendMessage>(
+    (message, options) => ask(toAskProps(message), options),
+    [ask],
+  );
+  const resumeStream = useCallback(async () => {
+    if (!id || id === Constants.NEW_CONVO) {
+      return;
+    }
+    jotaiStore.set(resumeRequestsAtom, (pending) =>
+      pending.has(id) ? pending : new Set(pending).add(id),
+    );
+  }, [id, jotaiStore]);
+  return { sendMessage, resumeStream };
+}
 
 /**
  * `useChat` without `messages`, for controls that submit or read status: it re-renders when the
@@ -338,10 +408,11 @@ export function useChatActions(): ChatActions {
   const status = useSyncExternalStore(subscribe, readStatus, readStatus);
   const regenerate = useRegenerate(getMessages, latestMessageId, regenerateTarget);
   const id = messagesKey || conversation?.conversationId || undefined;
+  const { sendMessage, resumeStream } = useTurnActions(ask, id);
 
   return useMemo(
-    () => ({ id, status, sendMessage: ask, regenerate, stop: stopGenerating }),
-    [id, status, ask, regenerate, stopGenerating],
+    () => ({ id, status, sendMessage, regenerate, stop: stopGenerating, resumeStream }),
+    [id, status, sendMessage, regenerate, stopGenerating, resumeStream],
   );
 }
 
@@ -404,6 +475,7 @@ export function useChat(): UseChatHelpers {
   );
 
   const regenerate = useRegenerate(getMessages, latestMessageId, regenerateTarget);
+  const { sendMessage, resumeStream } = useTurnActions(ask, chatId);
 
   const setMessages = useCallback(
     (update: UIMessage[] | ((messages: UIMessage[]) => UIMessage[])) => {
@@ -438,9 +510,10 @@ export function useChat(): UseChatHelpers {
     messages,
     status,
     error,
-    sendMessage: ask,
+    sendMessage,
     regenerate,
     stop: stopGenerating,
+    resumeStream,
     setMessages,
   };
 }

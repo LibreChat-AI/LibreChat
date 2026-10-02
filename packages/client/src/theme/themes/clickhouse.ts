@@ -109,6 +109,8 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-border-destructive': '193 0 0', // #c10000 (palette.danger.600)
   'rgb-border-control': '128 134 145', // #808691 (palette.slate.500, 3.42:1 on background.muted)
   'rgb-border-field-focus': '22 21 23', // #161517 (field.color.stroke.active)
+  'rgb-field-fill': '251 252 255', // #fbfcff (field.color.background.default)
+  'rgb-field-text': '48 46 50', // #302e32 (field.color.text.default)
   'rgb-surface-disabled': '223 223 223', // #dfdfdf (button.basic.color.primary.background.disabled)
   'rgb-text-disabled': '160 160 160', // #a0a0a0 (text.disabled)
   'rgb-border-disabled': '223 223 223', // #dfdfdf (field.color.stroke.disabled)
@@ -268,6 +270,8 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-border-destructive': '255 117 117', // #ff7575 (palette.danger.300)
   'rgb-border-control': '128 128 128', // #808080 (palette.neutral.500, 3.73:1 on background.muted)
   'rgb-border-field-focus': '250 255 105', // #faff69 (field.color.stroke.active)
+  'rgb-field-fill': '45 45 45', // rgb(17.794% 17.794% 17.794%) (field.color.background.default)
+  'rgb-field-text': '230 231 233', // #e6e7e9 (field.color.text.default)
   'rgb-surface-disabled': '65 65 65', // #414141 (button.basic.color.primary.background.disabled)
   'rgb-text-disabled': '128 128 128', // #808080 (text.disabled)
   'rgb-border-disabled': '65 65 65', // #414141 (field.color.stroke.disabled)
@@ -354,8 +358,8 @@ export const clickHouseDarkTheme: IThemeRGB = {
  * `radii.1`, which LibreChat's `sm` also renders at on a 16px root; every larger step tightens.
  *
  * Click UI's mono family is Inconsolata, which the component library ships in `theme/fonts.css`
- * (latin 400 and 700). The tail is the same metric-matched stack the default theme uses (Click
- * UI's own tail names `"SFMono Regular"`, which no platform installs).
+ * (latin 400 and 700), and the stack is Click UI's verbatim. Its `"SFMono Regular"` matches no
+ * installed face, so where Inconsolata has no glyph a browser falls to Consolas or `monospace`.
  *
  * Click UI's display family leads with Basier Square, a commercial face ClickHouse licenses for
  * its own sites. It is named here but not self-hosted: a browser that has it installed renders
@@ -378,6 +382,8 @@ const clickHouseShape = {
   menuRadius: '0.25rem', // genericMenu.panel.radii.all
   tooltipRadius: '0.25rem', // tooltip.radii.all
   tabRadius: '0.25rem', // tabs.radii.all
+  /** Click UI sizes a tab trigger by its label, in `tabs.space.x` on each side. */
+  tabMinWidth: '0',
   radiusSm: '0.25rem', // border.radii.1
   radiusMd: '0.25rem', // border.radii.1
   radiusLg: '0.25rem', // border.radii.1
@@ -386,8 +392,7 @@ const clickHouseShape = {
   radius3xl: '0.75rem', // border.radii.3
   fontFamily:
     '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif',
-  monoFontFamily:
-    '"Inconsolata", ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", "Liberation Mono", Consolas, monospace',
+  monoFontFamily: '"Inconsolata", Consolas, "SFMono Regular", monospace', // typography.font.families.mono
   displayFontFamily:
     '\'Basier Square\', "Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif', // typography.font.families.display
   textXs: '0.75rem', // typography.font.sizes.1
@@ -413,6 +418,15 @@ const clickHouseShape = {
    *  0.875rem/1.5 label and a 1px stroke, 32px in all. */
   buttonHeight: '2rem',
   buttonHeightSm: '2rem',
+  /** Click UI draws one button size, so the `lg` step matches the default too. Its icon button is
+   *  a 1rem icon in 0.25rem of `iconButton.sm` space on each side, 1.5rem in all, which still meets
+   *  the 24px target minimum; its `xs` (no space) would not, so `icon-xs` keeps LibreChat's. */
+  buttonHeightLg: '2rem',
+  buttonHeightCompact: '2rem',
+  iconButtonSizeSm: '1.5rem',
+  iconSize: '1rem', // image.sm.size.width
+  iconSizeMd: '1.25rem', // image.md.size.width
+  iconSizeLg: '1.5rem', // image.lg.size.width, the dialog close icon
   /** Click UI's field is sized by its content, like its button: 0.2813rem of space.y on both
    *  sides of a 0.875rem/1.5 value and a 1px stroke, 32px in all. On focus it swaps its stroke to
    *  `field.color.stroke.active` and draws no ring (InputWrapper); LibreChat adds a 1px ring in
@@ -420,6 +434,8 @@ const clickHouseShape = {
   fieldHeight: '2rem',
   fieldPaddingY: '0.2813rem', // field.space.y
   fieldFocusStyle: 'border' as const,
+  /** Click UI fills its fields in `field.color.background.default`. */
+  fieldFillStyle: 'fill' as const,
   /** Click UI's keyboard focus outline: 2px in `outline.default`, 2px off the edge
    *  (BaseButton.module.css, IconButton, Dropdown and ContextMenu triggers). */
   focusRingWidth: '2px',
@@ -445,8 +461,13 @@ const clickHouseShape = {
   disabledStyle: 'fill' as const,
   switchWidth: '2rem', // switch.size.width
   switchHeight: '1rem', // switch.size.height
+  checkboxSize: '1rem', // checkbox.size.all
   /** Click UI's own sizes halve like LibreChat's: `md` is this full space, and the compact tables
    *  every in-repo consumer draws land on `sm` (0.5rem), the size Click UI tables default to. */
+  /** The shared spacing takes two steps of Click UI's `spaces` scale: its 0.5rem gap step, the
+   *  one its buttons and fields space icon and label by, and 0.75rem, which already matched. */
+  spaceCompact: '0.5rem', // spaces.2
+  spaceNormal: '0.75rem', // spaces.3
   tableCellSpaceY: '1rem', // table.body.cell.space.md.y
   tableRowStroke: '1px', // table.cell.stroke
   motionFast: '100ms', // transition.duration.medium, the step transition.default runs at

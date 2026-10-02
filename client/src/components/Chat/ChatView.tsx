@@ -53,7 +53,16 @@ function LoadingSpinner() {
   );
 }
 
-function ChatView({ index = 0, project }: { index?: number; project?: TChatProject }) {
+function ChatView({
+  index = 0,
+  project,
+  routePending = false,
+}: {
+  index?: number;
+  project?: TChatProject;
+  /** The route is loading another conversation, or failed to. */
+  routePending?: boolean;
+}) {
   const { conversationId } = useParams();
   const localize = useLocalize();
   const rootSubmission = useRecoilValue(store.submissionByIndex(index));
@@ -181,7 +190,7 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
             <ChatContext.Provider value={chatHelpers}>
               <AddedChatContext.Provider value={addedChatHelpers}>
                 <ApprovalProvider pendingAction={pendingAction}>
-                  <Presentation>
+                  <Presentation routePending={routePending}>
                     <TraceSurface conversationId={conversationId}>
                       <h1 className="sr-only">{pageHeading}</h1>
                       {/* Marks the header's controls as this pane's, so a pane-scoped

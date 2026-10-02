@@ -6,6 +6,7 @@ import {
   ResetPassword,
   ApiErrorWatcher,
   TwoFactorScreen,
+  TwoFactorSetupScreen,
   RequestPasswordReset,
 } from '~/components/Auth';
 import { OAuthSuccess, OAuthError } from '~/components/OAuth';
@@ -118,6 +119,10 @@ export const router = createBrowserRouter(
             {
               path: 'login/2fa',
               element: <TwoFactorScreen />,
+            },
+            {
+              path: 'login/2fa/setup',
+              element: <TwoFactorSetupScreen />,
             },
           ],
         },

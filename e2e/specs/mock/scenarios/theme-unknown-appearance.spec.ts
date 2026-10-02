@@ -19,7 +19,10 @@ const withAppearance = (name: string, appearance: Record<string, unknown>) => ({
   },
 });
 
-const NEWER_THEME = withAppearance('e2e-newer', { controlRadius: '2px', futureSpacing: '3rem' });
+const NEWER_THEME = withAppearance('e2e-newer', {
+  controlRadius: '2px',
+  futureSpacing: '3.3125rem',
+});
 
 async function storeTheme(page: Page, definition: Record<string, unknown>) {
   await page.addInitScript((theme) => {
@@ -54,7 +57,7 @@ async function expectNewerThemeApplied(page: Page) {
   const dark = await page.evaluate(() => document.documentElement.classList.contains('dark'));
   expect(await themeValue(page, '--surface-primary')).toBe(dark ? '12 16 32' : '240 244 255');
   expect(await themeValue(page, '--theme-control-radius')).toBe('2px');
-  expect(await page.locator('html').getAttribute('style')).not.toContain('3rem');
+  expect(await page.locator('html').getAttribute('style')).not.toContain('3.3125rem');
 }
 
 test.describe('appearance tokens this build does not know', () => {
@@ -92,7 +95,7 @@ test.describe('appearance tokens this build does not know', () => {
   }) => {
     const theme = withAppearance('e2e-invalid-known', {
       controlRadius: 'huge',
-      futureSpacing: '3rem',
+      futureSpacing: '3.3125rem',
     });
     await storeTheme(page, theme);
 

@@ -87,6 +87,7 @@ function RootLayout() {
   /** Off by default, matching the drawer that covers the screen and closes by
    *  swipe. Opting in narrows it and gives the strip a dismiss target. */
   const drawerStrip = useRecoilValue(store.mobileDrawerStrip);
+  const newChatSwitchToHistory = useRecoilValue(store.newChatSwitchToHistory);
   const paneRef = useRef<HTMLDivElement>(null);
   /** Keyed off the committed state rather than the scrim's own click, because
    *  the header button, Escape, conversation selection and the bottom bar all
@@ -182,7 +183,10 @@ function RootLayout() {
                     {/* The drawer stops being painted once it is closed and
                         settled, so it needs the same travel window the scrim and
                         the pane's `inert` read. */}
-                    <UnifiedSidebar isSliding={isSliding} />
+                    <UnifiedSidebar
+                      isSliding={isSliding}
+                      switchToHistory={newChatSwitchToHistory}
+                    />
                     <div
                       ref={paneRef}
                       /** Focus target of last resort when the drawer closes on a

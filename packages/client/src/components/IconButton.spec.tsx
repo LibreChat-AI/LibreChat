@@ -33,6 +33,18 @@ describe('IconButton', () => {
     );
   });
 
+  it('keeps submit glyphs contrasted against the theme fill', () => {
+    render(
+      <IconButton label="Stop" variant="submit" size="theme" shape="theme">
+        stop
+      </IconButton>,
+    );
+
+    const button = screen.getByRole('button', { name: 'Stop' });
+    expect(button).toHaveClass('bg-surface-inverted', 'text-text-inverted');
+    expect(button).not.toHaveClass('text-text-primary', 'bg-text-primary');
+  });
+
   it('provides a theme-aware primary action', () => {
     render(
       <IconButton label="Send" variant="primary">

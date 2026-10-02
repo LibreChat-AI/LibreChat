@@ -27,14 +27,14 @@ const Checkbox: React.ForwardRefExoticComponent<
     <CheckboxPrimitive.Root
       ref={ref}
       className={cn(
-        'peer border-border-xheavy ring-offset-surface-primary focus-visible:ring-focus-control data-[state=checked]:bg-surface-inverted data-[state=checked]:text-text-inverted h-4 w-4 shrink-0 rounded-sm border focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50',
+        'peer border-border-xheavy ring-offset-surface-primary focus-visible:ring-focus-control data-[state=checked]:bg-surface-inverted data-[state=checked]:text-text-inverted size-theme-checkbox shrink-0 rounded-sm border focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50',
         disabledFillClasses,
         className,
       )}
       {...props}
     >
       <CheckboxPrimitive.Indicator className={cn('flex items-center justify-center')}>
-        <Check className="h-4 w-4" />
+        <Check className="size-theme-checkbox" />
       </CheckboxPrimitive.Indicator>
     </CheckboxPrimitive.Root>
   ),
@@ -55,12 +55,12 @@ const CheckboxGlyph: React.FC<{ checked: boolean; className?: string }> = ({
   <span
     aria-hidden="true"
     className={cn(
-      'border-border-xheavy flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border',
+      'border-border-xheavy size-theme-checkbox flex shrink-0 items-center justify-center rounded-sm border',
       checked && 'bg-surface-inverted text-text-inverted',
       className,
     )}
   >
-    {checked && <Check className="h-4 w-4" />}
+    {checked && <Check className="size-theme-checkbox" />}
   </span>
 );
 CheckboxGlyph.displayName = 'CheckboxGlyph';

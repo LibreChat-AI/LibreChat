@@ -8,6 +8,7 @@
 import { Keyv } from 'keyv';
 import type { TokenMethods } from '@librechat/data-schemas';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
+import type { FlowLease } from '~/flow/manager';
 import {
   MCPTokenStorage,
   MCPTokenRefreshUnavailableError,
@@ -94,6 +95,123 @@ describe('MCPTokenStorage', () => {
           validateClientBinding,
         }),
       ).resolves.toBe(true);
+    });
+
+    it.each([false, true])(
+      'rejects a known-rejected generation even with usable refresh credentials (access removed: %s)',
+      async (removeAccess) => {
+        await createBoundToken(store, {
+          userId: 'u1',
+          type: 'mcp_oauth',
+          identifier: 'mcp:srv1',
+          token: 'enc:rejected-access',
+          expiresIn: 3600,
+        });
+        await createBoundToken(store, {
+          userId: 'u1',
+          type: 'mcp_oauth_refresh',
+          identifier: 'mcp:srv1:refresh',
+          token: 'enc:usable-refresh',
+          expiresIn: 3600,
+        });
+        await storeClient();
+        await MCPTokenStorage.markAuthorizationRejected({
+          userId: 'u1',
+          serverName: 'srv1',
+          credentialSetId,
+          findToken: store.findToken,
+          updateToken: store.updateToken,
+        });
+        if (removeAccess) {
+          await store.deleteToken({ userId: 'u1', type: 'mcp_oauth', identifier: 'mcp:srv1' });
+        }
+
+        await expect(
+          MCPTokenStorage.hasStoredAuthorization({
+            userId: 'u1',
+            serverName: 'srv1',
+            findToken: store.findToken,
+            validateClientBinding,
+          }),
+        ).resolves.toBe(false);
+        const client = await store.findToken({
+          userId: 'u1',
+          type: 'mcp_oauth_client',
+          identifier: 'mcp:srv1:client',
+        });
+        expect(client?.metadata).toMatchObject({
+          ...storedBindingMetadata,
+          rejected_credential_set_id: credentialSetId,
+        });
+      },
+    );
+
+    it('does not poison a newer authorization while recording an older rejection', async () => {
+      await storeClient();
+      const updateToken: TokenMethods['updateToken'] = async (query, update) => {
+        await storeClient({ ...storedBindingMetadata, credential_set_id: 'new-generation' });
+        return store.updateToken(query, update);
+      };
+      await MCPTokenStorage.markAuthorizationRejected({
+        userId: 'u1',
+        serverName: 'srv1',
+        credentialSetId,
+        findToken: store.findToken,
+        updateToken,
+      });
+      const client = await store.findToken({
+        userId: 'u1',
+        type: 'mcp_oauth_client',
+        identifier: 'mcp:srv1:client',
+      });
+      expect(client?.metadata).toEqual({
+        ...storedBindingMetadata,
+        credential_set_id: 'new-generation',
+      });
+    });
+
+    it('accepts replacement credentials despite a carried-over older rejection marker', async () => {
+      await createBoundToken(store, {
+        userId: 'u1',
+        type: 'mcp_oauth',
+        identifier: 'mcp:srv1',
+        token: 'enc:current-access',
+        expiresIn: 3600,
+      });
+      await storeClient({
+        ...storedBindingMetadata,
+        rejected_credential_set_id: 'older-generation',
+      });
+      await expect(
+        MCPTokenStorage.hasStoredAuthorization({
+          userId: 'u1',
+          serverName: 'srv1',
+          findToken: store.findToken,
+          validateClientBinding,
+        }),
+      ).resolves.toBe(true);
+    });
+
+    it('waits for credential persistence before recording rejection', async () => {
+      await storeClient();
+      let grantLease: ((lease: FlowLease) => void) | undefined;
+      const release = jest.fn(async () => undefined);
+      const flowManager = {
+        acquireLease: jest.fn(() => new Promise<FlowLease>((resolve) => (grantLease = resolve))),
+      };
+      const findToken = jest.fn(store.findToken);
+      const pending = MCPTokenStorage.markAuthorizationRejected({
+        userId: 'u1',
+        serverName: 'srv1',
+        credentialSetId,
+        findToken,
+        updateToken: store.updateToken,
+        flowManager,
+      });
+      expect(findToken).not.toHaveBeenCalled();
+      grantLease?.({ generation: 0, release });
+      await pending;
+      expect(release).toHaveBeenCalledTimes(1);
     });
 
     it('rejects legacy credentials without binding metadata', async () => {
@@ -2494,8 +2612,12 @@ describe('MCPTokenStorage', () => {
         await peerRotates(serverName, 3);
         const flowManager = new FlowStateManager(new Keyv(), { ttl: 30000, ci: true });
         const acquire = flowManager.acquireLease.bind(flowManager);
+        let flightAcquired = false;
         jest.spyOn(flowManager, 'acquireLease').mockImplementation(async (id, options) => {
-          if (id === getMCPOAuthLeaseId('u1', serverName)) await peerRotates(serverName, 4);
+          if (id === getMCPOAuthRefreshFlightLeaseId('u1', serverName)) flightAcquired = true;
+          if (flightAcquired && id === getMCPOAuthLeaseId('u1', serverName)) {
+            await peerRotates(serverName, 4);
+          }
           return acquire(id, options);
         });
         const onTokensAdopted = jest.fn();
@@ -3385,6 +3507,96 @@ describe('MCPTokenStorage', () => {
       }
     });
 
+    it('never redeems after rejection persistence outlives the common storage flight', async () => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+      let releaseWrite!: () => void;
+      const blocked = new Promise<void>((resolve) => (releaseWrite = resolve));
+      let recording = false;
+      try {
+        const serverName = 'stalled-rejection';
+        await seedRefreshableTokens(serverName);
+        const updateToken: TokenMethods['updateToken'] = async (...args) => {
+          recording = true;
+          await blocked;
+          return store.updateToken(...args);
+        };
+        const refreshTokens = jest.fn().mockResolvedValue(rotatedTokens(2));
+        const params = {
+          ...refreshParams(refreshTokens, serverName),
+          coordinateRefresh: false,
+          updateToken,
+        };
+        const recovering = MCPTokenStorage.forceRefreshTokens({
+          ...params,
+          rejectedCredentialSetId: credentialSetId,
+        });
+        await waitFor(() => recording);
+        const loading = MCPTokenStorage.getTokens(params);
+        await new Promise((resolve) => setImmediate(resolve));
+        jest.advanceTimersByTime(MCPTokenStorage.INFLIGHT_REFRESH_STALE_MS + 1);
+        releaseWrite();
+        await expect(Promise.all([recovering, loading])).resolves.toEqual([null, null]);
+        expect(refreshTokens).not.toHaveBeenCalled();
+        await expect(
+          MCPTokenStorage.hasStoredAuthorization({
+            userId: 'u1',
+            serverName,
+            findToken: store.findToken,
+            validateClientBinding: () => undefined,
+          }),
+        ).resolves.toBe(false);
+      } finally {
+        releaseWrite();
+        jest.useRealTimers();
+      }
+    });
+
+    it.each([false, true])(
+      'records a joiner rejection when the token-loader refresh fails (publication: %s)',
+      async (publicationFailure) => {
+        const serverName = `mixed-refresh-failure-${publicationFailure}`;
+        await seedRefreshableTokens(serverName);
+        let finishRefresh!: (tokens: MCPOAuthTokens) => void;
+        let failRefresh!: (error: Error) => void;
+        const refreshTokens = jest.fn(
+          () =>
+            new Promise<MCPOAuthTokens>((resolve, reject) => {
+              finishRefresh = resolve;
+              failRefresh = reject;
+            }),
+        );
+        const params = {
+          ...refreshParams(refreshTokens, serverName),
+          coordinateRefresh: false,
+          flowManager: new FlowStateManager(new Keyv(), { ttl: 30000, ci: true }),
+          onRefreshSuccess: async () => {
+            if (publicationFailure) throw new Error('publication unavailable');
+          },
+        };
+        const loading = MCPTokenStorage.getTokens(params);
+        void loading.catch(() => undefined);
+        await waitFor(() => refreshTokens.mock.calls.length === 1);
+        const recovering = MCPTokenStorage.forceRefreshTokens({
+          ...params,
+          rejectedCredentialSetId: credentialSetId,
+        });
+        void recovering.catch(() => undefined);
+        if (publicationFailure) finishRefresh(rotatedTokens(2));
+        else failRefresh(new Error('provider unavailable'));
+        await expect(loading).rejects.toBeInstanceOf(MCPTokenRefreshUnavailableError);
+        await expect(recovering).rejects.toBeInstanceOf(MCPTokenRefreshUnavailableError);
+        expect(refreshTokens).toHaveBeenCalledTimes(1);
+        await expect(
+          MCPTokenStorage.hasStoredAuthorization({
+            userId: 'u1',
+            serverName,
+            findToken: store.findToken,
+            validateClientBinding: () => undefined,
+          }),
+        ).resolves.toBe(false);
+      },
+    );
+
     it('runs onRefreshSuccess on the shared redemption even after the initiating waiter aborted', async () => {
       await seedRefreshableTokens('hook-srv');
 
@@ -3454,6 +3666,69 @@ describe('MCPTokenStorage', () => {
       expect(events).toContain('write');
       expect(onRefreshPreparing).toHaveBeenCalledTimes(1);
     });
+
+    it.each([false, true])(
+      'preserves a rejection recorded during redemption when publication rolls back (refresh only: %s)',
+      async (refreshOnly) => {
+        const serverName = `rejected-rollback-${refreshOnly}`;
+        await seedRefreshableTokens(serverName);
+        if (refreshOnly) {
+          await store.deleteToken({
+            userId: 'u1',
+            type: 'mcp_oauth',
+            identifier: `mcp:${serverName}`,
+          });
+        } else {
+          await store.updateToken(
+            { userId: 'u1', type: 'mcp_oauth', identifier: `mcp:${serverName}` },
+            { expiresIn: 3600 },
+          );
+        }
+        const flowManager = new FlowStateManager(new Keyv(), { ttl: 30000, ci: true });
+        let resolveRefresh!: (tokens: MCPOAuthTokens) => void;
+        const refreshTokens = jest.fn(
+          () => new Promise<MCPOAuthTokens>((resolve) => (resolveRefresh = resolve)),
+        );
+        const pending = MCPTokenStorage.forceRefreshTokens({
+          ...refreshParams(refreshTokens, serverName),
+          flowManager,
+          onRefreshSuccess: async () => {
+            throw new Error('generation publication failed');
+          },
+        });
+        void pending.catch(() => undefined);
+        await waitFor(() => refreshTokens.mock.calls.length === 1);
+        await MCPTokenStorage.markAuthorizationRejected({
+          userId: 'u1',
+          serverName,
+          credentialSetId,
+          flowManager,
+          findToken: store.findToken,
+          updateToken: store.updateToken,
+        });
+
+        resolveRefresh(rotatedTokens(2));
+        await expect(pending).rejects.toBeInstanceOf(MCPTokenRefreshUnavailableError);
+
+        const client = await store.findToken({
+          userId: 'u1',
+          type: 'mcp_oauth_client',
+          identifier: `mcp:${serverName}:client`,
+        });
+        expect(client?.metadata).toMatchObject({
+          credential_set_id: credentialSetId,
+          rejected_credential_set_id: credentialSetId,
+        });
+        await expect(
+          MCPTokenStorage.hasStoredAuthorization({
+            userId: 'u1',
+            serverName,
+            findToken: store.findToken,
+            validateClientBinding: () => undefined,
+          }),
+        ).resolves.toBe(false);
+      },
+    );
 
     it('removes refreshed credentials when their authorization fence cannot be published', async () => {
       await seedRefreshableTokens('unfenced-srv');

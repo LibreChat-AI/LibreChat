@@ -8,6 +8,7 @@ import { BlinkAnimation } from './BlinkAnimation';
 import LegalConsent from './LegalConsent';
 import { Banner } from '../Banners';
 import Footer from './Footer';
+import { cn } from '~/utils';
 
 function AuthLayout({
   children,
@@ -53,6 +54,7 @@ function AuthLayout({
   /** The bar is dropped exactly when the sentence is on the screen, so a
    *  reader never meets both and never meets neither. */
   const statesConsent = registrationStatesConsent || statesConsentBelowProviders;
+  const isTwoFactorSetup = pathname === '/login/2fa/setup';
   const DisplayError = () => {
     if (hasStartupConfigError) {
       return (
@@ -103,7 +105,12 @@ function AuthLayout({
       </div>
 
       <main className="flex grow items-center justify-center">
-        <div className="w-authPageWidth bg-surface-primary overflow-hidden px-6 py-4 sm:max-w-md sm:rounded-lg">
+        <div
+          className={cn(
+            'bg-surface-primary overflow-hidden px-6 py-4 sm:rounded-lg',
+            isTwoFactorSetup ? 'w-11/12 max-w-lg' : 'w-authPageWidth sm:max-w-md',
+          )}
+        >
           {!hasStartupConfigError && !isFetching && header && (
             <h1
               className="text-text-primary mb-4 text-center text-3xl font-semibold"

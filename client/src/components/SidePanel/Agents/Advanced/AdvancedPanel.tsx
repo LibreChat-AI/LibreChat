@@ -39,14 +39,17 @@ export default function AdvancedPanel() {
           size="icon"
           onClick={() => setActivePanel(Panel.builder)}
           aria-label={localize('com_ui_back_to_builder')}
-          className="border-border-light text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-text-primary h-10 w-10 shrink-0 rounded-xl border focus-visible:ring-2"
+          className="border-border-light text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-text-primary shrink-0 rounded-xl border focus-visible:ring-2"
         >
           <ChevronLeft className="h-5 w-5" strokeWidth={1.75} aria-hidden="true" />
         </Button>
         <h2 className="text-text-primary text-center text-base font-semibold">
           {localize('com_ui_advanced_settings')}
         </h2>
-        <span aria-hidden="true" className="h-10 w-10" />
+        <span
+          aria-hidden="true"
+          className="size-theme-button min-h-theme-target min-w-theme-target"
+        />
       </header>
 
       <div className="flex flex-col gap-5 px-2 pb-2">

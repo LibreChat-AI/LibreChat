@@ -50,7 +50,15 @@ function SidebarChatProvider({ children }: { children: ReactNode }) {
   );
 }
 
-function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
+function UnifiedSidebar({
+  isSliding = false,
+  switchToHistory,
+}: {
+  isSliding?: boolean;
+  /** The user's "new chat returns to the chat list" preference. App-global
+   *  shell state the sidebar only reads, so the host passes it in. */
+  switchToHistory: boolean;
+}) {
   const localize = useLocalize();
   const location = useLocation();
   const navigate = useNavigate();
@@ -196,8 +204,12 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
       className={cn(
         /** The close swipe reads horizontal touches here (the drawer holds no
          * horizontal scrollers), while pinch-zoom stays with the browser:
-         * this full-viewport surface must not disable zooming entirely. */
-        'bg-surface-primary-alt text-text-primary fixed inset-y-0 left-0 flex touch-pan-y touch-pinch-zoom flex-col',
+         * this full-height surface must not disable zooming entirely.
+         * Absolute in the app container rather than fixed to the viewport, so
+         * a site banner above that container stays above the drawer too
+         * instead of covering its header strip, as it already does for the
+         * scrim and the pane. */
+        'bg-surface-primary-alt text-text-primary absolute inset-y-0 left-0 flex touch-pan-y touch-pinch-zoom flex-col',
         /** In dark mode the scrim and the drawer are both near-black, and no
          *  scrim opacity separates them by 3:1, so the drawer draws its own
          *  edge. Light palettes get that separation from the scrim. */
@@ -227,6 +239,7 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
             expanded={expanded}
             onClose={handleCollapse}
             onNewChat={handleCollapse}
+            switchToHistory={switchToHistory}
             onLeaveInsights={handleLeaveInsights}
             routeActiveId={isInsightsRoute ? 'insights' : undefined}
           />
@@ -276,6 +289,7 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
             onCollapse={handleCollapse}
             onExpand={handlePanelExpand}
             onLeaveInsights={handleLeaveInsights}
+            switchToHistory={switchToHistory}
             onResizeStart={handleResizeStart}
             onResizeKeyboard={handleResizeKeyboard}
           />

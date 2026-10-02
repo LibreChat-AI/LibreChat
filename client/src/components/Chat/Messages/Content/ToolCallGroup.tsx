@@ -21,6 +21,7 @@ import {
   useFailedRevealTrigger,
 } from './reveal';
 import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
+import { FoldRail, RailGlyph, FoldHeaderContext, revealFoldHeader, useRailHover } from './rail';
 import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
 import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
@@ -92,6 +93,9 @@ export default function ToolCallGroup({
   const mcpIconMap = useMCPIconMap();
   const mcpServerNames = useMCPServerNames();
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  const railHover = useRailHover();
+  const phaseHeader = useContext(FoldHeaderContext);
   const cancelLayoutReconcileRef = useRef<(() => void) | null>(null);
   const retainedForPendingApprovalRef = useRef(false);
 
@@ -346,6 +350,16 @@ export default function ToolCallGroup({
     onExpansionChange?.({ isExpanded: nextExpanded, userOverride: true });
   }, [isExpanded, onExpansionChange]);
 
+  /** The rail stays drawn while the panel animates shut, so a second click on
+   *  it must not reopen what the first one closed. */
+  const handleRailCollapse = useCallback(() => {
+    if (!isExpanded) {
+      return;
+    }
+    revealFoldHeader(rootRef.current, headerRef.current, phaseHeader?.header.current);
+    handleToggle();
+  }, [isExpanded, handleToggle, phaseHeader]);
+
   const handleToolExpand = useCallback(() => {
     setUserOverride(true);
     setShouldRenderBody(true);
@@ -541,7 +555,7 @@ export default function ToolCallGroup({
 
   return (
     <div className="mt-1 mb-2" ref={rootRef}>
-      <div className="flex w-full items-center gap-2">
+      <div className="flex w-full items-center gap-2" ref={headerRef}>
         <button
           type="button"
           className={cn(
@@ -554,31 +568,33 @@ export default function ToolCallGroup({
           aria-expanded={isExpanded}
           aria-label={groupAriaLabel}
         >
-          {iconStatus == null && (allSubagents || allAskQuestions || allTaskChecks) ? (
-            /** Homogeneous categories keep the same glyph as their individual
-             *  cards instead of stacking identical tool icons. */
-            <div
-              className={cn(
-                ROW_GLYPH_SLOT,
-                'text-text-secondary',
-                isGroupLive && 'text-text-primary animate-pulse',
-              )}
-              aria-hidden="true"
-            >
-              <CategoryIcon size={14} />
-            </div>
-          ) : (
-            <div className={ROW_GLYPH_SLOT} aria-hidden="true">
-              <StackedToolIcons
-                toolNames={iconToolNames}
-                mcpIconMap={mcpIconMap}
-                maxIcons={4}
-                sourceDomains={sourceDomains}
-                status={iconStatus}
-                isAnimating={isGroupLive}
-              />
-            </div>
-          )}
+          <RailGlyph hover={railHover}>
+            {iconStatus == null && (allSubagents || allAskQuestions || allTaskChecks) ? (
+              /** Homogeneous categories keep the same glyph as their individual
+               *  cards instead of stacking identical tool icons. */
+              <div
+                className={cn(
+                  ROW_GLYPH_SLOT,
+                  'text-text-secondary',
+                  isGroupLive && 'text-text-primary animate-pulse',
+                )}
+                aria-hidden="true"
+              >
+                <CategoryIcon size={14} />
+              </div>
+            ) : (
+              <div className={ROW_GLYPH_SLOT} aria-hidden="true">
+                <StackedToolIcons
+                  toolNames={iconToolNames}
+                  mcpIconMap={mcpIconMap}
+                  maxIcons={4}
+                  sourceDomains={sourceDomains}
+                  status={iconStatus}
+                  isAnimating={isGroupLive}
+                />
+              </div>
+            )}
+          </RailGlyph>
           <span
             className={cn(
               'tool-status-text min-w-0 truncate font-medium',
@@ -621,6 +637,11 @@ export default function ToolCallGroup({
       >
         {shouldRenderBody && (
           <div className={cn('overflow-hidden', FOLD_RAIL_CLASSES)} ref={expandRef}>
+            <FoldRail
+              hover={railHover}
+              expanded={isExpanded && (phaseHeader?.expanded ?? true)}
+              onCollapse={handleRailCollapse}
+            />
             <ToolAuthWarningContext.Provider value>
               <FailedRevealContext.Provider value={revealValue}>
                 <SoleToolContext.Provider value={phaseSole ?? count === 1}>

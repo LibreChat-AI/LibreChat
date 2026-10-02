@@ -1,9 +1,13 @@
 import {
   CODE_ENVIRONMENT_ADMISSION_MAX_MS,
+  CODE_ENVIRONMENT_COMMAND_TIMEOUT_DEFAULT_MS,
+  CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+  CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES,
   CODE_ENVIRONMENT_COMMAND_ADMISSION_DEFAULT_MS,
   CODE_ENVIRONMENT_QUEUE_WAIT_DEFAULT_MS,
   CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS,
 } from 'librechat-data-provider';
+import type { CodeEnvironmentUserConfigSchema } from 'librechat-data-provider';
 import type { WorkspaceEditMatch, WorkspaceEditMatching } from './edits';
 import type { CodeBridgeFetch } from './bridge';
 import { CODE_API_RATE_LIMIT_WAIT_DEFAULT_MS } from './limits';
@@ -13,7 +17,7 @@ const WORKSPACE_TOOL_TIMEOUT_MS = 30_000;
 const MAX_PATH_LENGTH = 4096;
 const MAX_QUERY_LENGTH = 4096;
 const MAX_READ_BYTES = 1024 * 1024;
-const MAX_READ_LINES = 500;
+const MAX_READ_LINES = CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES;
 const MAX_SEARCH_RESULTS = 200;
 const MAX_SEARCH_TEXT_LENGTH = 2000;
 const MAX_LIST_RESULTS = 500;
@@ -21,7 +25,8 @@ export const WORKSPACE_WRITE_MAX_BYTES: number = 1024 * 1024;
 export const WORKSPACE_EDIT_MAX_COUNT: number = 100;
 const MAX_COMMAND_BYTES = 32 * 1024;
 /** Keep aligned with data-provider's deployment schema defaults and hard cap. */
-export const WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS: number = 30_000;
+export const WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS: number =
+  CODE_ENVIRONMENT_COMMAND_TIMEOUT_DEFAULT_MS;
 export const WORKSPACE_COMMAND_MAX_TIMEOUT_MS: number = 5 * 60_000;
 const DEFAULT_COMMAND_OUTPUT_BYTES = 256 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
@@ -1069,6 +1074,19 @@ export function fromLinkedWorktreeResult(
     case 'execute_command':
       return result;
   }
+}
+
+/** Resolves a bounded read window without changing the protocol-v1 byte or line ceilings. */
+export function resolveAttachedWorkspaceReadFileLines(
+  configSchema?: CodeEnvironmentUserConfigSchema,
+): number {
+  const configured = configSchema?.limits?.defaultReadFileLines;
+  return configured != null &&
+    Number.isSafeInteger(configured) &&
+    configured >= 1 &&
+    configured <= MAX_READ_LINES
+    ? configured
+    : CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES;
 }
 
 export async function executeWorkspaceTool({

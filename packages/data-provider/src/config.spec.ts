@@ -23,6 +23,7 @@ import {
   resolveMCPAppRateLimits,
   resolveMCPAppsPolicy,
   endpointSchema,
+  isTwoFactorPolicyProvider,
   resolveEndpointType,
   webSearchSchema,
 } from './config';
@@ -386,6 +387,16 @@ describe('scheduled MCP preflight config', () => {
   });
 });
 
+describe('isTwoFactorPolicyProvider', () => {
+  it.each(['local', 'ldap', null, undefined])('includes provider %s', (provider) => {
+    expect(isTwoFactorPolicyProvider(provider)).toBe(true);
+  });
+
+  it.each(['openid', 'google', 'saml'])('excludes federated provider %s', (provider) => {
+    expect(isTwoFactorPolicyProvider(provider)).toBe(false);
+  });
+});
+
 describe('excludedKeys', () => {
   it.each([
     '_id',
@@ -700,6 +711,53 @@ describe('Agent Management authentication config', () => {
 });
 
 describe('attached code environment user config schema', () => {
+  it.each([1, 60_000, 300_000])(
+    'accepts a foreground default of %i ms',
+    (defaultCommandTimeoutMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.parse({ limits: { defaultCommandTimeoutMs } }),
+      ).toEqual({
+        limits: { defaultCommandTimeoutMs },
+      });
+    },
+  );
+
+  it.each([0, -1, 0.5, 300_001, NaN, Infinity])(
+    'rejects an invalid foreground default of %s',
+    (defaultCommandTimeoutMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { defaultCommandTimeoutMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it.each([1, 200, 500])('accepts a default read window of %i lines', (defaultReadFileLines) => {
+    expect(codeEnvironmentUserConfigSchema.parse({ limits: { defaultReadFileLines } })).toEqual({
+      limits: { defaultReadFileLines },
+    });
+  });
+
+  it.each([0, -1, 0.5, 501, NaN, Infinity])(
+    'rejects an invalid default read window of %s',
+    (defaultReadFileLines) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { defaultReadFileLines } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it('keeps defaults optional and accepts a foreground default above the configured ceiling for runtime clamping', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({})).toEqual({});
+    expect(codeEnvironmentUserConfigSchema.parse({ limits: {} })).toEqual({ limits: {} });
+    expect(
+      codeEnvironmentUserConfigSchema.parse({
+        limits: { defaultCommandTimeoutMs: 60_000, maxCommandTimeoutMs: 5_000 },
+      }),
+    ).toEqual({
+      limits: { defaultCommandTimeoutMs: 60_000, maxCommandTimeoutMs: 5_000 },
+    });
+  });
+
   it.each([0, 1200, 300000])(
     'preserves an admission budget of %i milliseconds',
     (maxQueueWaitMs) => {
@@ -2340,4 +2398,29 @@ describe('interface theme config', () => {
     );
     expect(chatProjectsConfigSchema.safeParse({ maxDescriptionLength: 10001 }).success).toBe(false);
   });
+});
+
+describe('built-in endpoint model lists', () => {
+  const parse = (endpoints: Record<string, unknown>) =>
+    configSchema.safeParse({ version: '1.0', endpoints });
+
+  it.each([
+    EModelEndpoint.openAI,
+    EModelEndpoint.google,
+    EModelEndpoint.anthropic,
+    EModelEndpoint.bedrock,
+  ])('accepts a models list for %s', (endpoint) => {
+    const result = parse({ [endpoint]: { models: ['model-a'] } });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.endpoints?.[endpoint]).toMatchObject({
+      models: ['model-a'],
+    });
+  });
+
+  it.each([EModelEndpoint.openAI, EModelEndpoint.google])(
+    'rejects a non-array models value for %s',
+    (endpoint) => {
+      expect(parse({ [endpoint]: { models: 'model-a' } }).success).toBe(false);
+    },
+  );
 });
