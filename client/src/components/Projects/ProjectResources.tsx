@@ -162,8 +162,20 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
     setFailedPageKey(null);
   }
   const nextPageFailed = failedPageKey === pageQueryKey;
-  const loadNextPage = () =>
-    void fetchNextPage().then((result) => setFailedPageKey(result.isError ? pageQueryKey : null));
+  /** The query a settling page request is checked against, so a request started for an
+   *  earlier project or search never rewrites the current query's marker. */
+  const activePageQueryKeyRef = useRef(pageQueryKey);
+  useEffect(() => {
+    activePageQueryKeyRef.current = pageQueryKey;
+  }, [pageQueryKey]);
+  const loadNextPage = () => {
+    const requestKey = pageQueryKey;
+    void fetchNextPage().then((result) => {
+      if (requestKey === activePageQueryKeyRef.current) {
+        setFailedPageKey(result.isError ? requestKey : null);
+      }
+    });
+  };
   const uploadFile = useUploadFileMutation();
   const addFile = useAddProjectFileMutation();
   const removeFile = useRemoveProjectFileMutation();

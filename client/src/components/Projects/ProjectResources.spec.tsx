@@ -401,6 +401,49 @@ describe('ProjectResources', () => {
     expect(fetchNextPage).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the current search page failure when an earlier page request settles later', async () => {
+    const settles: Array<(result: { isError: boolean }) => void> = [];
+    const fetchNextPage = jest.fn(
+      () =>
+        new Promise<{ isError: boolean }>((resolve) => {
+          settles.push(resolve);
+        }),
+    );
+    mockAvailableFilesState = {
+      ...mockAvailableFilesState,
+      data: {
+        pages: [
+          {
+            files: [{ ...uploadedFile, file_id: 'first-id', filename: 'first.txt' }] as TFile[],
+            nextCursor: null,
+          },
+        ],
+      },
+      hasNextPage: true,
+      fetchNextPage,
+    };
+    const view = renderResources();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add files' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Choose an existing file' }));
+    await user.click(await screen.findByRole('button', { name: 'Load more' }));
+    await user.type(screen.getByRole('searchbox', { name: 'Search files' }), 'first');
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(fetchNextPage).toHaveBeenCalledTimes(2);
+
+    /* The current search's page fails, then the earlier search's request succeeds. */
+    mockAvailableFilesState = { ...mockAvailableFilesState, isError: true };
+    settles[1]({ isError: true });
+    await Promise.resolve();
+    settles[0]({ isError: false });
+    await Promise.resolve();
+    view.rerender(<ProjectResources project={project} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Retry' }));
+    expect(fetchNextPage).toHaveBeenCalledTimes(3);
+    expect(mockRefetch).not.toHaveBeenCalled();
+  });
+
   it('refetches the listed files when a refresh of them fails', async () => {
     const fetchNextPage = jest.fn();
     mockAvailableFilesState = {
