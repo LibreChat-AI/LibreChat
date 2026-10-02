@@ -98,12 +98,16 @@ export async function parseWithPdfInspector(
      * walk's: they bound different work, and reusing the smaller one meant a PDF this
      * parser accepts with a good xref was refused with a damaged one, or on a platform
      * with no native binding at all. */
-    parsed = await extractDocumentTextWithPages(
+    /* The scan classifier never ran on this path, so a page whose text layer sits
+     * beside an image holding more text reads as complete; the result says it may not
+     * be, the same answer the native path gives when its classifier cannot run. */
+    const recovered = await extractDocumentTextWithPages(
       data,
       options?.maxPageCount ?? MAX_PDF_PAGES,
       undefined,
       signal,
     );
+    parsed = { ...recovered, mayOmitContent: true };
   }
   const { text, pagesNeedingOcr, mayOmitContent } = parsed;
 

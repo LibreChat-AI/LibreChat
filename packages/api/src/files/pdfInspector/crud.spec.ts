@@ -209,6 +209,29 @@ describe('pdf-inspector local parser', () => {
     }
   });
 
+  test('marks the whole-document pdfjs fallback as possibly incomplete', async () => {
+    mockPdfjs.pageText = { 1: 'Text beside an image of more text' };
+    try {
+      await jest.isolateModulesAsync(async () => {
+        jest.doMock('./native', () => ({
+          extractPagesMarkdownIsolated: async () => {
+            throw new Error('native binding unavailable');
+          },
+          extractTextIsolated: async () => '',
+        }));
+
+        const { parseWithPdfInspector: uploadIsolated } = await import('./crud');
+        const result = await uploadIsolated(context(pdfFile('sample.pdf')));
+
+        expect(result.text).toBe('Text beside an image of more text\n');
+        expect(result.pagesNeedingOcr).toBeUndefined();
+        expect(result.mayOmitContent).toBe(true);
+      });
+    } finally {
+      jest.dontMock('./native');
+    }
+  });
+
   /**
    * Past the recovery cap, unprobed pages are reported as needing OCR, which asks the
    * upload path to send the whole document to a configured provider. A page costs about
