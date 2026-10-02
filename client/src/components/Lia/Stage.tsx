@@ -13,6 +13,8 @@ const SCALE = 2;
 const EDGE = 22 * SCALE;
 /** Below this stage width there is no room beside the greeting, so Lia stays away. */
 const MIN_WIDTH = 360;
+/** On the floor beside the composer, how far from its edge Lia may wander. */
+const NEAR = 3 * EDGE;
 /** How far above the composer Lia reaches, raised arms included; content there is avoided. */
 const HEIGHT = 50 * SCALE;
 /** Lia's body, the only part that takes clicks; the canvas around it is see-through room for
@@ -134,6 +136,8 @@ export default function Stage({
     let placed: LiaEngine | null = null;
     /* Where Lia's canvas may reach, so the bubble can stay inside the same room. */
     let room: readonly [number, number] = [0, Infinity];
+    /* Set when the user drops her below the composer's middle, so she stays on the floor. */
+    let floorFirst = false;
     /* The bubble belongs to Lia: whenever she has nowhere to stand, it goes with her. */
     const setVisible = (visible: boolean) => {
       const value = visible ? 'visible' : 'hidden';
@@ -172,20 +176,35 @@ export default function Stage({
           placed?.position.x ?? Infinity,
           0,
         );
-      /* On top of the composer beside the greeting, or, when the greeting fills that, on the
-       * floor beside the composer, level with its bottom edge. */
-      let y = top + 1;
-      let span = standAt(top, left + EDGE, right - EDGE, []);
-      if (!span) {
-        y = bottom;
-        span = standAt(bottom, EDGE, root.clientWidth - EDGE, [[left - EDGE, right + EDGE]]);
+      /* On top of the composer beside the greeting, or on the floor beside the composer, level
+       * with its bottom edge: the top first, unless she was last dropped on the floor. */
+      const onTop = () => standAt(top, left + EDGE, right - EDGE, []);
+      const onFloor = () =>
+        standAt(
+          bottom,
+          Math.max(EDGE, left - NEAR),
+          Math.min(root.clientWidth - EDGE, right + NEAR),
+          [[left - EDGE, right + EDGE]],
+        );
+      const order = floorFirst
+        ? ([
+            [bottom, onFloor],
+            [top + 1, onTop],
+          ] as const)
+        : ([
+            [top + 1, onTop],
+            [bottom, onFloor],
+          ] as const);
+      for (const [y, find] of order) {
+        const span = find();
+        if (span) {
+          setVisible(true);
+          room = [Math.max(0, span[0] - EDGE), Math.min(root.clientWidth, span[1] + EDGE)];
+          return { y, x0: span[0], x1: span[1] };
+        }
       }
-      setVisible(span != null);
-      if (!span) {
-        return null;
-      }
-      room = [Math.max(0, span[0] - EDGE), Math.min(root.clientWidth, span[1] + EDGE)];
-      return { y, x0: span[0], x1: span[1] };
+      setVisible(false);
+      return null;
     };
     const engine = new LiaEngine(canvas, {
       platform,
@@ -407,7 +426,68 @@ export default function Stage({
       }
     };
 
-    const onPet = () => engine.pet();
+    /* Dragging her around: a press that moves past a few pixels picks her up, and letting go
+     * drops her on the composer or the floor beside it, whichever is nearer. A press that does
+     * not move stays a click, which pets her. */
+    let grab: { id: number; x: number; y: number; dx: number; dy: number } | null = null;
+    let dragging = false;
+    let dragged = false;
+    const feetAt = (e: PointerEvent) => {
+      const origin = root.getBoundingClientRect();
+      return {
+        x: e.clientX - origin.left - (grab?.dx ?? 0),
+        y: e.clientY - origin.top - (grab?.dy ?? 0) + BODY_H,
+      };
+    };
+    const onGrab = (e: PointerEvent) => {
+      if (e.button !== 0) {
+        return;
+      }
+      const box = hit.getBoundingClientRect();
+      grab = {
+        id: e.pointerId,
+        x: e.clientX,
+        y: e.clientY,
+        dx: e.clientX - box.left - BODY_W / 2,
+        dy: e.clientY - box.top,
+      };
+      hit.setPointerCapture(e.pointerId);
+    };
+    const onCarry = (e: PointerEvent) => {
+      if (!grab || e.pointerId !== grab.id) {
+        return;
+      }
+      if (!dragging && Math.hypot(e.clientX - grab.x, e.clientY - grab.y) < 5) {
+        return;
+      }
+      dragging = true;
+      engine.hold(feetAt(e));
+    };
+    const onLetGo = (e: PointerEvent) => {
+      if (!grab || e.pointerId !== grab.id) {
+        return;
+      }
+      if (dragging) {
+        const feet = feetAt(e);
+        const band = bandRef.current;
+        if (band) {
+          const form = (band.querySelector('form') ?? band).getBoundingClientRect();
+          const origin = root.getBoundingClientRect();
+          floorFirst = feet.y > (form.top + form.bottom) / 2 - origin.top;
+        }
+        engine.release(feet.x);
+        dragged = true;
+      }
+      grab = null;
+      dragging = false;
+    };
+    const onPet = () => {
+      if (dragged) {
+        dragged = false;
+        return;
+      }
+      engine.pet();
+    };
     const onHover = () => {
       if (engine.current == null && Math.random() < 0.4) {
         react('r-hover', 10000);
@@ -425,6 +505,10 @@ export default function Stage({
     window.addEventListener('dragleave', onDragLeave);
     window.addEventListener('drop', onDrop);
     document.addEventListener('visibilitychange', onVisibility);
+    hit.addEventListener('pointerdown', onGrab);
+    hit.addEventListener('pointermove', onCarry);
+    hit.addEventListener('pointerup', onLetGo);
+    hit.addEventListener('pointercancel', onLetGo);
     hit.addEventListener('click', onPet);
     hit.addEventListener('pointerenter', onHover);
 
@@ -442,6 +526,10 @@ export default function Stage({
       window.removeEventListener('dragleave', onDragLeave);
       window.removeEventListener('drop', onDrop);
       document.removeEventListener('visibilitychange', onVisibility);
+      hit.removeEventListener('pointerdown', onGrab);
+      hit.removeEventListener('pointermove', onCarry);
+      hit.removeEventListener('pointerup', onLetGo);
+      hit.removeEventListener('pointercancel', onLetGo);
       hit.removeEventListener('click', onPet);
       hit.removeEventListener('pointerenter', onHover);
       motion.removeEventListener('change', onMotion);
@@ -481,7 +569,7 @@ export default function Stage({
         title={localize('com_ui_lia_doing', {
           0: localize((activity ?? 'com_ui_lia_act_idle') as TranslationKeys),
         })}
-        className="pointer-events-auto absolute top-0 left-0 z-[6] cursor-pointer"
+        className="pointer-events-auto absolute top-0 left-0 z-[6] cursor-grab touch-none active:cursor-grabbing"
         style={{ width: BODY_W, height: BODY_H }}
       />
       <div
