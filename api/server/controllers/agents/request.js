@@ -58,6 +58,9 @@ const {
   resolvePersistableCodeEnvironmentDecision,
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
+  savePrivateTextMessage,
+  savePrivateTextErrorTurn,
+  stampPreliminaryPrivateTextMessage,
   announceReply,
   announceErrorTurn,
 } = require('@librechat/api');
@@ -487,7 +490,9 @@ async function saveErrorTurn(
     const iconURL = getEndpointIconURL(req, endpointOption);
 
     if (userMessage) {
-      const savedUserMessage = await saveMessage(
+      const savedUserMessage = await savePrivateTextMessage(
+        saveMessage,
+        req,
         reqCtx,
         {
           ...userMessage,
@@ -1648,10 +1653,13 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     const responseModel = getAgentResponseModel(req, endpointOption);
     const preliminaryUserMessage = isCompaction
       ? projectCompactionAnchor({ messageId: parentMessageId, conversationId })
-      : getPreliminaryUserMessage(
-          { ...req.body, messageId: preallocatedUserMessageId },
-          conversationId,
-          req._agentEventTriggerProjection,
+      : stampPreliminaryPrivateTextMessage(
+          req,
+          getPreliminaryUserMessage(
+            { ...req.body, messageId: preallocatedUserMessageId },
+            conversationId,
+            req._agentEventTriggerProjection,
+          ),
         );
     const job = await GenerationJobManager.createJob(streamId, userId, conversationId, {
       startupTelemetry,
@@ -2345,6 +2353,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                 conversationId: userMsg.conversationId,
                 text: userMsg.text,
                 quotes: userMsg.quotes,
+                privacyRevision: userMsg.privacyRevision,
                 reasoningOverride: userMsg.reasoningOverride,
                 // Persist the turn's uploaded files here (authoritative job metadata) so a
                 // HITL resume sources them from the job, not the user DB row — which the
@@ -2772,7 +2781,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                   convoSignal.observeMessageWrite(Promise.resolve(savedUserTurn));
                 } else {
                   // Custom clients used by integrations/tests may not inherit BaseClient.
-                  const savedUserMessage = await saveMessage(
+                  const savedUserMessage = await savePrivateTextMessage(
+                    saveMessage,
+                    req,
                     {
                       userId,
                       isTemporary:
@@ -3026,9 +3037,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           if (!userMessage) {
             throw new Error('User message was unavailable before terminal persistence');
           }
-          const savedUserMessage = await saveMessage(reqCtx, userMessage, {
-            context: 'api/server/controllers/agents/request.js - resumable user message',
-          });
+          const savedUserMessage = await savePrivateTextMessage(
+            saveMessage,
+            req,
+            reqCtx,
+            userMessage,
+            {
+              context: 'api/server/controllers/agents/request.js - resumable user message',
+            },
+          );
           if (!savedUserMessage) {
             throw new Error('User message could not be persisted before terminal publication');
           }
@@ -3353,17 +3370,19 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             ownsScheduledFailure =
               (await GenerationJobManager.completeJob(streamId, generationError, jobCreatedAt, {
                 beforeErrorPublication: () =>
-                  saveErrorTurn(req, {
-                    conversationId,
-                    endpointOption,
-                    isNewConvo,
-                    errorText: generationError,
-                    liveUserMessage: userMessage,
-                    liveResponseMessageId,
-                    runCreated: client?.run != null,
-                    sender: client?.sender,
-                    initialAgentId: verifiedInitialAgentId,
-                  }),
+                  savePrivateTextErrorTurn(req, error, () =>
+                    saveErrorTurn(req, {
+                      conversationId,
+                      endpointOption,
+                      isNewConvo,
+                      errorText: generationError,
+                      liveUserMessage: userMessage,
+                      liveResponseMessageId,
+                      runCreated: client?.run != null,
+                      sender: client?.sender,
+                      initialAgentId: verifiedInitialAgentId,
+                    }),
+                  ),
               })) === true;
             /** A true completion means this owner won the terminal CAS and
              * the beforeErrorPublication barrier above finished. Only that
@@ -3565,13 +3584,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       const completionPromise = persistInitializationError
         ? GenerationJobManager.completeJob(streamId, initializationError, jobCreatedAt, {
             beforeErrorPublication: () =>
-              saveErrorTurn(req, {
-                conversationId,
-                endpointOption,
-                isNewConvo,
-                errorText: initializationError,
-                initialAgentId: verifiedInitialAgentId,
-              }),
+              savePrivateTextErrorTurn(req, error, () =>
+                saveErrorTurn(req, {
+                  conversationId,
+                  endpointOption,
+                  isNewConvo,
+                  errorText: initializationError,
+                  initialAgentId: verifiedInitialAgentId,
+                }),
+              ),
           })
         : GenerationJobManager.completeJob(streamId, initializationError, jobCreatedAt);
       initializationFinalized =

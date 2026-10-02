@@ -703,7 +703,7 @@ describe('Message Operations', () => {
         expect(findOneAndUpdate).toHaveBeenCalledTimes(1);
         expect(findOneAndUpdate).toHaveBeenCalledWith(
           expect.anything(),
-          expect.objectContaining({ $unset: { contextMeta: 1 } }),
+          expect.objectContaining({ $unset: expect.objectContaining({ contextMeta: 1 }) }),
           expect.anything(),
         );
         expect(updateOne).not.toHaveBeenCalled();
@@ -737,7 +737,7 @@ describe('Message Operations', () => {
         expect(findOneAndUpdate).toHaveBeenCalledTimes(1);
         expect(findOneAndUpdate).toHaveBeenCalledWith(
           expect.anything(),
-          expect.objectContaining({ $unset: { contextMeta: 1 } }),
+          expect.objectContaining({ $unset: expect.objectContaining({ contextMeta: 1 }) }),
           expect.anything(),
         );
       } finally {

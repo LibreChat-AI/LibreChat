@@ -27,7 +27,7 @@ import {
   EDGE_CLEANUP_MAX_SWEEPS,
   type AgentMethods,
 } from './agent';
-import { withCodeEnvironmentReference } from './codeEnvironment';
+import { withCodeEnvironmentReference, withCodeEnvironmentReferences } from './codeEnvironment';
 import { tenantStorage } from '~/config/tenantContext';
 import { createAclEntryMethods } from './aclEntry';
 import { createModels } from '~/models';
@@ -2461,6 +2461,22 @@ describe('Agent Methods', () => {
       expect((await revertAgentVersion({ id: agentId }, 0))?.code_workspace_id).toBeUndefined();
     });
 
+    test('restores machine selection opt-in and clears it when restoring an older version', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      await createAgent({
+        id: agentId,
+        provider: 'test',
+        model: 'test-model',
+        author: new mongoose.Types.ObjectId(),
+      });
+      await updateAgent({ id: agentId }, { code_environment_ids: ['runtime-vm'] });
+      await updateAgent({ id: agentId }, { code_environment_ids: [] });
+      expect((await revertAgentVersion({ id: agentId }, 1))?.code_environment_ids).toEqual([
+        'runtime-vm',
+      ]);
+      expect((await revertAgentVersion({ id: agentId }, 0))?.code_environment_ids).toBeUndefined();
+    });
+
     test('should handle parameter objects correctly', async () => {
       const agentId = `agent_${uuidv4()}`;
       const authorId = new mongoose.Types.ObjectId();
@@ -3114,61 +3130,149 @@ describe('Agent Methods', () => {
       expect(compensate).toHaveBeenCalledWith(undefined);
     });
 
-    test('does not overwrite an intervening Agent update when acquiring an environment reference', async () => {
-      const agentId = `agent_${uuidv4()}`;
+    test.each(['code_environment_id', 'code_environment_ids'])(
+      'does not overwrite an intervening Agent update when acquiring %s',
+      async (field) => {
+        const agentId = `agent_${uuidv4()}`;
+        const environmentId = `environment_${uuidv4()}`;
+        const authorId = new mongoose.Types.ObjectId();
+        await createAgent({
+          id: agentId,
+          name: 'Original agent name',
+          author: authorId,
+          model: 'test-model',
+          provider: 'test-provider',
+        });
+        await mongoose.models.CodeEnvironment.create({
+          environmentId,
+          name: 'Concurrent update environment',
+          type: 'attached',
+          baseURL: 'https://code.example.com',
+          controlPlaneId: 'shared-code-api',
+          createdBy: authorId,
+        });
+        const CodeEnvironment = mongoose.models.CodeEnvironment;
+        const reserve = CodeEnvironment.findOneAndUpdate.bind(CodeEnvironment);
+        let enteredReserve!: () => void;
+        let releaseReserve!: () => void;
+        const entered = new Promise<void>((resolve) => (enteredReserve = resolve));
+        const release = new Promise<void>((resolve) => (releaseReserve = resolve));
+        const reserveSpy = jest.spyOn(CodeEnvironment, 'findOneAndUpdate').mockImplementationOnce(
+          (...args: Parameters<typeof CodeEnvironment.findOneAndUpdate>) =>
+            ({
+              lean: async () => {
+                enteredReserve();
+                await release;
+                return await reserve(...args).lean();
+              },
+            }) as ReturnType<typeof CodeEnvironment.findOneAndUpdate>,
+        );
+        const guardedUpdate = updateAgent(
+          { id: agentId },
+          {
+            name: 'Guarded update name',
+            [field]: field === 'code_environment_ids' ? [environmentId] : environmentId,
+          },
+        );
+        await entered;
+        await Agent.updateOne(
+          { id: agentId },
+          { $set: { description: 'Intervening update survived' } },
+        );
+        releaseReserve();
+
+        await expect(guardedUpdate).resolves.toBeNull();
+        await expect(Agent.findOne({ id: agentId }).lean()).resolves.toMatchObject({
+          name: 'Original agent name',
+          description: 'Intervening update survived',
+        });
+        await expect(Agent.findOne({ id: agentId }).lean()).resolves.not.toHaveProperty(field);
+        reserveSpy.mockRestore();
+      },
+    );
+    test('rejects additional machine references on create, update and version restore during removal', async () => {
+      const author = new mongoose.Types.ObjectId();
       const environmentId = `environment_${uuidv4()}`;
-      const authorId = new mongoose.Types.ObjectId();
-      await createAgent({
-        id: agentId,
-        name: 'Original agent name',
-        author: authorId,
-        model: 'test-model',
-        provider: 'test-provider',
-      });
       await mongoose.models.CodeEnvironment.create({
         environmentId,
-        name: 'Concurrent update environment',
+        name: 'Additional machine',
         type: 'attached',
         baseURL: 'https://code.example.com',
         controlPlaneId: 'shared-code-api',
-        createdBy: authorId,
+        createdBy: author,
       });
-      const CodeEnvironment = mongoose.models.CodeEnvironment;
-      const reserve = CodeEnvironment.findOneAndUpdate.bind(CodeEnvironment);
-      let enteredReserve!: () => void;
-      let releaseReserve!: () => void;
-      const entered = new Promise<void>((resolve) => (enteredReserve = resolve));
-      const release = new Promise<void>((resolve) => (releaseReserve = resolve));
-      const reserveSpy = jest.spyOn(CodeEnvironment, 'findOneAndUpdate').mockImplementationOnce(
-        (...args: Parameters<typeof CodeEnvironment.findOneAndUpdate>) =>
-          ({
-            lean: async () => {
-              enteredReserve();
-              await release;
-              return await reserve(...args).lean();
-            },
-          }) as ReturnType<typeof CodeEnvironment.findOneAndUpdate>,
+      const id = `agent_${uuidv4()}`;
+      await createAgent({
+        id,
+        name: 'Additional machine agent',
+        author,
+        model: 'test',
+        provider: 'test',
+        code_environment_ids: [environmentId],
+      });
+      await updateAgent({ id }, { code_environment_ids: [] });
+      await mongoose.models.CodeEnvironment.updateOne(
+        { environmentId },
+        { $set: { deletionStartedAt: new Date() } },
       );
-      const guardedUpdate = updateAgent(
-        { id: agentId },
-        { name: 'Guarded update name', code_environment_id: environmentId },
-      );
-      await entered;
-      await Agent.updateOne(
-        { id: agentId },
-        { $set: { description: 'Intervening update survived' } },
-      );
-      releaseReserve();
+      await expect(
+        createAgent({ id: `agent_${uuidv4()}`, author, code_environment_ids: [environmentId] }),
+      ).rejects.toMatchObject({ name: 'CodeEnvironmentReferenceError' });
+      await expect(
+        updateAgent({ id }, { $set: { code_environment_ids: [environmentId] } }),
+      ).rejects.toMatchObject({ name: 'CodeEnvironmentReferenceError' });
+      for (const operator of ['$push', '$addToSet']) {
+        await expect(
+          updateAgent({ id }, { [operator]: { code_environment_ids: { $each: [environmentId] } } }),
+        ).rejects.toMatchObject({ name: 'CodeEnvironmentReferenceError' });
+      }
+      await expect(revertAgentVersion({ id }, 0)).rejects.toMatchObject({
+        name: 'CodeEnvironmentReferenceError',
+      });
+      expect((await getAgent({ id }))?.code_environment_ids).toEqual([]);
+    });
 
-      await expect(guardedUpdate).resolves.toBeNull();
-      await expect(Agent.findOne({ id: agentId }).lean()).resolves.toMatchObject({
-        name: 'Original agent name',
-        description: 'Intervening update survived',
-      });
-      await expect(Agent.findOne({ id: agentId }).lean()).resolves.not.toHaveProperty(
-        'code_environment_id',
-      );
+    test('refuses an oversized reference list before acquiring any reservations', async () => {
+      const reserveSpy = jest.spyOn(mongoose.models.CodeEnvironment, 'findOneAndUpdate');
+      const operation = jest.fn();
+      await expect(
+        withCodeEnvironmentReferences(
+          mongoose,
+          Array.from({ length: 130 }, (_, i) => `machine-${i}`),
+          operation,
+        ),
+      ).rejects.toThrow('storage safety ceiling');
+      expect(reserveSpy).not.toHaveBeenCalled();
+      expect(operation).not.toHaveBeenCalled();
       reserveSpy.mockRestore();
+    });
+
+    test('releases acquired machine references when a later acquisition fails', async () => {
+      const createdBy = new mongoose.Types.ObjectId();
+      const ids = [`environment_${uuidv4()}`, `environment_${uuidv4()}`];
+      for (const [index, environmentId] of ids.entries()) {
+        await mongoose.models.CodeEnvironment.create({
+          environmentId,
+          name: 'Acquisition guard',
+          type: 'attached',
+          baseURL: 'https://code.example.com',
+          controlPlaneId: 'shared-code-api',
+          createdBy,
+          ...(index === 1 ? { deletionStartedAt: new Date() } : {}),
+        });
+      }
+      const operation = jest.fn();
+      await expect(withCodeEnvironmentReferences(mongoose, ids, operation)).rejects.toMatchObject({
+        name: 'CodeEnvironmentReferenceError',
+      });
+      expect(operation).not.toHaveBeenCalled();
+      expect(
+        (
+          await mongoose.models.CodeEnvironment.findOne({
+            environmentId: ids[0],
+          }).lean<CodeEnvironmentDocument>()
+        )?.pendingAgentReferences,
+      ).toEqual([]);
     });
     test('should preserve skills enabled when pruning deleted ids on an all-scoped revert', async () => {
       const agentId = `agent_${uuidv4()}`;

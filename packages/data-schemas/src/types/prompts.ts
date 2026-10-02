@@ -10,6 +10,12 @@ export interface IPrompt extends Document {
   tenantId?: string;
 }
 
+/** A stored prompt revision as plain data, without Mongoose document methods. */
+export type IPromptRecord = Pick<
+  IPrompt,
+  'groupId' | 'author' | 'prompt' | 'type' | 'createdAt' | 'updatedAt' | 'tenantId'
+> & { _id: Types.ObjectId; __v?: number };
+
 export interface IPromptGroup {
   name: string;
   numberOfGenerations: number;

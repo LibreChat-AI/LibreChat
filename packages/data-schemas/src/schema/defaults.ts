@@ -129,6 +129,7 @@ export const conversationPreset: {
     type: {
       environmentId: { type: StringConstructor; required: boolean };
       workspaceId: { type: StringConstructor; required: boolean };
+      agentIds: { type: StringConstructor[]; default: undefined };
       _id: boolean;
     }[];
     default: undefined;
@@ -329,6 +330,7 @@ export const conversationPreset: {
       {
         environmentId: { type: String, required: true },
         workspaceId: { type: String, required: true },
+        agentIds: { type: [String], default: undefined },
         _id: false,
       },
     ],

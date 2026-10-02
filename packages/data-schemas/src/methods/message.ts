@@ -13,6 +13,7 @@ import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
 import { fitBoundAppSnapshots, hasBoundAppSnapshots } from './appSnapshots';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { tenantStorage } from '~/config/tenantContext';
 import logger from '~/config/winston';
 
 /** Simple UUID v4 regex to replace zod validation */
@@ -293,6 +294,7 @@ function buildMessageSaveUpdate(
   options: {
     stampModelOutputOnInsert: boolean;
     unsetContextMeta: boolean;
+    unsetPrivateText?: boolean;
     retentionOnInsert?: { expiredAt: Date; isTemporary: false };
   },
 ): UpdateQuery<IMessage> {
@@ -305,7 +307,16 @@ function buildMessageSaveUpdate(
         ...options.retentionOnInsert,
       },
     }),
-    ...(options.unsetContextMeta && { $unset: { contextMeta: 1 } }),
+    ...((options.unsetContextMeta || options.unsetPrivateText) && {
+      $unset: {
+        ...(options.unsetContextMeta && { contextMeta: 1 }),
+        ...(options.unsetPrivateText && {
+          privateText: 1,
+          privacyRevision: 1,
+          ...(update.privateTextTokens === undefined && { privateTextTokens: 1 }),
+        }),
+      },
+    }),
   };
 }
 
@@ -319,6 +330,7 @@ async function findOneAndMergeMessageProvenance(
     upsert: boolean;
     stampModelOutputOnInsert?: boolean;
     unsetContextMeta?: boolean;
+    unsetPrivateText?: boolean;
     retentionOnInsert?: { expiredAt: Date; isTemporary: false };
     prepareAppUpdate?: (
       current: Record<string, unknown> | null,
@@ -392,7 +404,16 @@ async function findOneAndMergeMessageProvenance(
           $inc: { __v: 1 },
           ...(current == null &&
             options.retentionOnInsert != null && { $setOnInsert: options.retentionOnInsert }),
-          ...(options.unsetContextMeta && { $unset: { contextMeta: 1 } }),
+          ...((options.unsetContextMeta || options.unsetPrivateText) && {
+            $unset: {
+              ...(options.unsetContextMeta && { contextMeta: 1 }),
+              ...(options.unsetPrivateText && {
+                privateText: 1,
+                privacyRevision: 1,
+                ...(update.privateTextTokens === undefined && { privateTextTokens: 1 }),
+              }),
+            },
+          }),
         },
         { upsert: options.upsert && current == null, new: true, timestamps: options.timestamps },
       );
@@ -499,6 +520,8 @@ export const CLIENT_MESSAGE_SELECT: string = [
   '-conversationSignature',
   '-summary',
   '-summaryTokenCount',
+  '-privateText',
+  '-privateTextTokens',
   '-contextMeta',
   '-langfuseSampled',
   '-langfuseDestinationIds',
@@ -682,7 +705,37 @@ function toSettledAt(value: unknown): Date | undefined {
   return undefined;
 }
 
+export interface PrivateTextWrite {
+  readonly envelope: string;
+  readonly revision: string;
+}
+
+export interface PrivateTextRead {
+  readonly _id?: unknown;
+  readonly messageId: string;
+  readonly text: string;
+  readonly privacyRevision: string;
+  readonly privateText: string;
+}
+
 export interface MessageMethods {
+  getPersistedPrivateTextId(
+    input: Parameters<MessageMethods['hasPersistedPrivateText']>[0],
+  ): Promise<string | null>;
+  hasPersistedPrivateText(input: {
+    userId: string;
+    tenantId?: string;
+    conversationId: string;
+    messageId: string;
+    privacyRevision: string;
+    text: string;
+  }): Promise<boolean>;
+  getPrivateMessageTexts(input: {
+    userId: string;
+    tenantId?: string;
+    conversationId: string;
+    messageIds: readonly string[];
+  }): Promise<PrivateTextRead[]>;
   saveMessage(
     ctx: {
       userId: string;
@@ -694,7 +747,7 @@ export interface MessageMethods {
       newMessageId?: string;
       contextMeta?: IMessage['contextMeta'] | null;
     },
-    metadata?: { context?: string },
+    metadata?: { context?: string; privateText?: PrivateTextWrite; insertOnly?: boolean },
   ): Promise<IMessage | null | undefined>;
   /**
    * Reads the references a trace viewer needs for one of the user's
@@ -759,6 +812,7 @@ export interface MessageMethods {
   bulkSaveMessages(
     messages: Array<Partial<IMessage>>,
     overrideTimestamp?: boolean,
+    provenance?: { privateTextTokens: ReadonlyMap<string, readonly string[]> },
   ): Promise<unknown>;
   recordMessage(params: {
     user: string;
@@ -1007,6 +1061,7 @@ export function createMessageMethods(
       stampModelOutputOnInsert?: boolean;
       unsetContextMeta?: boolean;
       retentionOnInsert?: { expiredAt: Date; isTemporary: false };
+      unsetPrivateText?: boolean;
       timestamps?: boolean;
       onWrite?: (inserted: boolean, id: unknown) => void;
     },
@@ -1027,6 +1082,7 @@ export function createMessageMethods(
             stampModelOutputOnInsert: options.stampModelOutputOnInsert ?? false,
             unsetContextMeta: options.unsetContextMeta ?? false,
             retentionOnInsert: options.retentionOnInsert,
+            unsetPrivateText: options.unsetPrivateText,
           }),
           {
             upsert: options.upsert,
@@ -1071,7 +1127,7 @@ export function createMessageMethods(
       /** `null` unsets a previously stored value; omission leaves it in place. */
       contextMeta?: IMessage['contextMeta'] | null;
     },
-    metadata?: { context?: string },
+    metadata?: { context?: string; privateText?: PrivateTextWrite; insertOnly?: boolean },
   ) {
     if (!userId) {
       throw new Error('User not authenticated');
@@ -1092,6 +1148,16 @@ export function createMessageMethods(
         user: userId,
         messageId: params.newMessageId || params.messageId,
       };
+      delete update.privateText;
+      delete update.privacyRevision;
+      delete update.privateTextTokens;
+      if (metadata?.privateText != null) {
+        if (params.isCreatedByUser !== true || typeof params.text !== 'string') {
+          throw new Error('Private text requires a user message.');
+        }
+        update.privateText = metadata.privateText.envelope;
+        update.privacyRevision = metadata.privateText.revision;
+      }
       delete update.isTemporary;
       delete update.expiredAt;
       let retentionOnInsert: { expiredAt: Date; isTemporary: false } | undefined;
@@ -1184,10 +1250,38 @@ export function createMessageMethods(
       delete update.__v;
       const stampModelOutputOnInsert =
         params.isCreatedByUser === false && params.isUserSubmitted === undefined;
+      if (metadata?.insertOnly === true) {
+        if (metadata.privateText != null) {
+          throw new Error('A private message cannot use the ordinary insert-only writer.');
+        }
+        const now = new Date();
+        const existingOrInserted = await Message.findOneAndUpdate(
+          { messageId: params.messageId, user: userId },
+          {
+            $setOnInsert: {
+              ...update,
+              ...(userSubmittedPaths.length > 0 && { userSubmittedPaths }),
+              ...(userSubmittedMessageFieldPaths.length > 0 && { userSubmittedMessageFieldPaths }),
+              ...retentionOnInsert,
+              createdAt: now,
+              updatedAt: now,
+            },
+          },
+          { upsert: true, new: true, timestamps: false },
+        );
+        return existingOrInserted?.toObject();
+      }
       const message = await writeMessage(
         { messageId: params.messageId, user: userId },
         { ...update, userSubmittedPaths, userSubmittedMessageFieldPaths },
-        { upsert: true, stampModelOutputOnInsert, unsetContextMeta, retentionOnInsert },
+        {
+          upsert: true,
+          stampModelOutputOnInsert,
+          unsetContextMeta,
+          retentionOnInsert,
+          unsetPrivateText:
+            metadata?.privateText == null && Object.prototype.hasOwnProperty.call(update, 'text'),
+        },
       );
 
       if (message == null) {
@@ -1268,27 +1362,45 @@ export function createMessageMethods(
   async function bulkSaveMessages(
     messages: Array<Record<string, unknown>>,
     overrideTimestamp = false,
+    provenance?: { privateTextTokens: ReadonlyMap<string, readonly string[]> },
   ) {
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
       const bulkOps = messages.map((message) => {
         const normalizedMessage = sanitizeMessageUpdate(message);
-        const provenance = capNormalizedProvenance(
+        delete normalizedMessage.privateText;
+        delete normalizedMessage.privacyRevision;
+        delete normalizedMessage.privateTextTokens;
+        const tokens = provenance?.privateTextTokens.get(String(message.messageId));
+        const text = message.text;
+        if (
+          tokens?.length &&
+          tokens.length <= 4096 &&
+          message.isCreatedByUser === true &&
+          typeof text === 'string'
+        ) {
+          normalizedMessage.privateTextTokens = tokens.filter(
+            (token) =>
+              /^\[(?:EMAIL|PHONE|NAME|CREDENTIAL|CUSTOM)_\d+_[a-f0-9]{32}\]$/.test(token) &&
+              text.includes(token),
+          );
+        }
+        const submittedProvenance = capNormalizedProvenance(
           normalizeUserSubmittedPaths(message.userSubmittedPaths),
           normalizeUserSubmittedMessageFieldPaths(message.userSubmittedMessageFieldPaths),
         );
-        if (provenance.userSubmittedPaths.length > 0) {
-          normalizedMessage.userSubmittedPaths = provenance.userSubmittedPaths;
+        if (submittedProvenance.userSubmittedPaths.length > 0) {
+          normalizedMessage.userSubmittedPaths = submittedProvenance.userSubmittedPaths;
         } else {
           delete normalizedMessage.userSubmittedPaths;
         }
-        if (provenance.userSubmittedMessageFieldPaths.length > 0) {
+        if (submittedProvenance.userSubmittedMessageFieldPaths.length > 0) {
           normalizedMessage.userSubmittedMessageFieldPaths =
-            provenance.userSubmittedMessageFieldPaths;
+            submittedProvenance.userSubmittedMessageFieldPaths;
         } else {
           delete normalizedMessage.userSubmittedMessageFieldPaths;
         }
-        if (provenance.promoteWholeMessage) {
+        if (submittedProvenance.promoteWholeMessage) {
           normalizedMessage.isUserSubmitted = true;
         }
         return {
@@ -1297,7 +1409,15 @@ export function createMessageMethods(
               messageId: message.messageId,
               ...(message.user != null ? { user: message.user } : {}),
             },
-            update: { $set: normalizedMessage, $inc: { __v: 1 } },
+            update: {
+              $set: normalizedMessage,
+              $inc: { __v: 1 },
+              $unset: {
+                privateText: 1,
+                privacyRevision: 1,
+                ...(normalizedMessage.privateTextTokens == null && { privateTextTokens: 1 }),
+              },
+            },
             timestamps: !overrideTimestamp,
             upsert: true,
           },
@@ -1357,6 +1477,7 @@ export function createMessageMethods(
       for (const op of guarded) {
         await writeMessage(op.updateOne.filter, op.updateOne.update.$set, {
           upsert: true,
+          unsetPrivateText: true,
           timestamps: !overrideTimestamp,
           onWrite: (inserted, id) => {
             if (inserted) {
@@ -1417,6 +1538,9 @@ export function createMessageMethods(
         userSubmittedMessageFieldPaths: _userSubmittedMessageFieldPaths,
         ...safeRest
       } = rest;
+      delete safeRest.privateText;
+      delete safeRest.privacyRevision;
+      delete safeRest.privateTextTokens;
       const message = {
         user,
         endpoint,
@@ -1434,6 +1558,7 @@ export function createMessageMethods(
       };
       return await writeMessage({ user, messageId }, message, {
         upsert: true,
+        unsetPrivateText: Object.prototype.hasOwnProperty.call(safeRest, 'text'),
         stampModelOutputOnInsert:
           rest.isCreatedByUser === false && rest.isUserSubmitted === undefined,
       });
@@ -1451,7 +1576,11 @@ export function createMessageMethods(
     { messageId, text }: { messageId: string; text: string },
   ) {
     try {
-      await writeMessage({ messageId, user: userId }, { text }, { upsert: false });
+      await writeMessage(
+        { messageId, user: userId },
+        { text },
+        { upsert: false, unsetPrivateText: true },
+      );
     } catch (err) {
       logger.error('Error updating message text:', err);
       throw err;
@@ -2363,8 +2492,12 @@ export function createMessageMethods(
   ) {
     try {
       const { messageId, ...update } = message;
+      delete update.privateText;
+      delete update.privacyRevision;
+      delete update.privateTextTokens;
       const updatedMessage = await writeMessage({ messageId, user: userId }, update, {
         upsert: false,
+        unsetPrivateText: Object.prototype.hasOwnProperty.call(update, 'text'),
       });
 
       if (!updatedMessage) {
@@ -4038,7 +4171,78 @@ export function createMessageMethods(
     return Message.meiliSearch(query, searchOptions, hydrate);
   }
 
+  async function getPersistedPrivateTextId(input: {
+    userId: string;
+    tenantId?: string;
+    conversationId: string;
+    messageId: string;
+    privacyRevision: string;
+    text: string;
+  }): Promise<string | null> {
+    if (
+      !input.userId ||
+      !input.messageId ||
+      !input.privacyRevision ||
+      !UUID_REGEX.test(input.conversationId)
+    ) {
+      return null;
+    }
+    const activeTenant = tenantStorage.getStore()?.tenantId;
+    if (activeTenant != null && activeTenant !== input.tenantId) {
+      return null;
+    }
+    const Message = mongoose.models.Message as Model<IMessage>;
+    const stored = await Message.exists({
+      user: input.userId,
+      ...traceTenantScope(input.tenantId),
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      text: input.text,
+      privacyRevision: input.privacyRevision,
+      privateText: { $exists: true },
+      $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }],
+    });
+    return stored == null ? null : String(stored._id);
+  }
+
+  async function hasPersistedPrivateText(
+    input: Parameters<MessageMethods['hasPersistedPrivateText']>[0],
+  ): Promise<boolean> {
+    return (await getPersistedPrivateTextId(input)) != null;
+  }
+
+  async function getPrivateMessageTexts(input: {
+    userId: string;
+    tenantId?: string;
+    conversationId: string;
+    messageIds: readonly string[];
+  }): Promise<PrivateTextRead[]> {
+    if (!input.userId || !UUID_REGEX.test(input.conversationId) || input.messageIds.length > 50) {
+      throw new Error('Invalid private message read.');
+    }
+    const activeTenant = tenantStorage.getStore()?.tenantId;
+    if (activeTenant != null && activeTenant !== input.tenantId) {
+      return [];
+    }
+    const Message = mongoose.models.Message as Model<IMessage>;
+    return Message.find({
+      user: input.userId,
+      ...traceTenantScope(input.tenantId),
+      conversationId: input.conversationId,
+      messageId: { $in: input.messageIds },
+      isCreatedByUser: true,
+      privateText: { $exists: true },
+      $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }],
+    })
+      .select('messageId text privacyRevision +privateText')
+      .limit(50)
+      .lean<PrivateTextRead[]>();
+  }
+
   return {
+    hasPersistedPrivateText,
+    getPersistedPrivateTextId,
+    getPrivateMessageTexts,
     saveMessage,
     bulkSaveMessages,
     recordMessage,

@@ -637,6 +637,59 @@ describe('GenerationJobManager startup telemetry', () => {
     await manager.destroy();
   });
 
+  it('carries only canonical protected text and revision from created through abort', async () => {
+    const manager = createManager();
+    const streamId = 'stream-protected-stop';
+    const text = 'Email [EMAIL_1_0123456789abcdef0123456789abcdef]';
+    const revision = '0123456789abcdef0123456789abcdef';
+    const job = await manager.createJob(streamId, 'owner', streamId, {
+      initialMetadata: {
+        responseMessageId: 'response-1',
+        userMessage: {
+          messageId: 'user-1',
+          conversationId: streamId,
+          text,
+          privacyRevision: revision,
+        },
+      },
+    });
+    const created: ServerSentEvent = {
+      created: true,
+      streamId,
+      message: {
+        messageId: 'user-1',
+        conversationId: streamId,
+        sender: 'User',
+        isCreatedByUser: true,
+        text,
+        privacyRevision: revision,
+      },
+    };
+    try {
+      await manager.emitChunk(streamId, created, { expectedCreatedAt: job.createdAt });
+      expect((await manager.getJob(streamId))?.metadata.userMessage).toMatchObject({
+        messageId: 'user-1',
+        text,
+        privacyRevision: revision,
+      });
+      const result = await manager.abortJob(streamId, {
+        expectedCreatedAt: job.createdAt,
+        beforePublish: async (pending) => {
+          expect(pending.jobData?.userMessage).toMatchObject({ text, privacyRevision: revision });
+          expect(pending.finalEvent).toMatchObject({
+            requestMessage: { text, privacyRevision: revision },
+          });
+        },
+      });
+      expect(result.finalEvent).toMatchObject({
+        requestMessage: { messageId: 'user-1', text, privacyRevision: revision },
+      });
+      expect(JSON.stringify(result)).not.toContain('alice@example.com');
+    } finally {
+      await manager.destroy();
+    }
+  });
+
   it('ends an active startup when the manager shuts down', async () => {
     const manager = createManager();
     const telemetry = createTelemetry();

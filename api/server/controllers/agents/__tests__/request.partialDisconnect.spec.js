@@ -47,6 +47,10 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  savePrivateTextMessage: (save, _req, ...args) => save(...args),
+  savePrivateTextErrorTurn: (...args) =>
+    jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
+  stampPreliminaryPrivateTextMessage: (_req, message) => message,
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   applyForcedTemporaryRequest: jest.fn(),

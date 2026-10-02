@@ -12,7 +12,7 @@ import {
 import type { FilterQuery, Model, PipelineStage, ProjectionType, Types } from 'mongoose';
 import type { AgentSortOption, AgentToolResources } from 'librechat-data-provider';
 import type { IAgent, IAclEntry, IUser, ActionQuery } from '~/types';
-import { withCodeEnvironmentReference } from './codeEnvironment';
+import { withCodeEnvironmentReferences } from './codeEnvironment';
 import { OWNER_ACL_PERMISSION_BIT_SUPERSETS } from './aclEntry';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { filterExistingSkillIds } from './skill';
@@ -1169,6 +1169,13 @@ export function createAgentMethods(
 } {
   const { removeAllPermissions, getActions, getSoleOwnedResourceIds, isExternalSkillId } = deps;
 
+  function codeEnvironmentReferences(data: Record<string, unknown>): string[] {
+    return [
+      data.code_environment_id,
+      ...(Array.isArray(data.code_environment_ids) ? data.code_environment_ids : []),
+    ].filter((id): id is string => typeof id === 'string' && id.length > 0);
+  }
+
   async function restoreAgentAfterReferenceLoss(
     Agent: Model<IAgent>,
     agentAfterWrite: IAgent | null,
@@ -1180,7 +1187,10 @@ export function createAgentMethods(
     const restored = await Agent.replaceOne(
       {
         _id: agentAfterWrite._id,
-        code_environment_id: lostEnvironmentId,
+        $or: [
+          { code_environment_id: lostEnvironmentId },
+          { code_environment_ids: lostEnvironmentId },
+        ],
         updatedAt,
       },
       originalAgent,
@@ -1193,6 +1203,10 @@ export function createAgentMethods(
       await Agent.updateOne(
         { _id: agentAfterWrite._id, code_environment_id: lostEnvironmentId },
         { $unset: { code_environment_id: 1 } },
+      );
+      await Agent.updateOne(
+        { _id: agentAfterWrite._id, code_environment_ids: lostEnvironmentId },
+        { $pull: { code_environment_ids: lostEnvironmentId } },
       );
     }
   }
@@ -1235,11 +1249,10 @@ export function createAgentMethods(
         extractMCPServerNames(agentData.tools as string[] | undefined),
     };
 
-    return await withCodeEnvironmentReference(
+    return await withCodeEnvironmentReferences(
       mongoose,
-      typeof agentData.code_environment_id === 'string' ? agentData.code_environment_id : undefined,
+      codeEnvironmentReferences(agentData),
       async () => (await Agent.create(initialAgentData)).toObject() as IAgent,
-      undefined,
       async (createdAgent) => {
         await Agent.deleteOne({ _id: createdAgent._id });
       },
@@ -1574,37 +1587,42 @@ export function createAgentMethods(
       }
     }
 
-    const directEnvironmentId = updateData.code_environment_id;
-    const setEnvironmentId =
-      typeof updateData.$set === 'object' && updateData.$set != null
-        ? (updateData.$set as { code_environment_id?: unknown }).code_environment_id
-        : undefined;
-    let nextEnvironmentId: string | undefined;
-    if (typeof directEnvironmentId === 'string') {
-      nextEnvironmentId = directEnvironmentId;
-    } else if (typeof setEnvironmentId === 'string') {
-      nextEnvironmentId = setEnvironmentId;
+    const nextEnvironmentIds = codeEnvironmentReferences({
+      ...updateData,
+      ...(typeof updateData.$set === 'object' && updateData.$set != null ? updateData.$set : {}),
+    });
+    for (const operator of ['$push', '$addToSet']) {
+      const update = updateData[operator] as { code_environment_ids?: unknown } | undefined;
+      const values = update?.code_environment_ids;
+      const added =
+        values != null && typeof values === 'object' && '$each' in values
+          ? (values as { $each: unknown }).$each
+          : values;
+      nextEnvironmentIds.push(
+        ...codeEnvironmentReferences({
+          code_environment_ids: Array.isArray(added) ? added : [added],
+        }),
+      );
     }
-    const updatedAgent = await withCodeEnvironmentReference(
+    const updatedAgent = await withCodeEnvironmentReferences(
       mongoose,
-      nextEnvironmentId,
+      nextEnvironmentIds,
       async () =>
         (await Agent.findOneAndUpdate(
-          currentAgent == null || nextEnvironmentId == null
+          currentAgent == null || nextEnvironmentIds.length === 0
             ? searchParameter
             : { ...searchParameter, _id: currentAgent._id, updatedAt: currentRevision },
           updateData,
           mongoOptions,
         ).lean()) as IAgent | null,
-      undefined,
-      async (agentAfterUpdate) => {
-        if (agentAfterUpdate == null || nextEnvironmentId == null) return;
+      async (agentAfterUpdate, lostEnvironmentId) => {
+        if (agentAfterUpdate == null) return;
         if (currentAgent == null) return;
         await restoreAgentAfterReferenceLoss(
           Agent,
           agentAfterUpdate,
           currentAgent.toObject() as IAgent,
-          nextEnvironmentId,
+          lostEnvironmentId,
         );
       },
     );
@@ -2032,6 +2050,7 @@ export function createAgentMethods(
       projection.stateful_code_sessions = 1;
       projection.code_environment_id = 1;
       projection.code_workspace_id = 1;
+      projection.code_environment_ids = 1;
       projection.repositoryInstructions = 1;
       projection.agent_ids = 1;
       projection['edges.from'] = 1;
@@ -2629,6 +2648,7 @@ export function createAgentMethods(
     for (const field of [
       'code_environment_id',
       'code_workspace_id',
+      'code_environment_ids',
       'repositoryInstructions',
       'git_identity',
       'skills_scope',
@@ -2642,27 +2662,24 @@ export function createAgentMethods(
       Object.keys(unsetOnRestore).length > 0
         ? { $set: revertToVersion, $unset: unsetOnRestore }
         : { $set: revertToVersion };
-    const revertedAgent = await withCodeEnvironmentReference(
+    const revertedAgent = await withCodeEnvironmentReferences(
       mongoose,
-      typeof revertToVersion.code_environment_id === 'string'
-        ? revertToVersion.code_environment_id
-        : undefined,
+      codeEnvironmentReferences(revertToVersion),
       async () =>
         await Agent.findOneAndUpdate(
           { ...searchParameter, _id: agent._id, updatedAt: originalRevision },
           revertUpdate,
           { new: true },
         ).lean<IAgent>(),
-      undefined,
-      async (agentAfterRevert) => {
-        if (agentAfterRevert == null || typeof revertToVersion.code_environment_id !== 'string') {
+      async (agentAfterRevert, lostEnvironmentId) => {
+        if (agentAfterRevert == null) {
           return;
         }
         await restoreAgentAfterReferenceLoss(
           Agent,
           agentAfterRevert,
           agent.toObject() as IAgent,
-          revertToVersion.code_environment_id,
+          lostEnvironmentId,
         );
       },
     );

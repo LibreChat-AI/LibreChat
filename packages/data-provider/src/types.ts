@@ -712,6 +712,9 @@ export type TConfig = {
     allowedEnvironments: StatefulCodeEnvironment[];
     environments?: TPublicCodeEnvironment[];
     approvalsEnabled?: boolean;
+    /** Allow new chats to choose among the agent's explicitly listed machines. */
+    allowEnvironmentSelection?: boolean;
+    maxEnvironmentChoices?: number;
     /** Approval modes the endpoint policy permits the client to offer. */
     approvalModes?: CodeApprovalMode[];
   };

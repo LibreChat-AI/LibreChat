@@ -38,8 +38,10 @@ import { useAgentsMapContext } from '~/Providers';
 import ScheduleDialog from './ScheduleDialog';
 import { describeCadence } from './cadence';
 import { scheduleRowState } from './state';
+import Consent from './Consent';
 
 interface ScheduleCardProps {
+  consentEnabled?: boolean;
   schedule: TSchedule;
   /** Resolved by the panel, which holds ONE project-name lookup for the whole list —
    *  deriving it per card is O(schedules x projects) on every project-list refresh. */
@@ -152,7 +154,7 @@ function TrailingState({
   );
 }
 
-export default function ScheduleCard({ schedule, projectName }: ScheduleCardProps) {
+export default function ScheduleCard({ schedule, projectName, consentEnabled }: ScheduleCardProps) {
   const localize = useLocalize();
   const navigate = useNavigate();
   const lastRunKey = scheduleLastRunKey(schedule);
@@ -179,6 +181,8 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
 
   const menuId = useId();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [consentOpen, setConsentOpen] = useState(false);
+  const consentButtonRef = useRef<HTMLButtonElement>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const editButtonRef = useRef<HTMLButtonElement>(null);
@@ -274,39 +278,59 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
     };
   }, [schedule.enabled, schedule.nextRunAt, i18n.language, hour12, localize]);
 
+  const canInspectConsent = consentEnabled || schedule.hasMCPConsent === true;
+
   const dropdownItems = useMemo(
     () => [
-      {
-        label: localize('com_ui_schedule_run_now'),
-        onClick: handleRunNow,
-        hideOnClick: false,
-        disabled: runSchedule.isLoading,
-        icon: runSchedule.isLoading ? (
-          <Spinner className="size-4" />
-        ) : (
-          <Play className="icon-sm text-text-primary mr-2" aria-hidden="true" />
-        ),
-      },
-      {
-        label: localize('com_ui_edit'),
-        onClick: () => setEditOpen(true),
-        icon: <Pencil className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
-        ariaHasPopup: 'dialog' as const,
-        hideOnClick: false,
-        ref: editButtonRef,
-        render: (props) => <button {...props} />,
-      },
-      {
-        label: localize('com_ui_delete'),
-        onClick: () => setDeleteOpen(true),
-        icon: <Trash className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
-        ariaHasPopup: 'dialog' as const,
-        hideOnClick: false,
-        ref: deleteButtonRef,
-        render: (props) => <button {...props} />,
-      },
+      ...(canInspectConsent
+        ? [
+            {
+              label: localize('com_ui_schedule_consent_title'),
+              onClick: () => setConsentOpen(true),
+              ariaHasPopup: 'dialog' as const,
+              hideOnClick: false,
+              ref: consentButtonRef,
+              render: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+                <button {...props} />
+              ),
+            },
+          ]
+        : []),
+      ...(canWrite
+        ? [
+            {
+              label: localize('com_ui_schedule_run_now'),
+              onClick: handleRunNow,
+              hideOnClick: false,
+              disabled: runSchedule.isLoading,
+              icon: runSchedule.isLoading ? (
+                <Spinner className="size-4" />
+              ) : (
+                <Play className="icon-sm text-text-primary mr-2" aria-hidden="true" />
+              ),
+            },
+            {
+              label: localize('com_ui_edit'),
+              onClick: () => setEditOpen(true),
+              icon: <Pencil className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+              ariaHasPopup: 'dialog' as const,
+              hideOnClick: false,
+              ref: editButtonRef,
+              render: (props) => <button {...props} />,
+            },
+            {
+              label: localize('com_ui_delete'),
+              onClick: () => setDeleteOpen(true),
+              icon: <Trash className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+              ariaHasPopup: 'dialog' as const,
+              hideOnClick: false,
+              ref: deleteButtonRef,
+              render: (props) => <button {...props} />,
+            },
+          ]
+        : []),
     ],
-    [localize, handleRunNow, runSchedule.isLoading],
+    [localize, handleRunNow, runSchedule.isLoading, canInspectConsent, canWrite],
   );
 
   const lastRunConvoId = schedule.lastRun?.conversationId;
@@ -356,20 +380,22 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
                 {localize('com_ui_schedule_last_run')}
               </Link>
             )}
-            {canWrite && (
+            {(canWrite || canInspectConsent) && (
               /* Not the collapsible slot other rows use: this panel's rows end at
                  the sidebar's resize handle, and a slot collapsed to zero width
                  puts the switch's clickable point outside the panel entirely,
                  under that handle, where no hover can ever reveal it. The menu
                  trigger still fades in on row hover by itself. */
               <div className="flex shrink-0 items-center gap-2">
-                <Switch
-                  checked={schedule.enabled}
-                  onCheckedChange={handleToggle}
-                  disabled={updateSchedule.isLoading}
-                  aria-label={`${localize('com_ui_schedule_enabled')}: ${schedule.name}`}
-                  className="shrink-0"
-                />
+                {canWrite && (
+                  <Switch
+                    checked={schedule.enabled}
+                    onCheckedChange={handleToggle}
+                    disabled={updateSchedule.isLoading}
+                    aria-label={`${localize('com_ui_schedule_enabled')}: ${schedule.name}`}
+                    className="shrink-0"
+                  />
+                )}
                 <DropdownPopup
                   portal={true}
                   menuId={menuId}
@@ -409,6 +435,15 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
           />
         </div>
       </div>
+      {consentOpen && (
+        <Consent
+          canConfirm={canWrite}
+          id={schedule.id}
+          name={schedule.name}
+          onOpenChange={setConsentOpen}
+          triggerRef={consentButtonRef}
+        />
+      )}
       {editOpen && (
         <ScheduleDialog
           open={editOpen}
