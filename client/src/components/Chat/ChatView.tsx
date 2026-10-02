@@ -286,7 +286,7 @@ function ChatView({
                           <Lia
                             bandRef={composerBandRef}
                             landing={isLandingPage}
-                            sending={isSubmitting}
+                            submission={rootSubmission}
                           />
                         </div>
                         {isLandingPage && <Footer />}

@@ -1,6 +1,7 @@
 import React, { createRef } from 'react';
 import { createStore, Provider } from 'jotai';
 import { act, render, screen } from '@testing-library/react';
+import type { TSubmission } from 'librechat-data-provider';
 import Lia, { FAREWELL_MS } from '../index';
 import { showLiaAtom } from '~/store/lia';
 
@@ -17,25 +18,28 @@ interface Options {
   enabled: boolean;
   mascot?: boolean | null;
   landing?: boolean;
-  sending?: boolean;
+  submission?: TSubmission | null;
 }
 
-function renderLia({ enabled, mascot, landing = true, sending = false }: Options) {
+type ViewProps = { landing: boolean; submission: TSubmission | null };
+const send = () => ({}) as TSubmission;
+
+function renderLia({ enabled, mascot, landing = true, submission = null }: Options) {
   const store = createStore();
   store.set(showLiaAtom, enabled);
   mockUseGetStartupConfig.mockReturnValue({
     data: mascot === null ? undefined : { interface: mascot === undefined ? {} : { mascot } },
   });
   const bandRef = createRef<HTMLElement>();
-  const view = (props: { landing: boolean; sending: boolean }) => (
+  const view = (props: ViewProps) => (
     <Provider store={store}>
       <Lia bandRef={bandRef} {...props} />
     </Provider>
   );
-  const result = render(view({ landing, sending }));
+  const result = render(view({ landing, submission }));
   return {
     ...result,
-    update: (props: { landing: boolean; sending: boolean }) => result.rerender(view(props)),
+    update: (props: ViewProps) => result.rerender(view(props)),
   };
 }
 
@@ -66,7 +70,7 @@ describe('Lia', () => {
     jest.useFakeTimers();
     const { update } = renderLia({ enabled: true });
     expect(await screen.findByTestId('lia-stage')).toBeInTheDocument();
-    update({ landing: false, sending: true });
+    update({ landing: false, submission: send() });
     expect(screen.getByTestId('lia-stage')).toBeInTheDocument();
     act(() => {
       jest.advanceTimersByTime(FAREWELL_MS);
@@ -78,7 +82,15 @@ describe('Lia', () => {
   it('leaves at once when the user navigates away instead of sending', async () => {
     const { update } = renderLia({ enabled: true });
     expect(await screen.findByTestId('lia-stage')).toBeInTheDocument();
-    update({ landing: false, sending: false });
+    update({ landing: false, submission: null });
+    expect(screen.queryByTestId('lia-stage')).toBeNull();
+  });
+
+  it('does not take a send from an earlier conversation for a new one', async () => {
+    const stale = send();
+    const { update } = renderLia({ enabled: true, submission: stale });
+    expect(await screen.findByTestId('lia-stage')).toBeInTheDocument();
+    update({ landing: false, submission: stale });
     expect(screen.queryByTestId('lia-stage')).toBeNull();
   });
 

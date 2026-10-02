@@ -13,8 +13,10 @@ const SCALE = 2;
 const EDGE = 22 * SCALE;
 /** Below this stage width there is no room beside the greeting, so Lia stays away. */
 const MIN_WIDTH = 360;
-/** How far above the composer Lia reaches, raised arms included; content there is avoided. */
-const HEIGHT = 50 * SCALE;
+/** The canvas reaches this far either side of Lia and above her feet. It takes clicks, so
+ * content it would cover is avoided by the whole box, not just her body. */
+const REACH_X = (GRID_W / 2) * SCALE;
+const REACH_Y = FOOT_Y * SCALE;
 
 /** Words that make Lia react while you type them. */
 const KEYWORDS: Readonly<Record<string, string>> = {
@@ -124,10 +126,18 @@ export default function Stage({
       return obstacles;
     };
     let placed: LiaEngine | null = null;
+    /* The bubble belongs to Lia: whenever she has nowhere to stand, it goes with her. */
+    const setVisible = (visible: boolean) => {
+      const value = visible ? 'visible' : 'hidden';
+      canvas.style.visibility = value;
+      if (bubbleRef.current) {
+        bubbleRef.current.style.visibility = value;
+      }
+    };
     const platform = (): Platform | null => {
       const band = bandRef.current;
       if (!band || root.clientWidth < MIN_WIDTH) {
-        canvas.style.visibility = 'hidden';
+        setVisible(false);
         return null;
       }
       const origin = root.getBoundingClientRect();
@@ -136,8 +146,8 @@ export default function Stage({
       /* While leaving, the conversation replaces the welcome content and Lia rides the composer down. */
       const obstacles = leavingRef.current ? [] : measureObstacles(band);
       const blocked = obstacles
-        .filter((o) => o.bottom - origin.top > top - HEIGHT && o.top - origin.top < top)
-        .map((o) => [o.left - origin.left - EDGE, o.right - origin.left + EDGE] as const);
+        .filter((o) => o.bottom - origin.top > top - REACH_Y && o.top - origin.top < top)
+        .map((o) => [o.left - origin.left - REACH_X, o.right - origin.left + REACH_X] as const);
       const span = freeSpan(
         box.left - origin.left + EDGE,
         box.right - origin.left - EDGE,
@@ -145,7 +155,7 @@ export default function Stage({
         placed?.position.x ?? Infinity,
         EDGE,
       );
-      canvas.style.visibility = span ? 'visible' : 'hidden';
+      setVisible(span != null);
       return span ? { y: top + 1, x0: span[0], x1: span[1] } : null;
     };
     const engine = new LiaEngine(canvas, {
