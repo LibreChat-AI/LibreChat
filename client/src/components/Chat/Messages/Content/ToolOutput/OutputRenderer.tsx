@@ -2,6 +2,7 @@ import { useRef, useState, useMemo, useCallback, useLayoutEffect } from 'react';
 import copy from 'copy-to-clipboard';
 import { Button } from '@librechat/client';
 import { hasToolCallErrorPrefix, stripToolCallErrorPrefix } from 'librechat-data-provider';
+import type { UIEvent } from 'react';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { PANE_COPY_REVEAL } from '../rows';
 import { useLocalize } from '~/hooks';
@@ -133,15 +134,22 @@ export default function OutputRenderer({
   const [showErrorDetails, setShowErrorDetails] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
   const outputRef = useRef<HTMLPreElement>(null);
+  /** Whether the reader is at the bottom of the box; scrolling up stops the follow. */
+  const followRef = useRef(true);
 
   /* Terminal output opens on its last lines, where failures, stack traces and the
-     exit trailer land; the rest stays a scroll away inside the box. */
+     exit trailer land, and keeps following new output until the reader scrolls up. */
   useLayoutEffect(() => {
     const node = outputRef.current;
-    if (terminal && node != null) {
+    if (terminal && node != null && followRef.current) {
       node.scrollTop = node.scrollHeight;
     }
   }, [terminal, displayText, segments]);
+
+  const handleOutputScroll = useCallback((event: UIEvent<HTMLPreElement>) => {
+    const node = event.currentTarget;
+    followRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 8;
+  }, []);
 
   const handleCopy = useCallback(() => {
     setIsCopied(true);
@@ -168,6 +176,7 @@ export default function OutputRenderer({
         ) : (
           <pre
             ref={outputRef}
+            onScroll={terminal ? handleOutputScroll : undefined}
             className={cn(
               'max-h-[300px] overflow-auto text-xs break-words whitespace-pre-wrap',
               error && 'text-status-error font-mono',

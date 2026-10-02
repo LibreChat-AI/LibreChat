@@ -65,6 +65,35 @@ describe('OutputRenderer', () => {
     }
   });
 
+  it('stops following streamed terminal output once the reader scrolls up', () => {
+    const lines = (count: number) =>
+      Array.from({ length: count }, (_, i) => `line ${i + 1}`).join('\n');
+    const scrollHeight = jest
+      .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+      .mockReturnValue(900);
+    const clientHeight = jest
+      .spyOn(HTMLElement.prototype, 'clientHeight', 'get')
+      .mockReturnValue(300);
+    try {
+      const { rerender } = render(<OutputRenderer text={lines(30)} variant="terminal" />);
+      const pre = screen.getByText(/line 30/);
+      expect(pre.scrollTop).toBe(900);
+
+      pre.scrollTop = 100;
+      fireEvent.scroll(pre);
+      rerender(<OutputRenderer text={lines(40)} variant="terminal" />);
+      expect(pre.scrollTop).toBe(100);
+
+      pre.scrollTop = 600;
+      fireEvent.scroll(pre);
+      rerender(<OutputRenderer text={lines(50)} variant="terminal" />);
+      expect(pre.scrollTop).toBe(900);
+    } finally {
+      scrollHeight.mockRestore();
+      clientHeight.mockRestore();
+    }
+  });
+
   it('keeps whitespace-only terminal output', () => {
     const { container } = render(<OutputRenderer text={'\n\n'} variant="terminal" />);
     expect(container.querySelector('pre')?.textContent).toBe('\n\n');
