@@ -27,9 +27,9 @@ import {
   withCodeApiUploadRecovery,
 } from '~/utils';
 import { getCodeEnvUploadFilename, getUploadedCodeEnvFilename } from '../code/form';
-import { getCodeApiAuthHeaders, isCodeApiJwtAuthEnabled } from '~/auth/codeapi';
 import { buildCodeEnvIdentityParams } from '~/files/code/identity';
 import { codeExecutionHeaders } from '~/agents/execution';
+import { getCodeApiAuthHeaders } from '~/auth/codeapi';
 import { resolveDownloadPath } from '~/storage/path';
 
 /** Storage strategy lookup, injected so this module stays free of the api workspace. */
@@ -214,8 +214,8 @@ export function createProvisionService({
    * route's uploads, reads and executions send. The legacy key belongs to the default
    * Code API alone: an attached or stateful route never receives it, and a worker-bound
    * route gets a bearer minted for its worker plus the route headers. Returns null when
-   * JWT auth is required but no bearer or key can be sent, since the probe would only be
-   * rejected.
+   * there is nothing to authenticate with, neither a request to mint from nor a key this
+   * route accepts, since the probe could only be rejected.
    */
   async function buildSessionProbeHeaders({
     apiKey,
@@ -233,7 +233,7 @@ export function createProvisionService({
     const isDefaultRoute = (routeKey ?? 'default') === 'default';
     const authHeaders = await getCodeApiAuthHeaders(req, bridgeWorkerId);
     const legacyKey = isDefaultRoute && authHeaders.Authorization == null ? apiKey : undefined;
-    if (isCodeApiJwtAuthEnabled() && authHeaders.Authorization == null && !legacyKey) {
+    if (req == null && authHeaders.Authorization == null && !legacyKey) {
       return null;
     }
     return {
