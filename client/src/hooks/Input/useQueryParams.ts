@@ -103,6 +103,7 @@ export default function useQueryParams({
   const originConversationRef = useRef<string | null | undefined>(null);
   const destinationRef = useRef<{
     conversationId: string;
+    chatProjectId: TConversation['chatProjectId'];
     route: typeof route;
   } | null>(null);
   const cancelledRef = useRef(false);
@@ -147,7 +148,7 @@ export default function useQueryParams({
         currentId === destinationRef.current?.conversationId) &&
       (destinationRef.current == null ||
         currentId !== destinationRef.current.conversationId ||
-        (conversationRef.current?.chatProjectId ?? null) === destinationRef.current.route.projectId)
+        (conversationRef.current?.chatProjectId ?? null) === destinationRef.current.chatProjectId)
     );
   }, []);
 
@@ -175,6 +176,7 @@ export default function useQueryParams({
     params.sort();
     destinationRef.current = {
       conversationId,
+      chatProjectId: template.chatProjectId ?? null,
       route: { pathname: `/c/${conversationId}`, search: params.toString(), projectId },
     };
   }, []);

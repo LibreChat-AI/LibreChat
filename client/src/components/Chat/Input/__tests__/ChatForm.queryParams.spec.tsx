@@ -424,6 +424,85 @@ describe('ChatForm URL submission', () => {
     expect(getDraft(sourceConversation.conversationId)).toBe('original unsent draft');
   });
 
+  it.each([null, 'project-one'])(
+    'submits changed settings in an existing conversation with project %p',
+    async (chatProjectId) => {
+      const conversation = {
+        ...initialConversation,
+        conversationId: 'existing-chat',
+        chatProjectId,
+      };
+      const view = mountComposer(conversation, {
+        query: 'endpoint=openAI&model=gpt-4.1&q=hi&submit=true',
+      });
+      await act(async () => jest.advanceTimersByTime(100));
+      expect(newConversation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          template: expect.objectContaining({ conversationId: 'existing-chat', chatProjectId }),
+          preset: expect.objectContaining({ model: 'gpt-4.1' }),
+        }),
+      );
+      expect(screen.getByTestId('text-input')).toHaveValue('hi');
+      expect(screen.getByText('Sending...')).toBeInTheDocument();
+      expect(ask).not.toHaveBeenCalled();
+      await act(async () => {
+        view.rerender(<Harness conversation={{ ...conversation, model: 'gpt-4.1' }} />);
+      });
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'hi' }), expect.anything());
+      expect(view.getLocation().pathname).toBe('/c/existing-chat');
+      expect(view.getLocation().search).toBe('');
+      await act(async () => jest.advanceTimersByTime(4000));
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
+    },
+  );
+
+  it('retains timeout guidance for unapplied settings in an existing project conversation', async () => {
+    const conversation = {
+      ...initialConversation,
+      conversationId: 'existing-chat',
+      chatProjectId: 'project-one',
+    };
+    const view = mountComposer(conversation, {
+      query: 'endpoint=openAI&model=gpt-4.1&q=hi&submit=true',
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(screen.getByText('Sending...')).toBeInTheDocument();
+    await act(async () => jest.advanceTimersByTime(3000));
+    expect(screen.getByTestId('text-input')).toHaveValue('hi');
+    expect(screen.getByText(/Chat settings could not be applied/)).toBeInTheDocument();
+    expect(getDraft(conversation.conversationId)).toBe('hi');
+    expect(view.getLocation().search).toBe('');
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('cancels when the existing conversation project changes before settings apply', async () => {
+    const conversation = {
+      ...initialConversation,
+      conversationId: 'existing-chat',
+      chatProjectId: 'project-one',
+    };
+    const view = mountComposer(conversation, {
+      query: 'endpoint=openAI&model=gpt-4.1&q=hi&submit=true',
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(screen.getByText('Sending...')).toBeInTheDocument();
+    await act(async () => {
+      view.rerender(
+        <Harness
+          conversation={{ ...conversation, model: 'gpt-4.1', chatProjectId: 'project-two' }}
+        />,
+      );
+    });
+    expect(screen.queryByText('Sending...')).not.toBeInTheDocument();
+    expect(ask).not.toHaveBeenCalled();
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
+    expect(view.getLocation().search).toContain('submit=true');
+    expect(ask).not.toHaveBeenCalled();
+  });
+
   it('clears settled setup guidance when leaving for another chat', async () => {
     setDraft({ id: 'other-chat', value: 'destination draft' });
     const view = mountComposer();
