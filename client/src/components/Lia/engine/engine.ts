@@ -158,6 +158,9 @@ export class LiaEngine {
   }
 
   start() {
+    if (this.frameId) {
+      return;
+    }
     const loop = (now: number) => {
       this.tick(now);
       this.frameId = requestAnimationFrame(loop);
@@ -167,6 +170,7 @@ export class LiaEngine {
 
   stop() {
     cancelAnimationFrame(this.frameId);
+    this.frameId = 0;
   }
 
   /** The action playing now, if any. */
@@ -242,6 +246,11 @@ export class LiaEngine {
 
   /** Clicking Lia: a pet, then dizziness, then a crash for the persistent. */
   pet(now = performance.now()) {
+    if (this.run?.def.id === 'nap') {
+      /* A click on a napping Lia wakes her; the wake-up is the whole reaction. */
+      this.noteActivity(true, now);
+      return;
+    }
     this.noteActivity(true, now);
     if (this.run?.def.id === 'r-crash') {
       return;

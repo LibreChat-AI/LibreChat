@@ -112,6 +112,26 @@ describe('LiaEngine', () => {
     expect(engine.current?.id).toBe('r-wake');
   });
 
+  it('wakes from a nap on a click without turning it into a pet', () => {
+    const { engine } = setup();
+    engine.play('nap', 1, 0);
+    engine.pet(100);
+    expect(engine.current?.id).toBe('r-wake');
+  });
+
+  it('runs a single animation loop however often it is started', () => {
+    const { engine } = setup();
+    const raf = jest.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 7);
+    const cancel = jest.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
+    engine.start();
+    engine.start();
+    expect(raf).toHaveBeenCalledTimes(1);
+    engine.stop();
+    expect(cancel).toHaveBeenCalledWith(7);
+    engine.start();
+    expect(raf).toHaveBeenCalledTimes(2);
+  });
+
   it('reports speech bubbles to the host and clears them', () => {
     const { engine, bubbles } = setup();
     engine.life = false;
