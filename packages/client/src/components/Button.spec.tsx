@@ -265,6 +265,9 @@ describe('Button', () => {
     expect(row).toContain('transition-opacity');
     expect(row).toContain('enabled:duration-500');
     expect(row).toContain('disabled:duration-500');
+    /** Reduced motion drops both fades, the disabled one included. */
+    expect(row).toContain('motion-reduce:transition-none');
+    expect(row).toContain('motion-reduce:disabled:transition-none');
     expect(row).toContain('h-auto');
     expect(row).not.toContain('h-theme-button');
     expect(row).not.toMatch(/(^|\s)transition-colors(\s|$)/);

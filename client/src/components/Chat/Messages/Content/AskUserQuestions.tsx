@@ -121,7 +121,9 @@ export default function AskUserQuestions({
           </p>
         )}
         <div className="text-text-secondary flex shrink-0 items-start justify-between gap-2 px-3 pt-3">
-          <div className="min-w-0 flex-1">
+          {/* Bounded so a long prompt scrolls rather than pushing the composer
+              popover past the top of the viewport. */}
+          <div className="max-h-[25vh] min-w-0 flex-1 overflow-y-auto">
             {question.header != null && question.header !== '' && (
               <p className="mb-1 text-xs font-medium">{question.header}</p>
             )}
@@ -205,6 +207,22 @@ export default function AskUserQuestions({
               value={text}
               disabled={form.locked}
               onChange={(event) => form.setText(question, event.target.value)}
+              onKeyDown={(event) => {
+                /* The composer popover sits inside the chat form, where Enter in a
+                   single-line field would submit the composer draft instead.
+                   Enter confirms this answer: the next step, or the batch. */
+                if (event.key !== 'Enter' || event.nativeEvent.isComposing) {
+                  return;
+                }
+                event.preventDefault();
+                if (!isLastStep) {
+                  if (!navLocked) {
+                    goToStep(activeIndex + 1);
+                  }
+                  return;
+                }
+                form.submit();
+              }}
               placeholder={otherLabel ?? localize('com_ui_your_answer')}
               aria-label={`${question.question} ${localize('com_ui_your_answer')}`}
             />

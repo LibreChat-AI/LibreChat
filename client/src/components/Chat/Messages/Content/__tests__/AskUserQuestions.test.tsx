@@ -217,6 +217,34 @@ describe('AskUserQuestions', () => {
     expect(isShown('Where should this run?')).toBe(true);
   });
 
+  test('Enter in an answer field confirms the answer instead of submitting a surrounding form', () => {
+    const onFormSubmit = jest.fn((event: React.FormEvent) => event.preventDefault());
+    render(
+      <RecoilRoot>
+        <form onSubmit={onFormSubmit}>
+          <AskUserQuestions actionId="ask-enter" questions={questions} />
+          <button type="submit" aria-label="Send composer" />
+        </form>
+      </RecoilRoot>,
+    );
+
+    const first = screen.getByRole('textbox', { name: /Where should this run/ });
+    fireEvent.change(first, { target: { value: 'Locally' } });
+    fireEvent.keyDown(first, { key: 'Enter' });
+    expect(isShown('Which time window?')).toBe(true);
+
+    const last = screen.getByRole('textbox', { name: /Which time window/ });
+    fireEvent.change(last, { target: { value: 'Today' } });
+    fireEvent.keyDown(last, { key: 'Enter' });
+
+    expect(onFormSubmit).not.toHaveBeenCalled();
+    expect(mockSubmitAskAnswer).toHaveBeenCalledWith(
+      'ask-enter',
+      { environment: 'Locally', window: 'Today' },
+      expect.anything(),
+    );
+  });
+
   test('retains partial answers and the current step across surface remounts', () => {
     const view = renderBatch('ask-remount');
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));

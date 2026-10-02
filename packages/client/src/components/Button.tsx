@@ -166,11 +166,11 @@ const buttonVariantRecipe = cva(
          * disabled row, which cannot be hovered, eases its theme colors too.
          * The duration rides on `enabled:`/`disabled:` so it outranks the base
          * `duration-theme-fast` by specificity, which tailwind-merge cannot
-         * resolve between the two. `data-selected` marks the highlighted or
-         * chosen row.
+         * resolve between the two. Reduced motion drops both fades.
+         * `data-selected` marks the highlighted or chosen row.
          */
         option:
-          'w-full select-none justify-start gap-2.5 whitespace-normal text-left font-normal text-text-primary transition-opacity enabled:duration-500 disabled:duration-500 disabled:transition-all hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
+          'w-full select-none justify-start gap-2.5 whitespace-normal text-left font-normal text-text-primary transition-opacity enabled:duration-500 disabled:duration-500 disabled:transition-all motion-reduce:transition-none motion-reduce:disabled:transition-none hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
         card: 'justify-start whitespace-normal rounded-2xl text-left font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
       },
       size: {
