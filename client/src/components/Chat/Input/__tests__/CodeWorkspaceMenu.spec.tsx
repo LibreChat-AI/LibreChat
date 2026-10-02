@@ -116,7 +116,7 @@ describe('CodeWorkspaceMenu', () => {
         <CodeWorkspaceMenu setConversation={setConversation} workspace={graph} disabled={false} />,
       );
       await userEvent.click(screen.getByTestId('code-workspace'));
-      await userEvent.click(screen.getByRole('menuitemradio', { name: 'Project B' }));
+      await userEvent.click(screen.getByRole('menuitemradio', { name: /Project B/ }));
       expect(setConversation.mock.calls[0][0](conversation)).toMatchObject({
         codeWorkspaces: [{ environmentId: environment.id, workspaceId: 'project-b', checkout }],
       });
