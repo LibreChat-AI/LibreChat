@@ -13,6 +13,7 @@ interface PrivateTextMessage {
   isCreatedByUser?: boolean;
   text?: string;
   privacyRevision?: string;
+  privateTextTokens?: readonly string[];
 }
 
 interface Capture {
@@ -22,6 +23,8 @@ interface Capture {
   readonly text: string;
   readonly envelope: string;
   readonly cipher: PrivateTextCipher;
+  readonly admission: Promise<boolean>;
+  readonly admit: (allowed: boolean) => void;
 }
 
 const captures = new WeakMap<object, Capture>();
@@ -232,7 +235,11 @@ export function createPrivateTextIngress(options: {
           body.text.includes(marker) ? marker : `[${category}_${index}_${revision}]`,
       );
       const envelope = cipher.seal(body.text, [userId, tenantId, revision]);
-      captures.set(req, { userId, tenantId, revision, text, envelope, cipher });
+      let admit!: (allowed: boolean) => void;
+      const admission = new Promise<boolean>((resolve) => {
+        admit = resolve;
+      });
+      captures.set(req, { userId, tenantId, revision, text, envelope, cipher, admission, admit });
       body.text = text;
       next();
     } catch {
@@ -278,15 +285,25 @@ export function getPrivateTextInspectionTokens(
     return tokens;
   }
   for (const message of messages) {
-    if (
-      message?.isCreatedByUser !== true ||
-      typeof message.text !== 'string' ||
-      !/^[a-f0-9]{32}$/.test(message.privacyRevision ?? '')
-    ) {
+    if (message?.isCreatedByUser !== true || typeof message.text !== 'string') {
       continue;
     }
     if (message.text.length > 524288) {
       return new Set();
+    }
+    if ((message.privateTextTokens?.length ?? 0) > 4096) {
+      return new Set();
+    }
+    for (const token of message.privateTextTokens ?? []) {
+      if (
+        /^\[(?:EMAIL|PHONE|NAME|CREDENTIAL|CUSTOM)_\d+_[a-f0-9]{32}\]$/.test(token) &&
+        message.text.includes(token)
+      ) {
+        tokens.add(token);
+        if (tokens.size > 4096) {
+          return new Set();
+        }
+      }
     }
     for (const match of message.text.matchAll(
       /\[(?:EMAIL|PHONE|NAME|CREDENTIAL|CUSTOM)_\d+_([a-f0-9]{32})\]/g,
@@ -378,14 +395,52 @@ export async function requirePrivateTextPersistence(
   if (capture == null) {
     return;
   }
-  const result = await start();
-  if (
-    result?.message?.privacyRevision !== capture.revision ||
-    result.message.text !== capture.text
-  ) {
+  try {
+    const result = await start();
+    if (
+      result?.message?.privacyRevision !== capture.revision ||
+      result.message.text !== capture.text
+    ) {
+      throw unavailable();
+    }
+    capture.admit(true);
+    onPersisted?.();
+  } catch (error) {
+    capture.admit(false);
+    throw error;
+  }
+}
+
+/** Optional model side effects share the turn's admission decision, without starting its write. */
+export async function requirePrivateTextAdmission(
+  req: object | undefined,
+  signal?: AbortSignal,
+): Promise<void> {
+  const capture = req == null ? undefined : captures.get(req);
+  if (capture == null) {
+    return;
+  }
+  if (signal?.aborted) {
     throw unavailable();
   }
-  onPersisted?.();
+  let abort!: () => void;
+  const cancelled = new Promise<boolean>((resolve) => {
+    abort = () => resolve(false);
+    signal?.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    if (!(await Promise.race([capture.admission, cancelled])) || signal?.aborted) {
+      throw unavailable();
+    }
+  } finally {
+    signal?.removeEventListener('abort', abort);
+  }
+}
+
+export function rejectPrivateTextAdmission(req: object | undefined): void {
+  if (req != null) {
+    captures.get(req)?.admit(false);
+  }
 }
 
 /** Ordinary startup stays immediate; protected revisions are announced only after admission. */

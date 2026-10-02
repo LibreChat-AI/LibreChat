@@ -355,3 +355,78 @@ it.each([
     ).toBe(false);
   });
 });
+
+it('persists native-copy token provenance only from metadata and clears it on canonical edits', async () => {
+  const token = `[EMAIL_1_${'a'.repeat(32)}]`;
+  const conversationId = uuid();
+  const messageId = uuid();
+  const message = {
+    messageId,
+    conversationId,
+    user: 'owner',
+    text: token,
+    isCreatedByUser: true,
+    privateTextTokens: [token],
+    privacyRevision: 'forged',
+    privateText: 'forged',
+  };
+  await tenant('tenant-a', async () => {
+    await methods.bulkSaveMessages([message]);
+    expect(
+      (await methods.getMessages({ messageId, user: 'owner' }, '+privateTextTokens'))[0],
+    ).not.toHaveProperty('privateTextTokens');
+    await methods.bulkSaveMessages([message], true, {
+      privateTextTokens: new Map([[messageId, [token]]]),
+    });
+    const internal = (
+      await methods.getMessages({ messageId, user: 'owner' }, '+privateTextTokens')
+    )[0];
+    expect(internal.privateTextTokens).toEqual([token]);
+    expect(internal).not.toHaveProperty('privacyRevision');
+    expect(internal).not.toHaveProperty('privateText');
+    for (const select of [undefined, CLIENT_MESSAGE_SELECT]) {
+      expect(
+        (await methods.getMessages({ messageId, user: 'owner' }, select))[0],
+      ).not.toHaveProperty('privateTextTokens');
+    }
+    await methods.updateMessageText('owner', { messageId, text: 'Clean edit' });
+    expect(
+      (await methods.getMessages({ messageId, user: 'owner' }, '+privateTextTokens'))[0],
+    ).not.toHaveProperty('privateTextTokens');
+  });
+});
+
+it.each(['saveMessage', 'recordMessage', 'updateMessage', 'bulkSaveMessages'] as const)(
+  'clears native-copy provenance when %s overwrites canonical text',
+  async (writer) => {
+    const token = `[EMAIL_1_${'a'.repeat(32)}]`;
+    const messageId = uuid();
+    const conversationId = uuid();
+    await tenant('tenant-a', async () => {
+      await methods.bulkSaveMessages(
+        [{ user: 'owner', conversationId, messageId, text: token, isCreatedByUser: true }],
+        true,
+        { privateTextTokens: new Map([[messageId, [token]]]) },
+      );
+      const edited = {
+        conversationId,
+        messageId,
+        text: 'Edited text',
+        isCreatedByUser: true,
+        privateTextTokens: [token],
+      };
+      if (writer === 'saveMessage') {
+        await methods.saveMessage({ userId: 'owner' }, edited);
+      } else if (writer === 'recordMessage') {
+        await methods.recordMessage({ user: 'owner', ...edited });
+      } else if (writer === 'updateMessage') {
+        await methods.updateMessage('owner', edited);
+      } else {
+        await methods.bulkSaveMessages([{ user: 'owner', ...edited }]);
+      }
+      expect(
+        (await methods.getMessages({ user: 'owner', messageId }, '+privateTextTokens'))[0],
+      ).not.toHaveProperty('privateTextTokens');
+    });
+  },
+);

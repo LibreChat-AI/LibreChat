@@ -7509,6 +7509,61 @@ describe('AgentClient - titleConvo', () => {
       client.responseMessageId = 'response-123';
     });
 
+    it.each(['failure', 'reject', 'abort', 'success'])(
+      'gates automatic extraction on protected admission: %s',
+      async (outcome) => {
+        const { HumanMessage } = require('@librechat/agents/langchain/messages');
+        const api = require('@librechat/api');
+        const filters = {
+          messages: {
+            pii: {
+              action: 'redact',
+              fields: ['text'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+              ],
+            },
+          },
+        };
+        mockReq.body = { text: 'Remember alice@example.com', clientRequestId: 'memory-private' };
+        mockReq.path = '/';
+        api.createPrivateTextIngress({
+          getFilters: () => filters,
+          getLegacyPii: () => undefined,
+          getKey: () => 'ab'.repeat(32),
+        })(mockReq, { status: jest.fn().mockReturnThis(), json: jest.fn() }, jest.fn());
+        const message = api.stampPrivateTextMessage(mockReq, {
+          text: mockReq.body.text,
+          isCreatedByUser: true,
+          conversationId: 'conversation',
+          messageId: 'user-message',
+        });
+        client.setModelBoundStoredMessages([message]);
+        client.abortController = new AbortController();
+        const extraction = client.runMemory([new HumanMessage(message.text)]);
+        await Promise.resolve();
+        expect(mockProcessMemory).not.toHaveBeenCalled();
+        if (outcome === 'abort') {
+          client.abortController.abort();
+        } else if (outcome === 'reject') {
+          api.rejectPrivateTextAdmission(mockReq);
+        } else if (outcome === 'failure') {
+          await expect(api.getPrivateTextAdmission(mockReq, async () => ({}))()).rejects.toThrow();
+        } else {
+          await api.getPrivateTextAdmission(mockReq, async () => ({ message }))();
+        }
+        await extraction;
+        expect(mockProcessMemory).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+        if (outcome === 'success') {
+          expect(mockProcessMemory.mock.calls[0][2]).toEqual(
+            api.getPrivateTextInspectionTokens([message]),
+          );
+          expect(mockProcessMemory.mock.calls[0][3]).toBe(client.abortController.signal);
+        }
+      },
+    );
+
     it('should filter out image URLs from message content', async () => {
       const { HumanMessage, AIMessage } = require('@librechat/agents/langchain/messages');
       const messages = [

@@ -70,6 +70,7 @@ function sanitizeImportedMessage(message) {
   delete importable.contextMeta;
   delete importable.privateText;
   delete importable.privacyRevision;
+  delete importable.privateTextTokens;
   return {
     ...importable,
     isUserSubmitted: true,

@@ -1602,7 +1602,7 @@ describe('BaseClient', () => {
 
       const chatMessages = await TestClient.loadHistory(conversationId, '1');
 
-      expect(getMessages).toHaveBeenCalledWith({ conversationId, user });
+      expect(getMessages).toHaveBeenCalledWith({ conversationId, user }, '+privateTextTokens');
       expect(chatMessages).toHaveLength(1);
       expect(chatMessages[0].text).toBe('Hello');
     });

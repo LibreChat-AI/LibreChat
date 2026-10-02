@@ -120,6 +120,7 @@ export type ShareContentPreflight = (
       readonly text?: string;
       readonly isCreatedByUser?: boolean;
       readonly privacyRevision?: string;
+      readonly privateTextTokens?: readonly string[];
     }[];
   },
 ) => Promise<void>;

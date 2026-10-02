@@ -63,6 +63,7 @@ export interface IMessage extends Document {
   /** Authenticated ciphertext, available only through the owner-view read. */
   privateText?: string;
   privacyRevision?: string;
+  privateTextTokens?: string[];
   isCreatedByUser: boolean;
   /** True when the complete stored row came from outside the model. */
   isUserSubmitted?: boolean;

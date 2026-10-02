@@ -61,6 +61,7 @@ const messageSchema: Schema<IMessage> = new Schema(
     },
     privateText: { type: String, select: false },
     privacyRevision: { type: String },
+    privateTextTokens: { type: [String], select: false, default: undefined },
     isCreatedByUser: {
       type: Boolean,
       required: true,

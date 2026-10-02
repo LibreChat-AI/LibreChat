@@ -36,6 +36,7 @@ const {
   stampPrivateTextMessage,
   deferPrivateTextStart,
   requirePrivateTextPersistence,
+  rejectPrivateTextAdmission,
   persistedReasoningOverrideFields,
 } = require('@librechat/api');
 const {
@@ -1053,6 +1054,7 @@ class BaseClient {
 
       completionResult = await this.sendCompletion(payload, opts);
     } catch (error) {
+      rejectPrivateTextAdmission(this.options.req);
       if (userMessagePersistence?.isPending()) {
         if (isContentFilterError(error)) {
           userMessagePersistence.cancel();
@@ -1287,7 +1289,8 @@ class BaseClient {
       return [];
     }
 
-    const messages = (await db.getMessages({ conversationId, user: this.user })) ?? [];
+    const messages =
+      (await db.getMessages({ conversationId, user: this.user }, '+privateTextTokens')) ?? [];
     /** A client that reads beyond the walk below (which stops at a checkpoint
      *  summary) receives every row here; the rest keep nothing. */
     this.onHistoryLoaded?.(messages);

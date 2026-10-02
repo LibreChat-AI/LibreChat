@@ -12,6 +12,8 @@ import {
   isPrivateTextChatSubmission,
   getPreinspectedPrivateText,
   getPrivateTextAdmission,
+  requirePrivateTextAdmission,
+  rejectPrivateTextAdmission,
   getPrivateTextInspectionTokens,
   privateTextBinding,
 } from './submission';
@@ -450,6 +452,43 @@ describe('private text submission boundary', () => {
     );
     expect(getPrivateTextAdmission(undefined, undefined)).toBeUndefined();
     expect(getPrivateTextAdmission({}, undefined)).toBeUndefined();
+  });
+
+  it.each(['failure', 'rejection', 'abort'])(
+    'suppresses side effects on protected %s',
+    async (outcome) => {
+      const { req, message } = submit();
+      const abortController = new AbortController();
+      const sideEffect = jest.fn();
+      const pending = requirePrivateTextAdmission(req, abortController.signal).then(sideEffect);
+      await Promise.resolve();
+      expect(sideEffect).not.toHaveBeenCalled();
+      if (outcome === 'abort') {
+        abortController.abort();
+      } else {
+        rejectPrivateTextAdmission(req);
+      }
+      await expect(pending).rejects.toThrow();
+      expect(sideEffect).not.toHaveBeenCalled();
+      expect(message.text).not.toContain(original);
+    },
+  );
+
+  it('holds optional side effects until the admitted atomic write finishes', async () => {
+    const { req, message } = submit();
+    const sideEffect = jest.fn();
+    const waiting = requirePrivateTextAdmission(req).then(sideEffect);
+    let finish!: (result: { message: typeof message }) => void;
+    const write = new Promise<{ message: typeof message }>((resolve) => {
+      finish = resolve;
+    });
+    const admitted = getPrivateTextAdmission(req, () => write)!();
+    await Promise.resolve();
+    expect(sideEffect).not.toHaveBeenCalled();
+    finish({ message });
+    await admitted;
+    await waiting;
+    expect(sideEffect).toHaveBeenCalledTimes(1);
   });
 
   it('rejects stale or swallowed persistence results, including a duplicate ID with different text', async () => {

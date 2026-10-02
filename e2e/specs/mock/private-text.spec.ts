@@ -306,3 +306,115 @@ test('an unchanged unprotected transcript still downloads a PNG screenshot', asy
     }
   }
 });
+
+test('native copies retain canonical token trust without copying owner originals', async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(120000);
+  const token = await loginAdmin(request);
+  const copies: string[] = [];
+  await setRuntimeFilters(request, token, {
+    messages: {
+      pii: {
+        action: 'redact',
+        fields: ['text'],
+        starterPatterns: [],
+        customPatterns: [
+          { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+          { id: 'hex', label: 'Credential', regex: '[a-f0-9]{32}', category: 'credential' },
+        ],
+      },
+    },
+  });
+  try {
+    await page.goto('/c/new');
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    const response = await sendMessageAndWaitForCompletion(page, original);
+    const source = (await response.json()).conversationId as string;
+    copies.push(source);
+    const sourceMessages = await fetchJson<TMessage[]>(page, `/api/messages/${source}`, token);
+    const sourceUser = sourceMessages.find((message) => message.isCreatedByUser)!;
+    const duplicate = await requestResult(request, {
+      path: '/api/convos/duplicate',
+      token,
+      method: 'POST',
+      data: { conversationId: source },
+    });
+    expect(duplicate.ok).toBe(true);
+    const copied = duplicate.body as {
+      conversation: { conversationId: string };
+      messages: TMessage[];
+    };
+    const duplicateId = copied.conversation.conversationId;
+    copies.push(duplicateId);
+    const fork = await requestResult(request, {
+      path: '/api/convos/fork',
+      token,
+      method: 'POST',
+      data: { conversationId: source, messageId: sourceMessages.at(-1)!.messageId },
+    });
+    expect(fork.ok).toBe(true);
+    copies.push((fork.body as typeof copied).conversation.conversationId);
+    expect(JSON.stringify([duplicate.body, fork.body])).not.toContain('alice@example.com');
+    expect(JSON.stringify([duplicate.body, fork.body])).not.toContain('privateText');
+    expect(JSON.stringify([duplicate.body, fork.body])).not.toContain('privacyRevision');
+    await withMongo(async (db) => {
+      const row = await db
+        .collection('messages')
+        .findOne({ conversationId: duplicateId, isCreatedByUser: true });
+      expect(row?.text).toBe(sourceUser.text);
+      expect(row?.privateTextTokens).toEqual([
+        sourceUser.text.match(/\[(?:EMAIL|PHONE|NAME|CREDENTIAL|CUSTOM)_\d+_[a-f0-9]{32}\]/)![0],
+      ]);
+      expect(row?.privacyRevision).toBeUndefined();
+      expect(row?.privateText).toBeUndefined();
+    });
+    await page.goto(`/c/${duplicateId}`);
+    await sendMessageAndWaitForCompletion(page, 'Safe copied-history follow-up');
+    await expect(
+      messagesView(page).getByText('E2E private model input verified', { exact: true }).last(),
+    ).toBeVisible();
+    const canonical = await fetchJson<TMessage[]>(page, `/api/messages/${duplicateId}`, token);
+    expect(JSON.stringify(canonical)).not.toContain('privateText');
+    expect(JSON.stringify(canonical)).not.toContain('alice@example.com');
+    const share = await requestResult(request, {
+      path: `/api/share/${duplicateId}`,
+      token,
+      method: 'POST',
+      data: {},
+    });
+    expect(share.ok).toBe(true);
+    const shareId = (share.body as { shareId: string }).shareId;
+    const published = await requestResult(request, { path: `/api/share/${shareId}`, token });
+    expect(published.ok).toBe(true);
+    expect(published.text).not.toContain('privateText');
+    const sharedFork = await requestResult(request, {
+      path: `/api/share/${shareId}/fork`,
+      token,
+      method: 'POST',
+      data: {},
+    });
+    expect(sharedFork.ok).toBe(true);
+    copies.push((sharedFork.body as typeof copied).conversation.conversationId);
+    expect(sharedFork.text).not.toContain('privateText');
+    const repeated = await requestResult(request, {
+      path: '/api/convos/duplicate',
+      token,
+      method: 'POST',
+      data: { conversationId: duplicateId },
+    });
+    expect(repeated.ok).toBe(true);
+    copies.push((repeated.body as typeof copied).conversation.conversationId);
+  } finally {
+    await restoreRuntimeFilters(request, token);
+    for (const conversationId of copies) {
+      await requestResult(request, {
+        path: '/api/convos',
+        token,
+        method: 'DELETE',
+        data: { arg: { conversationId } },
+      });
+    }
+  }
+});

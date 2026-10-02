@@ -310,7 +310,11 @@ function buildMessageSaveUpdate(
     ...((options.unsetContextMeta || options.unsetPrivateText) && {
       $unset: {
         ...(options.unsetContextMeta && { contextMeta: 1 }),
-        ...(options.unsetPrivateText && { privateText: 1, privacyRevision: 1 }),
+        ...(options.unsetPrivateText && {
+          privateText: 1,
+          privacyRevision: 1,
+          ...(update.privateTextTokens === undefined && { privateTextTokens: 1 }),
+        }),
       },
     }),
   };
@@ -403,7 +407,11 @@ async function findOneAndMergeMessageProvenance(
           ...((options.unsetContextMeta || options.unsetPrivateText) && {
             $unset: {
               ...(options.unsetContextMeta && { contextMeta: 1 }),
-              ...(options.unsetPrivateText && { privateText: 1, privacyRevision: 1 }),
+              ...(options.unsetPrivateText && {
+                privateText: 1,
+                privacyRevision: 1,
+                ...(update.privateTextTokens === undefined && { privateTextTokens: 1 }),
+              }),
             },
           }),
         },
@@ -513,6 +521,7 @@ export const CLIENT_MESSAGE_SELECT: string = [
   '-summary',
   '-summaryTokenCount',
   '-privateText',
+  '-privateTextTokens',
   '-contextMeta',
   '-langfuseSampled',
   '-langfuseDestinationIds',
@@ -803,6 +812,7 @@ export interface MessageMethods {
   bulkSaveMessages(
     messages: Array<Partial<IMessage>>,
     overrideTimestamp?: boolean,
+    provenance?: { privateTextTokens: ReadonlyMap<string, readonly string[]> },
   ): Promise<unknown>;
   recordMessage(params: {
     user: string;
@@ -1140,6 +1150,7 @@ export function createMessageMethods(
       };
       delete update.privateText;
       delete update.privacyRevision;
+      delete update.privateTextTokens;
       if (metadata?.privateText != null) {
         if (params.isCreatedByUser !== true || typeof params.text !== 'string') {
           throw new Error('Private text requires a user message.');
@@ -1351,6 +1362,7 @@ export function createMessageMethods(
   async function bulkSaveMessages(
     messages: Array<Record<string, unknown>>,
     overrideTimestamp = false,
+    provenance?: { privateTextTokens: ReadonlyMap<string, readonly string[]> },
   ) {
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
@@ -1358,22 +1370,37 @@ export function createMessageMethods(
         const normalizedMessage = sanitizeMessageUpdate(message);
         delete normalizedMessage.privateText;
         delete normalizedMessage.privacyRevision;
-        const provenance = capNormalizedProvenance(
+        delete normalizedMessage.privateTextTokens;
+        const tokens = provenance?.privateTextTokens.get(String(message.messageId));
+        const text = message.text;
+        if (
+          tokens?.length &&
+          tokens.length <= 4096 &&
+          message.isCreatedByUser === true &&
+          typeof text === 'string'
+        ) {
+          normalizedMessage.privateTextTokens = tokens.filter(
+            (token) =>
+              /^\[(?:EMAIL|PHONE|NAME|CREDENTIAL|CUSTOM)_\d+_[a-f0-9]{32}\]$/.test(token) &&
+              text.includes(token),
+          );
+        }
+        const submittedProvenance = capNormalizedProvenance(
           normalizeUserSubmittedPaths(message.userSubmittedPaths),
           normalizeUserSubmittedMessageFieldPaths(message.userSubmittedMessageFieldPaths),
         );
-        if (provenance.userSubmittedPaths.length > 0) {
-          normalizedMessage.userSubmittedPaths = provenance.userSubmittedPaths;
+        if (submittedProvenance.userSubmittedPaths.length > 0) {
+          normalizedMessage.userSubmittedPaths = submittedProvenance.userSubmittedPaths;
         } else {
           delete normalizedMessage.userSubmittedPaths;
         }
-        if (provenance.userSubmittedMessageFieldPaths.length > 0) {
+        if (submittedProvenance.userSubmittedMessageFieldPaths.length > 0) {
           normalizedMessage.userSubmittedMessageFieldPaths =
-            provenance.userSubmittedMessageFieldPaths;
+            submittedProvenance.userSubmittedMessageFieldPaths;
         } else {
           delete normalizedMessage.userSubmittedMessageFieldPaths;
         }
-        if (provenance.promoteWholeMessage) {
+        if (submittedProvenance.promoteWholeMessage) {
           normalizedMessage.isUserSubmitted = true;
         }
         return {
@@ -1385,7 +1412,11 @@ export function createMessageMethods(
             update: {
               $set: normalizedMessage,
               $inc: { __v: 1 },
-              $unset: { privateText: 1, privacyRevision: 1 },
+              $unset: {
+                privateText: 1,
+                privacyRevision: 1,
+                ...(normalizedMessage.privateTextTokens == null && { privateTextTokens: 1 }),
+              },
             },
             timestamps: !overrideTimestamp,
             upsert: true,
@@ -1446,6 +1477,7 @@ export function createMessageMethods(
       for (const op of guarded) {
         await writeMessage(op.updateOne.filter, op.updateOne.update.$set, {
           upsert: true,
+          unsetPrivateText: true,
           timestamps: !overrideTimestamp,
           onWrite: (inserted, id) => {
             if (inserted) {
@@ -1508,6 +1540,7 @@ export function createMessageMethods(
       } = rest;
       delete safeRest.privateText;
       delete safeRest.privacyRevision;
+      delete safeRest.privateTextTokens;
       const message = {
         user,
         endpoint,
@@ -2461,6 +2494,7 @@ export function createMessageMethods(
       const { messageId, ...update } = message;
       delete update.privateText;
       delete update.privacyRevision;
+      delete update.privateTextTokens;
       const updatedMessage = await writeMessage({ messageId, user: userId }, update, {
         upsert: false,
         unsetPrivateText: Object.prototype.hasOwnProperty.call(update, 'text'),
