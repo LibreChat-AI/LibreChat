@@ -97,6 +97,7 @@ import useEventHandlers, {
 } from './useEventHandlers';
 import { drainAfterAbortByIndex, queuedMessagesByConvoId, runEndByIndex } from '~/hooks/Chat/queue';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { withSubmittedCodeDecision } from '~/hooks/Agents/codeDecision';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { liveAppliedSteerIdsAtom } from '~/store/steer';
@@ -582,7 +583,7 @@ const buildOptimisticConversation = (
   ].filter((messageId): messageId is string => typeof messageId === 'string' && messageId !== '');
 
   return {
-    ...submission.conversation,
+    ...withSubmittedCodeDecision(submission.conversation, submission),
     conversationId,
     endpoint: submission.conversation.endpoint ?? null,
     title: submission.conversation.title ?? 'New Chat',
