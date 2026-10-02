@@ -3,7 +3,9 @@ import {
   isCodeWorkspaceSelection,
   canonicalizeCodeWorkspaceSelections,
 } from './workspace';
+import { EModelEndpoint, tConvoUpdateSchema } from '../schemas';
 import { appendAgentIdSuffix } from '../agents/identity';
+import createPayload from '../createPayload';
 
 describe('chat machine selection', () => {
   it.each(['source', 'isolated'] as const)(
@@ -12,6 +14,22 @@ describe('chat machine selection', () => {
       const selection = { environmentId: 'vm', workspaceId: 'repo', checkout };
       expect(isCodeWorkspaceSelection(selection)).toBe(true);
       expect(canonicalizeCodeWorkspaceSelections([selection])).toEqual([selection]);
+      const conversation = {
+        conversationId: null,
+        endpoint: EModelEndpoint.agents,
+        endpointType: null,
+        codeWorkspaces: [selection],
+      };
+      expect(tConvoUpdateSchema.parse(conversation).codeWorkspaces).toEqual([selection]);
+      expect(
+        createPayload({
+          conversation,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          userMessage: { text: 'hello' },
+          codeEnvironmentMode: 'attached',
+          codeWorkspaces: [selection],
+        } as Parameters<typeof createPayload>[0]).payload.codeWorkspaces,
+      ).toEqual([selection]);
     },
   );
 

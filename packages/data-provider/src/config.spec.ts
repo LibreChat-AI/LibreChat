@@ -963,6 +963,13 @@ describe('attached code environment user config schema', () => {
     });
   });
 
+  it('keeps checkout selection disabled by default without creating workspace policy', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({})).not.toHaveProperty('workspaces');
+    expect(codeEnvironmentUserConfigSchema.parse({ workspaces: {} }).workspaces).toEqual({
+      allowCheckoutSelection: false,
+    });
+  });
+
   it.each([
     [{ linkedWorktrees: true }, true],
     [{ allowCheckoutSelection: true }, true],

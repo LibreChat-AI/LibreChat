@@ -103,10 +103,11 @@ function describeTransition(
 /** A sole advertised workspace is the only valid pick, so it counts as chosen until changed. */
 function chosenWorkspaceId(
   target: CodeWorkspaceEnvironmentResult,
-  choices: Record<string, string>,
+  choices: Record<string, CodeWorkspaceSelection>,
 ): string | undefined {
   const choice = choices[target.environment.id];
-  if (choice != null && target.workspaces.some(({ id }) => id === choice)) return choice;
+  if (choice != null && target.workspaces.some(({ id }) => id === choice.workspaceId))
+    return choice.workspaceId;
   return target.workspaces.length === 1 ? target.workspaces[0].id : undefined;
 }
 
@@ -207,9 +208,9 @@ function EnvironmentWorkspaces({
                       key={mode}
                       name={`codeCheckout:${environment.id}`}
                       value={mode}
-                      checked={(checkout ?? 'isolated') === mode}
-                      hideOnClick={true}
-                      className={menuItemClasses((checkout ?? 'isolated') === mode)}
+                      checked={checkout === mode}
+                      hideOnClick={hideOnClick}
+                      className={menuItemClasses(checkout === mode)}
                       onChange={() =>
                         onSelect({
                           environmentId: environment.id,
@@ -234,7 +235,7 @@ function EnvironmentWorkspaces({
                           )}
                         </p>
                       </div>
-                      {(checkout ?? 'isolated') === mode && (
+                      {checkout === mode && (
                         <Check
                           className="text-text-primary mt-0.5 size-4 shrink-0"
                           aria-hidden="true"
@@ -298,7 +299,7 @@ export default function CodeWorkspaceMenu({
   const { refresh, isRefreshing } = useCodeWorkspaceRefresh();
   const [moveDraft, setMoveDraft] = useState<{
     conversationId: string;
-    workspaces: Record<string, string>;
+    workspaces: Record<string, CodeWorkspaceSelection>;
   } | null>(null);
 
   if (!workspace.visible) return null;
@@ -393,6 +394,12 @@ export default function CodeWorkspaceMenu({
             {
               environmentId: target.environment.id,
               workspaceId,
+              checkout:
+                moveChoices[target.environment.id]?.checkout ??
+                transition.from?.find(
+                  ({ environmentId }) => environmentId === target.environment.id,
+                )?.checkout ??
+                (transition.from?.length === 1 ? transition.from[0].checkout : undefined),
               ...(target.selectionOwners?.length ? { agentIds: target.selectionOwners } : {}),
             },
           ];
@@ -450,6 +457,15 @@ export default function CodeWorkspaceMenu({
   if (onlyEnvironment?.selected?.checkout != null) {
     label = `${label} · ${localize(onlyEnvironment.selected.checkout === 'isolated' ? 'com_ui_code_checkout_isolated' : 'com_ui_code_checkout_source')}`;
   }
+  const checkoutSummaries = workspace.environments.flatMap(
+    ({ environment, selected, workspaces }) => {
+      if (selected?.checkout == null) return [];
+      const descriptor = workspaces.find(({ id }) => id === selected.workspaceId);
+      return [
+        `${environment.name ?? environment.id} · ${descriptor?.name ?? selected.workspaceId} · ${localize(selected.checkout === 'isolated' ? 'com_ui_code_checkout_isolated' : 'com_ui_code_checkout_source')}`,
+      ];
+    },
+  );
   const Icon =
     workspace.mode === 'without_attached' ||
     workspace.state === 'missing' ||
@@ -509,17 +525,23 @@ export default function CodeWorkspaceMenu({
               aria-label={`${label}. ${recovery}. ${localize('com_ui_retry')}`}
               aria-describedby={requirements.length > 0 ? requirementsId : undefined}
               aria-busy={isRefreshing}
-              className={cn(composerControlClasses(), 'min-w-0 max-w-full px-2.5')}
+              className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')}
             />
           }
         >
           <Icon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-          <span role="status" className="min-w-0 max-w-[16rem] truncate">
+          <span role="status" className="max-w-[16rem] min-w-0 truncate">
             {label}
           </span>
           <RefreshCw className="text-text-secondary size-3 shrink-0" aria-hidden="true" />
         </TooltipAnchor>
         <WorkspaceRequirements id={requirementsId} requirements={requirements} />
+        {workspace.environments.length > 1 && (
+          <WorkspaceRequirements
+            id={`${requirementsId}-checkouts`}
+            requirements={checkoutSummaries}
+          />
+        )}
       </div>
     );
   }
@@ -552,7 +574,7 @@ export default function CodeWorkspaceMenu({
               }
               className={cn(
                 composerControlClasses(),
-                'min-w-0 max-w-full px-2.5 md:px-theme-control-x',
+                'md:px-theme-control-x max-w-full min-w-0 px-2.5',
                 isOpen && 'bg-surface-hover',
                 buttonDisabled && 'cursor-not-allowed opacity-50',
               )}
@@ -560,7 +582,7 @@ export default function CodeWorkspaceMenu({
           }
         >
           <ButtonIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 max-w-[12rem] truncate">{buttonLabel}</span>
+          <span className="max-w-[12rem] min-w-0 truncate">{buttonLabel}</span>
           <ChevronDown
             className={cn(
               'text-text-secondary size-3 shrink-0 transition-transform',
@@ -576,7 +598,7 @@ export default function CodeWorkspaceMenu({
         gutter={8}
         unmountOnHide={true}
         className={cn(
-          'z-50 flex min-w-[280px] max-w-[min(360px,calc(100vw-2rem))] flex-col rounded-xl',
+          'z-50 flex max-w-[min(360px,calc(100vw-2rem))] min-w-[280px] flex-col rounded-xl',
           'border-border-light bg-presentation max-h-[var(--popover-available-height)] overflow-y-auto border p-1.5 shadow-lg',
           'origin-bottom opacity-0 transition-[opacity,transform] duration-200 ease-out',
           'data-[enter]:scale-100 data-[enter]:opacity-100',
@@ -598,10 +620,25 @@ export default function CodeWorkspaceMenu({
                 emptyLabel={localize('com_ui_code_workspace_unavailable')}
                 hideOnClick={false}
                 isSelected={(workspaceId) => chosenWorkspaceId(target, moveChoices) === workspaceId}
-                onSelect={({ environmentId, workspaceId }) =>
+                allowCheckoutSelection={true}
+                checkout={
+                  chosenTargets.find(({ environmentId }) => environmentId === target.environment.id)
+                    ?.checkout
+                }
+                onSelect={(selection) =>
                   setMoveDraft({
                     conversationId: transition.conversationId,
-                    workspaces: { ...moveChoices, [environmentId]: workspaceId },
+                    workspaces: {
+                      ...moveChoices,
+                      [selection.environmentId]: {
+                        ...selection,
+                        checkout:
+                          selection.checkout ??
+                          chosenTargets.find(
+                            ({ environmentId }) => environmentId === selection.environmentId,
+                          )?.checkout,
+                      },
+                    },
                   })
                 }
               />
@@ -774,6 +811,12 @@ export default function CodeWorkspaceMenu({
           </span>
         </Ariakit.MenuItem>
       </Ariakit.Menu>
+      {workspace.environments.length > 1 && (
+        <WorkspaceRequirements
+          id={`${requirementsId}-checkouts`}
+          requirements={checkoutSummaries}
+        />
+      )}
     </Ariakit.MenuProvider>
   );
 }

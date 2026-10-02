@@ -1352,7 +1352,7 @@ export const codeEnvironmentUserConfigSchema = z
         linkedWorktrees: z.boolean().optional(),
         /** Permit explicit per-conversation checkout choices after every API replica supports
          * them. Omission preserves automatic worker isolation and hides the selector. */
-        allowCheckoutSelection: z.boolean().optional(),
+        allowCheckoutSelection: z.boolean().optional().default(false),
       })
       .strict()
       .optional(),

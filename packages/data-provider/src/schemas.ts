@@ -1202,6 +1202,7 @@ export const tConversationSchema = z.object({
         .object({
           environmentId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
           workspaceId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
+          checkout: z.enum(['source', 'isolated']).optional(),
           agentIds: z
             .array(z.string().regex(CODE_WORKSPACE_ID_PATTERN))
             .min(1)
