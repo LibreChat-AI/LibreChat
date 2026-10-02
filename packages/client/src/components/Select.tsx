@@ -27,7 +27,7 @@ const SelectTrigger: React.ForwardRefExoticComponent<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      'border-border-control ring-offset-surface-primary placeholder:text-text-secondary focus-visible:ring-focus-control flex h-9 w-full items-center justify-between rounded-md border bg-transparent px-3 py-2 text-sm whitespace-nowrap shadow-xs focus-visible:ring-2 focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1',
+      'border-border-control ring-offset-surface-primary placeholder:text-text-secondary focus-visible:ring-focus-control h-theme-control flex w-full items-center justify-between rounded-md border bg-transparent px-3 py-2 text-sm whitespace-nowrap shadow-xs focus-visible:ring-2 focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1',
       disabledFillClasses,
       'hover:bg-surface-hover rounded-lg',
       className,
@@ -36,7 +36,7 @@ const SelectTrigger: React.ForwardRefExoticComponent<
   >
     {children}
     <SelectPrimitive.Icon asChild>
-      <CaretSortIcon className="h-4 w-4 opacity-50" />
+      <CaretSortIcon className="size-theme-icon opacity-50" />
     </SelectPrimitive.Icon>
   </SelectPrimitive.Trigger>
 ));
@@ -151,7 +151,7 @@ const SelectItem: React.ForwardRefExoticComponent<
   >
     <span className="absolute right-2 flex h-3.5 w-3.5 items-center justify-center">
       <SelectPrimitive.ItemIndicator>
-        <CheckIcon className="h-4 w-4" />
+        <CheckIcon className="size-theme-icon" />
       </SelectPrimitive.ItemIndicator>
     </span>
     <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>

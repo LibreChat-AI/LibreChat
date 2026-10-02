@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useStore } from 'jotai';
+import { useStore, useAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSetRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
 import {
@@ -43,6 +43,7 @@ import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { revealedQueuedTurnFamily } from '~/store/steer';
+import { resumeRequestsAtom } from '~/hooks/Chat/resume';
 import { useFileMapContext } from '~/Providers';
 import store from '~/store';
 
@@ -1227,6 +1228,53 @@ export default function useResumeOnLoad(
     attachedGenerationCreatedAt,
     activeJobsUpdatedAt,
     receiptSignature,
+    setSubmission,
+    queryClient,
+  ]);
+
+  /**
+   * An explicit `resumeStream` request takes the announcement's path: the
+   * status read decides whether anything is running, and the effect above
+   * builds the resume submission that `useResumableSSE` attaches through the
+   * host transport. The request is consumed either way: one made while this
+   * pane is already attached is answered by that attachment.
+   */
+  const [resumeRequests, setResumeRequests] = useAtom(resumeRequestsAtom);
+  const resumeRequested = !!conversationId && resumeRequests.has(conversationId);
+  /** The route can name a conversation before this pane has loaded it; until then the endpoint
+   *  that decides resumability is the previous conversation's, so the request waits. */
+  const routeConversationLoaded = currentConversation?.conversationId === conversationId;
+  useEffect(() => {
+    if (!resumeRequested || !conversationId || !routeConversationLoaded) {
+      return;
+    }
+    setResumeRequests((pending) => {
+      const next = new Set(pending);
+      next.delete(conversationId);
+      return next;
+    });
+    if (!resumableEnabled || conversationId === Constants.NEW_CONVO) {
+      return;
+    }
+    if (hasLiveSubmissionForThisConvo) {
+      return;
+    }
+    /** A finished submission still installed reads as attached to the check above. */
+    if (hasActiveSubmissionForThisConvo) {
+      setSubmission(null);
+    }
+    queryClient.invalidateQueries({ queryKey: streamStatusQueryKey(conversationId) });
+    queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, conversationId] });
+    processedConvoRef.current = null;
+    setExternalRunArm((arm) => arm + 1);
+  }, [
+    conversationId,
+    resumeRequested,
+    routeConversationLoaded,
+    setResumeRequests,
+    resumableEnabled,
+    hasActiveSubmissionForThisConvo,
+    hasLiveSubmissionForThisConvo,
     setSubmission,
     queryClient,
   ]);

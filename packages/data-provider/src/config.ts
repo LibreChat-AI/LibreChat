@@ -75,6 +75,18 @@ export {
 
 export const defaultSocialLogins = ['google', 'facebook', 'openid', 'github', 'discord', 'saml'];
 
+export const TWO_FACTOR_ENROLLMENT_REQUIRED_CODE = 'TWO_FACTOR_ENROLLMENT_REQUIRED' as const;
+
+/** A federated record was refused a password login, so the only way in is its identity provider. */
+export const TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE =
+  'TWO_FACTOR_FEDERATED_LOGIN_BLOCKED' as const;
+
+const TWO_FACTOR_POLICY_PROVIDERS = new Set(['local', 'ldap']);
+
+export function isTwoFactorPolicyProvider(provider: string | null | undefined): boolean {
+  return provider == null || TWO_FACTOR_POLICY_PROVIDERS.has(provider);
+}
+
 /** How long a started social login may take to return to its callback before its `state` expires. */
 export const DEFAULT_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -1219,6 +1231,10 @@ const codeEnvironmentPermissionFieldSchema = z
 export const CODE_ENVIRONMENT_COMMAND_TIMEOUT_DEFAULT_MS = 30_000;
 /** Protocol-level ceiling; deployments may only lower this value. */
 export const CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS = 5 * 60_000;
+/** Historical line window for attached workspace reads. */
+export const CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES = 200;
+/** Protocol-v1 read ceiling supported by existing workers. */
+export const CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES = 500;
 /**
  * Client retry horizon across Code API admission windows. Also the hard cap:
  * deployments may only lower it. `0` disables client retries, not the server's
@@ -1253,6 +1269,22 @@ export const codeEnvironmentUserConfigSchema = z
       .optional(),
     limits: z
       .object({
+        /** Foreground Bash timeout when the call omits timeoutMs. Omission keeps 30 seconds;
+         * the effective command ceiling may lower this value. */
+        defaultCommandTimeoutMs: z
+          .number()
+          .int()
+          .min(1)
+          .max(CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS)
+          .optional(),
+        /** Attached read_file line window when max_lines is omitted. Omission keeps 200 lines;
+         * the existing byte budget can truncate the result sooner. */
+        defaultReadFileLines: z
+          .number()
+          .int()
+          .min(1)
+          .max(CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES)
+          .optional(),
         /** Maximum timeout a Bash invocation may request. Omission preserves
          * the historical 30-second command budget. */
         maxCommandTimeoutMs: z
@@ -1931,6 +1963,17 @@ export type TVertexAIConfig = TVertexAISchema & {
  * Anthropic endpoint schema with optional Vertex AI configuration.
  * Extends baseEndpointSchema with Vertex AI support.
  */
+/**
+ * A built-in endpoint whose configured `models` list replaces its `*_MODELS`
+ * environment list. Read from the per-request config, so principal overrides
+ * can narrow it.
+ */
+export const modelListEndpointSchema = baseEndpointSchema.merge(
+  z.object({
+    models: z.array(z.string()).optional(),
+  }),
+);
+
 export const anthropicEndpointSchema = baseEndpointSchema.merge(
   z.object({
     /** Vertex AI configuration for running Anthropic models on Google Cloud */
@@ -2431,6 +2474,10 @@ export const interfaceSchema = z
     webSearch: z.boolean().optional(),
     contextUsage: z.boolean().optional(),
     contextCost: z.boolean().optional(),
+    /** Opening the artifacts pane in its own browser window. Enabled by
+     *  default; a deployment that cannot use popups can turn it off and keep
+     *  the docked pane. */
+    artifactUndocking: z.boolean().optional(),
     feedback: z.boolean().optional(),
     currency: z
       .object({
@@ -2620,6 +2667,7 @@ export const interfaceSchema = z
     webSearch: true,
     contextUsage: true,
     contextCost: false,
+    artifactUndocking: true,
     feedback: true,
     peoplePicker: {
       users: true,
@@ -2858,6 +2906,7 @@ export type TStartupConfig = {
   registrationEnabled: boolean;
   socialLoginEnabled: boolean;
   passwordResetEnabled: boolean;
+  twoFactorAuthenticationRequired?: boolean;
   emailEnabled: boolean;
   allowEmailChange: boolean;
   showBirthdayIcon: boolean;
@@ -2931,7 +2980,7 @@ export type TStartupConfig = {
 
 export type TSharedLinkStartupInterface = Pick<
   Partial<TInterfaceConfig>,
-  'privacyPolicy' | 'termsOfService' | 'codeHighlightThrottleMs' | 'theme'
+  'privacyPolicy' | 'termsOfService' | 'codeHighlightThrottleMs' | 'theme' | 'artifactUndocking'
 >;
 
 export type TSharedLinkStartupConfig = Pick<TStartupConfig, 'appTitle'> &
@@ -3703,8 +3752,8 @@ export const configSchema = z.object({
        * endpoint > a custom endpoint's own config.
        */
       all: baseEndpointSchema.omit({ baseURL: true }).optional(),
-      [EModelEndpoint.openAI]: baseEndpointSchema.optional(),
-      [EModelEndpoint.google]: baseEndpointSchema.optional(),
+      [EModelEndpoint.openAI]: modelListEndpointSchema.optional(),
+      [EModelEndpoint.google]: modelListEndpointSchema.optional(),
       [EModelEndpoint.anthropic]: anthropicEndpointSchema.optional(),
       [EModelEndpoint.azureOpenAI]: azureEndpointSchema.optional(),
       [EModelEndpoint.azureAssistants]: assistantEndpointSchema.optional(),

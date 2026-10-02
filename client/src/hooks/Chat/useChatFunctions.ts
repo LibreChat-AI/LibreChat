@@ -679,10 +679,11 @@ export default function useChatFunctions({
       currentMsg.files = [...submissionFiles];
       /** Queued override files were consumed just like composer files, so mark their identities
        * as submitted before later draft cleanup can classify the restored paste as unsent. */
-      submissionFiles.forEach((file) => {
-        markPasteSubmitted(file.file_id);
-        markPasteSubmitted(file.temp_file_id);
-      });
+      const submittedFileIds: (string | undefined)[] = [];
+      for (const file of submissionFiles) {
+        submittedFileIds.push(file.file_id, file.temp_file_id);
+      }
+      markPasteSubmitted(...submittedFileIds);
       // Caller-supplied overrideFiles were consumed elsewhere (queued
       // during-run messages take theirs out of the composer at queue time);
       // clearing here would eat attachments staged for the user's NEXT send.
@@ -696,22 +697,22 @@ export default function useChatFunctions({
       // `overrideFiles` (even empty) is authoritative for the submission:
       // auto-drained queued messages must never vacuum up attachments the
       // user has staged in the composer for their NEXT message.
-      currentMsg.files = Array.from(files.values()).map((file) => ({
-        file_id: file.file_id,
-        filepath: file.filepath,
-        filename: file.filename,
-        type: file.type ?? '', // Ensure type is not undefined
-        llmDeliveryPath: file.llmDeliveryPath,
-        height: file.height,
-        width: file.width,
-      }));
-      /** The draft keeps a paste's provenance after the map is emptied, so discarding later has
-       * to be able to tell what this message already took with it. */
-      files.forEach((file, key) => {
-        markPasteSubmitted(key);
-        markPasteSubmitted(file.file_id);
-        markPasteSubmitted(file.temp_file_id);
-      });
+      const submittedFileIds: (string | undefined)[] = [];
+      currentMsg.files = [];
+      for (const [key, file] of files) {
+        currentMsg.files.push({
+          file_id: file.file_id,
+          filepath: file.filepath,
+          filename: file.filename,
+          type: file.type ?? '',
+          llmDeliveryPath: file.llmDeliveryPath,
+          height: file.height,
+          width: file.width,
+        });
+        submittedFileIds.push(key, file.file_id, file.temp_file_id);
+      }
+      // Publish every alias before clearing the composer or its draft.
+      markPasteSubmitted(...submittedFileIds);
       setFiles(new Map());
       setFilesToDelete({});
     }

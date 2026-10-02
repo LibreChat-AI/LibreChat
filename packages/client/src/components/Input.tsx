@@ -3,10 +3,13 @@ import { fieldControl } from './Field';
 import { cn } from '~/utils';
 import './Field.css';
 
-/** `title` edits a heading in place, so the field takes the heading's type scale. */
+/** `title` edits a heading in place, so the field takes the heading's type scale. `inline` shares
+ *  a row with icon Buttons, so it takes their height role and the row stays one height when a
+ *  theme sizes fields and buttons apart. */
 const INPUT_VARIANTS = {
   default: '',
-  title: 'h-12 text-2xl font-semibold tracking-tight',
+  inline: 'h-theme-button',
+  title: 'h-theme-field-lg text-2xl font-semibold tracking-tight',
   'title-sm': 'text-base font-semibold tracking-tight',
 } as const;
 

@@ -320,8 +320,8 @@ describe('clickhouse theme definition', () => {
       roundControlRadius: '9999px',
     });
     expect(resolved.appearance.fontFamily).toMatch(/^"Inter", "SF Pro Display"/);
-    expect(resolved.appearance.monoFontFamily).toMatch(
-      /^"Inconsolata", ui-monospace, .*monospace$/,
+    expect(resolved.appearance.monoFontFamily).toBe(
+      '"Inconsolata", Consolas, "SFMono Regular", monospace',
     );
     /** Click UI's `border.radii` 1, 2 and 3. */
     expect(resolved.appearance).toMatchObject({
@@ -379,10 +379,9 @@ describe('clickhouse theme definition', () => {
     ).toEqual([]);
   });
 
-  /** Click UI's control height, button padding and gap, and `transition.default`. The shared
-   *  spacing roles keep LibreChat's values: they also pad message bubbles and the composer's send
-   *  button, and 0.75rem is already Click UI's field padding. */
-  it('sizes theme controls from Click UI and leaves the shared spacing alone', () => {
+  /** Click UI's control height, button padding and gap, `transition.default`, and the two steps of
+   *  its `spaces` scale the shared spacing takes. */
+  it('sizes theme controls and the shared spacing from Click UI', () => {
     const { appearance } = resolveTheme(clickHouseTheme, 'light');
     expect(appearance).toMatchObject({
       controlHeight: '2rem',
@@ -393,7 +392,7 @@ describe('clickhouse theme definition', () => {
       buttonHeightSm: '2rem',
       motionFast: '100ms',
     });
-    expect(appearance.spaceCompact).toBe(defaultAppearance.spaceCompact);
+    expect(appearance.spaceCompact).toBe('0.5rem');
     expect(appearance.spaceNormal).toBe(defaultAppearance.spaceNormal);
   });
 

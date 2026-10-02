@@ -1,8 +1,31 @@
+import * as React from 'react';
 import { X } from 'lucide-react';
 import { JSX } from 'react/jsx-runtime';
 import * as RadixToast from '@radix-ui/react-toast';
 import { NotificationSeverity } from '~/common';
 import { useToast, useLocalize } from '~/hooks';
+import { cn } from '~/utils';
+
+/**
+ * Shared by the app shell and undocked artifacts window so toast viewport
+ * positioning stays in sync between both hosts.
+ */
+const ToastViewport: React.ForwardRefExoticComponent<
+  RadixToast.ToastViewportProps & React.RefAttributes<HTMLOListElement>
+> = React.forwardRef<
+  React.ElementRef<typeof RadixToast.Viewport>,
+  React.ComponentPropsWithoutRef<typeof RadixToast.Viewport>
+>(({ className, ...props }, ref) => (
+  <RadixToast.Viewport
+    ref={ref}
+    className={cn(
+      'pointer-events-none fixed inset-x-0 top-0 z-[1000] mx-auto my-2 flex max-w-[560px] flex-col items-stretch justify-start',
+      className,
+    )}
+    {...props}
+  />
+));
+ToastViewport.displayName = RadixToast.Viewport.displayName;
 
 export function Toast(): JSX.Element {
   const { toast, onOpenChange } = useToast();
@@ -69,3 +92,4 @@ export function Toast(): JSX.Element {
     </RadixToast.Root>
   );
 }
+export { ToastViewport };

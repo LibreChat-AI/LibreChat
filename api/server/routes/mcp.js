@@ -352,30 +352,13 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
 
     const hasCsrf = validateOAuthCsrf(req, res, flowId, OAUTH_CSRF_COOKIE_PATH);
     const hasSession = !hasCsrf && validateOAuthSession(req, parsedFlowId.userId);
-    let hasActiveFlow = false;
-    if (!hasCsrf && !hasSession) {
-      const pendingFlow = await flowManager.getFlowState(flowId, 'mcp_oauth');
-      const pendingAge = pendingFlow?.createdAt ? Date.now() - pendingFlow.createdAt : Infinity;
-      hasActiveFlow = pendingFlow?.status === 'PENDING' && pendingAge < PENDING_STALE_MS;
-      if (hasActiveFlow) {
-        logger.debug(
-          '[MCP OAuth] CSRF/session cookies absent, validating via active PENDING flow',
-          {
-            flowId,
-          },
-        );
-      }
-    }
 
-    if (!hasCsrf && !hasSession && !hasActiveFlow) {
-      logger.error(
-        '[MCP OAuth] CSRF validation failed: no valid CSRF cookie, session cookie, or active flow',
-        {
-          flowId,
-          hasCsrfCookie: !!req.cookies?.[OAUTH_CSRF_COOKIE],
-          hasSessionCookie: !!req.cookies?.[OAUTH_SESSION_COOKIE],
-        },
-      );
+    if (!hasCsrf && !hasSession) {
+      logger.error('[MCP OAuth] CSRF validation failed: no valid CSRF or session cookie', {
+        flowId,
+        hasCsrfCookie: !!req.cookies?.[OAUTH_CSRF_COOKIE],
+        hasSessionCookie: !!req.cookies?.[OAUTH_SESSION_COOKIE],
+      });
       return res.redirect(`${basePath}/oauth/error?error=csrf_validation_failed`);
     }
 

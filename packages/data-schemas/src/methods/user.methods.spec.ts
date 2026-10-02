@@ -762,6 +762,314 @@ describe('User Methods - Database Tests', () => {
     });
   });
 
+  describe('updateTwoFactorEnrollment', () => {
+    const ACK_HASH = 'acknowledgement-nonce-hash';
+    const FINAL_HASH = 'finalization-nonce-hash';
+
+    async function createEnrollingUser(
+      email: string,
+      overrides: Partial<t.IUser> = {},
+    ): Promise<{ id: string; pendingBackupCodes: NonNullable<t.IUser['pendingBackupCodes']> }> {
+      const user = await User.create({
+        name: 'Enrolling User',
+        email,
+        provider: 'local',
+        twoFactorEnabled: false,
+        pendingTotpSecret: 'pending-secret',
+        pendingBackupCodes: [{ codeHash: 'staged-hash', used: false }],
+        ...overrides,
+      });
+      const id = user._id.toString();
+      const stored = await User.findById(user._id).select('+pendingBackupCodes').lean<t.IUser>();
+      return { id, pendingBackupCodes: stored?.pendingBackupCodes ?? [] };
+    }
+
+    function readEnrollment(userId: string) {
+      return User.findById(userId)
+        .select(
+          '+totpSecret +backupCodes +pendingTotpSecret +pendingBackupCodes +twoFactorAcknowledgementNonceHash +twoFactorFinalizationNonceHash',
+        )
+        .lean<t.IUser>();
+    }
+
+    test('stages rotated backup codes and an acknowledgement nonce without enabling 2FA', async () => {
+      const { id, pendingBackupCodes } = await createEnrollingUser('stage-2fa@example.com');
+
+      const updated = await methods.updateTwoFactorEnrollment(
+        id,
+        { pendingTotpSecret: 'pending-secret', pendingBackupCodes },
+        {
+          pendingBackupCodes: [{ codeHash: 'deliverable-hash', used: false, usedAt: null }],
+          twoFactorAcknowledgementNonceHash: ACK_HASH,
+          twoFactorFinalizationNonceHash: null,
+        },
+      );
+      const stored = await readEnrollment(id);
+
+      expect(updated).not.toBeNull();
+      expect(stored?.twoFactorEnabled).toBe(false);
+      expect(stored?.totpSecret).toBeFalsy();
+      expect(stored?.pendingTotpSecret).toBe('pending-secret');
+      expect(stored?.pendingBackupCodes).toMatchObject([{ codeHash: 'deliverable-hash' }]);
+      expect(stored?.twoFactorAcknowledgementNonceHash).toBe(ACK_HASH);
+      expect(stored?.twoFactorFinalizationNonceHash).toBeNull();
+    });
+
+    test('updates legacy enrolling users whose two-factor flag is missing', async () => {
+      const { id, pendingBackupCodes } = await createEnrollingUser('legacy-2fa@example.com');
+      const objectId = new mongoose.Types.ObjectId(id);
+      await User.collection.updateOne({ _id: objectId }, { $unset: { twoFactorEnabled: '' } });
+
+      const legacyUser = await User.collection.findOne({ _id: objectId });
+      expect(legacyUser).not.toHaveProperty('twoFactorEnabled');
+
+      const updated = await methods.updateTwoFactorEnrollment(
+        id,
+        { pendingTotpSecret: 'pending-secret', pendingBackupCodes },
+        { twoFactorAcknowledgementNonceHash: ACK_HASH },
+      );
+      const stored = await readEnrollment(id);
+
+      expect(updated).not.toBeNull();
+      expect(stored?.twoFactorAcknowledgementNonceHash).toBe(ACK_HASH);
+    });
+
+    test('a second confirmation on the stale snapshot loses the race and writes nothing', async () => {
+      const { id, pendingBackupCodes } = await createEnrollingUser('confirm-race@example.com');
+      const guard = { pendingTotpSecret: 'pending-secret', pendingBackupCodes };
+
+      const first = await methods.updateTwoFactorEnrollment(id, guard, {
+        pendingBackupCodes: [{ codeHash: 'first-hash', used: false, usedAt: null }],
+        twoFactorAcknowledgementNonceHash: 'first-ack',
+      });
+      const second = await methods.updateTwoFactorEnrollment(id, guard, {
+        pendingBackupCodes: [{ codeHash: 'second-hash', used: false, usedAt: null }],
+        twoFactorAcknowledgementNonceHash: 'second-ack',
+      });
+      const stored = await readEnrollment(id);
+
+      expect(first).not.toBeNull();
+      expect(second).toBeNull();
+      expect(stored?.pendingBackupCodes).toMatchObject([{ codeHash: 'first-hash' }]);
+      expect(stored?.twoFactorAcknowledgementNonceHash).toBe('first-ack');
+    });
+
+    test('consumes the acknowledgement nonce exactly once and keeps 2FA disabled', async () => {
+      const { id } = await createEnrollingUser('ack-2fa@example.com', {
+        twoFactorAcknowledgementNonceHash: ACK_HASH,
+      });
+
+      const first = await methods.updateTwoFactorEnrollment(
+        id,
+        { twoFactorAcknowledgementNonceHash: ACK_HASH },
+        {
+          twoFactorAcknowledgementNonceHash: null,
+          twoFactorFinalizationNonceHash: FINAL_HASH,
+        },
+      );
+      const replay = await methods.updateTwoFactorEnrollment(
+        id,
+        { twoFactorAcknowledgementNonceHash: ACK_HASH },
+        {
+          twoFactorAcknowledgementNonceHash: null,
+          twoFactorFinalizationNonceHash: 'replayed-finalization-hash',
+        },
+      );
+      const stored = await readEnrollment(id);
+
+      expect(first).not.toBeNull();
+      expect(replay).toBeNull();
+      expect(stored?.twoFactorEnabled).toBe(false);
+      expect(stored?.twoFactorFinalizationNonceHash).toBe(FINAL_HASH);
+    });
+
+    test('promotes the pending enrollment once and clears every enrollment field', async () => {
+      const { id, pendingBackupCodes } = await createEnrollingUser('finalize-2fa@example.com', {
+        twoFactorFinalizationNonceHash: FINAL_HASH,
+        expiresAt: new Date(Date.now() + 604800 * 1000),
+      });
+      const guard = {
+        pendingTotpSecret: 'pending-secret',
+        pendingBackupCodes,
+        twoFactorFinalizationNonceHash: FINAL_HASH,
+      };
+      const promotion = {
+        totpSecret: 'pending-secret',
+        backupCodes: pendingBackupCodes,
+        twoFactorEnabled: true,
+        pendingTotpSecret: null,
+        pendingBackupCodes: [],
+        twoFactorAcknowledgementNonceHash: null,
+        twoFactorFinalizationNonceHash: null,
+      };
+
+      const promoted = await methods.updateTwoFactorEnrollment(id, guard, promotion);
+      const replay = await methods.updateTwoFactorEnrollment(id, guard, promotion);
+      const stored = await readEnrollment(id);
+
+      expect(promoted).not.toBeNull();
+      expect(promoted).toMatchObject({
+        name: 'Enrolling User',
+        email: 'finalize-2fa@example.com',
+        provider: 'local',
+        twoFactorEnabled: true,
+      });
+      expect(promoted?.createdAt).toBeInstanceOf(Date);
+      expect(replay).toBeNull();
+      expect(stored).toMatchObject({
+        twoFactorEnabled: true,
+        totpSecret: 'pending-secret',
+        pendingTotpSecret: null,
+        pendingBackupCodes: [],
+        twoFactorAcknowledgementNonceHash: null,
+        twoFactorFinalizationNonceHash: null,
+      });
+      expect(stored?.backupCodes).toMatchObject([{ codeHash: 'staged-hash' }]);
+      expect(stored?.expiresAt).toBeUndefined();
+    });
+
+    test('persists the enrollment cutoff that retires pre-enrollment access tokens', async () => {
+      const { id, pendingBackupCodes } = await createEnrollingUser('cutoff-2fa@example.com', {
+        twoFactorFinalizationNonceHash: FINAL_HASH,
+      });
+      const twoFactorEnrolledAt = new Date();
+
+      const promoted = await methods.updateTwoFactorEnrollment(
+        id,
+        {
+          pendingTotpSecret: 'pending-secret',
+          pendingBackupCodes,
+          twoFactorFinalizationNonceHash: FINAL_HASH,
+        },
+        {
+          totpSecret: 'pending-secret',
+          backupCodes: pendingBackupCodes,
+          twoFactorEnabled: true,
+          twoFactorEnrolledAt,
+          pendingTotpSecret: null,
+          pendingBackupCodes: [],
+          twoFactorAcknowledgementNonceHash: null,
+          twoFactorFinalizationNonceHash: null,
+        },
+      );
+      const stored = await readEnrollment(id);
+
+      expect(promoted).not.toBeNull();
+      /** A path the schema does not declare is dropped in silence, so assert the round trip. */
+      expect(stored?.twoFactorEnrolledAt).toBeInstanceOf(Date);
+      expect(stored?.twoFactorEnrolledAt?.getTime()).toBe(twoFactorEnrolledAt.getTime());
+    });
+
+    test('leaves the enrollment cutoff null until a promotion writes it', async () => {
+      const { id } = await createEnrollingUser('no-cutoff-2fa@example.com');
+
+      const stored = await readEnrollment(id);
+
+      expect(stored?.twoFactorEnrolledAt).toBeNull();
+    });
+
+    const concurrentTransitions: Array<[string, Partial<t.IUser>]> = [
+      ['regenerated secret', { pendingTotpSecret: 'different-secret' }],
+      [
+        'regenerated backup codes',
+        { pendingBackupCodes: [{ codeHash: 'different-hash', used: false }] },
+      ],
+      ['federated provider transition', { provider: 'openid' }],
+      ['already-enabled transition', { twoFactorEnabled: true }],
+      ['cleared finalization nonce', { twoFactorFinalizationNonceHash: null }],
+    ];
+
+    test.each(concurrentTransitions)(
+      'does not promote after a concurrent %s',
+      async (name, concurrentUpdate) => {
+        const { id, pendingBackupCodes } = await createEnrollingUser(
+          `raced-2fa-${name.replace(/ /g, '-')}@example.com`,
+          { twoFactorFinalizationNonceHash: FINAL_HASH },
+        );
+        await User.findByIdAndUpdate(id, { $set: concurrentUpdate });
+
+        const promoted = await methods.updateTwoFactorEnrollment(
+          id,
+          {
+            pendingTotpSecret: 'pending-secret',
+            pendingBackupCodes,
+            twoFactorFinalizationNonceHash: FINAL_HASH,
+          },
+          {
+            totpSecret: 'pending-secret',
+            backupCodes: pendingBackupCodes,
+            twoFactorEnabled: true,
+            pendingTotpSecret: null,
+            pendingBackupCodes: [],
+            twoFactorAcknowledgementNonceHash: null,
+            twoFactorFinalizationNonceHash: null,
+          },
+        );
+        const stored = await readEnrollment(id);
+
+        expect(promoted).toBeNull();
+        expect(stored?.totpSecret).toBeFalsy();
+        expect(stored?.twoFactorEnabled).toBe(concurrentUpdate.twoFactorEnabled === true);
+      },
+    );
+
+    test('never exposes nonce state on an unprojected read', async () => {
+      const { id } = await createEnrollingUser('nonce-projection@example.com', {
+        twoFactorAcknowledgementNonceHash: ACK_HASH,
+        twoFactorFinalizationNonceHash: FINAL_HASH,
+      });
+
+      const user = await methods.getUserById(id);
+
+      expect(user).not.toBeNull();
+      expect(user).not.toHaveProperty('twoFactorAcknowledgementNonceHash');
+      expect(user).not.toHaveProperty('twoFactorFinalizationNonceHash');
+      expect(user).not.toHaveProperty('pendingTotpSecret');
+    });
+
+    test('invalidates cached auth user documents after a successful enrollment write', async () => {
+      enableAuthUserDocCache();
+      const { id, pendingBackupCodes } = await createEnrollingUser('cached-2fa@example.com');
+      const cache = {
+        get: jest.fn().mockResolvedValue(['cached-auth-document']),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const methodsWithCache = createUserMethods(mongoose, {
+        getCache: jest.fn().mockReturnValue(cache),
+      });
+
+      await methodsWithCache.updateTwoFactorEnrollment(
+        id,
+        { pendingTotpSecret: 'pending-secret', pendingBackupCodes },
+        { twoFactorAcknowledgementNonceHash: ACK_HASH },
+      );
+
+      expect(cache.delete).toHaveBeenCalledWith('cached-auth-document');
+      expect(cache.delete).toHaveBeenCalledWith(`${AUTH_USER_DOC_BY_ID_PREFIX}:${id}`);
+    });
+
+    test('leaves the auth user document cache untouched when the guard loses', async () => {
+      enableAuthUserDocCache();
+      const { id } = await createEnrollingUser('cached-2fa-miss@example.com');
+      const cache = {
+        get: jest.fn().mockResolvedValue(['cached-auth-document']),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const methodsWithCache = createUserMethods(mongoose, {
+        getCache: jest.fn().mockReturnValue(cache),
+      });
+
+      const result = await methodsWithCache.updateTwoFactorEnrollment(
+        id,
+        { pendingTotpSecret: 'stale-secret' },
+        { twoFactorAcknowledgementNonceHash: ACK_HASH },
+      );
+
+      expect(result).toBeNull();
+      expect(cache.delete).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getUserById', () => {
     test('should get user by ID', async () => {
       const user = await User.create({

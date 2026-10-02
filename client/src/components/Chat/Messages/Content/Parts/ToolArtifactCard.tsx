@@ -1,9 +1,9 @@
 import { memo, useEffect, useLayoutEffect, useRef } from 'react';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { Artifact } from '~/common';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { artifactRowKind, isCodeOnlyArtifact } from '~/utils/artifacts';
 import useToolArtifactClaim, { isStrictlyNewer } from './claim';
-import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import { displayFilename } from './attachmentTypes';
 import { useAttachmentLink } from './LogLink';
 import ArtifactRow from './ArtifactRow';

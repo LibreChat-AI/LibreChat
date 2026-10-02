@@ -18,6 +18,7 @@ import type {
   TEphemeralAgent,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import type { ExtendedFile } from '~/common';
 import { pendingReasoningOverrideFamily } from '~/components/Chat/Input/Composer/state';
 import { activeUsageResponseIdFamily, pendingUsageFamily } from '~/store/usage';
 import { revealedQueuedTurnFamily } from '~/store/steer';
@@ -165,9 +166,11 @@ function renderAsk(
     isSubmitting?: boolean;
     reasoningOverride?: TReasoningOverride;
     agentId?: string;
+    files?: Map<string, ExtendedFile>;
   } = {},
 ) {
   const setMessages = jest.fn();
+  const setFiles = jest.fn();
   const setSubmission = jest.fn();
   const getMessages = jest.fn(() => messages);
   const immutableConversation = conversation(conversationId);
@@ -194,17 +197,20 @@ function renderAsk(
         getMessages,
         setMessages,
         setSubmission,
+        files: options.files,
+        setFiles,
         setConversation: mockSetConversation,
       }),
     { wrapper },
   );
 
-  return { ...hook, getMessages, setMessages, setSubmission, reasoningStore };
+  return { ...hook, getMessages, setMessages, setFiles, setSubmission, reasoningStore };
 }
 
 describe('useChatFunctions ask', () => {
   beforeEach(() => {
     mockEndpointsQueryData.current = undefined;
+    localStorage.clear();
     jest.clearAllMocks();
     mockAgentQueryData.current = undefined;
     mockGetLatestConversation.mockReturnValue(null);
@@ -233,6 +239,50 @@ describe('useChatFunctions ask', () => {
         submission.initialResponse?.messageId,
       );
       expect(store.get(pendingUsageFamily('conversation-1')).eventCount).toBe(0);
+    },
+  );
+
+  it.each([false, true])(
+    'publishes document aliases once before consuming files (override=%s)',
+    (override) => {
+      const file: ExtendedFile = {
+        file_id: 'server-document',
+        temp_file_id: 'upload-document',
+        filename: 'report.pdf',
+        type: 'application/pdf',
+        filepath: '/uploads/report.pdf',
+        llmDeliveryPath: 'text',
+        size: 100,
+        progress: 1,
+      };
+      const { result, setFiles, setSubmission } = renderAsk([], 'new', {
+        files: new Map([['map-document', file]]),
+      });
+      const write = jest.spyOn(Storage.prototype, 'setItem');
+      setFiles.mockImplementation(() => {
+        expect(isPasteSubmitted('map-document')).toBe(true);
+        expect(isPasteSubmitted(file.file_id)).toBe(true);
+        expect(isPasteSubmitted(file.temp_file_id)).toBe(true);
+      });
+
+      act(() =>
+        result.current.ask(
+          { text: 'Read this document' },
+          override ? { overrideFiles: [file] } : undefined,
+        ),
+      );
+
+      expect(
+        write.mock.calls.filter(([key]) => key === 'librechat-submitted-paste-file-ids'),
+      ).toHaveLength(1);
+      expect(setFiles).toHaveBeenCalledTimes(override ? 0 : 1);
+      const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+      expect(submission.userMessage.files?.[0]).toMatchObject({
+        file_id: file.file_id,
+        llmDeliveryPath: 'text',
+      });
+      expect(isPasteSubmitted(file.file_id)).toBe(true);
+      expect(isPasteSubmitted(file.temp_file_id)).toBe(true);
     },
   );
 

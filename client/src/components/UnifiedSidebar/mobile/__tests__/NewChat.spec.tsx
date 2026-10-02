@@ -24,8 +24,9 @@ jest.mock('@librechat/client', () => ({
   useToastContext: () => ({ showToast: jest.fn() }),
 }));
 
+const mockSetActive = jest.fn();
 jest.mock('~/Providers', () => ({
-  useActivePanel: () => ({ active: 'conversations', setActive: jest.fn() }),
+  useActivePanel: () => ({ active: 'conversations', setActive: mockSetActive }),
   resolveActivePanel: () => 'conversations',
   DEFAULT_PANEL: 'conversations',
 }));
@@ -73,7 +74,7 @@ describe('mobile header new chat', () => {
     render(
       <QueryClientProvider client={queryClient}>
         <RecoilRoot>
-          <NewChat onNewChat={onNewChat} />
+          <NewChat onNewChat={onNewChat} switchToHistory={true} />
         </RecoilRoot>
       </QueryClientProvider>,
     );
@@ -91,7 +92,7 @@ describe('mobile header new chat', () => {
     render(
       <QueryClientProvider client={queryClient}>
         <RecoilRoot>
-          <NewChat onNewChat={onNewChat} />
+          <NewChat onNewChat={onNewChat} switchToHistory={true} />
         </RecoilRoot>
       </QueryClientProvider>,
     );
@@ -99,5 +100,30 @@ describe('mobile header new chat', () => {
 
     expect(onNewChat).not.toHaveBeenCalled();
     expect(mockNewConversation).not.toHaveBeenCalled();
+  });
+  /** The host supplies the "new chat returns to the chat list" preference;
+   *  the switch-back rides the same afterSlide as the reset. */
+  it.each([
+    [true, 1],
+    [false, 0],
+  ])('with switchToHistory=%s returns to the chat list %i time(s)', (switchToHistory, calls) => {
+    let afterSlide: (() => void) | undefined;
+    const onNewChat = jest.fn((callback?: () => void) => {
+      afterSlide = callback;
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RecoilRoot>
+          <NewChat onNewChat={onNewChat} switchToHistory={switchToHistory} />
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByTestId('nav-new-chat-fab'));
+    act(() => afterSlide?.());
+
+    expect(mockSetActive).toHaveBeenCalledTimes(calls);
+    if (calls) {
+      expect(mockSetActive).toHaveBeenCalledWith('conversations');
+    }
   });
 });
