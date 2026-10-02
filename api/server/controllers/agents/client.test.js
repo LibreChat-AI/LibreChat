@@ -3956,6 +3956,65 @@ describe('AgentClient - titleConvo', () => {
       expect(mockRun.generateTitle).toHaveBeenCalled();
     });
 
+    it.each(['success', 'write-failure', 'policy-rejection', 'abort'])(
+      'waits for protected persistence before an immediate title model call: %s',
+      async (outcome) => {
+        const api = jest.requireActual('@librechat/api');
+        const filters = {
+          messages: {
+            pii: {
+              action: 'redact',
+              fields: ['text'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+              ],
+            },
+          },
+        };
+        mockReq.path = '/';
+        mockReq.body.text = 'alice@example.com';
+        mockReq.body.clientRequestId = 'protected-title';
+        const next = jest.fn();
+        api.createPrivateTextIngress({
+          getFilters: () => filters,
+          getLegacyPii: () => undefined,
+          getKey: () => 'ab'.repeat(32),
+        })(mockReq, { status: jest.fn().mockReturnThis(), json: jest.fn() }, next);
+        expect(next).toHaveBeenCalledTimes(1);
+        const message = api.stampPrivateTextMessage(mockReq, {
+          messageId: 'title-user',
+          conversationId: 'title-conversation',
+          text: mockReq.body.text,
+          isCreatedByUser: true,
+        });
+        const abortController = new AbortController();
+        const title = client.titleConvo({ text: message.text, abortController, immediate: true });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(mockRun.generateTitle).not.toHaveBeenCalled();
+        expect(client.recordCollectedUsage).not.toHaveBeenCalled();
+        if (outcome === 'abort') {
+          abortController.abort();
+        } else if (outcome === 'policy-rejection') {
+          api.rejectPrivateTextAdmission(mockReq);
+        } else if (outcome === 'write-failure') {
+          await expect(
+            api.requirePrivateTextPersistence(mockReq, async () => ({})),
+          ).rejects.toThrow();
+        } else {
+          const write = deferred();
+          const admission = api.requirePrivateTextPersistence(mockReq, () => write.promise);
+          await Promise.resolve();
+          expect(mockRun.generateTitle).not.toHaveBeenCalled();
+          write.resolve({ message });
+          await admission;
+        }
+        await title;
+        expect(mockRun.generateTitle).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+        expect(client.recordCollectedUsage).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+      },
+    );
+
     it('passes empty contentParts in immediate mode (title from the user input only)', async () => {
       client.contentParts = [{ type: 'text', text: 'Streaming response so far' }];
       const abortController = new AbortController();

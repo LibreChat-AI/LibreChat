@@ -418,3 +418,73 @@ test('native copies retain canonical token trust without copying owner originals
     }
   }
 });
+
+test('a later history-policy rejection never persists the transformed protected turn', async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90000);
+  const token = await loginAdmin(request);
+  let conversationId: string | undefined;
+  try {
+    await page.goto('/c/new');
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    const seeded = await sendMessageAndWaitForCompletion(page, 'Safe admission-history seed');
+    conversationId = (await seeded.json()).conversationId as string;
+    const prior = await fetchJson<TMessage[]>(page, `/api/messages/${conversationId}`, token);
+    const user = prior.find((message) => message.isCreatedByUser)!;
+    await withMongo(async (db) => {
+      await db.collection('messages').updateOne(
+        { conversationId, messageId: user.messageId },
+        {
+          $set: { text: 'FORBIDDEN_HISTORICAL_MARKER' },
+        },
+      );
+    });
+    await page.reload();
+    await setRuntimeFilters(request, token, {
+      messages: {
+        pii: {
+          action: 'redact',
+          fields: ['text'],
+          starterPatterns: [],
+          customPatterns: [
+            { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+            { id: 'history', label: 'Restricted history', regex: 'FORBIDDEN_HISTORICAL_MARKER' },
+          ],
+        },
+      },
+    });
+    const completion = page.waitForResponse(async (response) => {
+      if (
+        response.request().method() !== 'GET' ||
+        !new URL(response.url()).pathname.includes('/api/agents/chat/stream/')
+      ) {
+        return false;
+      }
+      return true;
+    });
+    const admitted = await sendMessage(page, 'E2E_REJECTED_PRIVATE_TEXT: alice@example.com');
+    expect(admitted.ok()).toBe(true);
+    const stream = await completion;
+    const eventText = await stream.text();
+    expect(eventText).toContain('error');
+    await withMongo(async (db) => {
+      const rows = await db.collection('messages').find({ conversationId }).toArray();
+      expect(rows).toHaveLength(prior.length);
+      expect(JSON.stringify(rows)).not.toContain('E2E_REJECTED_PRIVATE_TEXT');
+      expect(JSON.stringify(rows)).not.toContain('alice@example.com');
+      expect(rows.every((row) => row.privateText == null)).toBe(true);
+    });
+  } finally {
+    await restoreRuntimeFilters(request, token);
+    if (conversationId) {
+      await requestResult(request, {
+        path: '/api/convos',
+        token,
+        method: 'DELETE',
+        data: { arg: { conversationId } },
+      });
+    }
+  }
+});

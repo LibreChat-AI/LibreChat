@@ -59,6 +59,7 @@ const {
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
   savePrivateTextMessage,
+  savePrivateTextErrorTurn,
   stampPreliminaryPrivateTextMessage,
   announceReply,
   announceErrorTurn,
@@ -3369,17 +3370,19 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             ownsScheduledFailure =
               (await GenerationJobManager.completeJob(streamId, generationError, jobCreatedAt, {
                 beforeErrorPublication: () =>
-                  saveErrorTurn(req, {
-                    conversationId,
-                    endpointOption,
-                    isNewConvo,
-                    errorText: generationError,
-                    liveUserMessage: userMessage,
-                    liveResponseMessageId,
-                    runCreated: client?.run != null,
-                    sender: client?.sender,
-                    initialAgentId: verifiedInitialAgentId,
-                  }),
+                  savePrivateTextErrorTurn(req, error, () =>
+                    saveErrorTurn(req, {
+                      conversationId,
+                      endpointOption,
+                      isNewConvo,
+                      errorText: generationError,
+                      liveUserMessage: userMessage,
+                      liveResponseMessageId,
+                      runCreated: client?.run != null,
+                      sender: client?.sender,
+                      initialAgentId: verifiedInitialAgentId,
+                    }),
+                  ),
               })) === true;
             /** A true completion means this owner won the terminal CAS and
              * the beforeErrorPublication barrier above finished. Only that
@@ -3581,13 +3584,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       const completionPromise = persistInitializationError
         ? GenerationJobManager.completeJob(streamId, initializationError, jobCreatedAt, {
             beforeErrorPublication: () =>
-              saveErrorTurn(req, {
-                conversationId,
-                endpointOption,
-                isNewConvo,
-                errorText: initializationError,
-                initialAgentId: verifiedInitialAgentId,
-              }),
+              savePrivateTextErrorTurn(req, error, () =>
+                saveErrorTurn(req, {
+                  conversationId,
+                  endpointOption,
+                  isNewConvo,
+                  errorText: initializationError,
+                  initialAgentId: verifiedInitialAgentId,
+                }),
+              ),
           })
         : GenerationJobManager.completeJob(streamId, initializationError, jobCreatedAt);
       initializationFinalized =

@@ -14,6 +14,7 @@ import {
   getPrivateTextAdmission,
   requirePrivateTextAdmission,
   rejectPrivateTextAdmission,
+  savePrivateTextErrorTurn,
   getPrivateTextInspectionTokens,
   privateTextBinding,
 } from './submission';
@@ -22,6 +23,7 @@ import {
   assertModelBoundContent,
 } from '../../middleware/modelBoundContent';
 import { createMessageFilterPii } from '../../middleware/messageFilterPii';
+import { ContentFilterError } from '../../middleware/contentFilter';
 import { createPrivateTextCipher } from './crypto';
 import { createPrivateTextView } from './view';
 
@@ -489,6 +491,68 @@ describe('private text submission boundary', () => {
     await admitted;
     await waiting;
     expect(sideEffect).toHaveBeenCalledTimes(1);
+  });
+
+  function policyError() {
+    return new ContentFilterError({
+      detectorId: 'pii-pattern',
+      ruleId: 'secret',
+      label: 'secret',
+      source: 'message',
+      field: 'text',
+      provenance: 'user',
+      fragmentId: 'history',
+      fragmentPath: '/text',
+    });
+  }
+
+  it('rejects terminal recovery before any write when protected content admission failed', async () => {
+    const { req, message } = submit();
+    const saveErrorTurn = jest.fn(async () => {});
+    await savePrivateTextErrorTurn(req, policyError(), saveErrorTurn);
+    expect(saveErrorTurn).not.toHaveBeenCalled();
+    const save = jest.fn(async () => message as IMessage);
+    await expect(savePrivateTextMessage(save, req, { userId: 'owner' }, message)).rejects.toThrow();
+    expect(save).not.toHaveBeenCalled();
+    const start = jest.fn(async () => ({ message }));
+    await expect(requirePrivateTextPersistence(req, start)).rejects.toThrow();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('cannot revive failed persistence through terminal recovery or a later admission', async () => {
+    const { req, message } = submit();
+    await expect(requirePrivateTextPersistence(req, async () => ({}))).rejects.toThrow();
+    const recovery = jest.fn(async () => {});
+    await savePrivateTextErrorTurn(req, new Error('persistence failure'), recovery);
+    expect(recovery).not.toHaveBeenCalled();
+    await expect(requirePrivateTextPersistence(req, async () => ({ message }))).rejects.toThrow();
+  });
+
+  it('does not announce a write that resolves after an admission rejection', async () => {
+    const { req, message } = submit();
+    let finish!: (result: { message: typeof message }) => void;
+    const write = new Promise<{ message: typeof message }>((resolve) => {
+      finish = resolve;
+    });
+    const announce = jest.fn();
+    const admission = requirePrivateTextPersistence(req, () => write, announce);
+    rejectPrivateTextAdmission(req);
+    finish({ message });
+    await expect(admission).rejects.toThrow();
+    expect(announce).not.toHaveBeenCalled();
+  });
+
+  it('retains ordinary error recovery and already-admitted protected turns', async () => {
+    const ordinary = jest.fn(async () => {});
+    await savePrivateTextErrorTurn({}, policyError(), ordinary);
+    expect(ordinary).toHaveBeenCalledTimes(1);
+    const { req, message } = submit();
+    await requirePrivateTextPersistence(req, async () => ({ message }));
+    rejectPrivateTextAdmission(req); // Terminal cleanup cannot undo a committed admission.
+    const recovery = jest.fn(async () => {});
+    await savePrivateTextErrorTurn(req, policyError(), recovery);
+    expect(recovery).toHaveBeenCalledTimes(1);
+    await expect(requirePrivateTextAdmission(req)).resolves.toBeUndefined();
   });
 
   it('rejects stale or swallowed persistence results, including a duplicate ID with different text', async () => {

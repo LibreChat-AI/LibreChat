@@ -2,7 +2,7 @@ import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provi
 import type { RequestHandler, Request, Response } from 'express';
 import type { MessageMethods } from '@librechat/data-schemas';
 import type { PrivateTextCipher } from './crypto';
-import { ContentFilterError } from '../../middleware/contentFilter';
+import { ContentFilterError, isContentFilterError } from '../../middleware/contentFilter';
 import { createPiiTextTransformer } from '../transform';
 import { createPrivateTextCipher } from './crypto';
 import { inspectContent } from '../runtime';
@@ -25,6 +25,7 @@ interface Capture {
   readonly cipher: PrivateTextCipher;
   readonly admission: Promise<boolean>;
   readonly admit: (allowed: boolean) => void;
+  readonly admissionState: () => boolean | undefined;
 }
 
 const captures = new WeakMap<object, Capture>();
@@ -235,11 +236,28 @@ export function createPrivateTextIngress(options: {
           body.text.includes(marker) ? marker : `[${category}_${index}_${revision}]`,
       );
       const envelope = cipher.seal(body.text, [userId, tenantId, revision]);
-      let admit!: (allowed: boolean) => void;
+      let resolveAdmission!: (allowed: boolean) => void;
+      let admissionResult: boolean | undefined;
       const admission = new Promise<boolean>((resolve) => {
-        admit = resolve;
+        resolveAdmission = resolve;
       });
-      captures.set(req, { userId, tenantId, revision, text, envelope, cipher, admission, admit });
+      const admit = (allowed: boolean) => {
+        if (admissionResult === undefined) {
+          admissionResult = allowed;
+          resolveAdmission(allowed);
+        }
+      };
+      captures.set(req, {
+        userId,
+        tenantId,
+        revision,
+        text,
+        envelope,
+        cipher,
+        admission,
+        admit,
+        admissionState: () => admissionResult,
+      });
       body.text = text;
       next();
     } catch {
@@ -345,7 +363,7 @@ export async function savePrivateTextMessage(
   if (capture == null || message.isCreatedByUser !== true) {
     return save(...args);
   }
-  if (message.text !== capture.text) {
+  if (capture.admissionState() === false || message.text !== capture.text) {
     throw unavailable();
   }
   if (
@@ -396,8 +414,12 @@ export async function requirePrivateTextPersistence(
     return;
   }
   try {
+    if (capture.admissionState() === false) {
+      throw unavailable();
+    }
     const result = await start();
     if (
+      capture.admissionState() === false ||
       result?.message?.privacyRevision !== capture.revision ||
       result.message.text !== capture.text
     ) {
@@ -441,6 +463,24 @@ export function rejectPrivateTextAdmission(req: object | undefined): void {
   if (req != null) {
     captures.get(req)?.admit(false);
   }
+}
+
+/** Recovery may retain ordinary failures, but cannot revive an unadmitted protected turn. */
+export async function savePrivateTextErrorTurn(
+  req: object | undefined,
+  error: unknown,
+  save: () => Promise<void>,
+): Promise<void> {
+  const capture = req == null ? undefined : captures.get(req);
+  if (capture != null) {
+    if (capture.admissionState() !== true && isContentFilterError(error)) {
+      capture.admit(false);
+    }
+    if (capture.admissionState() === false) {
+      return;
+    }
+  }
+  await save();
 }
 
 /** Ordinary startup stays immediate; protected revisions are announced only after admission. */
