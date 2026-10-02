@@ -973,7 +973,14 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
       const responseMessageOf = (finalEvent: unknown) =>
         (finalEvent as { responseMessage?: AbortResponseMessage } | null)?.responseMessage;
 
-      async function claimResume(streamId: string) {
+      async function claimResume(
+        streamId: string,
+        overrides: {
+          content?: Array<Record<string, unknown>>;
+          userSubmittedPaths?: string[];
+          userSubmittedMessageFieldPaths?: Array<{ path: string; field: string }>;
+        } = {},
+      ) {
         const job = await manager.createJob(streamId, 'user-1');
         await jobStore.updateJob(streamId, {
           conversationId: streamId,
@@ -983,7 +990,7 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
           userSubmittedPaths: ['/content/0/steer'],
           providerExecutionStartedId: 'exec-before-pause',
         });
-        const content: Array<Record<string, unknown>> = [
+        const content: Array<Record<string, unknown>> = overrides.content ?? [
           { type: 'text', text: 'Before the pause' },
           { type: 'tool_call', tool_call: { id: 'call-1', args: '{"q":"model"}' } },
         ];
@@ -1001,14 +1008,81 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
           {
             providerExecutionId: `exec-${streamId}`,
             providerDrained: true,
-            userSubmittedPaths: ['/content/0/steer', '/content/2', '/content/1/tool_call/args'],
-            userSubmittedMessageFieldPaths: claimedMessageFieldPaths,
+            userSubmittedPaths: overrides.userSubmittedPaths ?? [
+              '/content/0/steer',
+              '/content/2',
+              '/content/1/tool_call/args',
+            ],
+            userSubmittedMessageFieldPaths:
+              overrides.userSubmittedMessageFieldPaths ?? claimedMessageFieldPaths,
           },
           job.createdAt,
         );
         expect(claimed).toBe(true);
         return { job, content };
       }
+
+      test('does not label an unanswered ask placeholder as the claimed answer', async () => {
+        const streamId = 'steer-abort-ask-placeholder-provenance';
+        await claimResume(streamId, {
+          content: [
+            { type: 'text', text: 'Before the pause' },
+            {
+              type: 'tool_call',
+              tool_call: { id: 'ask-1', name: 'ask_user_question', args: '{}', output: '' },
+            },
+          ],
+          userSubmittedPaths: ['/content/0/steer'],
+          userSubmittedMessageFieldPaths: [
+            { path: '/content/1/tool_call/output', field: 'answer' },
+          ],
+        });
+
+        const result = await manager.abortJob(streamId);
+
+        expect(result.success).toBe(true);
+        expect(responseMessageOf(result.finalEvent)).not.toHaveProperty(
+          'userSubmittedMessageFieldPaths',
+        );
+      });
+
+      test('remaps an applied decision past a filtered part onto the published content', async () => {
+        const streamId = 'steer-abort-filtered-ordinal-provenance';
+        const { job } = await claimResume(streamId, {
+          content: [
+            { type: 'text', text: 'Before the pause' },
+            { type: 'text', text: '   ' },
+            {
+              type: 'tool_call',
+              tool_call: { id: 'call-1', args: '{"q":"user"}', output: 'User response' },
+            },
+          ],
+          userSubmittedPaths: ['/content/0/steer', '/content/1', '/content/2/tool_call/args'],
+          userSubmittedMessageFieldPaths: [
+            { path: '/content/2/tool_call/output', field: 'decision_response' },
+          ],
+        });
+        await expect(
+          manager.beginProviderExecution(streamId, job.createdAt, `exec-${streamId}`),
+        ).resolves.toBe(true);
+        const persisted: unknown[] = [];
+
+        const result = await manager.abortJob(streamId, {
+          beforePublish: async (pending) => {
+            persisted.push(pending.jobData);
+          },
+        });
+
+        expect(result.success).toBe(true);
+        const remapped = {
+          userSubmittedPaths: ['/content/0/steer', '/content/1/tool_call/args'],
+          userSubmittedMessageFieldPaths: [
+            { path: '/content/1/tool_call/output', field: 'decision_response' },
+          ],
+        };
+        expect(responseMessageOf(result.finalEvent)).toMatchObject(remapped);
+        expect(persisted).toEqual([expect.objectContaining(remapped)]);
+      });
 
       test('publishes the pre-claim provenance when the provider never started', async () => {
         const streamId = 'steer-abort-unapplied-provenance';
