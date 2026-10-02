@@ -48,6 +48,23 @@ describe('OutputRenderer', () => {
     expect(screen.queryByText('com_ui_show_more')).not.toBeInTheDocument();
   });
 
+  it('opens terminal output on its last lines and default output on its first', () => {
+    const text = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n');
+    const scrollHeight = jest
+      .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+      .mockReturnValue(900);
+    try {
+      const { unmount } = render(<OutputRenderer text={text} variant="terminal" />);
+      expect(screen.getByText(/line 30/).scrollTop).toBe(900);
+      unmount();
+
+      render(<OutputRenderer text={text} />);
+      expect(screen.getByText(/line 30/).scrollTop).toBe(0);
+    } finally {
+      scrollHeight.mockRestore();
+    }
+  });
+
   it('keeps whitespace-only terminal output', () => {
     const { container } = render(<OutputRenderer text={'\n\n'} variant="terminal" />);
     expect(container.querySelector('pre')?.textContent).toBe('\n\n');

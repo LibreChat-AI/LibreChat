@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useRef, useState, useMemo, useCallback, useLayoutEffect } from 'react';
 import copy from 'copy-to-clipboard';
 import { Button } from '@librechat/client';
 import { hasToolCallErrorPrefix, stripToolCallErrorPrefix } from 'librechat-data-provider';
@@ -132,6 +132,16 @@ export default function OutputRenderer({
   const error = extracted.error || forceError;
   const [showErrorDetails, setShowErrorDetails] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
+  const outputRef = useRef<HTMLPreElement>(null);
+
+  /* Terminal output opens on its last lines, where failures, stack traces and the
+     exit trailer land; the rest stays a scroll away inside the box. */
+  useLayoutEffect(() => {
+    const node = outputRef.current;
+    if (terminal && node != null) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [terminal, displayText, segments]);
 
   const handleCopy = useCallback(() => {
     setIsCopied(true);
@@ -157,6 +167,7 @@ export default function OutputRenderer({
           </pre>
         ) : (
           <pre
+            ref={outputRef}
             className={cn(
               'max-h-[300px] overflow-auto text-xs break-words whitespace-pre-wrap',
               error && 'text-status-error font-mono',
