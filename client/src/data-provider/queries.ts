@@ -32,7 +32,7 @@ import type {
 } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
 import type { ConversationCursorData } from '~/utils/convos';
-import { findConversationInInfinite, isNotFoundError } from '~/utils';
+import { acceptRunningConversation, findConversationInInfinite, isNotFoundError } from '~/utils';
 
 export const useGetPresetsQuery = (
   config?: UseQueryOptions<TPreset[]>,
@@ -133,8 +133,14 @@ export const useRunningConversationsQuery = (
           }
         },
         onSuccess: (conversation: t.TConversation | null) => {
+          if (
+            !conversation ||
+            !acceptRunningConversation(queryClient, conversationId, conversation)
+          ) {
+            return;
+          }
           const conversationKey = [QueryKeys.conversation, conversationId];
-          if (conversation && queryClient.getQueryData(conversationKey) === undefined) {
+          if (queryClient.getQueryData(conversationKey) === undefined) {
             queryClient.setQueryData(conversationKey, conversation);
           }
         },

@@ -883,6 +883,7 @@ export const trackConvoQueryAuthority = (
     if (
       root !== QueryKeys.allConversations &&
       root !== QueryKeys.pinnedConversations &&
+      root !== QueryKeys.runningConversation &&
       root !== QueryKeys.conversation
     ) {
       return;
@@ -1461,6 +1462,24 @@ export function findConvoInAllQueries(
   )?.convo;
 }
 
+const removedRunningQueries = new WeakSet<Query>();
+
+/** Accepts only the current server result; a visible result releases a removal fence. */
+export function acceptRunningConversation(
+  queryClient: QueryClient,
+  conversationId: string,
+  conversation: TConversation,
+): boolean {
+  const query = queryClient.getQueryCache().find([QueryKeys.runningConversation, conversationId]);
+  if (!query || query.state.data !== conversation) {
+    return false;
+  }
+  if (conversation.isArchived !== true && !isTemporaryConversation(conversation)) {
+    removedRunningQueries.delete(query);
+  }
+  return !removedRunningQueries.has(query);
+}
+
 export function updateConvoInAllQueries(
   queryClient: QueryClient,
   conversationId: string,
@@ -1469,8 +1488,10 @@ export function updateConvoInAllQueries(
 ) {
   const runningKey = [QueryKeys.runningConversation, conversationId];
   const runningState = queryClient.getQueryState<TConversation | null>(runningKey);
+  const runningQuery = runningState && queryClient.getQueryCache().find(runningKey);
+  const removed = runningQuery != null && removedRunningQueries.has(runningQuery);
   const cached =
-    runningState && runningState.data == null
+    !removed && runningState && runningState.data == null
       ? findConvoInAllQueries(queryClient, conversationId)
       : undefined;
   const cachedPin = cached && findPinnedConversation(queryClient, conversationId);
@@ -1479,22 +1500,29 @@ export function updateConvoInAllQueries(
       ? { ...cached, pinned: cachedPin.pinned, isShared: cachedPin.isShared ?? cached.isShared }
       : cached;
   const restartInitialFetch =
-    runningState?.fetchStatus === 'fetching' && runningState.data == null && !initialRow;
+    !removed &&
+    runningState?.fetchStatus === 'fetching' &&
+    runningState.data == null &&
+    !initialRow;
 
-  void queryClient.cancelQueries({ queryKey: runningKey, exact: true });
+  if (!removed) {
+    void queryClient.cancelQueries({ queryKey: runningKey, exact: true });
+  }
   queryClient.setQueryData<TConversation>([QueryKeys.conversation, conversationId], (current) =>
     current ? updater(current) : current,
   );
-  queryClient.setQueryData<TConversation | null>(runningKey, (current) => {
-    const previous = current ?? initialRow;
-    if (!previous) {
-      return current;
-    }
-    const next = preserveReadState(preserveListFlags(updater(previous), previous), previous);
-    return moveToTop && next.updatedAt === previous.updatedAt
-      ? { ...next, updatedAt: new Date().toISOString() }
-      : next;
-  });
+  if (!removed) {
+    queryClient.setQueryData<TConversation | null>(runningKey, (current) => {
+      const previous = current ?? initialRow;
+      if (!previous) {
+        return current;
+      }
+      const next = preserveReadState(preserveListFlags(updater(previous), previous), previous);
+      return moveToTop && next.updatedAt === previous.updatedAt
+        ? { ...next, updatedAt: new Date().toISOString() }
+        : next;
+    });
+  }
   updatePinnedConvosQuery(queryClient, conversationId, updater, moveToTop);
 
   const queries = findConversationListQueries(queryClient);
@@ -1600,6 +1628,10 @@ export function updateConvoInAllQueries(
 // Remove
 export function removeConvoFromAllQueries(queryClient: QueryClient, conversationId: string) {
   const runningKey = [QueryKeys.runningConversation, conversationId];
+  const query = queryClient.getQueryCache().find(runningKey);
+  if (query) {
+    removedRunningQueries.add(query);
+  }
   void queryClient.cancelQueries({ queryKey: runningKey, exact: true });
   updatePinnedConvosQuery(queryClient, conversationId, () => null);
   queryClient.setQueryData<TConversation | null>(runningKey, (current) =>

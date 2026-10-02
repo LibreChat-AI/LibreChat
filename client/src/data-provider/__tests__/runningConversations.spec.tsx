@@ -5,11 +5,15 @@ import { QueryKeys, dataService, setTokenHeader } from 'librechat-data-provider'
 import type { TConversation, TSharedLinkGetResponse } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
+  useArchiveConvoMutation,
+  useUpdateConversationMutation,
+  useArchiveAllConversationsMutation,
+} from '../mutations';
+import {
   findConvoInAllQueries,
   removeConvoFromAllQueries,
   updateConvoInAllQueries,
 } from '~/utils/convos';
-import { useUpdateConversationMutation, useArchiveAllConversationsMutation } from '../mutations';
 import { useAssignConversationToProjectMutation } from '../Projects/mutations';
 import { useRunningConversationsQuery } from '../queries';
 
@@ -24,6 +28,7 @@ jest.mock('librechat-data-provider', () => {
       assignConversationToProject: jest.fn(),
       archiveAllConversations: jest.fn(),
       updateConversation: jest.fn(),
+      archiveConversation: jest.fn(),
     },
   };
 });
@@ -259,11 +264,121 @@ describe('useRunningConversationsQuery', () => {
     await waitFor(() => expect(result.current).toEqual([]));
   });
 
+  it('does not restore an archived row when an older navigation request completes', async () => {
+    const navigation = deferred<TConversation>();
+    getConversationById.mockResolvedValueOnce(record()).mockReturnValueOnce(navigation.promise);
+    jest.mocked(dataService.archiveConversation).mockResolvedValue(record({ isArchived: true }));
+    const { result } = renderHook(
+      () => ({
+        rows: useRunningConversationsQuery(['c1']),
+        archive: useArchiveConvoMutation(),
+      }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+    const refresh = queryClient
+      .fetchQuery([QueryKeys.conversation, 'c1'], () => dataService.getConversationById('c1'))
+      .then((data) =>
+        updateConvoInAllQueries(queryClient, 'c1', (row) => ({
+          ...row,
+          endpoint: data.endpoint,
+          model: data.model,
+          spec: data.spec,
+        })),
+      );
+    await waitFor(() => expect(getConversationById).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      await result.current.archive.mutateAsync({ conversationId: 'c1', isArchived: true });
+    });
+    await waitFor(() => expect(result.current.rows).toEqual([]));
+    await act(async () => {
+      navigation.resolve(record({ isArchived: false }));
+      await refresh;
+    });
+    expect(queryClient.getQueryData([QueryKeys.runningConversation, 'c1'])).toBeNull();
+    await waitFor(() => expect(result.current.rows).toEqual([]));
+    expect(getConversationById).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a removed initial row absent until a fresh visible record arrives', async () => {
+    const initial = deferred<TConversation>();
+    getConversationById
+      .mockReturnValueOnce(initial.promise)
+      .mockResolvedValue(record({ title: 'Restored' }));
+    const { result } = renderHook(() => useRunningConversationsQuery(['c1']), { wrapper });
+    await waitFor(() => expect(getConversationById).toHaveBeenCalledTimes(1));
+    act(() => {
+      removeConvoFromAllQueries(queryClient, 'c1');
+      queryClient.setQueryData([QueryKeys.conversation, 'c1'], record());
+      updateConvoInAllQueries(queryClient, 'c1', (row) => ({ ...row, title: 'Stale update' }));
+    });
+    await waitFor(() => expect(result.current).toEqual([]));
+    expect(getConversationById).toHaveBeenCalledTimes(1);
+    await act(async () => initial.resolve(record()));
+    expect(result.current).toEqual([]);
+
+    await act(async () => {
+      await queryClient.refetchQueries([QueryKeys.runningConversation, 'c1']);
+    });
+    await waitFor(() => expect(result.current[0]?.title).toBe('Restored'));
+    act(() =>
+      updateConvoInAllQueries(queryClient, 'c1', (row) => ({ ...row, title: 'Current update' })),
+    );
+    await waitFor(() => expect(result.current[0]?.title).toBe('Current update'));
+  });
+
+  it('does not let local updates make an authoritatively archived record visible again', async () => {
+    getConversationById
+      .mockResolvedValueOnce(record())
+      .mockResolvedValue(record({ isArchived: true }));
+    const { result } = renderHook(() => useRunningConversationsQuery(['c1']), { wrapper });
+    await waitFor(() => expect(result.current).toHaveLength(1));
+    act(() => removeConvoFromAllQueries(queryClient, 'c1'));
+    await act(async () => {
+      await queryClient.refetchQueries([QueryKeys.runningConversation, 'c1']);
+    });
+    await waitFor(() => expect(result.current[0]?.isArchived).toBe(true));
+
+    act(() => updateConvoInAllQueries(queryClient, 'c1', () => record({ isArchived: false })));
+    expect(
+      queryClient.getQueryData<TConversation>([QueryKeys.runningConversation, 'c1'])?.isArchived,
+    ).toBe(true);
+    await waitFor(() => expect(result.current[0]?.isArchived).toBe(true));
+  });
+
   it('uses the newest running row when reading cached reply state', () => {
     queryClient.setQueryData([QueryKeys.conversation, 'c1'], record());
     const running = record({ lastResponseAt: '2026-01-03T00:00:00.000Z' });
     queryClient.setQueryData([QueryKeys.runningConversation, 'c1'], running);
     expect(findConvoInAllQueries(queryClient, 'c1')?.lastResponseAt).toBe(running.lastResponseAt);
+  });
+
+  it('uses a newer Running poll over an older point-query read snapshot', async () => {
+    let now = 1000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const reply = { lastResponseAt: '2026-01-03T00:00:00.000Z' };
+    try {
+      getConversationById.mockResolvedValue(record(reply));
+      const { result } = renderHook(() => useRunningConversationsQuery(['c1']), { wrapper });
+      await waitFor(() => expect(result.current).toHaveLength(1));
+      findConvoInAllQueries(queryClient, 'c1');
+      now += 1000;
+      await act(async () => {
+        await queryClient.fetchQuery([QueryKeys.conversation, 'c1'], () =>
+          dataService.getConversationById('c1'),
+        );
+      });
+      now += 1000;
+      const seen = '2026-01-04T00:00:00.000Z';
+      getConversationById.mockResolvedValue(record({ ...reply, lastSeenAt: seen }));
+      await act(async () => {
+        await queryClient.refetchQueries([QueryKeys.runningConversation, 'c1']);
+      });
+      expect(findConvoInAllQueries(queryClient, 'c1')?.lastSeenAt).toBe(seen);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('publishes a project assignment to the running row immediately', async () => {
