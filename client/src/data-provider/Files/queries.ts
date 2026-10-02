@@ -67,6 +67,17 @@ type FileDownloadOptions = {
 export const isDirectDownloadSource = (source?: string | null): boolean =>
   source === FileSources.s3 || source === FileSources.cloudfront;
 
+/**
+ * Object-storage sources whose stored URLs require server-side authentication
+ * to fetch. Images from these sources cannot be rendered from the raw URL in an
+ * `<img>` tag and must be loaded through the authenticated download proxy, which
+ * streams the bytes using the server's credentials.
+ */
+export const proxyImageSources = new Set<string>([FileSources.azure_blob]);
+
+export const isProxyImageSource = (source?: string | null): boolean =>
+  source != null && proxyImageSources.has(source);
+
 export const revokeDownloadURL = (url?: string | null): void => {
   if (!url?.startsWith('blob:')) {
     return;

@@ -23,6 +23,13 @@ jest.mock('~/components/Chat/Messages/Content/Image', () => ({
   ),
 }));
 
+jest.mock('~/components/Chat/Messages/Content/ImageFile', () => ({
+  __esModule: true,
+  default: ({ file }: { file?: { filepath?: string; filename?: string } }) => (
+    <div data-testid="image-component" data-alt={file?.filename} data-src={file?.filepath} />
+  ),
+}));
+
 jest.mock('@librechat/client', () => ({
   PixelCard: ({ progress }: { progress: number }) => (
     <div data-testid="pixel-card" data-progress={progress} />

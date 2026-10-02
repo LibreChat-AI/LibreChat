@@ -8,7 +8,7 @@ import type {
   PartMetadata,
 } from 'librechat-data-provider';
 import { ToolIcon, isError } from '~/components/Chat/Messages/Content/ToolOutput';
-import Image from '~/components/Chat/Messages/Content/Image';
+import ImageFile from '~/components/Chat/Messages/Content/ImageFile';
 import { useProgress, useLocalize } from '~/hooks';
 import { useToolCallIntent } from '../intent';
 import { ROW_GLYPH_SLOT } from '../../rows';
@@ -134,7 +134,6 @@ export default function OpenAIImageGen({
     width: imageWidth,
     height: imageHeight,
     filepath = null,
-    filename = '',
   } = (attachment as TFile & TAttachmentMetadata) || {};
 
   let origWidth = width ?? imageWidth;
@@ -284,13 +283,7 @@ export default function OpenAIImageGen({
               />
             )}
             {filepath && (
-              <Image
-                altText={filename}
-                imagePath={filepath}
-                width={Number(dimensions.width?.split('px')[0])}
-                height={Number(dimensions.height?.split('px')[0])}
-                args={parsedArgs}
-              />
+              <ImageFile file={attachment as TFile & TAttachmentMetadata} args={parsedArgs} />
             )}
           </div>
         </div>
