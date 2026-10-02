@@ -1872,6 +1872,23 @@ export const vertexAISchema = z.object({
   deploymentName: z.string().optional(),
   /** Optional: Available models - can be string array or object with deploymentName mapping */
   models: z.union([z.array(z.string()), z.record(z.string(), vertexModelConfigSchema)]).optional(),
+  /**
+   * Gateway mode: skip local Google service-account auth when an upstream AI
+   * gateway (e.g., LiteLLM, Helicone, a corporate proxy) owns Vertex
+   * authentication. No `Authorization` header is attached client-side; the
+   * gateway is expected to inject it. Native Anthropic Vertex request
+   * formatting (`rawPredict` / `streamRawPredict`, top-level `system`,
+   * `anthropic_version`) is preserved.
+   */
+  skipAuth: z.boolean().optional(),
+  /**
+   * Gateway mode: override the Vertex API base URL with the gateway URL, e.g.
+   * `https://gateway.example.com/google-vertex-ai/v1`. The Anthropic Vertex
+   * SDK still constructs the
+   * `/projects/<id>/locations/<region>/publishers/anthropic/models/<deployment>:rawPredict`
+   * path on top of this base.
+   */
+  baseURL: z.string().optional(),
 });
 
 export type TVertexAISchema = z.infer<typeof vertexAISchema>;
