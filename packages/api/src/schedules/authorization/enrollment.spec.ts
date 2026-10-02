@@ -15,6 +15,7 @@ const identity: ScheduledMCPIdentity = {
 };
 function setup() {
   const deps: ScheduleMCPEnrollmentDeps = {
+    getModelsConfig: jest.fn(async () => ({ test: ['test'] })),
     canUseRoot: jest.fn(async () => true),
     findUser: jest.fn(async () => ({ id: 'u', tenantId: 't', role: 'USER' }) as IUser),
     getAppConfig: jest.fn(async () =>
@@ -73,15 +74,21 @@ it('binds reachable persisted child selections without transferring the enrolled
     'root',
   ]);
 });
-it('denies a missing child instead of silently shrinking the grant', async () => {
+it('does not enroll an inaccessible child that runtime skips', async () => {
   const { deps, resolve } = setup();
   jest
     .mocked(deps.getNodes)
     .mockResolvedValueOnce([
-      { id: 'root', provider: 'test', model: 'test', agent_ids: ['private-child'] },
+      {
+        id: 'root',
+        provider: 'test',
+        model: 'test',
+        tools: ['query_mcp_warehouse'],
+        agent_ids: ['private-child'],
+      },
     ])
     .mockResolvedValueOnce([]);
-  await expect(resolve(identity, {})).rejects.toMatchObject({ code: 'consent_forbidden' });
+  expect((await resolve(identity, {}))[0].permittedTools.map((s) => s.agentId)).toEqual(['root']);
 });
 it('requires operator-declared recipient metadata, not a successful login or tool hint', async () => {
   const { deps, resolve } = setup();
@@ -151,7 +158,7 @@ it('honors capability-only root access without bypassing descendant VIEW checks'
     'root',
     expect.objectContaining({ id: 'u', tenantId: 't' }),
   );
-  expect(deps.getNodes).toHaveBeenNthCalledWith(1, ['root'], undefined);
+  expect(deps.getNodes).toHaveBeenNthCalledWith(1, ['root']);
   expect(deps.getNodes).toHaveBeenNthCalledWith(2, ['child'], expect.any(Object));
 });
 it('does not load an unauthorized root through the unfiltered loader', async () => {
@@ -159,4 +166,25 @@ it('does not load an unauthorized root through the unfiltered loader', async () 
   jest.mocked(deps.canUseRoot).mockResolvedValue(false);
   await expect(resolve(identity, {})).rejects.toMatchObject({ code: 'consent_forbidden' });
   expect(deps.getNodes).not.toHaveBeenCalled();
+});
+
+it('does not expand saved edges of a legacy-chain member', async () => {
+  const { deps, resolve } = setup();
+  jest.mocked(deps.getNodes).mockImplementation(async (ids) =>
+    ids.map((id) => ({
+      id,
+      provider: 'test',
+      model: 'test',
+      tools: ['query_mcp_warehouse'],
+      agent_ids: id === 'root' ? ['legacy'] : [],
+      edges: id === 'legacy' ? [{ from: 'legacy', to: 'private-child' }] : [],
+    })),
+  );
+  expect((await resolve(identity, {}))[0].permittedTools.map((s) => s.agentId)).toEqual([
+    'legacy',
+    'root',
+  ]);
+  expect(jest.mocked(deps.getNodes).mock.calls.flatMap(([ids]) => ids)).not.toContain(
+    'private-child',
+  );
 });

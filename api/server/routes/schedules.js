@@ -100,6 +100,8 @@ const consentHost = createScheduleMCPConsentHost({
         idOnTheSource: user.idOnTheSource,
       }),
     getNodes: methods.getAgentGraphNodes,
+    getModelsConfig: (user) =>
+      require('~/server/controllers/ModelController').getModelsConfig({ user }),
     getServers: (user, config) =>
       require('~/config').getMCPServersRegistry().getAllServerConfigs(user.id, config, user.role),
   }),
