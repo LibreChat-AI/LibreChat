@@ -15,6 +15,7 @@ import type { ScheduledMCPTarget, TModelsConfig } from 'librechat-data-provider'
 import type { ScheduleMCPEnrollmentResolver } from './service';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { ParsedServerConfig } from '~/mcp/types';
+import { getScheduledMCPConfigurationRevision } from './configuration';
 import { resolveScheduledMCPRequirements } from '../requirements';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { ScheduleMCPConsentError } from './service';
@@ -106,25 +107,7 @@ export function createScheduleMCPEnrollmentResolver(
         (!metadata.issuer || !metadata.audience)
       )
         throw new ScheduleMCPConsentError('consent_unavailable');
-      const configurationRevision = createHash('sha256')
-        .update(
-          JSON.stringify({
-            metadata,
-            type: config.type,
-            oauth: config.oauth && {
-              authorization: config.oauth.authorization_url,
-              token: config.oauth.token_url,
-              client: config.oauth.client_id,
-            },
-            obo: 'obo' in config ? config.obo : undefined,
-            apiKey: config.apiKey && {
-              source: config.apiKey.source,
-              type: config.apiKey.authorization_type,
-              header: config.apiKey.custom_header,
-            },
-          }),
-        )
-        .digest('hex');
+      const configurationRevision = getScheduledMCPConfigurationRevision(config, metadata);
       targets.set(name, {
         resource: { ...metadata, serverName: name, configurationRevision },
         policyRevision: '',

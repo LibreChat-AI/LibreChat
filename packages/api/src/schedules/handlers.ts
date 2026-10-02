@@ -5,7 +5,12 @@ import {
   updateSchedulePayloadSchema,
   isCronCadence,
 } from 'librechat-data-provider';
-import type { TScheduleCadence, TCreateSchedule, TUpdateSchedule } from 'librechat-data-provider';
+import type {
+  TScheduleCadence,
+  TCreateSchedule,
+  TUpdateSchedule,
+  TSchedule,
+} from 'librechat-data-provider';
 import type { ScheduleMethods, ISchedule, IScheduleRun } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type {
@@ -246,10 +251,11 @@ export type WireSchedule = Pick<
   | 'configRevision'
   | 'createdAt'
   | 'updatedAt'
-> & {
-  /** See `TSchedule.inFlight`: the generating occurrences, from their own run rows. */
-  inFlight?: Array<{ conversationId: string }>;
-};
+> &
+  Pick<TSchedule, 'hasMCPConsent'> & {
+    /** See `TSchedule.inFlight`: the generating occurrences, from their own run rows. */
+    inFlight?: Array<{ conversationId: string }>;
+  };
 
 /** Only generating occurrences are read for the list. `ScheduleRun` is indexed by
  *  status, not by user, and `started` rows are bounded globally by the capacity

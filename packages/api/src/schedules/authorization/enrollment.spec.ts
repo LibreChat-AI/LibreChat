@@ -1,9 +1,12 @@
 import { Types } from 'mongoose';
 import { Permissions, PermissionTypes } from 'librechat-data-provider';
+import type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from '@librechat/data-schemas';
 import type { IUser, AppConfig, AgentGraphAccessContext } from '@librechat/data-schemas';
 import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { ScheduleMCPEnrollmentDeps } from './enrollment';
+import type { ParsedServerConfig } from '~/mcp/types';
 import { createScheduleMCPEnrollmentResolver } from './enrollment';
+import { createScheduleMCPConsentService } from './service';
 import { createResolveAgentFireAccess } from '../access';
 
 const identity: ScheduledMCPIdentity = {
@@ -187,4 +190,131 @@ it('does not expand saved edges of a legacy-chain member', async () => {
   expect(jest.mocked(deps.getNodes).mock.calls.flatMap(([ids]) => ids)).not.toContain(
     'private-child',
   );
+});
+
+it.each<Partial<ParsedServerConfig>>([
+  { headers: { 'X-Workspace': 'other' } },
+  { requestHeaders: { 'X-Account': 'other' } },
+  { proxy: 'http://other-proxy.example/' },
+  { dbId: 'other-server' },
+])('requires fresh confirmation at every stage after a routing change: %j', async (change) => {
+  const { deps, resolve } = setup();
+  let server: ParsedServerConfig = {
+    type: 'streamable-http',
+    url: 'https://warehouse.example/mcp',
+    headers: { 'X-Workspace': 'original' },
+    requestHeaders: { 'X-Account': 'original' },
+    proxy: 'http://proxy.example/',
+    dbId: 'original-server',
+  };
+  jest.mocked(deps.getServers).mockImplementation(async () => ({ warehouse: server }));
+  const snapshot: ScheduleConsentSnapshot = {
+    agentId: 'root',
+    enabled: true,
+    configRevision: 0,
+    enrollment: null,
+  };
+  const admit = jest.fn(async () => true);
+  const storage: ScheduleMCPConsentStorage = {
+    readScheduleMCPConsent: async () => structuredClone(snapshot),
+    confirmScheduleMCPConsent: async ({ enrollment }) => {
+      snapshot.enrollment = enrollment;
+      return true;
+    },
+    revokeScheduleMCPConsent: async () => true,
+    admitScheduleMCPConsent: admit,
+  };
+  const service = createScheduleMCPConsentService({
+    storage,
+    resolveEnrollment: resolve,
+    getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
+    canUse: async () => true,
+    checkToolPolicy: async () => true,
+    now: () => 1000,
+  });
+  const preview = await service.view(identity);
+  const input = { offerDigest: preview.offer!.digest, expectedRevision: null, lifetimeHours: 1 };
+  const enrolled = await service.confirm(identity, input);
+  const oldResource = snapshot.enrollment!.consents[0].resource;
+  server = { ...server, ...change };
+  expect((await service.view(identity)).state).toBe('changed');
+  await expect(
+    service.confirm(identity, { ...input, expectedRevision: enrolled.revision }),
+  ).rejects.toMatchObject({ code: 'consent_changed' });
+  for (const stage of ['activation', 'mint', 'invoke', 'resume'] as const) {
+    expect(
+      await service.authority.authorize(
+        {
+          identity,
+          resource: oldResource,
+          stage,
+          selection: { agentId: 'root', tools: ['query'] },
+        },
+        {},
+      ),
+    ).toMatchObject({ state: 'denied', failure: { reason: 'binding_mismatch' } });
+  }
+  expect(admit).not.toHaveBeenCalled();
+  const fresh = await service.view(identity);
+  await service.confirm(identity, {
+    ...input,
+    offerDigest: fresh.offer!.digest,
+    expectedRevision: fresh.revision,
+  });
+  expect(
+    await service.authority.authorize(
+      {
+        identity,
+        resource: snapshot.enrollment!.consents[0].resource,
+        stage: 'invoke',
+        selection: { agentId: 'root', tools: ['query'] },
+      },
+      {},
+    ),
+  ).toMatchObject({ state: 'authorized' });
+});
+
+it('does not bind consent to renewed user tokens or client secrets', async () => {
+  const { deps, resolve } = setup();
+  let user = Object.assign({} as IUser, {
+    id: 'u',
+    tenantId: 't',
+    role: 'USER',
+    federatedTokens: {
+      access_token: 'fixture-access-one',
+      refresh_token: 'fixture-refresh-one',
+      expires_at: 10000,
+    },
+  });
+  let secret = 'fixture-secret-one';
+  jest.mocked(deps.findUser).mockImplementation(async () => user);
+  jest
+    .mocked(deps.getServers)
+    .mockImplementation(async () => ({
+      warehouse: {
+        type: 'streamable-http',
+        url: 'https://warehouse.example/mcp',
+        headers: {
+          Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
+          'X-Workspace': 'original',
+        },
+        oauth: {
+          client_id: 'client',
+          client_secret: secret,
+          authorization_url: 'https://issuer.example/authorize',
+          token_url: 'https://issuer.example/token',
+        },
+      },
+    }));
+  const before = await resolve(identity, {});
+  secret = 'fixture-secret-two';
+  user = {
+    ...user,
+    federatedTokens: {
+      access_token: 'fixture-access-two',
+      refresh_token: 'fixture-refresh-two',
+      expires_at: 20000,
+    },
+  };
+  expect(await resolve(identity, {})).toEqual(before);
 });
