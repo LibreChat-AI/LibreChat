@@ -462,17 +462,15 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
   ] as const)(
     'honors checkout $checkout with linkedWorktrees=$linkedWorktrees',
     async ({ checkout, linkedWorktrees, lanes }) => {
-      jest
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(
-          workspaceStatus([
-            {
-              id: 'worktree',
-              workspaceInstances: ['git_worktree'],
-              workspaceScopes: ['git_linked_worktree'],
-            },
-          ]),
-        );
+      jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+        workspaceStatus([
+          {
+            id: 'worktree',
+            workspaceInstances: ['git_worktree'],
+            workspaceScopes: ['git_linked_worktree'],
+          },
+        ]),
+      );
       const resolved = await resolveCodeExecutionWorkspaceContext({
         context: {
           ...context,
