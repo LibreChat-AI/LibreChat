@@ -20,8 +20,6 @@ import type {
   ServerRequest,
 } from '~/types';
 import type { ReachableAgent } from '~/agents/traversal';
-import { processTextWithTokenLimit } from '~/utils/text';
-import { countTokens } from '~/utils/tokenizer';
 import {
   CONTENT_TRAVERSAL_MAX_DEPTH,
   CONTENT_TRAVERSAL_MAX_NODES,
@@ -34,8 +32,10 @@ import {
   isAttachmentObjectNotFoundError,
 } from './utils';
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
+import { processTextWithTokenLimit } from '~/utils/text';
 import { someReachableAgent } from '~/agents/traversal';
 import { runGuardedEncode } from './memoryGuard';
+import { countTokens } from '~/utils/tokenizer';
 
 /** The longest document name LibreChat sends to Bedrock. */
 const BEDROCK_DOCUMENT_NAME_LIMIT = 200;
