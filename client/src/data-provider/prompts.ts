@@ -194,6 +194,7 @@ export const useDeletePrompt = (
         );
 
         removeGroupFromAll(queryClient, promptGroupId);
+        queryClient.invalidateQueries([QueryKeys.categories]);
       } else {
         queryClient.setQueryData<t.TPrompt[]>(
           [QueryKeys.prompts, variables.groupId],
@@ -253,6 +254,7 @@ export const useDeletePromptGroup = (
       );
 
       removeGroupFromAll(queryClient, variables.id);
+      queryClient.invalidateQueries([QueryKeys.categories]);
       if (onSuccess) {
         onSuccess(response, variables, context);
       }
