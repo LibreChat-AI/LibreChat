@@ -191,6 +191,10 @@ export default function Stage({
       const now = performance.now();
       engine.noteTyping(now);
       engine.caret = caretPoint(target, mirror, root.getBoundingClientRect());
+      /* Deleting back under the threshold re-arms the reaction for the next long message. */
+      if (target.value.length <= 280) {
+        longShown = false;
+      }
       const input = e as InputEvent;
       if (input.inputType === 'insertFromPaste') {
         if (target.value.length > 40) {
@@ -209,9 +213,6 @@ export default function Stage({
       if (!longShown && target.value.length > 280) {
         longShown = true;
         react('r-long', 1000);
-      }
-      if (target.value.length === 0) {
-        longShown = false;
       }
       const ch = input.data;
       if (ch === '?') {
@@ -250,9 +251,24 @@ export default function Stage({
 
     let shakeDir = 0;
     let flips: number[] = [];
+    /* Pointer events can outpace frames; read layout at most once per frame. */
+    let pendingPointer: { x: number; y: number } | null = null;
+    let pointerFrame = 0;
     const onPointerMove = (e: PointerEvent) => {
+      pendingPointer = { x: e.clientX, y: e.clientY };
+      if (!pointerFrame) {
+        pointerFrame = requestAnimationFrame(processPointer);
+      }
+    };
+    const processPointer = () => {
+      pointerFrame = 0;
+      const client = pendingPointer;
+      pendingPointer = null;
+      if (!client) {
+        return;
+      }
       const origin = root.getBoundingClientRect();
-      const p = { x: e.clientX - origin.left, y: e.clientY - origin.top };
+      const p = { x: client.x - origin.left, y: client.y - origin.top };
       const prev = engine.pointer;
       engine.pointer = p;
       engine.noteActivity();
@@ -354,6 +370,7 @@ export default function Stage({
       band?.removeEventListener('focusin', onFocusIn);
       band?.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('pointermove', onPointerMove);
+      cancelAnimationFrame(pointerFrame);
       window.removeEventListener('dragenter', onDragEnter);
       window.removeEventListener('dragleave', onDragLeave);
       window.removeEventListener('drop', onDrop);
