@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
 import { Constants, getCodeBaseURL } from '@librechat/agents';
-import { resolveCodeEnvironmentSelection } from 'librechat-data-provider';
+import {
+  resolveCodeEnvironmentSelection,
+  isCodeEnvironmentSelectionAllowed,
+} from 'librechat-data-provider';
 import type {
   Agents,
   CodeWorkspaceOperation,
@@ -351,7 +354,7 @@ export function resolveCodeExecutionContext(params: {
   userId?: string | null;
   agentId?: string | null;
   conversationId?: string | null;
-  /** Deployment ceiling and the persisted agent machine allowlist are both required. */
+  /** Deployment ceiling (on unless `false`) and a persisted agent machine allowlist are both required. */
   allowEnvironmentSelection?: boolean;
   environmentIds?: readonly string[];
   workspaceSelections?: unknown;
@@ -372,7 +375,7 @@ export function resolveCodeExecutionContext(params: {
       (params.environmentId ? candidate.id === params.environmentId : candidate.default === true),
   );
   const allowSelection =
-    params.allowEnvironmentSelection === true &&
+    isCodeEnvironmentSelectionAllowed(params.allowEnvironmentSelection) &&
     (params.environmentIds?.length ?? 0) > 0 &&
     (defaultEnvironment?.type === 'attached' ||
       (defaultEnvironment == null && Boolean(params.environmentId)));

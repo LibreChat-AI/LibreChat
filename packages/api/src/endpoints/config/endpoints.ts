@@ -2,6 +2,7 @@ import {
   AuthType,
   CODE_APPROVAL_MODES,
   DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES,
+  isCodeEnvironmentSelectionAllowed,
   EModelEndpoint,
   isAgentsEndpoint,
   orderEndpointsConfig,
@@ -103,7 +104,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
       const clientStatefulCodeSessions = statefulCodeSessions
         ? {
             allowedEnvironments: statefulCodeSessions.allowedEnvironments,
-            ...(statefulCodeSessions.allowEnvironmentSelection === true
+            ...(isCodeEnvironmentSelectionAllowed(statefulCodeSessions.allowEnvironmentSelection)
               ? {
                   allowEnvironmentSelection: true,
                   maxEnvironmentChoices:

@@ -6,6 +6,25 @@ export const CODE_WORKSPACE_MAX_COUNT = 32;
 /** Wire/storage safety ceiling; deployments may set a lower per-agent choice limit. */
 export const MAX_AGENT_CODE_ENVIRONMENT_CHOICES = 128;
 export const DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES = 32;
+
+/**
+ * Per-chat machine choice is on unless a deployment sets `allowEnvironmentSelection: false`.
+ * It only ever applies to agents whose author saved a machine allowlist; every other agent
+ * keeps its fixed machine either way.
+ */
+export function isCodeEnvironmentSelectionAllowed(
+  allowEnvironmentSelection?: boolean | null,
+): boolean {
+  return allowEnvironmentSelection !== false;
+}
+
+/**
+ * Linked-worktree lanes are on unless an environment sets `workspaces.linkedWorktrees: false`.
+ * They only apply where the worker advertises the `git_linked_worktree` scope.
+ */
+export function isLinkedWorktreeRoutingAllowed(linkedWorktrees?: boolean | null): boolean {
+  return linkedWorktrees !== false;
+}
 /** API/client protocol for immutable conversation-owned environment decisions. */
 export const CODE_ENVIRONMENT_DECISION_VERSION = 1 as const;
 /** API/client protocol for an owner's explicit move of a sealed environment decision. */

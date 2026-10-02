@@ -773,9 +773,9 @@ endpoints:
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
   #     # Let new chats choose an attached machine from their agent's explicit machine allowlist.
-  #     # Keep false until ALL API replicas support this field, then refresh clients.
-  #     # Omitted/false preserves agents' fixed machine bindings.
-  #     allowEnvironmentSelection: false
+  #     # On by default; only agents with a saved allowlist are affected. Set false to keep
+  #     # every agent on its fixed machine (for example while older API replicas still run).
+  #     allowEnvironmentSelection: true
   #     # Maximum additional machines per agent; default 32, supported ceiling 128.
   #     maxEnvironmentChoices: 32
   #     # Keep move-only behavior unless attach/detach is explicitly enabled.

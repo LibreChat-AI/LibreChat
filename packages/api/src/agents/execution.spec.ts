@@ -152,6 +152,11 @@ describe('resolveCodeExecutionContext', () => {
       );
     });
 
+    it('routes to the chosen machine when the deployment leaves the flag unset', () => {
+      const { allowEnvironmentSelection: _unset, ...unset } = params;
+      expect(resolveCodeExecutionContext(unset).environmentId).toBe('runtime-vm');
+    });
+
     it.each(['allowEnvironmentSelection', 'environmentIds'] as const)(
       'retains fixed routing when %s is disabled',
       (gate) => {

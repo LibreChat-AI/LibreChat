@@ -1,6 +1,7 @@
 import { logger } from '@librechat/data-schemas';
 import {
   isCodeWorkspaceSelections,
+  isLinkedWorktreeRoutingAllowed,
   canonicalizeCodeWorkspaceSelections,
 } from 'librechat-data-provider';
 import type { CodeWorkspaceSelection } from 'librechat-data-provider';
@@ -150,7 +151,9 @@ export async function resolveCodeExecutionWorkspaceContext({
       workspace.workspaceInstances?.includes('git_worktree')
         ? { workspaceInstanceId: context.conversationWorkspaceInstanceId }
         : {}),
-      ...(context.codeEnvironmentConfigSchema?.workspaces?.linkedWorktrees === true &&
+      ...(isLinkedWorktreeRoutingAllowed(
+        context.codeEnvironmentConfigSchema?.workspaces?.linkedWorktrees,
+      ) &&
       workspace.workspaceScopes?.includes('git_linked_worktree') &&
       !(
         context.conversationWorkspaceInstanceId &&

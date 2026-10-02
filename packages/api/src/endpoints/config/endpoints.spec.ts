@@ -246,6 +246,8 @@ describe('createEndpointsConfigService', () => {
 
       expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions).toEqual({
         allowedEnvironments: ['user', 'agent-user'],
+        allowEnvironmentSelection: true,
+        maxEnvironmentChoices: 32,
         approvalsEnabled: false,
         approvalModes: [],
         environments: [
@@ -299,33 +301,46 @@ describe('createEndpointsConfigService', () => {
 
       expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions).toEqual({
         allowedEnvironments: ['user'],
+        allowEnvironmentSelection: true,
+        maxEnvironmentChoices: 32,
         approvalsEnabled: true,
         approvalModes: ['ask', 'acceptEdits', 'fullAccess'],
         environments: [],
       });
     });
 
-    it('advertises machine selection only when the deployment enables it', async () => {
-      const deps = createMockDeps({
-        loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
-          [EModelEndpoint.agents]: { userProvide: false, order: 0 },
-        }),
-        getAppConfig: jest.fn().mockResolvedValue(
-          appConfig({
-            endpoints: {
-              [EModelEndpoint.agents]: {
-                statefulCodeSessions: { allowEnvironmentSelection: true },
-              },
-            },
+    it.each([
+      [undefined, true],
+      [true, true],
+      [false, undefined],
+    ])(
+      'advertises machine selection unless the deployment turns it off (configured: %p)',
+      async (allowEnvironmentSelection, advertised) => {
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
           }),
-        ),
-      });
-      const { getEndpointsConfig } = createEndpointsConfigService(deps);
-      const result = await getEndpointsConfig(fakeReq());
-      expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions?.allowEnvironmentSelection).toBe(
-        true,
-      );
-    });
+          getAppConfig: jest.fn().mockResolvedValue(
+            appConfig({
+              endpoints: {
+                [EModelEndpoint.agents]: {
+                  statefulCodeSessions: {
+                    ...(allowEnvironmentSelection === undefined
+                      ? {}
+                      : { allowEnvironmentSelection }),
+                  },
+                },
+              },
+            }),
+          ),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+        const advertisedConfig = result?.[EModelEndpoint.agents]?.statefulCodeSessions;
+        expect(advertisedConfig?.allowEnvironmentSelection).toBe(advertised);
+        expect(advertisedConfig?.maxEnvironmentChoices).toBe(advertised ? 32 : undefined);
+      },
+    );
 
     it.each([
       [{ enabled: true }, ['ask']],

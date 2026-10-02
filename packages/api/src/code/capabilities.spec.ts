@@ -480,7 +480,7 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
     expect(legacy.codeWorkspace).not.toHaveProperty('workspaceInstanceId');
   });
 
-  it('routes linked worktrees into lanes only when configured and no conversation instance owns the checkout', async () => {
+  it('routes linked worktrees into lanes unless disabled or a conversation instance owns the checkout', async () => {
     const workspaceInstanceId = 'c'.repeat(64);
     jest.spyOn(globalThis, 'fetch').mockImplementation(async () =>
       workspaceStatus([
@@ -517,7 +517,7 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
 
     expect(lanes.codeWorkspace?.linkedWorktrees).toBe(true);
     expect(disabled.codeWorkspace).not.toHaveProperty('linkedWorktrees');
-    expect(unconfigured.codeWorkspace).not.toHaveProperty('linkedWorktrees');
+    expect(unconfigured.codeWorkspace?.linkedWorktrees).toBe(true);
     expect(instance.codeWorkspace?.workspaceInstanceId).toBe(workspaceInstanceId);
     expect(instance.codeWorkspace).not.toHaveProperty('linkedWorktrees');
     expect(legacy.codeWorkspace).not.toHaveProperty('linkedWorktrees');

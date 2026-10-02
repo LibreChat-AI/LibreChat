@@ -1347,8 +1347,8 @@ export const codeEnvironmentUserConfigSchema = z
     workspaces: z
       .object({
         /** Run requests aimed at `.worktrees/<name>` in that worktree's own lane when the
-         * worker advertises linked-worktree lanes. Omission keeps every request scoped to
-         * its checkout. */
+         * worker advertises linked-worktree lanes. Omission allows it; `false` keeps every
+         * request scoped to its checkout. */
         linkedWorktrees: z.boolean().optional(),
       })
       .strict()
@@ -1508,8 +1508,8 @@ export const agentsEndpointSchema = baseEndpointSchema
       statefulCodeSessions: z
         .object({
           allowedEnvironments: z.array(z.enum(STATEFUL_CODE_ENVIRONMENTS)).min(1),
-          /** Allow agents with a machine allowlist to use a chat-owned machine instead of their default.
-           * Enable after every API replica supports per-chat machine routing. */
+          /** Let new chats pick a machine from their agent's saved allowlist instead of its default.
+           * Omission allows it; `false` keeps every agent on its fixed machine. */
           allowEnvironmentSelection: z.boolean().optional(),
           /** Maximum additional machine choices saved on an agent (wire ceiling: 128). */
           maxEnvironmentChoices: z
