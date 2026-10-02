@@ -6,6 +6,7 @@ import { clearUserConversations, deleteConversations, seedConversations } from '
 import {
   BASE_FONT_PX,
   MAX_SCALE,
+  MIN_SCALE,
   accountButton,
   appearanceCard,
   closeSettingsButton,
@@ -128,6 +129,42 @@ test.describe('UI scale layout', () => {
     expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width + 1);
     expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height + 1);
     expect(await documentOverflowsHorizontally(page)).toBe(false);
+  });
+
+  test('the one-line composer fits its padding at both ends of the range @scenario:ui-scale-composer-fits-at-both-range-ends', async ({
+    page,
+  }) => {
+    const composer = page.getByRole('textbox', { name: 'Message input' });
+    const measure = () =>
+      composer.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return {
+          height: element.clientHeight,
+          scrollHeight: element.scrollHeight,
+          paddingTop: parseFloat(style.paddingTop),
+        };
+      });
+
+    await withStoredScale(page, MIN_SCALE);
+    await page.goto('/c/new', { timeout: 10000 });
+    await expect(composer).toBeVisible({ timeout: 20000 });
+    await expectRootFontPx(page, BASE_FONT_PX * MIN_SCALE);
+    const small = await measure();
+
+    await withStoredScale(page, MAX_SCALE);
+    await page.reload({ timeout: 15000 });
+    await expect(composer).toBeVisible({ timeout: 20000 });
+    await expectRootFontPx(page, BASE_FONT_PX * MAX_SCALE);
+    const large = await measure();
+
+    /* The height is set from the scale in JS; padding left in px would outgrow
+       it at the bottom of the range and make an empty composer scroll. */
+    for (const sample of [small, large]) {
+      expect(sample.scrollHeight, 'an empty composer should not scroll').toBeLessThanOrEqual(
+        sample.height + 1,
+      );
+    }
+    expect(large.paddingTop / small.paddingTop).toBeCloseTo(MAX_SCALE / MIN_SCALE, 1);
   });
 
   test('the account avatar grows square with the scale @scenario:ui-scale-avatar-keeps-its-shape', async ({
