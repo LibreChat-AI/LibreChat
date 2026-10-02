@@ -729,6 +729,91 @@ describe('subagent activity stream authorization', () => {
     expect(transport.handlers.size).toBe(0);
   });
 
+  it.each([false, true])(
+    'delivers an expanded event-thread snapshot without closing (blocked: %s)',
+    async (blocked) => {
+      const transport = new TestTransport();
+      const stream = new SubagentActivityStream(transport);
+      const eventThreadId = 'x'.repeat(499);
+      const req = request();
+      req.params = { parentConversationId, threadId: eventThreadId, taskId };
+      const entries: SubagentActivityEnvelope[] = Array.from({ length: 100 }, (_, sequence) => ({
+        event: 'on_subagent_update',
+        data: update({
+          parentToolCallId: undefined,
+          ancestry: [],
+          activitySequence: sequence,
+          data: { text: 'a'.repeat(250) },
+        }),
+      }));
+      const retainedBytes = entries.reduce(
+        (total, data, seq) =>
+          total + Buffer.byteLength(JSON.stringify({ type: 'chunk', seq, data })),
+        0,
+      );
+      expect(retainedBytes).toBeLessThanOrEqual(65_536);
+      const unsubscribe = jest.fn();
+      const handler = createSubagentActivityStreamHandler(
+        {
+          getConvoOwnership: jest.fn().mockResolvedValue(parent),
+          getSubagentThreadForParent: jest.fn().mockResolvedValue({
+            ...child,
+            subagentThread: {
+              ...child.subagentThread,
+              parentToolCallId: 'event-binding:private',
+            },
+          }),
+          getMessages: jest.fn().mockResolvedValue([]),
+        },
+        {
+          subscribe: (_thread, _task, subscriber) => ({
+            unsubscribe,
+            ready: Promise.resolve().then(() => {
+              if (blocked)
+                subscriber.onEvent({
+                  event: 'on_subagent_update',
+                  data: update({ label: 'before-snapshot' }),
+                });
+              subscriber.onEvent({ event: 'subagent_activity_replay', data: entries });
+              subscriber.onEvent({
+                event: 'on_subagent_update',
+                data: update({ activitySequence: 100, label: 'live-tail' }),
+              });
+            }),
+          }),
+        },
+      );
+      const res = response();
+      if (blocked)
+        (res.write as jest.Mock).mockImplementationOnce((frame: string) => {
+          res.chunks.push(frame);
+          return false;
+        });
+      await handler(req, res);
+      expect(res.end).not.toHaveBeenCalled();
+      if (blocked) {
+        expect(res.chunks.join('')).not.toContain('subagent_activity_replay');
+        res.emit('drain');
+      }
+      const frames = res.chunks
+        .filter((chunk) => chunk.startsWith('data: '))
+        .map((chunk) => JSON.parse(chunk.slice(6)));
+      const replay = frames.find((frame) => frame.event === 'subagent_activity_replay');
+      expect(Buffer.byteLength(JSON.stringify(replay))).toBeGreaterThan(65_536);
+      expect(replay.data).toHaveLength(100);
+      expect(
+        replay.data.map((entry: SubagentActivityEnvelope) => entry.data.activitySequence),
+      ).toEqual(Array.from({ length: 100 }, (_, index) => index));
+      expect(replay.data[0].data.parentToolCallId).toBe(`event-thread:${eventThreadId}`);
+      expect(res.chunks.join('')).not.toContain('event-binding:');
+      expect(res.chunks.join('')).toContain('live-tail');
+      res.emit('close');
+      expect(unsubscribe).toHaveBeenCalled();
+      expect(res.listenerCount('drain')).toBe(0);
+      stream.destroy();
+    },
+  );
+
   it('streams a full snapshot and concurrent buffered frames through actual HTTP backpressure', async () => {
     const unsubscribe = jest.fn();
     const activity = (sequence: number, text: string): SubagentActivityEnvelope => ({

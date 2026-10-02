@@ -767,6 +767,88 @@ export function reduceSubagentProgress(
   return { ...progress, activityReplayFrom: replayFrom, activityReplayThrough: replayThrough };
 }
 
+/** Prefix events are new coverage, not a replacement for newer foreground parts.
+ * Reconcile bounded projections instead of retaining another raw event history. */
+function prependSubagentReplay(
+  previous: SubagentProgress,
+  events: SubagentUpdateEvent[],
+): SubagentProgress {
+  const prefix = foldAcceptedSubagentEvents(null, events, 'detached', []);
+  if (prefix == null) return previous;
+  let parts = prefix.contentParts;
+  let state = prefix.aggregatorState;
+  const indices = new Map<number, number>();
+  for (let index = 0; index < previous.contentParts.length; index++) {
+    const part = previous.contentParts[index];
+    const event: SubagentUpdateEvent = {
+      ...events[events.length - 1],
+      data: undefined,
+      label: undefined,
+    };
+    if (part.type === ContentTypes.TEXT) {
+      event.phase = 'message_delta';
+      event.data = { delta: { content: [part] } };
+    } else if (part.type === ContentTypes.THINK) {
+      event.phase = 'reasoning_delta';
+      event.data = { delta: { content: [part] } };
+    } else {
+      event.phase = 'run_step';
+      event.data = {
+        id: part.tool_call.stepId,
+        stepDetails: { type: 'tool_calls', tool_calls: [part.tool_call] },
+      };
+    }
+    ({ parts, state } = foldSubagentEvent(parts, state, event));
+    let target: number;
+    if (part.type === ContentTypes.TOOL_CALL) {
+      target = state.toolCallIndexById[part.tool_call.id];
+      const prefixTool = parts[target];
+      parts = parts.slice();
+      parts[target] = {
+        ...part,
+        tool_call: {
+          ...(prefixTool.type === ContentTypes.TOOL_CALL ? prefixTool.tool_call : {}),
+          ...part.tool_call,
+        },
+      };
+    } else target = part.type === ContentTypes.TEXT ? state.openTextIdx! : state.openThinkIdx!;
+    indices.set(index, target);
+  }
+  const bounded = boundContentParts(parts, {
+    ...previous.aggregatorState,
+    openTextIdx:
+      previous.aggregatorState.openTextIdx == null
+        ? null
+        : (indices.get(previous.aggregatorState.openTextIdx) ?? null),
+    openThinkIdx:
+      previous.aggregatorState.openThinkIdx == null
+        ? null
+        : (indices.get(previous.aggregatorState.openThinkIdx) ?? null),
+  });
+  const offset = prefix.tickerState.lines.length;
+  return {
+    ...previous,
+    contentParts: bounded.parts,
+    aggregatorState: bounded.state,
+    tickerState: boundTickerState({
+      ...previous.tickerState,
+      lines: [...prefix.tickerState.lines, ...previous.tickerState.lines],
+      textLineIdx:
+        previous.tickerState.textLineIdx == null ? null : previous.tickerState.textLineIdx + offset,
+      thinkLineIdx:
+        previous.tickerState.thinkLineIdx == null
+          ? null
+          : previous.tickerState.thinkLineIdx + offset,
+    }),
+    firstActivitySequence: events[0].activitySequence,
+    recentEventKeys: [...(prefix.recentEventKeys ?? []), ...(previous.recentEventKeys ?? [])].slice(
+      -MAX_RECENT_EVENT_KEYS,
+    ),
+    droppedCount: (prefix.droppedCount ?? 0) + (previous.droppedCount ?? 0),
+    coverage: prefix.coverage === 'complete' ? 'complete' : previous.coverage,
+  };
+}
+
 /** Reconcile snapshot coverage and bounded client overflow without advancing past an open parent. */
 export function reduceSubagentReplay(
   previous: SubagentProgress | null,
@@ -819,7 +901,16 @@ export function reduceSubagentReplay(
     previous?.firstActivitySequence != null &&
     firstSequence != null &&
     firstSequence < previous.firstActivitySequence;
-  const base = sameRun && !addsEarlierActivity ? previous : null;
+  const earlier =
+    addsEarlierActivity && sameRun && previous?.firstActivitySequence != null
+      ? events.filter(
+          (event) =>
+            validActivitySequence(event.activitySequence) &&
+            event.activitySequence < previous.firstActivitySequence!,
+        )
+      : [];
+  let base: SubagentProgress | null = sameRun ? previous : null;
+  if (base != null && earlier.length > 0) base = prependSubagentReplay(base, earlier);
   const progress = reduceSubagentProgress(base, events, 'detached', parentOpen);
   if (progress == null) return previous;
   const missing = sameRun ? previous?.activityReplayFrom : undefined;

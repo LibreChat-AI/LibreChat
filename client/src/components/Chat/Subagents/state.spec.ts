@@ -533,3 +533,129 @@ it('counts an expired rejected interval without discarding later retained pendin
     },
   ]);
 });
+
+describe('replay prefix projection reconciliation', () => {
+  const event = (sequence: number, phase: SubagentUpdateEvent['phase'] = 'message_delta') =>
+    update({
+      activityEventId: `backfill:${sequence}`,
+      activitySequence: sequence,
+      phase,
+      data:
+        phase === 'reasoning_delta'
+          ? { delta: { content: [{ type: 'think', think: `${sequence},` }] } }
+          : { delta: { content: [{ type: 'text', text: `${sequence},` }] } },
+    });
+  it.each([0, 2, 4])(
+    'preserves a displayed suffix when replay stops at sequence %s',
+    (snapshotEnd) => {
+      let progress = reduceSubagentProgress(
+        null,
+        [event(2), event(3), event(4)],
+        'detached',
+        false,
+      );
+      const replay = Array.from({ length: snapshotEnd + 1 }, (_, i) => event(i));
+      progress = reduceSubagentReplay(progress, replay, false);
+      expect(progress?.contentParts).toEqual([
+        { type: 'text', text: `${snapshotEnd === 0 ? '0,' : '0,1,'}2,3,4,` },
+      ]);
+      expect(progress?.lastActivitySequence).toBe(4);
+      progress = reduceSubagentReplay(progress, replay, false);
+      expect(progress?.contentParts).toEqual([
+        { type: 'text', text: `${snapshotEnd === 0 ? '0,' : '0,1,'}2,3,4,` },
+      ]);
+      progress = reduceSubagentProgress(
+        progress,
+        [{ ...event(4), data: undefined, activityDroppedCount: 4 }],
+        'detached',
+        false,
+      );
+      expect(progress?.droppedCount).toBe(0);
+      progress = reduceSubagentProgress(progress, [event(5)], 'detached', false);
+      expect(progress?.contentParts).toEqual([
+        { type: 'text', text: `${snapshotEnd === 0 ? '0,' : '0,1,'}2,3,4,5,` },
+      ]);
+    },
+  );
+  it('preserves reasoning and tool output while merging a prefix tool start', () => {
+    const toolResult = {
+      ...event(3),
+      phase: 'run_step_completed' as const,
+      data: {
+        result: {
+          id: 'step',
+          tool_call: {
+            id: 'tool',
+            name: 'execute_code',
+            args: { code: '1' },
+            output: 'success',
+            progress: 1,
+          },
+        },
+      },
+    };
+    let progress = reduceSubagentProgress(
+      null,
+      [event(2, 'reasoning_delta'), toolResult, event(4)],
+      'detached',
+      false,
+    );
+    const toolStart = {
+      ...event(0),
+      phase: 'run_step' as const,
+      data: {
+        id: 'step',
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [{ id: 'tool', name: 'execute_code', args: { code: '1' } }],
+        },
+      },
+    };
+    progress = reduceSubagentReplay(progress, [toolStart, event(1)], false);
+    expect(progress?.contentParts.map((part) => part.type)).toEqual([
+      'tool_call',
+      'text',
+      'think',
+      'text',
+    ]);
+    expect(progress?.contentParts[0]).toMatchObject({
+      tool_call: { id: 'tool', output: 'success', progress: 1 },
+    });
+    expect(progress?.contentParts[2]).toEqual({ type: 'think', think: '2,' });
+    expect(progress?.contentParts[3]).toEqual({ type: 'text', text: '4,' });
+    progress = reduceSubagentProgress(progress, [event(5)], 'detached', false);
+    expect(progress?.contentParts[3]).toEqual({ type: 'text', text: '4,5,' });
+    expect(progress?.tickerState.lines.some((line) => line.kind === 'tool_complete')).toBe(true);
+  });
+  it('keeps item and byte limits while prepending a missing prefix', () => {
+    const tool = (sequence: number) => ({
+      ...event(sequence),
+      phase: 'run_step' as const,
+      data: {
+        id: `step-${sequence}`,
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [
+            { id: `tool-${sequence}`, name: 'execute_code', args: { code: 'x'.repeat(2000) } },
+          ],
+        },
+      },
+    });
+    const previous = reduceSubagentProgress(
+      null,
+      Array.from({ length: 80 }, (_, i) => tool(i + 20)),
+      'detached',
+      false,
+    );
+    const progress = reduceSubagentReplay(
+      previous,
+      Array.from({ length: 20 }, (_, i) => tool(i)),
+      false,
+    );
+    expect(progress?.contentParts.length).toBeLessThanOrEqual(100);
+    expect(
+      new TextEncoder().encode(JSON.stringify(progress?.contentParts)).byteLength,
+    ).toBeLessThanOrEqual(65_536);
+    expect(progress?.contentParts.at(-1)).toMatchObject({ tool_call: { id: 'tool-99' } });
+  });
+});

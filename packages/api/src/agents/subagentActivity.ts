@@ -420,10 +420,18 @@ const notFound = (res: Response): void => {
   res.status(404).json({ error: 'Conversation not found' });
 };
 
+/** Snapshot plus attachment buffer can each hold one retention window. Public IDs
+ * may JSON-escape to six bytes per input byte; budget that expansion without trimming. */
+const MAX_PUBLIC_REPLAY_BYTES =
+  2 * (SUBAGENT_ACTIVITY_LIMITS.bytes + SUBAGENT_ACTIVITY_LIMITS.items * (6 * MAX_ID_BYTES + 32)) +
+  128;
+
 /** Node accepts a write that returns false. Hold later frames until drain instead of
- * closing a healthy socket. Queued activity has the same resource budget as replay. */
+ * closing a healthy socket. One public snapshot has its own derived budget; later
+ * queued live activity retains the standard byte/item budget. */
 function createActivityWriter(res: Response, onClose: () => void) {
   const pending: Array<{ frame: string; bytes: number }> = [];
+  let replaySent = false;
   let pendingBytes = 0;
   let blocked = false;
   let ending = false;
@@ -469,15 +477,19 @@ function createActivityWriter(res: Response, onClose: () => void) {
   return {
     dispose,
     isEnding: () => ending,
-    send: (value: unknown, final = false): void => {
+    send: (value: unknown, final = false, replay = false): void => {
       if (stopped || ending) return;
       const frame = `data: ${JSON.stringify(value)}\n\n`;
       if (final) {
         ending = true;
         terminal = frame;
       } else {
-        const bytes = Buffer.byteLength(frame, 'utf8');
+        const frameBytes = Buffer.byteLength(frame, 'utf8');
+        /** Reserve one bounded snapshot separately so public identity expansion cannot
+         * consume the live queue or cause a reconnect loop on an otherwise valid replay. */
+        const bytes = replay ? 0 : frameBytes;
         if (
+          (replay && (replaySent || frameBytes > MAX_PUBLIC_REPLAY_BYTES)) ||
           pending.length >= SUBAGENT_ACTIVITY_LIMITS.items ||
           pendingBytes + bytes > SUBAGENT_ACTIVITY_LIMITS.bytes
         ) {
@@ -485,6 +497,7 @@ function createActivityWriter(res: Response, onClose: () => void) {
           finish();
           return;
         }
+        if (replay) replaySent = true;
         pending.push({ frame, bytes });
         pendingBytes += bytes;
       }
@@ -609,6 +622,8 @@ export function createSubagentActivityStreamHandler(
                 threadId,
                 lineage?.parentToolCallId?.startsWith('event-binding:') === true,
               ),
+              false,
+              event.event === 'subagent_activity_replay',
             );
           },
           onDone: (event) => {
