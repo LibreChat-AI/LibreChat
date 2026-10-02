@@ -210,13 +210,20 @@ export default function AskUserQuestions({
               onKeyDown={(event) => {
                 /* The composer popover sits inside the chat form, where Enter in a
                    single-line field would submit the composer draft instead.
-                   Enter confirms this answer: the next step, or the batch. */
-                if (event.key !== 'Enter' || event.nativeEvent.isComposing) {
+                   Enter confirms this answer: the next step, or the batch. An Enter that
+                   confirms an IME composition is left alone, with the same Safari
+                   fallback as the composer. */
+                if (
+                  event.key !== 'Enter' ||
+                  event.nativeEvent.isComposing ||
+                  event.nativeEvent.keyCode === 229
+                ) {
                   return;
                 }
                 event.preventDefault();
                 if (!isLastStep) {
                   if (!navLocked) {
+                    refocusRef.current = true;
                     goToStep(activeIndex + 1);
                   }
                   return;

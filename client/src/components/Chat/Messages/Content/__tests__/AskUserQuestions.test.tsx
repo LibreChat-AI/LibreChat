@@ -245,6 +245,26 @@ describe('AskUserQuestions', () => {
     );
   });
 
+  test('Enter that confirms an IME composition neither advances nor submits', () => {
+    renderBatch('ask-ime');
+    const first = screen.getByRole('textbox', { name: /Where should this run/ });
+    fireEvent.change(first, { target: { value: '本番' } });
+    fireEvent.keyDown(first, { key: 'Enter', keyCode: 229 });
+
+    expect(isShown('Where should this run?')).toBe(true);
+    expect(mockSubmitAskAnswer).not.toHaveBeenCalled();
+  });
+
+  test('Enter moves focus to the next question', () => {
+    renderBatch('ask-enter-focus');
+    const first = screen.getByRole('textbox', { name: /Where should this run/ });
+    fireEvent.change(first, { target: { value: 'Locally' } });
+    fireEvent.keyDown(first, { key: 'Enter' });
+
+    expect(isShown('Which time window?')).toBe(true);
+    expect(screen.getByRole('group', { name: 'Which time window?' })).toHaveFocus();
+  });
+
   test('retains partial answers and the current step across surface remounts', () => {
     const view = renderBatch('ask-remount');
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));

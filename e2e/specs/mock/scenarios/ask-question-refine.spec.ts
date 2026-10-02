@@ -204,6 +204,16 @@ test.describe('ask question batch refinements', () => {
       expect(box).not.toBeNull();
       expect(box!.y).toBeGreaterThanOrEqual(0);
       expect(box!.height).toBeLessThanOrEqual(Math.ceil(metrics.viewportHeight * 0.7) + 1);
+
+      /* With both regions at their caps, scrolling the card reaches the answer field rather
+         than leaving it clipped below the footer. */
+      await popover.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+      });
+      await popover.locator('div[class*="max-h-[45vh]"]').evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+      });
+      await expect(popover.getByRole('textbox')).toBeInViewport();
     } finally {
       await cleanupAgent(page, agentId);
     }

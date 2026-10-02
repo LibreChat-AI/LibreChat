@@ -57,9 +57,11 @@ function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAn
       {/* The prompt and answers each scroll within their own caps; this outer cap keeps
           the whole card on screen when both are at their limit on a short viewport. */}
       <div className="popover border-border-light bg-surface-secondary flex max-h-[70vh] flex-col overflow-y-auto rounded-2xl border shadow-lg [view-transition-name:ask-question]">
+        {/* Kept at full height so the cap above scrolls it rather than clipping its end. */}
         <AskUserQuestions
           actionId={liveAsk.actionId}
           questions={questions}
+          className="shrink-0"
           headerAction={<MoveToChatButton onClick={collapse} />}
         />
       </div>

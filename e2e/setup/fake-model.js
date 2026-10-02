@@ -1909,6 +1909,12 @@ function askUserQuestionBatchResponses(label, toolNames, { long }) {
               options: [
                 { label: 'Staging', value: 'staging' },
                 { label: 'Production', value: 'production' },
+                ...(long
+                  ? Array.from({ length: 6 }, (_, index) => ({
+                      label: `Region ${index + 1}: ${'a deliberately long option label '.repeat(4)}`,
+                      value: `region-${index + 1}`,
+                    }))
+                  : []),
               ],
             },
             {
