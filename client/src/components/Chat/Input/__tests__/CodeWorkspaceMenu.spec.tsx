@@ -101,6 +101,28 @@ function renderMenu(ui: React.ReactElement) {
 }
 
 describe('CodeWorkspaceMenu', () => {
+  test.each(['source', 'isolated'] as const)(
+    'keeps explicit %s when choosing another repository on the same machine',
+    async (checkout) => {
+      const graph = workspace();
+      graph.environments[0].selected = {
+        environmentId: environment.id,
+        workspaceId: 'project-a',
+        checkout,
+      };
+      graph.environments[0].workspaces.push({ id: 'project-b', name: 'Project B' });
+      const setConversation = jest.fn();
+      renderMenu(
+        <CodeWorkspaceMenu setConversation={setConversation} workspace={graph} disabled={false} />,
+      );
+      await userEvent.click(screen.getByTestId('code-workspace'));
+      await userEvent.click(screen.getByRole('menuitemradio', { name: 'Project B' }));
+      expect(setConversation.mock.calls[0][0](conversation)).toMatchObject({
+        codeWorkspaces: [{ environmentId: environment.id, workspaceId: 'project-b', checkout }],
+      });
+    },
+  );
+
   test('reports checkout modes for every environment on a restored sealed chat', () => {
     const graph = workspace({ locked: true, transition: undefined });
     graph.environments = ['source', 'isolated'].map((checkout, index) => ({

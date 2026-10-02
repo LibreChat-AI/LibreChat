@@ -337,6 +337,12 @@ export default function CodeWorkspaceMenu({
   const { transition } = workspace;
   const environmentIds = new Set(workspace.environments.map(({ environment }) => environment.id));
   const selectWorkspace = (selection: CodeWorkspaceSelection) => {
+    const previous = workspace.environments.find(
+      ({ environment }) => environment.id === selection.environmentId,
+    )?.selected;
+    if (selection.checkout == null && previous?.checkout != null) {
+      selection = { ...selection, checkout: previous.checkout };
+    }
     workspace.rememberSelection(selection);
     const replacedIds = new Set(
       workspace.machineOptionGroups?.filter((ids) => ids.includes(selection.environmentId)).flat(),
