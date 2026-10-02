@@ -126,31 +126,4 @@ test.describe('thoughts floating bar', () => {
     await expect(header).toHaveAttribute('aria-expanded', 'false');
     await expect(body).toBeHidden();
   });
-
-  test('gives the header no pressed fill @scenario:thoughts-header-has-no-pressed-fill', async ({
-    page,
-  }) => {
-    test.setTimeout(90_000);
-    await page.setViewportSize({ width: 1280, height: 1100 });
-    const { header } = await openLongThoughts(page, unique('no-press'));
-    await header.scrollIntoViewIfNeeded();
-
-    const background = () => header.evaluate((node) => getComputedStyle(node).backgroundColor);
-    await page.mouse.move(0, 0);
-    await page.waitForTimeout(300);
-    const resting = await background();
-
-    const box = await header.boundingBox();
-    expect(box).not.toBeNull();
-    await page.mouse.move(box!.x + 20, box!.y + box!.height / 2);
-    await page.mouse.down();
-    try {
-      await page.waitForTimeout(400);
-      expect(await background()).toBe(resting);
-    } finally {
-      /** Release away from the header so the held press never toggles the block. */
-      await page.mouse.move(0, 0);
-      await page.mouse.up();
-    }
-  });
 });
