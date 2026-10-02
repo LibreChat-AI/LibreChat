@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { backgroundResultMetadata } from 'librechat-data-provider';
 import type { FilterQuery, Model, Types } from 'mongoose';
 import type {
@@ -18,6 +18,7 @@ import type {
   IAgentTriggerUserPurge,
   IAgentTriggerUserPurgeDocument,
 } from '~/types/triggerDelivery';
+import type { MessageMethods } from './message';
 import {
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
@@ -189,8 +190,31 @@ export interface AgentBackgroundToolResultBatchInput {
 export type AgentBackgroundToolResultBatchClaim =
   | { status: 'legacy' }
   | { status: 'not_ready'; waitingForResult?: true }
-  | { status: 'claimed'; claimId: string; ownerStatus: 'pending' | 'applied' | 'recoverable' }
-  | Extract<AgentBackgroundToolResultClaim, { status: 'acquired' }>;
+  | {
+      status: 'claimed';
+      claimId: string;
+      batchId: string;
+      ownerStatus: 'pending' | 'applied' | 'recoverable';
+    }
+  | (Extract<AgentBackgroundToolResultClaim, { status: 'acquired' }> & { batchId: string });
+
+export type AgentBackgroundToolResultBatchOwnerInput = Omit<
+  AgentBackgroundToolResultBatchInput,
+  'limit' | 'maxMetadataChars' | 'agentId'
+> & { agentId?: string };
+
+export type AgentBackgroundToolResultBatchReleaseInput = {
+  sourceId: string;
+  userId: string;
+  conversationId: string;
+  parentMessageId: string;
+  claimId: string;
+  deliveryClaimToken?: string;
+  batchId?: string;
+  dispatchId?: string;
+  /** Retirement and generation-claim CAS proved that no admission can occur. */
+  recoveryFenced?: true;
+};
 
 export interface AgentTriggerDeliveryFence {
   id: string;
@@ -439,19 +463,20 @@ export interface AgentTriggerDeliveryMethods {
     claimId: string;
     limit?: number;
   }) => Promise<AgentBackgroundToolResultClaim>;
-  releaseAgentBackgroundToolResultClaims: (input: {
-    sourceId: string;
-    userId: string;
-    conversationId: string;
-    parentMessageId: string;
-    claimId: string;
-    deliveryClaimToken?: string;
-  }) => Promise<boolean>;
+  releaseAgentBackgroundToolResultClaims: (
+    input: AgentBackgroundToolResultBatchReleaseInput,
+  ) => Promise<boolean>;
   claimAgentBackgroundToolResultBatch: (
     input: AgentBackgroundToolResultBatchInput,
   ) => Promise<AgentBackgroundToolResultBatchClaim>;
+  getAgentBackgroundToolResultBatch: (
+    input: AgentBackgroundToolResultBatchOwnerInput,
+  ) => Promise<IAgentTriggerDelivery['backgroundToolResultBatch'] | null>;
+  beginAgentBackgroundToolResultBatchDispatch: (
+    input: AgentBackgroundToolResultBatchOwnerInput & { batchId: string; dispatchId: string },
+  ) => Promise<boolean>;
   confirmAgentBackgroundToolResultBatch: (
-    input: Omit<AgentBackgroundToolResultBatchInput, 'limit' | 'maxMetadataChars'>,
+    input: AgentBackgroundToolResultBatchOwnerInput & { batchId: string },
   ) => Promise<boolean>;
   settleAgentTriggerHandlingOutcome: (
     input: SettleAgentTriggerHandlingOutcomeInput,
@@ -660,6 +685,7 @@ function requireClaim(delivery: IAgentTriggerDelivery | null): AgentTriggerDeliv
 export function createAgentTriggerDeliveryMethods(
   mongoose: typeof import('mongoose'),
   deps: {
+    releaseBatchProjections?: MessageMethods['releaseBackgroundToolResultClaims'];
     purgeQueuedTurnsForUser?: (user: string | Types.ObjectId) => Promise<unknown>;
   } = {},
 ): AgentTriggerDeliveryMethods {
@@ -2806,77 +2832,114 @@ export function createAgentTriggerDeliveryMethods(
     return result == null ? { status: 'not_ready' } : { status: 'acquired', results: [result] };
   }
 
-  async function releaseAgentBackgroundToolResultClaims(input: {
-    sourceId: string;
-    userId: string;
-    conversationId: string;
-    parentMessageId: string;
-    claimId: string;
-    deliveryClaimToken?: string;
-  }): Promise<boolean> {
+  async function releaseAgentBackgroundToolResultClaims(
+    input: AgentBackgroundToolResultBatchReleaseInput,
+  ): Promise<boolean> {
     if (
-      input.sourceId.length === 0 ||
-      input.sourceId.length > 256 ||
-      input.userId.length === 0 ||
-      input.conversationId.length === 0 ||
-      input.conversationId.length > 256 ||
-      input.parentMessageId.length === 0 ||
-      input.parentMessageId.length > 256 ||
-      input.claimId.length === 0 ||
+      [
+        input.sourceId,
+        input.userId,
+        input.conversationId,
+        input.parentMessageId,
+        input.claimId,
+      ].some((value) => value.length === 0 || value.length > 256) ||
       input.claimId.length > 128
     ) {
       throw new TypeError('Invalid background tool result receipt claim release');
     }
     const scope = backgroundResultIdentity(input);
-    const fenced = await Delivery().updateOne(
-      {
-        ...scope,
-        deliveryKey: input.claimId,
-        backgroundToolResultBatch: { $exists: true },
-        'backgroundToolResultBatch.appliedAt': { $exists: false },
-        ...(input.deliveryClaimToken == null
-          ? {}
-          : { capabilityClaimToken: input.deliveryClaimToken }),
-      },
-      { $set: { 'backgroundToolResultBatch.releasing': true } },
-      { timestamps: false },
-    );
+    const releaseId = randomUUID();
+    const releasing = await Delivery()
+      .findOneAndUpdate(
+        {
+          ...scope,
+          deliveryKey: input.claimId,
+          backgroundToolResultBatch: { $exists: true },
+          'backgroundToolResultBatch.appliedAt': { $exists: false },
+          ...(input.batchId == null ? {} : { 'backgroundToolResultBatch.batchId': input.batchId }),
+          ...(input.deliveryClaimToken == null
+            ? {}
+            : { capabilityClaimToken: input.deliveryClaimToken }),
+          ...(input.recoveryFenced === true
+            ? {}
+            : {
+                $or: [
+                  { 'backgroundToolResultBatch.releasing': true },
+                  { 'backgroundToolResultBatch.dispatchCount': 0 },
+                  ...(input.dispatchId == null
+                    ? []
+                    : [
+                        {
+                          'backgroundToolResultBatch.dispatchCount': 1,
+                          'backgroundToolResultBatch.dispatchId': input.dispatchId,
+                        },
+                      ]),
+                ],
+              }),
+        },
+        {
+          $set: {
+            'backgroundToolResultBatch.releasing': true,
+            'backgroundToolResultBatch.releaseId': releaseId,
+          },
+        },
+        { new: true, timestamps: false },
+      )
+      .select('+backgroundToolResultBatch')
+      .lean<Pick<IAgentTriggerDelivery, 'backgroundToolResultBatch'>>();
     if (
-      fenced.matchedCount === 0 &&
+      releasing == null &&
       (await Delivery().exists({
         ...scope,
         deliveryKey: input.claimId,
         backgroundToolResultBatch: { $exists: true },
       })) != null
-    ) {
+    )
       return false;
-    }
+    const batch = releasing?.backgroundToolResultBatch;
+    const batchId = batch?.batchId ?? input.batchId;
+    const receiptScope = {
+      ...scope,
+      'backgroundToolResult.resultClaim.claimId': input.claimId,
+      'backgroundToolResult.resultClaim.batchId': batchId ?? null,
+    };
     await Delivery().updateMany(
-      {
-        ...scope,
-        'backgroundToolResult.resultClaim.claimId': input.claimId,
-        'backgroundToolResult.resultClaim.appliedAt': { $exists: false },
-      },
+      { ...receiptScope, 'backgroundToolResult.resultClaim.appliedAt': { $exists: false } },
       { $unset: { 'backgroundToolResult.resultClaim': 1 } },
       { timestamps: false },
     );
-    if (
-      (await Delivery().exists({
-        ...scope,
-        'backgroundToolResult.resultClaim.claimId': input.claimId,
-      })) != null
-    ) {
-      return false;
+    if ((await Delivery().exists(receiptScope)) != null) return false;
+    if (batch != null) {
+      if (deps.releaseBatchProjections == null)
+        throw new Error('Background batch projection cleanup is unavailable');
+      if (
+        !(await deps.releaseBatchProjections({
+          userId: input.userId,
+          conversationId: input.conversationId,
+          messageId: input.parentMessageId,
+          kind: 'wakeup',
+          claimId: input.claimId,
+          batchId: batch.batchId,
+          allowMissingMessage: true,
+        }))
+      )
+        return false;
+      const cleared = await Delivery().updateOne(
+        {
+          ...scope,
+          deliveryKey: input.claimId,
+          'backgroundToolResultBatch.batchId': batch.batchId,
+          'backgroundToolResultBatch.releaseId': releaseId,
+          'backgroundToolResultBatch.appliedAt': { $exists: false },
+          ...(input.deliveryClaimToken == null
+            ? {}
+            : { capabilityClaimToken: input.deliveryClaimToken }),
+        },
+        { $unset: { backgroundToolResultBatch: 1 } },
+        { timestamps: false },
+      );
+      return cleared.matchedCount === 1;
     }
-    await Delivery().updateOne(
-      {
-        ...scope,
-        deliveryKey: input.claimId,
-        'backgroundToolResultBatch.appliedAt': { $exists: false },
-      },
-      { $unset: { backgroundToolResultBatch: 1 } },
-      { timestamps: false },
-    );
     return true;
   }
 
@@ -2946,6 +3009,13 @@ export function createAgentTriggerDeliveryMethods(
       });
       return { status: gated == null ? 'legacy' : 'not_ready' };
     }
+    if (root.backgroundToolResultBatch?.appliedAt != null)
+      return {
+        status: 'claimed',
+        claimId: input.deliveryKey,
+        batchId: root.backgroundToolResultBatch.batchId,
+        ownerStatus: 'applied',
+      };
     if (root.backgroundToolResultBatch?.releasing === true) {
       const released = await releaseAgentBackgroundToolResultClaims({
         ...input,
@@ -2955,6 +3025,23 @@ export function createAgentTriggerDeliveryMethods(
     }
     if (root.backgroundToolResult == null) return { status: 'not_ready', waitingForResult: true };
     const claim = root.backgroundToolResult.resultClaim;
+    if (
+      claim?.claimId === input.deliveryKey &&
+      claim.batchId !== root.backgroundToolResultBatch?.batchId
+    ) {
+      await Delivery().updateOne(
+        {
+          ...scope,
+          deliveryKey: input.deliveryKey,
+          'backgroundToolResult.resultClaim.claimId': input.deliveryKey,
+          'backgroundToolResult.resultClaim.batchId': claim.batchId ?? null,
+          'backgroundToolResult.resultClaim.appliedAt': { $exists: false },
+        },
+        { $unset: { 'backgroundToolResult.resultClaim': 1 } },
+        { timestamps: false },
+      );
+      return { status: 'not_ready' };
+    }
     if (claim != null && claim.claimId !== input.deliveryKey) {
       if (
         root.backgroundToolResultBatch != null &&
@@ -2963,23 +3050,38 @@ export function createAgentTriggerDeliveryMethods(
         await releaseAgentBackgroundToolResultClaims({ ...input, claimId: input.deliveryKey });
       }
       if (claim.appliedAt != null)
-        return { status: 'claimed', claimId: claim.claimId, ownerStatus: 'applied' };
+        return {
+          status: 'claimed',
+          claimId: claim.claimId,
+          batchId: claim.batchId!,
+          ownerStatus: 'applied',
+        };
       const owner = await Delivery()
         .findOne({ ...scope, deliveryKey: claim.claimId })
         .select(projection)
         .lean<Row>();
       const batch = owner?.backgroundToolResultBatch;
       const member = batch?.members?.includes(input.deliveryKey);
-      if (member && batch?.appliedAt != null) {
-        return { status: 'claimed', claimId: claim.claimId, ownerStatus: 'applied' };
+      if (member && batch?.batchId === claim.batchId && batch?.appliedAt != null) {
+        return {
+          status: 'claimed',
+          claimId: claim.claimId,
+          batchId: claim.batchId!,
+          ownerStatus: 'applied',
+        };
       }
       // A stale collector may finish a CAS after another collector froze a subset.
-      if (batch?.members != null && !member) {
+      if (
+        (batch?.members != null && !member) ||
+        (batch != null && batch.batchId !== claim.batchId)
+      ) {
         await Delivery().updateOne(
           {
             ...scope,
             deliveryKey: input.deliveryKey,
             'backgroundToolResult.resultClaim.claimId': claim.claimId,
+            'backgroundToolResult.resultClaim.batchId': claim.batchId ?? null,
+            'backgroundToolResult.resultClaim.appliedAt': { $exists: false },
           },
           { $unset: { 'backgroundToolResult.resultClaim': 1 } },
           { timestamps: false },
@@ -2998,6 +3100,7 @@ export function createAgentTriggerDeliveryMethods(
       return {
         status: 'claimed',
         claimId: claim.claimId,
+        batchId: claim.batchId!,
         ownerStatus: recoverable ? 'recoverable' : 'pending',
       };
     }
@@ -3024,6 +3127,7 @@ export function createAgentTriggerDeliveryMethods(
         JSON.stringify(backgroundResultMetadata(result)).length + 1;
       let remaining = input.maxMetadataChars - metadataCost(requested) - 1;
       if (remaining < 0) throw new TypeError('Background result metadata exceeds its input budget');
+      const batchId = randomUUID();
       const keys = [input.deliveryKey];
       for (const candidate of candidates) {
         const result = projectBackgroundResult(candidate);
@@ -3046,12 +3150,12 @@ export function createAgentTriggerDeliveryMethods(
             { 'backgroundToolResult.resultClaim.claimId': input.deliveryKey },
           ],
         },
-        { $set: { backgroundToolResultBatch: { candidates: keys } } },
+        { $set: { backgroundToolResultBatch: { batchId, dispatchCount: 0, candidates: keys } } },
         { timestamps: false },
       );
       root =
         planned.modifiedCount === 1
-          ? { ...root, backgroundToolResultBatch: { candidates: keys } }
+          ? { ...root, backgroundToolResultBatch: { batchId, dispatchCount: 0, candidates: keys } }
           : await readRoot();
       if (root == null) return { status: 'not_ready' };
     }
@@ -3073,6 +3177,7 @@ export function createAgentTriggerDeliveryMethods(
               kind: 'wakeup',
               claimId: input.deliveryKey,
               claimedAt: new Date(),
+              batchId: batch.batchId,
             },
           },
         },
@@ -3083,6 +3188,7 @@ export function createAgentTriggerDeliveryMethods(
           ...scope,
           deliveryKey: { $in: batch.candidates },
           'backgroundToolResult.resultClaim.claimId': input.deliveryKey,
+          'backgroundToolResult.resultClaim.batchId': batch.batchId,
         })
         .select('deliveryKey')
         .lean<Pick<IAgentTriggerDelivery, 'deliveryKey'>[]>();
@@ -3097,6 +3203,11 @@ export function createAgentTriggerDeliveryMethods(
           ...scope,
           deliveryKey: input.deliveryKey,
           'backgroundToolResult.resultClaim.claimId': input.deliveryKey,
+          'backgroundToolResultBatch.batchId': batch.batchId,
+          'backgroundToolResultBatch.releasing': { $ne: true },
+          ...(input.deliveryClaimToken == null
+            ? {}
+            : { capabilityClaimToken: input.deliveryClaimToken }),
           'backgroundToolResultBatch.members': { $exists: false },
         },
         { $set: { 'backgroundToolResultBatch.members': members } },
@@ -3116,6 +3227,7 @@ export function createAgentTriggerDeliveryMethods(
         ...scope,
         deliveryKey: { $in: batch.members },
         'backgroundToolResult.resultClaim.claimId': input.deliveryKey,
+        'backgroundToolResult.resultClaim.batchId': batch.batchId,
       })
       .select('deliveryKey envelope +backgroundToolResult')
       .lean<Row[]>();
@@ -3128,6 +3240,7 @@ export function createAgentTriggerDeliveryMethods(
         ...scope,
         deliveryKey: input.deliveryKey,
         capabilityClaimToken: input.deliveryClaimToken,
+        'backgroundToolResultBatch.batchId': batch.batchId,
         'backgroundToolResultBatch.releasing': { $ne: true },
       })) == null
     ) {
@@ -3135,21 +3248,57 @@ export function createAgentTriggerDeliveryMethods(
     }
     return {
       status: 'acquired',
+      batchId: batch.batchId,
       results: results.filter((result): result is NonNullable<typeof result> => result != null),
     };
   }
 
+  async function getAgentBackgroundToolResultBatch(
+    input: AgentBackgroundToolResultBatchOwnerInput,
+  ): Promise<IAgentTriggerDelivery['backgroundToolResultBatch'] | null> {
+    const row = await Delivery()
+      .findOne({ ...backgroundResultIdentity(input), deliveryKey: input.deliveryKey })
+      .select('+backgroundToolResultBatch')
+      .lean<Pick<IAgentTriggerDelivery, 'backgroundToolResultBatch'>>();
+    return row?.backgroundToolResultBatch ?? null;
+  }
+
+  async function beginAgentBackgroundToolResultBatchDispatch(
+    input: AgentBackgroundToolResultBatchOwnerInput & { batchId: string; dispatchId: string },
+  ): Promise<boolean> {
+    const marked = await Delivery().updateOne(
+      {
+        ...backgroundResultIdentity(input),
+        deliveryKey: input.deliveryKey,
+        'backgroundToolResultBatch.batchId': input.batchId,
+        'backgroundToolResultBatch.members.0': { $exists: true },
+        'backgroundToolResultBatch.releasing': { $ne: true },
+        'backgroundToolResultBatch.appliedAt': { $exists: false },
+        ...(input.deliveryClaimToken == null
+          ? {}
+          : { capabilityClaimToken: input.deliveryClaimToken }),
+      },
+      {
+        $inc: { 'backgroundToolResultBatch.dispatchCount': 1 },
+        $set: { 'backgroundToolResultBatch.dispatchId': input.dispatchId },
+      },
+      { timestamps: false },
+    );
+    return marked.matchedCount === 1;
+  }
+
   /** Admission proof precedes follower settlement, including lost HTTP replies. */
   async function confirmAgentBackgroundToolResultBatch(
-    input: Omit<AgentBackgroundToolResultBatchInput, 'limit' | 'maxMetadataChars'>,
+    input: AgentBackgroundToolResultBatchOwnerInput & { batchId: string },
   ): Promise<boolean> {
-    const scope = backgroundBatchScope(input);
+    const scope = backgroundResultIdentity(input);
     const root = await Delivery()
       .findOneAndUpdate(
         {
           ...scope,
           deliveryKey: input.deliveryKey,
           'backgroundToolResultBatch.members.0': { $exists: true },
+          'backgroundToolResultBatch.batchId': input.batchId,
           'backgroundToolResultBatch.releasing': { $ne: true },
         },
         { $min: { 'backgroundToolResultBatch.appliedAt': new Date() } },
@@ -3163,6 +3312,7 @@ export function createAgentTriggerDeliveryMethods(
         ...scope,
         deliveryKey: { $in: root.backgroundToolResultBatch.members },
         'backgroundToolResult.resultClaim.claimId': input.deliveryKey,
+        'backgroundToolResult.resultClaim.batchId': input.batchId,
       },
       {
         $set: {
@@ -4692,6 +4842,8 @@ export function createAgentTriggerDeliveryMethods(
     claimAgentBackgroundToolResults,
     claimAgentBackgroundToolResultBatch,
     confirmAgentBackgroundToolResultBatch,
+    beginAgentBackgroundToolResultBatchDispatch,
+    getAgentBackgroundToolResultBatch,
     releaseAgentBackgroundToolResultClaims,
     settleAgentTriggerHandlingOutcome,
     admitAgentEventActorAction,

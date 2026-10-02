@@ -29,6 +29,8 @@ import { createAgentTriggerLaneSequenceModel } from '../models/triggerLaneSequen
 import { createAgentTriggerUserPurgeModel } from '../models/triggerUserPurge';
 import { createAgentTriggerDeliveryModel } from '../models/triggerDelivery';
 import { createConversationModel } from '../models/convo';
+import { createMessageModel } from '../models/message';
+import { createMessageMethods } from './message';
 import { createUserModel } from '../models/user';
 
 jest.mock('~/config/winston', () => ({
@@ -57,8 +59,11 @@ beforeAll(async () => {
   UserPurge = createAgentTriggerUserPurgeModel(mongoose);
   User = createUserModel(mongoose);
   createConversationModel(mongoose);
+  createMessageModel(mongoose);
   await Promise.all([Delivery.init(), LaneSequence.init(), UserPurge.init(), User.init()]);
-  methods = createAgentTriggerDeliveryMethods(mongoose);
+  methods = createAgentTriggerDeliveryMethods(mongoose, {
+    releaseBatchProjections: createMessageMethods(mongoose).releaseBackgroundToolResultClaims,
+  });
 }, DB_SETUP_TIMEOUT_MS);
 
 afterAll(async () => {
@@ -79,6 +84,14 @@ beforeEach(async () => {
 afterAll(() => {
   setAgentEventActorReceiptMetricObserver();
 });
+
+async function confirmBatch(
+  input: Parameters<typeof methods.getAgentBackgroundToolResultBatch>[0],
+) {
+  const batch = await methods.getAgentBackgroundToolResultBatch(input);
+  if (batch == null) return false;
+  return methods.confirmAgentBackgroundToolResultBatch({ ...input, batchId: batch.batchId });
+}
 
 function enqueueInput(
   overrides: Partial<Parameters<typeof methods.enqueueAgentTriggerDelivery>[0]> = {},
@@ -5621,7 +5634,7 @@ describe('background result receipt batches', () => {
     });
     await ready('late');
     expect(await methods.claimAgentBackgroundToolResultBatch(input('one'))).toEqual(batch);
-    expect(await methods.confirmAgentBackgroundToolResultBatch(input('one'))).toBe(true);
+    expect(await confirmBatch(input('one'))).toBe(true);
     await expect(methods.claimAgentBackgroundToolResultBatch(input('two'))).resolves.toMatchObject({
       status: 'claimed',
       ownerStatus: 'applied',
@@ -5816,8 +5829,8 @@ describe('background result receipt batches', () => {
       ...input('one'),
       deliveryClaimToken: 'old',
     });
-    const updateOne = Delivery.updateOne.bind(Delivery);
-    const lostReply = jest.spyOn(Delivery, 'updateOne').mockImplementationOnce((...args) => {
+    const updateOne = Delivery.findOneAndUpdate.bind(Delivery);
+    const lostReply = jest.spyOn(Delivery, 'findOneAndUpdate').mockImplementationOnce((...args) => {
       const query = updateOne(...args);
       const execute = query.exec.bind(query);
       jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
@@ -5841,7 +5854,7 @@ describe('background result receipt batches', () => {
         deliveryClaimToken: 'new',
       }),
     ).toMatchObject({ status: 'acquired', results: [{ taskId: 'one' }, { taskId: 'two' }] });
-    expect(await methods.confirmAgentBackgroundToolResultBatch(input('one'))).toBe(true);
+    expect(await confirmBatch(input('one'))).toBe(true);
     await expect(methods.claimAgentBackgroundToolResultBatch(input('two'))).resolves.toMatchObject({
       status: 'claimed',
       ownerStatus: 'applied',
@@ -5885,6 +5898,139 @@ describe('background result receipt batches', () => {
     expect(oldLookup?.backgroundToolResult?.resultClaim?.claimId).toBe('one');
   });
 
+  it('retains frozen membership across an ambiguous POST and a definitely failed retry', async () => {
+    await ready('one');
+    await ready('two');
+    const batch = await methods.claimAgentBackgroundToolResultBatch(input('one'));
+    if (batch.status !== 'acquired') throw new Error('Expected acquired batch');
+    const owner = { ...input('one'), batchId: batch.batchId };
+    await methods.beginAgentBackgroundToolResultBatchDispatch({ ...owner, dispatchId: 'first' });
+    await ready('late');
+    await methods.beginAgentBackgroundToolResultBatchDispatch({ ...owner, dispatchId: 'retry' });
+    expect(
+      await methods.releaseAgentBackgroundToolResultClaims({
+        ...owner,
+        claimId: 'one',
+        dispatchId: 'retry',
+      }),
+    ).toBe(false);
+    expect(await methods.claimAgentBackgroundToolResultBatch(input('one'))).toEqual(batch);
+    expect(await methods.confirmAgentBackgroundToolResultBatch(owner)).toBe(true);
+    expect(
+      await methods.getAgentBackgroundToolResultClaim({ ...input('late'), taskId: 'late' }),
+    ).toBeNull();
+    expect((await methods.claimAgentBackgroundToolResultBatch(input('late'))).status).toBe(
+      'acquired',
+    );
+  });
+
+  it('releases only a proven first handoff failure', async () => {
+    await ready('one');
+    await ready('two');
+    const batch = await methods.claimAgentBackgroundToolResultBatch(input('one'));
+    if (batch.status !== 'acquired') throw new Error('Expected acquired batch');
+    const owner = { ...input('one'), batchId: batch.batchId };
+    await methods.beginAgentBackgroundToolResultBatchDispatch({ ...owner, dispatchId: 'first' });
+    expect(
+      await methods.releaseAgentBackgroundToolResultClaims({
+        ...owner,
+        claimId: 'one',
+        dispatchId: 'different-attempt',
+      }),
+    ).toBe(false);
+    expect(
+      await methods.releaseAgentBackgroundToolResultClaims({
+        ...owner,
+        claimId: 'one',
+        dispatchId: 'first',
+      }),
+    ).toBe(true);
+  });
+
+  it.each(['receipts', 'plan'] as const)(
+    'fences a predecessor already paused before %s cleanup',
+    async (phase) => {
+      await ready('one');
+      await ready('two');
+      await Delivery.updateOne({ deliveryKey: 'one' }, { $set: { capabilityClaimToken: 'old' } });
+      const original = await methods.claimAgentBackgroundToolResultBatch({
+        ...input('one'),
+        deliveryClaimToken: 'old',
+      });
+      if (original.status !== 'acquired') throw new Error('Expected batch');
+      let pause: () => void = () => undefined;
+      let resume: () => void = () => undefined;
+      const paused = new Promise<void>((resolve) => {
+        pause = resolve;
+      });
+      const barrier = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      let intercept = true;
+      const one = Delivery.updateOne.bind(Delivery);
+      const many = Delivery.updateMany.bind(Delivery);
+      const block = (query: ReturnType<typeof Delivery.updateOne>) => {
+        const execute = query.exec.bind(query);
+        jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+          pause();
+          await barrier;
+          return execute();
+        });
+        return query;
+      };
+      const spy =
+        phase === 'plan'
+          ? jest.spyOn(Delivery, 'updateOne').mockImplementation((...args) => {
+              const query = one(...args);
+              if (
+                intercept &&
+                JSON.stringify(query.getUpdate()).includes('"backgroundToolResultBatch":1')
+              ) {
+                intercept = false;
+                return block(query);
+              }
+              return query;
+            })
+          : jest.spyOn(Delivery, 'updateMany').mockImplementation((...args) => {
+              const query = many(...args);
+              if (
+                intercept &&
+                JSON.stringify(query.getUpdate()).includes('"backgroundToolResult.resultClaim":1')
+              ) {
+                intercept = false;
+                return block(query);
+              }
+              return query;
+            });
+      const stale = methods.releaseAgentBackgroundToolResultClaims({
+        ...input('one'),
+        batchId: original.batchId,
+        claimId: 'one',
+        deliveryClaimToken: 'old',
+      });
+      await paused;
+      await Delivery.updateOne({ deliveryKey: 'one' }, { $set: { capabilityClaimToken: 'new' } });
+      const successor = await methods.claimAgentBackgroundToolResultBatch({
+        ...input('one'),
+        deliveryClaimToken: 'new',
+      });
+      if (successor.status !== 'acquired') throw new Error('Expected successor');
+      expect(successor.batchId).not.toBe(original.batchId);
+      resume();
+      expect(await stale).toBe(false);
+      spy.mockRestore();
+      expect(
+        await methods.confirmAgentBackgroundToolResultBatch({
+          ...input('one'),
+          batchId: successor.batchId,
+        }),
+      ).toBe(true);
+      await expect(
+        methods.claimAgentBackgroundToolResultBatch(input('two')),
+      ).resolves.toMatchObject({ status: 'claimed', ownerStatus: 'applied' });
+    },
+  );
+
   it('does not let an expired lease release its successor preparation', async () => {
     await ready('one');
     await ready('two');
@@ -5907,7 +6053,7 @@ describe('background result receipt batches', () => {
     expect((await methods.claimAgentBackgroundToolResultBatch(input('two'))).status).toBe(
       'claimed',
     );
-    expect(await methods.confirmAgentBackgroundToolResultBatch(input('one'))).toBe(true);
+    expect(await confirmBatch(input('one'))).toBe(true);
     await expect(
       methods.releaseAgentBackgroundToolResultClaims({
         ...input('one'),
@@ -5927,7 +6073,7 @@ describe('background result receipt batches', () => {
     await methods.claimAgentBackgroundToolResultBatch(input('one'));
     const [released, confirmed] = await Promise.all([
       methods.releaseAgentBackgroundToolResultClaims({ ...input('one'), claimId: 'one' }),
-      methods.confirmAgentBackgroundToolResultBatch(input('one')),
+      confirmBatch(input('one')),
     ]);
     expect(Number(released) + Number(confirmed)).toBe(1);
   });
@@ -6037,13 +6183,13 @@ describe('background receipt batch contention', () => {
       const batch = batches[index]!;
       if (batch.status !== 'acquired') continue;
       consumed.push(...batch.results.map((result) => result.taskId));
-      await methods.confirmAgentBackgroundToolResultBatch(claims[index]!);
+      await confirmBatch(claims[index]!);
     }
     for (const claim of claims) {
       const batch = await methods.claimAgentBackgroundToolResultBatch(claim);
       if (batch.status === 'acquired' && !consumed.includes(claim.deliveryKey)) {
         consumed.push(...batch.results.map((result) => result.taskId));
-        await methods.confirmAgentBackgroundToolResultBatch(claim);
+        await confirmBatch(claim);
       }
     }
     expect(new Set(consumed).size).toBe(4);
@@ -6079,7 +6225,7 @@ describe('background receipt batch contention', () => {
           if (batch.status !== 'acquired') return;
           turns++;
           consumed.push(...batch.results.map((result) => result.taskId));
-          await methods.confirmAgentBackgroundToolResultBatch(claim);
+          await confirmBatch(claim);
           latency.push(Date.now() - started);
         }),
       );

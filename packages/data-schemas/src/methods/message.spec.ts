@@ -6007,3 +6007,78 @@ describe('receipt-backed claim release before projection', () => {
     ).resolves.toBe(true);
   });
 });
+
+describe('receipt batch projection epochs', () => {
+  it('does not let delayed cleanup remove a successor claim on the same logical request', async () => {
+    await Message.create({
+      messageId: 'epoch-parent',
+      conversationId: 'epoch-conversation',
+      user: 'epoch-owner',
+      isCreatedByUser: false,
+      unfinished: false,
+      content: [
+        {
+          type: 'tool_call',
+          tool_call: {
+            id: 'epoch-call',
+            output: 'done',
+            backgroundTask: {
+              taskId: 'epoch-task',
+              toolName: 'tool',
+              status: 'completed',
+              completionWakeup: true,
+              completionReceipt: true,
+            },
+          },
+        },
+      ],
+    });
+    const input = {
+      userId: 'epoch-owner',
+      conversationId: 'epoch-conversation',
+      messageId: 'epoch-parent',
+      taskId: 'epoch-task',
+      kind: 'wakeup' as const,
+      claimId: 'logical-root',
+      limit: 1,
+    };
+    expect((await claimBackgroundToolResults({ ...input, batchId: 'old' })).status).toBe(
+      'acquired',
+    );
+    let pause: () => void = () => undefined;
+    let resume: () => void = () => undefined;
+    const paused = new Promise<void>((resolve) => {
+      pause = resolve;
+    });
+    const barrier = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const update = Message.findOneAndUpdate.bind(Message);
+    const oldCleanup = jest.spyOn(Message, 'findOneAndUpdate').mockImplementationOnce((...args) => {
+      const query = update(...args);
+      const execute = query.exec.bind(query);
+      jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+        pause();
+        await barrier;
+        return execute();
+      });
+      return query;
+    });
+    const predecessor = releaseBackgroundToolResultClaims({ ...input, batchId: 'old' });
+    await paused;
+    expect(await releaseBackgroundToolResultClaims({ ...input, batchId: 'old' })).toBe(true);
+    expect((await claimBackgroundToolResults({ ...input, batchId: 'new' })).status).toBe(
+      'acquired',
+    );
+    resume();
+    expect(await predecessor).toBe(true);
+    oldCleanup.mockRestore();
+    expect((await claimBackgroundToolResults({ ...input, batchId: 'new' })).status).toBe(
+      'acquired',
+    );
+    expect(await claimBackgroundToolResults({ ...input, batchId: 'old' })).toMatchObject({
+      status: 'claimed',
+      claim: { batchId: 'new' },
+    });
+  });
+});

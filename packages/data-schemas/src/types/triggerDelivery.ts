@@ -95,6 +95,7 @@ export interface AgentBackgroundToolResultReceipt {
     claimId: string;
     claimedAt: Date;
     appliedAt?: Date;
+    batchId?: string;
   };
 }
 
@@ -133,6 +134,10 @@ export interface IAgentTriggerDelivery {
   backgroundToolResult?: AgentBackgroundToolResultReceipt;
   /** Receipt batching is separate from event-envelope coalescing. */
   backgroundToolResultBatch?: {
+    batchId: string;
+    dispatchCount: number;
+    dispatchId?: string;
+    releaseId?: string;
     candidates: string[];
     members?: string[];
     appliedAt?: Date;

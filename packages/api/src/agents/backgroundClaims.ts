@@ -38,6 +38,7 @@ export async function claimBackgroundToolResult(
       taskIds: messageClaim.results.map((result) => result.taskId),
       kind: input.kind,
       claimId: input.claimId,
+      ...(input.batchId != null && { batchId: input.batchId }),
     });
     if (!released) {
       throw new Error('The background result claim could not be released');

@@ -65,6 +65,7 @@ export interface BackgroundToolDeadClaimRecoveryInput {
   conversationId: string;
   messageId: string;
   claimId: string;
+  batchId?: string;
   /** Omitted for the legacy automatic-wakeup recovery path. */
   kind?: 'manual' | 'wakeup';
   /** Required to prove that a manual claim's owning generation is no longer active. */

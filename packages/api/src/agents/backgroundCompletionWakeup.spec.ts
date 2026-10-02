@@ -309,6 +309,7 @@ describe('background tool completion wakeups', () => {
       conversationId: 'conversation-1',
       parentMessageId: 'response-1',
       claimId: 'batch-root-delivery',
+      recoveryFenced: true,
     });
   });
 
@@ -1077,6 +1078,7 @@ describe('capability-gated receipt batch resolution', () => {
       ...methods,
       claimAgentBackgroundToolResultBatch: jest.fn(async () => ({
         status: 'acquired' as const,
+        batchId: 'batch-1',
         results: [
           {
             taskId: 'task-1',
@@ -1094,6 +1096,7 @@ describe('capability-gated receipt batch resolution', () => {
           },
         ],
       })),
+      beginAgentBackgroundToolResultBatchDispatch: jest.fn(async () => true),
       confirmAgentBackgroundToolResultBatch: jest.fn(async () => true),
     };
   }
@@ -1224,9 +1227,7 @@ describe('capability-gated receipt batch resolution', () => {
     const prepared = await resolve(await envelope(), { idempotencyKey: 'root' });
     if (prepared?.status !== 'ready') throw new Error('Expected ready');
     await prepared.releaseOnDefiniteFailure?.();
-    expect(methods.releaseBackgroundToolResultClaims).toHaveBeenCalledWith(
-      expect.objectContaining({ allowMissingMessage: true }),
-    );
+    expect(methods.releaseBackgroundToolResultClaims).not.toHaveBeenCalled();
     expect(methods.releaseAgentBackgroundToolResultClaims).toHaveBeenCalled();
   });
 

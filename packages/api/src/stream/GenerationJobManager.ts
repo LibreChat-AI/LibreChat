@@ -270,7 +270,8 @@ function claimsMirrorExactly(left: TokenIdempotencyClaim, right: TokenIdempotenc
     left.claimToken === right.claimToken &&
     left.previousClaimToken === right.previousClaimToken &&
     left.generationProtocolVersion === right.generationProtocolVersion &&
-    left.startedAt === right.startedAt
+    left.startedAt === right.startedAt &&
+    left.recoveryFence === right.recoveryFence
   );
 }
 
@@ -3339,7 +3340,7 @@ class GenerationJobManagerClass {
       }
       const normalized = normalizeTokenClaim(claim, 'admission evidence');
       assertClaimMatchesRequest(normalized, streamId, conversationId);
-      if (normalized.startedAt == null) {
+      if (normalized.startedAt == null || normalized.recoveryFence === true) {
         return null;
       }
       return {
@@ -3380,14 +3381,14 @@ class GenerationJobManagerClass {
       return 'unavailable';
     }
     if (observed.existing.startedAt != null) {
-      return 'started';
+      return observed.existing.recoveryFence === true ? 'fenced' : 'started';
     }
 
     let owned = observed;
     if (!observed.claimed) {
       owned = await this.takeoverGeneration(userId, clientRequestId, streamId, observed.existing);
       if (owned.existing?.startedAt != null) {
-        return 'started';
+        return owned.existing.recoveryFence === true ? 'fenced' : 'started';
       }
       if (!owned.claimed || owned.existing == null) {
         return 'unavailable';
@@ -3396,7 +3397,7 @@ class GenerationJobManagerClass {
 
     const claim = normalizeTokenClaim(owned.existing, 'background completion recovery fence');
     if (claim.startedAt != null) {
-      return 'started';
+      return claim.recoveryFence === true ? 'fenced' : 'started';
     }
     await this.tombstoneObservedGenerationClaim(
       userId,
@@ -3405,6 +3406,7 @@ class GenerationJobManagerClass {
       claim,
       Date.now(),
       claim.generationProtocolVersion === 2 ? 2 : 1,
+      true,
     );
     return 'fenced';
   }
@@ -3477,11 +3479,13 @@ class GenerationJobManagerClass {
     claim: TokenIdempotencyClaim,
     createdAt: number,
     generationProtocolVersion: 1 | 2,
+    recoveryFence?: true,
   ): Promise<TokenIdempotencyClaim> {
     const tombstone: TokenIdempotencyClaim = {
       ...claim,
       startedAt: createdAt,
       generationProtocolVersion,
+      ...(recoveryFence === true && { recoveryFence }),
     };
     const primaryKey = this.generationClaimKey(userId, clientRequestId, streamId);
     let markError: unknown;

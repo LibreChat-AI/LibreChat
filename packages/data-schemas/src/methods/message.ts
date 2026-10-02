@@ -544,7 +544,12 @@ export type BackgroundToolResultClaim =
   | { status: 'outcome_unknown'; toolName: string }
   | {
       status: 'claimed';
-      claim?: { kind: 'manual' | 'wakeup'; claimId: string; generationId?: string };
+      claim?: {
+        kind: 'manual' | 'wakeup';
+        claimId: string;
+        generationId?: string;
+        batchId?: string;
+      };
       messageId?: string;
     }
   | { status: 'acquired'; results: BackgroundToolResultRecord[]; messageId?: string };
@@ -804,6 +809,8 @@ export interface MessageMethods {
     agentId?: string;
     kind: 'manual' | 'wakeup';
     claimId: string;
+    /** Physical receipt-batch identity, independent of its logical request. */
+    batchId?: string;
     /** Response generation that owns this manual result delivery. */
     generationId?: string;
     /** Manual owner-process takeover after automatic delivery was retired. */
@@ -820,6 +827,7 @@ export interface MessageMethods {
     taskIds?: string[];
     /** Receipt-backed results can precede the message projection. */
     allowMissingMessage?: true;
+    batchId?: string;
     kind: 'manual' | 'wakeup';
     claimId: string;
   }): Promise<boolean>;
@@ -1856,7 +1864,9 @@ export function createMessageMethods(
   function readBackgroundToolResultClaim(
     row: Pick<IMessage, 'content'>,
     taskId: string,
-  ): { kind: 'manual' | 'wakeup'; claimId: string; generationId?: string } | undefined {
+  ):
+    | { kind: 'manual' | 'wakeup'; claimId: string; generationId?: string; batchId?: string }
+    | undefined {
     for (const part of row.content ?? []) {
       if (part == null || typeof part !== 'object' || Array.isArray(part)) {
         continue;
@@ -1866,7 +1876,12 @@ export function createMessageMethods(
           tool_call?: {
             backgroundTask?: {
               taskId?: unknown;
-              resultClaim?: { kind?: unknown; claimId?: unknown; generationId?: unknown };
+              resultClaim?: {
+                kind?: unknown;
+                claimId?: unknown;
+                generationId?: unknown;
+                batchId?: unknown;
+              };
             };
           };
         }
@@ -1883,6 +1898,7 @@ export function createMessageMethods(
         return {
           kind: claim.kind,
           claimId: claim.claimId,
+          ...(typeof claim.batchId === 'string' && { batchId: claim.batchId }),
           ...(typeof claim.generationId === 'string' && claim.generationId.length > 0
             ? { generationId: claim.generationId }
             : {}),
@@ -1894,7 +1910,7 @@ export function createMessageMethods(
 
   function parseBackgroundToolResults(
     message: IMessage,
-    claim: { kind: 'manual' | 'wakeup'; claimId: string },
+    claim: { kind: 'manual' | 'wakeup'; claimId: string; batchId?: string },
   ): BackgroundToolResultRecord[] {
     const results: BackgroundToolResultRecord[] = [];
     for (const part of message.content ?? []) {
@@ -1913,7 +1929,7 @@ export function createMessageMethods(
             status?: unknown;
             cancelled?: unknown;
             settledAt?: unknown;
-            resultClaim?: { kind?: unknown; claimId?: unknown };
+            resultClaim?: { kind?: unknown; claimId?: unknown; batchId?: unknown };
           };
         };
       };
@@ -1925,7 +1941,8 @@ export function createMessageMethods(
         typeof task.toolName !== 'string' ||
         (task.status !== 'completed' && task.status !== 'error') ||
         task.resultClaim?.kind !== claim.kind ||
-        task.resultClaim.claimId !== claim.claimId
+        task.resultClaim.claimId !== claim.claimId ||
+        task.resultClaim.batchId !== claim.batchId
       ) {
         continue;
       }
@@ -2006,6 +2023,7 @@ export function createMessageMethods(
     kind,
     claimId,
     generationId,
+    batchId,
     allowUnfinished = false,
     limit = kind === 'wakeup' ? 8 : 1,
     maxMetadataChars,
@@ -2017,6 +2035,7 @@ export function createMessageMethods(
     if (
       (requestedMessageId != null &&
         (requestedMessageId.length === 0 || requestedMessageId.length > 256)) ||
+      (batchId != null && (batchId.length === 0 || batchId.length > 128 || kind !== 'wakeup')) ||
       taskId.length === 0 ||
       taskId.length > 256 ||
       claimId.length === 0 ||
@@ -2087,7 +2106,10 @@ export function createMessageMethods(
     }
     const recoveredSource = requestedMessageId == null ? { messageId: resolvedMessageId } : {};
     const requestedClaim = readBackgroundToolResultClaim(row, taskId);
-    const replaying = requestedClaim?.kind === kind && requestedClaim.claimId === claimId;
+    const replaying =
+      requestedClaim?.kind === kind &&
+      requestedClaim.claimId === claimId &&
+      requestedClaim.batchId === batchId;
     const candidates: string[] = [];
     const costs = new Map<string, number>();
     let receiptBacked = false;
@@ -2106,8 +2128,13 @@ export function createMessageMethods(
       }
       const terminal = task?.status === 'completed' || task?.status === 'error';
       const wakeupEligible = kind !== 'wakeup' || task?.completionWakeup === true;
-      const resultClaim = task?.resultClaim as { kind?: unknown; claimId?: unknown } | undefined;
-      const replay = resultClaim?.kind === kind && resultClaim.claimId === claimId;
+      const resultClaim = task?.resultClaim as
+        | { kind?: unknown; claimId?: unknown; batchId?: unknown }
+        | undefined;
+      const replay =
+        resultClaim?.kind === kind &&
+        resultClaim.claimId === claimId &&
+        resultClaim.batchId === batchId;
       const sameAgent =
         agentId == null ||
         partAgentId == null ||
@@ -2188,6 +2215,7 @@ export function createMessageMethods(
       kind,
       claimId,
       claimedAt,
+      ...(batchId != null && { batchId }),
       ...(kind === 'manual' && requestedGenerationId != null
         ? { generationId: requestedGenerationId }
         : {}),
@@ -2208,6 +2236,7 @@ export function createMessageMethods(
               ? {
                   'tool_call.backgroundTask.resultClaim.kind': kind,
                   'tool_call.backgroundTask.resultClaim.claimId': claimId,
+                  'tool_call.backgroundTask.resultClaim.batchId': batchId ?? null,
                 }
               : /** Missing OR stored null: the in-memory claimable scan, the
                  * claim arrayFilters, and the settle stamp all treat a null
@@ -2274,6 +2303,7 @@ export function createMessageMethods(
                   {
                     'part.tool_call.backgroundTask.resultClaim.kind': kind,
                     'part.tool_call.backgroundTask.resultClaim.claimId': claimId,
+                    'part.tool_call.backgroundTask.resultClaim.batchId': batchId ?? null,
                   },
                 ],
               },
@@ -2286,7 +2316,7 @@ export function createMessageMethods(
     if (updated == null) {
       return { status: 'not_ready' };
     }
-    const results = parseBackgroundToolResults(updated, { kind, claimId });
+    const results = parseBackgroundToolResults(updated, { kind, claimId, batchId });
     const competingClaim = readBackgroundToolResultClaim(updated, taskId);
     return results.some((result) => result.taskId === taskId)
       ? { status: 'acquired', results, ...recoveredSource }
@@ -2305,6 +2335,7 @@ export function createMessageMethods(
     allowMissingMessage,
     kind,
     claimId,
+    batchId,
   }: {
     userId: string;
     conversationId: string;
@@ -2312,6 +2343,7 @@ export function createMessageMethods(
     taskIds?: string[];
     /** Receipt-backed results can precede the message projection. */
     allowMissingMessage?: true;
+    batchId?: string;
     kind: 'manual' | 'wakeup';
     claimId: string;
   }): Promise<boolean> {
@@ -2336,6 +2368,7 @@ export function createMessageMethods(
           {
             'part.tool_call.backgroundTask.resultClaim.kind': kind,
             'part.tool_call.backgroundTask.resultClaim.claimId': claimId,
+            'part.tool_call.backgroundTask.resultClaim.batchId': batchId ?? null,
             ...(taskIds == null
               ? {}
               : { 'part.tool_call.backgroundTask.taskId': { $in: taskIds } }),
@@ -2356,7 +2389,7 @@ export function createMessageMethods(
         (await Message.exists({ user: userId, conversationId, messageId })) == null
       );
     }
-    const remaining = parseBackgroundToolResults(updated, { kind, claimId });
+    const remaining = parseBackgroundToolResults(updated, { kind, claimId, batchId });
     return taskIds == null
       ? remaining.length === 0
       : !remaining.some((result) => taskIds.includes(result.taskId));

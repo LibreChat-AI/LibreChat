@@ -712,6 +712,8 @@ export interface IdempotencyClaimValue {
    * already-started/cleaned generation and can never be taken over as an
    * abandoned pre-create lease. */
   startedAt?: number;
+  /** Recovery closed an unpublished claim without admitting a generation. */
+  recoveryFence?: true;
 }
 
 /** Result of an atomic {@link IJobStore.claimIdempotencyKey} attempt. */

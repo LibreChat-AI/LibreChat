@@ -31,6 +31,7 @@ const backgroundToolCompletionAdapter = createBackgroundToolCompletionWakeupReso
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
   getResultBatchSize: () => service.getBackgroundCompletionResultBatchSize(),
+  getGenerationAdmissionEvidence,
   recoverDeadClaim: createBackgroundToolDeadClaimRecovery(
     (...args) => service.retire(...args),
     methods.releaseBackgroundToolResultClaims,
@@ -43,6 +44,8 @@ const backgroundToolCompletionAdapter = createBackgroundToolCompletionWakeupReso
         conversationId,
       ),
     methods.releaseAgentBackgroundToolResultClaims,
+    methods,
+    getGenerationAdmissionEvidence,
   ),
   getWaitMaxIntervalMs: () => service.getCompletionWaitMaxIntervalMs(),
 });

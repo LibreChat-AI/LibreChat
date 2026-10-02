@@ -281,9 +281,8 @@ separate even when their branches later converge.
 
 The root persists candidate keys before per-result claims, then freezes only successful
 claims in `backgroundToolResultBatch.members`. Retries use that same list. Each member's
-message projection is reconciled before dispatch. Definite rejection releases every
-claim and the unadmitted plan. Ambiguous dispatch retains ownership and retries the same
-idempotency key. Admission proof is stored before followers settle, and copied to each
+message projection is reconciled before dispatch. A first definite rejection releases the unadmitted plan. Once a handoff may have been
+admitted, later transport failures retain frozen ownership and the same idempotency key. Admission proof is stored before followers settle, and copied to each
 receipt so root retention cannot strand a follower.
 
 Followers defer without consuming attempts. A dead or retired root is recovered through
@@ -306,5 +305,13 @@ endpoints:
 ```
 
 Older manual-poll workers cannot read v3 ownership. Queue capability fencing alone does
-not protect that path. Disable batching and drain v3 deliveries before rolling back to
-older consumers. A successor lease resumes interrupted release cleanup before dispatch.
+not protect that path. Disabling batching stops new v3 production, not existing
+ownership. Do not downgrade poll consumers while v3 receipts remain, including delivered
+receipts. A successor lease resumes interrupted cleanup before dispatch.
+
+Every plan, receipt claim, and message claim carries a physical batch identity. Cleanup
+matches that identity; its final plan deletion also matches a release identity and the
+queue lease. A durable dispatch counter prevents a definite retry failure from releasing
+an earlier ambiguous handoff. Native recovery fences distinguish unadmitted tombstones
+from actual generation admission. Proven admissions settle followers, never re-present
+results.

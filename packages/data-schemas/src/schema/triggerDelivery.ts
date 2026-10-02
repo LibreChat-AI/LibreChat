@@ -169,6 +169,7 @@ const triggerDeliverySchema: Schema<IAgentTriggerDeliveryDocument> = new Schema(
                 claimId: { type: String, required: true, maxlength: 128 },
                 claimedAt: { type: Date, required: true },
                 appliedAt: { type: Date },
+                batchId: { type: String, maxlength: 128 },
               },
               { _id: false },
             ),
@@ -182,6 +183,10 @@ const triggerDeliverySchema: Schema<IAgentTriggerDeliveryDocument> = new Schema(
     backgroundToolResultBatch: {
       type: new Schema(
         {
+          batchId: { type: String, required: true, maxlength: 128 },
+          dispatchCount: { type: Number, required: true, min: 0 },
+          dispatchId: { type: String, maxlength: 128 },
+          releaseId: { type: String, maxlength: 128 },
           candidates: { type: [String], required: true },
           releasing: { type: Boolean },
           members: { type: [String], default: undefined },
