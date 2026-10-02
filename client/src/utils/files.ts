@@ -16,6 +16,7 @@ import {
   EToolResources,
   EModelEndpoint,
   retrievalMimeTypes,
+  proseDocumentMimeTypes,
   isEphemeralAgentId,
   documentParserMimeTypes,
   isNativelyReadableText,
@@ -739,7 +740,11 @@ export const getViableUploadOptions = (
   if (
     ctx.fileSearchEnabled &&
     ctx.fileSearchAllowedByAgent &&
-    every((type) => !type.startsWith('image/') && checkType(type, retrievalMimeTypes))
+    every(
+      (type) =>
+        !type.startsWith('image/') &&
+        (checkType(type, retrievalMimeTypes) || checkType(type, proseDocumentMimeTypes)),
+    )
   ) {
     options.push(EToolResources.file_search);
   }

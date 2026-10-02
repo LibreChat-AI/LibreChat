@@ -359,19 +359,30 @@ export const defaultOCRMimeTypes = [
  * the engine reading them: this list is part of the shared configuration contract the
  * client validates against, and it should not have to change because the engine did.
  */
-export const officeDocumentMimeTypes = [
-  excelMimeTypes,
+/**
+ * The parsed document formats that read as prose: word processing, e-books and slides.
+ * File search indexes these usefully, so the upload chooser offers it for them; the
+ * tabular formats below stay with code execution and context.
+ */
+export const proseDocumentMimeTypes = [
   /^application\/msword$/i,
   /^application\/vnd\.ms-word\.document\.macroenabled\.12$/i,
   /^application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document$/i,
-  /^application\/(?:rtf|epub\+zip|csv)$/i,
-  /^text\/(?:rtf|csv)$/i,
+  /^application\/(?:rtf|epub\+zip)$/i,
+  /^text\/rtf$/i,
   /^application\/vnd\.ms-powerpoint$/i,
   /^application\/vnd\.ms-powerpoint\.presentation\.macroenabled\.12$/i,
   /^application\/vnd\.ms-powerpoint\.slideshow\.macroenabled\.12$/i,
   /^application\/vnd\.openxmlformats-officedocument\.presentationml\.(?:presentation|slideshow)$/i,
+  /^application\/vnd\.oasis\.opendocument\.(?:text|presentation)$/i,
+];
+
+export const officeDocumentMimeTypes = [
+  excelMimeTypes,
+  ...proseDocumentMimeTypes,
+  /^(?:application|text)\/csv$/i,
   /^application\/vnd\.ms-excel\.sheet\.(?:macroenabled|binary\.macroenabled)\.12$/i,
-  /^application\/vnd\.oasis\.opendocument\.(?:text|spreadsheet|presentation)$/i,
+  /^application\/vnd\.oasis\.opendocument\.spreadsheet$/i,
 ];
 
 /** MIME types handled by local document extraction, PDF first. */

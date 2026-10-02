@@ -57,8 +57,9 @@ describe('getViableUploadOptions', () => {
   });
 
   describe('Anthropic (PDF/image only for provider attach)', () => {
-    it('routes a document-parser-only type to context', () => {
+    it('offers a parsed prose document to file search and context', () => {
       expect(getViableUploadOptions([file('application/rtf', 'notes.rtf')], baseCtx())).toEqual([
+        EToolResources.file_search,
         EToolResources.context,
       ]);
     });
@@ -153,6 +154,17 @@ describe('getViableUploadOptions', () => {
         EToolResources.file_search,
         EToolResources.execute_code,
       ]);
+    });
+
+    it.each([
+      ['application/msword', 'legacy.doc'],
+      ['application/epub+zip', 'book.epub'],
+      ['application/vnd.ms-powerpoint', 'deck.ppt'],
+      ['application/vnd.oasis.opendocument.presentation', 'deck.odp'],
+    ])('offers file search for parsed prose %s when context is off', (type, name) => {
+      expect(
+        getViableUploadOptions([file(type, name)], baseCtx({ contextEnabled: false })),
+      ).toContain(EToolResources.file_search);
     });
 
     it('offers every destination for a PDF', () => {
