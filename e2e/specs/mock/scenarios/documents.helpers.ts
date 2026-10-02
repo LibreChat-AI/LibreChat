@@ -35,43 +35,60 @@ export function documentFixture(file: string, options: { mimeType?: string } = {
   };
 }
 
-/** Mock Provider B presents the unified single attach button, which routes by MIME type. */
-export async function openUnifiedComposer(page: Page): Promise<void> {
+const PALETTE_NAME = 'Attach and tools';
+
+async function openComposer(page: Page, endpoint: string): Promise<void> {
   await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
-  await selectMockEndpoint(page, MOCK_ENDPOINTS[1]);
-  await expect(page.locator('#attach-file-button')).toBeVisible({ timeout: 15000 });
+  await selectMockEndpoint(page, endpoint);
+  await expect(page.getByRole('button', { name: PALETTE_NAME, exact: true })).toBeVisible({
+    timeout: 15000,
+  });
 }
 
-/** Mock Provider A keeps the explicit destination chooser, where "Upload as Text" is context. */
+async function openPalette(page: Page): Promise<Locator> {
+  await page.getByRole('button', { name: PALETTE_NAME, exact: true }).click();
+  return page.getByRole('dialog', { name: PALETTE_NAME, exact: true });
+}
+
+async function chooseFile(page: Page, row: Locator, upload: DocumentUpload): Promise<Response> {
+  const uploadResponse = waitForUpload(page);
+  await expect(row).toBeVisible();
+  const [fileChooser] = await Promise.all([page.waitForEvent('filechooser'), row.click()]);
+  await fileChooser.setFiles(upload);
+  return uploadResponse;
+}
+
+/** Mock Provider B uploads through the palette's implicit source row, which routes by MIME type. */
+export async function openUnifiedComposer(page: Page): Promise<void> {
+  await openComposer(page, MOCK_ENDPOINTS[1]);
+}
+
+/** Mock Provider A keeps the explicit destinations, where "Upload as Text" is context. */
 export async function openLegacyComposer(page: Page): Promise<void> {
-  await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
-  await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
-  await expect(page.locator('#attach-file-menu-button')).toBeVisible({ timeout: 15000 });
+  await openComposer(page, MOCK_ENDPOINTS[0]);
 }
 
 export async function uploadViaUnifiedButton(
   page: Page,
   upload: DocumentUpload,
 ): Promise<Response> {
-  const uploadResponse = waitForUpload(page);
-  const [fileChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.locator('#attach-file-button').click(),
-  ]);
-  await fileChooser.setFiles(upload);
-  return uploadResponse;
+  const palette = await openPalette(page);
+  const sourceRow = palette.getByRole('button', {
+    name: /^(From Local Computer|Upload to Provider)$/,
+  });
+  return chooseFile(page, sourceRow, upload);
 }
 
-/** Attaches through the legacy chooser's context destination ("Upload as Text"). */
+/** Attaches through the palette's context destination ("Upload as Text"). */
 export async function uploadAsText(page: Page, upload: DocumentUpload): Promise<Response> {
-  const uploadResponse = waitForUpload(page);
-  await page.locator('#attach-file-menu-button').click();
-  const [fileChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('menuitem', { name: 'Upload as Text' }).click(),
-  ]);
-  await fileChooser.setFiles(upload);
-  return uploadResponse;
+  const palette = await openPalette(page);
+  const moreOptions = palette.getByRole('button', { name: 'More upload options', exact: true });
+  await expect(moreOptions).toBeVisible();
+  await moreOptions.click();
+  const contextRow = palette
+    .locator('[data-row-key="local:context"]')
+    .getByRole('button', { name: 'Upload as Text', exact: true });
+  return chooseFile(page, contextRow, upload);
 }
 
 export type UploadedTextFile = {
