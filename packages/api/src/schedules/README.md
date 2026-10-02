@@ -85,9 +85,3 @@ authorization requires a separate implementation. Scopes are not an STS audience
 mapping and authorization remain the host's responsibility.
 
 This interface adds no token store, STS exchange, consent API, or new MCP credential mode.
-
-## Proposed authority contract
-
-[A1: scheduled MCP authorization](./authorization/README.md) defines credential-mode
-boundaries, consent/resource binding, read-only authority, shared conformance vectors
-and per-target activation gates. It adds no runtime capability or provider activation.

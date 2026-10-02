@@ -9,6 +9,7 @@ export type AuthorizationFixtureEvaluator = (
   options: { signal: AbortSignal },
 ) => Promise<ScheduledMCPAuthorizationResult>;
 
+/** Reuses the evaluator across fresh snapshots to expose stale authorization decisions. */
 export async function verifyAuthorizationFixture(
   fixture: AuthorizationFixture,
   evaluate: AuthorizationFixtureEvaluator,

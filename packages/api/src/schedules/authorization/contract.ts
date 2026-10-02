@@ -1,7 +1,6 @@
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { ScheduledTokenContext } from '../context';
 
-/** A1 design contract. Not installed in runtime or exported from the package barrel. */
 export type ScheduledMCPCredentialMode =
   | 'stored_oauth'
   | 'browser_bearer'
@@ -39,6 +38,7 @@ export interface ScheduledMCPConsent {
   readonly permittedTools: readonly ScheduledMCPToolSelection[];
   readonly policyRevision: string;
   readonly grantedAtMs: number;
+  /** Fixed consent deadline; credential renewal cannot extend it. */
   readonly absoluteExpiresAtMs: number;
   readonly revokedAtMs: number | null;
 }
@@ -59,7 +59,7 @@ export type ScheduledMCPFailureReason =
   | 'unsupported_mode'
   | 'dependency_unavailable';
 
-/** Internal diagnosis; D1 owns wire/persistence projection into existing statuses. */
+/** Safe diagnosis projected onto existing schedule statuses. */
 export interface ScheduledMCPFailure {
   readonly reason: ScheduledMCPFailureReason;
   readonly status: Exclude<ScheduleMCPOutcome['status'], 'ready'>;
@@ -116,7 +116,7 @@ export type ScheduledMCPBearerResult =
   | { readonly state: 'denied'; readonly failure: ScheduledMCPFailure }
   | { readonly state: 'cancelled' };
 
-/** B2 only. Reauthorize before minting; A3 reauthorizes before actual transport use. */
+/** Resolves a resource-bound bearer after live authorization; use must reauthorize. */
 export type ScheduledMCPResourceBearerResolver = (
   request: ScheduledMCPAuthorizationRequest & {
     readonly resource: ScheduledMCPResource & { readonly credentialMode: 'resource_bearer' };
