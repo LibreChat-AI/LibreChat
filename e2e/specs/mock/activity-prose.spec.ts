@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { NEW_CHAT_PATH, messagesView, selectMockEndpoint, sendMessage } from './helpers';
 
 const INTRO = "Let me establish today's date and gather independent signals in parallel.";
+const PHASE_LABEL = 'Verified runtime configuration and deployment';
 const LABELS = [
   'Established current date, found active incidents and recent chart updates',
   'Checked chart version and loaded the logs schema',
@@ -38,7 +39,7 @@ for (const autoExpandTools of [false, true]) {
         await request.post(`${LABEL_SERVER}/__e2e/behavior`, {
           data: {
             delayMs: 700,
-            phaseLabel: 'Verified runtime configuration and deployment',
+            phaseLabel: PHASE_LABEL,
             labelsByPrompt: Object.fromEntries(
               LABELS.map((text, batch) => [`activity prose ${label} ${batch}`, text]),
             ),
@@ -155,6 +156,12 @@ for (const autoExpandTools of [false, true]) {
       timeout: 30_000,
     });
     await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden();
+    /** Settled work intentionally folds its prose; wait for that boundary before reopening. */
+    const phase = messagesView(page).getByRole('button', { name: PHASE_LABEL, exact: true });
+    await expect(phase).toBeVisible({ timeout: 30_000 });
+    await expect(phase).toHaveAttribute('aria-expanded', 'false');
+    await phase.click();
+    await expect(phase).toHaveAttribute('aria-expanded', 'true');
     await expect(intro).toHaveText(INTRO);
   });
 }

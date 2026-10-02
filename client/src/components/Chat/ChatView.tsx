@@ -261,6 +261,7 @@ function ChatView({
                             ) : (
                               <ChatForm
                                 index={index}
+                                routePending={routePending}
                                 placeholder={chatFormPlaceholder}
                                 project={isProjectLandingPage ? project : undefined}
                                 isLandingPage={isLandingPage}
