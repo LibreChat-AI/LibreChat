@@ -161,10 +161,16 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
         ref={scrollRef}
         className="relative grid h-full max-h-[calc(100vh-20rem)] min-h-[calc(100vh-20rem)] w-full flex-1 overflow-hidden overflow-x-auto overflow-y-auto rounded-md"
       >
-        <Table className="w-full min-w-[300px] border-separate border-spacing-0">
+        {/* Unwrapped: this div is the scroller the virtualizer observes, so the table
+            must not add its own scrolling wrapper inside it. */}
+        <Table
+          unwrapped
+          aria-rowcount={rows.length > 0 ? rows.length + 1 : undefined}
+          className="w-full min-w-[300px] border-separate border-spacing-0"
+        >
           <TableHeader sticky>
             {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id}>
+              <TableRow key={headerGroup.id} aria-rowindex={1}>
                 {headerGroup.headers.map((header, _index) => {
                   const size = header.getSize();
                   const style: Style = {
@@ -205,6 +211,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
                       key={virtualRow.key}
                       ref={rowVirtualizer.measureElement}
                       data-index={virtualRow.index}
+                      aria-rowindex={virtualRow.index + 2}
                       data-state={row.getIsSelected() && 'selected'}
                     >
                       {row.getVisibleCells().map((cell) => {
