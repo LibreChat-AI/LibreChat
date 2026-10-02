@@ -6237,6 +6237,76 @@ describe('AgentClient - titleConvo', () => {
       ).resolves.toEqual(expect.objectContaining({ prompt: expect.any(Array) }));
     });
 
+    it.each([3, 0])(
+      'continues with %i current files after cumulative history reaches the count limit',
+      async (currentCount) => {
+        client.options.resendFiles = true;
+        const historical = Array.from({ length: currentCount ? 8 : 11 }, (_, index) =>
+          makeTextFile(`history-${index}`, `history-${index}.txt`, 'history'),
+        );
+        const current = Array.from({ length: currentCount }, (_, index) =>
+          makeTextFile(`current-${index}`, `current-${index}.txt`, 'current'),
+        );
+        client.options.attachments = Promise.resolve(current);
+        require('~/models').getFiles.mockResolvedValue(historical);
+        const messages = historical.map((file, index) => ({
+          messageId: `history-message-${index}`,
+          parentMessageId: index ? `history-message-${index - 1}` : null,
+          isCreatedByUser: true,
+          text: 'Inspect this file.',
+          files: [{ file_id: file.file_id }],
+        }));
+        messages.push({
+          messageId: 'current-message',
+          parentMessageId: messages[messages.length - 1].messageId,
+          isCreatedByUser: true,
+          text: 'Continue.',
+        });
+
+        const replayedMessages = await client.addPreviousAttachments(messages);
+        await expect(
+          client.buildMessages(replayedMessages, 'current-message', {}),
+        ).resolves.toEqual(expect.objectContaining({ prompt: expect.any(Array) }));
+        expect(Object.values(client.message_file_map).flat()).toHaveLength(11);
+      },
+    );
+
+    it('rejects an oversized current batch without blocking a later file-free turn', async () => {
+      client.options.resendFiles = true;
+      const files = Array.from({ length: 11 }, (_, index) =>
+        makeTextFile(`rejected-${index}`, `rejected-${index}.txt`, 'context'),
+      );
+      client.options.attachments = files;
+      await expect(
+        client.buildMessages(
+          [{ messageId: 'rejected-message', isCreatedByUser: true, text: 'Inspect files.' }],
+          'rejected-message',
+          {},
+        ),
+      ).rejects.toMatchObject({ limitType: 'count', observed: 11, limit: 10 });
+
+      client.options.attachments = [];
+      client.message_file_map = {};
+      require('~/models').getFiles.mockResolvedValue(files);
+      const replayedMessages = await client.addPreviousAttachments([
+        {
+          messageId: 'rejected-message',
+          isCreatedByUser: true,
+          text: 'Inspect files.',
+          files: files.map(({ file_id }) => ({ file_id })),
+        },
+        {
+          messageId: 'recovery-message',
+          parentMessageId: 'rejected-message',
+          isCreatedByUser: true,
+          text: 'Continue without new files.',
+        },
+      ]);
+      await expect(client.buildMessages(replayedMessages, 'recovery-message', {})).resolves.toEqual(
+        expect.objectContaining({ prompt: expect.any(Array) }),
+      );
+    });
+
     it('rejects combined historical and current bytes before either batch is encoded', async () => {
       mockAgent.endpoint = 'Moonshot';
       client.options.endpointType = EModelEndpoint.custom;
@@ -9764,7 +9834,7 @@ describe('AgentClient - resumeCompletion content protection', () => {
     ).not.toThrow();
   });
 
-  it('reapplies aggregate attachment limits to persistent history on resume', async () => {
+  it('does not reapply current attachment counts to persistent history on resume', async () => {
     const historicalFiles = Array.from({ length: 11 }, (_, index) => ({
       file_id: `resume-history-${index}`,
       filename: `history-${index}.txt`,
@@ -9796,6 +9866,8 @@ describe('AgentClient - resumeCompletion content protection', () => {
         },
       }),
     });
+    const resume = jest.fn().mockResolvedValue(undefined);
+    mockCreateRun.mockResolvedValue({ resume, getCalibrationRatio: jest.fn(() => 0) });
     const context = makeContext(undefined);
     context.options.req.body.isTemporary = false;
     context.options.req.config.fileConfig = {
@@ -9804,11 +9876,8 @@ describe('AgentClient - resumeCompletion content protection', () => {
 
     await expect(
       AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
-    ).rejects.toMatchObject({
-      code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
-      limitType: 'count',
-    });
-    expect(mockCreateRun).not.toHaveBeenCalled();
+    ).resolves.toBeUndefined();
+    expect(resume).toHaveBeenCalledTimes(1);
   });
 
   it('counts a restored request file only once when it is already in the checkpoint', async () => {
@@ -9878,7 +9947,7 @@ describe('AgentClient - resumeCompletion content protection', () => {
     ]);
   });
 
-  it('counts checkpoint files retained in model state after endpoint policy tightens', async () => {
+  it('preserves checkpoint files when the current file-count policy tightens', async () => {
     const checkpointFiles = [
       {
         file_id: 'retained-1',
@@ -9910,6 +9979,8 @@ describe('AgentClient - resumeCompletion content protection', () => {
       }),
     });
     require('~/models').getFiles.mockResolvedValue(checkpointFiles);
+    const resume = jest.fn().mockResolvedValue(undefined);
+    mockCreateRun.mockResolvedValue({ resume, getCalibrationRatio: jest.fn(() => 0) });
     const context = makeContext(undefined);
     context.options.req.config.fileConfig = {
       endpoints: {
@@ -9919,11 +9990,8 @@ describe('AgentClient - resumeCompletion content protection', () => {
 
     await expect(
       AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
-    ).rejects.toMatchObject({
-      code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
-      limitType: 'count',
-    });
-    expect(mockCreateRun).not.toHaveBeenCalled();
+    ).resolves.toBeUndefined();
+    expect(resume).toHaveBeenCalledTimes(1);
   });
 
   it('reapplies each secondary agent endpoint limit on resume', async () => {

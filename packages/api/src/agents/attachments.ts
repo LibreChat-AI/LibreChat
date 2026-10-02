@@ -238,7 +238,11 @@ export function isAgentAttachmentLimitError(
 
 export function collectAgentAttachmentStats(
   attachments?: Iterable<AttachmentTelemetryFile | null | undefined> | null,
-  options: { countRepeatedExtractedText?: boolean; countRepeatedBytes?: boolean } = {},
+  options: {
+    countRepeatedExtractedText?: boolean;
+    countRepeatedBytes?: boolean;
+    historicalFileIds?: ReadonlySet<string>;
+  } = {},
 ): AgentAttachmentStats {
   const stats: AgentAttachmentStats = {
     attachmentCount: 0,
@@ -272,7 +276,9 @@ export function collectAgentAttachmentStats(
       Number.isFinite(file.metadata?.pageCount) && Number(file.metadata?.pageCount) >= 0
         ? Number(file.metadata?.pageCount)
         : undefined;
-    stats.attachmentCount += 1;
+    if (!file.file_id || !options.historicalFileIds?.has(file.file_id)) {
+      stats.attachmentCount += 1;
+    }
     stats.totalKnownBytes += bytes;
     stats.extractedTextChars += extractedTextChars;
     stats.files.push({
@@ -296,6 +302,7 @@ export function assertAgentAttachmentLimits({
   countRepeatedExtractedText = false,
   countRepeatedBytes = countRepeatedExtractedText,
   enforceAttachmentCount = true,
+  historicalFileIds,
   useGlobalContextSizeLimit = false,
 }: {
   attachments?: Iterable<AttachmentTelemetryFile | null | undefined> | null;
@@ -306,11 +313,14 @@ export function assertAgentAttachmentLimits({
   countRepeatedExtractedText?: boolean;
   countRepeatedBytes?: boolean;
   enforceAttachmentCount?: boolean;
+  /** Replayed files consume context budgets, not the current submission's count allowance. */
+  historicalFileIds?: ReadonlySet<string>;
   useGlobalContextSizeLimit?: boolean;
 }): AgentAttachmentStats {
   const stats = collectAgentAttachmentStats(attachments, {
     countRepeatedExtractedText,
     countRepeatedBytes,
+    historicalFileIds,
   });
   const dynamicFileConfig = providedFileConfig ?? req?.config?.fileConfig;
   const fileConfig = mergeFileConfig(dynamicFileConfig);
@@ -356,6 +366,7 @@ export function assertAgentAttachmentTopology({
   endpoint,
   endpointType,
   endpointsByAgentId,
+  historicalFileIds,
 }: {
   sharedAttachments?: IMongoFile[];
   scopedAttachmentsByAgentId?: Map<string, IMongoFile[]>;
@@ -363,6 +374,7 @@ export function assertAgentAttachmentTopology({
   endpoint?: string | null;
   endpointType?: string | null;
   endpointsByAgentId?: AgentAttachmentEndpointsByAgentId;
+  historicalFileIds?: ReadonlySet<string>;
 }): void {
   const agentIds = new Set([
     ...scopedAttachmentsByAgentId.keys(),
@@ -394,6 +406,7 @@ export function assertAgentAttachmentTopology({
       endpoint: agentEndpoint?.endpoint,
       endpointType: agentEndpoint?.endpointType,
       countRepeatedExtractedText: true,
+      historicalFileIds,
     });
   }
   assertAgentAttachmentLimits({
@@ -523,6 +536,25 @@ export function collectFileIds<TFile extends FileWithId>(
   return fileIds;
 }
 
+/** Excludes replayed files from count admission unless they are submitted again now. */
+export function collectHistoricalAttachmentIds(
+  historicalFiles: Iterable<FileWithId | null | undefined>,
+  currentFiles: Iterable<FileWithId | null | undefined> = [],
+): Set<string> {
+  const fileIds = new Set<string>();
+  for (const file of historicalFiles) {
+    if (file?.file_id) {
+      fileIds.add(file.file_id);
+    }
+  }
+  for (const file of currentFiles) {
+    if (file?.file_id) {
+      fileIds.delete(file.file_id);
+    }
+  }
+  return fileIds;
+}
+
 export function buildAgentContextAttachmentsByAgentId<TFile extends FileWithId>(
   configs: Iterable<AgentContextAttachmentCarrier<TFile> | null | undefined>,
 ): Map<string, TFile[]> {
@@ -619,6 +651,7 @@ export async function buildAgentScopedContext({
   attachmentsByAgentId,
   sharedRunAttachmentIds,
   sharedAttachments = [],
+  historicalFileIds,
   req,
   tokenCountFn = countTokens,
   endpoint,
@@ -629,6 +662,7 @@ export async function buildAgentScopedContext({
   attachmentsByAgentId: AgentContextAttachmentsByAgentId<IMongoFile>;
   sharedRunAttachmentIds?: Set<string>;
   sharedAttachments?: IMongoFile[];
+  historicalFileIds?: ReadonlySet<string>;
   req?: ServerRequest;
   tokenCountFn?: TokenCountFn;
   endpoint?: string | null;
@@ -649,6 +683,7 @@ export async function buildAgentScopedContext({
   assertAgentAttachmentTopology({
     sharedAttachments,
     scopedAttachmentsByAgentId: new Map(attachmentEntries),
+    historicalFileIds,
     req,
     endpoint,
     endpointType,

@@ -153,6 +153,20 @@ beforeEach(() => {
   mockAccess = {};
 });
 
+describe('LibreChat attachment limits', () => {
+  it.each(['attachment count', 'total attachment size', 'extracted document text'])(
+    'does not blame the provider for the local %s limit',
+    (label) => {
+      const detail = `This turn exceeds the configured ${label} limit (11 > 10). Remove some attachments or use smaller files and try again.`;
+      renderError(detail, providerMessage);
+      expect(screen.getByText(catalog.com_error_attachment_limit)).toBeInTheDocument();
+      expect(screen.queryByText('OpenAI could not complete this request.')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: catalog.com_error_details_attachment }));
+      expect(screen.getByText(detail)).toBeVisible();
+    },
+  );
+});
+
 describe('Error — every client-facing error type', () => {
   /** The seeded gallery refuses to run while a member lacks a case; this is the renderer's half. */
   it.each([...Object.values(ErrorTypes), ...Object.values(ViolationTypes)])(

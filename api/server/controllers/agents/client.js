@@ -137,6 +137,7 @@ const {
   createAgentMemoryCallback,
   assertAgentAttachmentLimits,
   assertAgentAttachmentTopology,
+  collectHistoricalAttachmentIds,
   isModelBoundAttachmentFile,
   isAgentAttachmentLimitError,
   isAttachmentObjectNotFoundError,
@@ -411,6 +412,7 @@ class AgentClient extends BaseClient {
     );
     assertAgentAttachmentLimits({
       attachments: modelBoundAttachments,
+      historicalFileIds: this.turnHistoricalAttachmentIds,
       req: this.options.req,
       endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
       endpointType: this.options.endpointType,
@@ -478,6 +480,7 @@ class AgentClient extends BaseClient {
     const scopedAttachmentsByAgentId = this.turnScopedAttachmentsByAgentId ?? new Map();
     assertAgentAttachmentTopology({
       sharedAttachments,
+      historicalFileIds: this.turnHistoricalAttachmentIds,
       scopedAttachmentsByAgentId,
       req: this.options.req,
       endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
@@ -501,6 +504,10 @@ class AgentClient extends BaseClient {
       this.getModelBoundAttachmentsForEndpoint(historicalAttachments);
     const compatibleCurrentAttachments =
       this.getModelBoundAttachmentsForEndpoint(currentAttachments);
+    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
+      historicalAttachments,
+      currentAttachments,
+    );
     const sharedAttachments = [...compatibleHistoricalAttachments, ...compatibleCurrentAttachments];
     const sharedAttachmentIds = collectFileIds(sharedAttachments);
     const agents = collectReachableAgents([
@@ -525,6 +532,7 @@ class AgentClient extends BaseClient {
     );
     assertAgentAttachmentTopology({
       sharedAttachments,
+      historicalFileIds: this.turnHistoricalAttachmentIds,
       scopedAttachmentsByAgentId: scopedAttachmentMap,
       req: this.options.req,
       endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
@@ -2460,12 +2468,17 @@ class AgentClient extends BaseClient {
       endpointType: this.options.endpointType,
       endpointsByAgentId,
     });
+    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
+      this.authorizedHistoricalFiles?.values() ?? sharedAttachmentFiles,
+      requestAttachments,
+    );
     this.turnSharedAttachmentFiles = sharedAttachmentFiles;
     this.turnAggregateOnlyAttachmentFiles = retainedHistoricalFileContexts;
     this.turnScopedAttachmentsByAgentId = scopedAttachmentMap;
     this.turnAttachmentEndpointsByAgentId = endpointsByAgentId;
     assertAgentAttachmentTopology({
       sharedAttachments: sharedAttachmentFiles,
+      historicalFileIds: this.turnHistoricalAttachmentIds,
       scopedAttachmentsByAgentId: scopedAttachmentMap,
       req: this.options.req,
       endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
@@ -2485,6 +2498,7 @@ class AgentClient extends BaseClient {
         attachmentsByAgentId: this.options.agentContextAttachmentsByAgentId,
         sharedRunAttachmentIds,
         sharedAttachments: sharedAttachmentFiles,
+        historicalFileIds: this.turnHistoricalAttachmentIds,
         req: this.options.req,
         endpoint: this.options.agent?.endpoint ?? this.options.endpoint ?? EModelEndpoint.agents,
         endpointType: this.options.endpointType,
@@ -3171,6 +3185,7 @@ class AgentClient extends BaseClient {
                 attachmentsByAgentId: lateAttachmentsByAgentId,
                 sharedRunAttachmentIds: liveSharedAttachmentIds,
                 sharedAttachments: liveSharedAttachmentFiles,
+                historicalFileIds: this.turnHistoricalAttachmentIds,
                 req: this.options.req,
                 endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
                 endpointType: this.options.endpointType,
@@ -5493,6 +5508,10 @@ class AgentClient extends BaseClient {
           .call(this, requestFiles)
           .filter((file) => !file?.file_id || !checkpointFileIds.has(file.file_id)),
       ];
+      this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
+        resumeContentProjection.checkpointFiles,
+        requestFiles,
+      );
       const resumeSharedFileIds = collectFileIds(resumeSharedFiles);
       const resumeEndpointsByAgentId = new Map(
         agents
@@ -5512,6 +5531,7 @@ class AgentClient extends BaseClient {
           attachmentsByAgentId: this.options.agentContextAttachmentsByAgentId,
           sharedRunAttachmentIds: resumeSharedFileIds,
           sharedAttachments: resumeSharedFiles,
+          historicalFileIds: this.turnHistoricalAttachmentIds,
           req: this.options.req,
           endpoint: this.options.agent?.endpoint ?? this.options.endpoint ?? EModelEndpoint.agents,
           endpointType: this.options.endpointType,
@@ -5637,6 +5657,7 @@ class AgentClient extends BaseClient {
                 attachmentsByAgentId: lateAttachmentsByAgentId,
                 sharedRunAttachmentIds: liveResumeSharedFileIds,
                 sharedAttachments: liveResumeSharedFiles,
+                historicalFileIds: this.turnHistoricalAttachmentIds,
                 req: this.options.req,
                 endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
                 endpointType: this.options.endpointType,

@@ -14,6 +14,7 @@ import {
   createAgentMemoryCallback,
   collectAgentAttachmentStats,
   collectFileIds,
+  collectHistoricalAttachmentIds,
   buildAgentScopedContext,
   getAgentContextAttachments,
   buildAgentContextAttachmentsByAgentId,
@@ -97,6 +98,55 @@ describe('agent attachment helpers', () => {
       { fileId: 'file-1', mimeType: 'text/plain', bytes: 12, extractedTextChars: 5 },
       { fileId: 'file-2', mimeType: 'application/pdf', bytes: 8, extractedTextChars: 6 },
     ]);
+  });
+
+  it('counts only new files while retaining historical context budgets', () => {
+    const historical = Array.from({ length: 11 }, (_, index) => ({
+      file_id: `history-${index}`,
+      bytes: 10,
+      text: 'context',
+    }));
+    const current = { file_id: 'current', bytes: 5, text: 'new' };
+    const historicalFileIds = collectHistoricalAttachmentIds(historical, [current]);
+    const stats = assertAgentAttachmentLimits({
+      attachments: [...historical, current],
+      historicalFileIds,
+      fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
+    });
+
+    expect(stats).toMatchObject({
+      attachmentCount: 1,
+      totalKnownBytes: 115,
+      extractedTextChars: 80,
+    });
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: historical,
+        historicalFileIds,
+        fileConfig: { fileContextCharLimit: 10 },
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'extracted_text' }));
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: historical,
+        historicalFileIds,
+        fileConfig: { fileContextSizeLimit: 0.00001 },
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'bytes' }));
+  });
+
+  it('counts resubmitted historical files and unidentified files as current', () => {
+    const first = { file_id: 'first' };
+    const second = { file_id: 'second' };
+    const historicalFileIds = collectHistoricalAttachmentIds([first, second], [first]);
+    expect(historicalFileIds).toEqual(new Set(['second']));
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: [first, first, second, {}],
+        historicalFileIds,
+        fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'count', observed: 2, limit: 1 }));
   });
 
   it('counts bytes once per repeated model injection when requested', () => {
@@ -553,6 +603,26 @@ describe('agent attachment helpers', () => {
       observed: 2,
       limit: 1,
     });
+  });
+
+  it('does not count historical shared or scoped files at context extraction', async () => {
+    const historical = Array.from({ length: 11 }, (_, index) =>
+      makeTextFile(`history-${index}`, `history-${index}.txt`, 'history'),
+    );
+    const current = makeTextFile('current', 'current.txt', 'current');
+    const req = {
+      body: { fileTokenLimit: 1000 },
+      config: { fileConfig: { endpoints: { agents: { fileLimit: 1 } } } },
+    } as ServerRequest;
+    await expect(
+      buildAgentScopedContext({
+        agentIds: ['agent-a'],
+        sharedAttachments: [...historical.slice(0, 8), current],
+        historicalFileIds: collectHistoricalAttachmentIds(historical, [current]),
+        attachmentsByAgentId: new Map([['agent-a', historical.slice(8)]]),
+        req,
+      }),
+    ).resolves.toEqual(new Map([['agent-a', expect.stringContaining('history')]]));
   });
 
   it('rejects shared attachments incompatible with a receiving agent', async () => {
