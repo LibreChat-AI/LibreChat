@@ -11,18 +11,20 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/components/Messages/Content/CopyButton', () => ({
   __esModule: true,
-  default: ({ onClick }: { onClick: () => void }) => (
-    <button type="button" data-testid="copy-output" onClick={onClick} />
+  default: ({ onClick, className }: { onClick: () => void; className?: string }) => (
+    <button type="button" data-testid="copy-output" className={className} onClick={onClick} />
   ),
 }));
 
 describe('OutputRenderer', () => {
-  it('vertically centers the copy control beside the output', () => {
+  it('lays the copy control over the bottom right of the output without reserving width', () => {
     render(<OutputRenderer text={'First line\nSecond line'} />);
 
-    const copyPositioner = screen.getByTestId('copy-output').parentElement;
-    expect(copyPositioner).toHaveClass('absolute', 'right-0', 'top-1/2', '-translate-y-1/2');
-    expect(copyPositioner?.parentElement).toHaveClass('relative', 'pr-10');
+    const copyButton = screen.getByTestId('copy-output');
+    expect(copyButton).toHaveClass('absolute', 'right-0', 'bottom-0');
+    expect(copyButton).toHaveClass('[@media(hover:hover)]:group-hover/copy:opacity-100');
+    expect(copyButton.parentElement).toHaveClass('group/copy', 'relative');
+    expect(copyButton.parentElement).not.toHaveClass('pr-10');
   });
 
   it('copies original bytes when a code result has been formatted for display', () => {
@@ -32,16 +34,64 @@ describe('OutputRenderer', () => {
     expect(copy).toHaveBeenCalledWith(raw, { format: 'text/plain' });
   });
 
-  it('keeps the head by default and the tail for terminal output when collapsed', () => {
+  it('renders long output in full with no show more toggle', () => {
     const text = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n');
     const { unmount } = render(<OutputRenderer text={text} />);
-    expect(screen.getByText(/line 1/).textContent?.split('\n')[0]).toBe('line 1');
+    expect(screen.getByText(/line 1/).textContent?.split('\n')).toHaveLength(30);
+    expect(screen.queryByText('com_ui_show_more')).not.toBeInTheDocument();
     unmount();
 
     render(<OutputRenderer text={text} variant="terminal" />);
-    const shown = screen.getByText(/line 30/).textContent?.split('\n') ?? [];
-    expect(shown[0]).toBe('line 16');
-    expect(shown).toHaveLength(15);
+    const pre = screen.getByText(/line 30/);
+    expect(pre.textContent).toBe(text);
+    expect(pre).toHaveClass('max-h-[300px]', 'overflow-auto');
+    expect(screen.queryByText('com_ui_show_more')).not.toBeInTheDocument();
+  });
+
+  it('opens terminal output on its last lines and default output on its first', () => {
+    const text = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n');
+    const scrollHeight = jest
+      .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+      .mockReturnValue(900);
+    try {
+      const { unmount } = render(<OutputRenderer text={text} variant="terminal" />);
+      expect(screen.getByText(/line 30/).scrollTop).toBe(900);
+      unmount();
+
+      render(<OutputRenderer text={text} />);
+      expect(screen.getByText(/line 30/).scrollTop).toBe(0);
+    } finally {
+      scrollHeight.mockRestore();
+    }
+  });
+
+  it('stops following streamed terminal output once the reader scrolls up', () => {
+    const lines = (count: number) =>
+      Array.from({ length: count }, (_, i) => `line ${i + 1}`).join('\n');
+    const scrollHeight = jest
+      .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+      .mockReturnValue(900);
+    const clientHeight = jest
+      .spyOn(HTMLElement.prototype, 'clientHeight', 'get')
+      .mockReturnValue(300);
+    try {
+      const { rerender } = render(<OutputRenderer text={lines(30)} variant="terminal" />);
+      const pre = screen.getByText(/line 30/);
+      expect(pre.scrollTop).toBe(900);
+
+      pre.scrollTop = 100;
+      fireEvent.scroll(pre);
+      rerender(<OutputRenderer text={lines(40)} variant="terminal" />);
+      expect(pre.scrollTop).toBe(100);
+
+      pre.scrollTop = 600;
+      fireEvent.scroll(pre);
+      rerender(<OutputRenderer text={lines(50)} variant="terminal" />);
+      expect(pre.scrollTop).toBe(900);
+    } finally {
+      scrollHeight.mockRestore();
+      clientHeight.mockRestore();
+    }
   });
 
   it('keeps whitespace-only terminal output', () => {
@@ -49,20 +99,7 @@ describe('OutputRenderer', () => {
     expect(container.querySelector('pre')?.textContent).toBe('\n\n');
   });
 
-  it('does not count a final newline as a line when collapsing terminal output', () => {
-    const numbered = (n: number) =>
-      Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
-    const { unmount } = render(<OutputRenderer text={numbered(20)} variant="terminal" />);
-    expect(screen.queryByText('com_ui_show_more')).not.toBeInTheDocument();
-    unmount();
-
-    render(<OutputRenderer text={numbered(30)} variant="terminal" />);
-    const shown = screen.getByText(/line 30/).textContent?.split('\n') ?? [];
-    expect(shown).toHaveLength(15);
-    expect(shown[0]).toBe('line 16');
-  });
-
-  it('keeps segment styling when collapsing terminal output to its tail', () => {
+  it('keeps segment styling across the full terminal output', () => {
     const out = Array.from({ length: 25 }, (_, i) => `out ${i + 1}`).join('\n') + '\n';
     const err = 'stderr:\nboom\n';
     const trailer = '[exit code: 1]';
@@ -79,18 +116,10 @@ describe('OutputRenderer', () => {
     );
     const pre = screen.getByText(/out 25/).closest('pre') as HTMLElement;
     const shown = (pre.textContent ?? '').split('\n');
-    expect(shown).toHaveLength(15);
-    expect(shown[0]).toBe('out 14');
+    expect(shown[0]).toBe('out 1');
+    expect(pre.textContent).toBe(out + err + trailer);
     expect(screen.getByText(/boom/)).toHaveClass('text-status-error');
     expect(screen.getByText('[exit code: 1]')).toHaveClass('text-text-tertiary');
-  });
-
-  it('shows as many styled lines as plain lines when output ends in a newline', () => {
-    const out = Array.from({ length: 30 }, (_, i) => `row ${i + 1}`).join('\n') + '\n';
-    render(<OutputRenderer text={out} variant="terminal" segments={[{ text: out }]} />);
-    const shown = (screen.getByText(/row 30/).closest('pre')?.textContent ?? '').split('\n');
-    expect(shown.filter(Boolean)).toHaveLength(15);
-    expect(shown[0]).toBe('row 16');
   });
 
   it('does not treat text between bracketed prefixes as a tool-call error', () => {

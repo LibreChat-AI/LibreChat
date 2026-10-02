@@ -626,9 +626,6 @@
   "client/src/components/Chat/Messages/Content/ProgressText.tsx": {
     "shadcn/no-inline-styles": {
       "count": 2
-    },
-    "shadcn/no-restyle": {
-      "count": 8
     }
   },
   "client/src/components/Chat/Messages/Content/RetrievalCall.tsx": {
@@ -674,7 +671,7 @@
   },
   "client/src/components/Chat/Messages/Content/ToolOutput/OutputRenderer.tsx": {
     "shadcn/no-restyle": {
-      "count": 12
+      "count": 6
     }
   },
   "client/src/components/Chat/Messages/Content/ToolOutput/ToolIcon.tsx": {

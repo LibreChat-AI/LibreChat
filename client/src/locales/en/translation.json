@@ -2110,7 +2110,6 @@
   "com_ui_optional": "(optional)",
   "com_ui_options": "options",
   "com_ui_output": "Output",
-  "com_ui_page": "Page",
   "com_ui_parameters": "Parameters",
   "com_ui_params_changed_count": "{{count}} changed settings",
   "com_ui_params_changed_count_one": "{{count}} changed setting",
