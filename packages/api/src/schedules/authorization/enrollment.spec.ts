@@ -313,3 +313,44 @@ it('does not bind consent to renewed user tokens or client secrets', async () =>
   };
   expect(await resolve(identity, {})).toEqual(before);
 });
+
+it('does not offer owner consent for recipient-defining custom user variables', async () => {
+  const { deps, resolve } = setup();
+  jest.mocked(deps.getServers).mockResolvedValue({
+    warehouse: {
+      type: 'streamable-http',
+      url: 'https://warehouse.example/mcp',
+      headers: { 'X-Workspace': '{{WORKSPACE}}' },
+      customUserVars: {
+        WORKSPACE: { title: 'Workspace', description: 'Recipient', sensitive: false },
+      },
+    },
+  });
+  const snapshot: ScheduleConsentSnapshot = {
+    agentId: 'root',
+    enabled: true,
+    configRevision: 0,
+    enrollment: null,
+  };
+  const confirm = jest.fn(async () => true);
+  const service = createScheduleMCPConsentService({
+    storage: {
+      readScheduleMCPConsent: async () => snapshot,
+      confirmScheduleMCPConsent: confirm,
+      revokeScheduleMCPConsent: async () => true,
+      admitScheduleMCPConsent: async () => true,
+    },
+    resolveEnrollment: resolve,
+    getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
+    canUse: async () => true,
+  });
+  await expect(service.view(identity)).rejects.toMatchObject({ code: 'consent_unavailable' });
+  await expect(
+    service.confirm(identity, {
+      offerDigest: 'a'.repeat(64),
+      expectedRevision: null,
+      lifetimeHours: 1,
+    }),
+  ).rejects.toMatchObject({ code: 'consent_unavailable' });
+  expect(confirm).not.toHaveBeenCalled();
+});

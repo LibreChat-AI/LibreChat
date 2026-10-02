@@ -140,3 +140,102 @@ it('preserves literal templates for DB/plugin sources rather than reading host e
     else process.env[variable] = previous;
   }
 });
+
+it.each(['headers', 'requestHeaders', 'oauth_headers'] as const)(
+  'refuses unresolved custom routing in %s rather than hashing an unbound template',
+  (field) => {
+    expect(() =>
+      getScheduledMCPConfigurationRevision(
+        {
+          ...config,
+          [field]: { 'X-Workspace': '{{WORKSPACE}}' },
+          customUserVars: {
+            WORKSPACE: { title: 'Workspace', description: 'Routing recipient', sensitive: false },
+          },
+        },
+        binding,
+      ),
+    ).toThrow('consent_unavailable');
+  },
+);
+it('refuses dynamic user/body routing and custom placeholders in authorization headers', () => {
+  for (const template of [
+    '{{LIBRECHAT_USER_EMAIL}}',
+    '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+    '{{WORKSPACE}}',
+  ]) {
+    expect(() =>
+      getScheduledMCPConfigurationRevision(
+        { ...config, headers: { 'X-Workspace': template } },
+        binding,
+      ),
+    ).toThrow('consent_unavailable');
+    expect(() =>
+      getScheduledMCPConfigurationRevision(
+        { ...config, headers: { Authorization: `Bearer ${template}` } },
+        binding,
+      ),
+    ).toThrow('consent_unavailable');
+  }
+});
+it('refuses routing templates introduced by operator environment resolution', () => {
+  const variable = 'LC_CONSENT_UNBOUND_ROUTE_FIXTURE';
+  const previous = process.env[variable];
+  try {
+    process.env[variable] = '{{WORKSPACE}}';
+    expect(() =>
+      getScheduledMCPConfigurationRevision(
+        {
+          ...config,
+          dbId: undefined,
+          source: 'yaml',
+          headers: { 'X-Workspace': `\${${variable}}` },
+        },
+        binding,
+      ),
+    ).toThrow('consent_unavailable');
+  } finally {
+    if (previous === undefined) delete process.env[variable];
+    else process.env[variable] = previous;
+  }
+});
+it('preserves literal-source resource and OAuth URLs across replica environment changes', () => {
+  const variable = 'LC_CONSENT_LITERAL_URL_FIXTURE';
+  const previous = process.env[variable];
+  try {
+    for (const source of ['user', 'plugin'] as const) {
+      const declared: ParsedServerConfig = {
+        type: 'streamable-http',
+        url: `https://warehouse.example/\${${variable}}`,
+        dbId: source === 'user' ? 'server' : undefined,
+        source,
+        proxy: `http://proxy.example/\${${variable}}`,
+        oauth: {
+          authorization_url: `https://issuer.example/\${${variable}}/authorize`,
+          token_url: `https://issuer.example/\${${variable}}/token`,
+        },
+      };
+      process.env[variable] = 'one';
+      const before = getScheduledMCPConfigurationRevision(declared, {
+        ...binding,
+        url: declared.url!,
+      });
+      process.env[variable] = 'two';
+      expect(
+        getScheduledMCPConfigurationRevision(declared, { ...binding, url: declared.url! }),
+      ).toBe(before);
+      expect(declared.url).toContain(`\${${variable}}`);
+    }
+  } finally {
+    if (previous === undefined) delete process.env[variable];
+    else process.env[variable] = previous;
+  }
+});
+it('keeps plugin custom templates literal because their runtime never substitutes them', () => {
+  const literal = {
+    ...config,
+    source: 'plugin' as const,
+    headers: { 'X-Workspace': '{{WORKSPACE}}' },
+  };
+  expect(getScheduledMCPConfigurationRevision(literal, binding)).toMatch(/^[a-f0-9]{64}$/);
+});
