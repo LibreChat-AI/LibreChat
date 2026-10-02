@@ -326,7 +326,7 @@ describe('useRunningConversationsQuery', () => {
           archive: useArchiveConvoMutation(),
           archiveAll: useArchiveAllConversationsMutation(),
         }),
-        { wrapper, initialProps: { ids: [] } },
+        { wrapper, initialProps: { ids: [] as string[] } },
       );
       expect(queryClient.getQueryState([QueryKeys.runningConversation, 'c1'])).toBeUndefined();
       const refresh = queryClient
