@@ -667,6 +667,21 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it('rejects changed agent ownership on a sealed selection before contacting Code API', async () => {
+    const fetchSpy = jest.spyOn(globalThis, 'fetch');
+    const selected = { environmentId: 'personal', workspaceId: 'project-a' };
+    await expect(
+      resolveCodeExecutionWorkspaceContext({
+        context,
+        requestedSelections: [{ ...selected, agentIds: ['reviewer'] }],
+        persistedSelections: [{ ...selected, agentIds: ['primary'] }],
+        environments,
+        getAppConfig,
+      }),
+    ).rejects.toMatchObject({ reason: 'locked' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('fails when the saved workspace disappears instead of selecting another', async () => {
     jest.spyOn(globalThis, 'fetch').mockResolvedValue(workspaceStatus([{ id: 'replacement' }]));
 

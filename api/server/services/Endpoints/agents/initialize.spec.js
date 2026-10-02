@@ -1686,6 +1686,7 @@ describe('initializeClient — subagent loading', () => {
     [true, 'override-resolved', false],
     [true, 'resolved', false],
     [true, 'moved', true],
+    [true, 'inaccessible-choice', false],
     [false, 'resolved-null', false],
     [true, 'resolved-null', true],
     [false, 'other-owner', false],
@@ -1727,6 +1728,11 @@ describe('initializeClient — subagent loading', () => {
         ],
       };
       req.body.codeWorkspaces = [{ environmentId: 'attached-vm', workspaceId: 'project-b' }];
+      if (source === 'inaccessible-choice') {
+        req.config.endpoints.agents.statefulCodeSessions.allowEnvironmentSelection = true;
+        await db.updateAgent({ id: SUBAGENT_ID }, { code_environment_ids: ['unavailable-vm'] });
+        req.body.codeWorkspaces = [{ environmentId: 'unavailable-vm', workspaceId: 'project-b' }];
+      }
       if (source === 'request' && !registered) {
         req.body.codeWorkspaces[0].workspaceId = 'removed-project';
       }
@@ -1795,7 +1801,7 @@ describe('initializeClient — subagent loading', () => {
         });
         const defaultsWithoutAttached =
           source === 'other-owner' || (source === 'resolved-null' && !movesEnabled);
-        if (!registered && !defaultsWithoutAttached) {
+        if ((!registered && !defaultsWithoutAttached) || source === 'inaccessible-choice') {
           await expect(initialization).rejects.toMatchObject({
             code: ErrorTypes.CODE_WORKSPACE_UNAVAILABLE,
           });

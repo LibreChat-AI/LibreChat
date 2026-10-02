@@ -3615,6 +3615,67 @@ describe('initializeAgent — execute_code capability expansion', () => {
     }
   });
 
+  it('routes a restored machine selection before file priming and tool discovery', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = ['execute_code'];
+    agent.stateful_code_sessions = true;
+    agent.code_environment_id = 'application-vm';
+    agent.code_environment_ids = ['runtime-vm'];
+    req.config = {
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            allowEnvironmentSelection: true,
+            environments: ['application-vm', 'runtime-vm'].map((id) => ({
+              id,
+              name: id,
+              type: 'attached',
+              owner: 'deployment',
+              baseURL: `https://${id}.example.com/v1`,
+              workerId: `worker-${id}`,
+            })),
+          },
+        },
+      },
+    } as NonNullable<typeof req.config>;
+    req.resolvedConversation = {
+      conversationId: 'chat-runtime',
+      codeWorkspaces: [
+        { environmentId: 'application-vm', workspaceId: 'primary' },
+        { environmentId: 'runtime-vm', workspaceId: 'primary', agentIds: [agent.id] },
+      ],
+    };
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        conversationId: 'chat-runtime',
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+        statefulSessionsAvailable: true,
+        requestBody: {
+          codeWorkspaces: [{ environmentId: 'application-vm', workspaceId: 'primary' }],
+        },
+      },
+      db,
+    );
+    expect(loadTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        codeExecutionContext: expect.objectContaining({
+          environmentId: 'runtime-vm',
+          baseUrl: 'https://runtime-vm.example.com/v1',
+          bridgeWorkerId: 'worker-runtime-vm',
+        }),
+      }),
+    );
+    expect(result.codeExecutionContext?.environmentId).toBe('runtime-vm');
+    expect(agent.code_environment_id).toBe('application-vm');
+  });
+
   it.each([false, true])(
     'uses the validated attached workspace operation ceiling: protectedEdit=%s',
     async (protectedEdit) => {

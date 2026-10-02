@@ -4,6 +4,7 @@ import {
   Tools,
   isEphemeralAgentId,
   isCodeWorkspaceSelections,
+  resolveCodeEnvironmentSelection,
 } from 'librechat-data-provider';
 import {
   AgentCapabilities,
@@ -30,7 +31,12 @@ import {
   useIsReplacingConversationCodeEnvironment,
   useConversationCodeEnvironmentRecovery,
 } from '~/data-provider';
-import { collectReachableAgents, findExecutionEnvironment } from './useCodeApprovalMode';
+import {
+  collectReachableAgents,
+  findExecutionEnvironment,
+  getCodeEnvironmentChoiceIds,
+  findCodeWorkspaceDiscoveryEnvironment,
+} from './useCodeApprovalMode';
 import { useWorkspacePreferences } from './workspacePreferences';
 import useAgentToolPermissions from './useAgentToolPermissions';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
@@ -50,6 +56,10 @@ export type CodeWorkspaceState =
 
 export interface CodeWorkspaceEnvironmentResult {
   environment: TPublicCodeEnvironment;
+  /** Coding agents whose execution requires this machine, including reachable subagents. */
+  requiredBy?: Array<{ id: string; name?: string | null }>;
+  /** Selectable agents whose binding must be retained when this target is explicitly moved. */
+  selectionOwners?: string[];
   state: Exclude<CodeWorkspaceState, 'not_required' | 'relocatable'>;
   workspaces: CodeWorkspaceDescriptor[];
   selected?: CodeWorkspaceSelection;
@@ -97,6 +107,13 @@ export interface CodeWorkspaceResult {
    *  environment keeps it, so the state it is in stays visible and reversible. */
   visible: boolean;
   environments: CodeWorkspaceEnvironmentResult[];
+  /** Alternative machines are discovered on demand; an idle machine never blocks this chat. */
+  machineOptions?: TPublicCodeEnvironment[];
+  /** Each group belongs to one reachable coding agent, not the whole graph. */
+  machineOptionGroups?: string[][];
+  machineChoiceOwners?: Array<{ agentId: string; environmentIds: string[] }>;
+  /** Fixed graph targets must survive an alternative pick for a different agent. */
+  fixedMachineIds?: string[];
   transition?: CodeWorkspaceTransition;
   selections?: CodeWorkspaceSelection[];
   resolveSelections: (
@@ -141,7 +158,7 @@ function resolveEnvironmentSelection({
 }): CodeWorkspaceSelection | undefined {
   if (status?.status !== 'ready' || status.environmentId !== environment.id) return undefined;
   if (stored != null && workspaces.some(({ id }) => id === stored.workspaceId)) {
-    return { environmentId: environment.id, workspaceId: stored.workspaceId };
+    return { ...stored, environmentId: environment.id };
   }
   if (!hasStoredSelections && workspaces.length === 1) {
     return { environmentId: environment.id, workspaceId: workspaces[0].id };
@@ -198,15 +215,28 @@ export default function useCodeWorkspace(
     const unique = new Map<string, TPublicCodeEnvironment>();
     const defaults = new Map<string, Set<string>>();
     const preferenceAgentIds = new Map<string, Set<string>>();
+    const requiredBy = new Map<string, Array<{ id: string; name?: string | null }>>();
     let complete = true;
     for (const agent of reachable.agents) {
       if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code)) {
         continue;
       }
-      const environment = findExecutionEnvironment(agent, statefulCodeSessions?.environments);
-      if (agent.code_environment_id && environment == null) complete = false;
+      const environment = findCodeWorkspaceDiscoveryEnvironment(
+        agent,
+        statefulCodeSessions?.environments,
+        statefulCodeSessions?.allowEnvironmentSelection,
+        conversation?.codeWorkspaces,
+      );
+      /** Discovery must remain available while a graph draft is partial or its sealed
+       * route needs recovery. Only final submission resolves the entire graph strictly. */
+      if (environment == null && agent.code_environment_id) {
+        complete = false;
+      }
       if (environment?.type !== 'attached') continue;
       unique.set(environment.id, environment);
+      const owners = requiredBy.get(environment.id) ?? [];
+      owners.push({ id: agent.id, name: agent.name });
+      requiredBy.set(environment.id, owners);
       if (agent.code_environment_id === environment.id && agent.code_workspace_id) {
         const choices = defaults.get(environment.id) ?? new Set<string>();
         choices.add(agent.code_workspace_id);
@@ -224,7 +254,12 @@ export default function useCodeWorkspace(
         if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code)) {
           continue;
         }
-        const environment = findExecutionEnvironment(agent, statefulCodeSessions?.environments);
+        const environment = findCodeWorkspaceDiscoveryEnvironment(
+          agent,
+          statefulCodeSessions?.environments,
+          statefulCodeSessions?.allowEnvironmentSelection,
+          conversation?.codeWorkspaces,
+        );
         if (environment?.type !== 'attached') continue;
         const owners = preferenceAgentIds.get(environment.id) ?? new Set<string>();
         owners.add(rootAgentId);
@@ -235,6 +270,7 @@ export default function useCodeWorkspace(
       complete,
       defaults,
       preferenceAgentIds,
+      requiredBy,
       environments: [...unique.values()].sort((a, b) => a.id.localeCompare(b.id)),
     };
   }, [
@@ -242,9 +278,11 @@ export default function useCodeWorkspace(
     addedConversation?.agent_id,
     agentsMap,
     conversation?.agent_id,
+    conversation?.codeWorkspaces,
     primaryAgent,
     reachable.agents,
     statefulCodeSessions?.environments,
+    statefulCodeSessions?.allowEnvironmentSelection,
   ]);
   const isAgentsConversation =
     (conversation?.endpointType ?? conversation?.endpoint) === EModelEndpoint.agents;
@@ -295,6 +333,41 @@ export default function useCodeWorkspace(
   /** A new chat and a saved chat that never decided are both still choosing, so agent defaults, a
    *  remembered selection, and a sole workspace apply to each. */
   const undecided = conversation != null && !locked;
+  const machineChoiceOwners =
+    required &&
+    supportsEnvironmentDecisions &&
+    statefulCodeSessions?.allowEnvironmentSelection === true
+      ? reachable.agents.flatMap((agent) => {
+          if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code)) {
+            return [];
+          }
+          const ids = getCodeEnvironmentChoiceIds(agent, statefulCodeSessions.environments, true);
+          return ids == null ? [] : [{ agentId: agent.id, environmentIds: ids }];
+        })
+      : undefined;
+  const machineOptionGroups = undecided
+    ? machineChoiceOwners?.map(({ environmentIds }) => environmentIds)
+    : undefined;
+  const machineOptions = machineOptionGroups?.length
+    ? statefulCodeSessions?.environments?.filter(
+        ({ id, type }) =>
+          type === 'attached' && machineOptionGroups.some((ids) => ids.includes(id)),
+      )
+    : undefined;
+  const fixedMachineIds = reachable.agents.flatMap((agent) => {
+    if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code))
+      return [];
+    if (
+      getCodeEnvironmentChoiceIds(
+        agent,
+        statefulCodeSessions?.environments,
+        statefulCodeSessions?.allowEnvironmentSelection,
+      ) != null
+    )
+      return [];
+    const environment = findExecutionEnvironment(agent, statefulCodeSessions?.environments);
+    return environment?.type === 'attached' ? [environment.id] : [];
+  });
   const environmentResults = attachedEnvironments.map((environment, index) => {
     const status = statuses[index];
     const workspaces =
@@ -343,7 +416,17 @@ export default function useCodeWorkspace(
     else if (selected != null) state = 'ready';
     else if (stored != null) state = 'missing';
     else if (workspaces.length === 0) state = 'unavailable';
-    return { environment, state, workspaces, selected };
+    return {
+      environment,
+      state,
+      workspaces,
+      selected,
+      requiredBy: workspaceMetadata.requiredBy.get(environment.id),
+      selectionOwners: workspaceMetadata.requiredBy
+        .get(environment.id)
+        ?.filter(({ id }) => machineChoiceOwners?.some(({ agentId }) => agentId === id))
+        .map(({ id }) => id),
+    };
   });
 
   const resolveSelections = useCallback(
@@ -351,12 +434,9 @@ export default function useCodeWorkspace(
       if (!required || !selectionMetadataComplete || !isCodeWorkspaceSelections(selections ?? [])) {
         return undefined;
       }
-      /** A saved chat's decision is sealed as a whole: trimming a selection its agents no longer use
-       *  would submit a set the persisted decision rejects. */
-      if (
-        locked &&
-        selections?.some(({ environmentId }) => !attachedEnvironmentIds.has(environmentId))
-      ) {
+      /** Never silently discard a machine the user picked. A sealed choice needs a transition;
+       * a draft choice not used by the graph must be corrected before it can execute elsewhere. */
+      if (selections?.some(({ environmentId }) => !attachedEnvironmentIds.has(environmentId))) {
         return undefined;
       }
       const resolved: CodeWorkspaceSelection[] = [];
@@ -374,6 +454,7 @@ export default function useCodeWorkspace(
           resolved.push({
             environmentId: result.environment.id,
             workspaceId: requested.workspaceId,
+            ...(requested.agentIds == null ? {} : { agentIds: requested.agentIds }),
           });
           continue;
         }
@@ -383,9 +464,35 @@ export default function useCodeWorkspace(
         }
         return undefined;
       }
+      if (
+        statefulCodeSessions?.allowEnvironmentSelection === true &&
+        reachable.agents.some(
+          (agent) =>
+            agent.stateful_code_sessions === true &&
+            agent.tools?.includes(Tools.execute_code) &&
+            getCodeEnvironmentChoiceIds(agent, statefulCodeSessions.environments, true) != null &&
+            !resolveCodeEnvironmentSelection({
+              agentId: agent.id,
+              environmentId:
+                agent.code_environment_id ??
+                statefulCodeSessions.environments?.find(({ default: isDefault }) => isDefault)?.id,
+              environmentIds: agent.code_environment_ids,
+              allowSelection: true,
+              selections: resolved,
+            }).valid,
+        )
+      )
+        return undefined;
       return resolved.sort((a, b) => a.environmentId.localeCompare(b.environmentId));
     },
-    [attachedEnvironmentIds, environmentResults, locked, required, selectionMetadataComplete],
+    [
+      attachedEnvironmentIds,
+      environmentResults,
+      required,
+      selectionMetadataComplete,
+      reachable.agents,
+      statefulCodeSessions,
+    ],
   );
 
   const selections = resolveSelections(storedSelections);
@@ -554,6 +661,10 @@ export default function useCodeWorkspace(
     canSubmit,
     visible,
     environments: environmentResults,
+    machineOptions,
+    machineOptionGroups,
+    machineChoiceOwners,
+    fixedMachineIds,
     transition,
     selections,
     resolveSelections,

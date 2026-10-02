@@ -95,6 +95,7 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
       type: String,
     },
     code_workspace_id: { type: String },
+    code_environment_ids: { type: [String], default: undefined },
     repositoryInstructions: { type: String, enum: ['prefer', 'defer', 'off'] },
     git_identity: {
       type: new Schema(

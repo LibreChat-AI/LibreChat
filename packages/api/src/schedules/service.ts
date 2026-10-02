@@ -1,3 +1,4 @@
+import { DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS } from 'librechat-data-provider';
 import { logger, runAsSystem, tenantStorage, isRuntimeDisabled } from '@librechat/data-schemas';
 import { getRefillEligibilityDate, Permissions, PermissionTypes } from 'librechat-data-provider';
 import type { ScheduleMethods, AppConfig, IBalance, IChatProject } from '@librechat/data-schemas';
@@ -409,6 +410,13 @@ export function createSchedulesService(
     const projectId = config.projectId?.trim() || undefined;
     return {
       enabled: config.use !== false,
+      ...(config.mcpConsent && {
+        mcpConsent: {
+          enabled: config.mcpConsent.enabled === true,
+          maxLifetimeHours:
+            config.mcpConsent.maxLifetimeHours ?? DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
+        },
+      }),
       maxPerUser: config.maxPerUser ?? DEFAULT_SCHEDULE_LIMITS.maxPerUser,
       minIntervalMinutes: config.minIntervalMinutes ?? DEFAULT_SCHEDULE_LIMITS.minIntervalMinutes,
       autoDisableAfterFailures:
