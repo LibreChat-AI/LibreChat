@@ -76,6 +76,7 @@
     "dedent": "^1.5.3",
     "dompurify": "^3.4.16",
     "dotenv": "^16.0.3",
+    "emf-converter": "4.8.7",
     "eventsource": "^3.0.2",
     "express": "^5.2.1",
     "express-mongo-sanitize": "^2.2.0",

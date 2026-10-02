@@ -14,6 +14,8 @@ import {
   wordDocToHtml,
 } from './html';
 import { ZipBombError } from './zipSafety';
+import * as metafiles from './metafiles';
+import { buildEmf } from './__tests__/emf.helper';
 
 const fixturesDir = __dirname;
 const readFixture = (name: string): Buffer => fs.readFileSync(path.join(fixturesDir, name));
@@ -411,6 +413,46 @@ describe('Office HTML producers', () => {
       zip.file('docProps/core.xml', '<core/>');
       return zip.generateAsync({ type: 'nodebuffer' });
     };
+
+    describe('EMF/WMF metafile swap', () => {
+      const withEmf = async (): Promise<Buffer> => {
+        const zip = await JSZip.loadAsync(await buildPptx([{ title: 'T' }]));
+        zip.file('ppt/media/image1.emf', buildEmf());
+        return zip.generateAsync({ type: 'nodebuffer' });
+      };
+
+      afterEach(() => jest.restoreAllMocks());
+
+      test('embeds converted SVGs for pptx metafiles', async () => {
+        const html = await pptxToHtml(await withEmf());
+        expect(html).toContain('id="lc-metafiles"');
+        expect(html).toContain(metafiles.metafileKey(buildEmf().toString('base64')));
+        expect(html).toContain('swapMetafiles');
+      });
+
+      test('escapes < in the JSON block so </script> cannot break out', async () => {
+        const html = await _internal.pptxToHtmlViaCdn(await buildPptx([{ title: 'X' }]), '', {
+          k: 'data:x</script><b>',
+        });
+        const block = html.split('id="lc-metafiles"')[1].split('</script>')[0];
+        expect(block).toContain('\\u003c/script>');
+        expect(block).not.toContain('</script>');
+        expect(html).toContain('\\u003c/script>');
+      });
+
+      test('omits the block when there are no metafiles', async () => {
+        const html = await pptxToHtml(await buildPptx([{ title: 'T' }]));
+        expect(html).not.toContain('id="lc-metafiles"');
+      });
+
+      test('drops the map, keeping the CDN doc, when it would exceed the output cap', async () => {
+        const huge = { k: 'a'.repeat(_internal.OFFICE_HTML_OUTPUT_CAP) };
+        jest.spyOn(metafiles, 'extractPptxMetafileSvgs').mockResolvedValue(huge);
+        const html = await pptxToHtml(await buildPptx([{ title: 'T' }]));
+        expect(html).toContain('cdn.jsdelivr.net/npm/pptx-preview@');
+        expect(html).not.toContain('id="lc-metafiles"');
+      });
+    });
 
     test('routes a small pptx (≤ cap) through the CDN-rendered path', async () => {
       const pptx = await buildPptx([{ title: 'Hello', body: ['First slide'] }]);
