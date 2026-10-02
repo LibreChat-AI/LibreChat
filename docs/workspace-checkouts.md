@@ -30,6 +30,10 @@ In the composer workspace menu, select a repository, reopen the menu and choose
 after reload. Once the chat's decision is sealed, the picker does not implicitly
 change that execution target. Continue without a workspace or explicitly attach
 again through the deployment's supported decision transitions.
+Those transitions offer the same checkout choices. A registered checkout is
+available even on a worker without isolation support. Mixed predecessor modes
+require an explicit choice before confirmation; they never become automatic
+shared-root execution silently.
 
 - **Isolated worktree** uses the worker's admitted Git snapshot. It does not copy
   uncommitted source changes. An unavailable isolation capability fails closed;

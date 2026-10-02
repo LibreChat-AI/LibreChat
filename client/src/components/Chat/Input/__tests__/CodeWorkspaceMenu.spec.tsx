@@ -198,7 +198,7 @@ describe('CodeWorkspaceMenu', () => {
   test.each([
     { enabled: false, capable: true },
     { enabled: true, capable: false },
-  ])('hides checkout controls without policy and capability: %j', async ({ enabled, capable }) => {
+  ])('gates each checkout choice by policy and capability: %j', async ({ enabled, capable }) => {
     const graph = workspace();
     graph.environments[0].environment = {
       ...environment,
@@ -210,11 +210,26 @@ describe('CodeWorkspaceMenu', () => {
         ...(capable ? { workspaceInstances: ['git_worktree'] as ['git_worktree'] } : {}),
       },
     ];
+    const setConversation = jest.fn();
     renderMenu(
-      <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
+      <CodeWorkspaceMenu setConversation={setConversation} workspace={graph} disabled={false} />,
     );
     await userEvent.click(screen.getByTestId('code-workspace'));
-    expect(screen.queryByText('com_ui_code_checkout_mode')).not.toBeInTheDocument();
+    if (!enabled) {
+      expect(screen.queryByText('com_ui_code_checkout_mode')).not.toBeInTheDocument();
+    } else {
+      expect(
+        screen.queryByRole('menuitemradio', { name: /com_ui_code_checkout_isolated/ }),
+      ).not.toBeInTheDocument();
+      await userEvent.click(
+        screen.getByRole('menuitemradio', { name: /com_ui_code_checkout_source/ }),
+      );
+      expect(setConversation.mock.calls[0][0](conversation)).toMatchObject({
+        codeWorkspaces: [
+          { environmentId: environment.id, workspaceId: 'project-a', checkout: 'source' },
+        ],
+      });
+    }
   });
 
   test('explains the missing reviewer workspace while the selected primary workspace is ready', async () => {
@@ -954,13 +969,59 @@ describe('CodeWorkspaceMenu', () => {
             ),
           }),
         );
-        await userEvent.click(screen.getByRole('menuitem', { name: /com_ui_code_workspace_attach/ }));
+        await userEvent.click(
+          screen.getByRole('menuitem', { name: /com_ui_code_workspace_attach/ }),
+        );
         await waitFor(() =>
           expect(moveSpy).toHaveBeenCalledWith({
             conversationId: 'existing',
             from: [],
             to: [{ ...moved, checkout }],
           }),
+        );
+      },
+    );
+
+    test.each(['unsupported isolation', 'mixed predecessors'] as const)(
+      'requires an explicit source choice for %s',
+      async (scenario) => {
+        const graph = relocatable([
+          target(
+            { ...environment, configSchema: { workspaces: { allowCheckoutSelection: true } } },
+            [{ id: 'project-a' }],
+          ),
+        ]);
+        graph.transition = {
+          ...graph.transition!,
+          from:
+            scenario === 'unsupported isolation'
+              ? [{ ...mac, checkout: 'isolated' }]
+              : [
+                  { ...mac, checkout: 'isolated' },
+                  { environmentId: 'other-vm', workspaceId: 'repo', checkout: 'source' },
+                ],
+        };
+        const moveSpy = jest
+          .spyOn(dataService, 'moveConversationCodeEnvironment')
+          .mockResolvedValue({
+            conversationId: 'existing',
+            codeEnvironmentMode: 'attached',
+            codeWorkspaces: [{ ...moved, checkout: 'source' }],
+          });
+        renderMenu(
+          <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
+        );
+        await userEvent.click(screen.getByTestId('code-workspace-move'));
+        expect(await confirmItem()).toHaveAttribute('aria-disabled', 'true');
+        expect(moveSpy).not.toHaveBeenCalled();
+        await userEvent.click(
+          screen.getByRole('menuitemradio', { name: /com_ui_code_checkout_source/ }),
+        );
+        await userEvent.click(await confirmItem());
+        await waitFor(() =>
+          expect(moveSpy).toHaveBeenCalledWith(
+            expect.objectContaining({ to: [{ ...moved, checkout: 'source' }] }),
+          ),
         );
       },
     );

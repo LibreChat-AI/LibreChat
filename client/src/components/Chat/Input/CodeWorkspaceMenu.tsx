@@ -1,5 +1,6 @@
 import { Fragment, useId, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
+import { isCodeWorkspaceCheckoutAvailable } from 'librechat-data-provider';
 import { TooltipAnchor, composerControlClasses, useToastContext } from '@librechat/client';
 import { Check, ChevronDown, Folder, FolderSync, FolderX, RefreshCw, Monitor } from 'lucide-react';
 import type { CodeWorkspaceSelection, TConversation } from 'librechat-data-provider';
@@ -197,52 +198,57 @@ function EnvironmentWorkspaces({
             </Ariakit.MenuItemRadio>
             {selected &&
               allowCheckoutSelection &&
-              environment.configSchema?.workspaces?.allowCheckoutSelection === true &&
-              descriptor.workspaceInstances?.includes('git_worktree') && (
+              environment.configSchema?.workspaces?.allowCheckoutSelection === true && (
                 <>
                   <Ariakit.MenuHeading render={<div />} className={headingClasses}>
                     {localize('com_ui_code_checkout_mode')}
                   </Ariakit.MenuHeading>
-                  {(['isolated', 'source'] as const).map((mode) => (
-                    <Ariakit.MenuItemRadio
-                      key={mode}
-                      name={`codeCheckout:${environment.id}`}
-                      value={mode}
-                      checked={checkout === mode}
-                      hideOnClick={hideOnClick}
-                      className={menuItemClasses(checkout === mode)}
-                      onChange={() =>
-                        onSelect({
-                          environmentId: environment.id,
-                          workspaceId: descriptor.id,
-                          checkout: mode,
-                        })
-                      }
-                    >
-                      <div className="min-w-0 flex-1 text-left">
-                        <div className="text-text-primary text-sm font-medium">
-                          {localize(
-                            mode === 'isolated'
-                              ? 'com_ui_code_checkout_isolated'
-                              : 'com_ui_code_checkout_source',
-                          )}
+                  {(['isolated', 'source'] as const)
+                    .filter(
+                      (mode) =>
+                        mode === 'source' ||
+                        descriptor.workspaceInstances?.includes('git_worktree'),
+                    )
+                    .map((mode) => (
+                      <Ariakit.MenuItemRadio
+                        key={mode}
+                        name={`codeCheckout:${environment.id}`}
+                        value={mode}
+                        checked={checkout === mode}
+                        hideOnClick={hideOnClick}
+                        className={menuItemClasses(checkout === mode)}
+                        onChange={() =>
+                          onSelect({
+                            environmentId: environment.id,
+                            workspaceId: descriptor.id,
+                            checkout: mode,
+                          })
+                        }
+                      >
+                        <div className="min-w-0 flex-1 text-left">
+                          <div className="text-text-primary text-sm font-medium">
+                            {localize(
+                              mode === 'isolated'
+                                ? 'com_ui_code_checkout_isolated'
+                                : 'com_ui_code_checkout_source',
+                            )}
+                          </div>
+                          <p className="text-text-secondary text-xs">
+                            {localize(
+                              mode === 'isolated'
+                                ? 'com_ui_code_checkout_isolated_info'
+                                : 'com_ui_code_checkout_source_info',
+                            )}
+                          </p>
                         </div>
-                        <p className="text-text-secondary text-xs">
-                          {localize(
-                            mode === 'isolated'
-                              ? 'com_ui_code_checkout_isolated_info'
-                              : 'com_ui_code_checkout_source_info',
-                          )}
-                        </p>
-                      </div>
-                      {checkout === mode && (
-                        <Check
-                          className="text-text-primary mt-0.5 size-4 shrink-0"
-                          aria-hidden="true"
-                        />
-                      )}
-                    </Ariakit.MenuItemRadio>
-                  ))}
+                        {checkout === mode && (
+                          <Check
+                            className="text-text-primary mt-0.5 size-4 shrink-0"
+                            aria-hidden="true"
+                          />
+                        )}
+                      </Ariakit.MenuItemRadio>
+                    ))}
                 </>
               )}
           </Fragment>
@@ -388,18 +394,24 @@ export default function CodeWorkspaceMenu({
   const chosenTargets =
     transition?.targets.flatMap((target) => {
       const workspaceId = chosenWorkspaceId(target, moveChoices);
-      return workspaceId == null
+      const previous = transition.from?.filter(
+        ({ environmentId, agentIds }) =>
+          environmentId === target.environment.id ||
+          agentIds?.some((id) => target.selectionOwners?.includes(id)),
+      );
+      const priorModes = new Set(
+        (previous?.length ? previous : (transition.from ?? [])).map(({ checkout }) => checkout),
+      );
+      const inheritedCheckout = priorModes.size === 1 ? [...priorModes][0] : undefined;
+      /** A mixed predecessor decision requires a deliberate mode, never an automatic fallback. */
+      return workspaceId == null ||
+        (priorModes.size > 1 && moveChoices[target.environment.id]?.checkout == null)
         ? []
         : [
             {
               environmentId: target.environment.id,
               workspaceId,
-              checkout:
-                moveChoices[target.environment.id]?.checkout ??
-                transition.from?.find(
-                  ({ environmentId }) => environmentId === target.environment.id,
-                )?.checkout ??
-                (transition.from?.length === 1 ? transition.from[0].checkout : undefined),
+              checkout: moveChoices[target.environment.id]?.checkout ?? inheritedCheckout,
               ...(target.selectionOwners?.length ? { agentIds: target.selectionOwners } : {}),
             },
           ];
@@ -412,7 +424,19 @@ export default function CodeWorkspaceMenu({
     transition.kind !== 'detach' &&
     (transition.targets.length > 0 || transition.retained.length > 0);
   const moveReady =
-    transition != null && chosenTargets.length === transition.targets.length && proposed.length > 0;
+    transition != null &&
+    chosenTargets.length === transition.targets.length &&
+    proposed.length > 0 &&
+    chosenTargets.every((selection) => {
+      const target = transition.targets.find(
+        ({ environment }) => environment.id === selection.environmentId,
+      );
+      return isCodeWorkspaceCheckoutAvailable(
+        selection,
+        target?.workspaces.find(({ id }) => id === selection.workspaceId),
+        target?.environment.configSchema?.workspaces?.allowCheckoutSelection === true,
+      );
+    });
   const applyTransition = (to: CodeWorkspaceSelection[]) => {
     if (transition == null || disabled || moveMutation.isLoading) return;
     moveMutation.mutate(
