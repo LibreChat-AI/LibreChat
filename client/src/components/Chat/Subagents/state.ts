@@ -51,6 +51,8 @@ export interface SubagentProgress {
   contentParts: SubagentContentPart[];
   /** Activity omitted by the bounded producer buffer during transport pressure. */
   droppedCount?: number;
+  /** Marker receipts outlive content eviction, bounded like the delivery identity window. */
+  omissionEventKeys?: string[];
   /** Cursor carried across `foldSubagentEvent` calls. */
   aggregatorState: SubagentAggregatorState;
   /** Ticker lines + live-cursor state, built incrementally. */
@@ -551,6 +553,37 @@ export function useSubagentProgress(invocationKey: string): SubagentProgress | n
 const validActivitySequence = (value: number | undefined): value is number =>
   Number.isSafeInteger(value) && value != null && value >= 0;
 
+function acceptedOmissions(
+  previous: SubagentProgress | null,
+  events: SubagentUpdateEvent[],
+): Pick<SubagentProgress, 'droppedCount' | 'omissionEventKeys'> {
+  let droppedCount = previous?.droppedCount ?? 0;
+  let keys = previous?.omissionEventKeys;
+  let seen: Set<string> | undefined;
+  for (const event of events) {
+    const count = event.activityDroppedCount;
+    if (!Number.isSafeInteger(count) || (count ?? 0) <= 0) continue;
+    const key = eventKey(event);
+    if (key != null) {
+      seen ??= new Set(keys);
+      if (seen.has(key)) continue;
+    }
+    droppedCount += count!;
+    if (key != null) {
+      seen!.add(key);
+      if (keys == null || keys === previous?.omissionEventKeys) keys = [...(keys ?? [])];
+      keys.push(key);
+    }
+  }
+  return {
+    droppedCount,
+    omissionEventKeys:
+      keys != null && keys.length > MAX_RECENT_EVENT_KEYS
+        ? keys.slice(-MAX_RECENT_EVENT_KEYS)
+        : keys,
+  };
+}
+
 const foldAcceptedSubagentEvents = (
   previous: SubagentProgress | null,
   events: SubagentUpdateEvent[],
@@ -620,10 +653,8 @@ const foldAcceptedSubagentEvents = (
   let aggregatorState = previous?.aggregatorState ?? initSubagentAggregatorState();
   let tickerState = previous?.tickerState ?? initSubagentTickerState();
   let subagentKind = previous?.subagentKind;
-  let droppedCount = previous?.droppedCount ?? 0;
+  const omissions = acceptedOmissions(previous, events);
   for (const event of events) {
-    if (Number.isSafeInteger(event.activityDroppedCount) && (event.activityDroppedCount ?? 0) > 0)
-      droppedCount += event.activityDroppedCount!;
     subagentKind = event.subagentKind ?? subagentKind;
     const foldEvent =
       event.phase === 'reasoning_delta' &&
@@ -675,7 +706,7 @@ const foldAcceptedSubagentEvents = (
           events.find((event) => validActivitySequence(event.activitySequence))?.activitySequence)
         : events.find((event) => validActivitySequence(event.activitySequence))?.activitySequence,
     status: last.phase,
-    droppedCount,
+    ...omissions,
     latestLabel: last.label ?? previous?.latestLabel,
     recentEventKeys: boundedEventKeys,
     ...(effectiveActivitySequence == null
@@ -874,6 +905,16 @@ function prependSubagentReplay(
         tool_call: {
           ...(prefixTool.type === ContentTypes.TOOL_CALL ? prefixTool.tool_call : {}),
           ...part.tool_call,
+          ...(part.tool_call.argsUnavailable &&
+          prefixTool.type === ContentTypes.TOOL_CALL &&
+          !prefixTool.tool_call.argsUnavailable
+            ? { args: prefixTool.tool_call.args, argsUnavailable: undefined }
+            : {}),
+          ...(part.tool_call.nameUnavailable &&
+          prefixTool.type === ContentTypes.TOOL_CALL &&
+          !prefixTool.tool_call.nameUnavailable
+            ? { name: prefixTool.tool_call.name, nameUnavailable: undefined }
+            : {}),
         },
       };
     } else target = part.type === ContentTypes.TEXT ? state.openTextIdx! : state.openThinkIdx!;
@@ -954,6 +995,7 @@ function foldReplaySegments(
       progress,
     });
   }
+  const accepted: SubagentUpdateEvent[] = [];
   const ordered = [...events].sort(
     (left, right) => (left.activitySequence ?? 0) - (right.activitySequence ?? 0),
   );
@@ -961,12 +1003,17 @@ function foldReplaySegments(
     const sequence = event.activitySequence;
     if (!validActivitySequence(sequence)) {
       const latest = segments[segments.length - 1];
-      if (latest != null)
+      if (latest != null) {
+        const key = eventKey(event);
+        if (key != null && latest.progress.recentEventKeys?.includes(key)) continue;
+        accepted.push(event);
         latest.progress = foldAcceptedSubagentEvents(latest.progress, [event], 'detached', [])!;
+      }
       continue;
     }
     if (segments.some((segment) => sequence >= segment.from && sequence <= segment.through))
       continue;
+    accepted.push(event);
     const preceding = segments.find((segment) => segment.through === sequence - 1);
     if (preceding != null) {
       preceding.progress = foldAcceptedSubagentEvents(preceding.progress, [event], 'detached', [])!;
@@ -1013,6 +1060,7 @@ function foldReplaySegments(
     projection = prependSubagentReplay(projection, segments[index].progress);
   return {
     ...projection,
+    ...acceptedOmissions(previous, accepted),
     pendingSequencedEvents: pending.length === 0 ? undefined : pending,
     activityReplayFrom: previous?.activityReplayFrom,
     activityReplayThrough: previous?.activityReplayThrough,
@@ -1050,12 +1098,14 @@ function foldLegacyInvocations(
   replay = false,
 ): SubagentProgress {
   const invocations = (previous?.legacyReplayInvocations ?? []).map((entry) => ({ ...entry }));
+  const accepted: SubagentUpdateEvent[] = [];
   const order = Array.from(new Set(events.map((event) => eventLegacyOrdinal(event)!.invocation)));
   for (const event of events) {
     const cursor = eventLegacyOrdinal(event)!;
     let entry = invocations.find((item) => item.invocation === cursor.invocation);
     const normalized = { ...event, activitySequence: cursor.ordinal };
     if (entry == null) {
+      accepted.push(event);
       const progress = foldAcceptedSubagentEvents(null, [normalized], 'detached', [], true)!;
       entry = { invocation: cursor.invocation, progress };
       invocations.push(entry);
@@ -1068,6 +1118,7 @@ function foldLegacyInvocations(
       ];
       if (ranges.some((range) => cursor.ordinal >= range.from && cursor.ordinal <= range.through))
         continue;
+      accepted.push(event);
       if (cursor.ordinal <= (entry.progress.lastActivitySequence ?? -1))
         entry.progress = foldReplaySegments(entry.progress, [normalized], []);
       else
@@ -1115,6 +1166,7 @@ function foldLegacyInvocations(
     projection = prependSubagentReplay(projection, invocations[index].progress);
   return {
     ...projection,
+    ...acceptedOmissions(previous, accepted),
     firstActivitySequence: undefined,
     lastActivitySequence: undefined,
     replaySegments: undefined,

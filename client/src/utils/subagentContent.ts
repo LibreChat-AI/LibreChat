@@ -90,6 +90,9 @@ type ToolCallPart = {
     id: string;
     name: string;
     args: string;
+    /** Synthesis defaults are not observed tool fields. */
+    argsUnavailable?: true;
+    nameUnavailable?: true;
     output?: string;
     progress: number;
     inputValidationError?: true;
@@ -381,8 +384,18 @@ export function foldSubagentEvent(
         tool_call: {
           ...existing.tool_call,
           ...timings,
-          ...(tc.name ? { name: tc.name } : {}),
-          ...(tc.args != null ? { args: stringifyArgs(tc.args) } : {}),
+          ...(tc.name
+            ? {
+                name: tc.name,
+                ...(existing.tool_call.nameUnavailable ? { nameUnavailable: undefined } : {}),
+              }
+            : {}),
+          ...(tc.args != null
+            ? {
+                args: stringifyArgs(tc.args),
+                ...(existing.tool_call.argsUnavailable ? { argsUnavailable: undefined } : {}),
+              }
+            : {}),
           ...(tc.output != null ? { output: tc.output } : {}),
           ...(tc.inputValidationError === true ? { inputValidationError: true } : {}),
           progress: tc.progress ?? 1,
@@ -402,6 +415,8 @@ export function foldSubagentEvent(
         id: tc.id,
         name: tc.name ?? '',
         args: stringifyArgs(tc.args),
+        ...(tc.args == null ? { argsUnavailable: true } : {}),
+        ...(!tc.name ? { nameUnavailable: true } : {}),
         output: tc.output,
         ...(tc.inputValidationError === true ? { inputValidationError: true } : {}),
         progress: tc.progress ?? 1,

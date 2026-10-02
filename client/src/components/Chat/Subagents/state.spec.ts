@@ -833,3 +833,106 @@ it('preserves compatibility updates while a numeric coverage gap is open', () =>
   progress = reduceSubagentProgress(progress, [event(1)], 'detached', false);
   expect(progress?.contentParts).toEqual([{ type: 'text', text: '0,1,2,3,compat,' }]);
 });
+
+describe('tool prefix metadata reconciliation', () => {
+  const start = (args: unknown) =>
+    update({
+      activityEventId: 'tool-fields:0',
+      activitySequence: 0,
+      phase: 'run_step',
+      data: {
+        id: 'step',
+        stepDetails: { type: 'tool_calls', tool_calls: [{ id: 'tool', name: 'search', args }] },
+      },
+    });
+  const complete = (fields: { args?: unknown; name?: string }) =>
+    update({
+      activityEventId: 'tool-fields:1',
+      activitySequence: 1,
+      phase: 'run_step_completed',
+      data: {
+        result: { id: 'step', tool_call: { id: 'tool', output: 'found', progress: 1, ...fields } },
+      },
+    });
+  it('preserves recovered inputs and names when completion synthesis omitted both', () => {
+    const end = complete({});
+    const suffix = reduceSubagentProgress(null, [end], 'detached', false);
+    expect(suffix?.contentParts[0]).toMatchObject({
+      tool_call: { argsUnavailable: true, nameUnavailable: true },
+    });
+    const progress = reduceSubagentReplay(suffix, [start({ query: 'release notes' }), end], false);
+    expect(progress?.contentParts[0]).toMatchObject({
+      tool_call: {
+        name: 'search',
+        args: '{"query":"release notes"}',
+        output: 'found',
+        progress: 1,
+      },
+    });
+    expect(progress?.contentParts[0]).toEqual(
+      reduceSubagentProgress(null, [start({ query: 'release notes' }), end], 'detached', false)
+        ?.contentParts[0],
+    );
+  });
+  it('keeps explicitly supplied empty args and a newer name instead of treating them as defaults', () => {
+    const end = complete({ args: {}, name: 'search_v2' });
+    const progress = reduceSubagentReplay(
+      reduceSubagentProgress(null, [end], 'detached', false),
+      [start({ query: 'release notes' }), end],
+      false,
+    );
+    expect(progress?.contentParts[0]).toMatchObject({
+      tool_call: { name: 'search_v2', args: '{}', output: 'found' },
+    });
+  });
+});
+
+describe('cumulative omission receipts independent of projection eviction', () => {
+  const marker = (sequence: number, invocation?: string) =>
+    update({
+      subagentRunId: 'event-task',
+      activityEventId:
+        invocation == null ? `omissions:${sequence}` : `event-task:${invocation}:${sequence}`,
+      activitySequence: invocation == null ? sequence : undefined,
+      activityDroppedCount: 3,
+      phase: 'message_delta',
+      data: undefined,
+    });
+  const text = (sequence: number, invocation?: string) => ({
+    ...marker(sequence, invocation),
+    activityDroppedCount: undefined,
+    data: { delta: { content: [{ type: 'text', text: 'x'.repeat(60_000) }] } },
+  });
+  it.each(['task', 'invocation'])(
+    'retains nine omissions after large %s projections evict earlier markers',
+    (mode) => {
+      let progress = null as ReturnType<typeof reduceSubagentProgress>;
+      for (let index = 0; index < 3; index++) {
+        const invocation = mode === 'invocation' ? `generation-${index}` : undefined;
+        progress = reduceSubagentProgress(
+          progress,
+          [
+            marker(mode === 'task' ? index * 5 : 0, invocation),
+            text(mode === 'task' ? index * 5 + 1 : 1, invocation),
+          ],
+          'detached',
+          false,
+        );
+        expect(progress?.droppedCount).toBe((index + 1) * 3);
+      }
+      const replay = [
+        marker(0, mode === 'invocation' ? 'generation-0' : undefined),
+        text(1, mode === 'invocation' ? 'generation-0' : undefined),
+      ];
+      progress = reduceSubagentReplay(progress, replay, false);
+      expect(progress?.droppedCount).toBe(9);
+      progress = reduceSubagentReplay(progress, replay, false);
+      expect(progress?.droppedCount).toBe(9);
+      expect(progress?.omissionEventKeys).toHaveLength(3);
+      expect(progress?.contentParts.length).toBeLessThanOrEqual(100);
+      expect(
+        new TextEncoder().encode(JSON.stringify(progress?.contentParts)).byteLength,
+      ).toBeLessThanOrEqual(65_536);
+    },
+  );
+});
