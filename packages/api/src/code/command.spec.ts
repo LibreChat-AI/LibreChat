@@ -316,6 +316,23 @@ describe('createAttachedWorkspaceBashTool', () => {
     });
   });
 
+  test('runs a command whose working directory is a linked worktree in that lane', async () => {
+    const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      linkedWorktrees: true,
+      fetchImpl,
+    });
+
+    expect(JSON.stringify(bashTool.schema)).toContain('.worktrees/<name>');
+    await bashTool.func({ command: 'npm test', cwd: '.worktrees/fix-a/api' }, undefined, {});
+
+    const request = JSON.parse(String((fetchImpl as jest.Mock).mock.calls[0][1]?.body));
+    expect(request).toMatchObject({ command: 'npm test', cwd: 'api', worktree: 'fix-a' });
+  });
+
   test('forwards a bounded per-call execution timeout', async () => {
     const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
     const bashTool = createAttachedWorkspaceBashTool({

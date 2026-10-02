@@ -8,6 +8,7 @@ import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { cn, getRunStepDurationLabels } from '~/utils';
 import CancelledIcon from './CancelledIcon';
 import { useFailedReveal } from './reveal';
+import { ElapsedTimer } from '../Elapsed';
 import { ROW_GLYPH_SLOT } from './rows';
 import { useLocalize } from '~/hooks';
 
@@ -69,6 +70,9 @@ export default function ProgressText({
   icon: iconProp,
   subtitle,
   durationMs,
+  toolPreparationDurationMs,
+  toolExecutionDurationMs,
+  phaseStartAt,
   hasInput = true,
   popover = false,
   isExpanded = false,
@@ -89,8 +93,11 @@ export default function ProgressText({
   authText?: string;
   icon?: React.ReactNode;
   subtitle?: string;
-  /** Wall-clock duration of the run step, from `PartMetadata.runStepDurationMs`. */
+  /** Total run-step lifetime, not necessarily tool execution. */
   durationMs?: number;
+  toolPreparationDurationMs?: number;
+  toolExecutionDurationMs?: number;
+  phaseStartAt?: number;
   hasInput?: boolean;
   popover?: boolean;
   isExpanded?: boolean;
@@ -99,6 +106,15 @@ export default function ProgressText({
   /** For locale-aware decimal formatting of the sub-10s duration value. */
   const { i18n } = useTranslation();
   const isRunning = phase === 'running';
+  /** A server-authored phase stamp is an identity, not a browser clock origin.
+   * On reconnect we can only time from local receipt, never infer cross-host skew. */
+  const phaseTimer = useRef<{ stamp?: number; receivedAt: number } | null>(null);
+  if (!isRunning || phaseStartAt == null) {
+    phaseTimer.current = null;
+  } else if (phaseTimer.current?.stamp !== phaseStartAt) {
+    phaseTimer.current = { stamp: phaseStartAt, receivedAt: Date.now() };
+  }
+  const localPhaseStart = phaseTimer.current?.receivedAt;
   const rootRef = useRef<HTMLDivElement>(null);
   /** A header above asked for its failures. This control is the disclosure
    *  every card renders, so answering here reaches a failed bash, code,
@@ -139,10 +155,41 @@ export default function ProgressText({
    * failed card "how long it took" is not the fact the reader needs — that
    * slot already carries the cancelled icon or the failure suffix.
    */
-  const duration =
-    phase === 'completed' && isReportableRunStepDuration(durationMs)
-      ? getRunStepDurationLabels(durationMs, i18n.language)
-      : undefined;
+  const measured = toolPreparationDurationMs != null || toolExecutionDurationMs != null;
+  /** The formatter rounds to tenths below ten seconds. Shorter than 50 ms reads as 0.0s. */
+  const showToolCallTime =
+    toolExecutionDurationMs != null &&
+    Number.isFinite(toolExecutionDurationMs) &&
+    toolExecutionDurationMs >= 50;
+  const durationParts =
+    phase !== 'completed'
+      ? []
+      : [
+          ...(isReportableRunStepDuration(toolPreparationDurationMs)
+            ? [
+                {
+                  label: localize('com_ui_tool_preparation_time'),
+                  duration: getRunStepDurationLabels(toolPreparationDurationMs, i18n.language),
+                },
+              ]
+            : []),
+          ...(showToolCallTime
+            ? [
+                {
+                  label: localize('com_ui_tool_call_time'),
+                  duration: getRunStepDurationLabels(toolExecutionDurationMs, i18n.language),
+                },
+              ]
+            : []),
+          ...(!measured && isReportableRunStepDuration(durationMs)
+            ? [
+                {
+                  label: localize('com_ui_tool_total_time'),
+                  duration: getRunStepDurationLabels(durationMs, i18n.language),
+                },
+              ]
+            : []),
+        ];
 
   return (
     <Wrapper popover={popover} failed={phase === 'failed'} rootRef={rootRef}>
@@ -194,22 +241,19 @@ export default function ProgressText({
         {errorSuffix && (
           <span className="shrink-0 font-normal text-status-error">· {errorSuffix}</span>
         )}
-        {duration && (
-          <>
-            {/* The compact form is the readable one on screen but a poor
-                thing to hear ("one point four s"), so it is hidden from
-                assistive technology and paired with a spoken equivalent.
-                Both live inside the button, so its accessible name carries
-                the duration — this is not an `aria-live` region and does not
-                re-announce. */}
-            <span className="shrink-0 font-normal text-text-secondary" aria-hidden="true">
-              · {localize(duration.key, duration.values)}
+        {isRunning && phaseStartAt != null && localPhaseStart != null && (
+          <ElapsedTimer start={localPhaseStart} />
+        )}
+        {durationParts.map(({ label, duration }) => (
+          <span key={label} className="shrink-0 font-normal text-text-secondary">
+            <span aria-hidden="true">
+              · {label} {localize(duration.key, duration.values)}
             </span>
             <span className="sr-only">
-              {localize(duration.announcedKey, duration.announcedValues)}
+              {label} {localize(duration.announcedKey, duration.announcedValues)}
             </span>
-          </>
-        )}
+          </span>
+        ))}
         {hasInput && (
           <ChevronDown
             className={cn(

@@ -1,6 +1,6 @@
 {
   "name": "LibreChat",
-  "version": "v0.8.8-rc4",
+  "version": "v0.8.8",
   "description": "",
   "packageManager": "npm@11.13.0",
   "scarfSettings": {
@@ -250,7 +250,7 @@
     "hono": "^4.13.7",
     "@hono/node-server": "^2.1.1",
     "monaco-editor": {
-      "dompurify": "3.4.14"
+      "dompurify": "3.4.16"
     },
     "test-exclude": "^8.0.0",
     "js-yaml": "^4.3.2",
@@ -258,6 +258,7 @@
     "@opentelemetry/core": "^2.9.0",
     "@opentelemetry/propagator-jaeger": "^2.10.0",
     "protobufjs": "^7.6.5",
+    "@grpc/grpc-js": "^1.14.5",
     "gaxios": {
       "uuid": "^11.1.1"
     }

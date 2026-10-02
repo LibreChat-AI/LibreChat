@@ -394,7 +394,7 @@ export function processMCPEnv(params: {
   /** When true, only resolve customUserVars — skip env vars, user/OpenID/body placeholders (for DB-stored servers) */
   dbSourced?: boolean;
 }): MCPOptions {
-  const { options, user, customUserVars, body } = params;
+  const { options, user, body } = params;
 
   if (options === null || options === undefined) {
     return options;
@@ -415,6 +415,18 @@ export function processMCPEnv(params: {
 
   /** Derive dbSourced from explicit param OR from dbId on the options (failsafe for callers that forget the flag) */
   const dbSourced = params.dbSourced ?? !!options.dbId;
+
+  /** A shared-server editor can inject old auth-field names into any template. Only
+   *  server-declared variables may resolve, including destination-bound API key fields. */
+  const userManaged = dbSourced || !!options.dbId || options.source === 'user';
+  const customUserVars =
+    userManaged && params.customUserVars
+      ? Object.fromEntries(
+          Object.entries(params.customUserVars).filter(([name]) =>
+            Object.prototype.hasOwnProperty.call(options.customUserVars ?? {}, name),
+          ),
+        )
+      : params.customUserVars;
 
   const newObj: MCPOptions = structuredClone(options);
 

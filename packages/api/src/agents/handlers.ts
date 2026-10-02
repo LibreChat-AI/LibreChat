@@ -36,26 +36,29 @@ import type { CodeEnvRef, CodeWorkspaceOperation, PtcToolCallEvent } from 'libre
 import type { StructuredToolInterface } from '@librechat/agents/langchain/tools';
 import type { CodeEnvFile, CodeSessionContext } from '@librechat/agents';
 import type {
-  BackgroundToolDeadClaimRecovery,
-  BackgroundToolWakeupAdmission,
-  BackgroundToolWakeupRegistration,
-  PendingBackgroundCompletionControls,
-} from './backgroundCompletion';
-import type {
   WorkspaceEditResult,
+  WorkspaceTextEdit,
   WorkspacePreviewEditResult,
   WorkspaceListResult,
   WorkspaceReadResult,
   WorkspaceSearchResult,
   WorkspaceWriteResult,
 } from '~/code/workspace';
+import type {
+  BackgroundToolDeadClaimRecovery,
+  BackgroundToolWakeupAdmission,
+  BackgroundToolWakeupRegistration,
+  PendingBackgroundCompletionControls,
+} from './backgroundCompletion';
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
 import type { ArtifactDeliveryFailure } from '~/files/code';
 import type { BackgroundToolResultState } from './harvest';
+import type { WorkspaceEditMatching } from '~/code/edits';
 import type { CodeExecutionContext } from './execution';
 import type { TextContentFragment } from '~/protection';
 import type { RunFileSession } from './files/session';
 import type { ServerRequest } from '~/types';
+import type { TextEdit } from './edits';
 import {
   backgroundTaskRegistry,
   runCheckBackgroundTask,
@@ -131,6 +134,7 @@ import {
 } from './intent';
 import { buildSkillPrimeMessage, isSkillFilePath, SKILL_FILE_PREFIX } from './skills';
 import { resolveCallerCapabilityProjectionSnapshot } from './callerCapabilities';
+import { formatEditConflict, parseEditConflict } from '~/code/edits';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
 import { toolValidationFeedback } from './validationFeedback';
@@ -143,6 +147,7 @@ import { cleanCodeToolOutput } from './cleanup';
 import { primeSkillFiles } from './skillFiles';
 import { instrumentPtcToolMap } from './ptc';
 import { markSandboxReady } from './prewarm';
+import { normalizeEditArgs } from './edits';
 
 export interface ToolEndCallbackData {
   /** The executed call's arguments. The stream-consumer tool-end path cannot
@@ -563,6 +568,7 @@ export interface ToolExecuteOptions {
     file_path: string;
     workspace_id: string;
     workspace_instance_id?: string;
+    linked_worktrees?: boolean;
     start_line: number;
     max_lines: number;
     codeApiBaseUrl: string;
@@ -579,6 +585,7 @@ export interface ToolExecuteOptions {
     query: string;
     workspace_id: string;
     workspace_instance_id?: string;
+    linked_worktrees?: boolean;
     path?: string;
     max_results: number;
     codeApiBaseUrl: string;
@@ -594,6 +601,7 @@ export interface ToolExecuteOptions {
   listWorkspaceFiles?: (params: {
     workspace_id: string;
     workspace_instance_id?: string;
+    linked_worktrees?: boolean;
     path?: string;
     after_path?: string;
     max_results: number;
@@ -613,6 +621,7 @@ export interface ToolExecuteOptions {
     overwrite: boolean;
     workspace_id: string;
     workspace_instance_id?: string;
+    linked_worktrees?: boolean;
     codeApiBaseUrl: string;
     executionProfile: CodeExecutionContext['executionProfile'];
     bridgeWorkerId?: string;
@@ -625,9 +634,12 @@ export interface ToolExecuteOptions {
   /** Previews exact replacements without mutating an attached worker workspace. */
   previewWorkspaceEdit?: (params: {
     file_path: string;
-    edits: Array<{ oldText: string; newText: string }>;
+    edits: WorkspaceTextEdit[];
+    /** Sent only to workers that negotiated `tolerant_match`. */
+    matching?: WorkspaceEditMatching;
     workspace_id: string;
     workspace_instance_id?: string;
+    linked_worktrees?: boolean;
     codeApiBaseUrl: string;
     executionProfile: CodeExecutionContext['executionProfile'];
     bridgeWorkerId?: string;
@@ -640,10 +652,13 @@ export interface ToolExecuteOptions {
   /** Applies exact replacements atomically within an attached worker workspace. */
   editWorkspaceFile?: (params: {
     file_path: string;
-    edits: Array<{ oldText: string; newText: string }>;
+    edits: WorkspaceTextEdit[];
     expected_base_sha256?: string;
+    /** Sent only to workers that negotiated `tolerant_match`. */
+    matching?: WorkspaceEditMatching;
     workspace_id: string;
     workspace_instance_id?: string;
+    linked_worktrees?: boolean;
     codeApiBaseUrl: string;
     executionProfile: CodeExecutionContext['executionProfile'];
     bridgeWorkerId?: string;
@@ -1035,15 +1050,12 @@ type ParsedSkillAuthoringPath = {
   displayPath: string;
 };
 
-type TextEdit = {
-  old_text: string;
-  new_text: string;
-};
+type MatchedRange = { index: number; length: number };
 
 type MatchStatus =
   | { status: 'matched'; index: number; length: number; strategy: string }
   | { status: 'none' }
-  | { status: 'ambiguous'; strategy: string; count: number };
+  | { status: 'ambiguous'; strategy: string; count: number; matches: MatchedRange[] };
 
 type LoadedSkillText =
   | { status: 'loaded'; content: string; bytes: number; fileId?: string }
@@ -1628,59 +1640,61 @@ function getAuthorInfo(req: ServerRequest): {
   };
 }
 
-/* Models often stringify nested JSON (JSON-in-JSON) instead of passing a
-   real array/object, which would otherwise fail validation and cost a retry
-   round-trip. Parse a JSON string back to its value; leave non-strings and
-   unparseable strings untouched so the explicit errors below still fire. */
-function coerceJsonValue(value: unknown): unknown {
-  if (typeof value !== 'string') {
-    return value;
+/**
+ * Ranges a whitespace-tolerant strategy collects before it stops looking. An
+ * internal memory bound, not a policy: ambiguity only needs a second match, and
+ * exact `replace_all` never collects ranges at all.
+ */
+const MAX_EDIT_MATCHES = 10_000;
+
+/** Pieces buffered before they are flattened into one bounded output chunk. */
+const REPLACE_ALL_FLUSH_PIECES = 1_024;
+const REPLACE_ALL_FLUSH_CHARS = 16 * 1024;
+
+/**
+ * `content.split(needle).join(replacement)` without one array entry per match: pieces are
+ * flattened into chunks of bounded size, so memory tracks the output, not the match count.
+ */
+function replaceAllExact(content: string, needle: string, replacement: string): string {
+  const chunks: string[] = [];
+  let pieces: string[] = [];
+  let pendingChars = 0;
+  const flush = () => {
+    chunks.push(pieces.join(''));
+    pieces = [];
+    pendingChars = 0;
+  };
+  let cursor = 0;
+  for (let index = content.indexOf(needle); index !== -1; index = content.indexOf(needle, cursor)) {
+    pieces.push(content.slice(cursor, index), replacement);
+    pendingChars += index - cursor + replacement.length;
+    cursor = index + needle.length;
+    if (pieces.length >= REPLACE_ALL_FLUSH_PIECES || pendingChars >= REPLACE_ALL_FLUSH_CHARS) {
+      flush();
+    }
   }
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
+  pieces.push(content.slice(cursor));
+  flush();
+  return chunks.join('');
 }
 
-function normalizeEditArgs(args: {
-  old_text?: unknown;
-  new_text?: unknown;
-  edits?: unknown;
-}): TextEdit[] | string {
-  const coercedEdits = coerceJsonValue(args.edits);
-  if (Array.isArray(coercedEdits) && coercedEdits.length > 0) {
-    const edits: TextEdit[] = [];
-    for (const rawEdit of coercedEdits) {
-      const edit = coerceJsonValue(rawEdit);
-      if (!edit || typeof edit !== 'object') {
-        return 'Each edit must be an object with old_text and new_text.';
-      }
-      const entry = edit as { old_text?: unknown; new_text?: unknown };
-      if (typeof entry.old_text !== 'string' || typeof entry.new_text !== 'string') {
-        return 'Each edit requires string old_text and new_text.';
-      }
-      if (entry.old_text.length === 0) {
-        return 'old_text cannot be empty.';
-      }
-      edits.push({ old_text: entry.old_text, new_text: entry.new_text });
-    }
-    return edits;
+/** Non-overlapping exact occurrences, counted without retaining their positions. */
+function countExactMatches(content: string, needle: string): number {
+  let count = 0;
+  for (
+    let index = content.indexOf(needle);
+    index !== -1;
+    index = content.indexOf(needle, index + needle.length)
+  ) {
+    count++;
   }
-
-  if (typeof args.old_text !== 'string' || typeof args.new_text !== 'string') {
-    return 'Provide old_text and new_text, or a non-empty edits array.';
-  }
-  if (args.old_text.length === 0) {
-    return 'old_text cannot be empty.';
-  }
-  return [{ old_text: args.old_text, new_text: args.new_text }];
+  return count;
 }
 
 function countExactOccurrences(content: string, needle: string): number[] {
   const indexes: number[] = [];
   let start = 0;
-  while (start <= content.length) {
+  while (start <= content.length && indexes.length <= MAX_EDIT_MATCHES) {
     const index = content.indexOf(needle, start);
     if (index === -1) {
       break;
@@ -1697,7 +1711,12 @@ function findExactMatch(content: string, needle: string): MatchStatus {
     return { status: 'matched', index: matches[0], length: needle.length, strategy: 'exact' };
   }
   if (matches.length > 1) {
-    return { status: 'ambiguous', strategy: 'exact', count: matches.length };
+    return {
+      status: 'ambiguous',
+      strategy: 'exact',
+      count: matches.length,
+      matches: matches.map((index) => ({ index, length: needle.length })),
+    };
   }
   return { status: 'none' };
 }
@@ -1743,32 +1762,92 @@ function findLineWindowMatch(
   }
 
   const starts = lineStarts(content);
-  const normalizedNeedle =
-    strategy === 'line-trimmed'
-      ? needleLines.map((line) => line.trimEnd()).join('\n')
-      : stripCommonIndent(needle);
   const matches: Array<{ index: number; length: number }> = [];
-
-  for (let i = 0; i <= contentLines.length - needleLines.length; i++) {
-    const windowLines = contentLines.slice(i, i + needleLines.length);
-    const candidate =
-      strategy === 'line-trimmed'
-        ? windowLines.map((line) => line.trimEnd()).join('\n')
-        : stripCommonIndent(windowLines.join('\n'));
-    if (candidate !== normalizedNeedle) {
-      continue;
-    }
-    const index = starts[i];
-    const endLine = i + needleLines.length;
+  const addMatch = (startLine: number) => {
+    const index = starts[startLine];
+    const endLine = startLine + needleLines.length;
     const end = endLine < starts.length ? starts[endLine] - 1 : content.length;
     matches.push({ index, length: end - index });
+  };
+
+  if (strategy === 'line-trimmed') {
+    // Intern normalized lines so KMP compares integer IDs, not overlapping strings.
+    const ids = new Map<string, number>();
+    const pattern = needleLines.map((line) => {
+      const normalized = line.trimEnd();
+      let id = ids.get(normalized);
+      if (id == null) {
+        id = ids.size;
+        ids.set(normalized, id);
+      }
+      return id;
+    });
+    const prefixes = new Uint32Array(pattern.length);
+    let matched = 0;
+    for (let i = 1; i < pattern.length; i++) {
+      while (matched > 0 && pattern[i] !== pattern[matched]) {
+        matched = prefixes[matched - 1];
+      }
+      if (pattern[i] === pattern[matched]) matched++;
+      prefixes[i] = matched;
+    }
+
+    matched = 0;
+    for (let i = 0; i < contentLines.length && matches.length <= MAX_EDIT_MATCHES; i++) {
+      const id = ids.get(contentLines[i].trimEnd());
+      while (matched > 0 && id !== pattern[matched]) {
+        matched = prefixes[matched - 1];
+      }
+      if (id === pattern[matched]) matched++;
+      if (matched === pattern.length) {
+        addMatch(i - pattern.length + 1);
+        // Keep overlapping occurrences for ambiguity detection and replace_all.
+        matched = prefixes[matched - 1];
+      }
+    }
+  } else {
+    // This fallback runs only after line-trimmed and whitespace-normalized miss.
+    // Two nonblank needle lines imply at least two tokens: any indentation match
+    // would already have matched whitespace-normalized. An all-blank needle would
+    // already have matched line-trimmed. Only a single nonblank line remains.
+    let anchor = -1;
+    for (let i = 0; i < needleLines.length; i++) {
+      if (needleLines[i].trim().length === 0) continue;
+      if (anchor !== -1) return { status: 'none' };
+      anchor = i;
+    }
+    if (anchor === -1) return { status: 'none' };
+
+    const normalizedNeedle = stripCommonIndent(needle).split('\n');
+    const nonblank = new Uint32Array(contentLines.length + 1);
+    for (let i = 0; i < contentLines.length; i++) {
+      nonblank[i + 1] = nonblank[i] + Number(contentLines[i].trim().length > 0);
+    }
+    for (let i = anchor; i < contentLines.length && matches.length <= MAX_EDIT_MATCHES; i++) {
+      if (nonblank[i + 1] === nonblank[i]) continue;
+      const start = i - anchor;
+      const end = start + needleLines.length;
+      if (end > contentLines.length) break;
+      if (nonblank[end] - nonblank[start] !== 1) continue;
+      const indent = contentLines[i].length - contentLines[i].trimStart().length;
+      let matchesNeedle = true;
+      // Eligible windows have one nonblank line at a fixed offset. Each file line
+      // can belong to at most two of them, so these comparisons stay linear too.
+      for (let j = 0; j < needleLines.length; j++) {
+        if (contentLines[start + j].slice(indent) !== normalizedNeedle[j]) {
+          matchesNeedle = false;
+          break;
+        }
+      }
+      if (matchesNeedle) addMatch(start);
+    }
   }
 
   if (matches.length === 1) {
     return { status: 'matched', ...matches[0], strategy };
   }
   if (matches.length > 1) {
-    return { status: 'ambiguous', strategy, count: matches.length };
+    return { status: 'ambiguous', strategy, count: matches.length, matches };
   }
   return { status: 'none' };
 }
@@ -1786,7 +1865,7 @@ function findWhitespaceNormalizedMatch(content: string, needle: string): MatchSt
   const regex = new RegExp(pattern, 'g');
   const matches: Array<{ index: number; length: number }> = [];
   let match: RegExpExecArray | null;
-  while ((match = regex.exec(content)) != null) {
+  while (matches.length <= MAX_EDIT_MATCHES && (match = regex.exec(content)) != null) {
     matches.push({ index: match.index, length: match[0].length });
     if (match[0].length === 0) {
       regex.lastIndex += 1;
@@ -1796,7 +1875,12 @@ function findWhitespaceNormalizedMatch(content: string, needle: string): MatchSt
     return { status: 'matched', ...matches[0], strategy: 'whitespace-normalized' };
   }
   if (matches.length > 1) {
-    return { status: 'ambiguous', strategy: 'whitespace-normalized', count: matches.length };
+    return {
+      status: 'ambiguous',
+      strategy: 'whitespace-normalized',
+      count: matches.length,
+      matches,
+    };
   }
   return { status: 'none' };
 }
@@ -1817,6 +1901,51 @@ function findReplacementMatch(content: string, needle: string): MatchStatus {
   return findLineWindowMatch(content, needle, 'indentation-flexible');
 }
 
+/** Keeps the earliest of any overlapping matches so replacements never collide. */
+function nonOverlapping(matches: readonly MatchedRange[]): MatchedRange[] {
+  const kept: MatchedRange[] = [];
+  let end = -1;
+  for (const match of [...matches].sort((a, b) => a.index - b.index)) {
+    if (match.index < end) continue;
+    kept.push(match);
+    end = match.index + match.length;
+  }
+  return kept;
+}
+
+function describeMatchCount(count: number): string {
+  return count > MAX_EDIT_MATCHES ? `more than ${MAX_EDIT_MATCHES}` : String(count);
+}
+
+/**
+ * The size `replace_all` would produce, computed before any replacement text is
+ * built so an oversized result is refused without allocating it.
+ */
+function projectedReplaceAllBytes(
+  content: string,
+  matches: readonly MatchedRange[],
+  text: string,
+): number {
+  const replacementBytes = Buffer.byteLength(text, 'utf8');
+  let bytes = Buffer.byteLength(content, 'utf8');
+  for (const match of matches) {
+    bytes +=
+      replacementBytes -
+      Buffer.byteLength(content.slice(match.index, match.index + match.length), 'utf8');
+  }
+  return bytes;
+}
+
+function replaceMatches(content: string, matches: readonly MatchedRange[], text: string): string {
+  let result = '';
+  let cursor = 0;
+  for (const match of matches) {
+    result += content.slice(cursor, match.index) + text;
+    cursor = match.index + match.length;
+  }
+  return result + content.slice(cursor);
+}
+
 function applyTextEdits(
   content: string,
   edits: TextEdit[],
@@ -1825,14 +1954,45 @@ function applyTextEdits(
   const strategies: string[] = [];
 
   for (const edit of edits) {
+    const exactCount = edit.replace_all === true ? countExactMatches(working, edit.old_text) : 0;
+    if (exactCount > 0) {
+      const projectedBytes =
+        Buffer.byteLength(working, 'utf8') +
+        exactCount *
+          (Buffer.byteLength(edit.new_text, 'utf8') - Buffer.byteLength(edit.old_text, 'utf8'));
+      if (projectedBytes > MAX_AUTHORING_BYTES) {
+        throw new Error(
+          `replace_all would make the file larger than ${MAX_AUTHORING_BYTES} bytes; nothing was written.`,
+        );
+      }
+      working = replaceAllExact(working, edit.old_text, edit.new_text);
+      strategies.push(exactCount > 1 ? `exact x${exactCount}` : 'exact');
+      continue;
+    }
     const match = findReplacementMatch(working, edit.old_text);
     if (match.status === 'none') {
       throw new Error('old_text did not match the file content.');
     }
-    if (match.status === 'ambiguous') {
+    if (match.status === 'ambiguous' && edit.replace_all !== true) {
       throw new Error(
-        `old_text matched ${match.count} locations with ${match.strategy}; make it unique before retrying.`,
+        `old_text matched ${describeMatchCount(match.count)} locations with ${match.strategy}; make it unique or set replace_all before retrying.`,
       );
+    }
+    if (match.status === 'ambiguous') {
+      if (match.count > MAX_EDIT_MATCHES) {
+        throw new Error(
+          `replace_all with whitespace-tolerant matching is limited to ${MAX_EDIT_MATCHES} locations, and old_text matched more; copy the exact text or narrow old_text before retrying.`,
+        );
+      }
+      const matches = nonOverlapping(match.matches);
+      if (projectedReplaceAllBytes(working, matches, edit.new_text) > MAX_AUTHORING_BYTES) {
+        throw new Error(
+          `replace_all would make the file larger than ${MAX_AUTHORING_BYTES} bytes; nothing was written.`,
+        );
+      }
+      working = replaceMatches(working, matches, edit.new_text);
+      strategies.push(`${match.strategy} x${matches.length}`);
+      continue;
     }
     working =
       working.slice(0, match.index) + edit.new_text + working.slice(match.index + match.length);
@@ -2474,6 +2634,7 @@ async function handleWorkspaceFileRead(
       ...(codeExecutionContext.codeWorkspace?.workspaceInstanceId
         ? { workspace_instance_id: codeExecutionContext.codeWorkspace.workspaceInstanceId }
         : {}),
+      ...(codeExecutionContext.codeWorkspace?.linkedWorktrees ? { linked_worktrees: true } : {}),
       start_line: startLine,
       max_lines: maxLines,
       codeApiBaseUrl: codeExecutionContext.baseUrl,
@@ -2580,6 +2741,7 @@ async function handleWorkspaceSearchCall(
       ...(codeExecutionContext.codeWorkspace?.workspaceInstanceId
         ? { workspace_instance_id: codeExecutionContext.codeWorkspace.workspaceInstanceId }
         : {}),
+      ...(codeExecutionContext.codeWorkspace?.linkedWorktrees ? { linked_worktrees: true } : {}),
       ...(typeof args.path === 'string' && args.path.length > 0 ? { path: args.path } : {}),
       max_results: Number(maxResults),
       codeApiBaseUrl: codeExecutionContext.baseUrl,
@@ -2668,6 +2830,7 @@ async function handleWorkspaceListCall(
       ...(codeExecutionContext.codeWorkspace?.workspaceInstanceId
         ? { workspace_instance_id: codeExecutionContext.codeWorkspace.workspaceInstanceId }
         : {}),
+      ...(codeExecutionContext.codeWorkspace?.linkedWorktrees ? { linked_worktrees: true } : {}),
       ...(typeof args.path === 'string' && args.path.length > 0 ? { path: args.path } : {}),
       ...(typeof args.after_path === 'string' && args.after_path.length > 0
         ? { after_path: args.after_path }
@@ -3939,6 +4102,7 @@ function attachedWorkspaceMutationParams(
 ): {
   workspace_id: string;
   workspace_instance_id?: string;
+  linked_worktrees?: boolean;
   codeApiBaseUrl: string;
   executionProfile: CodeExecutionContext['executionProfile'];
   bridgeWorkerId?: string;
@@ -3954,6 +4118,7 @@ function attachedWorkspaceMutationParams(
     ...(codeExecutionContext.codeWorkspace?.workspaceInstanceId
       ? { workspace_instance_id: codeExecutionContext.codeWorkspace.workspaceInstanceId }
       : {}),
+    ...(codeExecutionContext.codeWorkspace?.linkedWorktrees ? { linked_worktrees: true } : {}),
     codeApiBaseUrl: codeExecutionContext.baseUrl,
     ...limits,
     ...(limits.maxRequestTimeoutMs == null
@@ -4027,6 +4192,52 @@ async function handleAttachedWorkspaceCreateFileCall({
   }
 }
 
+/** One sentence per edit that did not match exactly once, so the model can verify it. */
+function describeAttachedEdit(filePath: string, result: WorkspaceEditResult): string {
+  const count = result.replacements;
+  const notes = (result.matches ?? []).flatMap((match, index) => {
+    const edit = count === 1 ? 'the edit' : `edit ${index + 1}`;
+    const found = match.strategy === 'exact' ? [] : [`${edit} matched with ${match.strategy}`];
+    return match.occurrences > 1
+      ? [...found, `${edit} replaced ${match.occurrences} locations`]
+      : found;
+  });
+  if (notes.length === 0) {
+    return `Updated workspace/${filePath} with ${count} exact replacement${count === 1 ? '' : 's'}.`;
+  }
+  return `Updated workspace/${filePath} with ${count} replacement${count === 1 ? '' : 's'} (${notes.join('; ')}).`;
+}
+
+/**
+ * A worker is outside LibreChat's trust boundary, so its conflict text is never forwarded: only the
+ * facts a strict parse recovers from it (which edits failed, how, and on which lines) reach the
+ * model, in LibreChat's own words. Anything else gets the generic retry guidance.
+ */
+function describeAttachedEditConflict(filePath: string, error: WorkspaceToolHttpError): string {
+  const conflict = error.editConflict;
+  if (conflict?.startsWith('Workspace file changed')) {
+    return `"workspace/${filePath}" changed while this edit was being applied, so nothing was written. Re-read the file and retry.`;
+  }
+  const report = conflict == null ? undefined : parseEditConflict(conflict);
+  if (report) {
+    return formatEditConflict(`workspace/${filePath}`, report);
+  }
+  return `The edit to "workspace/${filePath}" did not apply, so nothing was written. The requested text did not match exactly once; re-read the file and retry.`;
+}
+
+/** The only body a sanitized conflict carries, so logs never retain worker-supplied text. */
+const SANITIZED_EDIT_CONFLICT_BODY = JSON.stringify({ code: 'EDIT_CONFLICT' });
+
+/** A copy of a worker conflict that keeps its status but none of its body or message. */
+function sanitizedEditConflict(
+  error: WorkspaceToolHttpError,
+  message: string,
+): WorkspaceToolHttpError {
+  const sanitized = new WorkspaceToolHttpError(error.reason, 409, SANITIZED_EDIT_CONFLICT_BODY);
+  sanitized.message = message;
+  return sanitized;
+}
+
 async function handleAttachedWorkspaceEditFileCall({
   tc,
   options,
@@ -4069,11 +4280,25 @@ async function handleAttachedWorkspaceEditFileCall({
   if (filteredName != null) return filteredName;
   const workspaceId = selectedWorkspaceId(codeExecutionContext, 'edit_file');
   if (!workspaceId) return unavailableWorkspaceOperation(tc, 'edit_file');
+  const editFeatures = codeExecutionContext.codeWorkspace?.editFileFeatures ?? [];
+  if (edits.some((edit) => edit.replace_all === true) && !editFeatures.includes('replace_all')) {
+    return errorResult(
+      tc,
+      'replace_all needs a newer LibreChat Code worker on this machine. Make each old_text unique instead.',
+    );
+  }
+  /** Tolerant by default, like every other edit_file variant; operators can require exact. */
+  const matching: WorkspaceEditMatching | undefined =
+    codeExecutionContext.codeEnvironmentConfigSchema?.edits?.tolerantMatching !== false &&
+    editFeatures.includes('tolerant_match')
+      ? 'tolerant'
+      : undefined;
 
   try {
-    const workspaceEdits = edits.map((edit) => ({
+    const workspaceEdits: WorkspaceTextEdit[] = edits.map((edit) => ({
       oldText: edit.old_text,
       newText: edit.new_text,
+      ...(edit.replace_all === true ? { replaceAll: true } : {}),
     }));
     const workspaceParams = attachedWorkspaceMutationParams(
       codeExecutionContext,
@@ -4098,6 +4323,7 @@ async function handleAttachedWorkspaceEditFileCall({
         preview = await options.previewWorkspaceEdit({
           file_path: path.filePath,
           edits: workspaceEdits,
+          ...(matching ? { matching } : {}),
           ...workspaceParams,
         });
       } catch (error) {
@@ -4121,24 +4347,23 @@ async function handleAttachedWorkspaceEditFileCall({
       file_path: path.filePath,
       edits: workspaceEdits,
       ...(expectedBaseSha256 ? { expected_base_sha256: expectedBaseSha256 } : {}),
+      ...(matching ? { matching } : {}),
       ...workspaceParams,
     });
-    return successResult(
-      tc,
-      `Updated workspace/${path.filePath} with ${result.replacements} exact replacement${result.replacements === 1 ? '' : 's'}.`,
-      {
-        path: `workspace/${path.filePath}`,
-        [HOST_FILE_AUTHORING_ARTIFACT_KEY]: true,
-        bytes_written: result.bytesWritten,
-        created: false,
-        edits: result.replacements,
-        strategies: Array.from({ length: result.replacements }, () => 'exact'),
-      },
-    );
+    return successResult(tc, describeAttachedEdit(path.filePath, result), {
+      path: `workspace/${path.filePath}`,
+      [HOST_FILE_AUTHORING_ARTIFACT_KEY]: true,
+      bytes_written: result.bytesWritten,
+      created: false,
+      edits: result.replacements,
+      strategies:
+        result.matches?.map((match) => match.strategy) ??
+        Array.from({ length: result.replacements }, () => 'exact'),
+    });
   } catch (error) {
     if (error instanceof WorkspaceToolHttpError) {
       if (error.upstreamStatus === 409) {
-        error.message += `; The requested text did not match exactly once in "workspace/${path.filePath}". Re-read the file and retry.`;
+        throw sanitizedEditConflict(error, describeAttachedEditConflict(path.filePath, error));
       }
       throw error;
     }
@@ -4425,6 +4650,7 @@ async function handleEditFileCall(
     path?: unknown;
     old_text?: unknown;
     new_text?: unknown;
+    replace_all?: unknown;
     edits?: unknown;
   };
   if (typeof args.path !== 'string' || args.path.length === 0) {

@@ -20,6 +20,7 @@ import {
 import { hasAlwaysOnThinking, hasBetweenToolsThinkingFloor, supportsPromptCache } from './bedrock';
 import { SettingDefinition, SettingsConfiguration } from './generate';
 import { resolveEffectiveUseResponsesApi } from './file-config';
+import { gpt6Tier } from './families';
 
 // Base definitions
 const baseDefinitions: Record<string, SettingDefinition> = {
@@ -1339,7 +1340,8 @@ export function applyModelAwareDefaults(
         : setting,
     );
   }
-  if (/^gpt-6-(?:sol|luna)(?:$|-)/i.test(model)) {
+  const tier = gpt6Tier(model);
+  if (tier === 'sol' || tier === 'luna') {
     return settings.map((setting) => {
       if (setting.key === 'reasoning_effort') {
         return {

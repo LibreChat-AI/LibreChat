@@ -1591,6 +1591,188 @@ describe('web.ts', () => {
     });
   });
 
+  describe('URL and API key credential pairing', () => {
+    const userId = 'test-user-id';
+    const providers = [
+      {
+        name: 'Firecrawl',
+        apiKey: 'firecrawlApiKey',
+        apiUrl: 'firecrawlApiUrl',
+        keyField: 'FIRECRAWL_API_KEY',
+        urlField: 'FIRECRAWL_API_URL',
+        category: SearchCategories.SCRAPERS,
+        authenticatedWithoutUrl: true,
+        config: {
+          searchProvider: SearchProviders.KEENABLE,
+          scraperProvider: ScraperProviders.FIRECRAWL,
+          rerankerType: RerankerTypes.NONE,
+        },
+      },
+      {
+        name: 'SearXNG',
+        apiKey: 'searxngApiKey',
+        apiUrl: 'searxngInstanceUrl',
+        keyField: 'SEARXNG_API_KEY',
+        urlField: 'SEARXNG_INSTANCE_URL',
+        category: SearchCategories.PROVIDERS,
+        authenticatedWithoutUrl: false,
+        config: {
+          searchProvider: SearchProviders.SEARXNG,
+          scraperProvider: ScraperProviders.KEENABLE,
+          rerankerType: RerankerTypes.NONE,
+        },
+      },
+    ] as const;
+
+    describe.each(providers)('$name', (provider) => {
+      let originalEnv: NodeJS.ProcessEnv;
+
+      beforeEach(() => {
+        originalEnv = process.env;
+        process.env = { ...originalEnv };
+        delete process.env[provider.keyField];
+        delete process.env[provider.urlField];
+        mockIsSSRFTarget.mockReturnValue(false);
+        mockResolveHostnameSSRF.mockResolvedValue(false);
+      });
+
+      afterEach(() => {
+        process.env = originalEnv;
+      });
+
+      const config: TWebSearchConfig = {
+        ...provider.config,
+        [provider.apiKey]: `\${${provider.keyField}}`,
+        [provider.apiUrl]: `\${${provider.urlField}}`,
+        safeSearch: SafeSearchTypes.MODERATE,
+      };
+
+      it.each([undefined, AuthType.USER_PROVIDED])(
+        'rejects a user URL with a system key when the URL environment value is %s',
+        async (urlEnv) => {
+          process.env[provider.keyField] = 'system-api-key';
+          if (urlEnv != null) {
+            process.env[provider.urlField] = urlEnv;
+          }
+
+          const result = await loadWebSearchAuth({
+            userId,
+            webSearchConfig: config,
+            loadAuthValues: async () => ({
+              [provider.keyField]: 'system-api-key',
+              [provider.urlField]: 'https://user-provider.example.com',
+            }),
+          });
+
+          expect(result.authenticated).toBe(provider.authenticatedWithoutUrl);
+          expect(result.authResult[provider.apiUrl]).toBeUndefined();
+          expect(result.authResult[provider.apiKey]).toBe(
+            provider.authenticatedWithoutUrl ? 'system-api-key' : undefined,
+          );
+          expect(result.authTypes).toContainEqual([
+            provider.category,
+            provider.authenticatedWithoutUrl ? AuthType.SYSTEM_DEFINED : AuthType.USER_PROVIDED,
+          ]);
+        },
+      );
+
+      it("preserves a user URL paired with the same user's key", async () => {
+        process.env[provider.keyField] = AuthType.USER_PROVIDED;
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: config,
+          loadAuthValues: async () => ({
+            [provider.keyField]: 'user-api-key',
+            [provider.urlField]: 'https://user-provider.example.com',
+          }),
+        });
+
+        expect(result.authenticated).toBe(true);
+        expect(result.authResult[provider.apiKey]).toBe('user-api-key');
+        expect(result.authResult[provider.apiUrl]).toBe('https://user-provider.example.com');
+        expect(result.authTypes).toContainEqual([provider.category, AuthType.USER_PROVIDED]);
+      });
+
+      it('preserves a system URL paired with a system key', async () => {
+        process.env[provider.keyField] = 'system-api-key';
+        process.env[provider.urlField] = 'https://admin-provider.example.com';
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: config,
+          loadAuthValues: async () => ({
+            [provider.keyField]: 'system-api-key',
+            [provider.urlField]: 'https://admin-provider.example.com',
+          }),
+        });
+
+        expect(result.authenticated).toBe(true);
+        expect(result.authResult[provider.apiKey]).toBe('system-api-key');
+        expect(result.authResult[provider.apiUrl]).toBe('https://admin-provider.example.com');
+        expect(result.authTypes).toContainEqual([provider.category, AuthType.SYSTEM_DEFINED]);
+      });
+
+      it('rejects mixed ownership with custom environment variable names', async () => {
+        process.env.CUSTOM_PROVIDER_API_KEY = 'system-api-key';
+        process.env.CUSTOM_PROVIDER_API_URL = AuthType.USER_PROVIDED;
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: {
+            ...config,
+            [provider.apiKey]: '${CUSTOM_PROVIDER_API_KEY}',
+            [provider.apiUrl]: '${CUSTOM_PROVIDER_API_URL}',
+          },
+          loadAuthValues: async () => ({
+            CUSTOM_PROVIDER_API_KEY: 'system-api-key',
+            CUSTOM_PROVIDER_API_URL: 'https://user-provider.example.com',
+          }),
+        });
+
+        expect(result.authenticated).toBe(provider.authenticatedWithoutUrl);
+        expect(result.authResult[provider.apiUrl]).toBeUndefined();
+      });
+    });
+
+    it.each([undefined, ''])(
+      'preserves keyless SearXNG with an API key value of %s',
+      async (apiKey) => {
+        const originalEnv = process.env;
+        process.env = { ...originalEnv };
+        delete process.env.SEARXNG_API_KEY;
+        delete process.env.SEARXNG_INSTANCE_URL;
+        mockIsSSRFTarget.mockReturnValue(false);
+        mockResolveHostnameSSRF.mockResolvedValue(false);
+
+        try {
+          const result = await loadWebSearchAuth({
+            userId,
+            webSearchConfig: {
+              searxngApiKey: '${SEARXNG_API_KEY}',
+              searxngInstanceUrl: '${SEARXNG_INSTANCE_URL}',
+              searchProvider: SearchProviders.SEARXNG,
+              scraperProvider: ScraperProviders.KEENABLE,
+              rerankerType: RerankerTypes.NONE,
+              safeSearch: SafeSearchTypes.MODERATE,
+            },
+            loadAuthValues: async () => ({
+              ...(apiKey == null ? {} : { SEARXNG_API_KEY: apiKey }),
+              SEARXNG_INSTANCE_URL: 'https://user-provider.example.com',
+            }),
+          });
+
+          expect(result.authenticated).toBe(true);
+          expect(result.authResult.searxngInstanceUrl).toBe('https://user-provider.example.com');
+          expect(result.authResult.searxngApiKey).toBe(apiKey);
+          expect(result.authTypes).toContainEqual([
+            SearchCategories.PROVIDERS,
+            AuthType.USER_PROVIDED,
+          ]);
+        } finally {
+          process.env = originalEnv;
+        }
+      },
+    );
+  });
+
   describe('webSearchAuth', () => {
     it('should have the expected structure', () => {
       // Check that all expected categories exist

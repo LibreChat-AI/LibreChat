@@ -439,6 +439,8 @@ export interface RegisterCodeExecutionToolsParams {
   /** Deployment ceiling advertised on attached Bash tool definitions. */
   workspaceCommandTimeoutMaxMs?: number;
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
+  /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
+  workspaceLinkedWorktrees?: boolean;
   /**
    * When `true`, the registered `bash_tool` description includes the
    * LLM-facing `{{tool<idx>turn<turn>}}` reference syntax guide so the
@@ -776,14 +778,20 @@ const SKILL_EDIT_FILE_PARAMETERS: LCTool['parameters'] = Object.freeze({
       type: 'string',
       description: 'Replacement text.',
     },
+    replace_all: {
+      type: 'boolean',
+      description: 'Replace every location old_text matches instead of requiring exactly one.',
+    },
     edits: {
       type: 'array',
-      description: 'Optional batch of replacements. Each old_text must match exactly once.',
+      description:
+        'Optional batch of replacements. Each old_text must match exactly once unless its replace_all is true.',
       items: {
         type: 'object',
         properties: {
           old_text: { type: 'string' },
           new_text: { type: 'string' },
+          replace_all: { type: 'boolean' },
         },
         required: ['old_text', 'new_text'],
       },
@@ -807,14 +815,20 @@ const CODE_EDIT_FILE_PARAMETERS: LCTool['parameters'] = Object.freeze({
       type: 'string',
       description: 'Replacement text.',
     },
+    replace_all: {
+      type: 'boolean',
+      description: 'Replace every location old_text matches instead of requiring exactly one.',
+    },
     edits: {
       type: 'array',
-      description: 'Optional batch of replacements. Each old_text must match exactly once.',
+      description:
+        'Optional batch of replacements. Each old_text must match exactly once unless its replace_all is true.',
       items: {
         type: 'object',
         properties: {
           old_text: { type: 'string' },
           new_text: { type: 'string' },
+          replace_all: { type: 'boolean' },
         },
         required: ['old_text', 'new_text'],
       },
@@ -898,9 +912,9 @@ Use a path in the form "workspace/{relativePath}". Requires overwrite: true to r
 
 Very long content can exceed the streamed tool-argument limit (64 KB by default). The attached workspace also limits each write to 1 MiB. Keep each call bounded.`;
 
-const ATTACHED_CODE_EDIT_FILE_DESCRIPTION = `Apply one or more ordered exact text replacements to an existing file in the selected attached environment.
+const ATTACHED_CODE_EDIT_FILE_DESCRIPTION = `Apply one or more ordered text replacements to an existing file in the selected attached environment.
 
-Use a path in the form "workspace/{relativePath}". Every old_text must match exactly one location at its step in the batch. Up to 100 replacements and 1 MiB of edit text are allowed; the entire batch commits atomically or makes no change.`;
+Use a path in the form "workspace/{relativePath}". Every old_text must match exactly one location at its step in the batch, unless that edit sets replace_all. Exact matching is tried first; where this environment allows it, whitespace-only differences are also accepted, and a whitespace-only miss names the line to copy. Up to 100 replacements and 1 MiB of edit text are allowed; the entire batch commits atomically or makes no change. A failure names every edit that did not apply and why, so fix those edits and retry.`;
 
 const ATTACHED_SKILL_CREATE_FILE_DESCRIPTION = `${SKILL_CREATE_FILE_DESCRIPTION.replace(
   'Non-skills paths target the code-execution sandbox when enabled. Prefer /mnt/data/{file}.',
@@ -911,7 +925,7 @@ const ATTACHED_SKILL_EDIT_FILE_DESCRIPTION = `Apply targeted text replacements t
 
 For skills/{skillName}/... paths, exact matching falls back to whitespace-tolerant matching when needed and the result includes a unified diff. Keep SKILL.md YAML frontmatter name equal to {skillName}; create a new skills/{newName}/SKILL.md to rename a skill.
 
-For workspace/{relativePath} paths in the selected attached environment, every old_text must match exactly one location at its step. There is no whitespace-tolerant fallback. Up to 100 replacements and 1 MiB of edit text commit atomically, and the result is a write summary rather than a unified diff.`;
+For workspace/{relativePath} paths in the selected attached environment, every old_text must match exactly one location at its step unless that edit sets replace_all. Exact matching is tried first; where this environment allows it, whitespace-only differences are also accepted, and a whitespace-only miss names the line to copy. Up to 100 replacements and 1 MiB of edit text commit atomically, a failure names every edit that did not apply and why, and the result is a write summary rather than a unified diff.`;
 
 function attachedFileAuthoringParameters(
   parameters: LCTool['parameters'],
@@ -1040,6 +1054,7 @@ function createBashToolDef(
   workspaceTools = false,
   workspaceCommandTimeoutMaxMs?: number,
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'],
+  workspaceLinkedWorktrees = false,
 ): LCTool {
   /* Passed as a variable (not an inline literal) so the extra
    * `statefulSessions` key stays assignable against pinned SDK versions
@@ -1052,7 +1067,11 @@ function createBashToolDef(
       ? buildAttachedWorkspaceBashDescription(enableToolOutputReferences, workspaceEnvironment)
       : buildBashExecutionToolDescription(descriptionOpts),
     parameters: (workspaceTools
-      ? buildAttachedWorkspaceBashSchema(workspaceCommandTimeoutMaxMs, workspaceEnvironment)
+      ? buildAttachedWorkspaceBashSchema(
+          workspaceCommandTimeoutMaxMs,
+          workspaceEnvironment,
+          workspaceLinkedWorktrees,
+        )
       : BashExecutionToolDefinition.schema) as unknown as LCTool['parameters'],
   }) as LCTool;
 }
@@ -1066,6 +1085,8 @@ function buildBashToolDef(opts: {
   workspaceTools?: boolean;
   workspaceCommandTimeoutMaxMs?: number;
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
+  /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
+  workspaceLinkedWorktrees?: boolean;
 }): LCTool {
   /* Stateful defs are built on demand: the stateless pair covers the
    * default path, and per-run construction is negligible next to init. */
@@ -1076,6 +1097,7 @@ function buildBashToolDef(opts: {
       opts.workspaceTools === true,
       opts.workspaceCommandTimeoutMaxMs,
       opts.workspaceEnvironment,
+      opts.workspaceLinkedWorktrees === true,
     );
   }
   return opts.enableToolOutputReferences
@@ -1109,6 +1131,7 @@ export function registerCodeExecutionTools(
     workspaceOperations,
     workspaceCommandTimeoutMaxMs,
     workspaceEnvironment,
+    workspaceLinkedWorktrees,
     enableToolOutputReferences = false,
     statefulSessions = false,
   } = params;
@@ -1129,6 +1152,7 @@ export function registerCodeExecutionTools(
         workspaceTools,
         workspaceCommandTimeoutMaxMs,
         workspaceEnvironment,
+        workspaceLinkedWorktrees,
       }),
     );
   }

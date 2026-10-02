@@ -9,6 +9,8 @@ import {
   isRepositoryInstructionDescriptor,
 } from 'librechat-data-provider';
 import type { CodeWorkspaceDescriptor, CodeWorkspaceOperation } from 'librechat-data-provider';
+import type { WorkspaceEditFileFeature } from './edits';
+import { WORKSPACE_EDIT_FILE_FEATURES } from './edits';
 
 const CODE_BRIDGE_REQUEST_TIMEOUT_MS = 10_000;
 // Covers 32 roots with 32 bounded action names and escaped metadata per root.
@@ -40,6 +42,8 @@ export type CodeBridgeWorkerStatus = {
   operations?: CodeWorkspaceOperation[];
   workspaces?: CodeWorkspaceDescriptor[];
   programmaticLanguages?: ['bash'];
+  /** Negotiated edit features; unknown names are dropped. */
+  editFileFeatures?: WorkspaceEditFileFeature[];
   maxCommandTimeoutMs?: number;
 };
 
@@ -253,11 +257,19 @@ function validWorkspaceOperations(value: unknown): value is CodeWorkspaceOperati
   );
 }
 
+function knownEditFileFeatures(value: unknown): WorkspaceEditFileFeature[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return WORKSPACE_EDIT_FILE_FEATURES.filter((feature) => value.includes(feature));
+}
+
 function validWorkspaceCapabilities(value: unknown): value is {
   protocolVersion: 1;
   operations: CodeWorkspaceOperation[];
   workspaces: CodeWorkspaceDescriptor[];
   programmaticLanguages?: unknown;
+  editFileFeatures?: unknown;
 } {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
   const capabilities = value as Record<string, unknown>;
@@ -282,6 +294,7 @@ function validWorkspaceCapabilities(value: unknown): value is {
           key !== 'name' &&
           key !== 'operations' &&
           key !== 'workspaceInstances' &&
+          key !== 'workspaceScopes' &&
           key !== 'environment' &&
           key !== 'instructions',
       ) ||
@@ -297,6 +310,10 @@ function validWorkspaceCapabilities(value: unknown): value is {
         (!Array.isArray(workspace.workspaceInstances) ||
           workspace.workspaceInstances.length !== 1 ||
           workspace.workspaceInstances[0] !== 'git_worktree')) ||
+      (workspace.workspaceScopes !== undefined &&
+        (!Array.isArray(workspace.workspaceScopes) ||
+          workspace.workspaceScopes.length !== 1 ||
+          workspace.workspaceScopes[0] !== 'git_linked_worktree')) ||
       (workspace.name !== undefined &&
         (typeof workspace.name !== 'string' ||
           workspace.name.trim().length === 0 ||
@@ -438,7 +455,7 @@ export async function getCodeBridgeWorkerStatus({
     }
     let workspaceStatus: Pick<
       CodeBridgeWorkerStatus,
-      'operations' | 'workspaces' | 'programmaticLanguages'
+      'operations' | 'workspaces' | 'programmaticLanguages' | 'editFileFeatures'
     > = {};
     if (validWorkspaceCapabilities(capabilities?.workspaceTools)) {
       workspaceStatus = {
@@ -456,6 +473,10 @@ export async function getCodeBridgeWorkerStatus({
         capabilities.workspaceTools.programmaticLanguages.includes('bash')
       ) {
         workspaceStatus.programmaticLanguages = ['bash'];
+      }
+      const editFileFeatures = knownEditFileFeatures(capabilities.workspaceTools.editFileFeatures);
+      if (editFileFeatures.length > 0) {
+        workspaceStatus.editFileFeatures = editFileFeatures;
       }
     } else if (validLegacyWorkspaceCapabilities(capabilities?.workspaceTools)) {
       workspaceStatus = { operations: [...capabilities.workspaceTools.operations] };

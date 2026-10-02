@@ -97,6 +97,7 @@ describe('getCodeBridgeWorkerStatus', () => {
                   id: 'project-a',
                   name: 'Project A',
                   workspaceInstances: ['git_worktree'],
+                  workspaceScopes: ['git_linked_worktree'],
                 },
                 { id: 'docs', operations: ['read_file'] },
               ],
@@ -128,6 +129,7 @@ describe('getCodeBridgeWorkerStatus', () => {
           id: 'project-a',
           name: 'Project A',
           workspaceInstances: ['git_worktree'],
+          workspaceScopes: ['git_linked_worktree'],
         },
         { id: 'docs', operations: ['read_file'] },
       ],
@@ -139,6 +141,40 @@ describe('getCodeBridgeWorkerStatus', () => {
         redirect: 'error',
       }),
     );
+  });
+
+  test('carries negotiated edit features and drops names it does not know', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          workerId: 'personal-vm',
+          online: true,
+          ready: true,
+          leaseExpiresInMs: 45_000,
+          capabilities: {
+            statefulWorkspace: true,
+            sandboxProfile: 'native-srt',
+            runtimes: ['bash'],
+            workspaceTools: {
+              protocolVersion: 1,
+              operations: ['read_file', 'edit_file'],
+              workspaces: [{ id: 'project-a' }],
+              editFileFeatures: ['replace_all', 'future_feature', 'tolerant_match'],
+            },
+          },
+        }),
+      ),
+    );
+
+    const status = await getCodeBridgeWorkerStatus({
+      baseURL: 'https://code.example.com/v1/',
+      token: 'administrator-token',
+      workerId: 'personal-vm',
+      fetchImpl,
+    });
+
+    expect(status.editFileFeatures).toEqual(['tolerant_match', 'replace_all']);
   });
 
   test('keeps legacy worker status readable without inventing a primary workspace', async () => {
@@ -246,6 +282,53 @@ describe('getCodeBridgeWorkerStatus', () => {
           protocolVersion: 1,
           operations: ['read_file'],
           workspaces: [{ id: 'project-a', operations: null }],
+        },
+      },
+    },
+    {
+      online: true,
+      ready: true,
+      leaseExpiresInMs: 5_000,
+      capabilities: {
+        statefulWorkspace: true,
+        sandboxProfile: 'native-srt',
+        runtimes: ['bash'],
+        workspaceTools: {
+          protocolVersion: 1,
+          operations: ['read_file'],
+          workspaces: [{ id: 'project-a', workspaceScopes: ['subdirectory'] }],
+        },
+      },
+    },
+    {
+      online: true,
+      ready: true,
+      leaseExpiresInMs: 5_000,
+      capabilities: {
+        statefulWorkspace: true,
+        sandboxProfile: 'native-srt',
+        runtimes: ['bash'],
+        workspaceTools: {
+          protocolVersion: 1,
+          operations: ['read_file'],
+          workspaces: [{ id: 'project-a', workspaceScopes: 'git_linked_worktree' }],
+        },
+      },
+    },
+    {
+      online: true,
+      ready: true,
+      leaseExpiresInMs: 5_000,
+      capabilities: {
+        statefulWorkspace: true,
+        sandboxProfile: 'native-srt',
+        runtimes: ['bash'],
+        workspaceTools: {
+          protocolVersion: 1,
+          operations: ['read_file'],
+          workspaces: [
+            { id: 'project-a', workspaceScopes: ['git_linked_worktree', 'git_linked_worktree'] },
+          ],
         },
       },
     },

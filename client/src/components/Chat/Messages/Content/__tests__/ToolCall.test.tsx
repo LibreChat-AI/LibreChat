@@ -15,6 +15,8 @@ jest.mock('~/hooks', () => ({
       com_assistants_completed_action: `Completed action on ${values?.[0]}`,
       com_assistants_running_var: `Running ${values?.[0]}`,
       com_assistants_running_action: 'Running action',
+      com_ui_tool_preparing: `Preparing ${values?.[0]}`,
+      com_ui_tool_calling: `Calling ${values?.[0]}`,
       com_ui_sign_in_to_domain: `Sign in to ${values?.[0]}`,
       com_ui_cancelled: 'Cancelled',
       com_ui_requires_auth: 'Requires authentication',
@@ -136,6 +138,26 @@ describe('ToolCall', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  describe('tool preparation feedback', () => {
+    it('announces preparation and then execution without calling the tool during argument streaming', () => {
+      const props = {
+        ...mockProps,
+        output: null,
+        initialProgress: 0.1,
+        isSubmitting: true,
+        toolPreparationStartedAt: 1_000,
+      };
+      const { rerender } = renderWithRecoil(<ToolCall {...props} />);
+      expect(screen.getByText('Preparing testFunction')).toBeInTheDocument();
+      rerender(
+        <RecoilRoot>
+          <ToolCall {...props} toolDispatchedAt={4_000} />
+        </RecoilRoot>,
+      );
+      expect(screen.getByText('Calling testFunction')).toBeInTheDocument();
+    });
   });
 
   describe('intent label', () => {
