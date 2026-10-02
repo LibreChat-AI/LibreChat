@@ -371,7 +371,8 @@ function getSteerUserSubmittedPaths(content: readonly TMessageContentParts[]): s
 
 /** A tool-call path the latest approval claim added is user-authored only once
  * the resumed tool call completed in this content: until then the part still
- * holds the model's arguments and no decision output. An `ask_user_question`
+ * holds the model's arguments and no decision output. A completed call always
+ * carries a string output, which may be empty for a void tool. An `ask_user_question`
  * answer stamped onto the content counts as completed, since the stamp is its
  * output. Other claimed paths (steers already in the seed content) need no
  * decision to apply and are kept. */
@@ -396,7 +397,7 @@ function getPublishedProvenance(
     const part = content[Number(match[1])];
     const output =
       part?.type === 'tool_call' ? (part.tool_call as { output?: unknown })?.output : undefined;
-    return typeof output === 'string' && output.length > 0;
+    return typeof output === 'string';
   };
   const prePaths = new Set(preResume.userSubmittedPaths ?? []);
   const preFieldPaths = new Set(

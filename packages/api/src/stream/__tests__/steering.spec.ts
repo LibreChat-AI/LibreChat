@@ -1064,24 +1064,29 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
         expect(persisted).toEqual([expect.objectContaining(claimedProvenance)]);
       });
 
-      test('labels a decision output that the abort transform stamped before the provider started', async () => {
-        const streamId = 'steer-abort-stamped-provenance';
-        await claimResume(streamId);
+      test.each([
+        ['steer-abort-stamped-provenance', 'Stamped answer'],
+        ['steer-abort-stamped-empty-provenance', ''],
+      ])(
+        'labels a decision output that the abort transform stamped before the provider started (%s)',
+        async (streamId, output) => {
+          await claimResume(streamId);
 
-        const result = await manager.abortJob(streamId, {
-          transformAbortContent: (parts) =>
-            parts.map((part, index) =>
-              index === 1 && part.type === 'tool_call'
-                ? { ...part, tool_call: { ...part.tool_call, output: 'Stamped answer' } }
-                : part,
-            ) as typeof parts,
-        });
+          const result = await manager.abortJob(streamId, {
+            transformAbortContent: (parts) =>
+              parts.map((part, index) =>
+                index === 1 && part.type === 'tool_call'
+                  ? { ...part, tool_call: { ...part.tool_call, output } }
+                  : part,
+              ) as typeof parts,
+          });
 
-        expect(result.success).toBe(true);
-        expect(responseMessageOf(result.finalEvent)?.userSubmittedMessageFieldPaths).toEqual(
-          claimedMessageFieldPaths,
-        );
-      });
+          expect(result.success).toBe(true);
+          expect(responseMessageOf(result.finalEvent)?.userSubmittedMessageFieldPaths).toEqual(
+            claimedMessageFieldPaths,
+          );
+        },
+      );
 
       test('persists the same pre-claim provenance that the final event publishes', async () => {
         const streamId = 'steer-abort-unapplied-persisted-provenance';
