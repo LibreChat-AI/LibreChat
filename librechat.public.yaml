@@ -1,0 +1,98 @@
+# plastic-ai — public environment (AWS profile UCL-Public) config
+version: 1.3.16
+cache: true
+
+fileStrategy: "s3"
+
+interface:
+  customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
+  fileSearch: true
+
+  privacyPolicy:
+    externalUrl: 'https://librechat.ai/privacy-policy'
+    openNewTab: true
+
+  termsOfService:
+    externalUrl: 'https://librechat.ai/tos'
+    openNewTab: true
+    modalAcceptance: true
+    modalTitle: 'Terms of Service for plastic-ai'
+    modalContent: |
+      Replace with your Terms of Service.
+
+  modelSelect: true
+  parameters: true
+  presets: false
+  prompts:
+    use: false
+    create: false
+    share: false
+    public: false
+  bookmarks: false
+  multiConvo: true
+  # File search runs through agents, so they are on here as in the sandbox.
+  agents:
+    use: true
+    create: true
+    share: false
+    public: false
+  peoplePicker:
+    users: false
+    groups: false
+    roles: false
+  marketplace:
+    use: false
+  fileCitations: true
+  feedback: true
+
+registration:
+  socialLogins: ["openid"]
+
+actions:
+  allowedDomains:
+    - 'google.com'
+
+endpoints:
+  agents:
+    capabilities: ["file_search", "web_search", "context", "ask_user_question", "tools"]
+
+  bedrock:
+    models:
+      - 'eu.anthropic.claude-sonnet-5'
+    inferenceProfiles:
+      'eu.anthropic.claude-sonnet-5': 'arn:aws:bedrock:eu-west-2:575062583775:inference-profile/eu.anthropic.claude-sonnet-5'
+    # chaild-test-guardrail-dev-v2; the task role may apply it (bedrock_guardrail_arns).
+    guardrailConfig:
+      guardrailIdentifier: 'arn:aws:bedrock:eu-west-2:575062583775:guardrail/qpq72rkzv8qy'
+      guardrailVersion: '1'
+      trace: 'enabled'
+
+  custom:
+    # The PII proxy service in the same VPC (Cloud Map: pii-proxy.plastic-ai.local).
+    # It takes no credential; the key is a placeholder the client requires.
+    - name: 'PII Proxy'
+      apiKey: 'dummy'
+      baseURL: 'http://pii-proxy.plastic-ai.local:8000/v1'
+      models:
+        default:
+          - 'eu.anthropic.claude-sonnet-5'
+        fetch: false
+      headers:
+        X-Conversation-ID: '{{LIBRECHAT_BODY_CONVERSATIONID}}'
+      titleConvo: false
+      modelDisplayLabel: 'Claude Sonnet 5'
+
+modelSpecs:
+  list:
+    - name: 'bedrock-claude-sonnet-5'
+      label: 'Claude Sonnet 5 (Bedrock)'
+      description: 'Anthropic Claude Sonnet 5 via AWS Bedrock (eu-west-2, EU geo profile)'
+      preset:
+        endpoint: 'bedrock'
+        model: 'eu.anthropic.claude-sonnet-5'
+    - name: 'bedrock-claude-sonnet-5-pii-proxy'
+      label: 'Claude Sonnet 5 (PII Proxy)'
+      description: 'Claude Sonnet 5 routed through the PII proxy'
+      preset:
+        endpoint: 'PII Proxy'
+        model: 'eu.anthropic.claude-sonnet-5'
