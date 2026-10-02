@@ -43,6 +43,7 @@ export async function loadDefaultInterface({
     customWelcome: interfaceConfig?.customWelcome ?? defaults.customWelcome,
     autoSubmitFromUrl: interfaceConfig?.autoSubmitFromUrl ?? defaults.autoSubmitFromUrl,
     buildInfo: interfaceConfig?.buildInfo ?? defaults.buildInfo,
+    mascot: interfaceConfig?.mascot ?? defaults.mascot,
     contextUsage: interfaceConfig?.contextUsage ?? defaults.contextUsage,
     artifactUndocking: interfaceConfig?.artifactUndocking ?? defaults.artifactUndocking,
     contextCost: interfaceConfig?.contextCost ?? defaults.contextCost,

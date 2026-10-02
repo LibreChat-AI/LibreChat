@@ -60,6 +60,7 @@ import Avatar from '../SettingsTabs/Account/Avatar';
 import CodeEnvironments from './CodeEnvironments';
 import About from '../SettingsTabs/About/About';
 import ApiKeys from '../SettingsTabs/ApiKeys';
+import { showLiaAtom } from '~/store/lia';
 import MemoryToggle from './MemoryToggle';
 import { TTSEndpoints } from '~/common';
 import store from '~/store';
@@ -145,6 +146,20 @@ export const registry: SettingEntry[] = [
       stateAtom: store.centerFormOnLanding,
       localizationKey: 'com_nav_center_chat_input',
       switchId: 'centerFormOnLanding',
+    }),
+  },
+  {
+    id: 'showLia',
+    tab: GENERAL,
+    section: 'layout',
+    labelKey: 'com_nav_show_lia',
+    keywords: ['mascot', 'lia', 'fun', 'animation', 'welcome'],
+    show: (ctx) => ctx.mascotAllowed,
+    Component: toggleControl({
+      stateAtom: showLiaAtom,
+      localizationKey: 'com_nav_show_lia',
+      switchId: 'showLia',
+      hoverCardText: 'com_nav_info_show_lia',
     }),
   },
   {
