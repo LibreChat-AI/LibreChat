@@ -612,8 +612,9 @@ describe('agent attachment helpers', () => {
     const current = makeTextFile('current', 'current.txt', 'current');
     const req = {
       body: { fileTokenLimit: 1000 },
-      config: { fileConfig: { endpoints: { agents: { fileLimit: 1 } } } },
+      config: {},
     } as ServerRequest;
+    req.config.fileConfig = { endpoints: { agents: { fileLimit: 1 } } };
     await expect(
       buildAgentScopedContext({
         agentIds: ['agent-a'],

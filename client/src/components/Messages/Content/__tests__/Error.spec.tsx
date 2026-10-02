@@ -161,7 +161,7 @@ describe('LibreChat attachment limits', () => {
       renderError(detail, providerMessage);
       expect(screen.getByText(catalog.com_error_attachment_limit)).toBeInTheDocument();
       expect(screen.queryByText('OpenAI could not complete this request.')).not.toBeInTheDocument();
-      fireEvent.click(screen.getByRole('button', { name: catalog.com_error_details_attachment }));
+      fireEvent.click(screen.getByText(catalog.com_error_details_attachment));
       expect(screen.getByText(detail)).toBeVisible();
     },
   );
