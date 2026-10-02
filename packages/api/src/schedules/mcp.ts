@@ -246,7 +246,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
         name.includes(Constants.mcp_delimiter) &&
         !name.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`),
     );
-    if (execution) {
+    if (execution?.enrolled) {
       const denied = candidates.find(({ name }) => !isScheduledMCPCandidate(name));
       if (denied || selectedTools.length === 0) {
         throw new ScheduleMCPError(

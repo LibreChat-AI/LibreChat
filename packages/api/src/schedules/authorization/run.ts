@@ -112,22 +112,38 @@ export function createScheduledMCPRunPolicy(
         mcpTools.get(agentId)!.has(input.toolName))
     );
   };
+  const decisions = new WeakMap<object, Promise<ScheduledMCPPolicyError | undefined>>();
+  const failure = (input: Parameters<HookCallback<'PreToolUse'>>[0]) => {
+    const pending = decisions.get(input);
+    if (pending) return pending;
+    const evaluated = (async () => {
+      try {
+        await execution.checkEnrollment();
+      } catch (error) {
+        return new ScheduledMCPPolicyError(
+          error instanceof ScheduledMCPPolicyError
+            ? error.failure.reason
+            : 'dependency_unavailable',
+          '',
+          input.executingAgentId,
+        );
+      }
+      if (!execution.enrolled || !denied(input)) return;
+      return new ScheduledMCPPolicyError('tool_policy_denied', '', input.executingAgentId);
+    })();
+    decisions.set(input, evaluated);
+    return evaluated;
+  };
   return {
     registerAgent,
     hook: async (input) => {
-      if (!denied(input)) return {};
-      return {
-        decision: 'deny',
-        reason: new ScheduledMCPPolicyError('tool_policy_denied', '', input.executingAgentId)
-          .message,
-      };
+      const error = await failure(input);
+      return error ? { decision: 'deny', reason: error.message } : {};
     },
     // Separate hook: a failed or timed-out receipt must never erase the immediate deny.
     receipt: async (input) => {
-      if (denied(input))
-        await recordDenial?.(
-          new ScheduledMCPPolicyError('tool_policy_denied', '', input.executingAgentId),
-        );
+      const error = await failure(input);
+      if (error) await recordDenial?.(error);
       return {};
     },
   };

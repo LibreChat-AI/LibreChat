@@ -7,7 +7,7 @@ import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { isShutdownInProgress } from '../app/shutdown';
 
 /** Swappable per test: null keeps the no-job-store harness the drain tests rely on. */
-let mockJobStore: { getJob: jest.Mock; deleteJob?: jest.Mock } | null = null;
+let mockJobStore: { getJob: jest.Mock; deleteJob?: jest.Mock; updateJob?: jest.Mock } | null = null;
 
 jest.mock('../agents/checkpointer', () => ({
   checkpointStorageConfigs: jest.fn(async (_user, _tenant, cfg) => [cfg]),
@@ -749,6 +749,7 @@ describe('scheduled OBO tool failure settlement', () => {
     methods.eraseScheduleIfDrained = jest.fn(async () => false);
     methods.getScheduleRunAbortState = jest.fn(async () => ({ status: 'started', mcp: [failure] }));
     const store = {
+      updateJob: jest.fn(async () => undefined),
       getJob: jest.fn(async () => ({
         createdAt: 42,
         scheduleId: 's1',

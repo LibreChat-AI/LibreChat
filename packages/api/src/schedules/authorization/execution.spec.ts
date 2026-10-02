@@ -212,7 +212,7 @@ it('retains legacy schedules with no enrollment but never grandfathers revoked e
   await f.revoke();
   expect(await f.factory.resolve(f.identity, 'invoke')).toBeDefined();
   f.snapshot.enrollment = null;
-  expect(await f.factory.resolve(f.identity, 'invoke')).toBeUndefined();
+  expect(await f.factory.resolve(f.identity, 'invoke')).toMatchObject({ enrolled: false });
 });
 
 it('admits disabled consent only for activation, not invocation', async () => {

@@ -1,3 +1,4 @@
+import { DEFAULT_HOOK_TIMEOUT_MS } from '@librechat/agents';
 import { normalizeServerName, stripServerNamePrefix } from 'librechat-data-provider';
 import type { ScheduledMCPIdentity, ScheduledMCPReadOnlyPolicy } from 'librechat-data-provider';
 import type { ScheduleMCPConsentStorage } from '@librechat/data-schemas';
@@ -9,8 +10,11 @@ import type { ScheduledTokenContext } from '../context';
 import { isScheduledMCPToolReadOnly, ScheduledMCPPolicyError } from './policy';
 import { getScheduledMCPConfigurationRevision } from './configuration';
 import { ScheduleMCPConsentError } from './service';
+import { waitUntilDeadline } from '~/mcp/utils';
 
 export interface ScheduledMCPInvocation {
+  /** False only for a monitored legacy occurrence. */
+  readonly enrolled?: boolean;
   readonly agentId?: string;
   readonly authorize: (input: {
     user?: { id: string; tenantId?: string };
@@ -25,6 +29,9 @@ export interface ScheduledMCPInvocation {
 export interface ScheduleMCPExecution {
   readonly identity: ScheduledMCPIdentity;
   readonly stage: 'activation' | 'invoke' | 'resume';
+  readonly enrolled: boolean;
+  /** Legacy admits only while enrollment is still absent; it never acquires a later grant. */
+  readonly checkEnrollment: () => Promise<void>;
   readonly bind: (agentId: string | undefined, selectionName: string) => ScheduledMCPInvocation;
 }
 
@@ -58,39 +65,63 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
   resolve: (
     identity: ScheduledMCPIdentity,
     stage: ScheduleMCPExecution['stage'],
-    options?: { manual?: boolean },
+    options?: { manual?: boolean; legacy?: boolean },
   ) => Promise<ScheduleMCPExecution | undefined>;
   attach: (
     context: RequestScopedMCPConnectionStore,
     identity: ScheduledMCPIdentity,
     stage: ScheduleMCPExecution['stage'],
     requireEnrollment?: boolean,
-    options?: { manual?: boolean },
+    options?: { manual?: boolean; legacy?: boolean },
   ) => Promise<void>;
 } {
   async function resolve(
     identity: ScheduledMCPIdentity,
     stage: ScheduleMCPExecution['stage'],
-    options: { manual?: boolean } = {},
+    options: { manual?: boolean; legacy?: boolean } = {},
   ): Promise<ScheduleMCPExecution | undefined> {
     const snapshot = await deps.storage.readScheduleMCPConsent(identity);
     if (snapshot?.compatible === false) throw new ScheduledMCPPolicyError('binding_mismatch', '');
-    // Existing schedules remain legacy until explicitly enrolled. Revoked enrollments stay protected.
-    if (!snapshot?.enrollment) return;
+    if (!snapshot) return;
+    const enrolled = snapshot.enrollment != null;
+    if (enrolled && options.legacy === true)
+      throw new ScheduledMCPPolicyError('binding_mismatch', '');
     const capturedIdentity = Object.freeze({ ...identity });
     const manual = options.manual === true;
     const resources = new Map(
-      snapshot.enrollment.consents.map(({ resource }) => [
+      (snapshot.enrollment?.consents ?? []).map(({ resource }) => [
         resource.serverName,
         structuredClone(resource),
       ]),
     );
+    let fenced = false;
+    const checkEnrollment = async (): Promise<void> => {
+      if (enrolled) return;
+      if (fenced) throw new ScheduledMCPPolicyError('binding_mismatch', '');
+      // Finish before the SDK discards a timed-out hook's contribution. No allow decision cached.
+      const observed = await waitUntilDeadline(
+        deps.storage.readScheduleMCPConsent(capturedIdentity),
+        Date.now() + DEFAULT_HOOK_TIMEOUT_MS / 2,
+      );
+      if (!observed.settled) throw new ScheduledMCPPolicyError('dependency_unavailable', '');
+      if (
+        !observed.value ||
+        observed.value.compatible === false ||
+        observed.value.enrollment != null
+      ) {
+        fenced = true;
+        throw new ScheduledMCPPolicyError('binding_mismatch', '');
+      }
+    };
     return Object.freeze({
       identity: capturedIdentity,
       stage,
+      enrolled,
+      checkEnrollment,
       bind(agentId: string | undefined, selectionName: string): ScheduledMCPInvocation {
         return Object.freeze({
           agentId,
+          enrolled,
           async authorize({
             user,
             serverName,
@@ -111,6 +142,20 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
               (user.tenantId ?? null) !== capturedIdentity.tenantId
             )
               deny('binding_mismatch');
+            if (!enrolled) {
+              try {
+                await checkEnrollment();
+              } catch (error) {
+                signal?.throwIfAborted();
+                deny(
+                  error instanceof ScheduledMCPPolicyError
+                    ? error.failure.reason
+                    : 'dependency_unavailable',
+                );
+              }
+              signal?.throwIfAborted();
+              return;
+            }
             // Only the recipient is captured. Authority re-resolves live graph/policy below.
             const resource = resources.get(serverName);
             if (!resource) deny('tool_policy_denied');
@@ -168,7 +213,8 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
     resolve,
     async attach(context, identity, stage, requireEnrollment = false, options) {
       const execution = await resolve(identity, stage, options);
-      if (!execution && requireEnrollment) throw new ScheduledMCPPolicyError('consent_missing', '');
+      if ((!execution || !execution.enrolled) && requireEnrollment)
+        throw new ScheduledMCPPolicyError('consent_missing', '');
       if (execution) executions.set(context, execution);
     },
   };

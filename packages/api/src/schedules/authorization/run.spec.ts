@@ -1,6 +1,13 @@
 import { StructuredTool } from '@langchain/core/tools';
 import { AIMessage } from '@librechat/agents/langchain/messages';
-import { Constants, HookRegistry, MultiAgentGraph, Providers, ToolNode } from '@librechat/agents';
+import {
+  Constants,
+  HookRegistry,
+  MultiAgentGraph,
+  Providers,
+  ToolNode,
+  executeHooks,
+} from '@librechat/agents';
 import type { GraphEdge } from '@librechat/agents';
 import { executionFixture } from './execution.helper';
 import { createScheduledMCPRunPolicy } from './run';
@@ -119,4 +126,28 @@ it('registers nested graph controls only from their resolved member edges', asyn
   expect(await f.check('root', `${Constants.LC_TRANSFER_TO_}peer`)).toMatchObject({
     decision: 'deny',
   });
+});
+
+it('denies safely when an unenrolled run cannot recheck enrollment', async () => {
+  const f = await executionFixture();
+  f.snapshot.enrollment = null;
+  const legacy = (await f.factory.resolve(f.identity, 'invoke'))!;
+  const record = jest.fn(async () => true);
+  const policy = createScheduledMCPRunPolicy(legacy, [{ id: 'root' }], [], record);
+  jest.mocked(f.storage.readScheduleMCPConsent).mockRejectedValueOnce(new Error('PRIVATE outage'));
+  const registry = new HookRegistry();
+  registry.register('PreToolUse', { hooks: [policy.hook, policy.receipt], internal: true });
+  const input = {
+    hook_event_name: 'PreToolUse' as const,
+    runId: 'legacy',
+    executingAgentId: 'root',
+    toolName: 'write',
+    toolInput: {},
+    toolUseId: 'call',
+  };
+  const result = await executeHooks({ registry, input });
+  expect(result).toMatchObject({ decision: 'deny' });
+  expect(result.reason).toContain('dependency_unavailable');
+  expect(result.reason).not.toContain('PRIVATE');
+  expect(record).toHaveBeenCalledTimes(1);
 });

@@ -2986,6 +2986,7 @@ class GenerationJobManagerClass {
         scheduleManual: jobData.scheduleManual,
         scheduleOutcome: jobData.scheduleOutcome,
         scheduleOutcomeError: jobData.scheduleOutcomeError,
+        scheduleMCPFailure: jobData.scheduleMCPFailure,
         preserveForScheduleReconcile: jobData.preserveForScheduleReconcile,
         // Surface deferred tools discovered before the pause so the resume route can
         // replay them into createRun (the rebuilt graph passes `messages: []`).

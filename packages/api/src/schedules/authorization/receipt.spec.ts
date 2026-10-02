@@ -14,6 +14,8 @@ import {
 } from '../service';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { createScheduleMCPConsentService } from './service';
+import { createScheduleMCPExecution } from './execution';
 import { executionFixture } from './execution.helper';
 import { createScheduledMCPRunPolicy } from './run';
 import { ScheduledMCPPolicyError } from './policy';
@@ -48,14 +50,11 @@ afterEach(async () => {
   await store.destroy();
 });
 
-async function setup() {
+async function setup(legacy = false) {
   const methods = createMethods(mongoose);
   const owner = new mongoose.Types.ObjectId();
   const fixture = await executionFixture();
-  const execution = {
-    ...fixture.execution,
-    identity: { ...fixture.identity, ownerId: owner.toString() },
-  };
+  const identity = { ...fixture.identity, ownerId: owner.toString() };
   const schedule = await methods.createSchedule({
     id: 'schedule',
     user: owner,
@@ -67,6 +66,27 @@ async function setup() {
     timezone: 'UTC',
     cadence: { frequency: 'hourly', minute: 0, hour: 1 },
   });
+  const consent = createScheduleMCPConsentService({
+    storage: methods,
+    resolveEnrollment: async () => [fixture.target],
+    getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
+    canUse: async () => true,
+    checkToolPolicy: async () => true,
+  });
+  const enroll = async () => {
+    const offer = await consent.view(identity);
+    await consent.confirm(identity, {
+      offerDigest: offer.offer!.digest,
+      expectedRevision: offer.revision,
+      lifetimeHours: 1,
+    });
+  };
+  if (!legacy) await enroll();
+  const factory = createScheduleMCPExecution({
+    storage: methods,
+    loadAuthorization: async () => ({ authority: consent.authority, policy: fixture.policy }),
+  });
+  const execution = (await factory.resolve(identity, 'invoke'))!;
   const scheduledFor = new Date('2026-10-02T12:00:00Z');
   await methods.insertScheduleRun({
     scheduleId: schedule.id,
@@ -114,7 +134,7 @@ async function setup() {
   const record = createScheduledMCPPolicyRecorder(execution, scope, (input) =>
     recordScheduledMCPToolAuthFailure(input, () => service.recordMCPToolAuthFailure),
   )!;
-  return { methods, execution, schedule, scheduledFor, job, scope, record, service };
+  return { methods, execution, schedule, scheduledFor, job, scope, record, service, enroll, deps };
 }
 
 it.each(['root', 'child'])(
@@ -234,3 +254,211 @@ it.each(['throw', 'timeout'] as const)(
     expect(result.reason).not.toContain('PRIVATE');
   },
 );
+
+it('fences a real legacy SDK action when narrowed consent is confirmed after initialization', async () => {
+  const f = await setup(true);
+  const policy = createScheduledMCPRunPolicy(f.execution, [{ id: 'root' }], [], f.record);
+  const hooks = new HookRegistry();
+  hooks.register('PreToolUse', { hooks: [policy.hook, policy.receipt] });
+  const body = jest.fn(async () => 'legacy write');
+  const action = new DynamicStructuredTool({
+    name: 'write_action_api',
+    description: 'Cached legacy action',
+    schema: z.object({}),
+    func: body,
+  });
+  const node = new ToolNode({ agentId: 'root', tools: [action], hookRegistry: hooks });
+  const call = () =>
+    node.invoke(
+      {
+        messages: [
+          new AIMessage({
+            content: '',
+            tool_calls: [{ id: 'legacy-call', name: action.name, args: {} }],
+          }),
+        ],
+      },
+      { configurable: { run_id: 'legacy', thread_id: 'thread' } },
+    );
+  await call();
+  expect(body).toHaveBeenCalledTimes(1);
+  await f.enroll();
+  const result = await call();
+  expect(JSON.stringify(result)).toContain('Blocked:');
+  expect(body).toHaveBeenCalledTimes(1);
+  await f.service.recordScheduleOutcome({
+    scheduleId: f.schedule.id,
+    scheduledFor: f.scheduledFor,
+    status: 'success',
+    conversationId: 'stream',
+    streamId: 'stream',
+    jobCreatedAt: f.job.createdAt,
+  });
+  expect(await f.methods.getScheduleById(f.schedule.id)).toMatchObject({
+    enabled: false,
+    lastRun: { status: 'error', mcp: [expect.objectContaining({ reason: 'binding_mismatch' })] },
+  });
+});
+
+it('retains a failed Mongo receipt in the job store and replays it after service reconstruction', async () => {
+  const f = await setup();
+  jest
+    .spyOn(f.service.engineDeps.methods, 'recordMCPToolAuthFailure')
+    .mockRejectedValueOnce(new Error('Storage outage PRIVATE'));
+  const failure = new ScheduledMCPPolicyError('tool_policy_denied', '', 'child');
+  expect(await f.record(failure)).toBe(true);
+  expect((await store.getJob('stream'))?.scheduleMCPFailure).toEqual(failure.outcomes[0]);
+  expect(
+    (await f.methods.getScheduleRunAbortState(f.schedule.id, f.scheduledFor))?.mcp,
+  ).toBeUndefined();
+  const recovered = createSchedulesService(f.deps);
+  await recovered.recordScheduleOutcome({
+    scheduleId: f.schedule.id,
+    scheduledFor: f.scheduledFor,
+    status: 'success',
+    conversationId: 'stream',
+    streamId: 'stream',
+    jobCreatedAt: f.job.createdAt,
+  });
+  expect(await f.methods.getScheduleById(f.schedule.id)).toMatchObject({
+    enabled: false,
+    disabledReason: 'mcp_permission_denied',
+    lastRun: { status: 'error', mcp: failure.outcomes },
+  });
+});
+
+it('defers success while both receipt channels are unavailable, then settles the retained denial', async () => {
+  const f = await setup();
+  const mongoWrite = jest
+    .spyOn(f.service.engineDeps.methods, 'recordMCPToolAuthFailure')
+    .mockRejectedValue(new Error('Mongo outage'));
+  const jobWrite = jest.spyOn(store, 'updateJob').mockRejectedValue(new Error('Job store outage'));
+  const failure = new ScheduledMCPPolicyError('tool_policy_denied', '', 'root');
+  expect(await f.record(failure)).toBe(false);
+  const settle = () =>
+    f.service.recordScheduleOutcome({
+      scheduleId: f.schedule.id,
+      scheduledFor: f.scheduledFor,
+      status: 'success',
+      conversationId: 'stream',
+      streamId: 'stream',
+      jobCreatedAt: f.job.createdAt,
+    });
+  expect(await settle()).toBe(false);
+  expect(await f.methods.getScheduleById(f.schedule.id)).toMatchObject({
+    enabled: true,
+    failureCount: 0,
+  });
+  jobWrite.mockRestore();
+  mongoWrite.mockRestore();
+  expect(await settle()).toBe(true);
+  expect(await f.methods.getScheduleById(f.schedule.id)).toMatchObject({
+    enabled: false,
+    disabledReason: 'mcp_permission_denied',
+    lastRun: { status: 'error', mcp: failure.outcomes },
+  });
+});
+
+it('retains a denial before a failed first job lookup and does not stamp a replacement generation', async () => {
+  const f = await setup();
+  const epoch = f.job.createdAt;
+  const recorder = jest.spyOn(f.service, 'recordMCPToolAuthFailure');
+  const read = jest.spyOn(store, 'getJob').mockRejectedValueOnce(new Error('Lookup outage'));
+  expect(await f.record(new ScheduledMCPPolicyError('tool_policy_denied', '', 'child'))).toBe(
+    false,
+  );
+  read.mockRestore();
+  expect(recorder).toHaveBeenCalledWith(
+    expect.objectContaining({ identity: f.execution.identity, jobCreatedAt: epoch }),
+  );
+  expect(await f.service.engineDeps.getJobStatus('stream')).toMatchObject({
+    scheduleMCPFailure: expect.objectContaining({ reason: 'tool_policy_denied' }),
+  });
+  await store.updateJob(
+    'stream',
+    { createdAt: f.job.createdAt + 1, scheduleId: 'other' },
+    f.job.createdAt,
+  );
+  const outcome = jest.spyOn(f.service.engineDeps.methods, 'recordRunOutcome');
+  expect(
+    await f.service.recordScheduleOutcome({
+      scheduleId: f.schedule.id,
+      scheduledFor: f.scheduledFor,
+      status: 'success',
+      conversationId: 'stream',
+      streamId: 'stream',
+      jobCreatedAt: epoch,
+    }),
+  ).toBe(true);
+  expect(outcome).toHaveBeenCalledWith(
+    expect.objectContaining({
+      status: 'error',
+      mcp: [expect.objectContaining({ reason: 'tool_policy_denied' })],
+    }),
+  );
+  expect((await store.getJob('stream'))?.scheduleMCPFailure).toBeUndefined();
+  expect(await f.methods.getScheduleById(f.schedule.id)).toMatchObject({
+    enabled: false,
+    lastRun: { status: 'error', mcp: [expect.objectContaining({ reason: 'tool_policy_denied' })] },
+  });
+});
+
+it('upgrades a transient receipt to a later permanent policy denial', async () => {
+  const f = await setup();
+  expect(await f.record(new ScheduledMCPPolicyError('dependency_unavailable', '', 'root'))).toBe(
+    true,
+  );
+  const permanent = new ScheduledMCPPolicyError('tool_policy_denied', '', 'child');
+  expect(await f.record(permanent)).toBe(true);
+  expect((await store.getJob('stream'))?.scheduleMCPFailure).toEqual(permanent.outcomes[0]);
+  await f.service.recordScheduleOutcome({
+    scheduleId: f.schedule.id,
+    scheduledFor: f.scheduledFor,
+    status: 'success',
+    conversationId: 'stream',
+    streamId: 'stream',
+    jobCreatedAt: f.job.createdAt,
+  });
+  expect(await f.methods.getScheduleById(f.schedule.id)).toMatchObject({
+    enabled: false,
+    disabledReason: 'mcp_permission_denied',
+  });
+});
+
+it('keeps a failed receipt through approval pause and a rebuilt settlement service', async () => {
+  const f = await setup();
+  const mongoWrite = jest
+    .spyOn(f.service.engineDeps.methods, 'recordMCPToolAuthFailure')
+    .mockRejectedValue(new Error('Mongo outage'));
+  const jobWrite = jest.spyOn(store, 'updateJob').mockRejectedValue(new Error('Job outage'));
+  const failure = new ScheduledMCPPolicyError('tool_policy_denied', '', 'child');
+  expect(await f.record(failure)).toBe(false);
+  const pause = () =>
+    f.service.recordScheduleOutcome({
+      scheduleId: f.schedule.id,
+      scheduledFor: f.scheduledFor,
+      status: 'requires_action',
+      conversationId: 'stream',
+      streamId: 'stream',
+      jobCreatedAt: f.job.createdAt,
+    });
+  expect(await pause()).toBe(false);
+  mongoWrite.mockRestore();
+  jobWrite.mockRestore();
+  expect(await pause()).toBe(true);
+  const resumed = createSchedulesService(f.deps);
+  expect(
+    await resumed.recordScheduleOutcome({
+      scheduleId: f.schedule.id,
+      scheduledFor: f.scheduledFor,
+      status: 'success',
+      conversationId: 'stream',
+      streamId: 'stream',
+      jobCreatedAt: f.job.createdAt,
+    }),
+  ).toBe(true);
+  expect(await f.methods.getScheduleById(f.schedule.id)).toMatchObject({
+    enabled: false,
+    lastRun: { status: 'error', mcp: failure.outcomes },
+  });
+});

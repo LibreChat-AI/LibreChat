@@ -2,6 +2,8 @@ import { logger } from '@librechat/data-schemas';
 import { createContentAggregator } from '@librechat/agents';
 import {
   ContentTypes,
+  scheduleMCPOutcomeSchema,
+  isScheduleMCPAuthorizationFailure,
   StepEvents,
   getRunStepDurationMs,
   getRunStepCloseMetadata,
@@ -5414,6 +5416,17 @@ export class RedisJobStore implements IJobStoreV2 {
           ? data.scheduleOutcome
           : undefined,
       scheduleOutcomeError: data.scheduleOutcomeError || undefined,
+      scheduleMCPFailure: (() => {
+        if (!data.scheduleMCPFailure) return;
+        try {
+          const parsed = scheduleMCPOutcomeSchema.safeParse(JSON.parse(data.scheduleMCPFailure));
+          return parsed.success && isScheduleMCPAuthorizationFailure(parsed.data)
+            ? parsed.data
+            : undefined;
+        } catch {
+          return;
+        }
+      })(),
       preserveForScheduleReconcile:
         data.preserveForScheduleReconcile != null
           ? data.preserveForScheduleReconcile === '1'

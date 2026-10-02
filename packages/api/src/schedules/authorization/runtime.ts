@@ -117,8 +117,11 @@ export function createScheduleMCPRuntimeHost(
       const row = await deps.methods.getScheduleById(scheduleId, req.user.id);
       if (!row || (row.tenantId ?? null) !== (req.user.tenantId ?? null))
         throw new ScheduledMCPPolicyError('binding_mismatch', '');
-      if (row.mcpConsent === undefined) return;
-      const rootId = restoredContext?.agentId ?? (fire ? req.body?.agent_id : undefined);
+      const enrolled = row.mcpConsent !== undefined;
+      const rootId =
+        restoredContext?.agentId ??
+        (fire ? req.body?.agent_id : undefined) ??
+        (!enrolled ? row.agent_id : undefined);
       if (typeof rootId !== 'string' || rootId !== row.agent_id)
         throw new ScheduledMCPPolicyError('binding_mismatch', '');
       const identity = scheduledMCPIdentity({
@@ -134,7 +137,8 @@ export function createScheduleMCPRuntimeHost(
           (restoredContext.tenantId ?? null) !== (req.user.tenantId ?? null))
       )
         throw new ScheduledMCPPolicyError('binding_mismatch', '');
-      await execution.attach(context, identity, restoredContext ? 'resume' : 'invoke', true, {
+      await execution.attach(context, identity, restoredContext ? 'resume' : 'invoke', enrolled, {
+        legacy: !enrolled,
         manual: restoredContext
           ? restoredJob?.scheduleId === scheduleId && restoredJob.scheduleManual === true
           : fire?.manual === true,

@@ -3,6 +3,7 @@ import type {
   ICompactionSemanticIndexProjection,
 } from '@librechat/data-schemas';
 import type { Agents, UserSubmittedMessageFieldPath } from 'librechat-data-provider';
+import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { EventEmitter } from 'events';
 import type {
   AgentEventDetachedTerminalEvidence,
@@ -83,6 +84,8 @@ export interface GenerationJobMetadata {
    * fails. The scheduler reconciler consumes this evidence before clearing the job. */
   scheduleOutcome?: 'success' | 'error' | 'interrupted' | 'skipped_balance';
   scheduleOutcomeError?: string;
+  /** Safe invocation denial retained until schedule settlement, never tool arguments. */
+  scheduleMCPFailure?: ScheduleMCPOutcome;
   /** Prevent normal terminal cleanup until schedule reconciliation has consumed
    * the retained outcome evidence. */
   preserveForScheduleReconcile?: boolean;

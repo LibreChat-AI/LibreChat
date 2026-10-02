@@ -1457,6 +1457,8 @@ Please follow these instructions when using tools from the respective MCP server
     mcpApps?: TMCPAppsPolicy;
   }): Promise<t.FormattedToolResponse> {
     const userId = user?.id;
+    const enforceSchedule =
+      scheduledMCPInvocation != null && scheduledMCPInvocation.enrolled !== false;
     const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
     const logPrefix = userId ? `[MCP][User: ${userId}][${serverName}]` : `[MCP][${serverName}]`;
     this.bindRequestScopedConnectionStore(requestScopedConnections);
@@ -1889,7 +1891,7 @@ Please follow these instructions when using tools from the respective MCP server
         } catch (error) {
           if (error instanceof ScheduledMCPPolicyError) throw error;
           // A resource rejection cannot prove that the operation had no side effects.
-          if (scheduledMCPInvocation && isMCPTransportAuthenticationError(error)) {
+          if (enforceSchedule && isMCPTransportAuthenticationError(error)) {
             throw new MCPAuthenticationRejectedError(serverName, false, error);
           }
           if (directBearerRecovery && user && isMCPTransportAuthenticationError(error)) {
@@ -2104,11 +2106,11 @@ Please follow these instructions when using tools from the respective MCP server
           logger.debug(`${logPrefix}[${toolName}] Tool call cancelled by user abort`);
           throw error;
         }
-        if (scheduledMCPInvocation && error instanceof MCPAuthenticationRejectedError) {
+        if (enforceSchedule && error instanceof MCPAuthenticationRejectedError) {
           throw new ScheduledMCPPolicyError(
             'credential_rejected',
             serverName,
-            scheduledMCPInvocation.agentId,
+            scheduledMCPInvocation?.agentId,
           );
         }
         // Log with context and re-throw or handle as needed

@@ -300,6 +300,7 @@ export interface JobState {
    *  owner left it. See SerializableJobData.scheduleOutcome. */
   scheduleOutcome?: string;
   scheduleOutcomeError?: string;
+  scheduleMCPFailure?: ScheduleMCPOutcome;
   preserveForScheduleReconcile?: boolean;
 }
 

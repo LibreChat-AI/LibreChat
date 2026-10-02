@@ -119,6 +119,10 @@ async function createRequestScopedTestServer(): Promise<RequestScopedTestServer>
         toolCalls += 1;
         return { content: [{ type: 'text', text: value }] };
       });
+      mcp.tool('write', 'Legacy mutation', {}, async () => {
+        toolCalls += 1;
+        return { content: [{ type: 'text', text: 'write performed' }] };
+      });
       await mcp.connect(transport);
     }
 
@@ -344,6 +348,58 @@ describe('request-scoped MCP lifecycle integration', () => {
       expect(server.toolCallCount()).toBe(1);
     } finally {
       await Promise.all([connection.disconnect(), protectedConnection.disconnect()]);
+      MCPConnection.clearCooldown('warehouse');
+    }
+  });
+
+  it('fences a cached legacy MCP write immediately after narrower enrollment', async () => {
+    const context = createContext();
+    const config: ParsedServerConfig = { type: 'streamable-http', url: server.url };
+    const connection = await manager.getConnection({
+      user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const catalog = await connection.fetchToolsSnapshot();
+    const echo = catalog.tools.find(({ name }) => name === 'echo')!;
+    const f = await executionFixture('invoke', echo, server.url);
+    f.snapshot.enrollment = null;
+    const legacy = (await f.factory.resolve(f.identity, 'invoke'))!;
+    const cachedWrite = legacy.bind('root', 'write');
+    const active = await manager.getConnection({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const call = () =>
+      manager.callTool({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        toolName: 'write',
+        toolArguments: {},
+        provider: 'openai',
+        requestScopedConnections: context,
+        flowManager,
+        scheduledMCPInvocation: cachedWrite,
+      });
+    try {
+      await call();
+      expect(server.toolCallCount()).toBe(1);
+      const offer = await f.service.view(f.identity);
+      await f.service.confirm(f.identity, {
+        offerDigest: offer.offer!.digest,
+        expectedRevision: null,
+        lifetimeHours: 1,
+      });
+      await expect(call()).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+      expect(server.toolCallCount()).toBe(1);
+    } finally {
+      await Promise.all([connection.disconnect(), active.disconnect()]);
       MCPConnection.clearCooldown('warehouse');
     }
   });

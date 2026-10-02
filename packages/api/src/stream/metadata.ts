@@ -1,3 +1,7 @@
+import {
+  scheduleMCPOutcomeSchema,
+  isScheduleMCPAuthorizationFailure,
+} from 'librechat-data-provider';
 import type { JobMetadataPatch } from './interfaces/IJobStore';
 import type { GenerationJobMetadata } from '~/types';
 
@@ -85,6 +89,11 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   }
   if (metadata.scheduleOutcomeError !== undefined) {
     patch.scheduleOutcomeError = metadata.scheduleOutcomeError;
+  }
+  if (metadata.scheduleMCPFailure !== undefined) {
+    const failure = scheduleMCPOutcomeSchema.safeParse(metadata.scheduleMCPFailure);
+    if (failure.success && isScheduleMCPAuthorizationFailure(failure.data))
+      patch.scheduleMCPFailure = failure.data;
   }
   if (metadata.preserveForScheduleReconcile !== undefined) {
     patch.preserveForScheduleReconcile = metadata.preserveForScheduleReconcile;

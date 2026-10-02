@@ -3,6 +3,7 @@ import { getRefillEligibilityDate, Permissions, PermissionTypes } from 'librecha
 import {
   DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
   isScheduleMCPAuthorizationFailure,
+  getScheduleMCPDisabledReason,
 } from 'librechat-data-provider';
 import type { ScheduleMethods, AppConfig, IBalance, IChatProject } from '@librechat/data-schemas';
 import type { TCheckpointerConfig } from 'librechat-data-provider';
@@ -469,6 +470,17 @@ export function createSchedulesService(
   }
 
   const getLimits = createScheduleLimitsResolver(deps.getAppConfig);
+  // Recovery evidence, not an allow cache. Only an undurable active generation retains an entry.
+  const pendingMCPFailures = new Map<
+    string,
+    {
+      outcome: ScheduleMCPOutcome;
+      identity: ScheduleMCPExecution['identity'];
+    }
+  >();
+  const failureKey = (streamId: string, epoch: number) => JSON.stringify([streamId, epoch]);
+  const preferFailure = (previous: ScheduleMCPOutcome | undefined, next: ScheduleMCPOutcome) =>
+    !previous || getScheduleMCPDisabledReason([previous, next]) === next.status ? next : previous;
 
   const MANUAL_RUN_LEASE_MS = 5 * 60 * 1000;
   // Bounded wait for aborted scheduled runs to settle during account-deletion quiesce,
@@ -639,6 +651,14 @@ export function createSchedulesService(
       if (job == null) {
         return null;
       }
+      const pending = pendingMCPFailures.get(failureKey(conversationId, job.createdAt));
+      const retained =
+        pending &&
+        job.scheduleId === pending.identity.scheduleId &&
+        job.userId === pending.identity.ownerId &&
+        (job.tenantId ?? null) === pending.identity.tenantId
+          ? pending.outcome
+          : job.scheduleMCPFailure;
       return {
         status: job.status,
         createdAt: job.createdAt,
@@ -651,6 +671,7 @@ export function createSchedulesService(
         ...(job.scheduleOutcomeError != null && {
           scheduleOutcomeError: job.scheduleOutcomeError,
         }),
+        ...(retained && { scheduleMCPFailure: retained }),
       };
     },
     abortScheduledJob: async (conversationId, identity, options) => {
@@ -906,7 +927,14 @@ export function createSchedulesService(
     ) {
       return false;
     }
-    const job = await GenerationJobManager.getJobStore()?.getJob(streamId);
+    const key = failureKey(streamId, jobCreatedAt);
+    if (error instanceof ScheduledMCPPolicyError && identity)
+      pendingMCPFailures.set(key, {
+        outcome: preferFailure(pendingMCPFailures.get(key)?.outcome, error.outcomes[0]),
+        identity: Object.freeze({ ...identity }),
+      });
+    const store = GenerationJobManager.getJobStore();
+    const job = await store?.getJob(streamId);
     if (
       job?.createdAt !== jobCreatedAt ||
       job.userId !== userId ||
@@ -917,18 +945,64 @@ export function createSchedulesService(
         (job.scheduleId !== identity.scheduleId ||
           job.userId !== identity.ownerId ||
           (job.tenantId ?? null) !== identity.tenantId ||
-          job.agent_id !== identity.agentId))
+          (job.agent_id != null && job.agent_id !== identity.agentId)))
     ) {
+      pendingMCPFailures.delete(key);
       return false;
     }
-    return methods.recordMCPToolAuthFailure({
+    const input = {
       scheduleId: job.scheduleId,
       scheduledFor: new Date(job.scheduledFor),
       conversationId: job.conversationId,
       ...(job.tenantId ? { tenantId: job.tenantId } : {}),
       server: serverName,
       ...(error instanceof ScheduledMCPPolicyError && { outcome: error.outcomes[0] }),
+    };
+    if (!(error instanceof ScheduledMCPPolicyError)) return methods.recordMCPToolAuthFailure(input);
+    const outcome = preferFailure(
+      job.scheduleMCPFailure,
+      pendingMCPFailures.get(key)?.outcome ?? error.outcomes[0],
+    );
+    pendingMCPFailures.set(key, {
+      outcome,
+      identity: identity ?? {
+        scheduleId: job.scheduleId,
+        ownerId: userId,
+        tenantId: job.tenantId ?? null,
+        agentId: job.agent_id ?? '',
+        invocationMode: 'delegated',
+      },
     });
+    const writes = await Promise.allSettled([
+      store.updateJob(
+        streamId,
+        {
+          scheduleMCPFailure: outcome,
+          preserveForScheduleReconcile: true,
+          scheduleOutcome: 'error',
+          scheduleOutcomeError: `${outcome.status}: ${JSON.stringify([outcome])}`,
+        },
+        jobCreatedAt,
+      ),
+      methods.recordMCPToolAuthFailure({ ...input, outcome }),
+    ]);
+    let jobRetained = false;
+    if (writes[0].status === 'fulfilled') {
+      const latest = await store.getJob(streamId).catch(() => null);
+      jobRetained =
+        latest?.createdAt === jobCreatedAt &&
+        latest.scheduleId === job.scheduleId &&
+        latest.scheduledFor === job.scheduledFor &&
+        latest.userId === userId &&
+        (latest.tenantId ?? null) === (job.tenantId ?? null) &&
+        latest.scheduleMCPFailure != null;
+    }
+    if (jobRetained || (writes[1].status === 'fulfilled' && writes[1].value)) {
+      pendingMCPFailures.delete(key);
+      return true;
+    }
+    logger.warn('[schedules] MCP denial evidence awaiting durable recovery');
+    return false;
   }
 
   const OUTCOME_RETRY_ATTEMPTS = 3;
@@ -995,6 +1069,45 @@ export function createSchedulesService(
     }
     const terminal = status !== 'requires_action';
     let mcp: ScheduleMCPOutcome[] = [];
+    const key = streamId && jobCreatedAt != null ? failureKey(streamId, jobCreatedAt) : undefined;
+    let retained: ScheduleMCPOutcome | undefined;
+    if (streamId && jobCreatedAt != null) {
+      try {
+        const job = await GenerationJobManager.getJobStore()?.getJob(streamId);
+        const pending = key ? pendingMCPFailures.get(key) : undefined;
+        if (pending?.identity.scheduleId === scheduleId) retained = pending.outcome;
+        if (
+          job?.createdAt === jobCreatedAt &&
+          job.scheduleId === scheduleId &&
+          new Date(job.scheduledFor ?? '').getTime() === new Date(scheduledFor).getTime() &&
+          (!pending ||
+            (job.userId === pending.identity.ownerId &&
+              (job.tenantId ?? null) === pending.identity.tenantId &&
+              (job.agent_id == null || job.agent_id === pending.identity.agentId)))
+        )
+          retained = pending?.outcome ?? job.scheduleMCPFailure;
+        else if (!retained && key) pendingMCPFailures.delete(key);
+      } catch {
+        // A known denial cannot be replaced by success while its evidence is undurable.
+        if (key && pendingMCPFailures.has(key)) return false;
+        logger.warn('[schedules] retained generation evidence is unavailable');
+        return false;
+      }
+    }
+    if (!terminal && retained && streamId && jobCreatedAt != null) {
+      try {
+        await GenerationJobManager.updateMetadata(
+          streamId,
+          {
+            scheduleMCPFailure: retained,
+            preserveForScheduleReconcile: true,
+          },
+          jobCreatedAt,
+        );
+      } catch {
+        return false;
+      }
+    }
     if (terminal) {
       // Honor an in-flight interactive Stop's persistence before terminalizing. A deferral
       // is NOT a failure to record — the run is deliberately left active/preserved — but it
@@ -1008,6 +1121,17 @@ export function createSchedulesService(
         return false;
       }
       mcp = observed;
+      if (
+        retained &&
+        !mcp.some(
+          (item) =>
+            item.server === retained.server &&
+            item.agentId === retained.agentId &&
+            item.reason === retained.reason &&
+            item.status === retained.status,
+        )
+      )
+        mcp.push(retained);
     }
     const missingAuth =
       mcp.length > 0 &&
@@ -1020,6 +1144,7 @@ export function createSchedulesService(
           streamId,
           {
             preserveForScheduleReconcile: true,
+            ...(retained && { scheduleMCPFailure: retained }),
             scheduleOutcome:
               effectiveStatus === 'success' ||
               effectiveStatus === 'error' ||
@@ -1057,6 +1182,7 @@ export function createSchedulesService(
           autoDisableAfterFailures: limits.autoDisableAfterFailures,
           balanceSkipDisableThreshold: BALANCE_SKIP_DISABLE_THRESHOLD,
         });
+        if (terminal && key) pendingMCPFailures.delete(key);
         // ERASE-ON-SETTLE: whichever process records a run's terminal outcome also
         // attempts the deferred erase of a deleting schedule. This is what makes a
         // delete's `draining` state converge in EVERY topology — the clustered

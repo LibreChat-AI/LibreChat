@@ -242,7 +242,7 @@ it('never grants enrolled legacy resumes lacking trusted root metadata', async (
       restoredJob: { scheduleId: 'schedule' },
     }),
   ).resolves.toBeUndefined();
-  expect(getScheduleMCPExecution(f.context)).toBeUndefined();
+  expect(getScheduleMCPExecution(f.context)).toMatchObject({ enrolled: false });
 });
 
 it('ignores spoofed body fields on ordinary chat and refuses cross-tenant triggers', async () => {
@@ -460,4 +460,30 @@ it.each(['expire', 'deny'] as const)('manual invocation still denies %s', async 
   ).rejects.toMatchObject({
     failure: { reason: mutation === 'expire' ? 'consent_expired' : 'rbac_denied' },
   });
+});
+
+it('attaches a legacy monitor without minting a grant and fences its next tool after confirmation', async () => {
+  const f = await setup();
+  f.snapshot.enrollment = null;
+  f.row.mcpConsent = undefined;
+  await f.host.prepare({ req: f.req, context: f.context });
+  const execution = getScheduleMCPExecution(f.context)!;
+  expect(execution.enrolled).toBe(false);
+  const guard = bindScheduledMCPInvocation(f.context, 'root', 'write')!;
+  const call = () =>
+    guard.authorize({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: f.serverConfig,
+      toolName: 'write',
+      loadTools: async () => ({ tools: [], complete: true }),
+    });
+  await expect(call()).resolves.toBeUndefined();
+  const offer = await f.host.consent.service.view(f.identity);
+  await f.host.consent.service.confirm(f.identity, {
+    offerDigest: offer.offer!.digest,
+    expectedRevision: null,
+    lifetimeHours: 1,
+  });
+  await expect(call()).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
 });
