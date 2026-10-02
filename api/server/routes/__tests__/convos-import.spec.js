@@ -384,6 +384,24 @@ describe('conversation import job API (real router, real Mongo)', () => {
     expect(rejected.body.jobId).toBeUndefined();
   });
 
+  it('answers a job-store failure after inspection as retryable, without a job', async () => {
+    const patch = jest
+      .spyOn(ImportJobStore.prototype, 'patch')
+      .mockRejectedValueOnce(new Error('store unavailable'));
+    try {
+      const filepath = await buildChatGptExportZip();
+      const refused = await request(app)
+        .post('/api/convos/import')
+        .attach('file', filepath)
+        .expect(503);
+
+      expect(refused.body.jobId).toBeUndefined();
+      expect(refused.body.message).not.toContain('store unavailable');
+    } finally {
+      patch.mockRestore();
+    }
+  });
+
   it('404s a job belonging to another user', async () => {
     const missing = await request(app).get('/api/convos/import/jobs/does-not-exist').expect(404);
 

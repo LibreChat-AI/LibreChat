@@ -1305,8 +1305,10 @@ async function handleImportUpload(req, res) {
     await fs.promises.utimes(req.file.path, new Date(), new Date()).catch(() => undefined);
     res.status(202).json({ jobId: job.jobId, summary: updated.summary });
   } catch (error) {
+    /** Only the job store and the upload's own file are touched here, so a
+     * failure is an outage the client can retry, not a bad request. */
     await fs.promises.unlink(req.file.path).catch(() => undefined);
-    res.status(400).json({
+    res.status(503).json({
       message: sanitizeImportError(error, `Error creating import job for user ${req.user.id}`),
     });
   }
