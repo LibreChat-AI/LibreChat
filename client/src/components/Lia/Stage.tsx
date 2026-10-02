@@ -152,24 +152,40 @@ export default function Stage({
       const origin = root.getBoundingClientRect();
       const box = band.getBoundingClientRect();
       const top = box.top - origin.top;
+      /* The band runs below the visible composer, so the floor is the form's bottom edge. */
+      const bottom =
+        (band.querySelector('form') ?? band).getBoundingClientRect().bottom - origin.top;
+      const left = box.left - origin.left;
+      const right = box.right - origin.left;
       /* While leaving, the conversation replaces the welcome content and Lia rides the composer down. */
       const obstacles = leavingRef.current ? [] : measureObstacles(band);
-      const blocked = obstacles
-        .filter((o) => o.bottom - origin.top > top - HEIGHT && o.top - origin.top < top)
-        .map((o) => [o.left - origin.left - EDGE, o.right - origin.left + EDGE] as const);
-      const span = freeSpan(
-        box.left - origin.left + EDGE,
-        box.right - origin.left - EDGE,
-        blocked,
-        placed?.position.x ?? Infinity,
-        /* Any gap that fits her body will do: beside a wide greeting she stands still. */
-        0,
-      );
-      setVisible(span != null);
-      if (span) {
-        room = [Math.max(0, span[0] - EDGE), Math.min(root.clientWidth, span[1] + EDGE)];
+      /* Where she can stand with her feet at `y`, clear of the content beside or above her.
+       * Any gap that fits her body will do: in a narrow one she stands still. */
+      const standAt = (y: number, x0: number, x1: number, extra: [number, number][]) =>
+        freeSpan(
+          x0,
+          x1,
+          obstacles
+            .filter((o) => o.bottom - origin.top > y - HEIGHT && o.top - origin.top < y)
+            .map((o) => [o.left - origin.left - EDGE, o.right - origin.left + EDGE] as const)
+            .concat(extra),
+          placed?.position.x ?? Infinity,
+          0,
+        );
+      /* On top of the composer beside the greeting, or, when the greeting fills that, on the
+       * floor beside the composer, level with its bottom edge. */
+      let y = top + 1;
+      let span = standAt(top, left + EDGE, right - EDGE, []);
+      if (!span) {
+        y = bottom;
+        span = standAt(bottom, EDGE, root.clientWidth - EDGE, [[left - EDGE, right + EDGE]]);
       }
-      return span ? { y: top + 1, x0: span[0], x1: span[1] } : null;
+      setVisible(span != null);
+      if (!span) {
+        return null;
+      }
+      room = [Math.max(0, span[0] - EDGE), Math.min(root.clientWidth, span[1] + EDGE)];
+      return { y, x0: span[0], x1: span[1] };
     };
     const engine = new LiaEngine(canvas, {
       platform,
