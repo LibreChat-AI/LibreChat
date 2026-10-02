@@ -2852,6 +2852,8 @@
   "com_ui_subagent_control_cancel_message": "Withdraw message",
   "com_ui_subagent_control_history": "Control history",
   "com_ui_subagent_control_history_truncated": "Earlier control activity is not shown.",
+  "com_ui_subagent_activity_dropped_one": "One activity update was omitted while the live stream was unavailable. The completed transcript remains available.",
+  "com_ui_subagent_activity_dropped": "{{count}} activity updates were omitted while the live stream was unavailable. The completed transcript remains available.",
   "com_ui_subagent_activity_details_unavailable": "Additional activity details are unavailable.",
   "com_ui_subagent_show_full_activity": "Show full activity",
   "com_ui_subagent_load_earlier_activity": "Load earlier activity",

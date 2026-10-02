@@ -751,6 +751,15 @@ endpoints:
   #   # (optional) Shared files during an active agent run. Each delegating agent must
   #   # also opt in with subagents.shareFiles. Inputs are read-only; outputs stay
   #   # private until explicitly published. Published files remain downloadable.
+  #   # Live child activity, independent of the completed transcript.
+  #   subagentActivity:
+  #     replayTtlMs: 300000 # Increase for long silent tool calls.
+  #     publicationTimeoutMs: 1000
+  #     retryAttempts: 3
+  #     retryBaseDelayMs: 100
+  #     recoveryDelayMs: 1000
+  #     memoryMaxStreams: 1000 # Non-Redis replay cache.
+  #     memoryMaxBytes: 16777216
   #   fileSharing:
   #     enabled: false
   #     allowSiblingSharing: false # permit explicitly named sibling/descendant recipients

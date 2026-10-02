@@ -2424,3 +2424,45 @@ describe('built-in endpoint model lists', () => {
     },
   );
 });
+
+describe('subagent activity policy', () => {
+  it('defaults operational controls through the config schema', () => {
+    const parsed = configSchema.parse({
+      version: '1.3.17',
+      endpoints: { agents: { subagentActivity: {} } },
+    });
+    expect(parsed.endpoints?.agents?.subagentActivity).toEqual({
+      replayTtlMs: 300_000,
+      publicationTimeoutMs: 1_000,
+      retryAttempts: 3,
+      retryBaseDelayMs: 100,
+      recoveryDelayMs: 1_000,
+      memoryMaxStreams: 1_000,
+      memoryMaxBytes: 16_777_216,
+    });
+  });
+  it('retains operator overrides and rejects unsafe budgets', () => {
+    const config = {
+      version: '1.3.17',
+      endpoints: {
+        agents: {
+          subagentActivity: {
+            replayTtlMs: 3_600_000,
+            publicationTimeoutMs: 5_000,
+            retryAttempts: 2,
+            memoryMaxBytes: 65_536,
+          },
+        },
+      },
+    };
+    expect(configSchema.parse(config).endpoints?.agents?.subagentActivity).toMatchObject(
+      config.endpoints.agents.subagentActivity,
+    );
+    expect(
+      configSchema.safeParse({
+        ...config,
+        endpoints: { agents: { subagentActivity: { retryAttempts: 0 } } },
+      }).success,
+    ).toBe(false);
+  });
+});
