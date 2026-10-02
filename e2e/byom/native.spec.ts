@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, open, readFile, readdir } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { ChildProcess } from 'node:child_process';
+import { readGenerationStatus } from './status.mjs';
 import {
   getAccessToken,
   requestJson,
@@ -263,10 +264,7 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
     await expect
       .poll(
         async () => {
-          const status = await requestJson<{ active: boolean }>(page, {
-            path: `/api/agents/chat/status/${conversationId}`,
-            token,
-          });
+          const status = await generationStatus(conversationId);
           return status.active;
         },
         { timeout: 30_000 },
@@ -277,6 +275,13 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
     await expect(page.getByTestId('stop-generation-button')).toBeHidden();
     await expect(page).toHaveURL(new RegExp(`/c/${conversationId}$`));
     return conversationId;
+  }
+
+  async function generationStatus(conversationId: string) {
+    const response = await page.request.get(`/api/agents/chat/status/${conversationId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return readGenerationStatus(response);
   }
 
   async function readDecision(conversationId: string) {
@@ -329,10 +334,7 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
         await expect
           .poll(
             async () => {
-              const status = await requestJson<{ active: boolean }>(page, {
-                path: `/api/agents/chat/status/${streamId}`,
-                token,
-              });
+              const status = await generationStatus(streamId!);
               return status.active;
             },
             { timeout: 30_000 },

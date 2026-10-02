@@ -67,6 +67,9 @@ jobs:
           npm run build --prefix .native-code/service
           cp .native-code/service/src/matplotlib-async.py .native-code/service/.build-service/src/matplotlib-async.py
 
+      - name: Verify harness lifecycle and generation readiness
+        run: node --test e2e/byom/*.test.mjs
+
       - name: Exercise agent machine choices and native worker isolation
         env:
           BYOM_WORKSPACE_TRANSITIONS: 'false'

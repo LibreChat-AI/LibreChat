@@ -248,7 +248,7 @@ try {
     appEnv,
     root,
   );
-  await ready(appURL, app);
+  await ready(`${appURL}/readyz`, app);
   await mkdir(path.join(runDir, 'workers'), { mode: 0o700 });
   console.log(
     `Native BYOM acceptance: ${appURL}; Code API ${codeURL}; Redis ${redisPort}; Mongo ${mongo.instanceInfo.port}`,
