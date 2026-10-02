@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { InMemorySubagentTaskStore } from '@librechat/agents';
 import { logger, tenantStorage } from '@librechat/data-schemas';
-import { EModelEndpoint, Constants } from 'librechat-data-provider';
+import { EModelEndpoint, Constants, subagentActivityConfigSchema } from 'librechat-data-provider';
 import {
   mapChatMessagesToStoredMessages,
   mapStoredMessagesToChatMessages,
@@ -29,6 +29,7 @@ import type {
   SubagentTaskResultClaim,
 } from '@librechat/data-schemas';
 import type { BaseMessage, StoredMessage } from '@librechat/agents/langchain/messages';
+import type { TSubagentActivityConfig } from 'librechat-data-provider';
 import type {
   SubagentActivityUpdateEvent,
   SubagentActivitySubscriber,
@@ -77,8 +78,6 @@ const SHUTDOWN_CONTROL_RECEIPT_FLUSH_ATTEMPTS = 4;
 const DEFAULT_SHUTDOWN_CONTROL_RECEIPT_BACKOFF_MS = 1_000;
 /** Bounds retained live-only updates while an event transport is unavailable. */
 const MAX_PENDING_ACTIVITY_EVENTS = SUBAGENT_ACTIVITY_LIMITS.items;
-/** Live activity must never delay terminal notification indefinitely. */
-const ACTIVITY_PUBLICATION_TIMEOUT_MS = 1_000;
 
 /** A cancellation target set resolved before the conversations are removed. */
 export interface SubagentCancellationPlan {
@@ -229,7 +228,7 @@ class SubagentActivityPublicationTimeoutError extends Error {
   }
 }
 
-async function settleActivityWithin(operation: Promise<void>): Promise<void> {
+async function settleActivityWithin(operation: Promise<void>, timeoutMs: number): Promise<void> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
@@ -237,7 +236,7 @@ async function settleActivityWithin(operation: Promise<void>): Promise<void> {
       new Promise<void>((_, reject) => {
         timeout = setTimeout(
           () => reject(new SubagentActivityPublicationTimeoutError()),
-          ACTIVITY_PUBLICATION_TIMEOUT_MS,
+          timeoutMs,
         );
         timeout.unref?.();
       }),
@@ -248,6 +247,7 @@ async function settleActivityWithin(operation: Promise<void>): Promise<void> {
 }
 
 export interface SubagentThreadTaskStoreOptions extends InMemorySubagentTaskStoreOptions {
+  activity?: Partial<TSubagentActivityConfig>;
   maxThreadDepth?: number;
   leaseTtlMs?: number;
   leaseHeartbeatMs?: number;
@@ -635,6 +635,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
   /** Tasks whose completion wake-up was registered; only they announce settlement. */
   private readonly wakeupTaskIds = new Set<string>();
   private taskControlTransport?: SubagentTaskControlTransport;
+  private activityOptions: TSubagentActivityConfig = subagentActivityConfigSchema.parse({});
   private activityStream = new SubagentActivityStream(new InMemoryEventTransport());
 
   constructor(
@@ -642,6 +643,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     options: SubagentThreadTaskStoreOptions = {},
   ) {
     super(options);
+    this.configureActivity(options.activity);
     this.maxThreadDepth =
       Number.isSafeInteger(options.maxThreadDepth) && (options.maxThreadDepth ?? 0) > 0
         ? (options.maxThreadDepth as number)
@@ -1169,6 +1171,21 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     }
   }
 
+  /** Host injects the base configuration before task admission. */
+  configureActivity(options: Partial<TSubagentActivityConfig> = {}): TSubagentActivityConfig {
+    this.activityOptions = subagentActivityConfigSchema.parse(options);
+    this.configureActivityStream(
+      new SubagentActivityStream(
+        new InMemoryEventTransport({
+          maxStreams: this.activityOptions.memoryMaxStreams,
+          maxBytes: this.activityOptions.memoryMaxBytes,
+        }),
+        this.activityOptions,
+      ),
+    );
+    return this.activityOptions;
+  }
+
   /** Replaces the process-local activity bus after the host's Redis service is ready. */
   configureActivityStream(stream: SubagentActivityStream): void {
     const previous = this.activityStream;
@@ -1251,19 +1268,27 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
   }
 
   private async retryActivity(operation: () => Promise<void>): Promise<boolean> {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < this.activityOptions.retryAttempts; attempt++) {
       try {
-        await settleActivityWithin(operation());
+        await settleActivityWithin(operation(), this.activityOptions.publicationTimeoutMs);
         return true;
       } catch (error) {
-        if (attempt === 2) {
+        if (attempt + 1 === this.activityOptions.retryAttempts) {
           logger.warn(
             '[subagentThreads] Failed to publish child activity after bounded retries',
             error,
           );
           return false;
         }
-        await new Promise<void>((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
+        await new Promise<void>((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              this.activityOptions.recoveryDelayMs,
+              this.activityOptions.retryBaseDelayMs * 2 ** attempt,
+            ),
+          ),
+        );
       }
     }
     return false;
@@ -1297,7 +1322,9 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
         };
         lease.activityQueuedBytes = 0;
         if (lease.activityAdmissionClosed === true) break;
-        await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, this.activityOptions.recoveryDelayMs),
+        );
       }
     }
   }

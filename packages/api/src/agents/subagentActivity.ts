@@ -1,6 +1,8 @@
-import { createHash } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
+import { createHash, randomUUID } from 'node:crypto';
+import { subagentActivityConfigSchema } from 'librechat-data-provider';
 import type { ConversationMethods, MessageMethods } from '@librechat/data-schemas';
+import type { TSubagentActivityConfig } from 'librechat-data-provider';
 import type { SubagentUpdateEvent } from '@librechat/agents';
 import type { Response } from 'express';
 import type { IEventTransport } from '~/stream/interfaces/IJobStore';
@@ -12,14 +14,13 @@ const STREAM_PREFIX = 'subagent-activity:';
 const MAX_ID_BYTES = 512;
 const MAX_LABEL_BYTES = 512;
 const MAX_ANCESTRY_ENTRIES = 16;
-const MAX_EVENT_BYTES = 64 * 1024;
+/** Includes Redis type/data/seq wrappers and the largest safe omission count. */
+const REPLAY_WIRE_RESERVE_BYTES = 128;
+const MAX_EVENT_BYTES = SUBAGENT_ACTIVITY_LIMITS.bytes - REPLAY_WIRE_RESERVE_BYTES;
 const HEARTBEAT_MS = 15_000;
 const DEMAND_TTL_MS = 30_000;
 const DEMAND_HEARTBEAT_MS = 10_000;
 const DEMAND_CACHE_MS = 250;
-/** Fixed protocol safety window, like the transport sequence TTL. This cache is not a
- * configurable alternate persistence tier; payload budgets match the durable public view. */
-const REPLAY_LIMITS = { ...SUBAGENT_ACTIVITY_LIMITS, ttlMs: 5 * 60_000 };
 const SHUTDOWN_SUBSCRIBER_ERROR = 'Server is shutting down';
 
 export type SubagentActivityTerminalStatus = 'completed' | 'failed' | 'cancelled';
@@ -192,7 +193,19 @@ export const subagentActivityStreamId = (threadId: string, taskId: string): stri
 export class SubagentActivityStream {
   private readonly demandCache = new Map<string, { demanded: boolean; expiresAt: number }>();
 
-  constructor(private readonly transport: IEventTransport) {}
+  private readonly replayLimits: { items: number; bytes: number; ttlMs: number };
+
+  constructor(
+    private readonly transport: IEventTransport,
+    options: Partial<TSubagentActivityConfig> = {},
+  ) {
+    const config = subagentActivityConfigSchema.parse(options);
+    this.replayLimits = {
+      items: SUBAGENT_ACTIVITY_LIMITS.items,
+      bytes: SUBAGENT_ACTIVITY_LIMITS.bytes,
+      ttlMs: config.replayTtlMs,
+    };
+  }
 
   private async isDemanded(streamId: string): Promise<boolean> {
     if (this.transport.hasDemand == null) return true;
@@ -233,7 +246,10 @@ export class SubagentActivityStream {
       ...(droppedCount > 0 ? { droppedCount } : {}),
     };
     if (this.transport.emitReplayableChunk != null) {
-      await this.transport.emitReplayableChunk(streamId, envelope, REPLAY_LIMITS);
+      await this.transport.emitReplayableChunk(streamId, envelope, this.replayLimits, {
+        id: `${droppedCount > 0 ? 'gap' : 'event'}:${envelope.data.activityEventId ?? envelope.data.activitySequence?.toString() ?? randomUUID()}`,
+        sequence: envelope.data.activitySequence,
+      });
       return;
     }
     await emitObservedChunk(this.transport, streamId, envelope);
@@ -286,7 +302,7 @@ export class SubagentActivityStream {
         },
       },
       {
-        ...(replayable ? { replay: REPLAY_LIMITS } : {}),
+        ...(replayable ? { replay: this.replayLimits } : {}),
         deferSequenceDelivery: synchronizeAttachment,
         captureSequenceFrontier: synchronizeAttachment,
       },
@@ -330,7 +346,9 @@ export class SubagentActivityStream {
     try {
       const terminal = { final: true, subagentActivity: true, status };
       if (this.transport.emitReplayableDone != null) {
-        await this.transport.emitReplayableDone(streamId, terminal, REPLAY_LIMITS);
+        await this.transport.emitReplayableDone(streamId, terminal, this.replayLimits, {
+          id: 'done',
+        });
         return;
       }
       if (!(await this.isDemanded(streamId))) return;

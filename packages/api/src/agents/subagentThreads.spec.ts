@@ -345,6 +345,32 @@ describe('SubagentThreadTaskStore', () => {
     store.destroyActivityStream();
   });
 
+  it('resolves legacy null-tenant names without crossing tenant boundaries', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    await methods.createAgent({
+      id: 'null-tenant-agent',
+      name: 'Legacy Reviewer',
+      author: userId,
+      provider: 'openAI',
+      model: 'test-model',
+    });
+    await mongoose.connection
+      .collection('agents')
+      .updateOne({ id: 'null-tenant-agent' }, { $set: { tenantId: null } });
+    expect(await methods.getAgentName('null-tenant-agent')).toBe('Legacy Reviewer');
+    expect(await methods.getAgentName('null-tenant-agent', 'other-tenant')).toBeUndefined();
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const store = new SubagentThreadTaskStore(methods);
+    const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+    const started = store.start(taskRequest(config.scopeId, { subagentType: 'null-tenant-agent' }));
+    await waitForSettled(store, config.scopeId, started);
+    expect((await methods.getConvo(userId, requireThreadId(started)))?.title).toBe(
+      'Legacy Reviewer',
+    );
+    store.destroyActivityStream();
+  });
+
   it('persists the child agent name and falls back to its id', async () => {
     const userId = new mongoose.Types.ObjectId().toString();
     const parentConversationId = randomUUID();
@@ -721,7 +747,14 @@ describe('SubagentThreadTaskStore', () => {
     const userId = 'activity-recovery-user';
     const parentConversationId = randomUUID();
     await saveParent(userId, parentConversationId);
-    const store = new SubagentThreadTaskStore(methods);
+    const store = new SubagentThreadTaskStore(methods, {
+      activity: {
+        publicationTimeoutMs: 200,
+        retryAttempts: 3,
+        retryBaseDelayMs: 10,
+        recoveryDelayMs: 100,
+      },
+    });
     const stream = new SubagentActivityStream(new InMemoryEventTransport());
     store.configureActivityStream(stream);
     const originalPublish = stream.publish.bind(stream);

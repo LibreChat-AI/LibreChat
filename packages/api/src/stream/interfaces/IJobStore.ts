@@ -12,10 +12,10 @@ import type { RunStep, StandardGraph } from '@librechat/agents';
 import type { AgentEventDetachedTerminalEvidence } from '~/agents/triggers/types';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
+import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
 import type { MCPRuntimeRequestBody } from '~/mcp/types';
-import type { ReplayLimits } from '../internal/replay';
 
 /**
  * Detached Event Actor execution guarantee advertised by a generation store.
@@ -1691,8 +1691,18 @@ export interface IEventTransport {
   emitChunk(streamId: string, event: unknown, generationId?: number): void | Promise<void | number>;
 
   /** Retain an observational chunk even with no viewers, then publish it atomically. */
-  emitReplayableChunk?(streamId: string, event: unknown, limits: ReplayLimits): Promise<void>;
-  emitReplayableDone?(streamId: string, event: unknown, limits: ReplayLimits): Promise<void>;
+  emitReplayableChunk?(
+    streamId: string,
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void>;
+  emitReplayableDone?(
+    streamId: string,
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void>;
 
   /**
    * Publish a done event - returns Promise in Redis mode for ordered delivery.

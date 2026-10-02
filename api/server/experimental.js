@@ -439,7 +439,6 @@ if (cluster.isMaster) {
     logger.info(`Worker ${process.pid} initializing...`);
 
     await waitForKeyvRedisClient();
-    await configureSubagentTaskRouting();
 
     if (typeof Bun !== 'undefined') {
       axios.defaults.headers.common['Accept-Encoding'] = 'gzip';
@@ -501,6 +500,7 @@ if (cluster.isMaster) {
     // principal) still merges DB `__base__` overrides, which must not drive which hook
     // modules load in every worker (matches api/server/index.js's baseOnly usage).
     const baseAppConfig = await getAppConfig({ baseOnly: true });
+    await configureSubagentTaskRouting(baseAppConfig?.endpoints?.agents?.subagentActivity);
     registerBackgroundTaskShutdown({
       interruptGraceMs: baseAppConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
       getBudgetMs: clusterShutdownBudgetMs,

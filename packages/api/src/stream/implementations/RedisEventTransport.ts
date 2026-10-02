@@ -3,7 +3,7 @@ import { logger } from '@librechat/data-schemas';
 import type { Redis, Cluster } from 'ioredis';
 import type { IEventTransport, PreemptMessage } from '~/stream/interfaces/IJobStore';
 import type { ChunkPublicationOptions } from '~/stream/internal/chunkPublication';
-import type { ReplayLimits } from '../internal/replay';
+import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import {
   MAX_COALESCED_BYTES,
   MAX_COALESCED_EVENTS,
@@ -33,6 +33,7 @@ const KEYS = {
   /** Atomic sequence counter: shared across all replicas for a given stream */
   sequence: (streamId: string) => `stream:{${streamId}}:seq`,
   backlog: (streamId: string) => `stream:{${streamId}}:activity-backlog`,
+  publication: (streamId: string) => `stream:{${streamId}}:activity-publication`,
   backlogBytes: (streamId: string) => `stream:{${streamId}}:activity-bytes`,
   /** Job metadata, used to keep the sequence counter alive for the full job lifetime */
   job: (streamId: string) => `stream:{${streamId}}:job`,
@@ -1238,14 +1239,16 @@ export class RedisEventTransport implements IEventTransport {
     type: 'chunk' | 'done',
     event: unknown,
     limits: ReplayLimits,
+    publication?: ReplayPublication,
   ): Promise<void> {
     const [prefix, suffix] = RedisEventTransport.buildPayloadParts({ type, data: event });
     await this.publisher.eval(
       PUBLISH_REPLAY_LUA,
-      3,
+      4,
       KEYS.sequence(streamId),
       KEYS.backlog(streamId),
       KEYS.backlogBytes(streamId),
+      KEYS.publication(streamId),
       CHANNELS.events(streamId),
       prefix,
       suffix,
@@ -1253,15 +1256,28 @@ export class RedisEventTransport implements IEventTransport {
       limits.bytes,
       limits.ttlMs,
       RedisEventTransport.SEQUENCE_TTL_SECONDS,
+      publication?.id ?? '',
+      publication?.sequence ?? '',
+      type === 'done' ? '1' : '0',
     );
   }
 
-  emitReplayableChunk(streamId: string, event: unknown, limits: ReplayLimits): Promise<void> {
-    return this.publishReplayable(streamId, 'chunk', event, limits);
+  emitReplayableChunk(
+    streamId: string,
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void> {
+    return this.publishReplayable(streamId, 'chunk', event, limits, publication);
   }
 
-  emitReplayableDone(streamId: string, event: unknown, limits: ReplayLimits): Promise<void> {
-    return this.publishReplayable(streamId, 'done', event, limits);
+  emitReplayableDone(
+    streamId: string,
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void> {
+    return this.publishReplayable(streamId, 'done', event, limits, publication);
   }
 
   private subscribeReplayable(

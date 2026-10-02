@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import IoRedis, { Cluster } from 'ioredis';
 import type { Redis } from 'ioredis';
 import type { SubagentActivityEnvelope } from '~/agents/subagentActivity';
-import { SubagentActivityStream, subagentActivityStreamId } from '~/agents/subagentActivity';
+import {
+  SubagentActivityStream,
+  subagentActivityStreamId,
+  boundSubagentActivityUpdate,
+} from '~/agents/subagentActivity';
 import { RedisEventTransport } from '../implementations/RedisEventTransport';
 import { SUBAGENT_ACTIVITY_LIMITS } from '~/agents/activity';
 import { READ_REPLAY_LUA } from '../internal/replay';
@@ -196,6 +200,80 @@ describe('bounded cross-replica subagent replay (real Redis)', () => {
     expect(attached.events.map((event) => event.data.activitySequence)).toEqual([0, 1, 2]);
   });
 
+  it('deduplicates commit-before-response-loss retries without retaining duplicate chunks or DONE', async () => {
+    const owner = await replica();
+    const viewer = await replica();
+    const thread = randomUUID();
+    const task = randomUUID();
+    const streamId = subagentActivityStreamId(thread, task);
+    const attached = collect(viewer.stream, thread, task);
+    await attached.subscription.ready;
+    const originalEval = owner.publisher.eval.bind(owner.publisher);
+    jest
+      .spyOn(owner.publisher, 'eval')
+      .mockImplementationOnce(async (...args: Parameters<Redis['eval']>) => {
+        await originalEval(...args);
+        throw new Error('response lost after commit');
+      });
+    await expect(owner.stream.publish(thread, task, update(0))).rejects.toThrow('response lost');
+    await owner.stream.publish(thread, task, update(0));
+    await owner.stream.publish(thread, task, update(1));
+    await owner.stream.publish(thread, task, update(0));
+    expect(await owner.publisher.get(`stream:{${streamId}}:seq`)).toBe('2');
+    expect(await owner.publisher.llen(`stream:{${streamId}}:activity-backlog`)).toBe(2);
+    jest
+      .spyOn(owner.publisher, 'eval')
+      .mockImplementationOnce(async (...args: Parameters<Redis['eval']>) => {
+        await originalEval(...args);
+        throw new Error('terminal response lost after commit');
+      });
+    await expect(owner.stream.complete(thread, task, 'completed')).rejects.toThrow('response lost');
+    await owner.stream.complete(thread, task, 'completed');
+    await owner.stream.publish(thread, task, update(2));
+    await waitUntil(() => attached.onDone.mock.calls.length === 1);
+    expect(attached.events.map((event) => event.data.activitySequence)).toEqual([0, 1]);
+    expect(await owner.publisher.get(`stream:{${streamId}}:seq`)).toBe('3');
+    expect(await owner.publisher.llen(`stream:{${streamId}}:activity-backlog`)).toBe(3);
+  });
+
+  it('retains the largest permitted payload including wire and omission-marker overhead', async () => {
+    const owner = await replica();
+    const thread = randomUUID();
+    const task = randomUUID();
+    let low = 0;
+    let high = 65_536;
+    const candidate = (length: number) => ({ ...update(0), data: { text: 'x'.repeat(length) } });
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (boundSubagentActivityUpdate(candidate(middle)).data != null) low = middle;
+      else high = middle - 1;
+    }
+    const event = candidate(low);
+    expect(low).toBeGreaterThan(63 * 1024);
+    await owner.stream.publish(thread, task, event, Number.MAX_SAFE_INTEGER);
+    const retained = await owner.publisher.lrange(
+      `stream:{${subagentActivityStreamId(thread, task)}}:activity-backlog`,
+      0,
+      -1,
+    );
+    expect(retained).toHaveLength(1);
+    expect(Buffer.byteLength(retained[0])).toBeLessThanOrEqual(SUBAGENT_ACTIVITY_LIMITS.bytes);
+    expect(JSON.parse(retained[0]).data.data.data).toEqual(event.data);
+  });
+
+  it('injects retention long enough to cover a silent tool interval', async () => {
+    const owner = await replica();
+    const thread = randomUUID();
+    const task = randomUUID();
+    const stream = new SubagentActivityStream(owner.transport, { replayTtlMs: 3_600_000 });
+    await stream.publish(thread, task, update(0));
+    const ttl = await owner.publisher.pttl(
+      `stream:{${subagentActivityStreamId(thread, task)}}:activity-backlog`,
+    );
+    expect(ttl).toBeGreaterThan(3_590_000);
+    expect(ttl).toBeLessThanOrEqual(3_600_000);
+  });
+
   it('renews demand for an older publisher during a rolling deployment', async () => {
     const owner = await replica();
     const viewer = await replica();
@@ -287,11 +365,12 @@ describe('bounded cross-replica subagent replay (real Redis)', () => {
     await subscription.ready;
     expect(onReplay).toHaveBeenCalledWith([{ text: 'before' }]);
     expect(onDone).toHaveBeenCalledWith({ final: true });
+    const stalledStreamId = subagentActivityStreamId(randomUUID(), randomUUID());
     const held = new Promise<never>(() => undefined);
     jest.spyOn(viewer.publisher, 'eval').mockImplementationOnce(() => held);
     const onError = jest.fn();
     const stalled = viewer.transport.subscribe(
-      streamId,
+      stalledStreamId,
       { onChunk: jest.fn(), onError },
       { replay: limits },
     );
@@ -299,7 +378,7 @@ describe('bounded cross-replica subagent replay (real Redis)', () => {
     const readyFailure = stalled.ready?.catch((error: Error) => error.message);
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
     for (let i = 0; i < 4; i++)
-      await owner.transport.emitReplayableChunk(streamId, { text: i }, limits);
+      await owner.transport.emitReplayableChunk(stalledStreamId, { text: i }, limits);
     await waitUntil(() => onError.mock.calls.length === 1);
     expect(onError.mock.calls[0][0]).toContain('overflow');
     expect(await readyFailure).toContain('Timed out synchronizing');

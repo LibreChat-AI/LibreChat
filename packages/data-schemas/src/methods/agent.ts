@@ -764,7 +764,7 @@ export function createAgentMethods(
   /** Storage-neutral display-name lookup for a known execution subject. */
   async function getAgentName(id: string, tenantId?: string): Promise<string | undefined> {
     const agent = await getAgent(
-      { id, ...(tenantId == null ? { tenantId: { $exists: false } } : { tenantId }) },
+      { id, tenantId: tenantId ?? null },
       { name: 1, tenantId: 1, _id: 0 },
     );
     if ((agent?.tenantId ?? undefined) !== tenantId) return undefined;

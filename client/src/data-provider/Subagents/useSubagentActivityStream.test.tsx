@@ -411,6 +411,107 @@ describe('useSubagentActivityStream', () => {
     expect(result.current?.contentParts).toEqual([{ type: 'text', text: 'Compatible update' }]);
   });
 
+  it('keeps a capped replay pending until delayed parent activity backfills it', () => {
+    const active = { ...selection, isSubmitting: true };
+    const { result } = renderHook(
+      () => {
+        const progressAtom = subagentProgressByToolCallId(
+          subagentProgressKey(active.parentMessageId, active.toolCallId, active.partIndex),
+        );
+        useSubagentActivityStream(active);
+        return {
+          progress: useAtomValue(progressAtom),
+          setProgress: useSetAtom(progressAtom),
+          closeParent: useSetAtom(
+            subagentParentStreamOpenByToolCallId(
+              subagentProgressKey(active.parentMessageId, active.toolCallId, active.partIndex),
+            ),
+          ),
+        };
+      },
+      { wrapper },
+    );
+    const event = (sequence: number) => ({
+      event: StepEvents.ON_SUBAGENT_UPDATE,
+      data: {
+        runId: 'parent',
+        subagentRunId: 'child',
+        subagentType: 'researcher',
+        subagentAgentId: 'agent-1',
+        parentToolCallId: active.toolCallId,
+        activityEventId: `task:${sequence}`,
+        activitySequence: sequence,
+        phase: 'message_delta' as const,
+        timestamp: '2026-09-29T00:00:00.000Z',
+        data: { delta: { content: [{ type: 'text', text: `${sequence}` }] } },
+      },
+    });
+    act(() =>
+      streams[0].emit('message', { event: 'subagent_activity_replay', data: [event(2), event(3)] }),
+    );
+    expect(result.current.progress?.contentParts).toEqual([]);
+    expect(result.current.progress?.pendingSequencedEvents).toHaveLength(2);
+    act(() =>
+      result.current.setProgress((previous) =>
+        reduceSubagentProgress(previous, [event(0).data, event(1).data], 'parent', true),
+      ),
+    );
+    expect(result.current.progress?.contentParts).toEqual([{ type: 'text', text: '0123' }]);
+    expect(result.current.progress?.pendingSequencedEvents).toBeUndefined();
+    act(() => streams[0].emit('message', event(4)));
+    expect(result.current.progress?.contentParts).toEqual([{ type: 'text', text: '01234' }]);
+    act(() => result.current.closeParent(false));
+    act(() => streams[0].emit('message', event(6)));
+    expect(result.current.progress?.lastActivitySequence).toBe(6);
+  });
+
+  it('counts omission markers only once when accepted, including pending replay overlap', () => {
+    const active = { ...selection, isSubmitting: true };
+    const { result } = renderHook(
+      () => {
+        const key = subagentProgressKey(
+          active.parentMessageId,
+          active.toolCallId,
+          active.partIndex,
+        );
+        useSubagentActivityStream(active);
+        return {
+          progress: useAtomValue(subagentProgressByToolCallId(key)),
+          closeParent: useSetAtom(subagentParentStreamOpenByToolCallId(key)),
+        };
+      },
+      { wrapper },
+    );
+    const marker = {
+      event: StepEvents.ON_SUBAGENT_UPDATE,
+      droppedCount: 2,
+      data: {
+        runId: 'parent',
+        subagentRunId: 'child',
+        subagentType: 'researcher',
+        subagentAgentId: 'agent-1',
+        parentToolCallId: active.toolCallId,
+        activityEventId: 'task:3',
+        activitySequence: 3,
+        phase: 'message_delta' as const,
+        timestamp: '2026-09-29T00:00:00.000Z',
+      },
+    };
+    act(() => streams[0].emit('message', marker));
+    act(() =>
+      streams[0].emit('message', { event: 'subagent_activity_replay', data: [marker, marker] }),
+    );
+    expect(result.current.progress?.droppedCount ?? 0).toBe(0);
+    expect(result.current.progress?.pendingSequencedEvents).toHaveLength(1);
+    act(() => result.current.closeParent(false));
+    expect(result.current.progress?.droppedCount).toBe(2);
+    act(() =>
+      streams[0].emit('message', { event: 'subagent_activity_replay', data: [marker, marker] }),
+    );
+    act(() => streams[0].emit('message', marker));
+    expect(result.current.progress?.droppedCount).toBe(2);
+  });
+
   it('buffers the first detached suffix while the parent stream is still open', () => {
     const activeSelection = { ...selection, isSubmitting: true };
     const key = subagentProgressKey(

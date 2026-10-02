@@ -580,7 +580,10 @@ const foldAcceptedSubagentEvents = (
   let aggregatorState = previous?.aggregatorState ?? initSubagentAggregatorState();
   let tickerState = previous?.tickerState ?? initSubagentTickerState();
   let subagentKind = previous?.subagentKind;
+  let droppedCount = previous?.droppedCount ?? 0;
   for (const event of events) {
+    if (Number.isSafeInteger(event.activityDroppedCount) && (event.activityDroppedCount ?? 0) > 0)
+      droppedCount += event.activityDroppedCount!;
     subagentKind = event.subagentKind ?? subagentKind;
     const foldEvent =
       event.phase === 'reasoning_delta' &&
@@ -628,7 +631,7 @@ const foldAcceptedSubagentEvents = (
           events.find((event) => validActivitySequence(event.activitySequence))?.activitySequence)
         : events.find((event) => validActivitySequence(event.activitySequence))?.activitySequence,
     status: last.phase,
-    droppedCount: previous?.droppedCount,
+    droppedCount,
     latestLabel: last.label ?? previous?.latestLabel,
     recentEventKeys: boundedEventKeys,
     ...(effectiveActivitySequence == null
@@ -712,7 +715,15 @@ export function reduceSubagentProgress(
     const key = eventKey(event);
     if (key != null && seen.has(key)) continue;
     if (validActivitySequence(sequence)) {
-      if (sequence < expected || pendingSequences.has(sequence)) continue;
+      if (sequence < expected) continue;
+      if (pendingSequences.has(sequence)) {
+        if ((event.activityDroppedCount ?? 0) > 0) {
+          const index = pending.findIndex((entry) => entry.activitySequence === sequence);
+          if (index >= 0 && (pending[index].activityDroppedCount ?? 0) === 0)
+            pending[index] = event;
+        }
+        continue;
+      }
       if (sequence === expected) {
         directEvents.push(event);
         expected += 1;

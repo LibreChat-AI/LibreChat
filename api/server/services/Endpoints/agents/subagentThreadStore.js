@@ -107,7 +107,8 @@ registerShutdownTask(
 );
 
 /** Starts the optional Redis owner directory before HTTP admission opens. */
-async function configureSubagentTaskRouting() {
+async function configureSubagentTaskRouting(config) {
+  const activityOptions = subagentThreadTaskStore.configureActivity(config);
   if (taskRoutingConfigured || !cacheConfig.USE_REDIS) {
     return;
   }
@@ -130,7 +131,7 @@ async function configureSubagentTaskRouting() {
   const activityPublisher = duplicateIoRedisClient(ioredisClient, {
     enableOfflineQueue: false,
     maxRetriesPerRequest: 1,
-    commandTimeout: 1_000,
+    commandTimeout: activityOptions.publicationTimeoutMs,
   });
   const transport = new RedisSubagentTaskControlTransport(publisher, subscriber, {
     namespace: cacheConfig.REDIS_KEY_PREFIX,
@@ -138,7 +139,10 @@ async function configureSubagentTaskRouting() {
   try {
     await subagentThreadTaskStore.configureTaskControlTransport(transport);
     subagentThreadTaskStore.configureActivityStream(
-      new SubagentActivityStream(new RedisEventTransport(activityPublisher, activitySubscriber)),
+      new SubagentActivityStream(
+        new RedisEventTransport(activityPublisher, activitySubscriber),
+        activityOptions,
+      ),
     );
   } catch (error) {
     subscriber.disconnect();
