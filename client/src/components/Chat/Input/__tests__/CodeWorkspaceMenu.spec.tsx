@@ -23,6 +23,8 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, values?: Record<string, unknown>) => {
     if (key === 'com_ui_code_workspace_required_for')
       return `Choose a workspace for ${values?.[0]} on ${values?.[1]}.`;
+    if (key === 'com_ui_code_workspace_graph_requirement')
+      return 'Every coding agent in this chat needs a workspace, including subagents.';
     if (key === 'com_ui_code_workspace_used_by') return `Used by ${values?.[0]}`;
     if (key === 'com_ui_code_workspace_agent_status')
       return `${values?.[0]} needs ${values?.[1]}: ${values?.[2]}`;
@@ -115,6 +117,9 @@ describe('CodeWorkspaceMenu', () => {
     expect(screen.getByRole('status')).toHaveTextContent(
       'Choose a workspace for PR Reviewer on Danny Skynet Trusted VM.',
     );
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Every coding agent in this chat needs a workspace, including subagents.',
+    );
     expect(screen.getByRole('status')).not.toHaveTextContent('for Lia');
     await userEvent.click(screen.getByTestId('code-workspace'));
     expect(screen.getByText('Used by Lia')).toBeVisible();
@@ -190,6 +195,44 @@ describe('CodeWorkspaceMenu', () => {
       codeWorkspaces: [{ environmentId: environment.id, workspaceId: 'project-a' }],
     });
     expect(next.codeWorkspaces).toEqual([{ environmentId: alternate.id, workspaceId: 'runtime' }]);
+    read.mockRestore();
+  });
+
+  test('records primary ownership on B while retaining the fixed reviewer on A', async () => {
+    const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+    const read = jest.spyOn(dataService, 'getCodeEnvironmentStatus').mockResolvedValue({
+      environmentId: alternate.id,
+      status: 'ready',
+      operations: ['read_file'],
+      workspaces: [{ id: 'runtime', name: 'Runtime Project' }],
+    });
+    const setter = jest.fn();
+    renderMenu(
+      <CodeWorkspaceMenu
+        setConversation={setter}
+        workspace={workspace({
+          machineOptions: [environment, alternate],
+          machineOptionGroups: [[environment.id, alternate.id]],
+          machineChoiceOwners: [{ agentId: 'lia', environmentIds: [environment.id, alternate.id] }],
+          fixedMachineIds: [environment.id],
+        })}
+        disabled={false}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Runtime VM' }));
+    await userEvent.click(await screen.findByRole('menuitemradio', { name: /Runtime Project/ }));
+    expect(
+      setter.mock.calls[0][0]({
+        ...conversation,
+        codeWorkspaces: [
+          { environmentId: environment.id, workspaceId: 'project-a', agentIds: ['lia'] },
+        ],
+      }).codeWorkspaces,
+    ).toEqual([
+      { environmentId: environment.id, workspaceId: 'project-a' },
+      { environmentId: alternate.id, workspaceId: 'runtime', agentIds: ['lia'] },
+    ]);
     read.mockRestore();
   });
 

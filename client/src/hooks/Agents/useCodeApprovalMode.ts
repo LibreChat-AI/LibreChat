@@ -162,6 +162,7 @@ export function findExecutionEnvironment(
   const allowSelection =
     getCodeEnvironmentChoiceIds(agent, environments, allowEnvironmentSelection) != null;
   const selection = resolveCodeEnvironmentSelection({
+    agentId: agent.id,
     environmentId: agent.code_environment_id ?? defaultEnvironment?.id,
     environmentIds: agent.code_environment_ids,
     allowSelection,

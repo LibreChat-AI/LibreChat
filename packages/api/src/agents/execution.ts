@@ -92,6 +92,7 @@ export function getCodeWorkspaceSelections(
     selections.set(workspace.environmentId, {
       environmentId: workspace.environmentId,
       workspaceId: workspace.workspaceId,
+      ...(workspace.agentIds == null ? {} : { agentIds: [...workspace.agentIds] }),
     });
   }
   if (selections.size === 0) return undefined;
@@ -376,6 +377,7 @@ export function resolveCodeExecutionContext(params: {
     (defaultEnvironment?.type === 'attached' ||
       (defaultEnvironment == null && Boolean(params.environmentId)));
   const selection = resolveCodeEnvironmentSelection({
+    agentId: params.agentId,
     environmentId: params.environmentId ?? defaultEnvironment?.id,
     environmentIds: params.environmentIds,
     allowSelection,

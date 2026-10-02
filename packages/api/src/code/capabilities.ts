@@ -1,5 +1,8 @@
 import { logger } from '@librechat/data-schemas';
-import { isCodeWorkspaceSelections } from 'librechat-data-provider';
+import {
+  isCodeWorkspaceSelections,
+  canonicalizeCodeWorkspaceSelections,
+} from 'librechat-data-provider';
 import type { CodeWorkspaceSelection } from 'librechat-data-provider';
 import type { CodeEnvironmentConfig, CodeExecutionContext } from '~/agents/execution';
 import type { createAppConfigService } from '~/app/service';
@@ -20,13 +23,7 @@ const pollWorkerStatus = createCodeBridgeStatusPoller();
 function canonicalWorkspaceSelections(
   selections: CodeWorkspaceSelection[],
 ): CodeWorkspaceSelection[] {
-  return [...selections].sort((left, right) => {
-    if (left.environmentId < right.environmentId) return -1;
-    if (left.environmentId > right.environmentId) return 1;
-    if (left.workspaceId < right.workspaceId) return -1;
-    if (left.workspaceId > right.workspaceId) return 1;
-    return 0;
-  });
+  return canonicalizeCodeWorkspaceSelections(selections);
 }
 
 function sameWorkspaceSelections(

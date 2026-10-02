@@ -3640,7 +3640,10 @@ describe('initializeAgent — execute_code capability expansion', () => {
     } as NonNullable<typeof req.config>;
     req.resolvedConversation = {
       conversationId: 'chat-runtime',
-      codeWorkspaces: [{ environmentId: 'runtime-vm', workspaceId: 'primary' }],
+      codeWorkspaces: [
+        { environmentId: 'application-vm', workspaceId: 'primary' },
+        { environmentId: 'runtime-vm', workspaceId: 'primary', agentIds: [agent.id] },
+      ],
     };
     const result = await initializeAgent(
       {

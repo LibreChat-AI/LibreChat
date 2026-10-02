@@ -6,6 +6,20 @@ const conversation = (overrides: Partial<TConversation> = {}): TConversation =>
   ({ conversationId: 'existing', ...overrides }) as TConversation;
 
 describe('withSubmittedCodeDecision', () => {
+  it('does not treat changed agent ownership as the same sealed route', () => {
+    const current = conversation({
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [{ ...selection, agentIds: ['primary'] }],
+    });
+    const submitted = {
+      codeEnvironmentMode: 'attached' as const,
+      codeWorkspaces: [{ ...selection, agentIds: ['reviewer'] }],
+    };
+    expect(hasSameCodeDecision(current, submitted)).toBe(false);
+    expect(withSubmittedCodeDecision(current, submitted)?.codeWorkspaces).toEqual(
+      submitted.codeWorkspaces,
+    );
+  });
   it('records the mode and selections the run was submitted with', () => {
     expect(
       withSubmittedCodeDecision(conversation(), {

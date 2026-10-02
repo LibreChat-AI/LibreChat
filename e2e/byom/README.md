@@ -70,9 +70,13 @@ own access and current worker capabilities. This does not move an existing chat 
 Each coding agent in the graph contributes its machine requirement, including lazy subagents.
 The composer identifies an unselected agent and machine beneath the picker, and each machine
 section lists its agents. Agents may share one selection when they explicitly allow that machine.
-When a graph selects both a default and an alternative for another agent, the selected default
-wins for that agent; without its default, exactly one permitted target must match. Independent
-fixed-machine requirements are retained when a different agent picks an alternative.
+Explicit choices record the choosing agents in `codeWorkspaces[].agentIds`, so Lia can use B
+while a fixed reviewer stays on A. Ownership survives persistence, reload and decision sealing.
+Legacy selections without ownership prefer the selected default; without it, exactly one
+permitted target must match. Independent fixed-machine requirements survive alternative picks.
+Update every API replica and refresh clients before enabling the opt-in: old validators reject
+ownership-bearing choices rather than silently rerouting them. The builder also permits removing
+saved machines that are no longer accessible, without blocking unrelated edits to the agent.
 
 `maxEnvironmentChoices` limits additional machines per agent (default 32, ceiling 128). The
 builder uses the same limit; create, update, duplicate and restore authorize all listed machines

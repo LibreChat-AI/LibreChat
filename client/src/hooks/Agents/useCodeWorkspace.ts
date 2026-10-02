@@ -58,6 +58,8 @@ export interface CodeWorkspaceEnvironmentResult {
   environment: TPublicCodeEnvironment;
   /** Coding agents whose execution requires this machine, including reachable subagents. */
   requiredBy?: Array<{ id: string; name?: string | null }>;
+  /** Selectable agents whose binding must be retained when this target is explicitly moved. */
+  selectionOwners?: string[];
   state: Exclude<CodeWorkspaceState, 'not_required' | 'relocatable'>;
   workspaces: CodeWorkspaceDescriptor[];
   selected?: CodeWorkspaceSelection;
@@ -109,6 +111,7 @@ export interface CodeWorkspaceResult {
   machineOptions?: TPublicCodeEnvironment[];
   /** Each group belongs to one reachable coding agent, not the whole graph. */
   machineOptionGroups?: string[][];
+  machineChoiceOwners?: Array<{ agentId: string; environmentIds: string[] }>;
   /** Fixed graph targets must survive an alternative pick for a different agent. */
   fixedMachineIds?: string[];
   transition?: CodeWorkspaceTransition;
@@ -155,7 +158,7 @@ function resolveEnvironmentSelection({
 }): CodeWorkspaceSelection | undefined {
   if (status?.status !== 'ready' || status.environmentId !== environment.id) return undefined;
   if (stored != null && workspaces.some(({ id }) => id === stored.workspaceId)) {
-    return { environmentId: environment.id, workspaceId: stored.workspaceId };
+    return { ...stored, environmentId: environment.id };
   }
   if (!hasStoredSelections && workspaces.length === 1) {
     return { environmentId: environment.id, workspaceId: workspaces[0].id };
@@ -330,8 +333,7 @@ export default function useCodeWorkspace(
   /** A new chat and a saved chat that never decided are both still choosing, so agent defaults, a
    *  remembered selection, and a sole workspace apply to each. */
   const undecided = conversation != null && !locked;
-  const machineOptionGroups =
-    undecided &&
+  const machineChoiceOwners =
     required &&
     supportsEnvironmentDecisions &&
     statefulCodeSessions?.allowEnvironmentSelection === true
@@ -340,9 +342,12 @@ export default function useCodeWorkspace(
             return [];
           }
           const ids = getCodeEnvironmentChoiceIds(agent, statefulCodeSessions.environments, true);
-          return ids == null ? [] : [ids];
+          return ids == null ? [] : [{ agentId: agent.id, environmentIds: ids }];
         })
       : undefined;
+  const machineOptionGroups = undecided
+    ? machineChoiceOwners?.map(({ environmentIds }) => environmentIds)
+    : undefined;
   const machineOptions = machineOptionGroups?.length
     ? statefulCodeSessions?.environments?.filter(
         ({ id, type }) =>
@@ -417,6 +422,10 @@ export default function useCodeWorkspace(
       workspaces,
       selected,
       requiredBy: workspaceMetadata.requiredBy.get(environment.id),
+      selectionOwners: workspaceMetadata.requiredBy
+        .get(environment.id)
+        ?.filter(({ id }) => machineChoiceOwners?.some(({ agentId }) => agentId === id))
+        .map(({ id }) => id),
     };
   });
 
@@ -445,6 +454,7 @@ export default function useCodeWorkspace(
           resolved.push({
             environmentId: result.environment.id,
             workspaceId: requested.workspaceId,
+            ...(requested.agentIds == null ? {} : { agentIds: requested.agentIds }),
           });
           continue;
         }
@@ -462,6 +472,7 @@ export default function useCodeWorkspace(
             agent.tools?.includes(Tools.execute_code) &&
             getCodeEnvironmentChoiceIds(agent, statefulCodeSessions.environments, true) != null &&
             !resolveCodeEnvironmentSelection({
+              agentId: agent.id,
               environmentId:
                 agent.code_environment_id ??
                 statefulCodeSessions.environments?.find(({ default: isDefault }) => isDefault)?.id,
@@ -652,6 +663,7 @@ export default function useCodeWorkspace(
     environments: environmentResults,
     machineOptions,
     machineOptionGroups,
+    machineChoiceOwners,
     fixedMachineIds,
     transition,
     selections,

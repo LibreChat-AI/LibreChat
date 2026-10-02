@@ -147,6 +147,47 @@ describe('useCodeWorkspace', () => {
       expect(result.current.resolveSubmission(choices)?.codeWorkspaces).toEqual(choices);
     });
 
+    it('keeps a fixed reviewer on A while the primary explicitly chooses B, including reload', () => {
+      enableChoices();
+      mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
+      mockAgentsMap.mockReturnValue({
+        reviewer: {
+          id: 'reviewer',
+          stateful_code_sessions: true,
+          tools: [Tools.execute_code],
+          code_environment_id: 'personal-vm',
+        },
+      });
+      mockStatus.mockImplementation((ids: string[]) =>
+        ids.map((id) => ({
+          data: { environmentId: id, status: 'ready', workspaces: [{ id: 'project-a' }] },
+        })),
+      );
+      const choices = [
+        { environmentId: 'personal-vm', workspaceId: 'project-a' },
+        { environmentId: 'runtime-vm', workspaceId: 'project-a', agentIds: ['agent_primary'] },
+      ];
+      const { result, rerender } = renderHook(
+        ({ saved }) =>
+          useCodeWorkspace({
+            ...conversation(choices),
+            conversationId: saved ? 'saved' : 'new',
+            codeEnvironmentMode: 'attached',
+          }),
+        { initialProps: { saved: false } },
+      );
+      expect(result.current.fixedMachineIds).toEqual(['personal-vm']);
+      expect(result.current.canSubmit).toBe(true);
+      expect(result.current.resolveSubmission(choices)?.codeWorkspaces).toEqual(choices);
+      expect(
+        result.current.environments.find(({ environment }) => environment.id === 'runtime-vm')
+          ?.requiredBy,
+      ).toEqual([{ id: 'agent_primary', name: undefined }]);
+      rerender({ saved: true });
+      expect(result.current.canSubmit).toBe(true);
+      expect(result.current.resolveSubmission(choices)?.codeWorkspaces).toEqual(choices);
+    });
+
     it('offers an explicit saved-chat recovery target when the selected default disappears', () => {
       const config = enableChoices();
       config.statefulCodeSessions.environments = config.statefulCodeSessions.environments.filter(

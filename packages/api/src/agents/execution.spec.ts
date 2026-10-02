@@ -73,6 +73,24 @@ describe('resolveCodeExecutionContext', () => {
       workspaceSelections: [{ environmentId: 'runtime-vm', workspaceId: 'primary' }],
     };
 
+    it('uses explicit ownership for a primary alternative without moving its fixed reviewer', () => {
+      const choices = [
+        { environmentId: 'application-vm', workspaceId: 'primary' },
+        { environmentId: 'runtime-vm', workspaceId: 'primary', agentIds: ['lia'] },
+      ];
+      expect(
+        resolveCodeExecutionContext({ ...params, workspaceSelections: choices }).environmentId,
+      ).toBe('runtime-vm');
+      expect(
+        resolveCodeExecutionContext({
+          ...params,
+          agentId: 'reviewer',
+          environmentIds: undefined,
+          workspaceSelections: choices,
+        }).environmentId,
+      ).toBe('application-vm');
+    });
+
     it('routes the same agent independently per chat, including policy and session partitions', () => {
       const runtime = resolveCodeExecutionContext(params);
       const application = resolveCodeExecutionContext({
@@ -704,6 +722,14 @@ describe('stateful code approval target binding', () => {
   it('persists only the environment/workspace pair, not live capabilities', () => {
     expect(getCodeWorkspaceSelections([context()])).toEqual([
       { environmentId: 'environment-a', workspaceId: 'project-a' },
+    ]);
+  });
+
+  it('retains graph ownership when removing live workspace capabilities', () => {
+    const owned = context();
+    owned.codeWorkspace!.agentIds = ['agent-a'];
+    expect(getCodeWorkspaceSelections([owned])).toEqual([
+      { environmentId: 'environment-a', workspaceId: 'project-a', agentIds: ['agent-a'] },
     ]);
   });
 });

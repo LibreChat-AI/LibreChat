@@ -278,7 +278,7 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
   async function readDecision(conversationId: string) {
     return requestJson<{
       codeEnvironmentMode?: string;
-      codeWorkspaces?: Array<{ environmentId: string; workspaceId: string }>;
+      codeWorkspaces?: Array<{ environmentId: string; workspaceId: string; agentIds?: string[] }>;
     }>(page, { path: `/api/convos/${conversationId}`, token });
   }
 
@@ -469,11 +469,11 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
     expect(await turn('read')).toContain('native-original');
     const runtimeChat = new URL(page.url()).pathname.slice(3);
     expect((await readDecision(runtimeChat)).codeWorkspaces).toEqual([
-      { environmentId: b.environmentId, workspaceId: 'primary' },
+      { environmentId: b.environmentId, workspaceId: 'primary', agentIds: [coding.id] },
     ]);
     await page.reload();
     expect((await readDecision(runtimeChat)).codeWorkspaces).toEqual([
-      { environmentId: b.environmentId, workspaceId: 'primary' },
+      { environmentId: b.environmentId, workspaceId: 'primary', agentIds: [coding.id] },
     ]);
     expect(await turn('read')).toContain('native-original');
     await page.goto(`/c/new?agent_id=${encodeURIComponent(coding.id)}`);
@@ -485,6 +485,57 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
     expect((await readDecision(applicationChat)).codeWorkspaces).toEqual([
       { environmentId: a.environmentId, workspaceId: 'primary' },
     ]);
+
+    /** A fixed lazy reviewer on A must not pull the primary's explicit choice of B back to A. */
+    const reviewer = await requestJson<{ id: string }>(page, {
+      path: '/api/agents',
+      token,
+      method: 'POST',
+      body: {
+        name: 'PR Reviewer',
+        provider: 'Acceptance',
+        model: 'acceptance',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        stateful_code_environment: 'conversation',
+        code_environment_id: a.environmentId,
+      },
+    });
+    await requestJson(page, {
+      path: `/api/agents/${coding.id}`,
+      token,
+      method: 'PATCH',
+      body: { subagents: { enabled: true, allowSelf: false, agent_ids: [reviewer.id] } },
+    });
+    await page.goto(`/c/new?agent_id=${encodeURIComponent(coding.id)}`);
+    await page.getByTestId('code-workspace').click();
+    await page.getByRole('menuitem', { name: 'Acceptance b', exact: true }).click();
+    await page
+      .locator(`[data-code-environment-id="${b.environmentId}"]`)
+      .getByRole('menuitemradio', { name: /workspace/ })
+      .click();
+    await expect(page.getByTestId('code-workspace')).toContainText('2 code workspaces');
+    await page.getByTestId('code-workspace').click();
+    await expect(page.getByText('Used by PR Reviewer', { exact: true })).toBeVisible();
+    await expect(page.getByText('Used by Lia', { exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    selectedWorker = b;
+    expect(await turn('read')).toContain('native-original');
+    const graphChat = new URL(page.url()).pathname.slice(3);
+    const graphSelections = [
+      { environmentId: a.environmentId, workspaceId: 'primary' },
+      { environmentId: b.environmentId, workspaceId: 'primary', agentIds: [coding.id] },
+    ].sort((left, right) => left.environmentId.localeCompare(right.environmentId));
+    expect((await readDecision(graphChat)).codeWorkspaces).toEqual(graphSelections);
+    await page.reload();
+    expect(await turn('read')).toContain('native-original');
+    expect((await readDecision(graphChat)).codeWorkspaces).toEqual(graphSelections);
+    await requestJson(page, {
+      path: `/api/agents/${coding.id}`,
+      token,
+      method: 'PATCH',
+      body: { subagents: { enabled: false, allowSelf: false, agent_ids: [] } },
+    });
     /** Return to the sealed runtime chat to exercise offline failure with no default fallback. */
     await page.goto(`/c/${runtimeChat}`);
     selectedWorker = b;

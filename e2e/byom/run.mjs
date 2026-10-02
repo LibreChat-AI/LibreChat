@@ -158,7 +158,7 @@ try {
     cache: true,
     endpoints: {
       agents: {
-        capabilities: ['tools', 'execute_code', 'stateful_code_sessions'],
+        capabilities: ['tools', 'execute_code', 'stateful_code_sessions', 'subagents'],
         /** BYOM supplies the safe Ask baseline. The endpoint bypass permits a
          * per-turn Accept edits selection without weakening command approvals. */
         toolApproval: { enabled: true, mode: 'bypass' },

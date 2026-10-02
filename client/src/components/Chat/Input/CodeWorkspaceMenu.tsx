@@ -270,20 +270,35 @@ export default function CodeWorkspaceMenu({
     const replacedIds = new Set(
       workspace.machineOptionGroups?.filter((ids) => ids.includes(selection.environmentId)).flat(),
     );
+    const owners = workspace.machineChoiceOwners
+      ?.filter(({ environmentIds }) => environmentIds.includes(selection.environmentId))
+      .map(({ agentId }) => agentId);
     setConversation((current) => {
       if (current == null) return current;
-      const retained = (current.codeWorkspaces ?? workspace.selections ?? []).filter(
-        ({ environmentId }) =>
-          environmentIds.has(environmentId) &&
-          environmentId !== selection.environmentId &&
-          (!replacedIds.has(environmentId) || workspace.fixedMachineIds?.includes(environmentId)),
+      const retained = (current.codeWorkspaces ?? workspace.selections ?? []).flatMap(
+        ({ agentIds, ...existing }) => {
+          if (
+            !environmentIds.has(existing.environmentId) ||
+            existing.environmentId === selection.environmentId
+          )
+            return [];
+          const remaining = agentIds?.filter((id) => !owners?.includes(id));
+          const fixed = workspace.fixedMachineIds?.includes(existing.environmentId);
+          if (
+            !fixed &&
+            (agentIds == null ? replacedIds.has(existing.environmentId) : remaining?.length === 0)
+          )
+            return [];
+          return [{ ...existing, ...(remaining?.length ? { agentIds: remaining } : {}) }];
+        },
       );
       return {
         ...current,
         codeEnvironmentMode: 'attached',
-        codeWorkspaces: [...retained, selection].sort((a, b) =>
-          a.environmentId.localeCompare(b.environmentId),
-        ),
+        codeWorkspaces: [
+          ...retained,
+          { ...selection, ...(owners?.length ? { agentIds: owners } : {}) },
+        ].sort((a, b) => a.environmentId.localeCompare(b.environmentId)),
       };
     });
   };
@@ -308,7 +323,15 @@ export default function CodeWorkspaceMenu({
   const chosenTargets =
     transition?.targets.flatMap((target) => {
       const workspaceId = chosenWorkspaceId(target, moveChoices);
-      return workspaceId == null ? [] : [{ environmentId: target.environment.id, workspaceId }];
+      return workspaceId == null
+        ? []
+        : [
+            {
+              environmentId: target.environment.id,
+              workspaceId,
+              ...(target.selectionOwners?.length ? { agentIds: target.selectionOwners } : {}),
+            },
+          ];
     }) ?? [];
   /** A transition replaces the whole decision, so an empty target set is the detach and gets its
    *  own item: this one only confirms a decision that still names at least one workspace. */
@@ -387,6 +410,14 @@ export default function CodeWorkspaceMenu({
     pendingRequirements.length === 0 && workspace.state === 'choose' && !workspace.canSubmit
       ? [localize('com_ui_code_workspace_graph_selection_conflict')]
       : pendingRequirements;
+  if (
+    requirements.length > 0 &&
+    new Set(
+      workspace.environments.flatMap(({ requiredBy }) => requiredBy?.map(({ id }) => id) ?? []),
+    ).size > 1
+  ) {
+    requirements.unshift(localize('com_ui_code_workspace_graph_requirement'));
+  }
 
   if (workspace.locked && transition == null) {
     /** A sealed decision with no transition on offer only reports where this chat runs: without a

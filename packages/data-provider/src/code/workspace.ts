@@ -125,6 +125,8 @@ export function isCodeWorkspaceEnvironment(
 export interface CodeWorkspaceSelection {
   environmentId: string;
   workspaceId: string;
+  /** Explicit graph-agent ownership of a chat machine choice; absent on legacy selections. */
+  agentIds?: string[];
 }
 
 export function isCodeEnvironmentMode(value: unknown): value is CodeEnvironmentMode {
@@ -143,11 +145,21 @@ export function isCodeWorkspaceSelection(value: unknown): value is CodeWorkspace
   }
   const selection = value as Record<string, unknown>;
   return (
-    Object.keys(selection).every((key) => key === 'environmentId' || key === 'workspaceId') &&
+    Object.keys(selection).every((key) =>
+      ['environmentId', 'workspaceId', 'agentIds'].includes(key),
+    ) &&
     typeof selection.environmentId === 'string' &&
     CODE_WORKSPACE_ID_PATTERN.test(selection.environmentId) &&
     typeof selection.workspaceId === 'string' &&
-    CODE_WORKSPACE_ID_PATTERN.test(selection.workspaceId)
+    CODE_WORKSPACE_ID_PATTERN.test(selection.workspaceId) &&
+    (selection.agentIds === undefined ||
+      (Array.isArray(selection.agentIds) &&
+        selection.agentIds.length > 0 &&
+        selection.agentIds.length <= MAX_AGENT_CODE_ENVIRONMENT_CHOICES &&
+        selection.agentIds.every(
+          (id) => typeof id === 'string' && CODE_WORKSPACE_ID_PATTERN.test(id),
+        ) &&
+        new Set(selection.agentIds).size === selection.agentIds.length))
   );
 }
 
@@ -155,13 +167,32 @@ export function isCodeWorkspaceSelection(value: unknown): value is CodeWorkspace
 export function isCodeWorkspaceSelections(value: unknown): value is CodeWorkspaceSelection[] {
   if (!Array.isArray(value)) return false;
   const environmentIds = new Set<string>();
+  const agentIds = new Set<string>();
   return value.every((selection) => {
     if (!isCodeWorkspaceSelection(selection) || environmentIds.has(selection.environmentId)) {
       return false;
     }
     environmentIds.add(selection.environmentId);
+    for (const id of selection.agentIds ?? []) {
+      if (agentIds.has(id)) return false;
+      agentIds.add(id);
+      if (agentIds.size > MAX_AGENT_CODE_ENVIRONMENT_CHOICES) return false;
+    }
     return true;
   });
+}
+
+/** Stable decision serialization includes ownership so replay cannot change an agent's route. */
+export function canonicalizeCodeWorkspaceSelections(
+  selections: CodeWorkspaceSelection[],
+): CodeWorkspaceSelection[] {
+  return selections
+    .map(({ environmentId, workspaceId, agentIds }) => ({
+      environmentId,
+      workspaceId,
+      ...(agentIds == null ? {} : { agentIds: [...agentIds].sort() }),
+    }))
+    .sort((left, right) => left.environmentId.localeCompare(right.environmentId));
 }
 
 /** Resolves an agent's default or its chat-owned machine choice. Callers still authorize the
@@ -169,11 +200,13 @@ export function isCodeWorkspaceSelections(value: unknown): value is CodeWorkspac
 export function resolveCodeEnvironmentSelection({
   environmentId,
   environmentIds,
+  agentId,
   allowSelection,
   selections,
 }: {
   environmentId?: string | null;
   environmentIds?: readonly string[];
+  agentId?: string | null;
   allowSelection?: boolean;
   selections?: unknown;
 }): { valid: true; environmentId?: string | null } | { valid: false } {
@@ -183,6 +216,15 @@ export function resolveCodeEnvironmentSelection({
   const allowed = new Set(environmentIds ?? []);
   if (environmentId) allowed.add(environmentId);
   const matches = selections.filter((selection) => allowed.has(selection.environmentId));
+  const owned =
+    agentId == null
+      ? undefined
+      : selections.find((selection) => selection.agentIds?.includes(agentId));
+  if (owned != null) {
+    return allowed.has(owned.environmentId)
+      ? { valid: true, environmentId: owned.environmentId }
+      : { valid: false };
+  }
   /** A graph may need an alternative for a different agent. Preserve this agent's explicit
    * default when present; without it, require exactly one allowed target rather than guessing. */
   const selectedDefault = matches.find((selection) => selection.environmentId === environmentId);

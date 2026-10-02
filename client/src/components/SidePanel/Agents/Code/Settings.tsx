@@ -175,6 +175,30 @@ export default function CodeSettings() {
           />
         </div>
       </HoverCard>
+      {additionalMachines
+        .filter((id) => !executionEnvironments.some((candidate) => candidate.id === id))
+        .map((machineId) => (
+          <div key={machineId} className="flex items-center gap-2">
+            <Checkbox
+              id={`unavailable-code-machine-${machineId}`}
+              checked={true}
+              aria-label={localize('com_ui_code_environment_unavailable_choice', { 0: machineId })}
+              onCheckedChange={() =>
+                setValue(
+                  'code_environment_ids',
+                  additionalMachines.filter((id) => id !== machineId),
+                  { shouldDirty: true },
+                )
+              }
+            />
+            <label
+              htmlFor={`unavailable-code-machine-${machineId}`}
+              className="text-text-secondary text-sm"
+            >
+              {localize('com_ui_code_environment_unavailable_choice', { 0: machineId })}
+            </label>
+          </div>
+        ))}
       {enabled && codeEnabled === true && (
         <div className="space-y-2 pl-1">
           {executionEnvironments.length > 0 && (

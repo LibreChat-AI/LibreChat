@@ -115,6 +115,15 @@ test('honors the server machine-choice limit without disabling the selected choi
   expect(screen.getByRole('checkbox', { name: 'Runtime machine' })).not.toBeDisabled();
 });
 
+test('lets an owner remove a machine that is no longer accessible', async () => {
+  mockMachineChoicesEnabled.mockReturnValue(true);
+  render(<IdentityForm savedMachines={['missing']} />);
+  fireEvent.click(
+    screen.getByRole('checkbox', { name: 'com_ui_code_environment_unavailable_choice' }),
+  );
+  expect(screen.getByTestId('machine-allowlist')).toHaveTextContent('[]');
+});
+
 test('does not offer machine choices when the deployment has not enabled them', () => {
   render(<IdentityForm />);
   expect(screen.queryByRole('checkbox', { name: 'Runtime machine' })).not.toBeInTheDocument();

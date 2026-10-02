@@ -4,6 +4,44 @@ describe('chat machine selection', () => {
   const defaultId = 'application-vm';
   const selections = [{ environmentId: 'runtime-vm', workspaceId: 'primary' }];
 
+  it('routes the selectable primary to B while its fixed reviewer keeps A', () => {
+    const graph = [
+      { environmentId: defaultId, workspaceId: 'primary' },
+      { ...selections[0], agentIds: ['primary'] },
+    ];
+    expect(
+      resolveCodeEnvironmentSelection({
+        agentId: 'primary',
+        environmentId: defaultId,
+        environmentIds: ['runtime-vm'],
+        allowSelection: true,
+        selections: graph,
+      }),
+    ).toEqual({ valid: true, environmentId: 'runtime-vm' });
+    expect(
+      resolveCodeEnvironmentSelection({
+        agentId: 'reviewer',
+        environmentId: defaultId,
+        selections: graph,
+      }),
+    ).toEqual({ valid: true, environmentId: defaultId });
+  });
+
+  it('rejects an explicitly owned choice outside the agent allowlist rather than falling back', () => {
+    expect(
+      resolveCodeEnvironmentSelection({
+        agentId: 'primary',
+        environmentId: defaultId,
+        environmentIds: ['runtime-vm'],
+        allowSelection: true,
+        selections: [
+          { environmentId: defaultId, workspaceId: 'primary' },
+          { environmentId: 'foreign', workspaceId: 'primary', agentIds: ['primary'] },
+        ],
+      }),
+    ).toEqual({ valid: false });
+  });
+
   it('retains the agent default without an opt-in or a chat choice', () => {
     expect(resolveCodeEnvironmentSelection({ environmentId: defaultId, selections })).toEqual({
       valid: true,
