@@ -4,6 +4,7 @@ import { Types } from 'mongoose';
 import { logger, tenantStorage } from '@librechat/data-schemas';
 import {
   ResourceType,
+  SystemRoles,
   PrincipalType,
   AccessRoleIds,
   SKILL_SYNC_DEFAULT_DISCOVERY_DEPTH,
@@ -783,15 +784,17 @@ async function ensureSourceSharing(
   deps: GitHubSkillSyncDeps,
   skillId: Types.ObjectId,
   source: SkillSyncGitHubSourceConfig,
+  isNew = false,
 ): Promise<void> {
-  // Manual sharing belongs to administrators. In particular, do not restore a
-  // removed PUBLIC grant or publish a newly created/recovered mirror.
-  if (source.sharePublicly === false) {
+  const publicSharing = source.sharePublicly !== false;
+  // Bootstrap administrator discovery only for new/recreated restricted mirrors.
+  // Existing ACLs belong to administrators, including removal of this grant.
+  if (!publicSharing && !isNew) {
     return;
   }
   await deps.grantPermission({
-    principalType: PrincipalType.PUBLIC,
-    principalId: null,
+    principalType: publicSharing ? PrincipalType.PUBLIC : PrincipalType.ROLE,
+    principalId: publicSharing ? null : SystemRoles.ADMIN,
     resourceType: ResourceType.SKILL,
     resourceId: skillId,
     accessRoleId: AccessRoleIds.SKILL_VIEWER,
@@ -1111,7 +1114,7 @@ async function restoreDeletedSyncedSkill(
       skillId: restored.skill._id,
     });
   }
-  await ensureSourceSharing(deps, restored.skill._id, source);
+  await ensureSourceSharing(deps, restored.skill._id, source, true);
 }
 
 async function cleanupDeletedSyncedSkillFiles(
@@ -1853,7 +1856,7 @@ async function syncSource(params: {
           discovered,
           assertNotCancelled,
         });
-        await ensureSourceSharing(deps, skill._id, source);
+        await ensureSourceSharing(deps, skill._id, source, upserted.created);
         logSkillWarnings(skill.name, upserted.warnings);
         counts.syncedSkillCount++;
         counts.syncedFileCount += fileCounts.syncedFileCount;

@@ -359,15 +359,19 @@ describe('createGitHubSkillSyncRunner', () => {
     const result = await createGitHubSkillSyncRunner(deps).runOnce();
     expect(result.status).toBe('completed');
     expect(deps.createSkill).toHaveBeenCalledTimes(2);
-    expect(deps.grantPermission).toHaveBeenCalledTimes(1);
+    expect(deps.grantPermission).toHaveBeenCalledTimes(2);
     const [publicResult, restrictedResult] = await Promise.all(
       (deps.createSkill as jest.Mock).mock.results.map((result) => result.value),
     );
     expect(deps.grantPermission).toHaveBeenCalledWith(
-      expect.objectContaining({ resourceId: publicResult.skill._id }),
+      expect.objectContaining({ resourceId: publicResult.skill._id, principalType: 'public' }),
     );
-    expect(deps.grantPermission).not.toHaveBeenCalledWith(
-      expect.objectContaining({ resourceId: restrictedResult.skill._id }),
+    expect(deps.grantPermission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resourceId: restrictedResult.skill._id,
+        principalType: 'role',
+        principalId: 'ADMIN',
+      }),
     );
   });
 
@@ -414,7 +418,14 @@ describe('createGitHubSkillSyncRunner', () => {
         }),
       );
       if (sharePublicly === false) {
-        expect(deps.grantPermission).not.toHaveBeenCalled();
+        expect(deps.grantPermission).toHaveBeenCalledWith(
+          expect.objectContaining({
+            principalType: 'role',
+            principalId: 'ADMIN',
+            accessRoleId: 'skill_viewer',
+          }),
+        );
+        expect(deps.grantPermission).toHaveBeenCalledTimes(1);
       } else {
         expect(deps.grantPermission).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -1924,7 +1935,15 @@ describe('createGitHubSkillSyncRunner', () => {
         }),
       );
       if (sharePublicly === false) {
-        expect(deps.grantPermission).not.toHaveBeenCalled();
+        expect(deps.grantPermission).toHaveBeenCalledTimes(1);
+        expect(deps.grantPermission).toHaveBeenCalledWith(
+          expect.objectContaining({
+            resourceId: restoredSkill?._id,
+            principalType: 'role',
+            principalId: 'ADMIN',
+            accessRoleId: 'skill_viewer',
+          }),
+        );
       } else {
         expect(deps.grantPermission).toHaveBeenCalledWith(
           expect.objectContaining({ resourceId: restoredSkill?._id }),

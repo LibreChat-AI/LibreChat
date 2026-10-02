@@ -1,10 +1,20 @@
 import mongoose, { Types } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createModels, createMethods } from '@librechat/data-schemas';
-import { ResourceType, PrincipalType, PermissionBits } from 'librechat-data-provider';
+import {
+  ResourceType,
+  PrincipalType,
+  PermissionBits,
+  SystemRoles,
+  AccessRoleIds,
+} from 'librechat-data-provider';
 import type { AllMethods } from '@librechat/data-schemas';
+import type { Response } from 'express';
 import type { GitRepoAdapter } from './adapters/types';
+import type { ServerRequest } from '~/types';
+import { AccessControlService } from '~/acl/accessControlService';
 import { createGitHubSkillSyncRunner } from './github';
+import { createSkillsHandlers } from '../handlers';
 
 let server: MongoMemoryServer;
 let db: AllMethods;
@@ -14,6 +24,7 @@ beforeAll(async () => {
   await mongoose.connect(server.getUri());
   createModels(mongoose);
   db = createMethods(mongoose);
+  await db.seedDefaultRoles();
 }, 60_000);
 
 afterAll(async () => {
@@ -155,4 +166,83 @@ it('preserves group sharing across content updates, no-op syncs and revocation',
       PermissionBits.VIEW,
     ),
   ).toBe(false);
+
+  // Exercise the catalogue handler and sharing service, not just direct ACL reads.
+  const access = new AccessControlService(mongoose, db);
+  const handlers = createSkillsHandlers({
+    ...db,
+    getStrategyFunctions: () => ({}),
+    isValidObjectIdString: (id) => typeof id === 'string' && Types.ObjectId.isValid(id),
+    findAccessibleResources: (params) =>
+      access.findAccessibleResources({
+        ...params,
+        role: params.role ?? undefined,
+      }),
+    findPubliclyAccessibleResources: ({ requiredPermissions }) =>
+      access.findPubliclyAccessibleResources({
+        resourceType: ResourceType.SKILL,
+        requiredPermissions,
+      }),
+    hasPublicPermission: ({ resourceType, resourceId, requiredPermissions }) =>
+      db.hasPermission(
+        [{ principalType: PrincipalType.PUBLIC }],
+        resourceType,
+        resourceId,
+        requiredPermissions,
+      ),
+    grantPermission: ({ principalType, principalId, resourceType, resourceId, grantedBy }) =>
+      db.grantPermission(
+        principalType,
+        principalId,
+        resourceType,
+        resourceId,
+        PermissionBits.VIEW,
+        grantedBy,
+      ),
+  });
+  async function catalogue(userId: string, role: SystemRoles): Promise<string[]> {
+    const req = { user: { id: userId, role }, query: {} } as ServerRequest;
+    const res = {} as Response;
+    res.status = jest.fn(() => res);
+    res.json = jest.fn(() => res);
+    await handlers.list(req, res);
+    expect(res.status).toHaveBeenCalledWith(200);
+    const payload = jest.mocked(res.json).mock.calls[0][0] as { skills: Array<{ _id: string }> };
+    return payload.skills.map((skill) => skill._id);
+  }
+  const adminId = new Types.ObjectId().toString();
+  const clientId = new Types.ObjectId().toString();
+  const outsiderId = new Types.ObjectId().toString();
+  const importedId = reimported._id.toString();
+  expect(await catalogue(adminId, SystemRoles.ADMIN)).toContain(importedId);
+  expect(await catalogue(clientId, SystemRoles.USER)).not.toContain(importedId);
+  expect(await catalogue(outsiderId, SystemRoles.USER)).not.toContain(importedId);
+
+  const group = await db.createGroup({
+    name: 'client-example',
+    source: 'local',
+    memberIds: [clientId],
+  });
+  await access.bulkUpdateResourcePermissions({
+    resourceType: ResourceType.SKILL,
+    resourceId: importedId,
+    updatedPrincipals: [
+      {
+        type: PrincipalType.GROUP,
+        id: group._id.toString(),
+        accessRoleId: AccessRoleIds.SKILL_VIEWER,
+      },
+    ],
+    grantedBy: adminId,
+  });
+  expect((await runner.runOnce()).status).toBe('completed');
+  expect(await catalogue(adminId, SystemRoles.ADMIN)).toContain(importedId);
+  expect(await catalogue(clientId, SystemRoles.USER)).toContain(importedId);
+  expect(await catalogue(outsiderId, SystemRoles.USER)).not.toContain(importedId);
+
+  // Sync must not undo a later deliberate removal of the initial admin grant.
+  await db.revokePermission(PrincipalType.ROLE, SystemRoles.ADMIN, ResourceType.SKILL, importedId);
+  expect((await runner.runOnce()).status).toBe('completed');
+  expect(await catalogue(adminId, SystemRoles.ADMIN)).not.toContain(importedId);
+  expect(await catalogue(clientId, SystemRoles.USER)).toContain(importedId);
 });
