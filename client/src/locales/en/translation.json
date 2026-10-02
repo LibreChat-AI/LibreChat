@@ -2171,6 +2171,7 @@
   "com_ui_pro": "Pro",
   "com_ui_production": "Production",
   "com_ui_project": "Project",
+  "com_ui_in_project": "In {{name}}",
   "com_ui_project_add_files": "Add files",
   "com_ui_project_files_info": "About project files",
   "com_ui_project_instructions_info": "About project instructions",

@@ -1,4 +1,5 @@
-import { useQuery, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { useRef } from 'react';
+import { useQuery, useQueries, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import {
   QueryKeys,
   dataService,
@@ -80,6 +81,48 @@ export const useGetConvoIdQuery = (
       ...config,
     },
   );
+};
+
+const RUNNING_CONVERSATION_REFRESH_MS = 15_000;
+const noRunningConversations: t.TConversation[] = [];
+
+/**
+ * Rows for running chats that no loaded sidebar list holds: chats filed in a project,
+ * pinned chats, and chats past the pages fetched so far. Each row refreshes while it is
+ * shown, so a title generated mid-run reaches it, and a chat whose record is not written
+ * yet reads as absent and is asked again rather than cached as an error.
+ */
+export const useRunningConversationsQuery = (
+  conversationIds: readonly string[],
+): t.TConversation[] => {
+  const results = useQueries({
+    queries: conversationIds.map((conversationId) => ({
+      queryKey: [QueryKeys.runningConversation, conversationId],
+      queryFn: async (): Promise<t.TConversation | null> => {
+        try {
+          return await dataService.getConversationById(conversationId);
+        } catch (error) {
+          if (isNotFoundError(error)) {
+            return null;
+          }
+          throw error;
+        }
+      },
+      staleTime: RUNNING_CONVERSATION_REFRESH_MS,
+      refetchInterval: RUNNING_CONVERSATION_REFRESH_MS,
+      refetchOnWindowFocus: false,
+    })),
+  });
+
+  const rowsRef = useRef<t.TConversation[]>(noRunningConversations);
+  const rows = results
+    .map((result) => result.data)
+    .filter((row): row is t.TConversation => row != null);
+  const previous = rowsRef.current;
+  if (rows.length !== previous.length || rows.some((row, index) => row !== previous[index])) {
+    rowsRef.current = rows.length === 0 ? noRunningConversations : rows;
+  }
+  return rowsRef.current;
 };
 
 export const useConversationsInfiniteQuery = (
