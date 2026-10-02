@@ -63,12 +63,19 @@ function AuthLayout({
     <div className="relative flex min-h-screen flex-col bg-surface-primary">
       <Banner />
       <BlinkAnimation active={isFetching}>
-        <div className="mt-6 h-10 w-full bg-cover">
-          <img
-            src="assets/logo.svg"
-            className="h-full w-full object-contain"
-            alt={localize('com_ui_logo', { 0: startupConfig?.appTitle ?? 'LibreChat' })}
-          />
+        <div className="mt-6 flex h-24 w-full items-center justify-center overflow-visible">
+          <a
+            href={startupConfig?.helpAndFaqURL ?? 'https://librechat.ai'}
+            target="_blank"
+            rel="noreferrer"
+            className="flex h-full items-center justify-center overflow-visible"
+          >
+            <img
+              src={`assets/${startupConfig?.appLogo ?? 'logo.svg'}`}
+              className="h-full w-auto object-contain overflow-visible"
+              alt={localize('com_ui_logo', { 0: startupConfig?.appTitle ?? 'LibreChat' })}
+            />
+          </a>
         </div>
       </BlinkAnimation>
       <DisplayError />

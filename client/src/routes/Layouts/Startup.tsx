@@ -44,6 +44,29 @@ export default function StartupLayout({ isAuthenticated }: { isAuthenticated?: b
 
   useEffect(() => {
     document.title = startupConfig?.appTitle || 'LibreChat';
+
+    // Method to replace favicon link/href value
+    const updateFavicon = (size: '16x16' | '32x32', filename: string) => {
+      const faviconLink = document.querySelector(`link[rel="icon"][sizes="${size}"]`) as HTMLLinkElement;
+
+      if (faviconLink) {
+        faviconLink.href = filename;
+      } else {
+        // Optional: If no favicon link exists, then create one
+        const newLink = document.createElement('link');
+        newLink.rel = 'icon';
+        newLink.type = 'image/png';
+        newLink.sizes = size;
+        newLink.href = filename;
+        document.head.appendChild(newLink);
+      }
+    };
+
+    const favicon_16 = startupConfig?.appFavicon16 || 'assets/favicon-16x16.png';
+    updateFavicon('16x16', favicon_16);
+
+    const favicon_32 = startupConfig?.appFavicon32 || 'assets/favicon-32x32.png';
+    updateFavicon('32x32', favicon_32);
   }, [startupConfig?.appTitle]);
 
   useEffect(() => {

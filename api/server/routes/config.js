@@ -74,6 +74,10 @@ function buildPreLoginPayload() {
   /** @type {Partial<TStartupConfig>} */
   const payload = {
     appTitle: process.env.APP_TITLE || 'LibreChat',
+    appLogo: process.env.APP_LOGO || 'logo.svg',
+    appFavicon16: process.env.APP_FAVICON_16 || 'assets/favicon-16x16.png',
+    appFavicon32: process.env.APP_FAVICON_32 || 'assets/favicon-32x32.png',
+    helpAndFaqURL: process.env.HELP_AND_FAQ_URL || 'https://librechat.ai',
     discordLoginEnabled: !!process.env.DISCORD_CLIENT_ID && !!process.env.DISCORD_CLIENT_SECRET,
     facebookLoginEnabled: !!process.env.FACEBOOK_CLIENT_ID && !!process.env.FACEBOOK_CLIENT_SECRET,
     githubLoginEnabled: !!process.env.GITHUB_CLIENT_ID && !!process.env.GITHUB_CLIENT_SECRET,
