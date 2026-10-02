@@ -1,7 +1,10 @@
+import { Types } from 'mongoose';
+import { Permissions, PermissionTypes } from 'librechat-data-provider';
 import type { IUser, AppConfig, AgentGraphAccessContext } from '@librechat/data-schemas';
 import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { ScheduleMCPEnrollmentDeps } from './enrollment';
 import { createScheduleMCPEnrollmentResolver } from './enrollment';
+import { createResolveAgentFireAccess } from '../access';
 
 const identity: ScheduledMCPIdentity = {
   scheduleId: 's',
@@ -12,6 +15,7 @@ const identity: ScheduledMCPIdentity = {
 };
 function setup() {
   const deps: ScheduleMCPEnrollmentDeps = {
+    canUseRoot: jest.fn(async () => true),
     findUser: jest.fn(async () => ({ id: 'u', tenantId: 't', role: 'USER' }) as IUser),
     getAppConfig: jest.fn(async () =>
       Object.assign({} as AppConfig, {
@@ -111,4 +115,48 @@ it('denies an owner/tenant mismatch and cancellation before resolving resources'
   controller.abort();
   await expect(resolve(identity, { signal: controller.signal })).rejects.toThrow();
   expect(deps.getServers).not.toHaveBeenCalled();
+});
+
+it('honors capability-only root access without bypassing descendant VIEW checks', async () => {
+  const { deps, resolve } = setup();
+  const rootAccess = createResolveAgentFireAccess({
+    findAgentObjectId: async () => ({ _id: new Types.ObjectId() }),
+    getRoleByName: async () => ({
+      permissions: { [PermissionTypes.AGENTS]: { [Permissions.USE]: true } },
+    }),
+    hasCapability: async () => true,
+    checkPermission: async () => false,
+  });
+  deps.canUseRoot = jest.fn(async (id, user) => (await rootAccess(id, user)) === 'ok');
+  jest.mocked(deps.getNodes).mockImplementation(async (ids, access) => {
+    if (ids.includes('root'))
+      return access
+        ? []
+        : [
+            {
+              id: 'root',
+              provider: 'test',
+              model: 'test',
+              tools: ['query_mcp_warehouse'],
+              agent_ids: ['child'],
+            },
+          ];
+    return [{ id: 'child', provider: 'test', model: 'test', tools: ['query_mcp_warehouse'] }];
+  });
+  expect((await resolve(identity, {}))[0].permittedTools.map((s) => s.agentId)).toEqual([
+    'child',
+    'root',
+  ]);
+  expect(deps.canUseRoot).toHaveBeenCalledWith(
+    'root',
+    expect.objectContaining({ id: 'u', tenantId: 't' }),
+  );
+  expect(deps.getNodes).toHaveBeenNthCalledWith(1, ['root'], undefined);
+  expect(deps.getNodes).toHaveBeenNthCalledWith(2, ['child'], expect.any(Object));
+});
+it('does not load an unauthorized root through the unfiltered loader', async () => {
+  const { deps, resolve } = setup();
+  jest.mocked(deps.canUseRoot).mockResolvedValue(false);
+  await expect(resolve(identity, {})).rejects.toMatchObject({ code: 'consent_forbidden' });
+  expect(deps.getNodes).not.toHaveBeenCalled();
 });

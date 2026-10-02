@@ -22,9 +22,10 @@ import { ScheduleMCPConsentError } from './service';
 
 export interface ScheduleMCPEnrollmentDeps {
   findUser: (id: string) => Promise<IUser | null>;
+  canUseRoot: (agentId: string, user: IUser) => Promise<boolean>;
   getAppConfig: (options: GetAppConfigOptions) => Promise<AppConfig | undefined>;
   resolveGraphAccess: (user: IUser) => Promise<AgentGraphAccessContext>;
-  getNodes: (ids: string[], access: AgentGraphAccessContext) => Promise<AgentGraphNode[]>;
+  getNodes: (ids: string[], access?: AgentGraphAccessContext) => Promise<AgentGraphNode[]>;
   getServers: (
     user: IUser,
     config: Record<string, ParsedServerConfig>,
@@ -41,6 +42,8 @@ export function createScheduleMCPEnrollmentResolver(
     if (!user || (user.tenantId ?? null) !== identity.tenantId)
       throw new ScheduleMCPConsentError('consent_forbidden');
     user.id = identity.ownerId;
+    if (!(await deps.canUseRoot(identity.agentId, user)))
+      throw new ScheduleMCPConsentError('consent_forbidden');
     const [appConfig, access] = await Promise.all([
       deps.getAppConfig({ ...getAppConfigOptionsFromUser(user), failClosed: true }),
       deps.resolveGraphAccess(user),
@@ -66,7 +69,9 @@ export function createScheduleMCPEnrollmentResolver(
       if (visited.size + batch.length > MAX_SUBAGENT_GRAPH_NODES)
         throw new ScheduleMCPConsentError('consent_unavailable');
       batch.forEach((id) => visited.add(id));
-      const nodes = await deps.getNodes(batch, access);
+      // Root access includes manage:agents; descendants retain the runtime's VIEW filtering.
+      const rootBatch = batch.length === 1 && batch[0] === identity.agentId;
+      const nodes = await deps.getNodes(batch, rootBatch ? undefined : access);
       if (nodes.length !== batch.length) throw new ScheduleMCPConsentError('consent_forbidden');
       frontier = [];
       for (const node of nodes) {

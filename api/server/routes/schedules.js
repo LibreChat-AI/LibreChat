@@ -90,6 +90,7 @@ const handlers = createSchedulesHandlers({
 
 const consentHost = createScheduleMCPConsentHost({
   resolveEnrollment: createScheduleMCPEnrollmentResolver({
+    canUseRoot: async (agentId, user) => (await resolveAgentFireAccess(agentId, user)) === 'ok',
     findUser: (id) => methods.findUser({ _id: id }),
     getAppConfig: require('~/server/services/Config/app').getAppConfig,
     resolveGraphAccess: (user) =>
