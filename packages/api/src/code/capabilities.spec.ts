@@ -565,7 +565,9 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
       resolveCodeExecutionWorkspaceContext({
         context: {
           ...context,
-          codeEnvironmentConfigSchema: { workspaces: { linkedWorktrees } },
+          codeEnvironmentConfigSchema: {
+            workspaces: { linkedWorktrees, allowCheckoutSelection: false },
+          },
           ...(instanceId ? { conversationWorkspaceInstanceId: instanceId } : {}),
         },
         requestedSelections: [{ environmentId: 'personal', workspaceId }],
