@@ -6,7 +6,11 @@ import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { buildTree, Constants, dataService, QueryKeys } from 'librechat-data-provider';
 import type { TConversation, TMessage, TPreset } from 'librechat-data-provider';
-import { ScreenshotLimitError, useScreenshot } from '~/hooks/ScreenshotContext';
+import {
+  ScreenshotLimitError,
+  ScreenshotTargetError,
+  useScreenshot,
+} from '~/hooks/ScreenshotContext';
 import useBuildMessageTree from '~/hooks/Messages/useBuildMessageTree';
 import { isUnacknowledgedUserMessage } from '~/utils/messages';
 import { NotificationSeverity } from '~/common';
@@ -37,17 +41,19 @@ export default function useExportConversation({
 }) {
   const queryClient = useQueryClient();
   const { showToast } = useToastContext();
-  const { captureScreenshot } = useScreenshot();
+  const { captureScreenshot, screenshotTargetRef } = useScreenshot();
   const buildMessageTree = useBuildMessageTree();
   const localize = useLocalize();
 
   const { conversationId: paramId } = useParams();
 
+  const screenshotConversationId =
+    paramId === 'new' ? paramId : (conversation?.conversationId ?? paramId ?? '');
   const getCachedMessages = useCallback(() => {
-    const queryParam =
-      paramId === 'new' ? paramId : (conversation?.conversationId ?? paramId ?? '');
-    return queryClient.getQueryData<TMessage[]>([QueryKeys.messages, queryParam]) ?? [];
-  }, [paramId, conversation?.conversationId, queryClient]);
+    return (
+      queryClient.getQueryData<TMessage[]>([QueryKeys.messages, screenshotConversationId]) ?? []
+    );
+  }, [screenshotConversationId, queryClient]);
 
   const getMessageTree = useCallback(async () => {
     const conversationId = conversation?.conversationId;
@@ -85,11 +91,27 @@ export default function useExportConversation({
     if (refuseUnsafeScreenshot()) {
       return;
     }
+    const target = screenshotTargetRef?.current;
     let data: Blob;
     try {
-      data = await captureScreenshot();
+      data = await captureScreenshot(
+        (node) =>
+          node === target &&
+          node.dataset.conversationId === screenshotConversationId &&
+          !screenshotWouldExposePrivateText(),
+      );
+      if (
+        !target?.isConnected ||
+        screenshotTargetRef?.current !== target ||
+        target.dataset.conversationId !== screenshotConversationId
+      ) {
+        throw new ScreenshotTargetError();
+      }
     } catch (err) {
-      console.error('Failed to capture screenshot', err);
+      if (refuseUnsafeScreenshot()) {
+        return;
+      }
+      console.error('Failed to capture screenshot');
       showToast({
         message: localize(
           err instanceof ScreenshotLimitError

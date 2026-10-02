@@ -267,3 +267,42 @@ test('the first protected owner view loads from its server ID while generation i
     }
   }
 });
+
+test('an unchanged unprotected transcript still downloads a PNG screenshot', async ({
+  page,
+  request,
+}) => {
+  const token = await loginAdmin(request);
+  let conversationId: string | undefined;
+  try {
+    await page.goto('/c/new');
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    const response = await sendMessageAndWaitForCompletion(page, 'Ordinary screenshot capture');
+    conversationId = (await response.json()).conversationId as string;
+    await expect(page.getByTestId('screenshot-target')).toHaveAttribute(
+      'data-conversation-id',
+      conversationId!,
+    );
+    await page.getByRole('button', { name: 'Export/Share' }).click();
+    await page.getByRole('menuitem', { name: 'Export' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Export conversation' });
+    await dialog.getByTestId('dropdown-menu').click();
+    await page.getByRole('option', { name: 'screenshot (.png)' }).click();
+    const [image] = await Promise.all([
+      page.waitForEvent('download'),
+      dialog.getByRole('button', { name: 'Export', exact: true }).click(),
+    ]);
+    expect(image.suggestedFilename()).toMatch(/\.png$/);
+    const bytes = await readFile(await image.path());
+    expect([...bytes.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+  } finally {
+    if (conversationId) {
+      await requestResult(request, {
+        path: '/api/convos',
+        token,
+        method: 'DELETE',
+        data: { arg: { conversationId } },
+      });
+    }
+  }
+});

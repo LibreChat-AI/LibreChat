@@ -161,7 +161,12 @@ function MessagesViewContent({
                 </div>
               ) : (
                 <>
-                  <div ref={screenshotTargetRef} data-testid="screenshot-target">
+                  <div
+                    key={treeConversationId}
+                    ref={screenshotTargetRef}
+                    data-conversation-id={treeConversationId}
+                    data-testid="screenshot-target"
+                  >
                     <RowMountProvider mountWindow={mountWindow}>
                       {FLAT_THREAD && threadRows ? (
                         <ThreadList

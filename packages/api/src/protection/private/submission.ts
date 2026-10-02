@@ -418,8 +418,11 @@ export function getPrivateTextAdmission(
   start: (() => Promise<{ message?: PrivateTextMessage | null } | undefined>) | undefined,
   onPersisted?: () => void,
 ): (() => Promise<void>) | undefined {
-  if (req == null || !captures.has(req) || start == null) {
+  if (req == null || !captures.has(req)) {
     return;
+  }
+  if (start == null) {
+    throw unavailable();
   }
   return () => requirePrivateTextPersistence(req, start, onPersisted);
 }

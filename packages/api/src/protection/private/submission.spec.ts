@@ -11,6 +11,7 @@ import {
   isPreDenialTextSubmission,
   isPrivateTextChatSubmission,
   getPreinspectedPrivateText,
+  getPrivateTextAdmission,
   getPrivateTextInspectionTokens,
   privateTextBinding,
 } from './submission';
@@ -440,6 +441,15 @@ describe('private text submission boundary', () => {
         throw new Error('write failed');
       }),
     ).rejects.toThrow();
+  });
+
+  it('requires a persistence gate for a captured turn before allowing any model callback', () => {
+    const { req } = submit();
+    expect(() => getPrivateTextAdmission(req, undefined)).toThrow(
+      expect.objectContaining({ code: 'content_filter_block' }),
+    );
+    expect(getPrivateTextAdmission(undefined, undefined)).toBeUndefined();
+    expect(getPrivateTextAdmission({}, undefined)).toBeUndefined();
   });
 
   it('rejects stale or swallowed persistence results, including a duplicate ID with different text', async () => {

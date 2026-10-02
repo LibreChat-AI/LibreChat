@@ -1784,10 +1784,10 @@ describe('BaseClient', () => {
             privateTextTokens: getPrivateTextInspectionTokens(client.modelBoundStoredMessages),
           },
           {
-            onContentRejected: client.modelBoundUserMessagePersistence.cancel,
+            onContentRejected: client.modelBoundUserMessagePersistence?.cancel,
             onContentAllowed: getPrivateTextAdmission(
               req,
-              client.modelBoundUserMessagePersistence.start,
+              client.modelBoundUserMessagePersistence?.start,
               client.privateTextStart,
             ),
           },
@@ -1832,6 +1832,39 @@ describe('BaseClient', () => {
       await expect(client.sendMessage(req.body.text, { onStart })).rejects.toThrow();
       expect(onStart).not.toHaveBeenCalled();
       expect(provider).not.toHaveBeenCalled();
+    });
+
+    test.each(['user-id', 'user-id__1', 'user-id__invalid'])(
+      'rejects a protected persistence-skipping override %s before model invocation',
+      async (overrideUserMessageId) => {
+        const { client, req, provider } = protectedClient();
+        req.body.overrideUserMessageId = overrideUserMessageId;
+        const onStart = jest.fn();
+        await expect(client.sendMessage(req.body.text, { onStart })).rejects.toMatchObject({
+          code: 'content_filter_block',
+        });
+        expect(client.skipSaveUserMessage).toBe(true);
+        expect(client.saveMessageToDatabase).not.toHaveBeenCalled();
+        expect(onStart).not.toHaveBeenCalled();
+        expect(provider).not.toHaveBeenCalled();
+      },
+    );
+
+    test('retains protected admission for the normal browser override with writer index zero', async () => {
+      const { client, req, provider } = protectedClient();
+      req.body.overrideUserMessageId = 'normal-user-id__0';
+      const onStart = jest.fn();
+      await expect(client.sendMessage(req.body.text, { onStart })).resolves.toBeDefined();
+      expect(client.skipSaveUserMessage).toBe(false);
+      expect(onStart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageId: 'normal-user-id',
+          privacyRevision: expect.any(String),
+        }),
+        expect.any(String),
+        true,
+      );
+      expect(provider).toHaveBeenCalledTimes(1);
     });
 
     test('a legacy history rejection leaves a transformed turn and conversation unsaved', async () => {

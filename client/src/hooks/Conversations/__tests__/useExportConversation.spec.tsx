@@ -12,6 +12,7 @@ import useExportConversation from '../useExportConversation';
 const mockGetMessages = jest.fn();
 const mockShowToast = jest.fn();
 const mockCaptureScreenshot = jest.fn();
+const mockScreenshotRef = { current: document.createElement('div') };
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -29,8 +30,12 @@ jest.mock('@librechat/client', () => ({
 }));
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
 jest.mock('~/hooks/ScreenshotContext', () => ({
-  useScreenshot: () => ({ captureScreenshot: mockCaptureScreenshot }),
+  useScreenshot: () => ({
+    captureScreenshot: mockCaptureScreenshot,
+    screenshotTargetRef: mockScreenshotRef,
+  }),
   ScreenshotLimitError: class ScreenshotLimitError extends Error {},
+  ScreenshotTargetError: class ScreenshotTargetError extends Error {},
 }));
 jest.mock('downloadjs', () => jest.fn());
 jest.mock('export-from-json', () =>
@@ -96,6 +101,8 @@ async function readBlob(blob: Blob): Promise<string> {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockScreenshotRef.current.dataset.conversationId = conversationId;
+  document.body.append(mockScreenshotRef.current);
 });
 
 it('exports acknowledged canonical text rather than a pending private cache value', async () => {
