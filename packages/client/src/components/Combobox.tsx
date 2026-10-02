@@ -156,7 +156,7 @@ export default function ComboboxComponent({
                     >
                       <span className="absolute right-2 flex h-3.5 w-3.5 items-center justify-center">
                         <RadixSelect.ItemIndicator>
-                          <CheckIcon className="h-4 w-4" />
+                          <CheckIcon className="size-theme-icon" />
                         </RadixSelect.ItemIndicator>
                       </span>
                       <RadixSelect.ItemText>

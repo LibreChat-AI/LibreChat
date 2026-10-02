@@ -370,9 +370,10 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeMd` (the
   exported Dialog's close glyph) 1.25 to 1.5rem, `iconSizeLg` 1 to 2rem, `checkboxSize` 1 to
   1.5rem. The target floor (`h-theme-target`, `min-h-theme-target`, `min-w-theme-target`) is
-  a fixed 24px, WCAG 2.5.8's minimum, not a role: a theme can draw controls larger, never
-  smaller, and the Button's `xs`, `lg`, `compact` and `icon-sm` heights and `fieldHeightLg`
-  reject a value under 24px.
+  a fixed 24px, WCAG 2.5.8's minimum, not a role, so a theme cannot lower it. The Button's
+  `xs`, `lg`, `compact` and `icon-sm` heights and `fieldHeightLg` reject a value under 24px;
+  `controlHeight`, `buttonHeight`, `buttonHeightSm` and `fieldHeight` predate the floor and
+  keep their earlier validation.
 - `bg-field-fill` / `text-field-text` - A form field's fill and typed value. The
   ink follows `text-primary` and the fill follows `surface-primary` when a theme
   names those and not these. Fields stay clear unless the theme's
