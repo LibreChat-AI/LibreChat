@@ -15,6 +15,8 @@ import {
   collectAgentAttachmentStats,
   collectFileIds,
   collectHistoricalAttachmentIds,
+  admitSteerAttachmentHistory,
+  rollbackSteerAttachmentHistory,
   buildAgentScopedContext,
   getAgentContextAttachments,
   buildAgentContextAttachmentsByAgentId,
@@ -147,6 +149,37 @@ describe('agent attachment helpers', () => {
         fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
       }),
     ).toThrow(expect.objectContaining({ limitType: 'count', observed: 2, limit: 1 }));
+  });
+
+  it('rolls back repeated historical occurrences without excluding a retained current file', () => {
+    const historical = { file_id: 'history' };
+    const current = { file_id: 'current' };
+    const state = admitSteerAttachmentHistory({
+      historicalFileIds: new Set([historical.file_id]),
+      attachments: [historical, historical, current, {}],
+    });
+    expect(state.historicalFileIds).toEqual(new Set());
+    rollbackSteerAttachmentHistory({ state, attachments: [historical] });
+    expect(state.historicalFileIds).toEqual(new Set());
+    const historicalFileIds = rollbackSteerAttachmentHistory({
+      state,
+      attachments: [historical, current, {}, { file_id: 'untracked' }],
+    });
+    expect(historicalFileIds).toEqual(new Set([historical.file_id]));
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: [historical, current, { file_id: 'later' }],
+        historicalFileIds,
+        fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'count', observed: 2 }));
+  });
+
+  it('preserves exclusions when a legacy admission has no history ledger', () => {
+    const historicalFileIds = new Set(['history']);
+    expect(
+      rollbackSteerAttachmentHistory({ historicalFileIds, attachments: [{ file_id: 'history' }] }),
+    ).toBe(historicalFileIds);
   });
 
   it('counts bytes once per repeated model injection when requested', () => {

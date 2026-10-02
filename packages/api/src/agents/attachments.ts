@@ -556,6 +556,71 @@ export function collectHistoricalAttachmentIds(
   return fileIds;
 }
 
+interface SteerAttachmentHistory {
+  originalHistoricalFileIds: ReadonlySet<string>;
+  historicalFileIds: Set<string>;
+  currentFileCounts: Map<string, number>;
+}
+
+/** Tracks count admission separately from encoding so failed media can release its reservation. */
+export function admitSteerAttachmentHistory({
+  state,
+  historicalFileIds,
+  attachments,
+}: {
+  state?: SteerAttachmentHistory;
+  historicalFileIds?: ReadonlySet<string>;
+  attachments: Iterable<FileWithId | null | undefined>;
+}): SteerAttachmentHistory {
+  const admission = state ?? {
+    originalHistoricalFileIds: new Set(historicalFileIds),
+    historicalFileIds: new Set(historicalFileIds),
+    currentFileCounts: new Map<string, number>(),
+  };
+  for (const file of attachments) {
+    if (!file?.file_id || !admission.originalHistoricalFileIds.has(file.file_id)) {
+      continue;
+    }
+    admission.currentFileCounts.set(
+      file.file_id,
+      (admission.currentFileCounts.get(file.file_id) ?? 0) + 1,
+    );
+    admission.historicalFileIds.delete(file.file_id);
+  }
+  return admission;
+}
+
+/** Restores historical exclusions only after every submission of that ID has rolled back. */
+export function rollbackSteerAttachmentHistory({
+  state,
+  historicalFileIds,
+  attachments,
+}: {
+  state?: SteerAttachmentHistory;
+  historicalFileIds?: ReadonlySet<string>;
+  attachments: Iterable<FileWithId | null | undefined>;
+}): ReadonlySet<string> | undefined {
+  if (!state) {
+    return historicalFileIds;
+  }
+  for (const file of attachments) {
+    const fileId = file?.file_id;
+    const count = fileId ? state.currentFileCounts.get(fileId) : undefined;
+    if (!fileId || !count) {
+      continue;
+    }
+    if (count > 1) {
+      state.currentFileCounts.set(fileId, count - 1);
+      continue;
+    }
+    state.currentFileCounts.delete(fileId);
+    if (state.originalHistoricalFileIds.has(fileId)) {
+      state.historicalFileIds.add(fileId);
+    }
+  }
+  return state.historicalFileIds;
+}
+
 export function buildAgentContextAttachmentsByAgentId<TFile extends FileWithId>(
   configs: Iterable<AgentContextAttachmentCarrier<TFile> | null | undefined>,
 ): Map<string, TFile[]> {

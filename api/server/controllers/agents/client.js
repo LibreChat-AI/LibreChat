@@ -138,6 +138,8 @@ const {
   assertAgentAttachmentLimits,
   assertAgentAttachmentTopology,
   collectHistoricalAttachmentIds,
+  admitSteerAttachmentHistory,
+  rollbackSteerAttachmentHistory,
   isModelBoundAttachmentFile,
   isAgentAttachmentLimitError,
   isAttachmentObjectNotFoundError,
@@ -495,7 +497,12 @@ class AgentClient extends BaseClient {
       [...sharedAttachments, ...(this.turnAggregateOnlyAttachmentFiles ?? [])],
       [...scopedAttachmentsByAgentId.values()].flat(),
     );
-    this.turnHistoricalAttachmentIds = historicalFileIds;
+    this.turnSteerAttachmentHistory = admitSteerAttachmentHistory({
+      state: this.turnSteerAttachmentHistory,
+      historicalFileIds: this.turnHistoricalAttachmentIds,
+      attachments: modelBoundFiles,
+    });
+    this.turnHistoricalAttachmentIds = this.turnSteerAttachmentHistory.historicalFileIds;
     this.turnSharedAttachmentFiles = sharedAttachments;
     this.attachmentMemoryContext?.attachments?.push(...modelBoundFiles);
     if (steerId && modelBoundFiles.length > 0) {
@@ -509,6 +516,7 @@ class AgentClient extends BaseClient {
       this.getModelBoundAttachmentsForEndpoint(historicalAttachments);
     const compatibleCurrentAttachments =
       this.getModelBoundAttachmentsForEndpoint(currentAttachments);
+    this.turnSteerAttachmentHistory = undefined;
     this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
       historicalAttachments,
       currentAttachments,
@@ -754,6 +762,7 @@ class AgentClient extends BaseClient {
     this.steerOffsetState = { offset: 0 };
     this.appliedSteerParts = new Map();
     this.admittedSteerAttachments = new Map();
+    this.turnSteerAttachmentHistory = undefined;
     /** @type {(messages: BaseMessage[], inspectionMessages?: BaseMessage[]) => Promise<void>} */
     this.processMemory;
   }
@@ -937,6 +946,11 @@ class AgentClient extends BaseClient {
     };
     removeOccurrences(this.turnSharedAttachmentFiles);
     removeOccurrences(this.attachmentMemoryContext?.attachments);
+    this.turnHistoricalAttachmentIds = rollbackSteerAttachmentHistory({
+      state: this.turnSteerAttachmentHistory,
+      historicalFileIds: this.turnHistoricalAttachmentIds,
+      attachments: admitted,
+    });
   }
 
   /**
@@ -2473,6 +2487,7 @@ class AgentClient extends BaseClient {
       endpointType: this.options.endpointType,
       endpointsByAgentId,
     });
+    this.turnSteerAttachmentHistory = undefined;
     this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
       this.authorizedHistoricalFiles?.values() ?? sharedAttachmentFiles,
       requestAttachments,
@@ -5513,6 +5528,7 @@ class AgentClient extends BaseClient {
           .call(this, requestFiles)
           .filter((file) => !file?.file_id || !checkpointFileIds.has(file.file_id)),
       ];
+      this.turnSteerAttachmentHistory = undefined;
       this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
         resumeContentProjection.checkpointFiles,
         requestFiles,

@@ -6326,6 +6326,70 @@ describe('AgentClient - titleConvo', () => {
       expect(client.turnHistoricalAttachmentIds.has(historical[0].file_id)).toBe(false);
     });
 
+    it('releases a failed historical resubmission before admitting later steer files', () => {
+      mockReq.config.fileConfig = { endpoints: { openAI: { fileLimit: 1 } } };
+      const historical = makeTextFile('history', 'history.txt', 'history');
+      const current = makeTextFile('current', 'current.txt', 'current');
+      client.turnSharedAttachmentFiles = [historical];
+      client.turnHistoricalAttachmentIds = new Set([historical.file_id]);
+      client.turnAttachmentEndpointsByAgentId = new Map([
+        ['primary-agent', { endpoint: EModelEndpoint.openAI }],
+      ]);
+      client.attachmentMemoryContext = { attachments: [historical] };
+      client.admitSteerAttachments([historical], 'failed-steer');
+
+      client.rollbackSteerAttachmentAdmission('failed-steer');
+
+      expect(client.turnHistoricalAttachmentIds).toEqual(new Set([historical.file_id]));
+      expect(client.turnSharedAttachmentFiles).toEqual([historical]);
+      expect(client.attachmentMemoryContext.attachments).toEqual([historical]);
+      expect(() => client.admitSteerAttachments([current], 'later-steer')).not.toThrow();
+    });
+
+    it('keeps committed resubmissions counted when a later duplicate steer fails', () => {
+      mockReq.config.fileConfig = { endpoints: { openAI: { fileLimit: 1 } } };
+      const historical = makeTextFile('history', 'history.txt', 'history');
+      const current = makeTextFile('current', 'current.txt', 'current');
+      client.turnSharedAttachmentFiles = [historical];
+      client.turnHistoricalAttachmentIds = new Set([historical.file_id]);
+      client.turnAttachmentEndpointsByAgentId = new Map([
+        ['primary-agent', { endpoint: EModelEndpoint.openAI }],
+      ]);
+      client.admitSteerAttachments([historical], 'accepted-steer');
+      client.admittedSteerAttachments.delete('accepted-steer');
+      client.admitSteerAttachments([historical], 'failed-steer');
+
+      client.rollbackSteerAttachmentAdmission('failed-steer');
+
+      expect(client.turnHistoricalAttachmentIds.has(historical.file_id)).toBe(false);
+      expect(client.turnSharedAttachmentFiles).toEqual([historical, historical]);
+      expect(() => client.admitSteerAttachments([current], 'later-steer')).toThrow(
+        expect.objectContaining({ limitType: 'count', observed: 2, limit: 1 }),
+      );
+    });
+
+    it.each([
+      ['first', 'second'],
+      ['second', 'first'],
+    ])(
+      'restores an overlapping historical exclusion after rolling back %s then %s',
+      (first, second) => {
+        const historical = makeTextFile('history', 'history.txt', 'history');
+        client.turnSharedAttachmentFiles = [historical];
+        client.turnHistoricalAttachmentIds = new Set([historical.file_id]);
+        client.admitSteerAttachments([historical], 'first');
+        client.admitSteerAttachments([historical], 'second');
+
+        client.rollbackSteerAttachmentAdmission(first);
+        expect(client.turnHistoricalAttachmentIds.has(historical.file_id)).toBe(false);
+        client.rollbackSteerAttachmentAdmission(second);
+        expect(client.turnHistoricalAttachmentIds.has(historical.file_id)).toBe(true);
+        expect(client.turnSharedAttachmentFiles).toEqual([historical]);
+        client.rollbackSteerAttachmentAdmission(second);
+        expect(client.turnHistoricalAttachmentIds.has(historical.file_id)).toBe(true);
+      },
+    );
+
     it('rejects combined historical and current bytes before either batch is encoded', async () => {
       mockAgent.endpoint = 'Moonshot';
       client.options.endpointType = EModelEndpoint.custom;
