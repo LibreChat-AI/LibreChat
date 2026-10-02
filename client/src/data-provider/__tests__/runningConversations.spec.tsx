@@ -97,6 +97,49 @@ describe('useRunningConversationsQuery', () => {
     });
   });
 
+  it('returns sidebar fields without chat-owned settings while retaining the full navigation record', async () => {
+    const full = record({
+      codeApprovalMode: 'fullAccess',
+      codeEnvironmentMode: 'without_attached',
+      promptPrefix: 'Original prompt',
+      temperature: 0.2,
+      max_tokens: 2048,
+      codeWorkspaces: [{ environmentId: 'env-old', workspaceId: 'workspace-old' }],
+    });
+    getConversationById.mockResolvedValue(full);
+    const { result } = renderHook(() => useRunningConversationsQuery(['c1']), { wrapper });
+    await waitFor(() => expect(result.current).toHaveLength(1));
+
+    expect(result.current[0]).toMatchObject({
+      conversationId: 'c1',
+      title: full.title,
+      chatProjectId: 'project-1',
+    });
+    for (const field of [
+      'codeApprovalMode',
+      'codeEnvironmentMode',
+      'codeWorkspaces',
+      'promptPrefix',
+      'temperature',
+      'max_tokens',
+    ]) {
+      expect(result.current[0]).not.toHaveProperty(field);
+    }
+    expect(queryClient.getQueryData([QueryKeys.conversation, 'c1'])).toMatchObject(full);
+  });
+
+  it('keeps the sidebar projection stable while the underlying records are unchanged', async () => {
+    getConversationById.mockResolvedValue(record({ codeApprovalMode: 'fullAccess' }));
+    const { result, rerender } = renderHook(() => useRunningConversationsQuery(['c1']), {
+      wrapper,
+    });
+    await waitFor(() => expect(result.current).toHaveLength(1));
+    const rows = result.current;
+    rerender();
+    expect(result.current).toBe(rows);
+    expect(result.current[0]).toBe(rows[0]);
+  });
+
   it('leaves a conversation the chat view already cached untouched', async () => {
     const cached = record({ title: 'Edited locally' });
     queryClient.setQueryData([QueryKeys.conversation, 'c1'], cached);

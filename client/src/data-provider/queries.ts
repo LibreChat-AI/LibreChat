@@ -32,7 +32,12 @@ import type {
 } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
 import type { ConversationCursorData } from '~/utils/convos';
-import { acceptRunningConversation, findConversationInInfinite, isNotFoundError } from '~/utils';
+import {
+  acceptRunningConversation,
+  findConversationInInfinite,
+  isNotFoundError,
+  toSidebarConversation,
+} from '~/utils';
 
 export const useGetPresetsQuery = (
   config?: UseQueryOptions<TPreset[]>,
@@ -152,13 +157,19 @@ export const useRunningConversationsQuery = (
     ),
   });
 
+  const recordsRef = useRef<t.TConversation[]>(noRunningConversations);
   const rowsRef = useRef<t.TConversation[]>(noRunningConversations);
-  const rows = results
+  const records = results
     .map((result) => result.data)
-    .filter((row): row is t.TConversation => row != null);
-  const previous = rowsRef.current;
-  if (rows.length !== previous.length || rows.some((row, index) => row !== previous[index])) {
-    rowsRef.current = rows.length === 0 ? noRunningConversations : rows;
+    .filter((record): record is t.TConversation => record != null);
+  const previous = recordsRef.current;
+  if (
+    records.length !== previous.length ||
+    records.some((record, index) => record !== previous[index])
+  ) {
+    recordsRef.current = records;
+    rowsRef.current =
+      records.length === 0 ? noRunningConversations : records.map(toSidebarConversation);
   }
   return rowsRef.current;
 };
