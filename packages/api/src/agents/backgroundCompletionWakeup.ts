@@ -1034,13 +1034,14 @@ export function createBackgroundToolDeadClaimRecovery(
     if (await claimGenerationIsActive()) {
       return false;
     }
+    const receiptBatchId = batch?.batchId ?? batchId;
     const receiptReleased = await releaseReceiptClaims?.({
       sourceId: BACKGROUND_TOOL_COMPLETION_SOURCE,
       userId,
       conversationId,
       parentMessageId: messageId,
       claimId,
-      ...(batch != null ? { batchId: batch.batchId } : batchId != null ? { batchId } : {}),
+      ...(receiptBatchId != null && { batchId: receiptBatchId }),
       recoveryFenced: true,
     });
     if (receiptReleased === false) return false;

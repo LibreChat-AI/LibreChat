@@ -3020,6 +3020,7 @@ export function createAgentTriggerDeliveryMethods(
       const released = await releaseAgentBackgroundToolResultClaims({
         ...input,
         claimId: input.deliveryKey,
+        batchId: root.backgroundToolResultBatch.batchId,
       });
       return released ? claimAgentBackgroundToolResultBatch(input) : { status: 'not_ready' };
     }
@@ -3047,7 +3048,11 @@ export function createAgentTriggerDeliveryMethods(
         root.backgroundToolResultBatch != null &&
         root.backgroundToolResultBatch.appliedAt == null
       ) {
-        await releaseAgentBackgroundToolResultClaims({ ...input, claimId: input.deliveryKey });
+        await releaseAgentBackgroundToolResultClaims({
+          ...input,
+          claimId: input.deliveryKey,
+          batchId: root.backgroundToolResultBatch.batchId,
+        });
       }
       if (claim.appliedAt != null)
         return {
@@ -3195,7 +3200,11 @@ export function createAgentTriggerDeliveryMethods(
       const owners = new Set(owned.map((row) => row.deliveryKey));
       const members = batch.candidates.filter((key) => owners.has(key));
       if (!owners.has(input.deliveryKey)) {
-        await releaseAgentBackgroundToolResultClaims({ ...input, claimId: input.deliveryKey });
+        await releaseAgentBackgroundToolResultClaims({
+          ...input,
+          claimId: input.deliveryKey,
+          batchId: batch.batchId,
+        });
         return { status: 'not_ready' };
       }
       const frozen = await Delivery().updateOne(

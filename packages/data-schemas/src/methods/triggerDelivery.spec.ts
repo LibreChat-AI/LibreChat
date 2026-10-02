@@ -6031,6 +6031,51 @@ describe('background result receipt batches', () => {
     },
   );
 
+  it('does not let a resumed cleanup snapshot erase a replacement batch without a queue token', async () => {
+    await ready('one');
+    await ready('two');
+    const old = await methods.claimAgentBackgroundToolResultBatch(input('one'));
+    if (old.status !== 'acquired') throw new Error('Expected old batch');
+    await Delivery.updateOne(
+      { deliveryKey: 'one' },
+      { $set: { 'backgroundToolResultBatch.releasing': true } },
+    );
+    let pause: () => void = () => undefined;
+    let resume: () => void = () => undefined;
+    const paused = new Promise<void>((resolve) => {
+      pause = resolve;
+    });
+    const barrier = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const update = Delivery.findOneAndUpdate.bind(Delivery);
+    const cleanup = jest.spyOn(Delivery, 'findOneAndUpdate').mockImplementationOnce((...args) => {
+      const query = update(...args);
+      const execute = query.exec.bind(query);
+      jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+        pause();
+        await barrier;
+        return execute();
+      });
+      return query;
+    });
+    const predecessor = methods.claimAgentBackgroundToolResultBatch(input('one'));
+    await paused;
+    expect(
+      await methods.releaseAgentBackgroundToolResultClaims({
+        ...input('one'),
+        claimId: 'one',
+        batchId: old.batchId,
+      }),
+    ).toBe(true);
+    const current = await methods.claimAgentBackgroundToolResultBatch(input('one'));
+    if (current.status !== 'acquired') throw new Error('Expected replacement batch');
+    resume();
+    expect(await predecessor).toEqual({ status: 'not_ready' });
+    cleanup.mockRestore();
+    expect(await methods.claimAgentBackgroundToolResultBatch(input('one'))).toEqual(current);
+  });
+
   it('does not let an expired lease release its successor preparation', async () => {
     await ready('one');
     await ready('two');
