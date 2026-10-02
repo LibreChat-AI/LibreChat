@@ -9,6 +9,7 @@ import type { ActiveSubagentPanel } from '~/components/Chat/Subagents/state';
 import {
   closeParentSubagentProgress,
   reduceSubagentProgress,
+  reduceSubagentReplay,
   registerSubagentProgressKey,
   subagentParentStreamOpenByToolCallId,
   subagentProgressByToolCallId,
@@ -150,53 +151,10 @@ export default function useSubagentActivityStream(
                 ]
               : [],
           );
-          if (events.length === 0) return;
           registerSubagentProgressKey(key);
-          setProgress((previous) => {
-            /** Replace a suffix only when replay actually backfills earlier activity.
-             * A later capped snapshot must not erase parts already held by the client. */
-            const firstSequence = events[0].activitySequence;
-            const sameRun = previous?.subagentRunId === events[0].subagentRunId;
-            const addsEarlierActivity =
-              previous?.firstActivitySequence != null &&
-              firstSequence != null &&
-              firstSequence < previous.firstActivitySequence;
-            const base = sameRun && !addsEarlierActivity ? previous : null;
-            const progress = reduceSubagentProgress(
-              base,
-              events,
-              'detached',
-              parentStreamOpenRef.current,
-            );
-            if (progress == null) return previous;
-            const missing = previous?.activityReplayFrom;
-            if (
-              !parentStreamOpenRef.current &&
-              missing != null &&
-              (progress.lastActivitySequence ?? -1) >= missing
-            ) {
-              /** Redis can evict the rejected prefix during a long foreground stream.
-               * Preserve displayed parts and explicitly count the unavailable range. */
-              return {
-                ...progress,
-                activityReplayFrom: undefined,
-                droppedCount:
-                  (progress.droppedCount ?? 0) +
-                  Math.max(
-                    0,
-                    (firstSequence ?? missing) -
-                      Math.max(missing, (base?.lastActivitySequence ?? -1) + 1) -
-                      (base?.pendingSequencedEvents ?? []).filter(
-                        (event) =>
-                          event.activitySequence != null &&
-                          event.activitySequence >= missing &&
-                          event.activitySequence < (firstSequence ?? missing),
-                      ).length,
-                  ),
-              };
-            }
-            return progress;
-          });
+          setProgress((previous) =>
+            reduceSubagentReplay(previous, events, parentStreamOpenRef.current),
+          );
           retryAttempt = 0;
           return;
         }

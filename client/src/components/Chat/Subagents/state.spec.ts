@@ -6,6 +6,7 @@ import type { SubagentUpdateEvent } from 'librechat-data-provider';
 import {
   closeParentSubagentProgress,
   reduceSubagentProgress,
+  reduceSubagentReplay,
   registerSubagentProgressKey,
   removeSubagentProgressAtoms,
   subagentParentStreamOpenByToolCallId,
@@ -497,4 +498,38 @@ describe('useSubagentProgress', () => {
     expect(subagentProgressByToolCallId(key)).toBe(held);
     expect(store.get(held)).not.toBeNull();
   });
+});
+
+it('counts an expired rejected interval without discarding later retained pending frames', () => {
+  const event = (sequence: number) =>
+    update({
+      activityEventId: `overflow:${sequence}`,
+      activitySequence: sequence,
+      phase: 'message_delta',
+      data: { delta: { content: [{ type: 'text', text: `${sequence},` }] } },
+    });
+  let progress = reduceSubagentProgress(
+    null,
+    Array.from({ length: 100 }, (_, i) => event(i + 2)),
+    'detached',
+    true,
+  );
+  progress = reduceSubagentProgress(progress, [event(102), event(103)], 'detached', true);
+  progress = reduceSubagentProgress(progress, [event(0), event(1)], 'parent', true);
+  progress = reduceSubagentProgress(progress, [event(104), event(105)], 'detached', true);
+  expect(progress?.activityReplayFrom).toBe(102);
+  expect(progress?.pendingSequencedEvents).toHaveLength(2);
+  progress = reduceSubagentReplay(closeParentSubagentProgress(progress), [], false);
+  expect(progress?.lastActivitySequence).toBe(105);
+  expect(progress?.droppedCount).toBe(2);
+  expect(progress?.activityReplayFrom).toBeUndefined();
+  expect(progress?.contentParts).toEqual([
+    {
+      type: 'text',
+      text: Array.from({ length: 106 }, (_, i) => i)
+        .filter((i) => i !== 102 && i !== 103)
+        .map((i) => `${i},`)
+        .join(''),
+    },
+  ]);
 });

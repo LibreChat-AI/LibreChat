@@ -69,6 +69,7 @@ export interface SubagentProgress {
   pendingSequencedEvents?: SubagentUpdateEvent[];
   /** Earliest rejected host sequence. A detached reader requests replay after parent close. */
   activityReplayFrom?: number;
+  activityReplayThrough?: number;
   /** Whether the folded events cover the run from its beginning or only the
    *  forward-only suffix observed after opening a detached task stream. */
   coverage?: 'complete' | 'suffix';
@@ -628,6 +629,7 @@ const foldAcceptedSubagentEvents = (
     aggregatorState,
     tickerState,
     activityReplayFrom: previous?.activityReplayFrom,
+    activityReplayThrough: previous?.activityReplayThrough,
     firstActivitySequence:
       previous?.subagentRunId === last.subagentRunId
         ? (previous.firstActivitySequence ??
@@ -696,6 +698,7 @@ export function reduceSubagentProgress(
   );
   const directEvents: SubagentUpdateEvent[] = [];
   let replayFrom = sameRun ? previous?.activityReplayFrom : undefined;
+  let replayThrough = sameRun ? previous?.activityReplayThrough : undefined;
   let expected = lastActivitySequence == null ? 0 : lastActivitySequence + 1;
   if (!waitForEarlierSequences && lastActivitySequence == null) {
     const firstSequence = [...pending, ...orderedEvents]
@@ -743,6 +746,7 @@ export function reduceSubagentProgress(
         pendingSequences.add(sequence);
       } else {
         replayFrom = Math.min(replayFrom ?? sequence, sequence);
+        replayThrough = Math.max(replayThrough ?? sequence, sequence);
       }
     } else {
       if (key != null) seen.add(key);
@@ -755,6 +759,85 @@ export function reduceSubagentProgress(
     drainPending();
   }
   const progress = foldAcceptedSubagentEvents(previous, directEvents, source, pending);
-  if (progress == null || replayFrom === progress.activityReplayFrom) return progress;
-  return { ...progress, activityReplayFrom: replayFrom };
+  if (
+    progress == null ||
+    (replayFrom === progress.activityReplayFrom && replayThrough === progress.activityReplayThrough)
+  )
+    return progress;
+  return { ...progress, activityReplayFrom: replayFrom, activityReplayThrough: replayThrough };
+}
+
+/** Reconcile snapshot coverage and bounded client overflow without advancing past an open parent. */
+export function reduceSubagentReplay(
+  previous: SubagentProgress | null,
+  events: SubagentUpdateEvent[],
+  parentOpen: boolean,
+): SubagentProgress | null {
+  if (events.length === 0) {
+    const from = previous?.activityReplayFrom;
+    const through = previous?.activityReplayThrough;
+    if (parentOpen || previous == null || from == null || through == null) return previous;
+    const start = Math.max(from, (previous.lastActivitySequence ?? -1) + 1);
+    const retainedPending = (previous.pendingSequencedEvents ?? []).filter(
+      (event) =>
+        event.activitySequence != null &&
+        event.activitySequence >= start &&
+        event.activitySequence <= through,
+    ).length;
+    const omitted = Math.max(0, through - start + 1 - retainedPending);
+    const acknowledged = closeParentSubagentProgress({
+      ...previous,
+      activityReplayFrom: undefined,
+      activityReplayThrough: undefined,
+    });
+    if (acknowledged == null || omitted === 0) return acknowledged;
+    if ((acknowledged.lastActivitySequence ?? -1) >= through)
+      return { ...acknowledged, droppedCount: (acknowledged.droppedCount ?? 0) + omitted };
+    /** The retained window expired. Count the rejected range and resume later live frames. */
+    return reduceSubagentProgress(
+      acknowledged,
+      [
+        {
+          runId: '',
+          subagentRunId: previous.subagentRunId,
+          subagentType: previous.subagentType,
+          subagentAgentId: previous.subagentAgentId ?? '',
+          activityEventId: `client-overflow:${through}`,
+          activitySequence: through,
+          activityDroppedCount: omitted,
+          phase: 'message_delta',
+          timestamp: new Date().toISOString(),
+        },
+      ],
+      'detached',
+      false,
+    );
+  }
+  const firstSequence = events[0].activitySequence;
+  const sameRun = previous?.subagentRunId === events[0].subagentRunId;
+  const addsEarlierActivity =
+    previous?.firstActivitySequence != null &&
+    firstSequence != null &&
+    firstSequence < previous.firstActivitySequence;
+  const base = sameRun && !addsEarlierActivity ? previous : null;
+  const progress = reduceSubagentProgress(base, events, 'detached', parentOpen);
+  if (progress == null) return previous;
+  const missing = sameRun ? previous?.activityReplayFrom : undefined;
+  if (parentOpen || missing == null || (progress.lastActivitySequence ?? -1) < missing)
+    return progress;
+  const start = Math.max(missing, (base?.lastActivitySequence ?? -1) + 1);
+  const retainedPending = (base?.pendingSequencedEvents ?? []).filter(
+    (event) =>
+      event.activitySequence != null &&
+      event.activitySequence >= start &&
+      event.activitySequence < (firstSequence ?? start),
+  ).length;
+  return {
+    ...progress,
+    activityReplayFrom: undefined,
+    activityReplayThrough: undefined,
+    droppedCount:
+      (progress.droppedCount ?? 0) +
+      Math.max(0, (firstSequence ?? start) - start - retainedPending),
+  };
 }

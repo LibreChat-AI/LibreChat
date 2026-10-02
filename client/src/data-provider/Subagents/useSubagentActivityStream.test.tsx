@@ -567,7 +567,7 @@ describe('useSubagentActivityStream', () => {
     expect(result.current.progress?.pendingSequencedEvents).toBeUndefined();
   });
 
-  it.each([6, 104])(
+  it.each([6, 104, 106])(
     'recovers a full pending buffer with retained replay starting at %s',
     (snapshotStart) => {
       jest.useFakeTimers();
@@ -640,6 +640,9 @@ describe('useSubagentActivityStream', () => {
             .join(''),
         },
       ]);
+      act(() => streams[1].emit('message', event(106)));
+      expect(result.current.progress?.lastActivitySequence).toBe(106);
+      expect(result.current.progress?.activityReplayFrom).toBeUndefined();
       unmount();
       jest.useRealTimers();
     },
