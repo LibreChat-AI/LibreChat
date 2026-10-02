@@ -57,10 +57,14 @@ const injectAgentIntoAgentsMap = (
 /** Stages URL prompts, then auto-submits once normalized conversation settings match. */
 export default function useQueryParams({
   textAreaRef,
+  routePending = false,
   onBeforePrompt,
+  onPromptSettled,
 }: {
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
+  routePending?: boolean;
   onBeforePrompt?: () => void;
+  onPromptSettled?: (text: string, conversationId: string | null | undefined) => void;
 }) {
   const maxAttempts = 50;
   const attemptsRef = useRef(0);
@@ -74,6 +78,10 @@ export default function useQueryParams({
   const settingsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [submissionStatus, setSubmissionStatus] = useState<'idle' | 'preparing' | 'failed'>('idle');
 
+  const routePendingRef = useRef(routePending);
+  routePendingRef.current = routePending;
+  const onPromptSettledRef = useRef(onPromptSettled);
+  onPromptSettledRef.current = onPromptSettled;
   const methods = useChatFormContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const setSearchParamsRef = useRef(setSearchParams);
@@ -367,6 +375,16 @@ export default function useQueryParams({
     }
   }, [methods, ownsRequest]);
 
+  const settlePrompt = useCallback(() => {
+    if (!ownsRequest() || promptTextRef.current == null) {
+      return;
+    }
+    onPromptSettledRef.current?.(
+      methods.getValues('text'),
+      destinationRef.current?.conversationId ?? conversationRef.current?.conversationId,
+    );
+  }, [methods, ownsRequest]);
+
   /** Consumes an auto-submit once, leaving a refused submission in the composer. */
   const processSubmission = useCallback(() => {
     if (
@@ -402,23 +420,34 @@ export default function useQueryParams({
         }
         if (validSettingsRef.current && !areSettingsApplied()) {
           setSubmissionStatus('failed');
+          settlePrompt();
           cleanUp();
           return;
         }
         setSubmissionStatus('idle');
         if (data.text?.trim() && submitMessageRef.current(data) !== false) {
           logger.log('conversation', 'Message submitted from query params');
+        } else {
+          settlePrompt();
         }
         cleanUp();
       },
       () => {
         if (ownsRequest()) {
           setSubmissionStatus('idle');
+          settlePrompt();
         }
         cleanUp();
       },
     )();
-  }, [methods, ownsRequest, areSettingsApplied, getPreservedSearchParams, restoreUrlPrompt]);
+  }, [
+    methods,
+    ownsRequest,
+    areSettingsApplied,
+    getPreservedSearchParams,
+    restoreUrlPrompt,
+    settlePrompt,
+  ]);
 
   useEffect(() => {
     const processQueryParams = () => {
@@ -448,13 +477,22 @@ export default function useQueryParams({
         return;
       }
 
-      attemptsRef.current += 1;
       if (!ownsRequest()) {
         cancelRequest();
         clearInterval(intervalId);
         return;
       }
 
+      const currentConversation = conversationRef.current;
+      if (
+        routePendingRef.current ||
+        !currentConversation ||
+        (currentConversation.conversationId != null &&
+          routeRef.current.pathname !== `/c/${currentConversation.conversationId}`)
+      ) {
+        return;
+      }
+      attemptsRef.current += 1;
       if (!textAreaRef.current) {
         return;
       }
@@ -488,6 +526,7 @@ export default function useQueryParams({
 
         // Defer URL cleanup until after submission completes (processSubmission handles it)
         if ((!willAutoSubmit || !decodedPrompt.trim()) && ownsRequest()) {
+          settlePrompt();
           setSearchParamsRef.current(getPreservedSearchParams(), { replace: true });
         }
       };
@@ -516,6 +555,7 @@ export default function useQueryParams({
               submissionHandledRef.current = true;
               setSubmissionStatus('failed');
               logger.log('conversation', 'Settings application timeout, retaining prompt');
+              settlePrompt();
               setSearchParamsRef.current(getPreservedSearchParams(), { replace: true });
             }
           }, MAX_SETTINGS_WAIT_MS);
@@ -535,6 +575,8 @@ export default function useQueryParams({
     methods,
     textAreaRef,
     onBeforePrompt,
+    routePending,
+    settlePrompt,
     newQueryConvo,
     newConversation,
     submitMessage,

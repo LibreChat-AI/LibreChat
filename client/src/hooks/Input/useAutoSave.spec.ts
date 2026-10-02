@@ -169,6 +169,65 @@ describe('useAutoSave — conversation switching', () => {
     jest.useRealTimers();
   });
 
+  it('persists a settled replacement in the current draft without native input', () => {
+    const textAreaRef = { current: document.createElement('textarea') };
+    const { result, rerender } = renderHook(
+      ({ conversationId }: { conversationId: string }) =>
+        useAutoSave({ conversationId, textAreaRef, files: new Map(), setFiles: jest.fn() }),
+      { initialProps: { conversationId: 'convo-1' } },
+    );
+    textAreaRef.current.value = 'original draft';
+    act(() => result.current.preserveText());
+    textAreaRef.current.value = 'retained URL prompt';
+    act(() => result.current.settleText('retained URL prompt', 'convo-1'));
+    mockSetDraft.mockClear();
+    act(() => rerender({ conversationId: 'convo-2' }));
+    expect(mockSetDraft).toHaveBeenCalledWith({ id: 'convo-1', value: 'retained URL prompt' });
+    expect(mockSetDraft).not.toHaveBeenCalledWith({ id: 'convo-1', value: 'original draft' });
+  });
+
+  it('settles into the requested new-chat draft without overwriting the departing source', () => {
+    const textAreaRef = { current: document.createElement('textarea') };
+    const { result, rerender } = renderHook(
+      ({ conversationId }: { conversationId: string }) =>
+        useAutoSave({ conversationId, textAreaRef, files: new Map(), setFiles: jest.fn() }),
+      { initialProps: { conversationId: 'convo-1' } },
+    );
+    textAreaRef.current.value = 'original source draft';
+    act(() => result.current.preserveText());
+    textAreaRef.current.value = 'retained URL prompt';
+    act(() => result.current.settleText('retained URL prompt', Constants.NEW_CONVO));
+    expect(mockSetDraft).toHaveBeenCalledWith({
+      id: Constants.NEW_CONVO,
+      value: 'retained URL prompt',
+    });
+    mockSetDraft.mockClear();
+    act(() => rerender({ conversationId: Constants.NEW_CONVO as string }));
+    expect(mockSetDraft).toHaveBeenCalledWith({ id: 'convo-1', value: 'original source draft' });
+    expect(mockSetDraft).not.toHaveBeenCalledWith({ id: 'convo-1', value: 'retained URL prompt' });
+  });
+
+  it('does not replace another live tab’s draft during settlement', () => {
+    markTabLive('other-tab');
+    setFilesDraft('convo-1', { fileIds: ['theirs'], pendingPastes: {}, tabId: 'other-tab' });
+    const textAreaRef = { current: document.createElement('textarea') };
+    mockSetDraft.mockImplementation(jest.requireActual('~/utils').setDraft);
+    localStorage.setItem(`${LocalStorageKeys.TEXT_DRAFT}convo-1`, encodeBase64('their draft'));
+    const { result } = renderHook(() =>
+      useAutoSave({
+        conversationId: 'convo-1',
+        textAreaRef,
+        files: new Map(),
+        setFiles: jest.fn(),
+      }),
+    );
+    act(() => result.current.settleText('our URL prompt', 'convo-1'));
+    expect(localStorage.getItem(`${LocalStorageKeys.TEXT_DRAFT}convo-1`)).toBe(
+      encodeBase64('their draft'),
+    );
+    mockSetDraft.mockReset();
+  });
+
   it('resumes normal persistence when the user edits the programmatically replaced text', () => {
     jest.useFakeTimers();
     const textAreaRef = { current: document.createElement('textarea') };

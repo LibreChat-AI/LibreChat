@@ -28,7 +28,15 @@ const ask = jest.fn();
 const newConversation = jest.fn();
 const transport = { ...defaultChatTransport, listQueued: async () => [] };
 
-function Harness({ conversation }: { conversation: TConversation }) {
+function Harness({
+  conversation,
+  routePending = false,
+  onAsk = ask,
+}: {
+  conversation: TConversation;
+  routePending?: boolean;
+  onAsk?: typeof ask;
+}) {
   const [files, setFiles] = useRecoilState(store.filesByIndex(0));
   const [isSubmitting] = useRecoilState(store.isSubmittingFamily(0));
   const [, setFilesLoading] = useState(false);
@@ -53,7 +61,7 @@ function Harness({ conversation }: { conversation: TConversation }) {
       latestMessageDepth: undefined,
       feedbackEnabled: false,
       setMessages: () => undefined,
-      ask,
+      ask: onAsk,
       regenerate: () => undefined,
       setSiblingIdx: () => undefined,
       showPopover: false,
@@ -67,13 +75,14 @@ function Harness({ conversation }: { conversation: TConversation }) {
       handleRegenerate: () => undefined,
       handleContinue: () => undefined,
     }),
-    [conversation, files, setFiles, isSubmitting],
+    [conversation, files, setFiles, isSubmitting, onAsk],
   );
   return (
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
         <ChatForm
           index={0}
+          routePending={routePending}
           isLandingPage
           showComposerTips={false}
           enterToSend
@@ -87,7 +96,14 @@ function Harness({ conversation }: { conversation: TConversation }) {
   );
 }
 
-function mountComposer(conversation = initialConversation) {
+function mountComposer(
+  conversation = initialConversation,
+  {
+    pathname = `/c/${conversation.conversationId}`,
+    query = 'agent_id=agent_test&q=hi&submit=true',
+    routePending = false,
+  } = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, staleTime: Infinity, cacheTime: Infinity },
@@ -105,6 +121,7 @@ function mountComposer(conversation = initialConversation) {
   queryClient.setQueryData([QueryKeys.name, EModelEndpoint.assistants], { expiresAt: '' });
   queryClient.setQueryData([QueryKeys.messages, conversation.conversationId], []);
   queryClient.setQueryData([QueryKeys.messages, 'other-chat'], []);
+  queryClient.setQueryData([QueryKeys.messages, 'chat-b'], []);
   queryClient.setQueryData([QueryKeys.assistant, EModelEndpoint.assistants, 'asst_test'], {
     id: 'asst_test',
     model: 'gpt-4o',
@@ -133,11 +150,7 @@ function mountComposer(conversation = initialConversation) {
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
-        <MemoryRouter
-          initialEntries={[
-            `/c/${conversation.conversationId}?agent_id=agent_test&q=hi&submit=true`,
-          ]}
-        >
+        <MemoryRouter initialEntries={[`${pathname}?${query}`]}>
           <NavigationBridge />
           <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
             <ChatTransportContext.Provider value={transport}>
@@ -148,7 +161,9 @@ function mountComposer(conversation = initialConversation) {
       </RecoilRoot>
     </QueryClientProvider>
   );
-  const view = render(<Harness conversation={conversation} />, { wrapper });
+  const view = render(<Harness conversation={conversation} routePending={routePending} />, {
+    wrapper,
+  });
   return { ...view, navigate: (to: string) => navigate(to), getLocation: () => location };
 }
 
@@ -156,11 +171,109 @@ describe('ChatForm URL submission', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     localStorage.clear();
+    ask.mockReset();
   });
 
   afterEach(() => {
     jest.useRealTimers();
   });
+
+  it.each(['chat-a', 'chat-b'])(
+    'waits for route reconciliation while %s remains in the store',
+    async (sourceId) => {
+      const source = { ...initialConversation, conversationId: sourceId };
+      setDraft({ id: sourceId, value: 'source draft' });
+      const view = mountComposer(source, {
+        pathname: '/c/chat-b',
+        query: 'endpoint=openAI&q=hi&submit=true',
+        routePending: true,
+      });
+      await act(async () => jest.advanceTimersByTime(6000));
+      expect(ask).not.toHaveBeenCalled();
+      expect(newConversation).not.toHaveBeenCalled();
+      expect(screen.getByTestId('text-input')).toHaveValue('source draft');
+      expect(view.getLocation().search).toContain('q=hi');
+      const destinationAsk = jest.fn();
+      await act(async () => {
+        view.rerender(
+          <Harness
+            conversation={{ ...initialConversation, conversationId: 'chat-b' }}
+            onAsk={destinationAsk}
+          />,
+        );
+      });
+      await act(async () => jest.advanceTimersByTime(100));
+      expect(destinationAsk).toHaveBeenCalledTimes(1);
+      expect(destinationAsk).toHaveBeenCalledWith(
+        expect.objectContaining({ text: 'hi' }),
+        expect.anything(),
+      );
+      expect(ask).not.toHaveBeenCalled();
+      expect(getDraft(sourceId)).toBe('source draft');
+    },
+  );
+
+  it.each(['', 'old draft'])(
+    'persists an unsent URL prompt over settled draft %p',
+    async (oldDraft) => {
+      const source = { ...initialConversation, conversationId: 'source-chat' };
+      setDraft({ id: source.conversationId, value: oldDraft });
+      const view = mountComposer(source, { query: 'q=hi' });
+      await act(async () => jest.advanceTimersByTime(100));
+      expect(screen.getByTestId('text-input')).toHaveValue('hi');
+      expect(getDraft(source.conversationId)).toBe('hi');
+      await act(async () => {
+        view.navigate('/c/other-chat');
+        view.rerender(
+          <Harness conversation={{ ...initialConversation, conversationId: 'other-chat' }} />,
+        );
+      });
+      await act(async () => {
+        view.navigate('/c/source-chat');
+        view.rerender(<Harness conversation={source} />);
+      });
+      expect(screen.getByTestId('text-input')).toHaveValue('hi');
+      expect(ask).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['timeout', 'refusal'])(
+    'persists a URL prompt after %s without native input',
+    async (outcome) => {
+      setDraft({ id: getNewConversationDraftId(), value: 'old draft' });
+      const source =
+        outcome === 'refusal'
+          ? {
+              ...initialConversation,
+              endpoint: EModelEndpoint.agents,
+              agent_id: 'agent_test',
+              model: undefined,
+            }
+          : initialConversation;
+      if (outcome === 'refusal') {
+        ask.mockReturnValueOnce(false);
+      }
+      const view = mountComposer(source);
+      await act(async () => jest.advanceTimersByTime(100));
+      if (outcome === 'timeout') {
+        await act(async () => jest.advanceTimersByTime(3000));
+      }
+      expect(screen.getByTestId('text-input')).toHaveValue('hi');
+      expect(getDraft(getNewConversationDraftId())).toBe('hi');
+      await act(async () => {
+        view.navigate('/c/other-chat');
+        view.rerender(
+          <Harness conversation={{ ...initialConversation, conversationId: 'other-chat' }} />,
+        );
+      });
+      await act(async () => {
+        view.navigate('/c/new');
+        view.rerender(<Harness conversation={source} />);
+      });
+      expect(screen.getByTestId('text-input')).toHaveValue('hi');
+      expect(ask).toHaveBeenCalledTimes(outcome === 'refusal' ? 1 : 0);
+    },
+  );
 
   it('shows the prompt and Sending status while blocking duplicate manual sends', async () => {
     mountComposer();

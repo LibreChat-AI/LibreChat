@@ -107,6 +107,8 @@ interface ChatFormProps {
   index: number;
   placeholder?: string;
   project?: TChatProject;
+  /** The host is reconciling the requested route with its conversation record. */
+  routePending: boolean;
   /** Owned by ChatView: which layout the composer sits in — the welcome screen
    *  floats or bottoms it out, a conversation ends the page with it. */
   isLandingPage: boolean;
@@ -162,6 +164,7 @@ const ChatForm = memo(function ChatForm({
   index,
   placeholder,
   project,
+  routePending,
   isLandingPage,
   showComposerTips,
   enterToSend,
@@ -320,7 +323,7 @@ const ChatForm = memo(function ChatForm({
    *  collapsed batch is neither, it hands the composer back to the thread. */
   const composerReserved = answerMode.composerAnswers || answerMode.composerLocked;
 
-  const { consumeDraft, preserveText } = useAutoSave({
+  const { consumeDraft, preserveText, settleText } = useAutoSave({
     index,
     files,
     setFiles,
@@ -447,7 +450,12 @@ const ChatForm = memo(function ChatForm({
     isPreparing: isPreparingFromUrl,
     settingsError: urlSettingsError,
     clearSettingsError,
-  } = useQueryParams({ textAreaRef, onBeforePrompt: preserveText });
+  } = useQueryParams({
+    textAreaRef,
+    routePending,
+    onBeforePrompt: preserveText,
+    onPromptSettled: settleText,
+  });
 
   const handleKeyUp = useHandleKeyUp({
     index,
@@ -1060,6 +1068,7 @@ function ChatFormWrapper({
   index = 0,
   placeholder,
   project,
+  routePending = false,
   isLandingPage,
   showComposerTips,
   /** Defaults to the atom's own default (`atomWithLocalStorage('enterToSend',
@@ -1076,6 +1085,7 @@ function ChatFormWrapper({
   index?: number;
   placeholder?: string;
   project?: TChatProject;
+  routePending?: boolean;
   showComposerTips: boolean;
   enterToSend?: boolean;
   autoSendText?: number;
@@ -1162,6 +1172,7 @@ function ChatFormWrapper({
       speechSettingsInitialized={speechSettingsInitialized}
       placeholder={placeholder}
       project={project}
+      routePending={routePending}
       isLandingPage={isLandingPage}
       footerBelow={footerBelow}
       centerFormOnLanding={centerFormOnLanding}

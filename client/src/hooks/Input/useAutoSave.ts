@@ -229,6 +229,26 @@ export const useAutoSave = ({
     saveText(activeStorageId);
   }, [saveDrafts, activeStorageId, textAreaRef, saveText]);
 
+  /** A retained replacement becomes its destination draft, not the departing source draft. */
+  const settleText = useCallback(
+    (text: string, targetConversationId: string | null | undefined = _conversationId) => {
+      let id = targetConversationId;
+      if (targetConversationId === _conversationId) {
+        id = activeStorageId;
+      } else if (targetConversationId === Constants.NEW_CONVO) {
+        id = getNewConversationDraftId(index);
+      }
+      if (!saveDrafts || !id) {
+        return;
+      }
+      if (preservedTextRef.current?.id === id) {
+        preservedTextRef.current = null;
+      }
+      setDraft({ id, value: text });
+    },
+    [saveDrafts, activeStorageId, _conversationId, index],
+  );
+
   /** Only autosave knows whether a foreign tab kept this composer on the
    * pending key. Submission consumes that actual key under its ownership guard. */
   const consumeDraft = useCallback(() => {
@@ -503,5 +523,5 @@ export const useAutoSave = ({
     });
   }, [conversationId, saveDrafts, currentConversationId, fileIds, files]);
 
-  return { consumeDraft, preserveText };
+  return { consumeDraft, preserveText, settleText };
 };
