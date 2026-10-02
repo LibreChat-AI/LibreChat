@@ -2871,8 +2871,8 @@ async function writeSandboxTextForAuthoring({
   }
   const ctx = sandboxSessionContext(tc, sandboxContext);
   let writeResult: Awaited<ReturnType<NonNullable<ToolExecuteOptions['writeSandboxFile']>>>;
+  signal?.throwIfAborted();
   try {
-    signal?.throwIfAborted();
     writeResult = await options.writeSandboxFile({
       file_path: filePath,
       content,
@@ -2882,6 +2882,7 @@ async function writeSandboxTextForAuthoring({
       ...(req ? { req } : {}),
     });
   } catch (error) {
+    if (signal?.aborted === true && isAbortError(error)) throw error;
     const message = getThrownValueMessage(error);
     logger.warn('[file_authoring] Sandbox write failed', getSafeErrorMetadata(error));
     return errorResult(

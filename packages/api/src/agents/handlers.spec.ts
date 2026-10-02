@@ -6104,6 +6104,56 @@ describe('createToolExecuteHandler', () => {
       }
     });
 
+    it.each(['pre-write', 'in-flight'])(
+      'preserves %s sandbox edit cancellation as an abort',
+      async (stage) => {
+        const controller = new AbortController();
+        const throwIfAborted = controller.signal.throwIfAborted.bind(controller.signal);
+        let checks = 0;
+        const guard = jest.spyOn(controller.signal, 'throwIfAborted').mockImplementation(() => {
+          if (++checks === 3 && stage === 'pre-write') controller.abort();
+          throwIfAborted();
+        });
+        const writeSandboxFile = jest.fn(async () => {
+          controller.abort();
+          throw controller.signal.reason;
+        });
+        const warn = jest.spyOn(logger, 'warn');
+        const debug = jest.spyOn(logger, 'debug');
+        const handler = makeSandboxAuthoringHandler({
+          runSignal: controller.signal,
+          readSandboxFile: jest.fn(async () => ({ content: 'ax' })),
+          writeSandboxFile,
+        });
+        try {
+          const [result] = await invokeHandler(handler, [
+            {
+              id: 'cancel_at_write',
+              name: 'edit_file',
+              args: { path: '/mnt/data/a.txt', old_text: 'a', new_text: 'b' },
+            },
+          ]);
+          expect(result.status).toBe('error');
+          expect(result.errorMessage).not.toContain('Error writing');
+          expect(debug).toHaveBeenCalledWith(
+            '[ON_TOOL_EXECUTE] Tool edit_file cancelled by run abort',
+            expect.any(Object),
+          );
+          expect(warn).not.toHaveBeenCalledWith(
+            '[file_authoring] Sandbox write failed',
+            expect.any(Object),
+          );
+          expect(writeSandboxFile).toHaveBeenCalledTimes(stage === 'pre-write' ? 0 : 1);
+          expect(checks).toBe(3);
+          expect(result.artifact).toBeUndefined();
+        } finally {
+          guard.mockRestore();
+          warn.mockRestore();
+          debug.mockRestore();
+        }
+      },
+    );
+
     it('supports an ordinary exact sandbox edit at the authoring size limit with omitted limits', async () => {
       const content =
         'start\n' + ('x'.repeat(1023) + '\n').repeat(10239) + 'x'.repeat(1014) + '\nend';
