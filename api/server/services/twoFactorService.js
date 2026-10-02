@@ -1,5 +1,6 @@
 const { webcrypto, timingSafeEqual } = require('node:crypto');
 const { hashBackupCode, decryptV3, decryptV2 } = require('@librechat/data-schemas');
+const { generateTwoFactorLoginChallengeToken } = require('@librechat/api');
 const { updateUser } = require('~/models');
 
 // Base32 alphabet for TOTP secret encoding.
@@ -268,8 +269,7 @@ const getTOTPSecret = async (storedSecret) => {
  * @returns {string}
  */
 const generate2FATempToken = (userId) => {
-  const { sign } = require('jsonwebtoken');
-  return sign({ userId, twoFAPending: true }, process.env.JWT_SECRET, { expiresIn: '5m' });
+  return generateTwoFactorLoginChallengeToken(userId, process.env.JWT_SECRET);
 };
 
 module.exports = {

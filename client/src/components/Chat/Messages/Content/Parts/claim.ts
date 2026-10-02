@@ -2,7 +2,7 @@ import { useId, useLayoutEffect } from 'react';
 import { atom } from 'jotai';
 import { atomFamily } from 'jotai/utils';
 import type { Artifact } from '~/common';
-import { useMessagePartsHost } from '~/hooks/Chat/parts';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 
 interface ToolArtifactClaim {
   /** False only while another mounted instance holds this display key. */

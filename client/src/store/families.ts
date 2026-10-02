@@ -11,16 +11,10 @@ import {
   useSetRecoilState,
   useRecoilCallback,
 } from 'recoil';
-import type {
-  EModelEndpoint,
-  TConversation,
-  TSubmission,
-  TMessage,
-  TPreset,
-} from 'librechat-data-provider';
+import type { EModelEndpoint, TConversation, TSubmission, TPreset } from 'librechat-data-provider';
 import type { GenerationProtocolVersion } from '~/data-provider/SSE/protocol';
 import type { TOptionSettings, ExtendedFile } from '~/common';
-import type { QueuedMessageOrigin } from '~/hooks/Chat/queue';
+import type { PendingSteer } from '~/hooks/Chat/queue';
 import {
   clearModelForNonEphemeralAgent,
   createChatSearchParams,
@@ -346,53 +340,6 @@ const pendingComposerTextByConvoId = atomFamily<string | undefined, string>({
   key: 'pendingComposerTextByConvoId',
   default: undefined,
 });
-
-/**
- * A steer message submitted mid-run. Server truth: `sending` covers the POST
- * in flight, `pending` means the server queued it (awaiting its injection
- * boundary — the next tool batch, or the next safe token boundary when
- * `preempt` was armed), `failed` keeps the text recoverable after a rejected
- * POST. The chip disappears when `on_steer_applied` lands (the inline content
- * part becomes the durable record).
- */
-export type PendingSteer = {
-  steerId: string;
-  /** Optimistic id echoed by server state when SYNC beats the POST callback. */
-  clientSteerId?: string;
-  text: string;
-  status: 'sending' | 'pending' | 'failed';
-  /** The transport failed without a definitive server rejection. The durable
-   * enqueue may have committed. Same-id Retry is safe only under protocol v2;
-   * edit/queue/remove stay hidden until ownership is resolved. */
-  deliveryUncertain?: boolean;
-  /** Protocol selected for the generation that owns this attempt. */
-  generationProtocolVersion?: GenerationProtocolVersion;
-  createdAt: number;
-  /** Attachments steered with the message (refs; already uploaded). */
-  files?: TMessage['files'];
-  /** Quoted excerpts riding this steer (also sent on the POST — the server
-   *  merges them into the injected turn); kept on the chip so a steer that
-   *  never injects restores onto the queued item with them intact. */
-  quotes?: string[];
-  /** Manual skill picks, carried for restoration only (a skill pick
-   *  configures a NEW turn's run, so it never rides the steer POST). */
-  manualSkills?: string[];
-  /** Full-generation setting carried for restoration only; it cannot alter a live steer. */
-  reasoningOverride?: TMessage['reasoningOverride'];
-  /** Asked the run to seal generation at the next safe boundary rather than
-   *  wait for a tool step. Labelling only — the server owns the behaviour and
-   *  echoes what it actually armed. */
-  preempt?: boolean;
-  /** Monotonic server revision; delayed ACKs cannot undo SSE corrections. */
-  preemptRevision?: number;
-  /** Exact server generation this steer belongs to. Conversation ids are
-   * reused by later turns, so retries/arm/cancel must retain this epoch rather
-   * than mutating whatever generation currently occupies the conversation. */
-  generationCreatedAt?: number;
-  /** Exact client queue identity/order to restore if this accepted steer is
-   *  returned as a terminal leftover before injection. */
-  queuedOrigin?: QueuedMessageOrigin;
-};
 
 /**
  * Per-conversation steers awaiting injection. Reconciled against the server:

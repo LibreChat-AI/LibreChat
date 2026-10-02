@@ -102,7 +102,9 @@ describe('useCodeWorkspace', () => {
       const { result } = renderHook(() => useCodeWorkspace(conversation()));
       expect(result.current.required).toBe(false);
       expect(result.current.state).toBe('not_required');
-      expect(mockStatus).toHaveBeenLastCalledWith(['personal-vm'], false);
+      expect(mockStatus).toHaveBeenLastCalledWith(['personal-vm'], false, {
+        notifyOnChangeProps: ['data', 'isLoading', 'isError'],
+      });
     },
   );
 
@@ -192,7 +194,9 @@ describe('useCodeWorkspace', () => {
     expect(result.current.selections).toEqual([
       { environmentId: 'personal-vm', workspaceId: 'project-a' },
     ]);
-    expect(mockStatus).toHaveBeenCalledWith(['personal-vm'], true);
+    expect(mockStatus).toHaveBeenCalledWith(['personal-vm'], true, {
+      notifyOnChangeProps: ['data', 'isLoading', 'isError'],
+    });
   });
 
   it('does not emit a selection-less decision until the API advertises support', () => {
@@ -394,7 +398,9 @@ describe('useCodeWorkspace', () => {
     const { result } = renderHook(() => useCodeWorkspace({ ...conversation(), agent_id }));
     expect(result.current.required).toBe(false);
     expect(result.current.state).toBe('not_required');
-    expect(mockStatus).toHaveBeenLastCalledWith([], false);
+    expect(mockStatus).toHaveBeenLastCalledWith([], false, {
+      notifyOnChangeProps: ['data', 'isLoading', 'isError'],
+    });
   });
 
   it('still blocks missing saved-agent metadata alongside an ephemeral agent', () => {
@@ -532,7 +538,9 @@ describe('useCodeWorkspace', () => {
     expect(result.current.resolveSubmission()).toEqual({
       codeEnvironmentMode: 'without_attached',
     });
-    expect(mockStatus).toHaveBeenLastCalledWith([], false);
+    expect(mockStatus).toHaveBeenLastCalledWith([], false, {
+      notifyOnChangeProps: ['data', 'isLoading', 'isError'],
+    });
   });
 
   it('does not replace a saved workspace that disappeared', () => {
@@ -1309,7 +1317,9 @@ describe('useCodeWorkspace', () => {
     expect(result.current.required).toBe(true);
     expect(result.current.state).toBe('unavailable');
     expect(result.current.selections).toBeUndefined();
-    expect(mockStatus).toHaveBeenCalledWith([], false);
+    expect(mockStatus).toHaveBeenCalledWith([], false, {
+      notifyOnChangeProps: ['data', 'isLoading', 'isError'],
+    });
   });
 
   it('does not gate a non-agent conversation', () => {

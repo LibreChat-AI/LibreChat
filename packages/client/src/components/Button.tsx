@@ -155,18 +155,18 @@ const buttonVariantRecipe = cva(
         /** Default-height actions with less horizontal padding, such as Copy link. */
         dense: 'h-theme-button px-3 py-2',
         /** Compact text controls that share a toolbar row with a compact dropdown. */
-        compact: 'h-8 gap-1.5 px-2.5 py-2 text-xs',
+        compact: 'h-theme-button-compact gap-1.5 px-2.5 py-2 text-xs',
         /**
          * A chip, the text counterpart of `icon-xs`: the reset beside a list that
          * matched nothing, and anything else that offers a way out without asking
          * to be the thing the eye lands on.
          */
-        xs: 'h-7 rounded-md px-2.5 text-xs',
+        xs: 'h-theme-button-xs rounded-md px-2.5 text-xs',
         sm: 'h-theme-button-sm rounded-lg px-3',
-        lg: 'h-11 rounded-lg px-8',
-        icon: 'size-10',
-        'icon-sm': 'size-8 p-0',
-        'icon-xs': 'size-7',
+        lg: 'h-theme-button-lg rounded-lg px-8',
+        icon: 'size-theme-button',
+        'icon-sm': 'size-theme-icon-button-sm p-0',
+        'icon-xs': 'size-theme-button-xs',
         /**
          * A square icon control on the theme's control height — the size of
          * every button in the composer's action row, for a control that has to
@@ -194,8 +194,8 @@ const buttonVariantRecipe = cva(
       },
       /* A section heading is sized by its own text, so it opts out of the
        * default size recipe that every other caller supplies explicitly.
-       * Without this the default `h-10 px-4` is emitted after the variant and
-       * wins the merge, giving a 40px control in a 32px header row. */
+       * Without this the default size's height and padding are emitted after the variant and
+       * win the merge, giving a 40px control in a 32px header row. */
       {
         variant: 'section-header',
         size: 'default',

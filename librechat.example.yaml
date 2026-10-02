@@ -238,6 +238,9 @@ interface:
     public: false
   bookmarks: true
   multiConvo: true
+  # Allow the artifacts pane to be moved into its own browser window
+  # (desktop only; the mobile sheet is unaffected). Default: true.
+  artifactUndocking: true
   agents:
     use: true
     create: true
@@ -815,6 +818,17 @@ endpoints:
   #             # Maximum Bash execution budget the model may request per call.
   #             # Omit to preserve the historical 30-second limit. Hard cap: 300000.
   #             maxCommandTimeoutMs: 120000
+  #             # Foreground Bash default when timeoutMs is omitted. Omit to keep 30000.
+  #             # Clamped to the effective admin, worker, and verified HTTP ceilings.
+  #             # Background calls still default to the effective maximum.
+  #             # Programmatic Bash uses this only when timeout is omitted; explicit
+  #             # values keep the same negotiated ceiling. Its SDK has a 1000 ms floor
+  #             # and cannot run under a smaller ceiling; use bash_tool for those budgets.
+  #             # defaultCommandTimeoutMs: 60000
+  #             # Attached read_file window when max_lines is omitted. Omit to keep 200.
+  #             # Valid range: 1–500 lines; the existing byte budget still applies.
+  #             # defaultReadFileLines: 500
+  #             # New strict fields require all LibreChat API replicas to be updated first.
   #             # Optional total HTTP budget per workspace tool call, including
   #             # admission, retries, worst-case execution, settlement, and delivery.
   #             # Do NOT enable until every LibreChat API replica recognizes this

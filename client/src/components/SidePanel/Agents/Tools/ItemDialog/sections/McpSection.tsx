@@ -557,7 +557,7 @@ export default function McpSection({ item }: Props) {
                       ? localize('com_ui_tools_mcp_deselect_all')
                       : localize('com_ui_tools_mcp_select_all')
                   }
-                  className="border-border-medium size-4 rounded border"
+                  className="border-border-medium rounded border"
                 />
                 <span>
                   {(hasTools ? allSelected : isWildcardAttached)

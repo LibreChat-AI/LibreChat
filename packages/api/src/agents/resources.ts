@@ -90,6 +90,8 @@ export type ProvisionState = {
   codeEnvFiles: TFile[];
   /** Names from cleared refs on this state's active route; never reusable storage pointers. */
   codeEnvRecoveryNames?: Map<string, { name: string; isTargetScope: boolean }>;
+  /** Destination names advertised to the model before lazy code-file provisioning. */
+  codeEnvDestinations?: Map<string, string>;
   /** Files that need embedding into the vector DB for file_search */
   vectorDBFiles: TFile[];
   /** Set of file_ids confirmed alive in code env (from staleness check) */

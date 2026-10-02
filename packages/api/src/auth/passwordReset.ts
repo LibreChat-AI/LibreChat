@@ -1,5 +1,7 @@
 import { logger } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
+import type { PasswordResetUpdate } from './passwordResetUpdate';
+import { createPasswordResetUpdate } from './passwordResetUpdate';
 import { EMAIL_CHANGE_TOKEN_TYPE } from './email';
 
 /** The stored reset token, in both the typed shape and the untyped legacy one. */
@@ -23,7 +25,7 @@ export interface PasswordResetDeps {
   getUserById: (userId: string, select: string) => Promise<PasswordResetUser | null>;
   updateUser: (
     userId: string,
-    update: { password: string; credentialsChangedAt: Date },
+    update: PasswordResetUpdate,
     expectedState: { email: string },
   ) => Promise<PasswordResetUser | null>;
   deleteTokens: (query: { userId: string; type: string }) => Promise<unknown>;
@@ -158,8 +160,7 @@ export async function commitPasswordReset(
 
   const user = await deps.updateUser(
     input.userId,
-    /** Stamped with the new password so access tokens issued before the reset stop verifying */
-    { password: deps.hashPassword(input.password), credentialsChangedAt: new Date() },
+    createPasswordResetUpdate(deps.hashPassword(input.password)),
     { email: account.email },
   );
   if (!user) {

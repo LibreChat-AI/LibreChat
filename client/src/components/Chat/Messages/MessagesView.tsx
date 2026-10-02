@@ -10,8 +10,8 @@ import {
   useMessageScrolling,
   useConversationSeen,
 } from '~/hooks';
+import { MessagePartsHostProvider, appMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { MessagesViewProvider, useChatContext, useFileMapContext } from '~/Providers';
-import { MessagePartsHostProvider, appMessagePartsHost } from '~/hooks/Chat/parts';
 import { RowMountProvider, useProgressiveRowMount } from '~/hooks/Messages';
 import { useChatSurface } from '~/components/Chat/Subagents/surface';
 import useThreadRows from '~/hooks/Messages/useThreadRows';
@@ -197,7 +197,11 @@ function MessagesViewContent({
                * and Escalate actions would mutate that run while sitting at
                * the destination thread's tail. */}
               {treeConversationId != null && (
-                <PendingSteers conversationId={treeConversationId} index={index} />
+                <PendingSteers
+                  conversationId={treeConversationId}
+                  index={index}
+                  fullWidth={maximizeChatSpace}
+                />
               )}
               <div id="messages-end" className="group h-0 w-full shrink-0" ref={messagesEndRef} />
             </div>

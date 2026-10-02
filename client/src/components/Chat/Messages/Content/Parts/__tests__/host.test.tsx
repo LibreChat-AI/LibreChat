@@ -5,10 +5,9 @@ import type {
   MessagePartArtifactPanel,
   MessagePartMessage,
   MessagePartsHost,
-  PtcTrace,
 } from '~/hooks/Chat/contract';
-import type { Artifact } from '~/common';
-import { MessagePartsHostProvider, appMessagePartsHost } from '~/hooks/Chat/parts';
+import type { Artifact, PtcTrace } from '~/common';
+import { MessagePartsHostProvider, appMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import ToolArtifactCard from '../ToolArtifactCard';
 import PtcToolTrace from '../PtcToolTrace';
 import TextPart from '../Text';

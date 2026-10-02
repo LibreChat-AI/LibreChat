@@ -18,6 +18,7 @@ const mockRefetch = jest.fn();
 let mockUseRealShell = false;
 let mockCurrentCode: string | undefined;
 let mockShell: { content: string | undefined; isLoading: boolean } | undefined;
+let mockCodeArtifactId: string | undefined;
 
 jest.mock('./ArtifactCodeEditor', () => ({
   ArtifactCodeEditor: (props: { artifact: Artifact }) => mockEditor(props),
@@ -28,7 +29,8 @@ jest.mock('./ArtifactPreview', () => ({
 }));
 
 jest.mock('~/Providers/EditorContext', () => ({
-  useCodeState: () => ({ currentCode: mockCurrentCode, setCurrentCode: jest.fn() }),
+  useArtifactCode: (artifactId: string) =>
+    mockCodeArtifactId === artifactId ? mockCurrentCode : undefined,
 }));
 
 jest.mock('~/hooks/Artifacts/useOfficeFileShell', () => ({
@@ -86,6 +88,7 @@ function lastFiles(): Record<string, string> {
 describe('SandboxArtifactTabs SVG preview', () => {
   beforeEach(() => {
     mockCurrentCode = undefined;
+    mockCodeArtifactId = undefined;
     mockPreview.mockClear();
   });
 
@@ -98,6 +101,7 @@ describe('SandboxArtifactTabs SVG preview', () => {
     /* Editor text belongs to the preview only once it was typed against the
      * artifact on screen, so it lands on a later render, not on mount. */
     mockCurrentCode = edited;
+    mockCodeArtifactId = svgArtifact.id;
     rerender(
       <Tabs.Root value="preview">
         <SandboxArtifactTabs artifact={svgArtifact} previewRef={previewRef} />
@@ -114,6 +118,7 @@ describe('SandboxArtifactTabs SVG preview', () => {
     const { rerender } = renderTabs();
 
     mockCurrentCode = '';
+    mockCodeArtifactId = svgArtifact.id;
     rerender(
       <Tabs.Root value="preview">
         <SandboxArtifactTabs artifact={svgArtifact} previewRef={previewRef} />
@@ -135,6 +140,7 @@ describe('SandboxArtifactTabs SVG preview', () => {
     const { rerender } = renderTabs(htmlArtifact);
 
     mockCurrentCode = '<p>edited</p>';
+    mockCodeArtifactId = htmlArtifact.id;
     rerender(
       <Tabs.Root value="preview">
         <SandboxArtifactTabs artifact={htmlArtifact} previewRef={previewRef} />

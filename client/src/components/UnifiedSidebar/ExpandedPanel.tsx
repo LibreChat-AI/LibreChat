@@ -1,5 +1,4 @@
 import { memo, useCallback, lazy, Suspense } from 'react';
-import { useRecoilValue } from 'recoil';
 import { SquarePen } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { Skeleton, Sidebar, Button, TooltipAnchor } from '@librechat/client';
@@ -11,17 +10,17 @@ import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import useNewChat from '~/hooks/Chat/useNewChat';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
-import store from '~/store';
 
 const AccountSettings = lazy(() => import('~/components/Nav/AccountSettings'));
 
 const NewChatButton = memo(function NewChatButton({
   setActive,
+  switchToHistory,
 }: {
   setActive: (id: string) => void;
+  switchToHistory: boolean;
 }) {
   const localize = useLocalize();
-  const switchToHistory = useRecoilValue(store.newChatSwitchToHistory);
   const tooltipDescription = useShortcutHint('newChat', localize('com_ui_new_chat'));
   const ariaKey = useShortcutAriaKey('newChat');
 
@@ -129,6 +128,7 @@ function ExpandedPanel({
   onExpand,
   onNavigate,
   onLeaveInsights,
+  switchToHistory,
 }: {
   links: NavLink[];
   expanded?: boolean;
@@ -136,6 +136,7 @@ function ExpandedPanel({
   onExpand?: () => void;
   onNavigate?: () => void;
   onLeaveInsights?: () => void;
+  switchToHistory: boolean;
 }) {
   const localize = useLocalize();
   const location = useLocation();
@@ -169,7 +170,7 @@ function ExpandedPanel({
           </Button>
         }
       />
-      <NewChatButton setActive={setActive} />
+      <NewChatButton setActive={setActive} switchToHistory={switchToHistory} />
       <AgentMarketplaceButton />
       <div className="border-border-light mx-2 border-b" />
       <div className="flex flex-col gap-1 overflow-y-auto">

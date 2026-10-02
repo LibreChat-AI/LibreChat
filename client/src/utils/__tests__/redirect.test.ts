@@ -1,9 +1,11 @@
 import {
+  isRequiredTwoFactorSetupRoute,
   persistRedirectToSession,
+  clearPostLoginRedirect,
   getPostLoginRedirect,
+  peekPostLoginRedirect,
   isSafeRedirect,
   withBasePath,
-  hasStoredRedirect,
   SESSION_KEY,
 } from '../redirect';
 
@@ -40,6 +42,44 @@ describe('withBasePath', () => {
   it('uses only the pathname of an absolute base href', () => {
     setBaseHref('https://example.com/librechat/');
     expect(withBasePath('/login/2fa?tempToken=abc')).toBe('/librechat/login/2fa?tempToken=abc');
+  });
+});
+
+describe('isRequiredTwoFactorSetupRoute', () => {
+  const setPathname = (pathname: string) => {
+    window.history.replaceState({}, '', pathname);
+  };
+
+  afterEach(() => {
+    sessionStorage.clear();
+    setPathname('/');
+  });
+
+  /** The router matches these spellings, so the guard has to recognise them too. */
+  it.each([
+    '/login/2fa/setup',
+    '/login/2fa/setup/',
+    '/LOGIN/2FA/SETUP',
+    '/Login/2FA/Setup/',
+    '/librechat/login/2fa/setup/',
+  ])('recognises %s as the enrollment screen', (pathname) => {
+    sessionStorage.setItem('two_factor_setup_token', 'setup-token');
+    setPathname(pathname);
+
+    expect(isRequiredTwoFactorSetupRoute()).toBe(true);
+  });
+
+  it('does not claim the route without a live setup token', () => {
+    setPathname('/login/2fa/setup/');
+
+    expect(isRequiredTwoFactorSetupRoute()).toBe(false);
+  });
+
+  it('does not claim a route that merely contains the setup path', () => {
+    sessionStorage.setItem('two_factor_setup_token', 'setup-token');
+    setPathname('/login/2fa/setup/extra');
+
+    expect(isRequiredTwoFactorSetupRoute()).toBe(false);
   });
 });
 
@@ -217,6 +257,18 @@ describe('getPostLoginRedirect', () => {
   });
 });
 
+describe('peekPostLoginRedirect', () => {
+  beforeEach(() => sessionStorage.clear());
+
+  it('preserves a safe stored destination across repeated setup mounts', () => {
+    sessionStorage.setItem(SESSION_KEY, '/c/deep-link?model=test');
+
+    expect(peekPostLoginRedirect(new URLSearchParams())).toBe('/c/deep-link?model=test');
+    expect(peekPostLoginRedirect(new URLSearchParams())).toBe('/c/deep-link?model=test');
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe('/c/deep-link?model=test');
+  });
+});
+
 describe('login error redirect_to preservation (AuthContext onError pattern)', () => {
   /** Mirrors the logic in AuthContext.tsx loginUser.onError */
   function buildLoginErrorPath(search: string): string {
@@ -273,39 +325,101 @@ describe('persistRedirectToSession', () => {
   });
 });
 
+/**
+ * Embedded and private contexts deny session storage by throwing on access. The destination is a
+ * convenience, so a denial must degrade rather than take down the sign-in that carries it.
+ */
 describe('blocked session storage', () => {
-  /** Embedded and private contexts throw on access rather than answering null. */
-  const originalDescriptor = Object.getOwnPropertyDescriptor(window, 'sessionStorage');
+  const denyStorage = () => {
+    const denied = () => {
+      throw new DOMException('denied', 'SecurityError');
+    };
+    jest.spyOn(Storage.prototype, 'setItem').mockImplementation(denied);
+    jest.spyOn(Storage.prototype, 'getItem').mockImplementation(denied);
+    jest.spyOn(Storage.prototype, 'removeItem').mockImplementation(denied);
+  };
 
   beforeEach(() => {
-    Object.defineProperty(window, 'sessionStorage', {
-      configurable: true,
-      get() {
-        throw new DOMException('Storage is blocked in this context', 'SecurityError');
-      },
-    });
+    clearPostLoginRedirect();
   });
 
-  afterAll(() => {
-    if (originalDescriptor != null) {
-      Object.defineProperty(window, 'sessionStorage', originalDescriptor);
-    }
+  afterEach(() => {
+    jest.restoreAllMocks();
+    clearPostLoginRedirect();
   });
 
-  it('persisting a destination does not take down the sign-in', () => {
-    expect(() => persistRedirectToSession('/c/new')).not.toThrow();
+  it('does not throw when persisting a destination', () => {
+    denyStorage();
+    expect(() => persistRedirectToSession('/c/abc123')).not.toThrow();
   });
 
-  it('a blocked store reads as empty so the URL param still resolves', () => {
-    const params = new URLSearchParams('redirect_to=%2Fc%2Fnew');
-    expect(getPostLoginRedirect(params)).toBe('/c/new');
+  it('does not throw when consuming a destination', () => {
+    denyStorage();
+    expect(() => getPostLoginRedirect(new URLSearchParams())).not.toThrow();
   });
 
-  it('no destination resolves when only the blocked store exists', () => {
+  it('does not throw when clearing a destination', () => {
+    denyStorage();
+    expect(() => clearPostLoginRedirect()).not.toThrow();
+  });
+
+  it('still resolves the URL destination while storage is denied', () => {
+    denyStorage();
+    expect(getPostLoginRedirect(new URLSearchParams('redirect_to=%2Fc%2Fabc123'))).toBe(
+      '/c/abc123',
+    );
+  });
+
+  /** The in-document hand-off never replaces the document, so the mirror still reaches it. */
+  it('carries the destination in memory across a persist and consume pair', () => {
+    denyStorage();
+    persistRedirectToSession('/c/abc123');
+
+    expect(getPostLoginRedirect(new URLSearchParams())).toBe('/c/abc123');
+  });
+
+  it('consumes the in-memory destination exactly once', () => {
+    denyStorage();
+    persistRedirectToSession('/c/abc123');
+
+    expect(getPostLoginRedirect(new URLSearchParams())).toBe('/c/abc123');
     expect(getPostLoginRedirect(new URLSearchParams())).toBeNull();
   });
 
-  it('hasStoredRedirect counts a blocked store as empty', () => {
-    expect(hasStoredRedirect()).toBe(false);
+  it('drops the in-memory destination on clear', () => {
+    denyStorage();
+    persistRedirectToSession('/c/abc123');
+    clearPostLoginRedirect();
+
+    expect(getPostLoginRedirect(new URLSearchParams())).toBeNull();
+  });
+
+  it('still refuses an unsafe destination while storage is denied', () => {
+    denyStorage();
+    persistRedirectToSession('https://evil.com');
+
+    expect(getPostLoginRedirect(new URLSearchParams())).toBeNull();
+  });
+
+  /**
+   * Storage answers here, so it is the authority. A mirror written on every persist would outlive
+   * a destination cleared straight out of storage and resurrect it on the next sign-in.
+   */
+  it('does not resurrect a destination dropped straight from storage', () => {
+    persistRedirectToSession('/c/abc123');
+    sessionStorage.clear();
+
+    expect(getPostLoginRedirect(new URLSearchParams())).toBeNull();
+  });
+
+  it('does not let a denied write outlive a later working one', () => {
+    denyStorage();
+    persistRedirectToSession('/c/denied');
+    jest.restoreAllMocks();
+
+    persistRedirectToSession('/c/stored');
+    sessionStorage.clear();
+
+    expect(getPostLoginRedirect(new URLSearchParams())).toBeNull();
   });
 });

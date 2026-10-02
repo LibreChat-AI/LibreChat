@@ -87,6 +87,7 @@ afterEach(() => {
   delete process.env.ALLOW_REGISTRATION;
   delete process.env.ALLOW_SOCIAL_LOGIN;
   delete process.env.ALLOW_PASSWORD_RESET;
+  delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
   delete process.env.DOMAIN_SERVER;
   delete process.env.GOOGLE_CLIENT_ID;
   delete process.env.GOOGLE_CLIENT_SECRET;
@@ -314,6 +315,16 @@ describe('GET /api/config', () => {
       expect(response.body.appTitle).toBe('Test App');
       expect(response.body).toHaveProperty('emailLoginEnabled');
       expect(response.body).toHaveProperty('serverDomain');
+    });
+
+    it('should expose the effective two-factor enforcement policy', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+      const app = createApp(null);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.twoFactorAuthenticationRequired).toBe(true);
     });
 
     it('should omit CloudFront cookie refresh from unauthenticated response (#12688)', async () => {

@@ -101,6 +101,11 @@ export interface IThemeRGB {
   /** A field's edge while it holds focus, under `fieldFocusStyle: 'border'`; follows
    *  `rgb-focus-control` when a theme omits it. */
   'rgb-border-field-focus'?: string;
+  /** A field's fill, painted only under `fieldFillStyle: 'fill'`; follows `rgb-surface-primary`
+   *  when a theme omits it. */
+  'rgb-field-fill'?: string;
+  /** A field's typed value; follows `rgb-text-primary` when a theme omits it. */
+  'rgb-field-text'?: string;
   /** Disabled fill, ink and edge. Painted only under the `fill` disabled style. */
   'rgb-surface-disabled'?: string;
   'rgb-text-disabled'?: string;
@@ -287,6 +292,8 @@ export interface IThemeVariables {
   '--border-destructive': string;
   '--border-control': string;
   '--border-field-focus': string;
+  '--field-fill': string;
+  '--field-text': string;
   '--surface-disabled': string;
   '--text-disabled': string;
   '--border-disabled': string;
@@ -423,6 +430,8 @@ export interface IThemeColors {
   'border-destructive'?: string;
   'border-control'?: string;
   'border-field-focus'?: string;
+  'field-fill'?: string;
+  'field-text'?: string;
   'surface-disabled'?: string;
   'text-disabled'?: string;
   'border-disabled'?: string;
@@ -502,6 +511,8 @@ export interface IThemeAppearance {
   menuRadius: string;
   tooltipRadius: string;
   tabRadius: string;
+  /** The narrowest a tab trigger draws; `0` sizes it by its label. */
+  tabMinWidth: string;
   radiusSm: string;
   radiusMd: string;
   radiusLg: string;
@@ -513,19 +524,36 @@ export interface IThemeAppearance {
    *  `spaceCompact` when a theme names those and not these. */
   controlPaddingX: string;
   controlGap: string;
+  /** An icon beside a label or in a menu row (0.75 to 1.25rem), and the larger one a dialog's
+   *  close button draws (1 to 2rem). */
+  iconSize: string;
+  /** The medium icon (1.25 to 1.5rem), such as the exported Dialog's close glyph. */
+  iconSizeMd: string;
+  iconSizeLg: string;
   /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
   controlFontWeight: string;
   buttonHeight: string;
   buttonHeightSm: string;
+  /** The Button's `xs` and `lg` heights; `icon-xs` is as wide as `xs` is tall, `icon` as the
+   *  default, and `icon-sm` takes its own size. */
+  buttonHeightXs: string;
+  buttonHeightLg: string;
+  /** The compact toolbar step the Button and Dropdown `compact` recipes share. */
+  buttonHeightCompact: string;
+  iconButtonSizeSm: string;
   /**
    * A form field's height, and its focus treatment: `ring` draws the keyboard-only focus ring,
    * `border` swaps the field's edge to `border-field-focus` on any focus, and keyboard focus adds
    * a 1px ring in that color so the indicator keeps a 2px perimeter.
    */
   fieldHeight: string;
+  /** The height of the large `title` field. */
+  fieldHeightLg: string;
   /** The field's vertical padding, which has to leave its line room inside `fieldHeight`. */
   fieldPaddingY: string;
   fieldFocusStyle: 'ring' | 'border';
+  /** `transparent` leaves a field on the surface it sits on; `fill` paints it `field-fill`. */
+  fieldFillStyle: 'transparent' | 'fill';
   /** The keyboard focus outline's width and its offset from the element's edge, apart from the
    *  heavier outline the contrast modes keep. */
   focusRingWidth: string;
@@ -537,6 +565,8 @@ export interface IThemeAppearance {
   labelFontWeight: string;
   switchWidth: string;
   switchHeight: string;
+  /** A checkbox's box and the check inside it, 1 to 1.5rem. */
+  checkboxSize: string;
   tableCellSpaceY: string;
   tableRowStroke: string;
   spaceCompact: string;

@@ -4,6 +4,8 @@
  *
  *   stdout:\n<out>\n  stderr:\n<err>\n  [exit code: N][terminated by SIG][timed out][output truncated]
  *
+ * An optional starting-directory header and timeout/cwd guidance are preserved.
+ *
  * The text alone does not prove where it came from: the sandbox `bash_tool`
  * shares the name and trims its output, so a sandbox command that prints
  * `[exit code: 1]` last yields the same shape. Callers must only parse output
@@ -19,14 +21,15 @@ export interface CommandOutput {
   failed: boolean;
   /** `head + stderr + trailer === output`, so a renderer can style each part
    *  without dropping any text. `head` is the stdout section (or the
-   *  no-output notice), `stderr` the stderr section with its label. */
+   *  no-output notice), including any directory header; `stderr` keeps its label. */
   head: string;
   stderr: string;
   trailer: string;
 }
 
+const STARTING_DIRECTORY = /^\[starting directory: "workspace\/(?:[^"\\\r\n]|\\[^\r\n])*"\]\n/;
 const TRAILER =
-  /\n((?:\[(?:exit code: -?\d+|terminated by [\w+-]+|timed out|output truncated)\])+)$/;
+  /\n((?:\[(?:exit code: -?\d+|terminated by [\w+-]+|timed out|output truncated)\])+)((?:\nCommand reached timeoutMs: [^\n]*)?(?:\n\[directory hint: [^\n]*\])?)$/;
 const MARKER = /\[(exit code: (-?\d+)|terminated by ([\w+-]+)|timed out|output truncated)\]/g;
 const STDOUT = 'stdout:\n';
 const STDERR = 'stderr:\n';
@@ -38,7 +41,9 @@ export function parseCommandOutput(output: string): CommandOutput | null {
     return null;
   }
   const body = output.slice(0, match.index + 1);
-  if (!body.startsWith(STDOUT) && !body.startsWith(STDERR) && body !== EMPTY) {
+  const directoryLength = STARTING_DIRECTORY.exec(body)?.[0].length ?? 0;
+  const content = body.slice(directoryLength);
+  if (!content.startsWith(STDOUT) && !content.startsWith(STDERR) && content !== EMPTY) {
     return null;
   }
   let exitCode: number | null = null;
@@ -59,8 +64,10 @@ export function parseCommandOutput(output: string): CommandOutput | null {
   /** The last label wins: output that itself prints `stderr:` is ambiguous,
    *  and styling too little as stderr is the safer mistake. Either way no
    *  text is dropped. */
-  const labelAt = body.startsWith(STDERR) ? 0 : body.lastIndexOf(`\n${STDERR}`) + 1;
-  const split = labelAt > 0 || body.startsWith(STDERR) ? labelAt : body.length;
+  const labelAt = content.startsWith(STDERR)
+    ? directoryLength
+    : body.lastIndexOf(`\n${STDERR}`) + 1;
+  const split = labelAt > 0 || content.startsWith(STDERR) ? labelAt : body.length;
   return {
     exitCode,
     signal,
@@ -69,6 +76,6 @@ export function parseCommandOutput(output: string): CommandOutput | null {
     failed: (exitCode != null && exitCode !== 0) || signal != null || timedOut,
     head: body.slice(0, split),
     stderr: body.slice(split),
-    trailer: match[1],
+    trailer: match[1] + match[2],
   };
 }

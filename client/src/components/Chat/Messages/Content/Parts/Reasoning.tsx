@@ -13,9 +13,9 @@ import {
   useInViewport,
 } from './Thinking';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import CopyButton from '~/components/Messages/Content/CopyButton';
-import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import { useReasoningDisclosure } from '../disclosure';
 import { ROW_GLYPH_SLOT } from '../rows';
 import { cn } from '~/utils';
