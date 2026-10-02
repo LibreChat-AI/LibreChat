@@ -25,7 +25,6 @@ interface Capture {
 }
 
 const captures = new WeakMap<object, Capture>();
-const PRIVATE_PLACEHOLDER = /\[(?:EMAIL|PHONE|NAME|CREDENTIAL|CUSTOM)_\d+_[a-f0-9]{32}\]/;
 
 const CONTROL_ROUTES = new Set([
   'abort',
@@ -373,6 +372,7 @@ export async function savePrivateTextMessage(
 export async function requirePrivateTextPersistence(
   req: object | undefined,
   start: () => Promise<{ message?: PrivateTextMessage | null } | undefined>,
+  onPersisted?: () => void,
 ): Promise<void> {
   const capture = req == null ? undefined : captures.get(req);
   if (capture == null) {
@@ -385,6 +385,43 @@ export async function requirePrivateTextPersistence(
   ) {
     throw unavailable();
   }
+  onPersisted?.();
+}
+
+/** Ordinary startup stays immediate; protected revisions are announced only after admission. */
+export function deferPrivateTextStart(
+  req: object | undefined,
+  onStart: ((message: PrivateTextMessage, responseId: string, isNew: boolean) => void) | undefined,
+  message: PrivateTextMessage,
+  responseId: string,
+  isNew: boolean,
+): (() => void) | undefined {
+  if (typeof onStart !== 'function') {
+    return;
+  }
+  if (req == null || !captures.has(req)) {
+    onStart(message, responseId, isNew);
+    return;
+  }
+  let announced = false;
+  return () => {
+    if (!announced) {
+      announced = true;
+      onStart(message, responseId, isNew);
+    }
+  };
+}
+
+/** Runs only after the exact native payload passes its policy callback. */
+export function getPrivateTextAdmission(
+  req: object | undefined,
+  start: (() => Promise<{ message?: PrivateTextMessage | null } | undefined>) | undefined,
+  onPersisted?: () => void,
+): (() => Promise<void>) | undefined {
+  if (req == null || !captures.has(req) || start == null) {
+    return;
+  }
+  return () => requirePrivateTextPersistence(req, start, onPersisted);
 }
 
 /**
@@ -393,10 +430,7 @@ export async function requirePrivateTextPersistence(
  * omit the revision, so their prerequisite is an insert-only write.
  */
 export async function saveAbortedUserMessage(
-  store: Pick<
-    MessageMethods,
-    'saveMessage' | 'getPersistedPrivateTextId' | 'getPrivateMessageTexts'
-  >,
+  store: Pick<MessageMethods, 'saveMessage' | 'getPersistedPrivateTextId'>,
   ctx: Parameters<MessageMethods['saveMessage']>[0],
   message: Parameters<MessageMethods['saveMessage']>[1],
   metadata: Parameters<MessageMethods['saveMessage']>[2],
@@ -408,57 +442,35 @@ export async function saveAbortedUserMessage(
     if (!message.messageId || !message.conversationId) {
       throw unavailable();
     }
-    if (typeof message.text !== 'string' || !PRIVATE_PLACEHOLDER.test(message.text)) {
-      const saved = await store.saveMessage(ctx, message, { ...metadata, insertOnly: true });
-      if (
-        saved == null ||
-        saved.messageId !== message.messageId ||
-        saved.conversationId !== message.conversationId ||
-        saved.text !== message.text
-      ) {
-        throw unavailable();
-      }
-      if (typeof saved.privacyRevision === 'string' && saved.privacyRevision.length > 0) {
-        if (typeof saved.text !== 'string') {
-          throw unavailable();
-        }
-        const exists = await store.getPersistedPrivateTextId({
-          userId: ctx.userId,
-          tenantId,
-          conversationId: message.conversationId,
-          messageId: message.messageId,
-          text: saved.text,
-          privacyRevision: saved.privacyRevision,
-        });
-        if (!exists) {
-          throw unavailable();
-        }
-        if (finalEvent?.requestMessage != null) {
-          finalEvent.requestMessage.privacyRevision = saved.privacyRevision;
-        }
-      }
-      return { _id: saved._id };
-    }
-    const rows = await store.getPrivateMessageTexts({
-      userId: ctx.userId,
-      tenantId,
-      conversationId: message.conversationId,
-      messageIds: [message.messageId],
-    });
-    const row = rows.find(
-      (candidate) =>
-        candidate.messageId === message.messageId &&
-        candidate.text === message.text &&
-        candidate.privacyRevision &&
-        candidate.privateText,
-    );
-    if (row == null) {
+    const saved = await store.saveMessage(ctx, message, { ...metadata, insertOnly: true });
+    if (
+      saved == null ||
+      saved.messageId !== message.messageId ||
+      saved.conversationId !== message.conversationId ||
+      saved.text !== message.text
+    ) {
       throw unavailable();
     }
-    if (finalEvent?.requestMessage != null) {
-      finalEvent.requestMessage.privacyRevision = row.privacyRevision;
+    if (typeof saved.privacyRevision === 'string' && saved.privacyRevision.length > 0) {
+      if (typeof saved.text !== 'string') {
+        throw unavailable();
+      }
+      const exists = await store.getPersistedPrivateTextId({
+        userId: ctx.userId,
+        tenantId,
+        conversationId: message.conversationId,
+        messageId: message.messageId,
+        text: saved.text,
+        privacyRevision: saved.privacyRevision,
+      });
+      if (!exists) {
+        throw unavailable();
+      }
+      if (finalEvent?.requestMessage != null) {
+        finalEvent.requestMessage.privacyRevision = saved.privacyRevision;
+      }
     }
-    return { _id: row._id };
+    return { _id: saved._id };
   }
   if (!message.messageId || !message.conversationId || typeof message.text !== 'string') {
     throw unavailable();

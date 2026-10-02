@@ -681,7 +681,7 @@ export interface ModelBoundChatModelCallback {
   readonly handleChatModelStart: (
     llm: object | undefined,
     messageBatches: readonly (readonly ModelBoundProviderMessage[])[],
-  ) => void;
+  ) => void | Promise<void>;
 }
 
 export interface InitialModelBoundAdmissionCallback {
@@ -3238,7 +3238,10 @@ function snapshotBoundedSourceFileIds(
 /** Creates a run-stable callback shared by root, summary, and subagent model clients. */
 export function createModelBoundChatModelCallback(
   input: Omit<ModelBoundProviderContentInput, 'providerMessages'>,
-  options: { readonly onContentRejected?: (error: unknown) => void } = {},
+  options: {
+    readonly onContentRejected?: (error: unknown) => void;
+    readonly onContentAllowed?: () => void | Promise<void>;
+  } = {},
 ): ModelBoundChatModelCallback {
   const storedMessageSnapshot = snapshotBoundedProviderArray(input.storedMessages);
   const resolvedFileSnapshot = snapshotBoundedProviderArray(input.resolvedFiles);
@@ -3323,6 +3326,7 @@ export function createModelBoundChatModelCallback(
         options.onContentRejected?.(error);
         throw new FatalModelBoundPolicyError(error);
       }
+      return options.onContentAllowed?.();
     },
   });
   return callback;

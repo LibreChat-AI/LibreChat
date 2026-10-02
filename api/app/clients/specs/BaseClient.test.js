@@ -3,6 +3,10 @@ const BaseClientClass = require('../BaseClient');
 const {
   ContentFilterError,
   createPrivateTextIngress,
+  createModelBoundChatModelCallback,
+  getPrivateTextAdmission,
+  getPrivateTextInspectionTokens,
+  assertModelBoundContent,
   resolveTurnDeliveryRouting,
   buildSteerMedia,
   Tokenizer,
@@ -1735,65 +1739,131 @@ describe('BaseClient', () => {
       );
     });
 
-    test('protected created events wait for the atomic user write and fail closed on write failure', async () => {
+    function protectedClient(history = [], legacyPii) {
+      const filters = {
+        messages: {
+          pii: {
+            action: 'redact',
+            fields: ['text'],
+            starterPatterns: [],
+            customPatterns: [
+              { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+            ],
+          },
+        },
+      };
       const req = {
         user: { id: 'owner' },
         path: '/',
         body: { text: 'alice@example.com', clientRequestId: 'created-privacy' },
+        config: { filters, messageFilter: { pii: legacyPii } },
       };
-      const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
       const next = jest.fn();
       createPrivateTextIngress({
-        getFilters: () => ({
-          messages: {
-            pii: {
-              action: 'redact',
-              fields: ['text'],
-              starterPatterns: [],
-              customPatterns: [
-                { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
-              ],
-            },
-          },
-        }),
-        getLegacyPii: () => undefined,
+        getFilters: () => filters,
+        getLegacyPii: () => legacyPii,
         getKey: () => 'ab'.repeat(32),
-      })(req, res, next);
+      })(req, { status: jest.fn().mockReturnThis(), json: jest.fn() }, next);
       expect(next).toHaveBeenCalledTimes(1);
-      const client = Object.create(BaseClientClass.prototype);
-      client.options = { req };
-      client.sender = 'Agent';
-      client.resolveStartUserMessage = jest.fn(() => ({
-        messageId: 'private-user',
-        conversationId: 'private-conversation',
-        text: req.body.text,
-        isCreatedByUser: true,
-      }));
-      client.setMessageOptions = jest.fn(async () => ({
-        user: 'owner',
-        saveOptions: {},
-        conversationId: 'private-conversation',
-        responseMessageId: 'private-response',
-        parentMessageId: Constants.NO_PARENT,
-      }));
+      const client = initializeFakeClient(apiKey, { ...options, req }, history);
+      client.shouldDeferUserMessagePersistence = () => true;
+      client.assertStoredModelBoundContent = () =>
+        assertModelBoundContent({
+          legacyPii,
+          storedMessages: client.modelBoundStoredMessages,
+        });
+      client.assertBuiltModelBoundContent = () => {};
+      client.saveMessageToDatabase = jest.fn(async (message) => ({ message }));
+      const provider = jest.fn();
+      client.sendCompletion = jest.fn(async (payload) => {
+        const callback = createModelBoundChatModelCallback(
+          {
+            filters,
+            legacyPii,
+            storedMessages: client.modelBoundStoredMessages,
+            privateTextTokens: getPrivateTextInspectionTokens(client.modelBoundStoredMessages),
+          },
+          {
+            onContentRejected: client.modelBoundUserMessagePersistence.cancel,
+            onContentAllowed: getPrivateTextAdmission(
+              req,
+              client.modelBoundUserMessagePersistence.start,
+              client.privateTextStart,
+            ),
+          },
+        );
+        await callback.handleChatModelStart(undefined, [payload]);
+        provider();
+        return { completion: 'Safe reply' };
+      });
+      return { client, req, provider };
+    }
+
+    test('protected startup remains deferred until exact admission and the atomic write finishes', async () => {
+      const { client, req, provider } = protectedClient();
       const committed = deferred();
       let written;
-      client.saveMessageToDatabase = jest.fn((message) => {
+      client.saveMessageToDatabase.mockImplementationOnce((message) => {
         written = message;
         return committed.promise;
       });
       const onStart = jest.fn();
-      const started = client.handleStartMethods(req.body.text, { onStart });
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(client.saveMessageToDatabase).toHaveBeenCalledTimes(1);
+      const sent = client.sendMessage(req.body.text, { onStart });
+      // Wait for the admission callback to begin the real deferred write.
+      for (let i = 0; i < 30 && !written; i++) {
+        await Promise.resolve();
+      }
+      expect(written).toBeDefined();
       expect(onStart).not.toHaveBeenCalled();
-      committed.resolve({ message: { ...written } });
-      await started;
+      expect(provider).not.toHaveBeenCalled();
+      committed.resolve({ message: written });
+      await sent;
       expect(onStart).toHaveBeenCalledTimes(1);
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(onStart.mock.invocationCallOrder[0]).toBeLessThan(
+        provider.mock.invocationCallOrder[0],
+      );
+    });
+
+    test('protected write failure prevents created and the provider call', async () => {
+      const { client, req, provider } = protectedClient();
       client.saveMessageToDatabase.mockResolvedValueOnce({});
-      await expect(client.handleStartMethods(req.body.text, { onStart })).rejects.toThrow();
-      expect(onStart).toHaveBeenCalledTimes(1);
+      const onStart = jest.fn();
+      await expect(client.sendMessage(req.body.text, { onStart })).rejects.toThrow();
+      expect(onStart).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+    });
+
+    test('a legacy history rejection leaves a transformed turn and conversation unsaved', async () => {
+      const history = [{ messageId: 'prior', text: 'LEGACY-SECRET', isCreatedByUser: true }];
+      const { client, req, provider } = protectedClient(history, {
+        starterPatterns: [],
+        customPatterns: [{ id: 'legacy', label: 'Legacy', regex: 'LEGACY-SECRET' }],
+      });
+      const onStart = jest.fn();
+      await expect(
+        client.sendMessage(req.body.text, {
+          conversationId: 'conversation',
+          parentMessageId: 'prior',
+          onStart,
+        }),
+      ).rejects.toThrow();
+      expect(client.saveMessageToDatabase).not.toHaveBeenCalled();
+      expect(onStart).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+    });
+
+    test('an exact model-input rejection cancels the protected deferred write before created', async () => {
+      const { client, req, provider } = protectedClient();
+      const onStart = jest.fn();
+      client.buildMessages.mockResolvedValueOnce({
+        prompt: [{ role: 'user', content: 'alice@example.com' }],
+      });
+      await expect(client.sendMessage(req.body.text, { onStart })).rejects.toThrow();
+      expect(client.saveMessageToDatabase).not.toHaveBeenCalled();
+      expect(onStart).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+      expect(client.modelBoundUserMessagePersistence.isPending()).toBe(false);
     });
 
     test('onStart is called with the correct arguments', async () => {

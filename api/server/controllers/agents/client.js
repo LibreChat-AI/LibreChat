@@ -159,6 +159,7 @@ const {
   filterFilesByEndpointRuntimeConfig,
   createModelBoundChatModelCallback: createModelBoundContentCallback,
   getPrivateTextInspectionTokens,
+  getPrivateTextAdmission,
   createInitialModelBoundAdmissionCallback,
   hasModelBoundContentProtection,
   assertResumeRuntimeContentAllowed,
@@ -2039,6 +2040,11 @@ class AgentClient extends BaseClient {
       },
       {
         onContentRejected: persistence?.cancel,
+        onContentAllowed: getPrivateTextAdmission(
+          this.options.req,
+          persistence?.start,
+          this.privateTextStart,
+        ),
       },
     );
   }

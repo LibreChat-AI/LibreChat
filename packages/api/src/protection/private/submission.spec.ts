@@ -171,7 +171,7 @@ describe('private text submission boundary', () => {
     ]);
     const store = {
       saveMessage,
-      getPersistedPrivateTextId: jest.fn(async () => 'protected-row-id'),
+      getPersistedPrivateTextId: jest.fn(async (): Promise<string | null> => 'protected-row-id'),
       getPrivateMessageTexts,
     };
     const finalEvent = { requestMessage: { messageId: message.messageId, privacyRevision: '' } };
@@ -186,14 +186,40 @@ describe('private text submission boundary', () => {
         finalEvent,
       ),
     ).toEqual({ _id: undefined });
-    expect(saveMessage).not.toHaveBeenCalled();
+    expect(saveMessage).toHaveBeenCalledWith({ userId: 'owner' }, older, { insertOnly: true });
     expect(finalEvent.requestMessage.privacyRevision).toBe(message.privacyRevision);
-    getPrivateMessageTexts.mockResolvedValueOnce([]);
+    store.getPersistedPrivateTextId.mockResolvedValueOnce(null);
     await expect(
       saveAbortedUserMessage(store, { userId: 'owner' }, older, undefined, 'tenant-a'),
     ).rejects.toThrow('private value');
-    expect(saveMessage).not.toHaveBeenCalled();
+    expect(saveMessage).toHaveBeenCalledTimes(2);
   });
+
+  it.each([true, false])(
+    'stops a revisionless literal placeholder, existing row: %s',
+    async (existing) => {
+      const message = {
+        messageId: 'literal-token',
+        conversationId: 'conversation',
+        isCreatedByUser: true,
+        text: `[EMAIL_1_${'a'.repeat(32)}]`,
+      };
+      const saveMessage = jest.fn(async () =>
+        Object.assign(message as IMessage, { _id: existing ? 'existing' : 'inserted' }),
+      );
+      const getPersistedPrivateTextId = jest.fn(async () => null);
+      expect(
+        await saveAbortedUserMessage(
+          { saveMessage, getPersistedPrivateTextId },
+          { userId: 'owner' },
+          message,
+          undefined,
+        ),
+      ).toEqual({ _id: existing ? 'existing' : 'inserted' });
+      expect(saveMessage).toHaveBeenCalledWith({ userId: 'owner' }, message, { insertOnly: true });
+      expect(getPersistedPrivateTextId).not.toHaveBeenCalled();
+    },
+  );
 
   it('stamps a protected preliminary job message before the created event', () => {
     const { req, message } = submit();

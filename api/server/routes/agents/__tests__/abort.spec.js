@@ -451,27 +451,25 @@ describe('Agent Abort Endpoint', () => {
           await options.beforePublish(abortResult);
           return abortResult;
         });
-        mockGetPrivateMessageTexts.mockResolvedValueOnce([
-          {
-            messageId: userMessageId,
-            text,
-            privacyRevision: 'recovered-revision',
-            privateText: 'v1:protected',
-          },
-        ]);
+        mockSaveMessage.mockImplementationOnce(async (_ctx, message, metadata) => {
+          expect(metadata.insertOnly).toBe(true);
+          return { ...message, _id: 'protected-parent', privacyRevision: 'recovered-revision' };
+        });
 
         const response = await request(app).post('/api/agents/chat/abort').send({ conversationId });
         expect(response.status).toBe(200);
-        expect(mockGetPrivateMessageTexts).toHaveBeenCalledWith(
+        expect(mockGetPrivateMessageTexts).not.toHaveBeenCalled();
+        expect(mockHasPersistedPrivateText).toHaveBeenCalledWith(
           expect.objectContaining({
             userId: 'test-user-123',
             conversationId,
-            messageIds: [userMessageId],
+            messageId: userMessageId,
+            privacyRevision: 'recovered-revision',
+            text,
           }),
         );
         expect(abortResult.finalEvent.requestMessage.privacyRevision).toBe('recovered-revision');
-        expect(mockHasPersistedPrivateText).not.toHaveBeenCalled();
-        expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+        expect(mockSaveMessage).toHaveBeenCalledTimes(2);
         expect(mockSaveMessage).toHaveBeenCalledWith(
           expect.anything(),
           expect.objectContaining({ messageId: 'protected-response' }),

@@ -34,6 +34,7 @@ const {
   getConversationWriteContext,
   savePrivateTextMessage,
   stampPrivateTextMessage,
+  deferPrivateTextStart,
   requirePrivateTextPersistence,
   persistedReasoningOverrideFields,
 } = require('@librechat/api');
@@ -636,16 +637,13 @@ class BaseClient {
       });
     }
 
-    // A created frame enables Stop and owner reads on other replicas. Protected
-    // turns must have their atomic user/conversation write committed first.
-    await requirePrivateTextPersistence(this.options.req, () =>
-      this.saveMessageToDatabase(userMessage, saveOptions, user),
+    this.privateTextStart = deferPrivateTextStart(
+      this.options.req,
+      opts?.onStart,
+      userMessage,
+      responseMessageId,
+      !requestConvoId && parentMessageId === Constants.NO_PARENT,
     );
-
-    if (typeof opts?.onStart === 'function') {
-      const isNewConvo = !requestConvoId && parentMessageId === Constants.NO_PARENT;
-      opts.onStart(userMessage, responseMessageId, isNewConvo);
-    }
 
     return {
       ...opts,
@@ -1053,9 +1051,6 @@ class BaseClient {
         await balanceReservations.track(balanceAdmission);
       }
 
-      await requirePrivateTextPersistence(this.options.req, () =>
-        userMessagePersistence != null ? userMessagePersistence.start() : userMessagePromise,
-      );
       completionResult = await this.sendCompletion(payload, opts);
     } catch (error) {
       if (userMessagePersistence?.isPending()) {
@@ -1069,6 +1064,11 @@ class BaseClient {
     }
     /** A safe no-model completion (or a runtime that cannot expose the
      * admission callback) must not leave the parent-write gate pending. */
+    await requirePrivateTextPersistence(
+      this.options.req,
+      () => (userMessagePersistence != null ? userMessagePersistence.start() : userMessagePromise),
+      this.privateTextStart,
+    );
     userMessagePersistence?.start();
     const { completion, metadata } = completionResult;
     if (this.abortController) {
