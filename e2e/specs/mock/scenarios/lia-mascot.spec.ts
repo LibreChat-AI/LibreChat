@@ -10,14 +10,62 @@ test.describe.configure({ timeout: 120_000 });
 
 const lia = (page: Page) => page.getByTestId('lia');
 
+/** Opens the welcome screen; `optedIn` stores the preference before the app boots. */
 async function open(page: Page, { optedIn }: { optedIn: boolean }) {
-  await page.addInitScript((on) => {
-    localStorage.setItem('showLia', JSON.stringify(on));
-  }, optedIn);
+  if (optedIn) {
+    await page.addInitScript(() => localStorage.setItem('showLia', 'true'));
+  }
   await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
   await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible({
     timeout: 15000,
   });
+}
+
+const isPhone = (page: Page) => (page.viewportSize()?.width ?? 1280) <= 768;
+
+/** Opens Settings from the account menu, which lives in the drawer on phones. */
+async function openSettings(page: Page) {
+  if (isPhone(page)) {
+    const drawer = page.locator('#mobile-drawer');
+    await expect(drawer).toBeAttached();
+    await expect(async () => {
+      if (await drawer.evaluate((element) => element.hasAttribute('inert'))) {
+        await page.getByRole('button', { name: 'Open sidebar' }).click({ timeout: 2_000 });
+      }
+      await expect(drawer).not.toHaveAttribute('inert', /.*/, { timeout: 2_000 });
+    }).toPass({ timeout: 15_000 });
+  }
+  const account = isPhone(page)
+    ? page.locator('#mobile-drawer').getByTestId('nav-user')
+    : page.getByTestId('nav-user');
+  await account.click();
+  await page.getByRole('menuitem', { name: 'Settings' }).click();
+  await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible({
+    timeout: 10000,
+  });
+  if (isPhone(page)) {
+    /* Phones open Settings on its section list; the General rows render once it is chosen. */
+    await page.getByRole('dialog').getByText('General', { exact: true }).click();
+  }
+}
+
+/** Closes Settings and, on phones, the drawer it was opened from. */
+async function closeSettings(page: Page) {
+  const heading = page.getByRole('heading', { name: 'Settings', exact: true });
+  /* On phones the first Escape may step back to the section list before closing. */
+  await expect(async () => {
+    await page.keyboard.press('Escape');
+    await expect(heading).toBeHidden({ timeout: 1_000 });
+  }).toPass({ timeout: 10_000 });
+  if (isPhone(page)) {
+    const drawer = page.locator('#mobile-drawer');
+    await expect(async () => {
+      if (!(await drawer.evaluate((element) => element.hasAttribute('inert')))) {
+        await page.getByRole('button', { name: 'Close sidebar' }).click({ timeout: 2_000 });
+      }
+      await expect(drawer).toHaveAttribute('inert', /.*/, { timeout: 2_000 });
+    }).toPass({ timeout: 15_000 });
+  }
 }
 
 /** The pixels Lia's body occupies: the canvas carries transparent room for raised arms. */
@@ -44,15 +92,12 @@ test.describe('Lia mascot', () => {
     page,
   }) => {
     await open(page, { optedIn: false });
-    await page.getByTestId('nav-user').click();
-    await page.getByRole('menuitem', { name: 'Settings' }).click();
-    await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible({
-      timeout: 10000,
-    });
+    await openSettings(page);
     const toggle = page.getByTestId('showLia');
     await toggle.scrollIntoViewIfNeeded();
     await toggle.click();
-    await page.keyboard.press('Escape');
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await closeSettings(page);
     await expect(lia(page)).toBeVisible({ timeout: 10000 });
 
     await page.reload();
@@ -133,12 +178,8 @@ test.describe('Lia mascot', () => {
     await page.waitForTimeout(2000);
     await expect(lia(page)).toHaveCount(0);
 
-    await page.getByTestId('nav-user').click();
-    await page.getByRole('menuitem', { name: 'Settings' }).click();
-    await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible({
-      timeout: 10000,
-    });
-    await expect(page.getByTestId('centerFormOnLanding')).toBeVisible();
+    await openSettings(page);
+    await expect(page.getByTestId('centerFormOnLanding')).toBeAttached();
     await expect(page.getByTestId('showLia')).toHaveCount(0);
   });
 
