@@ -32,6 +32,14 @@ function paint(draw: (c: CanvasRenderingContext2D) => void) {
     rects.push({ key: `${String(c.fillStyle)}:${x},${y},${w},${h}`, x, y, w, h });
     fill(x, y, w, h);
   };
+  /* The face's glow blob is the one thing drawn as an image, from a cache painted with fillRect. */
+  const image = c.drawImage.bind(c) as (...args: unknown[]) => void;
+  c.drawImage = ((...args: unknown[]) => {
+    const source = args[0] as { width?: number; height?: number };
+    const at = args.slice(1).join(',');
+    rects.push({ key: `image:${source.width}x${source.height}@${at}`, x: 0, y: 0, w: 0, h: 0 });
+    image(...args);
+  }) as CanvasRenderingContext2D['drawImage'];
   draw(c);
   return rects;
 }
