@@ -138,6 +138,7 @@ export interface IAgentTriggerDelivery {
     dispatchCount: number;
     dispatchId?: string;
     releaseId?: string;
+    proofCopiedAt?: Date;
     candidates: string[];
     members?: string[];
     appliedAt?: Date;

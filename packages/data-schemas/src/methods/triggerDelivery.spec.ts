@@ -6076,6 +6076,153 @@ describe('background result receipt batches', () => {
     expect(await methods.claimAgentBackgroundToolResultBatch(input('one'))).toEqual(current);
   });
 
+  it('retains a retired owner across the TTL horizon until every claim is released', async () => {
+    await ready('one');
+    await ready('two');
+    const batch = await methods.claimAgentBackgroundToolResultBatch(input('one'));
+    if (batch.status !== 'acquired') throw new Error('Expected batch');
+    await Delivery.updateOne({ deliveryKey: 'one' }, { $set: { capabilityStatus: 'dead' } });
+    expect(
+      await methods.retireAgentTriggerDelivery({
+        deliveryKey: 'one',
+        sourceId,
+        reason: 'recovery',
+        onlyIfDead: true,
+        settledAt: START,
+      }),
+    ).toBe(true);
+    // The recovering process died before the generation fence or result release.
+    expect(await Delivery.findOne({ deliveryKey: 'one' }).lean()).not.toHaveProperty('expiresAt');
+    const future = new Date(Date.now() + 91 * 24 * 60 * 60_000);
+    await Delivery.deleteMany({ expiresAt: { $lte: future } });
+    await expect(methods.claimAgentBackgroundToolResultBatch(input('two'))).resolves.toMatchObject({
+      status: 'claimed',
+      ownerStatus: 'recoverable',
+    });
+    expect(
+      await methods.releaseAgentBackgroundToolResultClaims({
+        ...input('one'),
+        claimId: 'one',
+        batchId: batch.batchId,
+        recoveryFenced: true,
+      }),
+    ).toBe(true);
+    expect(await Delivery.findOne({ deliveryKey: 'one' }).lean()).toHaveProperty('expiresAt');
+    expect((await methods.claimAgentBackgroundToolResultBatch(input('two'))).status).toBe(
+      'acquired',
+    );
+  });
+
+  it('retains applied ownership until every receipt has durable proof of admission', async () => {
+    await ready('one');
+    await ready('two');
+    const batch = await methods.claimAgentBackgroundToolResultBatch(input('one'));
+    if (batch.status !== 'acquired') throw new Error('Expected batch');
+    await Delivery.updateOne({ deliveryKey: 'one' }, { $set: { capabilityStatus: 'dead' } });
+    await methods.retireAgentTriggerDelivery({
+      deliveryKey: 'one',
+      sourceId,
+      reason: 'recovery',
+      onlyIfDead: true,
+      settledAt: START,
+    });
+    const lostCopy = jest.spyOn(Delivery, 'updateMany').mockImplementationOnce(() => {
+      throw new Error('crash before receipt proof copy');
+    });
+    await expect(confirmBatch(input('one'))).rejects.toThrow('crash before receipt proof copy');
+    lostCopy.mockRestore();
+    expect(await Delivery.findOne({ deliveryKey: 'one' }).lean()).not.toHaveProperty('expiresAt');
+    await Delivery.deleteMany({
+      expiresAt: { $lte: new Date(Date.now() + 91 * 24 * 60 * 60_000) },
+    });
+    expect(await Delivery.exists({ deliveryKey: 'one' })).not.toBeNull();
+    // The durable root proof remains sufficient after the native key's horizon.
+    await expect(methods.claimAgentBackgroundToolResultBatch(input('one'))).resolves.toMatchObject({
+      status: 'claimed',
+      ownerStatus: 'applied',
+    });
+    const root = await Delivery.findOne({ deliveryKey: 'one' })
+      .select('+backgroundToolResultBatch')
+      .lean();
+    expect(root?.backgroundToolResultBatch?.proofCopiedAt).toBeInstanceOf(Date);
+    expect(root?.expiresAt).toBeInstanceOf(Date);
+    await Delivery.deleteOne({ deliveryKey: 'one' });
+    await expect(methods.claimAgentBackgroundToolResultBatch(input('two'))).resolves.toMatchObject({
+      status: 'claimed',
+      ownerStatus: 'applied',
+    });
+  });
+
+  it('does not publish a late collecting plan onto an already retired owner', async () => {
+    await ready('one');
+    await ready('two');
+    let pause: () => void = () => undefined;
+    let resume: () => void = () => undefined;
+    const paused = new Promise<void>((resolve) => {
+      pause = resolve;
+    });
+    const barrier = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const update = Delivery.updateOne.bind(Delivery);
+    const publication = jest.spyOn(Delivery, 'updateOne').mockImplementationOnce((...args) => {
+      const query = update(...args);
+      const execute = query.exec.bind(query);
+      jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+        pause();
+        await barrier;
+        return execute();
+      });
+      return query;
+    });
+    const stale = methods.claimAgentBackgroundToolResultBatch(input('one'));
+    await paused;
+    expect(
+      await methods.retireAgentTriggerDelivery({
+        deliveryKey: 'one',
+        sourceId,
+        reason: 'discarded',
+        onlyIfUnclaimed: true,
+        settledAt: START,
+      }),
+    ).toBe(true);
+    const collectingCrash = jest.spyOn(Delivery, 'updateMany').mockImplementationOnce(() => {
+      throw new Error('crash after late publication');
+    });
+    resume();
+    await expect(stale).resolves.toEqual({ status: 'not_ready' });
+    publication.mockRestore();
+    collectingCrash.mockRestore();
+    expect(
+      await Delivery.findOne({ deliveryKey: 'one' }).select('+backgroundToolResultBatch').lean(),
+    ).not.toHaveProperty('backgroundToolResultBatch');
+    expect(
+      await methods.getAgentBackgroundToolResultClaim({ ...input('two'), taskId: 'two' }),
+    ).toBeNull();
+  });
+
+  it('cannot begin dispatch after the owner is retired, even without a queue token', async () => {
+    await ready('one');
+    await ready('two');
+    const batch = await methods.claimAgentBackgroundToolResultBatch(input('one'));
+    if (batch.status !== 'acquired') throw new Error('Expected batch');
+    await Delivery.updateOne({ deliveryKey: 'one' }, { $set: { capabilityStatus: 'dead' } });
+    await methods.retireAgentTriggerDelivery({
+      deliveryKey: 'one',
+      sourceId,
+      reason: 'recovery',
+      onlyIfDead: true,
+      settledAt: START,
+    });
+    expect(
+      await methods.beginAgentBackgroundToolResultBatchDispatch({
+        ...input('one'),
+        batchId: batch.batchId,
+        dispatchId: 'late',
+      }),
+    ).toBe(false);
+  });
+
   it('does not let an expired lease release its successor preparation', async () => {
     await ready('one');
     await ready('two');

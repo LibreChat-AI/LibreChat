@@ -315,3 +315,11 @@ queue lease. A durable dispatch counter prevents a definite retry failure from r
 an earlier ambiguous handoff. Native recovery fences distinguish unadmitted tombstones
 from actual generation admission. Proven admissions settle followers, never re-present
 results.
+
+Retired owners do not expire while a batch still needs claim release or per-receipt
+admission proof. Cleanup restores the ordinary retention deadline only after every
+member is safe without the owner. Retirement also closes publication and dispatch.
+
+A failed receipt write is repaired from its durable terminal message projection.
+Manual polling marks receipt reconciliation before automatic delivery can settle that
+handoff; speculative manual ownership only defers the automatic delivery.

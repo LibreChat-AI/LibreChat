@@ -4,7 +4,11 @@ import { BACKGROUND_TOOL_COMPLETION_SOURCE } from './backgroundCompletionWakeup'
 /** Reconciles manual polling with the independent automatic-delivery receipt,
  * including polls reconstructed after the process-local registry was lost. */
 export async function claimBackgroundToolResult(
-  methods: Pick<MessageMethods, 'claimBackgroundToolResults' | 'releaseBackgroundToolResultClaims'>,
+  methods: Pick<
+    MessageMethods,
+    'claimBackgroundToolResults' | 'releaseBackgroundToolResultClaims'
+  > &
+    Partial<Pick<MessageMethods, 'confirmBackgroundToolResultClaim'>>,
   getReceiptClaim: AgentTriggerDeliveryMethods['getAgentBackgroundToolResultClaim'],
   input: Parameters<MessageMethods['claimBackgroundToolResults']>[0],
 ): ReturnType<MessageMethods['claimBackgroundToolResults']> {
@@ -52,6 +56,19 @@ export async function claimBackgroundToolResult(
     throw error;
   }
   if (receiptClaim == null || receiptClaim.claimId === input.claimId) {
+    if (
+      input.kind === 'manual' &&
+      methods.confirmBackgroundToolResultClaim != null &&
+      !(await methods.confirmBackgroundToolResultClaim({
+        userId: input.userId,
+        conversationId: input.conversationId,
+        messageId,
+        taskId: input.taskId,
+        claimId: input.claimId,
+      }))
+    ) {
+      throw new Error('The reconciled background result claim was superseded');
+    }
     return messageClaim;
   }
   await release();

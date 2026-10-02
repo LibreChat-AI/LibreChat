@@ -549,6 +549,7 @@ export type BackgroundToolResultClaim =
         claimId: string;
         generationId?: string;
         batchId?: string;
+        receiptReconciled?: true;
       };
       messageId?: string;
     }
@@ -819,6 +820,13 @@ export interface MessageMethods {
     /** Includes JSON escaping, delimiters, and empty result fields. */
     maxMetadataChars?: number;
   }): Promise<BackgroundToolResultClaim>;
+  confirmBackgroundToolResultClaim(params: {
+    userId: string;
+    conversationId: string;
+    messageId: string;
+    taskId: string;
+    claimId: string;
+  }): Promise<boolean>;
   releaseBackgroundToolResultClaims(params: {
     userId: string;
     conversationId: string;
@@ -1865,7 +1873,13 @@ export function createMessageMethods(
     row: Pick<IMessage, 'content'>,
     taskId: string,
   ):
-    | { kind: 'manual' | 'wakeup'; claimId: string; generationId?: string; batchId?: string }
+    | {
+        kind: 'manual' | 'wakeup';
+        claimId: string;
+        generationId?: string;
+        batchId?: string;
+        receiptReconciled?: true;
+      }
     | undefined {
     for (const part of row.content ?? []) {
       if (part == null || typeof part !== 'object' || Array.isArray(part)) {
@@ -1881,6 +1895,7 @@ export function createMessageMethods(
                 claimId?: unknown;
                 generationId?: unknown;
                 batchId?: unknown;
+                receiptReconciled?: unknown;
               };
             };
           };
@@ -1899,6 +1914,7 @@ export function createMessageMethods(
           kind: claim.kind,
           claimId: claim.claimId,
           ...(typeof claim.batchId === 'string' && { batchId: claim.batchId }),
+          ...(claim.receiptReconciled === true && { receiptReconciled: true }),
           ...(typeof claim.generationId === 'string' && claim.generationId.length > 0
             ? { generationId: claim.generationId }
             : {}),
@@ -2325,6 +2341,37 @@ export function createMessageMethods(
           ...(competingClaim == null ? {} : { claim: competingClaim }),
           ...recoveredSource,
         };
+  }
+
+  /** Manual ownership is committed only after receipt arbitration completes. */
+  async function confirmBackgroundToolResultClaim(
+    input: Parameters<MessageMethods['confirmBackgroundToolResultClaim']>[0],
+  ): Promise<boolean> {
+    const Message = mongoose.models.Message as Model<IMessage>;
+    const identity = {
+      'tool_call.backgroundTask.taskId': input.taskId,
+      'tool_call.backgroundTask.resultClaim.kind': 'manual',
+      'tool_call.backgroundTask.resultClaim.claimId': input.claimId,
+    };
+    const confirmed = await Message.updateOne(
+      {
+        user: input.userId,
+        conversationId: input.conversationId,
+        messageId: input.messageId,
+        content: { $elemMatch: identity },
+      },
+      { $set: { 'content.$[part].tool_call.backgroundTask.resultClaim.receiptReconciled': true } },
+      {
+        arrayFilters: [
+          {
+            'part.tool_call.backgroundTask.taskId': input.taskId,
+            'part.tool_call.backgroundTask.resultClaim.kind': 'manual',
+            'part.tool_call.backgroundTask.resultClaim.claimId': input.claimId,
+          },
+        ],
+      },
+    );
+    return confirmed.matchedCount === 1;
   }
 
   async function releaseBackgroundToolResultClaims({
@@ -4087,6 +4134,7 @@ export function createMessageMethods(
     updateMessageText,
     updateToolCallResult,
     claimBackgroundToolResults,
+    confirmBackgroundToolResultClaim,
     releaseBackgroundToolResultClaims,
     updateMessage,
     recordSubagentTaskControlReceipt,

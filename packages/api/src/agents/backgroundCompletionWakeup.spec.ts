@@ -1252,6 +1252,7 @@ describe('capability-gated receipt batch resolution', () => {
 
   it('still detects a lost producer while a v3 receipt is not ready', async () => {
     const methods = batchMethods();
+    methods.claimBackgroundToolResults.mockResolvedValueOnce({ status: 'not_ready', results: [] });
     methods.claimAgentBackgroundToolResultBatch.mockResolvedValueOnce({
       status: 'not_ready',
       waitingForResult: true,

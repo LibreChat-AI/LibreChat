@@ -2242,41 +2242,63 @@ export function createAgentTriggerDeliveryMethods(
         },
       };
     })();
-    const retired = await Delivery()
-      .findOneAndUpdate(
-        {
-          deliveryKey: input.deliveryKey,
-          'envelope.event.source.type': 'internal',
-          'envelope.event.source.id': input.sourceId,
-          ...statusFence,
-          ...(input.onlyIfUnclaimed === true
-            ? { 'backgroundToolResult.resultClaim': { $exists: false } }
-            : {}),
-        },
-        {
-          $set: {
-            status: 'succeeded',
-            result,
-            settledAt: input.settledAt,
-            expiresAt: new Date(input.settledAt.getTime() + SUCCESS_RETENTION_MS),
-            laneCleanupPendingAt: input.settledAt,
+    const retire = (retainBatch: boolean) =>
+      Delivery()
+        .findOneAndUpdate(
+          {
+            deliveryKey: input.deliveryKey,
+            'envelope.event.source.type': 'internal',
+            'envelope.event.source.id': input.sourceId,
+            ...statusFence,
+            ...(retainBatch
+              ? {
+                  backgroundToolResultBatch: { $exists: true },
+                  'backgroundToolResultBatch.proofCopiedAt': { $exists: false },
+                }
+              : {
+                  $and: [
+                    {
+                      $or: [
+                        { backgroundToolResultBatch: { $exists: false } },
+                        { 'backgroundToolResultBatch.proofCopiedAt': { $exists: true } },
+                      ],
+                    },
+                  ],
+                }),
+            ...(input.onlyIfUnclaimed === true
+              ? { 'backgroundToolResult.resultClaim': { $exists: false } }
+              : {}),
           },
-          $unset: {
-            leaseBy: 1,
-            leaseUntil: 1,
-            claimToken: 1,
-            capabilityStatus: 1,
-            claimAvailableAt: 1,
-            capabilityLeaseBy: 1,
-            capabilityLeaseUntil: 1,
-            capabilityClaimToken: 1,
-            lastError: 1,
+          {
+            $set: {
+              status: 'succeeded',
+              result,
+              settledAt: input.settledAt,
+              ...(!retainBatch && {
+                expiresAt: new Date(input.settledAt.getTime() + SUCCESS_RETENTION_MS),
+              }),
+              laneCleanupPendingAt: input.settledAt,
+            },
+            $unset: {
+              leaseBy: 1,
+              leaseUntil: 1,
+              claimToken: 1,
+              capabilityStatus: 1,
+              claimAvailableAt: 1,
+              capabilityLeaseBy: 1,
+              capabilityLeaseUntil: 1,
+              capabilityClaimToken: 1,
+              lastError: 1,
+              ...(retainBatch && { expiresAt: 1 }),
+            },
           },
-        },
-        { new: true },
-      )
-      .select('_id orderingKey laneCleanupPendingAt')
-      .lean<Pick<IAgentTriggerDelivery, '_id' | 'orderingKey' | 'laneCleanupPendingAt'>>();
+          { new: true },
+        )
+        .select('_id orderingKey laneCleanupPendingAt')
+        .lean<Pick<IAgentTriggerDelivery, '_id' | 'orderingKey' | 'laneCleanupPendingAt'>>();
+    // A retired owner is its followers' recovery and frozen-membership record.
+    // Its TTL cannot start while release or receipt-proof copying is incomplete.
+    const retired = (await retire(false)) ?? (await retire(true));
     if (retired?._id != null) {
       try {
         await fulfillLaneCleanupRequest(retired);
@@ -2885,8 +2907,8 @@ export function createAgentTriggerDeliveryMethods(
         },
         { new: true, timestamps: false },
       )
-      .select('+backgroundToolResultBatch')
-      .lean<Pick<IAgentTriggerDelivery, 'backgroundToolResultBatch'>>();
+      .select('status +backgroundToolResultBatch')
+      .lean<Pick<IAgentTriggerDelivery, 'status' | 'backgroundToolResultBatch'>>();
     if (
       releasing == null &&
       (await Delivery().exists({
@@ -2924,21 +2946,28 @@ export function createAgentTriggerDeliveryMethods(
         }))
       )
         return false;
-      const cleared = await Delivery().updateOne(
-        {
-          ...scope,
-          deliveryKey: input.claimId,
-          'backgroundToolResultBatch.batchId': batch.batchId,
-          'backgroundToolResultBatch.releaseId': releaseId,
-          'backgroundToolResultBatch.appliedAt': { $exists: false },
-          ...(input.deliveryClaimToken == null
-            ? {}
-            : { capabilityClaimToken: input.deliveryClaimToken }),
-        },
-        { $unset: { backgroundToolResultBatch: 1 } },
-        { timestamps: false },
-      );
-      return cleared.matchedCount === 1;
+      const clear = (retired: boolean) =>
+        Delivery().updateOne(
+          {
+            ...scope,
+            deliveryKey: input.claimId,
+            'backgroundToolResultBatch.batchId': batch.batchId,
+            'backgroundToolResultBatch.releaseId': releaseId,
+            'backgroundToolResultBatch.appliedAt': { $exists: false },
+            status: retired ? 'succeeded' : { $ne: 'succeeded' },
+            ...(input.deliveryClaimToken == null
+              ? {}
+              : { capabilityClaimToken: input.deliveryClaimToken }),
+          },
+          {
+            $unset: { backgroundToolResultBatch: 1 },
+            ...(retired && { $max: { expiresAt: new Date(Date.now() + SUCCESS_RETENTION_MS) } }),
+          },
+          { timestamps: false },
+        );
+      const cleared = await clear(releasing?.status === 'succeeded');
+      if (cleared.matchedCount === 1) return true;
+      return releasing?.status !== 'succeeded' && (await clear(true)).matchedCount === 1;
     }
     return true;
   }
@@ -3009,13 +3038,22 @@ export function createAgentTriggerDeliveryMethods(
       });
       return { status: gated == null ? 'legacy' : 'not_ready' };
     }
-    if (root.backgroundToolResultBatch?.appliedAt != null)
+    if (root.backgroundToolResultBatch?.appliedAt != null) {
+      if (
+        root.backgroundToolResultBatch.proofCopiedAt == null &&
+        !(await confirmAgentBackgroundToolResultBatch({
+          ...input,
+          batchId: root.backgroundToolResultBatch.batchId,
+        }))
+      )
+        return { status: 'not_ready' };
       return {
         status: 'claimed',
         claimId: input.deliveryKey,
         batchId: root.backgroundToolResultBatch.batchId,
         ownerStatus: 'applied',
       };
+    }
     if (root.backgroundToolResultBatch?.releasing === true) {
       const released = await releaseAgentBackgroundToolResultClaims({
         ...input,
@@ -3147,6 +3185,8 @@ export function createAgentTriggerDeliveryMethods(
           ...scope,
           deliveryKey: input.deliveryKey,
           backgroundToolResultBatch: { $exists: false },
+          status: { $in: UNDELIVERED_STATUSES },
+          capabilityStatus: { $ne: 'dead' },
           ...(input.deliveryClaimToken == null
             ? {}
             : { capabilityClaimToken: input.deliveryClaimToken }),
@@ -3279,6 +3319,8 @@ export function createAgentTriggerDeliveryMethods(
       {
         ...backgroundResultIdentity(input),
         deliveryKey: input.deliveryKey,
+        status: { $in: UNDELIVERED_STATUSES },
+        capabilityStatus: { $ne: 'dead' },
         'backgroundToolResultBatch.batchId': input.batchId,
         'backgroundToolResultBatch.members.0': { $exists: true },
         'backgroundToolResultBatch.releasing': { $ne: true },
@@ -3313,8 +3355,8 @@ export function createAgentTriggerDeliveryMethods(
         { $min: { 'backgroundToolResultBatch.appliedAt': new Date() } },
         { new: true, timestamps: false },
       )
-      .select('+backgroundToolResultBatch')
-      .lean<Pick<IAgentTriggerDelivery, 'backgroundToolResultBatch'>>();
+      .select('status +backgroundToolResultBatch')
+      .lean<Pick<IAgentTriggerDelivery, 'status' | 'backgroundToolResultBatch'>>();
     if (root?.backgroundToolResultBatch?.appliedAt == null) return false;
     await Delivery().updateMany(
       {
@@ -3330,7 +3372,33 @@ export function createAgentTriggerDeliveryMethods(
       },
       { timestamps: false },
     );
-    return true;
+    if (
+      (await Delivery().exists({
+        ...scope,
+        'backgroundToolResult.resultClaim.claimId': input.deliveryKey,
+        'backgroundToolResult.resultClaim.batchId': input.batchId,
+        'backgroundToolResult.resultClaim.appliedAt': { $exists: false },
+      })) != null
+    )
+      return false;
+    const finish = (retired: boolean) =>
+      Delivery().updateOne(
+        {
+          ...scope,
+          deliveryKey: input.deliveryKey,
+          'backgroundToolResultBatch.batchId': input.batchId,
+          'backgroundToolResultBatch.appliedAt': { $exists: true },
+          status: retired ? 'succeeded' : { $ne: 'succeeded' },
+        },
+        {
+          $min: { 'backgroundToolResultBatch.proofCopiedAt': new Date() },
+          ...(retired && { $max: { expiresAt: new Date(Date.now() + SUCCESS_RETENTION_MS) } }),
+        },
+        { timestamps: false },
+      );
+    const finished = await finish(root.status === 'succeeded');
+    if (finished.matchedCount === 1) return true;
+    return root.status !== 'succeeded' && (await finish(true)).matchedCount === 1;
   }
 
   async function settleAgentTriggerHandlingOutcome(

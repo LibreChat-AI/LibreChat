@@ -187,6 +187,7 @@ const triggerDeliverySchema: Schema<IAgentTriggerDeliveryDocument> = new Schema(
           dispatchCount: { type: Number, required: true, min: 0 },
           dispatchId: { type: String, maxlength: 128 },
           releaseId: { type: String, maxlength: 128 },
+          proofCopiedAt: { type: Date },
           candidates: { type: [String], required: true },
           releasing: { type: Boolean },
           members: { type: [String], default: undefined },
