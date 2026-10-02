@@ -493,6 +493,17 @@ describe('resolveAbortedTurnAnchorDecision', () => {
     ).resolves.toBe('skip-turn');
   });
 
+  it('skips the whole turn when a compaction carries no anchor id', async () => {
+    const messageExists = reader(true);
+
+    for (const userMessage of [undefined, null, {}, { messageId: '' }]) {
+      await expect(
+        resolveAbortedTurnAnchorDecision({ ...jobData, userMessage }, { messageExists }),
+      ).resolves.toBe('skip-turn');
+    }
+    expect(messageExists).not.toHaveBeenCalled();
+  });
+
   /** A read that throws must not escape past the caller's remaining cleanup:
    *  nothing is known about the anchor, so nothing is written either. */
   it('skips the whole turn when the anchor read fails', async () => {

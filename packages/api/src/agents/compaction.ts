@@ -315,9 +315,13 @@ export async function resolveAbortedTurnAnchorDecision(
     messageExists,
   }: { messageExists: (messageId: string, conversationId?: string) => Promise<boolean> },
 ): Promise<AbortAnchorDecision> {
-  const anchorId = jobData?.userMessage?.messageId;
-  if (jobData?.compact !== true || anchorId == null || anchorId.length === 0) {
+  if (jobData?.compact !== true) {
     return 'persist';
+  }
+  /** A compaction with no anchor id has nothing to hang its response on. */
+  const anchorId = jobData.userMessage?.messageId;
+  if (anchorId == null || anchorId.length === 0) {
+    return 'skip-turn';
   }
   try {
     const anchorExists = await messageExists(anchorId, jobData.conversationId);
