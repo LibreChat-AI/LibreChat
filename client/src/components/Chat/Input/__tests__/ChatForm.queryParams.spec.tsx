@@ -3,10 +3,10 @@ import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
 import { RecoilRoot, useRecoilState } from 'recoil';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { act, render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter, useNavigate, useLocation } from 'react-router-dom';
 import type { TConversation } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
@@ -124,8 +124,10 @@ function mountComposer(conversation = initialConversation) {
     [EModelEndpoint.agents]: { order: 1 },
   });
   let navigate: ReturnType<typeof useNavigate>;
+  let location: ReturnType<typeof useLocation>;
   function NavigationBridge() {
     navigate = useNavigate();
+    location = useLocation();
     return null;
   }
   const wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -147,7 +149,7 @@ function mountComposer(conversation = initialConversation) {
     </QueryClientProvider>
   );
   const view = render(<Harness conversation={conversation} />, { wrapper });
-  return { ...view, navigate: (to: string) => navigate(to) };
+  return { ...view, navigate: (to: string) => navigate(to), getLocation: () => location };
 }
 
 describe('ChatForm URL submission', () => {
@@ -287,6 +289,101 @@ describe('ChatForm URL submission', () => {
     });
     expect(ask).toHaveBeenCalledTimes(1);
     expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'hi' }), expect.anything());
+  });
+
+  it.each(['', 'unrelated saved draft'])(
+    'submits across the inherited project rewrite with destination draft %p',
+    async (savedText) => {
+      setDraft({ id: getNewConversationDraftId(), value: savedText });
+      const view = mountComposer({
+        ...initialConversation,
+        conversationId: 'existing-chat',
+        chatProjectId: 'project-one',
+        endpoint: EModelEndpoint.assistants,
+        assistant_id: 'asst_test',
+      });
+      await act(async () => jest.advanceTimersByTime(100));
+      expect(newConversation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          template: expect.objectContaining({ chatProjectId: 'project-one' }),
+        }),
+      );
+      await act(async () => {
+        view.navigate('/c/new?agent_id=agent_test&q=hi&submit=true&projectId=project-one');
+        view.rerender(
+          <Harness
+            conversation={{
+              ...initialConversation,
+              endpoint: EModelEndpoint.agents,
+              agent_id: 'agent_test',
+              model: undefined,
+              chatProjectId: 'project-one',
+            }}
+          />,
+        );
+      });
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'hi' }), expect.anything());
+      expect(view.getLocation().search).toBe('?projectId=project-one');
+      await act(async () => jest.advanceTimersByTime(4000));
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
+    },
+  );
+
+  it('preserves the inherited project during setup-timeout URL cleanup', async () => {
+    const view = mountComposer({
+      ...initialConversation,
+      conversationId: 'existing-chat',
+      chatProjectId: 'project-one',
+      endpoint: EModelEndpoint.assistants,
+      assistant_id: 'asst_test',
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    await act(async () => {
+      view.navigate('/c/new?agent_id=agent_test&q=hi&submit=true&projectId=project-one');
+      view.rerender(
+        <Harness conversation={{ ...initialConversation, chatProjectId: 'project-one' }} />,
+      );
+    });
+    expect(screen.getByText('Sending...')).toBeInTheDocument();
+    await act(async () => jest.advanceTimersByTime(3000));
+    expect(screen.getByTestId('text-input')).toHaveValue('hi');
+    expect(screen.getByText(/Chat settings could not be applied/)).toBeInTheDocument();
+    expect(view.getLocation().search).toBe('?projectId=project-one');
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unrelated project rewrite even when it retains the submission query', async () => {
+    const view = mountComposer({
+      ...initialConversation,
+      conversationId: 'existing-chat',
+      chatProjectId: 'project-one',
+      endpoint: EModelEndpoint.assistants,
+      assistant_id: 'asst_test',
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    setDraft({ id: getNewConversationDraftId(), value: 'destination draft' });
+    await act(async () => {
+      view.navigate('/c/new?agent_id=agent_test&q=hi&submit=true&projectId=project-two');
+      view.rerender(
+        <Harness
+          conversation={{
+            ...initialConversation,
+            endpoint: EModelEndpoint.agents,
+            agent_id: 'agent_test',
+            model: undefined,
+            chatProjectId: 'project-two',
+          }}
+        />,
+      );
+    });
+    expect(screen.getByTestId('text-input')).toHaveValue('destination draft');
+    expect(screen.getByTestId('text-input')).not.toBeDisabled();
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(view.getLocation().search).toContain('projectId=project-two');
+    expect(screen.getByTestId('text-input')).toHaveValue('destination draft');
+    expect(ask).not.toHaveBeenCalled();
   });
 
   it('sends the visible prompt once when the requested agent reaches the conversation', async () => {

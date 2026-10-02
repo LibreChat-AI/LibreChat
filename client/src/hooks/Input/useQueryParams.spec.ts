@@ -23,6 +23,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useRecoilValue } from 'recoil';
 import { EModelEndpoint, parseConvo } from 'librechat-data-provider';
 import type { TConversation, TStartupConfig } from 'librechat-data-provider';
+import buildDefaultConvo from '~/utils/buildDefaultConvo';
 import useQueryParams from './useQueryParams';
 import { useChatContext, useChatFormContext } from '~/Providers';
 import useSubmitMessage from '~/hooks/Messages/useSubmitMessage';
@@ -408,6 +409,28 @@ describe('useQueryParams', () => {
     expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
     expect(hook.result.current.settingsError).toBe(false);
   });
+
+  it.each([{ tools: [] }, { tools: ['web_search'] }])(
+    'matches preset tools retained by the conversation builder: $tools',
+    ({ tools }) => {
+      const preset = { endpoint: EModelEndpoint.openAI, model: 'gpt-4o', tools };
+      const hook = mountQuery(
+        { spec: 'helper', q: 'hi', submit: 'true' },
+        { modelSpecs: { list: [{ name: 'helper', label: 'Helper', preset }] } },
+      );
+      const conversation = buildDefaultConvo({
+        models: ['gpt-4o'],
+        endpoint: EModelEndpoint.openAI,
+        conversation: { conversationId: 'new' } as TConversation,
+        lastConversationSetup: { ...preset, spec: 'helper' } as TConversation,
+      });
+      expect(conversation.tools).toEqual(tools);
+      hook.updateConversation(conversation);
+      hook.rerender();
+      expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+      expect(hook.result.current.settingsError).toBe(false);
+    },
+  );
 
   it('preserves explicit URL overrides over visible spec defaults', () => {
     const hook = mountQuery(

@@ -13,6 +13,7 @@ import {
 import type {
   AgentListResponse,
   TEndpointsConfig,
+  TConversation,
   TStartupConfig,
   TPreset,
 } from 'librechat-data-provider';
@@ -72,6 +73,8 @@ export default function useQueryParams({
 
   const methods = useChatFormContext();
   const [searchParams, setSearchParams] = useSearchParams();
+  const setSearchParamsRef = useRef(setSearchParams);
+  setSearchParamsRef.current = setSearchParams;
   const location = useLocation();
   const searchIdentity = useMemo(() => {
     const params = new URLSearchParams(searchParams);
@@ -87,7 +90,10 @@ export default function useQueryParams({
   const routeRef = useRef(route);
   routeRef.current = route;
   const originConversationRef = useRef<string | null | undefined>(null);
-  const destinationRef = useRef<string | null>(null);
+  const destinationRef = useRef<{
+    conversationId: string;
+    route: typeof route;
+  } | null>(null);
   const cancelledRef = useRef(false);
   const mountedRef = useRef(true);
   const getDefaultConversation = useDefaultConvo();
@@ -105,12 +111,12 @@ export default function useQueryParams({
 
   const getPreservedSearchParams = useCallback(() => {
     const preservedParams = new URLSearchParams();
-    const projectId = searchParams.get(PROJECT_ID_SEARCH_PARAM);
+    const projectId = routeRef.current.projectId;
     if (projectId) {
       preservedParams.set(PROJECT_ID_SEARCH_PARAM, projectId);
     }
     return preservedParams;
-  }, [searchParams]);
+  }, []);
 
   const conversationRef = useRef(conversation);
   conversationRef.current = conversation;
@@ -119,13 +125,18 @@ export default function useQueryParams({
     const currentId = conversationRef.current?.conversationId;
     const current = routeRef.current;
     return (
-      current.projectId === originRouteRef.current.projectId &&
-      (current.pathname === originRouteRef.current.pathname ||
-        (destinationRef.current != null && current.pathname === `/c/${destinationRef.current}`)) &&
+      ((current.projectId === originRouteRef.current.projectId &&
+        current.pathname === originRouteRef.current.pathname) ||
+        (destinationRef.current != null &&
+          current.pathname === destinationRef.current.route.pathname &&
+          current.projectId === destinationRef.current.route.projectId)) &&
       (!processedRef.current ||
         currentId == null ||
         currentId === originConversationRef.current ||
-        currentId === destinationRef.current)
+        currentId === destinationRef.current?.conversationId) &&
+      (destinationRef.current == null ||
+        currentId !== destinationRef.current.conversationId ||
+        (conversationRef.current?.chatProjectId ?? null) === destinationRef.current.route.projectId)
     );
   }, []);
 
@@ -133,10 +144,29 @@ export default function useQueryParams({
     () =>
       mountedRef.current &&
       !cancelledRef.current &&
-      routeRef.current.search === originRouteRef.current.search &&
+      ((routeRef.current.pathname === originRouteRef.current.pathname &&
+        routeRef.current.search === originRouteRef.current.search) ||
+        (routeRef.current.pathname === destinationRef.current?.route.pathname &&
+          routeRef.current.search === destinationRef.current.route.search)) &&
       ownsComposer(),
     [ownsComposer],
   );
+
+  /** Match the route that useNewConvo writes, including its inherited project. */
+  const expectDestination = useCallback((template: Partial<TConversation>) => {
+    const conversationId = template.conversationId ?? 'new';
+    const params = new URLSearchParams(originRouteRef.current.search);
+    params.delete(PROJECT_ID_SEARCH_PARAM);
+    const projectId = conversationId === 'new' ? template.chatProjectId || null : null;
+    if (projectId) {
+      params.set(PROJECT_ID_SEARCH_PARAM, projectId);
+    }
+    params.sort();
+    destinationRef.current = {
+      conversationId,
+      route: { pathname: `/c/${conversationId}`, search: params.toString(), projectId },
+    };
+  }, []);
 
   const cancelRequest = useCallback(() => {
     cancelledRef.current = true;
@@ -192,7 +222,9 @@ export default function useQueryParams({
       }
 
       const expectedValue =
-        key === 'endpoint' || key === 'endpointType' ? value : normalizedSettings?.[key];
+        key === 'endpoint' || key === 'endpointType' || (key === 'tools' && value != null)
+          ? value
+          : normalizedSettings?.[key];
       if (!isEqual(convo[key], expectedValue)) {
         return false;
       }
@@ -290,7 +322,7 @@ export default function useQueryParams({
 
         /* We don't reset the latest message, only when changing settings mid-converstion */
         logger.log('conversation', 'Switching conversation from query params', currentConvo);
-        destinationRef.current = currentConvo.conversationId ?? 'new';
+        expectDestination(currentConvo);
         newConversation({
           template: currentConvo,
           preset: newPreset,
@@ -300,12 +332,13 @@ export default function useQueryParams({
         return true;
       }
 
-      destinationRef.current = 'new';
+      const newTemplate = {
+        chatProjectId: conversation?.chatProjectId ?? null,
+        ...(newPreset.agent_id ? { agent_id: newPreset.agent_id } : {}),
+      };
+      expectDestination(newTemplate);
       newConversation({
-        template: {
-          chatProjectId: conversation?.chatProjectId ?? null,
-          ...(newPreset.agent_id ? { agent_id: newPreset.agent_id } : {}),
-        },
+        template: newTemplate,
         preset: newPreset,
         keepAddedConvos: true,
         keepComposerState: true,
@@ -314,6 +347,7 @@ export default function useQueryParams({
     },
     [
       areSettingsApplied,
+      expectDestination,
       queryClient,
       modularChat,
       conversation,
@@ -355,7 +389,7 @@ export default function useQueryParams({
     const cleanUp = () => {
       validatingRef.current = false;
       if (ownsRequest()) {
-        setSearchParams(getPreservedSearchParams(), { replace: true });
+        setSearchParamsRef.current(getPreservedSearchParams(), { replace: true });
       }
     };
     methods.handleSubmit(
@@ -381,14 +415,7 @@ export default function useQueryParams({
         cleanUp();
       },
     )();
-  }, [
-    methods,
-    ownsRequest,
-    areSettingsApplied,
-    setSearchParams,
-    getPreservedSearchParams,
-    restoreUrlPrompt,
-  ]);
+  }, [methods, ownsRequest, areSettingsApplied, getPreservedSearchParams, restoreUrlPrompt]);
 
   useEffect(() => {
     const processQueryParams = () => {
@@ -457,7 +484,7 @@ export default function useQueryParams({
 
         // Defer URL cleanup until after submission completes (processSubmission handles it)
         if ((!willAutoSubmit || !decodedPrompt.trim()) && ownsRequest()) {
-          setSearchParams(getPreservedSearchParams(), { replace: true });
+          setSearchParamsRef.current(getPreservedSearchParams(), { replace: true });
         }
       };
 
@@ -485,7 +512,7 @@ export default function useQueryParams({
               submissionHandledRef.current = true;
               setSubmissionStatus('failed');
               logger.log('conversation', 'Settings application timeout, retaining prompt');
-              setSearchParams(getPreservedSearchParams(), { replace: true });
+              setSearchParamsRef.current(getPreservedSearchParams(), { replace: true });
             }
           }, MAX_SETTINGS_WAIT_MS);
         }
@@ -506,7 +533,6 @@ export default function useQueryParams({
     newQueryConvo,
     newConversation,
     submitMessage,
-    setSearchParams,
     getPreservedSearchParams,
     queryClient,
     processSubmission,
