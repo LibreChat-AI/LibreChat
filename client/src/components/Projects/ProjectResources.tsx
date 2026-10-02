@@ -586,11 +586,32 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
               }}
               disabled={addFile.isLoading || !hasFileCapacity}
               emptyText={
-                deferredPickerSearch
+                deferredPickerSearch || pickerView !== 'all'
                   ? localize('com_ui_no_search_results')
                   : localize('com_ui_project_no_eligible_files')
               }
             />
+            {/* A later page that fails keeps the loaded cards; the grid only shows
+                its own retry while nothing has loaded. */}
+            {isFilesError && availableFiles.length > 0 && (
+              <Alert
+                variant="error"
+                icon={false}
+                role="alert"
+                className="mt-3 flex items-center justify-between"
+              >
+                <span>{localize('com_ui_project_files_error')}</span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isFetchingNextPage}
+                  onClick={() => void (hasNextPage ? fetchNextPage() : refetchFiles())}
+                >
+                  {localize('com_ui_retry')}
+                </Button>
+              </Alert>
+            )}
             {!isFilesLoading && !isFilesError && hasNextPage && (
               <Button
                 type="button"

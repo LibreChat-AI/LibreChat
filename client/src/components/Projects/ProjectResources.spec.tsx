@@ -318,6 +318,50 @@ describe('ProjectResources', () => {
     expect(screen.queryByText('No eligible indexed files')).not.toBeInTheDocument();
   });
 
+  it('reads an empty category view as a filtered result, not an empty library', async () => {
+    mockAvailableFilesState = {
+      ...mockAvailableFilesState,
+      data: {
+        pages: [{ files: [{ ...uploadedFile, file_id: 'doc-id' }] as TFile[], nextCursor: null }],
+      },
+    };
+    renderResources();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add files' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Choose an existing file' }));
+    await user.click(await screen.findByRole('radio', { name: 'com_ui_composer_files_images' }));
+
+    expect(await screen.findByText('No results match your search')).toBeInTheDocument();
+    expect(screen.queryByText('No eligible indexed files')).not.toBeInTheDocument();
+  });
+
+  it('keeps loaded files and offers a retry when a later page fails', async () => {
+    const fetchNextPage = jest.fn();
+    mockAvailableFilesState = {
+      ...mockAvailableFilesState,
+      data: {
+        pages: [
+          {
+            files: [{ ...uploadedFile, file_id: 'first-id', filename: 'first.txt' }] as TFile[],
+            nextCursor: null,
+          },
+        ],
+      },
+      hasNextPage: true,
+      fetchNextPage,
+      isError: true,
+    };
+    renderResources();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add files' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Choose an existing file' }));
+
+    expect(await screen.findByRole('button', { name: /first.txt/ })).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load project files');
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(fetchNextPage).toHaveBeenCalled();
+  });
+
   it('names the file limit when attaching an existing file to a full project', async () => {
     mockAddMutateAsync.mockRejectedValueOnce({
       message: 'unsafe association detail',
