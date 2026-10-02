@@ -349,6 +349,27 @@ describe('agentCreateSchema with subagents', () => {
 });
 
 describe('stateful code environments', () => {
+  it('rejects a machine list above the wire safety ceiling before any persistence', () => {
+    expect(
+      agentUpdateSchema.safeParse({
+        code_environment_ids: Array.from({ length: 129 }, (_, i) => `machine-${i}`),
+      }).success,
+    ).toBe(false);
+  });
+  it.each([{ value: ['machine-a', 'machine-b'] }, { value: [] }])(
+    'accepts an explicit machine allowlist of $value',
+    ({ value }) => {
+      expect(agentUpdateSchema.parse({ code_environment_ids: value })).toEqual({
+        code_environment_ids: value,
+      });
+    },
+  );
+  it.each([{ value: true }, { value: ['bad/path'] }, { value: [1] }])(
+    'rejects malformed machine allowlists',
+    ({ value }) => {
+      expect(agentUpdateSchema.safeParse({ code_environment_ids: value }).success).toBe(false);
+    },
+  );
   it.each(['user', 'agent-user', 'conversation'])('accepts %s', (environment) => {
     const result = agentCreateSchema.safeParse({
       provider: 'openAI',

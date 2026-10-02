@@ -213,6 +213,70 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
     };
   });
 
+  describe('agent machine allowlist authorization', () => {
+    test.each(['create', 'update', 'duplicate', 'restore'])(
+      '%s refuses machine references outside the principal-scoped configuration',
+      async (ingress) => {
+        const source = await Agent.create({
+          id: `agent_${uuidv4()}`,
+          name: 'Machine reference source',
+          provider: 'openai',
+          model: 'gpt-4',
+          author: mockReq.user.id,
+          stateful_code_sessions: false,
+          code_environment_ids: ingress === 'duplicate' ? ['another-users-vm'] : [],
+          versions: [
+            {
+              name: 'Earlier',
+              provider: 'openai',
+              model: 'gpt-4',
+              code_environment_ids: ['another-users-vm'],
+            },
+          ],
+        });
+        mockReq.config = {
+          endpoints: {
+            agents: {
+              statefulCodeSessions: {
+                allowedEnvironments: ['user'],
+                environments: [
+                  {
+                    id: 'own-vm',
+                    name: 'Own VM',
+                    type: 'attached',
+                    baseURL: 'https://own.example.com/v1',
+                  },
+                ],
+              },
+            },
+          },
+        };
+        mockReq.params.id = source.id;
+        if (ingress === 'create') {
+          mockReq.body = {
+            name: 'New agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            code_environment_ids: ['another-users-vm'],
+          };
+          await createAgentHandler(mockReq, mockRes);
+        } else if (ingress === 'update') {
+          mockReq.body = { code_environment_ids: ['another-users-vm'] };
+          await updateAgentHandler(mockReq, mockRes);
+        } else if (ingress === 'duplicate') {
+          await duplicateAgentHandler(mockReq, mockRes);
+        } else {
+          mockReq.body = { version_index: 0 };
+          await revertAgentVersionHandler(mockReq, mockRes);
+        }
+        expect(mockRes.status).toHaveBeenCalledWith(403);
+        expect(await Agent.countDocuments()).toBe(1);
+        const persisted = await Agent.findOne({ id: source.id }).lean();
+        expect(persisted.code_environment_ids).toEqual(source.code_environment_ids);
+      },
+    );
+  });
+
   describe('createAgentHandler', () => {
     test('removes programmatic tool options when Code Interpreter capability is disabled', async () => {
       mockReq.body = {

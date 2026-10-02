@@ -142,6 +142,7 @@ export function composeAgentUpdatePayload(
     stateful_code_sessions,
     stateful_code_environment,
     code_environment_id,
+    code_environment_ids,
     repositoryInstructions,
     code_workspace_id,
     git_identity,
@@ -215,6 +216,12 @@ export function composeAgentUpdatePayload(
       stateful_code_sessions: normalizedStatefulCodeSessions,
       stateful_code_environment: normalizedStatefulCodeEnvironment,
       code_environment_id: agent_id ? code_environment_id : (code_environment_id ?? undefined),
+      code_environment_ids:
+        agent_id &&
+        typeof data.agent === 'object' &&
+        isEqual(code_environment_ids ?? [], data.agent?.code_environment_ids ?? [])
+          ? undefined
+          : code_environment_ids,
       repositoryInstructions,
       code_workspace_id,
       git_identity: normalizedGitIdentity,
