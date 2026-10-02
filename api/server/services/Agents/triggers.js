@@ -109,6 +109,7 @@ module.exports = {
   persistAgentBackgroundToolResult: service.persistBackgroundToolResult,
   expediteCompletionWakeups: service.expediteCompletionWakeups,
   getAgentBackgroundToolResultClaim: service.getBackgroundToolResultClaim,
+  getBackgroundCompletionReceiptBatching: service.getBackgroundCompletionReceiptBatching,
   releaseAgentBackgroundToolResultClaims: service.releaseBackgroundToolResultClaims,
   drainAgentTriggerDeliveriesForUser: service.drainUser,
   prepareAgentTriggerUserPurge: service.prepareUserPurge,

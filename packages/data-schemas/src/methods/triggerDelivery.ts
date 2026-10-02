@@ -2223,6 +2223,9 @@ export function createAgentTriggerDeliveryMethods(
           'envelope.event.source.type': 'internal',
           'envelope.event.source.id': input.sourceId,
           ...statusFence,
+          ...(input.onlyIfUnclaimed === true
+            ? { 'backgroundToolResult.resultClaim': { $exists: false } }
+            : {}),
         },
         {
           $set: {
@@ -2942,6 +2945,13 @@ export function createAgentTriggerDeliveryMethods(
         requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
       });
       return { status: gated == null ? 'legacy' : 'not_ready' };
+    }
+    if (root.backgroundToolResultBatch?.releasing === true) {
+      const released = await releaseAgentBackgroundToolResultClaims({
+        ...input,
+        claimId: input.deliveryKey,
+      });
+      return released ? claimAgentBackgroundToolResultBatch(input) : { status: 'not_ready' };
     }
     if (root.backgroundToolResult == null) return { status: 'not_ready', waitingForResult: true };
     const claim = root.backgroundToolResult.resultClaim;

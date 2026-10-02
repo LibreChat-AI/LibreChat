@@ -92,6 +92,7 @@ export interface AgentTriggerDeliveryRecord {
   orderingKey: string;
   laneSequence: number;
   envelope: unknown;
+  requiredWorkerCapability?: string;
   status: AgentTriggerDeliveryStatus;
   attempts: number;
   availableAt: Date;
@@ -209,6 +210,7 @@ export interface AgentTriggerDeliveryEngineDeps {
       attempt?: number;
       maxAttempts?: number;
       deliveryClaimToken?: string;
+      requiredWorkerCapability?: string;
     },
   ) => Promise<AgentTriggerExecutionResult>;
   /** Source-owned terminalization must commit before its delivery can become
@@ -495,6 +497,9 @@ export function createAgentTriggerDeliveryEngine(
           attempt,
           maxAttempts,
           deliveryClaimToken: delivery.claimToken,
+          ...(delivery.requiredWorkerCapability != null && {
+            requiredWorkerCapability: delivery.requiredWorkerCapability,
+          }),
         });
       } catch (error) {
         const attemptedAt = now();

@@ -1,4 +1,7 @@
-import { AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3 } from '@librechat/data-schemas';
+import {
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+} from '@librechat/data-schemas';
 import type { AgentTriggerProducerLeaseStatus } from '@librechat/data-schemas';
 import type { CodeApprovalMode } from 'librechat-data-provider';
 import type { EnqueueBackgroundToolCompletion } from './backgroundCompletionWakeup';
@@ -113,6 +116,37 @@ describe('background tool completion wakeups', () => {
     jest.useRealTimers();
   });
 
+  it('admits v3 receipts only when the deployment rollout gate is enabled', async () => {
+    const enqueue = jest.fn<
+      ReturnType<EnqueueBackgroundToolCompletion>,
+      Parameters<EnqueueBackgroundToolCompletion>
+    >(async () => ({ deliveryKey: 'key' }));
+    let enabled = false;
+    const notify = createBackgroundToolCompletionWakeupHandler(
+      enqueue,
+      async () => true,
+      async () => true,
+      undefined,
+      undefined,
+      () => enabled,
+    );
+    await notify(registration());
+    expect(enqueue).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+      }),
+    );
+    enabled = true;
+    await notify(registration({ taskId: 'task-2' }));
+    expect(enqueue).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
+      }),
+    );
+  });
+
   it('expedites its own delivery when a result it can consume appears', async () => {
     const expedite = jest.fn();
     const notify = createBackgroundToolCompletionWakeupHandler(
@@ -168,7 +202,7 @@ describe('background tool completion wakeups', () => {
     expect(options).toEqual({
       orderingKey: 'background-tool-completion:conversation-1:task-1',
       availableAt: new Date(NOW + 250),
-      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
+      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
       producerLeaseUntil: new Date(NOW + 30_000),
     });
     if (admission !== false) {
@@ -1063,6 +1097,19 @@ describe('capability-gated receipt batch resolution', () => {
       confirmAgentBackgroundToolResultBatch: jest.fn(async () => true),
     };
   }
+
+  it('does not probe batch storage for rollout-default v2 deliveries', async () => {
+    const methods = batchMethods();
+    const resolve = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => null,
+    });
+    await resolve(await envelope(), {
+      idempotencyKey: 'delivery-1',
+      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+    });
+    expect(methods.claimAgentBackgroundToolResultBatch).not.toHaveBeenCalled();
+  });
 
   it('reconciles every member before dispatch and confirms only after admission', async () => {
     const methods = batchMethods();

@@ -13,6 +13,7 @@ const {
   enqueueAgentTrigger,
   persistAgentBackgroundToolResult,
   getAgentBackgroundToolResultClaim,
+  getBackgroundCompletionReceiptBatching,
   releaseAgentBackgroundToolResultClaims,
   renewAgentTriggerProducerLease,
   retireAgentTrigger,
@@ -26,6 +27,7 @@ const preregisterBackgroundToolCompletion = createBackgroundToolCompletionWakeup
   (deliveryKey, sourceId, result) =>
     persistAgentBackgroundToolResult({ deliveryKey, sourceId, result }),
   (deliveryKey) => expediteCompletionWakeups({ deliveryKeys: [deliveryKey] }),
+  getBackgroundCompletionReceiptBatching,
 );
 
 const pendingBackgroundToolCompletions = createPendingBackgroundCompletions({

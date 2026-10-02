@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { backgroundResultMetadata, isEphemeralAgentId } from 'librechat-data-provider';
-import { AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3 } from '@librechat/data-schemas';
+import {
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+} from '@librechat/data-schemas';
 import type {
   AgentTriggerProducerLeaseStatus,
   AgentTriggerDeliveryMethods,
@@ -346,11 +349,16 @@ export function createBackgroundToolCompletionWakeupResolver({
       agentId: envelope.target.agentId,
       ...(context.deliveryClaimToken != null && { deliveryClaimToken: context.deliveryClaimToken }),
     };
-    const batch = await methods.claimAgentBackgroundToolResultBatch?.({
-      ...batchScope,
-      limit: getResultBatchSize?.() ?? 8,
-      maxMetadataChars: BACKGROUND_TOOL_WAKEUP_INPUT_MAX_CHARS - 256,
-    });
+    const batch =
+      context.requiredWorkerCapability != null &&
+      context.requiredWorkerCapability !==
+        AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3
+        ? undefined
+        : await methods.claimAgentBackgroundToolResultBatch?.({
+            ...batchScope,
+            limit: getResultBatchSize?.() ?? 8,
+            maxMetadataChars: BACKGROUND_TOOL_WAKEUP_INPUT_MAX_CHARS - 256,
+          });
     if (batch?.status === 'claimed') {
       if (batch.ownerStatus === 'applied') return { status: 'settled' };
       if (batch.ownerStatus === 'recoverable') {
@@ -781,6 +789,7 @@ export function createBackgroundToolCompletionWakeupHandler(
   renewProducerLease: RenewBackgroundToolCompletionProducerLease,
   persistResult?: PersistBackgroundToolCompletionResult,
   expedite?: (deliveryKey: string) => void,
+  getReceiptBatchingEnabled?: () => boolean,
 ): (
   registration: BackgroundToolWakeupRegistration,
 ) => Promise<BackgroundToolWakeupAdmission | false> {
@@ -824,7 +833,10 @@ export function createBackgroundToolCompletionWakeupHandler(
       availableAt: new Date(
         Math.max(Date.now(), registration.createdAt) + WAKEUP_ADMISSION_DELAY_MS,
       ),
-      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
+      requiredWorkerCapability:
+        getReceiptBatchingEnabled?.() === true
+          ? AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3
+          : AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
       producerLeaseUntil: new Date(Date.now() + BACKGROUND_TOOL_PRODUCER_LEASE_MS),
     });
     return {

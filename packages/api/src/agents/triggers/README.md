@@ -294,3 +294,17 @@ opportunistic, not one-turn-per-conversation election.
 `triggerDelivery.spec.ts` includes a real-Mongo collecting barrier, crash/lost-reply
 injection, rolling-upgrade isolation, and an 8-conversation × 4-result storage stress
 harness. Its latency measures receipt admission, not model turns or deployment latency.
+
+Receipt batching defaults off. Deploy compatible receipt and manual-poll consumers on
+**every replica**, then enable:
+
+```yaml
+endpoints:
+  agents:
+    backgroundTasks:
+      completionReceiptBatching: true
+```
+
+Older manual-poll workers cannot read v3 ownership. Queue capability fencing alone does
+not protect that path. Disable batching and drain v3 deliveries before rolling back to
+older consumers. A successor lease resumes interrupted release cleanup before dispatch.

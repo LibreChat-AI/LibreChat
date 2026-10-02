@@ -13,6 +13,7 @@ export interface AgentTriggerDispatchContext {
   maxAttempts?: number;
   /** Exact queue lease that owns this preparation. */
   deliveryClaimToken?: string;
+  requiredWorkerCapability?: string;
   signal?: AbortSignal;
 }
 
@@ -51,6 +52,7 @@ export function dispatchAgentTrigger<FireResult, ContinueResult, SteerResult>(
     attempt?: number;
     maxAttempts?: number;
     deliveryClaimToken?: string;
+    requiredWorkerCapability?: string;
   },
 ): Promise<ContinueResult | FireResult | SteerResult> {
   let normalized: AgentTriggerEnvelope;
@@ -64,6 +66,9 @@ export function dispatchAgentTrigger<FireResult, ContinueResult, SteerResult>(
     ...(options?.attempt != null && { attempt: options.attempt }),
     ...(options?.maxAttempts != null && { maxAttempts: options.maxAttempts }),
     ...(options?.deliveryClaimToken != null && { deliveryClaimToken: options.deliveryClaimToken }),
+    ...(options?.requiredWorkerCapability != null && {
+      requiredWorkerCapability: options.requiredWorkerCapability,
+    }),
     ...(options?.signal != null && { signal: options.signal }),
   };
   if (normalized.mode === 'fire') {

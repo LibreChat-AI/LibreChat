@@ -709,6 +709,8 @@ if (cluster.isMaster) {
           address: server.address(),
           completionResultBatchSize:
             baseAppConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+          completionReceiptBatching:
+            baseAppConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
           idlePolling: baseAppConfig?.endpoints?.agents?.eventDriven?.idlePolling,
         });
       } catch (initErr) {

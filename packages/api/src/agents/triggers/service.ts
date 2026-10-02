@@ -51,6 +51,7 @@ const DEFAULT_PURGE_RECOVERY_LIMIT = 25;
 
 export interface AgentTriggerServiceOptions {
   completionResultBatchSize?: number;
+  completionReceiptBatching?: boolean;
   address?: BoundAddress | string | null;
   idlePolling?: {
     queuedTurnMaxIntervalMs?: number;
@@ -231,6 +232,7 @@ export interface AgentTriggerService {
     input: Parameters<AgentTriggerDeliveryMethods['getAgentBackgroundToolResultClaim']>[0],
   ) => ReturnType<AgentTriggerDeliveryMethods['getAgentBackgroundToolResultClaim']>;
   getBackgroundCompletionResultBatchSize: () => number;
+  getBackgroundCompletionReceiptBatching: () => boolean;
   /** Longest a waiting completion delivery re-checks readiness. */
   getCompletionWaitMaxIntervalMs: () => number;
   /** Best effort: moves waiting completion deliveries forward after what they wait on changed. */
@@ -354,6 +356,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
   }
   let boundOrigin: string | undefined;
   let backgroundCompletionResultBatchSize = 8;
+  let backgroundCompletionReceiptBatching = false;
   let completionWaitMaxIntervalMs = WAITING_RETRY_CAP_MS;
   let deliveryEngine: AgentTriggerDeliveryEngine | undefined;
   let initializePromise: Promise<void> | undefined;
@@ -417,6 +420,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
       attempt?: number;
       maxAttempts?: number;
       deliveryClaimToken?: string;
+      requiredWorkerCapability?: string;
     },
   ): Promise<AgentTriggerExecutionResult> => {
     const parsed = parseAgentTriggerEnvelope(envelope);
@@ -626,6 +630,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
   return {
     initialize: (options = {}) => {
       backgroundCompletionResultBatchSize = options.completionResultBatchSize ?? 8;
+      backgroundCompletionReceiptBatching = options.completionReceiptBatching === true;
       completionWaitMaxIntervalMs =
         options.idlePolling?.completionWaitMaxIntervalMs ?? WAITING_RETRY_CAP_MS;
       boundOrigin = selfOriginFromAddress(options.address) ?? boundOrigin;
@@ -816,6 +821,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         return getClaim == null ? null : getClaim(input);
       }),
     getBackgroundCompletionResultBatchSize: () => backgroundCompletionResultBatchSize,
+    getBackgroundCompletionReceiptBatching: () => backgroundCompletionReceiptBatching,
     getCompletionWaitMaxIntervalMs: () => completionWaitMaxIntervalMs,
     expediteCompletionWakeups: (input) => expediteCompletions(input),
     releaseBackgroundToolResultClaims: (input) =>

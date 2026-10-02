@@ -5808,6 +5808,83 @@ describe('background result receipt batches', () => {
     expect(next).not.toBeNull();
   });
 
+  it('resumes an interrupted release under the successor queue lease', async () => {
+    await ready('one');
+    await ready('two');
+    await Delivery.updateOne({ deliveryKey: 'one' }, { $set: { capabilityClaimToken: 'old' } });
+    await methods.claimAgentBackgroundToolResultBatch({
+      ...input('one'),
+      deliveryClaimToken: 'old',
+    });
+    const updateOne = Delivery.updateOne.bind(Delivery);
+    const lostReply = jest.spyOn(Delivery, 'updateOne').mockImplementationOnce((...args) => {
+      const query = updateOne(...args);
+      const execute = query.exec.bind(query);
+      jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+        await execute();
+        throw new Error('lost release fence reply');
+      });
+      return query;
+    });
+    await expect(
+      methods.releaseAgentBackgroundToolResultClaims({
+        ...input('one'),
+        claimId: 'one',
+        deliveryClaimToken: 'old',
+      }),
+    ).rejects.toThrow('lost release fence reply');
+    lostReply.mockRestore();
+    await Delivery.updateOne({ deliveryKey: 'one' }, { $set: { capabilityClaimToken: 'new' } });
+    expect(
+      await methods.claimAgentBackgroundToolResultBatch({
+        ...input('one'),
+        deliveryClaimToken: 'new',
+      }),
+    ).toMatchObject({ status: 'acquired', results: [{ taskId: 'one' }, { taskId: 'two' }] });
+    expect(await methods.confirmAgentBackgroundToolResultBatch(input('one'))).toBe(true);
+    await expect(methods.claimAgentBackgroundToolResultBatch(input('two'))).resolves.toMatchObject({
+      status: 'claimed',
+      ownerStatus: 'applied',
+    });
+  });
+
+  it('cannot discard a follower after a root acquired its receipt', async () => {
+    await ready('one');
+    await ready('two');
+    await methods.claimAgentBackgroundToolResultBatch(input('one'));
+    await expect(
+      methods.retireAgentTriggerDelivery({
+        deliveryKey: 'two',
+        sourceId,
+        settledAt: START,
+        reason: 'discarded',
+        onlyIfUnclaimed: true,
+        requireTransition: true,
+      }),
+    ).resolves.toBe(false);
+    expect(await methods.claimAgentBackgroundToolResultBatch(input('one'))).toMatchObject({
+      status: 'acquired',
+      results: [{ taskId: 'one' }, { taskId: 'two' }],
+    });
+  });
+
+  it('keeps rollout-default receipts visible to old manual polling after late projection', async () => {
+    await ready('one', {
+      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+    });
+    await methods.claimAgentBackgroundToolResults({ ...input('one'), claimId: 'one' });
+    const oldLookup = await Delivery.findOne({
+      user,
+      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+      'envelope.target.conversationId': 'conversation',
+      'envelope.target.parentMessageId': 'parent',
+      'envelope.event.payload.taskId': 'one',
+    })
+      .select('+backgroundToolResult')
+      .lean();
+    expect(oldLookup?.backgroundToolResult?.resultClaim?.claimId).toBe('one');
+  });
+
   it('does not let an expired lease release its successor preparation', async () => {
     await ready('one');
     await ready('two');

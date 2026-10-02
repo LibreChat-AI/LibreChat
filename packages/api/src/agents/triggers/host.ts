@@ -177,6 +177,7 @@ export interface AgentTriggerExecutionHost {
       attempt?: number;
       maxAttempts?: number;
       deliveryClaimToken?: string;
+      requiredWorkerCapability?: string;
     },
   ) => Promise<AgentTriggerExecutionResult>;
 }

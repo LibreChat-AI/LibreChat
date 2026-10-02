@@ -213,6 +213,14 @@ describe('durable agent trigger service', () => {
     await service.stop();
   });
 
+  it('keeps receipt batching disabled until the deployment gate is explicitly enabled', async () => {
+    const service = createAgentTriggerService({ mintToken: () => 'test' });
+    expect(service.getBackgroundCompletionReceiptBatching()).toBe(false);
+    await service.initialize({ address: '127.0.0.1', completionReceiptBatching: true });
+    expect(service.getBackgroundCompletionReceiptBatching()).toBe(true);
+    await service.stop();
+  });
+
   describe('waiting completion deliveries', () => {
     const address = { address: '127.0.0.1', family: 'IPv4' as const, port: 3080 };
     const flush = () => new Promise((resolve) => setImmediate(resolve));
