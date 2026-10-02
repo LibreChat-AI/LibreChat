@@ -192,14 +192,14 @@ it('does not expand saved edges of a legacy-chain member', async () => {
   );
 });
 
-it.each<Partial<ParsedServerConfig>>([
+it.each<Partial<Extract<ParsedServerConfig, { type: 'http' | 'streamable-http' }>>>([
   { headers: { 'X-Workspace': 'other' } },
   { requestHeaders: { 'X-Account': 'other' } },
   { proxy: 'http://other-proxy.example/' },
   { dbId: 'other-server' },
 ])('requires fresh confirmation at every stage after a routing change: %j', async (change) => {
   const { deps, resolve } = setup();
-  let server: ParsedServerConfig = {
+  let server: Extract<ParsedServerConfig, { type: 'http' | 'streamable-http' }> = {
     type: 'streamable-http',
     url: 'https://warehouse.example/mcp',
     headers: { 'X-Workspace': 'original' },
@@ -276,7 +276,7 @@ it.each<Partial<ParsedServerConfig>>([
 
 it('does not bind consent to renewed user tokens or client secrets', async () => {
   const { deps, resolve } = setup();
-  let user = Object.assign({} as IUser, {
+  const user = Object.assign({} as IUser, {
     id: 'u',
     tenantId: 't',
     role: 'USER',
@@ -288,33 +288,28 @@ it('does not bind consent to renewed user tokens or client secrets', async () =>
   });
   let secret = 'fixture-secret-one';
   jest.mocked(deps.findUser).mockImplementation(async () => user);
-  jest
-    .mocked(deps.getServers)
-    .mockImplementation(async () => ({
-      warehouse: {
-        type: 'streamable-http',
-        url: 'https://warehouse.example/mcp',
-        headers: {
-          Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
-          'X-Workspace': 'original',
-        },
-        oauth: {
-          client_id: 'client',
-          client_secret: secret,
-          authorization_url: 'https://issuer.example/authorize',
-          token_url: 'https://issuer.example/token',
-        },
+  jest.mocked(deps.getServers).mockImplementation(async () => ({
+    warehouse: {
+      type: 'streamable-http',
+      url: 'https://warehouse.example/mcp',
+      headers: {
+        Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
+        'X-Workspace': 'original',
       },
-    }));
+      oauth: {
+        client_id: 'client',
+        client_secret: secret,
+        authorization_url: 'https://issuer.example/authorize',
+        token_url: 'https://issuer.example/token',
+      },
+    },
+  }));
   const before = await resolve(identity, {});
   secret = 'fixture-secret-two';
-  user = {
-    ...user,
-    federatedTokens: {
-      access_token: 'fixture-access-two',
-      refresh_token: 'fixture-refresh-two',
-      expires_at: 20000,
-    },
+  user.federatedTokens = {
+    access_token: 'fixture-access-two',
+    refresh_token: 'fixture-refresh-two',
+    expires_at: 20000,
   };
   expect(await resolve(identity, {})).toEqual(before);
 });

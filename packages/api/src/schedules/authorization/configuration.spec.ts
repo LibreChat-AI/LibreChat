@@ -9,7 +9,7 @@ const binding: ScheduledMCPResourceBinding = {
   audience: 'warehouse',
   scopes: ['read'],
 };
-const config: ParsedServerConfig = {
+const config: Extract<ParsedServerConfig, { type: 'http' | 'streamable-http' }> = {
   type: 'streamable-http',
   url: binding.url,
   headers: { 'X-Workspace': 'catalog', Accept: 'application/json' },
@@ -35,7 +35,7 @@ const config: ParsedServerConfig = {
   },
 };
 
-it.each<Partial<ParsedServerConfig>>([
+it.each<Partial<Extract<ParsedServerConfig, { type: 'http' | 'streamable-http' }>>>([
   { headers: { ...config.headers, 'X-Workspace': 'catalog-2' } },
   { requestHeaders: { ...config.requestHeaders, 'X-Workspace': 'chat-2' } },
   { proxy: 'http://proxy-b.example/' },
