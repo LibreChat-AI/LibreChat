@@ -9,7 +9,7 @@ const {
 } = require('@librechat/api');
 const { isEphemeralAgentId } = require('librechat-data-provider');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
-const { getMCPServerTools } = require('~/server/services/Config');
+const { getMCPServerTools, getEndpointsConfig } = require('~/server/services/Config');
 const { getAccessibleMcpServerNames, getAccessibleMCPServers } = require('~/server/services/MCP');
 const { isFatalAgentInitializationError } = require('~/server/services/ToolService');
 const { getSkillDbMethods, canAuthorSkillFiles } = require('./skillDeps');
@@ -20,6 +20,7 @@ const loadAddedAgent = (params) =>
     getAgent: db.getAgentWithVersionCount,
     getMCPServerTools,
     getAccessibleMCPServers,
+    getEndpointsConfig: () => getEndpointsConfig(params.req),
   });
 
 /**

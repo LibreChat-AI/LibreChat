@@ -1090,6 +1090,168 @@ describe('loadAgent', () => {
     expect(result?.tools).toContain('ask_user_question');
   });
 
+  describe('added ephemeral model parameters', () => {
+    const appConfig: Record<string, unknown> = {
+      config: {},
+      fileStrategy: FileSources.local,
+      imageOutputType: 'png',
+    };
+
+    const responsesConvo = {
+      endpoint: 'openAI',
+      model: 'gpt-5.6-luna',
+      useResponsesApi: true,
+      reasoning_effort: 'high',
+      temperature: 0.4,
+      promptPrefix: 'Be brief',
+      conversationId: 'convo-1',
+      ephemeralAgent: { web_search: false },
+    } as unknown as TConversation;
+
+    test('keeps provider parameters when mirroring an ephemeral primary', async () => {
+      const result = await loadAddedAgent(
+        {
+          req: { user: { id: 'user123' }, config: appConfig },
+          conversation: responsesConvo,
+          primaryAgent: {
+            id: Constants.EPHEMERAL_AGENT_ID as string,
+            tools: [],
+          } as unknown as LibreChatAgent,
+        },
+        deps,
+      );
+
+      expect(result?.instructions).toBe('Be brief');
+      expect(result?.model_parameters).toEqual({
+        useResponsesApi: true,
+        reasoning_effort: 'high',
+        temperature: 0.4,
+      });
+    });
+
+    test('keeps provider parameters without an ephemeral primary', async () => {
+      const result = await loadAddedAgent(
+        { req: { user: { id: 'user123' }, config: appConfig }, conversation: responsesConvo },
+        deps,
+      );
+
+      expect(result?.model).toBe('gpt-5.6-luna');
+      expect(result?.model_parameters).toEqual({
+        useResponsesApi: true,
+        reasoning_effort: 'high',
+        temperature: 0.4,
+      });
+    });
+
+    test("builds from the added conversation, not the primary's request body", async () => {
+      const primaryBody = {
+        promptPrefix: 'Primary instructions',
+        ephemeralAgent: { web_search: true, mcp: ['primary-server'] },
+      };
+
+      const result = await loadAddedAgent(
+        {
+          req: { user: { id: 'user123' }, config: appConfig, body: primaryBody },
+          conversation: {
+            endpoint: 'openAI',
+            model: 'gpt-5.6-luna',
+            ephemeralAgent: { execute_code: true },
+          } as unknown as TConversation,
+        } as Parameters<typeof loadAddedAgent>[0],
+        deps,
+      );
+
+      expect(result?.id).toMatch(/____1$/);
+      expect(result?.instructions).toBeUndefined();
+      expect(result?.tools).toEqual(['execute_code']);
+      expect(primaryBody.ephemeralAgent.mcp).toEqual(['primary-server']);
+      expect(mockGetMCPServerTools).not.toHaveBeenCalled();
+    });
+
+    test('reuses ephemeral primary tools without resolving MCP servers', async () => {
+      const result = await loadAddedAgent(
+        {
+          req: { user: { id: 'user123' }, config: appConfig },
+          conversation: {
+            ...responsesConvo,
+            ephemeralAgent: { mcp: ['added-server'] },
+          } as unknown as TConversation,
+          primaryAgent: {
+            id: Constants.EPHEMERAL_AGENT_ID as string,
+            tools: ['web_search'],
+          } as unknown as LibreChatAgent,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual(['web_search']);
+      expect(mockGetMCPServerTools).not.toHaveBeenCalled();
+      expect(mockGetAccessibleMCPServers).not.toHaveBeenCalled();
+    });
+
+    test('applies an enforced model spec preset over request parameters', async () => {
+      const result = await loadAddedAgent(
+        {
+          req: {
+            user: { id: 'user123' },
+            config: {
+              ...appConfig,
+              modelSpecs: {
+                enforce: true,
+                list: [
+                  {
+                    name: 'luna',
+                    label: 'Luna',
+                    preset: {
+                      endpoint: 'openAI',
+                      model: 'gpt-5.6-luna',
+                      useResponsesApi: true,
+                      promptPrefix: 'Spec instructions',
+                    },
+                  },
+                ],
+              },
+            },
+          },
+          conversation: {
+            endpoint: 'openAI',
+            model: 'gpt-5.6-luna',
+            spec: 'luna',
+            useResponsesApi: false,
+            temperature: 0.9,
+          } as unknown as TConversation,
+        },
+        deps,
+      );
+
+      expect(result?.instructions).toBe('Spec instructions');
+      expect(result?.model_parameters).toEqual({ useResponsesApi: true });
+    });
+
+    test('parses custom endpoints with their resolved default params endpoint', async () => {
+      const getEndpointsConfig = jest.fn().mockResolvedValue({
+        Claude: { customParams: { defaultParamsEndpoint: 'anthropic' } },
+      });
+
+      const result = await loadAddedAgent(
+        {
+          req: { user: { id: 'user123' }, config: appConfig },
+          conversation: {
+            endpoint: 'Claude',
+            endpointType: 'custom',
+            model: 'claude-sonnet',
+            thinking: true,
+            thinkingBudget: 4000,
+          } as unknown as TConversation,
+        },
+        { ...deps, getEndpointsConfig },
+      );
+
+      expect(getEndpointsConfig).toHaveBeenCalledTimes(1);
+      expect(result?.model_parameters).toMatchObject({ thinking: true, thinkingBudget: 4000 });
+    });
+  });
+
   test('should handle ephemeral agent with undefined ephemeralAgent in body', async () => {
     const { EPHEMERAL_AGENT_ID } = Constants;
 
