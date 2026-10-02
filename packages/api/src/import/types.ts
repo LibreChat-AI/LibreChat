@@ -57,7 +57,7 @@ export type ChatGptPart =
   | ChatGptAudioTranscription
   | ChatGptRealtimePointer;
 
-export interface ChatGptThought {
+export interface ChatGptContentThought {
   content: string | null;
   summary: string | null;
 }
@@ -70,7 +70,7 @@ export interface ChatGptContent {
   content?: string;
   /** Payload of a `tether_browsing_display` block, which carries no `parts`. */
   result?: string;
-  thoughts?: ChatGptThought[];
+  thoughts?: ChatGptContentThought[];
   source_analysis_msg_id?: string;
 }
 

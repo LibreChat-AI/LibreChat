@@ -5,6 +5,9 @@ const generationJobManager = {
   getCleanupBlockingJobIdsForUser: jest.fn().mockResolvedValue([]),
   getCleanupBlockingJobIdsForConversations: jest.fn().mockResolvedValue([]),
 };
+/** Per process, so parallel Jest workers that both reach the import route never
+ * read or unlink each other's upload. */
+const uploadPath = `/tmp/convos-route-upload-${process.pid}.json`;
 const subagentActivityHandlerInputs = [];
 const moderatedTexts = [];
 const moderateText = jest.fn((req, _res, next) => {
@@ -59,6 +62,7 @@ const markConvoSeenHandler = jest.fn();
 const markConvoUnreadHandler = jest.fn();
 
 module.exports = {
+  uploadPath,
   archiveAllHandler,
   ownerPrefix,
   generationJobManager,
@@ -317,7 +321,7 @@ module.exports = {
   multerLib: () =>
     jest.fn(() => ({
       single: jest.fn(() => (req, res, next) => {
-        req.file = { path: '/tmp/test-file.json' };
+        req.file = { path: uploadPath };
         next();
       }),
     })),

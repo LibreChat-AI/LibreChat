@@ -137,6 +137,17 @@ jest.mock('../Files', () => ({
   ),
 }));
 
+jest.mock('../EditContentParts', () => ({
+  __esModule: true,
+  default: ({ content }: { content: TMessageContentParts[] }) => (
+    <>
+      {content.map((part, index) => (
+        <div key={index} data-testid="edit-text-part" />
+      ))}
+    </>
+  ),
+}));
+
 jest.mock('../Part', () => {
   const { useMessageContext } = jest.requireActual<typeof import('~/Providers/MessageContext')>(
     '~/Providers/MessageContext',
@@ -1082,9 +1093,12 @@ describe('ContentParts: message files', () => {
     render(
       <ContentParts
         {...baseProps}
-        content={[
-          { type: ContentTypes.TEXT, text: 'a', groupId: 'g1' } as unknown as TMessageContentParts,
-        ]}
+        content={
+          [
+            { type: ContentTypes.TEXT, text: 'a', agentId: 'agent_a', groupId: 1 },
+            { type: ContentTypes.TEXT, text: 'b', agentId: 'agent_b____1', groupId: 1 },
+          ] as unknown as TMessageContentParts[]
+        }
         files={[pdf]}
       />,
     );

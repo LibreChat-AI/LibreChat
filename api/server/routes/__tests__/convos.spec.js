@@ -13,6 +13,7 @@ const {
   subagentActivityHandlerInputs,
   checkpointRows,
   resetCheckpointRows,
+  uploadPath,
 } = require(MOCKS);
 
 const priorLimitMessageIp = process.env.LIMIT_MESSAGE_IP;
@@ -253,11 +254,11 @@ describe('Convos Routes', () => {
      * and which reads the upload's first bytes to rule out a zip. */
     beforeEach(() => {
       inspectExport.mockRejectedValue(new Error('Unsupported import type'));
-      fs.writeFileSync('/tmp/test-file.json', '{"conversationId":"legacy","messages":[]}');
+      fs.writeFileSync(uploadPath, '{"conversationId":"legacy","messages":[]}');
     });
 
     afterEach(() => {
-      fs.rmSync('/tmp/test-file.json', { force: true });
+      fs.rmSync(uploadPath, { force: true });
     });
 
     it('passes source-aware filters into conversation import', async () => {
@@ -267,7 +268,7 @@ describe('Convos Routes', () => {
 
       expect(response.status).toBe(201);
       expect(importConversations).toHaveBeenCalledWith({
-        filepath: '/tmp/test-file.json',
+        filepath: uploadPath,
         requestUserId: 'test-user-123',
         userRole: 'USER',
         interfaceConfig: undefined,
