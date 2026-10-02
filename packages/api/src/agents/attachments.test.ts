@@ -614,7 +614,10 @@ describe('agent attachment helpers', () => {
       body: { fileTokenLimit: 1000 },
       config: {},
     } as ServerRequest;
-    req.config.fileConfig = { endpoints: { agents: { fileLimit: 1 } } };
+    req.config = {
+      ...req.config!,
+      fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
+    };
     await expect(
       buildAgentScopedContext({
         agentIds: ['agent-a'],

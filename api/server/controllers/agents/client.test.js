@@ -6307,6 +6307,25 @@ describe('AgentClient - titleConvo', () => {
       );
     });
 
+    it('counts resubmitted historical files during steering without mutating rejected state', () => {
+      const historical = Array.from({ length: 11 }, (_, index) =>
+        makeTextFile(`history-${index}`, `history-${index}.txt`, 'context'),
+      );
+      client.turnSharedAttachmentFiles = historical;
+      client.turnHistoricalAttachmentIds = new Set(historical.map(({ file_id }) => file_id));
+      client.turnAttachmentEndpointsByAgentId = new Map([
+        ['primary-agent', { endpoint: EModelEndpoint.openAI }],
+      ]);
+
+      expect(() => client.admitSteerAttachments(historical, 'rejected-steer')).toThrow(
+        expect.objectContaining({ limitType: 'count', observed: 11, limit: 10 }),
+      );
+      expect(client.turnHistoricalAttachmentIds.size).toBe(11);
+      expect(client.turnSharedAttachmentFiles).toBe(historical);
+      expect(() => client.admitSteerAttachments([historical[0]], 'accepted-steer')).not.toThrow();
+      expect(client.turnHistoricalAttachmentIds.has(historical[0].file_id)).toBe(false);
+    });
+
     it('rejects combined historical and current bytes before either batch is encoded', async () => {
       mockAgent.endpoint = 'Moonshot';
       client.options.endpointType = EModelEndpoint.custom;

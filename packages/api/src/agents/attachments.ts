@@ -538,13 +538,14 @@ export function collectFileIds<TFile extends FileWithId>(
 
 /** Excludes replayed files from count admission unless they are submitted again now. */
 export function collectHistoricalAttachmentIds(
-  historicalFiles: Iterable<FileWithId | null | undefined>,
+  historicalFiles: Iterable<FileWithId | string | null | undefined>,
   currentFiles: Iterable<FileWithId | null | undefined> = [],
 ): Set<string> {
   const fileIds = new Set<string>();
   for (const file of historicalFiles) {
-    if (file?.file_id) {
-      fileIds.add(file.file_id);
+    const fileId = typeof file === 'string' ? file : file?.file_id;
+    if (fileId) {
+      fileIds.add(fileId);
     }
   }
   for (const file of currentFiles) {

@@ -154,6 +154,14 @@ beforeEach(() => {
 });
 
 describe('LibreChat attachment limits', () => {
+  it('recognizes fractional attachment-size limits', () => {
+    const detail =
+      'This turn exceeds the configured total attachment size limit (128 > 104.8576). Remove some attachments or use smaller files and try again.';
+    renderError(detail, providerMessage);
+    expect(screen.getByText(catalog.com_error_attachment_limit)).toBeInTheDocument();
+    expect(screen.getByText(detail)).toBeVisible();
+  });
+
   it.each(['attachment count', 'total attachment size', 'extracted document text'])(
     'does not blame the provider for the local %s limit',
     (label) => {
@@ -161,7 +169,6 @@ describe('LibreChat attachment limits', () => {
       renderError(detail, providerMessage);
       expect(screen.getByText(catalog.com_error_attachment_limit)).toBeInTheDocument();
       expect(screen.queryByText('OpenAI could not complete this request.')).not.toBeInTheDocument();
-      fireEvent.click(screen.getByText(catalog.com_error_details_attachment));
       expect(screen.getByText(detail)).toBeVisible();
     },
   );
