@@ -114,13 +114,13 @@ interface Move {
 export class LiaEngine {
   /** Screen pixels per grid pixel. */
   scale = 2;
-  reducedMotion = false;
   /** Whether Lia chooses activities on her own. */
   life = true;
   pointer: Point | null = null;
   caret: Point | null = null;
   readonly mood = { energy: 0.85, joy: 0.6 };
 
+  private reduced = false;
   private gx = 0;
   private gy = 0;
   private placed = false;
@@ -163,7 +163,10 @@ export class LiaEngine {
     }
     const loop = (now: number) => {
       this.tick(now);
-      this.frameId = requestAnimationFrame(loop);
+      /* A host callback may have stopped the engine during this frame. */
+      if (this.frameId) {
+        this.frameId = requestAnimationFrame(loop);
+      }
     };
     this.frameId = requestAnimationFrame(loop);
   }
@@ -171,6 +174,21 @@ export class LiaEngine {
   stop() {
     cancelAnimationFrame(this.frameId);
     this.frameId = 0;
+  }
+
+  get reducedMotion() {
+    return this.reduced;
+  }
+
+  /** Turning reduced motion on finishes any walk in progress at once instead of animating it. */
+  set reducedMotion(value: boolean) {
+    this.reduced = value;
+    if (value && this.move) {
+      const move = this.move;
+      this.gx = move.tx;
+      this.move = null;
+      move.done();
+    }
   }
 
   /** The action playing now, if any. */

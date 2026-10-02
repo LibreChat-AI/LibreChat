@@ -132,6 +132,36 @@ describe('LiaEngine', () => {
     expect(raf).toHaveBeenCalledTimes(2);
   });
 
+  it('stays stopped when a host callback stops it mid-frame', () => {
+    const frames: FrameRequestCallback[] = [];
+    jest.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      frames.push(cb);
+      return frames.length;
+    });
+    jest.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
+    const canvas = document.createElement('canvas');
+    const engine: LiaEngine = new LiaEngine(
+      canvas,
+      { platform: () => PLATFORM, onBubble: () => undefined, onFrame: () => engine.stop() },
+      0,
+    );
+    engine.start();
+    frames[0](16);
+    expect(frames).toHaveLength(1);
+  });
+
+  it('finishes a walk at once when reduced motion turns on', () => {
+    const { engine } = setup();
+    engine.life = false;
+    engine.play('travel-walk', 2, 0);
+    run(engine, 0, 200);
+    engine.reducedMotion = true;
+    const at = engine.position.x;
+    run(engine, 200, 1200);
+    expect(engine.position.x).toBe(at);
+    expect(engine.current?.id).not.toBe('travel-walk');
+  });
+
   it('reports speech bubbles to the host and clears them', () => {
     const { engine, bubbles } = setup();
     engine.life = false;
