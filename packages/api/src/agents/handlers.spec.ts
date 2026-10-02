@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { applyTextEdits } from './files/matching';
 jest.mock('./prewarm', () => ({
   markSandboxReady: jest.fn(),
@@ -5311,7 +5312,7 @@ describe('createToolExecuteHandler', () => {
     it('normalizes each line once on a large multiline miss', async () => {
       const content = ' '.repeat(19).concat('\n').repeat(20_000);
       const oldText = '\t'.repeat(19).concat('\n').repeat(800) + 'missing';
-      const { handler, saveSkillFileContent } = makeMatchingHandler(content);
+      const { saveSkillFileContent } = makeMatchingHandler(content);
       const trimEnd = String.prototype.trimEnd;
       const budget = 20_001 + 801;
       let normalizations = 0;
@@ -5585,6 +5586,63 @@ describe('createToolExecuteHandler', () => {
         expect(timerFired).toBe(true);
         expect(updateSkill).not.toHaveBeenCalled();
         expect(saveSkillFileContent).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['SKILL.md', 'references/a.md'])(
+      'does not persist a late worker reply for %s',
+      async (file) => {
+        const updateSkill = jest.fn();
+        const saveSkillFileContent = jest.fn();
+        const handler = makeAuthoringHandler(
+          {
+            getSkillByName: jest.fn(async () => ({
+              _id: SKILL_ID,
+              name: 'bounded-skill',
+              body: 'ax',
+              fileCount: 1,
+              version: 1,
+            })),
+            getSkillFileByPath: jest.fn(async () => ({
+              content: 'ax',
+              isBinary: false,
+              bytes: 2,
+              mimeType: 'text/markdown',
+              filepath: '/tmp/a.md',
+              file_id: 'revision-1',
+              source: 'local',
+              relativePath: 'references/a.md',
+            })),
+            updateSkill,
+            saveSkillFileContent,
+          },
+          {
+            req: {
+              user: { id: 'user-1' },
+              config: { endpoints: { agents: { hostFileEdits: { timeoutMs: 10000 } } } },
+            },
+          },
+        );
+        const clock = jest
+          .spyOn(performance, 'now')
+          .mockReturnValueOnce(0)
+          .mockReturnValueOnce(0)
+          .mockReturnValue(10000);
+        try {
+          const [result] = await invokeHandler(handler, [
+            {
+              id: 'late_reply',
+              name: 'edit_file',
+              args: { path: `skills/bounded-skill/${file}`, old_text: 'a', new_text: 'b' },
+            },
+          ]);
+          expect(result.status).toBe('error');
+          expect(result.errorMessage).toContain('timed out');
+          expect(updateSkill).not.toHaveBeenCalled();
+          expect(saveSkillFileContent).not.toHaveBeenCalled();
+        } finally {
+          clock.mockRestore();
+        }
       },
     );
 
@@ -5961,6 +6019,38 @@ describe('createToolExecuteHandler', () => {
       expect(result.status).toBe('error');
       expect(result.errorMessage).toContain('budget exceeded');
       expect(writeSandboxFile).not.toHaveBeenCalled();
+    });
+
+    it('does not persist a late non-attached sandbox edit', async () => {
+      const writeSandboxFile = jest.fn();
+      const handler = makeSandboxAuthoringHandler(
+        { readSandboxFile: jest.fn(async () => ({ content: 'ax' })), writeSandboxFile },
+        {
+          req: {
+            user: { id: 'user-1' },
+            config: { endpoints: { agents: { hostFileEdits: { timeoutMs: 10000 } } } },
+          },
+        },
+      );
+      const clock = jest
+        .spyOn(performance, 'now')
+        .mockReturnValueOnce(0)
+        .mockReturnValueOnce(0)
+        .mockReturnValue(10000);
+      try {
+        const [result] = await invokeHandler(handler, [
+          {
+            id: 'late_sandbox_reply',
+            name: 'edit_file',
+            args: { path: '/mnt/data/a.txt', old_text: 'a', new_text: 'b' },
+          },
+        ]);
+        expect(result.status).toBe('error');
+        expect(result.errorMessage).toContain('timed out');
+        expect(writeSandboxFile).not.toHaveBeenCalled();
+      } finally {
+        clock.mockRestore();
+      }
     });
 
     it('creates a sandbox file when it does not already exist', async () => {

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
+import { performance } from 'node:perf_hooks';
 import { hostFileEditLimitsSchema } from 'librechat-data-provider';
 import type { HostFileEditLimits } from 'librechat-data-provider';
 import type { HostEditJob, HostEditReply } from './edit-worker';
@@ -84,6 +85,7 @@ export function createHostEditProcessor(workerPath: string): {
           );
         }
       }
+      const deadline = performance.now() + limits.timeoutMs;
       const slot = acquire();
       active++;
       const job: HostEditJob = {
@@ -136,9 +138,20 @@ export function createHostEditProcessor(workerPath: string): {
           );
         };
         const exited = (): void => failed();
+        const timeout = (): void => {
+          void finish(
+            undefined,
+            new HostEditError('File edit processing timed out. Nothing was written.'),
+            true,
+          );
+        };
         const message = (reply: HostEditReply): void => {
           if (signal?.aborted) {
             abort();
+            return;
+          }
+          if (performance.now() >= deadline) {
+            timeout();
             return;
           }
           void finish(
@@ -147,13 +160,7 @@ export function createHostEditProcessor(workerPath: string): {
             false,
           );
         };
-        const timer = setTimeout(() => {
-          void finish(
-            undefined,
-            new HostEditError('File edit processing timed out. Nothing was written.'),
-            true,
-          );
-        }, limits.timeoutMs);
+        const timer = setTimeout(timeout, Math.max(0, deadline - performance.now()));
         slot.worker.once('message', message);
         slot.worker.once('error', failed);
         slot.worker.once('exit', exited);
@@ -182,9 +189,16 @@ export function createHostEditProcessor(workerPath: string): {
   };
 }
 
-const processor = createHostEditProcessor(
-  path.join(path.dirname(require.resolve('@librechat/api')), 'agents/files/edit-worker.cjs'),
-);
+let processor: ReturnType<typeof createHostEditProcessor> | undefined;
 
-export const applyHostTextEdits: ReturnType<typeof createHostEditProcessor>['apply'] =
-  processor.apply;
+export function applyHostTextEdits(
+  content: string,
+  edits: TextEdit[],
+  configured?: Partial<HostFileEditLimits>,
+  signal?: AbortSignal,
+): Promise<HostEditResult> {
+  processor ??= createHostEditProcessor(
+    path.join(path.dirname(require.resolve('@librechat/api')), 'agents/files/edit-worker.cjs'),
+  );
+  return processor.apply(content, edits, configured, signal);
+}

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import type { TextEdit } from '../edits';
 import { createHostEditProcessor } from './processing';
 
@@ -115,6 +116,52 @@ describe('worker lifecycle', () => {
         strategies: [],
       });
     } finally {
+      await processor.close();
+    }
+  });
+
+  it.each([10_000, 10_001])(
+    'rejects a reply at monotonic time %i before the timeout callback runs',
+    async (replyTime) => {
+      const processor = createHostEditProcessor(fixture);
+      const persisted = jest.fn();
+      const clock = jest
+        .spyOn(performance, 'now')
+        .mockReturnValueOnce(0)
+        .mockReturnValueOnce(0)
+        .mockReturnValue(replyTime);
+      try {
+        const result = processor.apply('ready', [edit], { timeoutMs: 10_000, maxConcurrent: 1 });
+        await expect(result.then(persisted)).rejects.toThrow('timed out');
+        expect(clock).toHaveBeenCalledTimes(3);
+        expect(persisted).not.toHaveBeenCalled();
+        clock.mockRestore();
+        await expect(processor.apply('ready', [edit], { maxConcurrent: 1 })).resolves.toEqual({
+          content: 'ready',
+          strategies: [],
+        });
+      } finally {
+        clock.mockRestore();
+        await processor.close();
+      }
+    },
+  );
+
+  it('accepts a reply strictly before the monotonic deadline', async () => {
+    const processor = createHostEditProcessor(fixture);
+    const clock = jest
+      .spyOn(performance, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValue(9999);
+    try {
+      await expect(processor.apply('ready', [edit], { timeoutMs: 10_000 })).resolves.toEqual({
+        content: 'ready',
+        strategies: [],
+      });
+      expect(clock).toHaveBeenCalledTimes(3);
+    } finally {
+      clock.mockRestore();
       await processor.close();
     }
   });
