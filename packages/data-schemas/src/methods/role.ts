@@ -20,7 +20,8 @@ function isSystemRoleName(name: string): boolean {
 }
 
 function isAuthUserDocCacheEnabled(): boolean {
-  return process.env.AUTH_USER_CACHE_MODE === 'on';
+  const configuredMode = process.env.AUTH_USER_CACHE_MODE;
+  return configuredMode === undefined || configuredMode === 'on';
 }
 
 export class RoleConflictError extends Error {
