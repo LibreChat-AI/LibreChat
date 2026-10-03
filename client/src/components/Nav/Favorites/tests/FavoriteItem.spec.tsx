@@ -1,7 +1,19 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render as rtlRender, screen, fireEvent } from '@testing-library/react';
 import type { Agent, TModelSpec } from 'librechat-data-provider';
+import type { ReactElement } from 'react';
 import type { FavoriteModel } from '~/store/favorites';
 import FavoriteItem from '../FavoriteItem';
+
+function render(ui: ReactElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, cacheTime: 0 },
+    },
+  });
+
+  return rtlRender(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
 
 const mockRemoveFavoriteAgent = jest.fn();
 const mockRemoveFavoriteModel = jest.fn();
@@ -31,6 +43,13 @@ jest.mock('~/components/Endpoints/MinimalIcon', () => ({
 jest.mock('~/utils', () => ({
   ...jest.requireActual('~/utils'),
   renderAgentAvatar: () => <span data-testid="agent-avatar" />,
+}));
+
+jest.mock('librechat-data-provider/react-query', () => ({
+  ...jest.requireActual('librechat-data-provider/react-query'),
+  useGetModelLabelsQuery: () => ({
+    data: {},
+  }),
 }));
 
 const baseAgent: Agent = {

@@ -1,7 +1,7 @@
 import React, { useMemo, useCallback } from 'react';
 import { Feather } from 'lucide-react';
 import { Sparkles, ProviderIcon } from '@librechat/client';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
+import { useGetModelsQuery, useGetModelLabelsQuery } from 'librechat-data-provider/react-query';
 import {
   Permissions,
   alternateName,
@@ -69,6 +69,7 @@ export const useEndpoints = ({
   startupConfig: TStartupConfig | undefined;
 }) => {
   const modelsQuery = useGetModelsQuery();
+  const { data: modelLabels } = useGetModelLabelsQuery();
   const { data: endpoints = [] } = useGetEndpointsQuery({ select: mapEndpoints });
   const interfaceConfig = startupConfig?.interface ?? defaultInterface;
   const includedEndpoints = useMemo(
@@ -206,6 +207,7 @@ export const useEndpoints = ({
         ep !== EModelEndpoint.assistants &&
         (modelsQuery.data?.[ep]?.length ?? 0) > 0
       ) {
+        result.modelLabels = modelLabels?.[ep];
         result.models = modelsQuery.data?.[ep]?.map((model) => ({
           name: model,
           isGlobal: false,
@@ -222,6 +224,7 @@ export const useEndpoints = ({
     endpointsConfig,
     filteredEndpoints,
     modelsQuery.data,
+    modelLabels,
     showAgentMarketplace,
   ]);
 

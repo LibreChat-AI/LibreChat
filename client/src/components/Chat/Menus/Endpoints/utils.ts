@@ -20,6 +20,7 @@ export function filterItems<
     hasModels?: boolean;
     models?: Array<{ name: string; isGlobal?: boolean }>;
     searchAliases?: string[];
+    modelLabels?: Record<string, string>;
     showMarketplace?: boolean;
   },
 >(
@@ -56,7 +57,10 @@ export function filterItems<
 
     if (item.models && item.models.length > 0) {
       return item.models.some((modelId) => {
-        if (modelId.name.toLowerCase().includes(searchTermLower)) {
+        if (
+          modelId.name.toLowerCase().includes(searchTermLower) ||
+          item.modelLabels?.[modelId.name]?.toLowerCase().includes(searchTermLower)
+        ) {
           return true;
         }
 
@@ -102,7 +106,7 @@ export function filterModels(
   }
 
   return models.filter((modelId) => {
-    let modelName = modelId;
+    let modelName = endpoint.modelLabels?.[modelId] ?? modelId;
 
     if (isAgentsEndpoint(endpoint.value) && agentsMap && agentsMap[modelId]) {
       modelName = agentsMap[modelId]?.name || modelId;
@@ -116,7 +120,10 @@ export function filterModels(
         typeof assistant.name === 'string' && assistant.name ? (assistant.name as string) : modelId;
     }
 
-    return modelName.toLowerCase().includes(searchTermLower);
+    return (
+      modelName.toLowerCase().includes(searchTermLower) ||
+      modelId.toLowerCase().includes(searchTermLower)
+    );
   });
 }
 
@@ -230,7 +237,7 @@ export const getDisplayValue = ({
       return endpoint.assistantNames[selectedValues.model];
     }
 
-    return selectedValues.model;
+    return endpoint.modelLabels?.[selectedValues.model] ?? selectedValues.model;
   }
 
   if (selectedValues.endpoint) {

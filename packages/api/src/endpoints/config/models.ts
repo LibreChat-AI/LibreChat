@@ -87,7 +87,10 @@ export interface LoadConfigModelsDeps {
 export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
   const { getAppConfig, getUserKeyValues, fetchModels = defaultFetchModels } = deps;
 
-  return async function loadConfigModels(req: ServerRequest): Promise<TModelsConfig> {
+  return async function loadConfigModels(
+    req: ServerRequest,
+    modelLabels?: Record<string, Record<string, string>>,
+  ): Promise<TModelsConfig> {
     const appConfig = req.config ?? (await getAppConfig(getAppConfigOptionsFromUser(req.user)));
     if (!appConfig) {
       return {};
@@ -125,6 +128,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
         (endpoint.models.fetch || endpoint.models.default),
     );
 
+    const labelsByFetch: Record<string, Record<string, string>> = {};
     const fetchPromisesMap: Record<string, Promise<string[]>> = {};
     const uniqueKeyToEndpointsMap: Record<string, string[]> = {};
     /** tokenKey the deduped fetch cached its token config under, so siblings
@@ -226,6 +230,11 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
             direct: endpoint.directEndpoint,
             userIdQuery: models.userIdQuery,
             tokenKey,
+            onModelLabels: modelLabels
+              ? (labels) => {
+                  labelsByFetch[uniqueKey] = labels;
+                }
+              : undefined,
           });
         }
         uniqueKeyToEndpointsMap[uniqueKey] = uniqueKeyToEndpointsMap[uniqueKey] || [];
@@ -269,6 +278,11 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
                 direct: endpoint.directEndpoint,
                 userIdQuery: models.userIdQuery,
                 skipCache: true,
+                onModelLabels: modelLabels
+                  ? (labels) => {
+                      labelsByFetch[userFetchKey] = labels;
+                    }
+                  : undefined,
                 /** Fetched with the user's key/URL — always user-scoped */
                 tokenKey: getTokenConfigKey(endpoint, name, req.user?.id ?? '', tenantId),
               });
@@ -304,6 +318,9 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
           typeof m === 'string' ? m : m.name,
         );
         modelsConfig[name] = !modelData?.length ? defaults : modelData;
+        if (modelLabels && modelData.length && labelsByFetch[currentKey]) {
+          modelLabels[name] = labelsByFetch[currentKey];
+        }
       }
 
       /** A shared fetch caches token config under one endpoint's tokenKey;
