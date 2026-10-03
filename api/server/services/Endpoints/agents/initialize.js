@@ -44,6 +44,7 @@ const {
   extractFileContext,
   createScheduleUpstreamTokenProviderResolver,
   initializeWithScheduleMCPExecution,
+  retainScheduleMCPCompletion,
   getScheduleMCPExecution,
   getMCPRequestContext,
 } = require('@librechat/api');
@@ -1939,6 +1940,15 @@ function createInitializeClient(dependencies = {}) {
       },
       () => require('~/server/services/Schedules/consent'),
       () => initializeClientWithProvider({ ...params, upstreamTokenProviderResolver }),
+      (identity) =>
+        retainScheduleMCPCompletion(
+          identity,
+          {
+            streamId: params.req._resumableStreamId,
+            createdAt: params.jobCreatedAt,
+          },
+          GenerationJobManager.getJobStore(),
+        ),
     );
   };
 }

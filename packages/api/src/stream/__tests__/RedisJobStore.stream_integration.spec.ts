@@ -103,6 +103,16 @@ describe('RedisJobStore Integration Tests', () => {
       const second = new RedisJobStore(ioredisClient!);
       const id = 'schedule-denial';
       const job = await first.createJob(id, 'owner', id, 'tenant');
+      const lineage = {
+        scheduleId: 'original-schedule',
+        ownerId: 'owner',
+        tenantId: 'tenant',
+        agentId: 'original-root',
+        invocationMode: 'delegated' as const,
+      };
+      await first.updateJob(id, { scheduleMCPCompletion: lineage }, job.createdAt);
+      expect((await second.getJob(id))?.scheduleMCPCompletion).toEqual(lineage);
+
       const transient = new ScheduledMCPPolicyError('dependency_unavailable', 'warehouse', 'root')
         .outcomes[0];
       const permanent = new ScheduledMCPPolicyError('binding_mismatch', 'warehouse', 'child')
@@ -136,6 +146,11 @@ describe('RedisJobStore Integration Tests', () => {
           job.createdAt - 1,
         );
         expect((await first.getJob(id))?.scheduleMCPFailure).toEqual(permanent);
+        expect((await first.getJob(id))?.scheduleMCPCompletion).toEqual(lineage);
+        await ioredisClient!.hset(`stream:{${id}}:job`, 'scheduleMCPCompletion', '{invalid');
+        await expect(second.getJob(id)).rejects.toMatchObject({
+          failure: { reason: 'binding_mismatch' },
+        });
       } finally {
         await first.destroy();
         await second.destroy();

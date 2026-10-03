@@ -10,11 +10,15 @@ import type { ScheduleMCPCompletionLookup } from './continuation';
 import type { ScheduleMCPEnrollmentDeps } from './enrollment';
 import type { ScheduledTokenContext } from '../context';
 import {
+  isScheduledMCPCompletionRequest,
+  resolveScheduleMCPCompletion,
+  parseScheduleMCPCompletion,
+} from './continuation';
+import {
   createScheduleMCPExecution,
   scheduledMCPIdentity,
   getScheduleMCPExecution,
 } from './execution';
-import { isScheduledMCPCompletionRequest, resolveScheduleMCPCompletion } from './continuation';
 import { readScheduleFireContext, isScheduleFireRequest } from '../trigger';
 import { createScheduleMCPEnrollmentResolver } from './enrollment';
 import { getAppConfigOptionsFromUser } from '~/app/service';
@@ -41,7 +45,11 @@ export function createScheduleMCPRuntimeHost(
     req: RuntimeRequest;
     context?: RequestScopedMCPConnectionStore;
     restoredContext?: ScheduledTokenContext;
-    restoredJob?: { scheduleId?: string; scheduleManual?: boolean };
+    restoredJob?: {
+      scheduleId?: string;
+      scheduleManual?: boolean;
+      scheduleMCPCompletion?: ScheduledMCPIdentity;
+    };
   }) => Promise<void>;
 } {
   function createEvaluation(enrollment: ScheduleMCPEnrollmentDeps) {
@@ -118,7 +126,8 @@ export function createScheduleMCPRuntimeHost(
     consent,
     execution,
     async prepare({ req, context, restoredContext, restoredJob }) {
-      if (isScheduledMCPCompletionRequest(req)) {
+      const completion = restoredJob?.scheduleMCPCompletion;
+      if (completion !== undefined || isScheduledMCPCompletionRequest(req)) {
         if (!context || !deps.getScheduleMCPCompletionState)
           throw new ScheduledMCPPolicyError('binding_mismatch', '');
         const marker = req.body?.agentCompletion;
@@ -139,20 +148,27 @@ export function createScheduleMCPRuntimeHost(
             : undefined;
         if (captured && !captured.success)
           throw new ScheduledMCPPolicyError('binding_mismatch', '');
-        const identity = captured?.success
-          ? captured.data
-          : await resolveScheduleMCPCompletion(
-              {
-                ownerId: req.user.id,
-                tenantId: req.user.tenantId ?? null,
-                conversationId: String(req.body?.conversationId ?? ''),
-              },
-              deps.getScheduleMCPCompletionState,
-            );
+        let identity = captured?.success ? captured.data : undefined;
+        if (completion !== undefined) identity = parseScheduleMCPCompletion(completion);
+        else if (!identity)
+          identity = await resolveScheduleMCPCompletion(
+            {
+              ownerId: req.user.id,
+              tenantId: req.user.tenantId ?? null,
+              conversationId: String(req.body?.conversationId ?? ''),
+            },
+            deps.getScheduleMCPCompletionState,
+          );
         if (!identity) return;
         if (identity.ownerId !== req.user.id || identity.tenantId !== (req.user.tenantId ?? null))
           throw new ScheduledMCPPolicyError('binding_mismatch', '');
-        await execution.attach(context, identity, 'invoke', false, { legacy: true });
+        await execution.attach(
+          context,
+          identity,
+          completion !== undefined ? 'resume' : 'invoke',
+          false,
+          { legacy: true },
+        );
         if (!getScheduleMCPExecution(context))
           throw new ScheduledMCPPolicyError('binding_mismatch', '');
         return;
@@ -199,7 +215,12 @@ export async function prepareScheduleMCPExecution(
   input: Parameters<ReturnType<typeof createScheduleMCPRuntimeHost>['prepare']>[0],
   getHost: () => Pick<ReturnType<typeof createScheduleMCPRuntimeHost>, 'prepare'>,
 ): Promise<void> {
-  if (!isScheduleFireRequest(input.req) && !isScheduledMCPCompletionRequest(input.req)) return;
+  if (
+    input.restoredJob?.scheduleMCPCompletion === undefined &&
+    !isScheduleFireRequest(input.req) &&
+    !isScheduledMCPCompletionRequest(input.req)
+  )
+    return;
   await getHost().prepare(input);
 }
 
@@ -208,8 +229,24 @@ export function initializeWithScheduleMCPExecution<T>(
   input: Parameters<ReturnType<typeof createScheduleMCPRuntimeHost>['prepare']>[0],
   getHost: () => Pick<ReturnType<typeof createScheduleMCPRuntimeHost>, 'prepare'>,
   initialize: () => Promise<T>,
+  retainCompletion?: (identity: ScheduledMCPIdentity) => Promise<void>,
 ): Promise<T> {
-  if (!isScheduleFireRequest(input.req) && !isScheduledMCPCompletionRequest(input.req))
+  if (
+    input.restoredJob?.scheduleMCPCompletion === undefined &&
+    !isScheduleFireRequest(input.req) &&
+    !isScheduledMCPCompletionRequest(input.req)
+  )
     return initialize();
-  return getHost().prepare(input).then(initialize);
+  return getHost()
+    .prepare(input)
+    .then(async () => {
+      const execution = getScheduleMCPExecution(input.context);
+      if (
+        isScheduledMCPCompletionRequest(input.req) &&
+        execution &&
+        input.restoredJob?.scheduleMCPCompletion === undefined
+      )
+        await retainCompletion?.(execution.identity);
+      return initialize();
+    });
 }

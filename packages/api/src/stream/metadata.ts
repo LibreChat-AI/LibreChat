@@ -4,6 +4,7 @@ import {
 } from 'librechat-data-provider';
 import type { JobMetadataPatch } from './interfaces/IJobStore';
 import type { GenerationJobMetadata } from '~/types';
+import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 
 export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): JobMetadataPatch {
   const patch: JobMetadataPatch = {};
@@ -71,6 +72,9 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   }
   if (metadata.agentEventLegacyTurnToken) {
     patch.agentEventLegacyTurnToken = metadata.agentEventLegacyTurnToken;
+  }
+  if (metadata.scheduleMCPCompletion !== undefined) {
+    patch.scheduleMCPCompletion = parseScheduleMCPCompletion(metadata.scheduleMCPCompletion);
   }
   if (metadata.scheduleId) {
     patch.scheduleId = metadata.scheduleId;

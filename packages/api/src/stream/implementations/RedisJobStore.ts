@@ -53,6 +53,7 @@ import {
   MAX_COALESCED_EVENTS,
   resolveCoalesceWindowMs,
 } from '~/stream/internal/coalescing';
+import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { RecoveredSteerPayloadMismatchError } from '~/stream/SteerRecovery';
 import { SCHEDULE_MCP_FAILURE_PATCH_LUA } from '../scheduleFailure';
@@ -5405,6 +5406,10 @@ export class RedisJobStore implements IJobStoreV2 {
         ? JSON.parse(data.agentEventSuspension)
         : undefined,
       agentEventLegacyTurnToken: data.agentEventLegacyTurnToken || undefined,
+      scheduleMCPCompletion:
+        data.scheduleMCPCompletion === undefined
+          ? undefined
+          : parseScheduleMCPCompletion(data.scheduleMCPCompletion, true),
       scheduleId: data.scheduleId || undefined,
       scheduledFor: data.scheduledFor || undefined,
       scheduleConfigRevision: data.scheduleConfigRevision

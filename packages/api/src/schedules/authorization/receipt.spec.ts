@@ -19,6 +19,7 @@ import { createAgentTriggerExecutionHost } from '~/agents/triggers/host';
 import { createAgentTriggerEnvelope } from '~/agents/triggers/envelope';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
 import { resolveScheduleMCPCompletion } from './continuation';
+import { retainScheduleMCPCompletion } from './continuation';
 import { createScheduleMCPConsentService } from './service';
 import { createMCPRequestContext } from '~/mcp/request';
 import { executionFixture } from './execution.helper';
@@ -840,5 +841,137 @@ it('scopes completion lineage to its owner and tenant and rejects missing schedu
   await mongoose.models.Schedule.deleteOne({ id: f.schedule.id });
   await expect(
     resolveScheduleMCPCompletion(scope, f.methods.getScheduleMCPCompletionState),
+  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+});
+
+it('refuses an authenticated completion approval after its original schedule was enrolled and revoked', async () => {
+  const f = await setup(true);
+  const identity = f.execution.identity;
+  const host = createScheduleMCPRuntimeHost({
+    methods: f.methods,
+    getScheduleMCPCompletionState: f.methods.getScheduleMCPCompletionState,
+    findUser: async () => null,
+    getRoleByName: async () => null,
+    canViewAgent: async () => false,
+    enrollment: {
+      findUser: async () => null,
+      canUseRoot: async () => false,
+      getAppConfig: async () => undefined,
+      resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
+      getNodes: async () => [],
+      getModelsConfig: async () => ({}),
+      getServers: async () => ({}),
+    },
+  });
+  await f.enroll();
+  const snapshot = await f.methods.readScheduleMCPConsent(identity);
+  await f.methods.revokeScheduleMCPConsent(identity, snapshot!.enrollment!.revision);
+  const provider = jest.fn(async () => 'approved read would execute');
+  const req = {
+    user: { id: identity.ownerId, tenantId: 'tenant' },
+    _isAgentTrigger: false,
+    _isScheduledFire: false,
+    body: { conversationId: 'stream', agent_id: 'child' },
+  };
+  await expect(
+    initializeWithScheduleMCPExecution(
+      {
+        req,
+        context: createMCPRequestContext(),
+        restoredJob: { scheduleMCPCompletion: identity } as never,
+      },
+      () => host,
+      provider,
+    ),
+  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+  expect(provider).not.toHaveBeenCalled();
+});
+
+it('persists completion identity before tool construction and restores its monitor across repeated approvals', async () => {
+  const f = await setup(true);
+  const host = createScheduleMCPRuntimeHost({
+    methods: f.methods,
+    getScheduleMCPCompletionState: f.methods.getScheduleMCPCompletionState,
+    findUser: async () => null,
+    getRoleByName: async () => null,
+    canViewAgent: async () => false,
+    enrollment: {
+      findUser: async () => null,
+      canUseRoot: async () => false,
+      getAppConfig: async () => undefined,
+      resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
+      getNodes: async () => [],
+      getModelsConfig: async () => ({}),
+      getServers: async () => ({}),
+    },
+  });
+  const req = {
+    user: { id: f.execution.identity.ownerId, tenantId: 'tenant' },
+    _isAgentTrigger: true,
+    body: { conversationId: 'stream', agent_id: 'child' },
+  };
+  const provider = jest.fn(async () => {
+    expect((await store.getJob('stream'))?.scheduleMCPCompletion).toEqual(f.execution.identity);
+  });
+  await initializeWithScheduleMCPExecution(
+    { req, context: createMCPRequestContext() },
+    () => host,
+    provider,
+    (identity) =>
+      retainScheduleMCPCompletion(
+        identity,
+        { streamId: 'stream', createdAt: f.job.createdAt },
+        store,
+      ),
+  );
+  expect(provider).toHaveBeenCalledTimes(1);
+  const lineage = (await store.getJob('stream'))!.scheduleMCPCompletion!;
+  for (let i = 0; i < 2; i++) {
+    const context = createMCPRequestContext();
+    await initializeWithScheduleMCPExecution(
+      {
+        req: { ...req, _isAgentTrigger: false },
+        context,
+        restoredJob: { scheduleMCPCompletion: lineage },
+      },
+      () => host,
+      async () => {
+        expect(getScheduleMCPExecution(context)?.identity).toEqual(lineage);
+        expect(getScheduleMCPExecution(context)?.stage).toBe('resume');
+      },
+    );
+  }
+  await f.enroll();
+  const context = createMCPRequestContext();
+  await expect(
+    initializeWithScheduleMCPExecution(
+      {
+        req: { ...req, _isAgentTrigger: false },
+        context,
+        restoredJob: { scheduleMCPCompletion: lineage },
+      },
+      () => host,
+      provider,
+    ),
+  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+  expect(provider).toHaveBeenCalledTimes(1);
+});
+
+it('cannot launch a completion when its lineage cannot be durably retained', async () => {
+  const f = await setup(true);
+  const scope = { streamId: 'stream', createdAt: f.job.createdAt };
+  jest.spyOn(store, 'updateJob').mockResolvedValueOnce(undefined);
+  await expect(
+    retainScheduleMCPCompletion(f.execution.identity, scope, store),
+  ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
+  await expect(
+    retainScheduleMCPCompletion(
+      f.execution.identity,
+      { ...scope, createdAt: scope.createdAt - 1 },
+      store,
+    ),
+  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+  await expect(
+    retainScheduleMCPCompletion({ ...f.execution.identity, tenantId: 'foreign' }, scope, store),
   ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
 });

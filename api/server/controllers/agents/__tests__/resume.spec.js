@@ -1084,6 +1084,33 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
     });
   });
 
+  it('passes retained completion lineage to authenticated approval initialization without claiming an occurrence', async () => {
+    const lineage = {
+      scheduleId: 'original-schedule',
+      ownerId: USER_ID,
+      tenantId: TENANT_ID,
+      agentId: 'original-root',
+      invocationMode: 'delegated',
+    };
+    mockGenerationJobManager.getJob.mockResolvedValue(
+      makeToolApprovalJob({ metadata: { scheduleMCPCompletion: lineage } }),
+    );
+    const res = await post(
+      approveBody({
+        agentCompletion: { scheduleMCPIdentity: { ...lineage, agentId: 'forged-root' } },
+      }),
+    );
+    expect(res.status).toBe(200);
+    await settled;
+    expect(mockInitializeClient.mock.calls[0][0].scheduleJobIdentity.scheduleMCPCompletion).toEqual(
+      lineage,
+    );
+    expect(mockInitializeClient.mock.calls[0][0].scheduledTokenContext).toBeUndefined();
+    expect(capturedInit.isScheduledFire).not.toBe(true);
+    expect(mockClaimScheduleResume).not.toHaveBeenCalled();
+    expect(mockRecordScheduleOutcome).not.toHaveBeenCalled();
+  });
+
   describe('scheduled occurrence lifecycle', () => {
     const scheduledFor = '2026-08-17T12:00:00.000Z';
     const makeScheduledJob = () =>

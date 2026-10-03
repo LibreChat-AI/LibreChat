@@ -2,8 +2,8 @@ import type {
   IAgentEventActorContextMeta,
   ICompactionSemanticIndexProjection,
 } from '@librechat/data-schemas';
+import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { Agents, UserSubmittedMessageFieldPath } from 'librechat-data-provider';
-import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { EventEmitter } from 'events';
 import type {
   AgentEventDetachedTerminalEvidence,
@@ -80,6 +80,8 @@ export interface GenerationJobMetadata {
   scheduledFor?: string;
   scheduleConfigRevision?: number;
   scheduleManual?: boolean;
+  /** Original schedule root for a legacy completion, never occurrence bookkeeping. */
+  scheduleMCPCompletion?: ScheduledMCPIdentity;
   /** Intended terminal classification retained when Mongo outcome persistence
    * fails. The scheduler reconciler consumes this evidence before clearing the job. */
   scheduleOutcome?: 'success' | 'error' | 'interrupted' | 'skipped_balance';

@@ -28,3 +28,28 @@ it('does not manufacture a failure receipt from a ready or ordinary outcome', ()
       .scheduleMCPFailure,
   ).toBeUndefined();
 });
+
+const completion = {
+  scheduleId: 'schedule',
+  ownerId: 'owner',
+  tenantId: 'tenant',
+  agentId: 'root',
+  invocationMode: 'delegated' as const,
+};
+it('retains validated completion-lineage identity in private metadata', () => {
+  expect(sanitizeJobMetadata({ scheduleMCPCompletion: completion })).toEqual({
+    scheduleMCPCompletion: completion,
+  });
+  expect(() =>
+    sanitizeJobMetadata({ scheduleMCPCompletion: { ...completion, token: 'PRIVATE' } } as never),
+  ).toThrow('binding_mismatch');
+  expect(sanitizeJobMetadata({})).not.toHaveProperty('scheduleMCPCompletion');
+});
+it.each([null, {}, 'malformed', { ...completion, invocationMode: 'autonomous' }])(
+  'never treats invalid completion lineage as ordinary metadata: %s',
+  (value) => {
+    expect(() => sanitizeJobMetadata({ scheduleMCPCompletion: value } as never)).toThrow(
+      'binding_mismatch',
+    );
+  },
+);
