@@ -688,6 +688,13 @@ describe('Conversation Operations', () => {
         ]);
         const current = await getConvo(mockCtx.userId, conversationId);
         expect(current?.titleRevision).toBe(2);
+        expect(await methods.getConvoTitleState(mockCtx.userId, conversationId)).toEqual({
+          title: current?.title,
+          titleSetByUser: true,
+          titleRevision: 2,
+        });
+        expect(await methods.getConvoTitleState('another-owner', conversationId)).toBeNull();
+
         const page = await getConvosByCursor(mockCtx.userId);
         expect(page.conversations.find((row) => row.conversationId === conversationId)).toEqual(
           expect.objectContaining({ titleSetByUser: true, titleRevision: 2 }),

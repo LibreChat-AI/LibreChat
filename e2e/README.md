@@ -8,7 +8,7 @@ The standard mock profile disables automatic titles. CI runs the title-enabled c
 
 ```sh
 E2E_TITLE_CONVO=true npx playwright test --config=e2e/playwright.config.mock.ts \
-  conversation-management.spec.ts --grep first-turn
+  conversation-management.spec.ts --grep 'first-turn|final-title polling'
 ```
 
 ## Deployed-instance smoke test

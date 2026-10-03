@@ -354,6 +354,55 @@ test.describe('conversation management', () => {
     });
   }
 
+  test('adopts a newer remote rename from delayed final-title polling', async ({
+    page,
+    request,
+  }) => {
+    test.skip(process.env.E2E_TITLE_CONVO !== 'true', 'Requires the title-enabled mock profile');
+    test.setTimeout(50000);
+    const label = uniqueLabel('final-poll-rename');
+    const firstTitle = `First ${label}`;
+    const secondTitle = `Second ${label}`;
+    const fixture = `http://127.0.0.1:${process.env.E2E_LABEL_PORT ?? '8889'}`;
+    await request.post(`${fixture}/__e2e/reset`);
+    await request.post(`${fixture}/__e2e/behavior`, {
+      data: { label: `Generated ${label}`, hold: true, holdModel: 'mock-title-model' },
+    });
+    let otherTab: Page | undefined;
+    try {
+      await page.goto(NEW_CHAT_PATH);
+      await selectMockEndpoint(page, { label: 'Mock Titles final', model: 'mock-titles-final' });
+      const published = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname.startsWith('/api/convos/gen_title/') &&
+          response.status() === 200,
+      );
+      expect((await sendMessage(page, `E2E_SLOW_REPLY:${label}`)).ok()).toBeTruthy();
+      await expect(messagesView(page).getByText('chunk-010')).toBeVisible();
+      otherTab = await page.context().newPage();
+      await otherTab.goto(page.url());
+      await renameConversation(otherTab, firstConversation(otherTab), firstTitle);
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
+        timeout: 30000,
+      });
+      await expect(firstConversation(page)).toContainText(firstTitle);
+      await renameConversation(otherTab, firstConversation(otherTab), secondTitle);
+      await expect(firstConversation(page)).toContainText(firstTitle);
+      await request.post(`${fixture}/__e2e/release`);
+      expect(await (await published).json()).toEqual({
+        title: secondTitle,
+        titleSetByUser: true,
+        titleRevision: 2,
+      });
+      await expect(firstConversation(page)).toContainText(secondTitle);
+      await page.reload();
+      await expect(page.getByTestId('convo-item').filter({ hasText: secondTitle })).toBeVisible();
+    } finally {
+      await otherTab?.close();
+      await request.post(`${fixture}/__e2e/reset`, { timeout: 2000 }).catch(() => undefined);
+    }
+  });
+
   test('deletes a conversation, clears its messages, and blocks direct URL access', async ({
     page,
   }) => {

@@ -255,6 +255,11 @@ async function refreshChatProjectStatsInBatches(
   }
 }
 
+export type ConversationTitleState = Pick<
+  IConversation,
+  'title' | 'titleSetByUser' | 'titleRevision'
+>;
+
 export interface ConversationMethods {
   getConvoFiles(conversationId: string): Promise<string[]>;
   searchConversation(
@@ -374,6 +379,7 @@ export interface ConversationMethods {
     convoMap: Record<string, unknown>;
   }>;
   getConvo(user: string, conversationId: string): Promise<IConversation | null>;
+  getConvoTitleState(user: string, conversationId: string): Promise<ConversationTitleState | null>;
   getSubagentThreadForParent(input: {
     user: string;
     parentConversationId: string;
@@ -702,6 +708,16 @@ export function createConversationMethods(
       logger.error('[getConvo] Error getting single conversation', error);
       throw new Error('Error getting single conversation');
     }
+  }
+
+  async function getConvoTitleState(
+    user: string,
+    conversationId: string,
+  ): Promise<ConversationTitleState | null> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    return Conversation.findOne({ user, conversationId })
+      .select('title titleSetByUser titleRevision -_id')
+      .lean<ConversationTitleState>();
   }
 
   /** Resolves a child only through its owning parent and includes its private live lease. */
@@ -4128,6 +4144,7 @@ export function createConversationMethods(
     getConvosByCursor,
     getConvosQueried,
     getConvo,
+    getConvoTitleState,
     getSubagentThreadForParent,
     listSubagentThreadsForParent,
     getAgentEventBinding,

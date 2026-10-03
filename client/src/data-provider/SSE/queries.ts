@@ -181,17 +181,25 @@ export function useTitleGeneration(enabled = true) {
       }
 
       if (titleQuery.isSuccess && titleQuery.data) {
-        const cached = queryClient.getQueryData<TConversation>([
-          QueryKeys.conversation,
-          conversationId,
-        ]);
-        const title =
-          cached?.titleSetByUser && cached.title != null ? cached.title : titleQuery.data.title;
-        queryClient.setQueryData(
+        const incoming = titleQuery.data;
+        const applyTitle = (convo: TConversation): TConversation => {
+          if (
+            convo.titleSetByUser &&
+            convo.title != null &&
+            (!incoming.titleSetByUser || (convo.titleRevision ?? 0) > (incoming.titleRevision ?? 0))
+          ) {
+            return convo;
+          }
+          return { ...convo, ...incoming };
+        };
+        queryClient.setQueryData<TConversation>(
           [QueryKeys.conversation, conversationId],
-          (convo: TConversation | undefined) => (convo ? { ...convo, title } : convo),
+          (convo) => (convo ? applyTitle(convo) : convo),
         );
-        updateConvoInAllQueries(queryClient, conversationId, (c) => ({ ...c, title }));
+        updateConvoInAllQueries(queryClient, conversationId, applyTitle);
+        const title =
+          queryClient.getQueryData<TConversation>([QueryKeys.conversation, conversationId])
+            ?.title ?? incoming.title;
         // Only update document title if this conversation is currently active
         if (window.location.pathname.includes(conversationId)) {
           setDocumentTitle(title);

@@ -75,6 +75,7 @@ module.exports = {
   agents: () => ({ sleep: jest.fn() }),
 
   api: (overrides = {}) => ({
+    createGeneratedTitleHandler: jest.fn(() => jest.fn()),
     /** Mirrors the real helper so query-flag parsing (`isArchived`, `pinned`) is exercised. */
     isEnabled: jest.fn((value) => {
       if (typeof value === 'boolean') {

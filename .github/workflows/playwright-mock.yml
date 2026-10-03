@@ -411,7 +411,7 @@ jobs:
           E2E_TITLE_CONVO: 'true'
         run: >-
           npx playwright test --config=e2e/playwright.config.mock.ts
-          conversation-management.spec.ts --grep first-turn --reporter=line
+          conversation-management.spec.ts --grep 'first-turn|final-title polling' --reporter=line
           --output=e2e/specs/.test-results/title-ownership
 
       - name: Upload title ownership diagnostics

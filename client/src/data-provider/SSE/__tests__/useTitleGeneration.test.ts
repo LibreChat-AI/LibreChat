@@ -17,7 +17,7 @@ let mockTiming: 'immediate' | 'final' = 'immediate';
 let mockQueriesResults: Array<{
   isSuccess?: boolean;
   isError?: boolean;
-  data?: { title: string };
+  data?: { title: string; titleSetByUser?: boolean; titleRevision?: number };
   error?: unknown;
 }> = [];
 let mockCapturedQueries: Array<{ queryKey: unknown[] }> = [];
@@ -138,6 +138,33 @@ describe('useTitleGeneration — result handling', () => {
     const call = mockSetQueryData.mock.calls.find(([key]) => key[1] === id);
     const updater = call?.[1] as (value: typeof owned) => typeof owned;
     expect(updater(owned)).toEqual(owned);
+  });
+
+  it.each([
+    [1, 2],
+    [3, 2],
+  ])('orders polled manual revisions (cache %s, poll %s)', (cachedRevision, polledRevision) => {
+    const id = `manual-poll-${cachedRevision}-${polledRevision}`;
+    const cached = { title: 'Cached rename', titleSetByUser: true, titleRevision: cachedRevision };
+    mockGetQueryData.mockImplementation((key: string[]) => (key[1] === id ? cached : undefined));
+    const { rerender } = renderHook(() => useTitleGeneration(true));
+    act(() => queueTitleGeneration(id));
+    mockQueriesResults = [
+      {
+        isSuccess: true,
+        data: { title: 'Polled rename', titleSetByUser: true, titleRevision: polledRevision },
+      },
+    ];
+    rerender();
+    const update = mockSetQueryData.mock.calls.find(([key]) => key[1] === id)?.[1];
+    const expected =
+      polledRevision >= cachedRevision
+        ? { title: 'Polled rename', titleSetByUser: true, titleRevision: polledRevision }
+        : cached;
+    expect(update(cached)).toEqual(expected);
+    const updateLists = mockUpdateConvoInAllQueries.mock.calls.find(([, key]) => key === id)?.[2];
+    expect(updateLists(cached)).toEqual(expected);
+    expect(isEligible(id)).toBe(false);
   });
 
   it('applies the fetched title to the conversation caches on success', () => {

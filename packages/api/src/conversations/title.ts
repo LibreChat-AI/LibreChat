@@ -1,4 +1,6 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import type { ConversationMethods } from '@librechat/data-schemas';
+import type { Response } from 'express';
 import type { ConversationWriteContext } from './save';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
@@ -117,4 +119,49 @@ export async function publishFallbackConversationTitle(
   } catch (error) {
     deps.logger.error('[addTitle] Fallback publication failed', getSafeErrorMetadata(error));
   }
+}
+
+type GeneratedTitleRequest = { params: { conversationId: string }; user?: { id: string } };
+
+type GeneratedTitleDependencies = Pick<ConversationMethods, 'getConvoTitleState'> & {
+  getCache: () => TitleCache;
+  logger: { error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
+  delay?: (milliseconds: number) => Promise<void>;
+};
+
+/** Keep the shared cache string-compatible with legacy replicas; project authority at read time. */
+export function createGeneratedTitleHandler(
+  deps: GeneratedTitleDependencies,
+): (req: GeneratedTitleRequest, res: Response) => Promise<Response> {
+  return async function generatedTitleHandler(req, res) {
+    const { conversationId } = req.params;
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'unauthorized' });
+    try {
+      const cache = deps.getCache();
+      const key = `${userId}-${conversationId}`;
+      let title = await cache.get(key);
+      if (title == null) {
+        for (const milliseconds of [500, 1000, 2000, 4000, 8000]) {
+          await (deps.delay ?? delay)(milliseconds);
+          title = await cache.get(key);
+          if (title != null) break;
+        }
+      }
+      if (title == null)
+        return res.status(404).json({
+          message: "Title not found or method not implemented for the conversation's endpoint",
+        });
+      const current = await deps.getConvoTitleState(userId, conversationId);
+      const result =
+        current?.titleSetByUser && current.title != null
+          ? { title: current.title, titleSetByUser: true, titleRevision: current.titleRevision }
+          : { title };
+      await cache.delete(key);
+      return res.status(200).json(result);
+    } catch (error) {
+      deps.logger.error('[gen_title] Title lookup failed', getSafeErrorMetadata(error));
+      return res.status(500).json({ error: 'title_read_failed' });
+    }
+  };
 }
