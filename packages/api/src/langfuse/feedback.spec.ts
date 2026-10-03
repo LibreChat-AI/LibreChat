@@ -150,7 +150,7 @@ describe('Langfuse feedback scores', () => {
       name: 'user-feedback',
       value: 1,
       dataType: 'BOOLEAN',
-      comment: 'helpful — nice',
+      comment: 'helpful: nice',
       observationId: 'observation-id',
       metadata: {
         rating: 'thumbsUp',
@@ -164,6 +164,49 @@ describe('Langfuse feedback scores', () => {
     });
     expect(JSON.parse(init?.body as string).metadata).not.toHaveProperty('empty');
     expect(JSON.parse(init?.body as string).metadata).not.toHaveProperty('missing');
+  });
+
+  it('suppresses feedback content under metricsOnly privacy', async () => {
+    const { sendFeedbackScore } = await loadFeedback();
+
+    await sendFeedbackScore({
+      traceId: 'trace-id',
+      feedback: {
+        rating: 'thumbsDown',
+        tag: 'wrong',
+        text: 'the answer leaked my key',
+      },
+      metadata: {
+        messageId: 'message-id',
+        conversationId: 'conversation-id',
+        userId: 'user-id',
+        sender: 'Alice Example',
+        endpoint: 'agents',
+        tokenCount: 42,
+      },
+      appConfig: appConfigWithLangfuse({
+        privacy: { mode: 'metricsOnly' },
+      }),
+    });
+
+    const [, init] = getFetchMock().mock.calls[0];
+    const body = JSON.parse(init?.body as string);
+    expect(body).toMatchObject({
+      id: 'feedback-trace-id',
+      traceId: 'trace-id',
+      name: 'user-feedback',
+      value: 0,
+      dataType: 'BOOLEAN',
+    });
+    expect(body.comment).toBeUndefined();
+    expect(body.metadata).toEqual({
+      rating: 'thumbsDown',
+      messageId: 'message-id',
+      conversationId: 'conversation-id',
+      userId: 'user-id',
+      endpoint: 'agents',
+      tokenCount: 42,
+    });
   });
 
   it('posts feedback scores to the configured Langfuse host', async () => {

@@ -3540,6 +3540,24 @@ export const langfuseConfigSchema = z.object({
   headers: z.record(z.string()).optional(),
   /** Trace user identity and allowlisted user/request metadata. */
   trace: langfuseTraceConfigSchema.optional(),
+  /**
+   * Content privacy policy for exported traces, applied before trace data
+   * leaves the server. `metricsOnly` replaces message, tool, and media
+   * content with a redaction marker while keeping trace structure, timing,
+   * model, token usage, cost, and error status. The default `full` mode
+   * exports content unchanged.
+   *
+   * Fails closed: when the tracing runtime cannot enforce the policy, trace
+   * export is disabled for the run instead of sending unmasked content.
+   */
+  privacy: z
+    .object({
+      mode: z.enum(['full', 'metricsOnly']).optional(),
+      /** Replacement text used for suppressed content. Blank after
+       * trimming is rejected so a configured marker always exists. */
+      redactionText: z.string().trim().min(1).max(128).optional(),
+    })
+    .optional(),
 });
 
 export type LangfuseConfig = z.infer<typeof langfuseConfigSchema>;

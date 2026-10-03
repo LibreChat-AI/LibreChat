@@ -1911,6 +1911,61 @@ describe('configSchema langfuse', () => {
 
     expect(result.success).toBe(false);
   });
+
+  it('accepts Langfuse privacy controls', () => {
+    const result = configSchema.safeParse({
+      version: '1.3.7',
+      langfuse: {
+        privacy: {
+          mode: 'metricsOnly',
+          redactionText: '[CONTENT REDACTED]',
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects unknown Langfuse privacy modes and blank redaction text', () => {
+    const unknownMode = configSchema.safeParse({
+      version: '1.3.7',
+      langfuse: {
+        privacy: { mode: 'redacted' },
+      },
+    });
+
+    const blankRedactionText = configSchema.safeParse({
+      version: '1.3.7',
+      langfuse: {
+        privacy: { mode: 'metricsOnly', redactionText: '' },
+      },
+    });
+
+    const whitespaceRedactionText = configSchema.safeParse({
+      version: '1.3.7',
+      langfuse: {
+        privacy: { mode: 'metricsOnly', redactionText: '   ' },
+      },
+    });
+
+    expect(unknownMode.success).toBe(false);
+    expect(blankRedactionText.success).toBe(false);
+    expect(whitespaceRedactionText.success).toBe(false);
+  });
+
+  it('trims Langfuse privacy redaction text before storing it', () => {
+    const result = configSchema.safeParse({
+      version: '1.3.7',
+      langfuse: {
+        privacy: { mode: 'metricsOnly', redactionText: ' [private] ' },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.langfuse?.privacy?.redactionText).toBe('[private]');
+    }
+  });
 });
 
 describe('interface.traceViewer', () => {

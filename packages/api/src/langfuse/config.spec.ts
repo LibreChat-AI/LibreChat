@@ -3,6 +3,11 @@ import type { AppConfig } from '@librechat/data-schemas';
 process.env.CREDS_KEY =
   process.env.CREDS_KEY ?? '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
+const mockAgentsRuntime: { LANGFUSE_PRIVACY_ENFORCEMENT_SUPPORTED?: boolean } = {
+  LANGFUSE_PRIVACY_ENFORCEMENT_SUPPORTED: true,
+};
+jest.mock('@librechat/agents', () => mockAgentsRuntime);
+
 const CENTRAL_EXPORT_ATTRIBUTE = 'librechat.langfuse.central_export.enabled';
 const exportTelemetry = (plan: string, reason: string) => ({
   'librechat.langfuse.export_plan': plan,
@@ -1032,5 +1037,120 @@ describe('buildLangfuseConfig', () => {
         appConfig: { langfuse: { headers: {} } } as unknown as AppConfig,
       }),
     ).not.toHaveProperty('additionalHeaders');
+  });
+
+  it('attaches metricsOnly privacy to an otherwise unchanged export', async () => {
+    delete process.env.TENANT_ISOLATION_STRICT;
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk-env';
+    process.env.LANGFUSE_SECRET_KEY = 'sk-env';
+    process.env.LANGFUSE_BASE_URL = 'https://env.langfuse.example';
+    const { buildLangfuseConfig } = await import('./config');
+
+    expect(
+      buildLangfuseConfig({
+        runId: 'run-1',
+        tenantId: 'tenant-7',
+        appConfig: {
+          langfuse: {
+            privacy: { mode: 'metricsOnly', redactionText: ' [private] ' },
+          },
+        } as unknown as AppConfig,
+      }),
+    ).toEqual({
+      deterministicTraceId: true,
+      privacy: { mode: 'metricsOnly', redactionText: '[private]' },
+      publicKey: 'pk-env',
+      secretKey: 'sk-env',
+      baseUrl: 'https://env.langfuse.example',
+    });
+  });
+
+  it('fails closed when the runtime cannot enforce privacy masking', async () => {
+    delete process.env.TENANT_ISOLATION_STRICT;
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk-env';
+    process.env.LANGFUSE_SECRET_KEY = 'sk-env';
+    const policyModule = await import('./policy');
+    const supportSpy = jest
+      .spyOn(policyModule, 'isLangfusePrivacyMaskingSupported')
+      .mockReturnValue(false);
+    const { buildLangfuseConfig } = await import('./config');
+
+    try {
+      expect(
+        buildLangfuseConfig({
+          runId: 'run-1',
+          appConfig: {
+            langfuse: { privacy: { mode: 'metricsOnly' } },
+          } as unknown as AppConfig,
+        }),
+      ).toEqual({
+        deterministicTraceId: true,
+        privacy: { mode: 'metricsOnly' },
+        enabled: false,
+      });
+    } finally {
+      supportSpy.mockRestore();
+    }
+  });
+
+  it('drops allowlisted user and request trace fields under metricsOnly', async () => {
+    delete process.env.TENANT_ISOLATION_STRICT;
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk-env';
+    process.env.LANGFUSE_SECRET_KEY = 'sk-env';
+    const { buildLangfuseConfig } = await import('./config');
+    const trace = {
+      userIdField: 'email',
+      userMetadataFields: ['email', 'username'],
+      conversationMetadataFields: ['conversationId', 'model'],
+    };
+    const input = {
+      runId: 'run-1',
+      user: { id: 'user-1', email: 'alice@example.com', username: 'alice' },
+      traceContext: { conversationId: 'convo-1', model: 'gpt-5' },
+    };
+
+    const full = buildLangfuseConfig({
+      ...input,
+      appConfig: { langfuse: { trace } } as unknown as AppConfig,
+    });
+    expect(full).toEqual(
+      expect.objectContaining({
+        userId: 'alice@example.com',
+        metadata: expect.objectContaining({ 'librechat.user.email': 'alice@example.com' }),
+      }),
+    );
+
+    const masked = buildLangfuseConfig({
+      ...input,
+      appConfig: {
+        langfuse: { trace, privacy: { mode: 'metricsOnly' } },
+      } as unknown as AppConfig,
+    });
+    expect(masked).not.toHaveProperty('userId');
+    expect(masked).not.toHaveProperty('metadata');
+    expect(masked).toEqual(expect.objectContaining({ privacy: { mode: 'metricsOnly' } }));
+  });
+
+  it('keeps full privacy mode exporting tenant trace data untouched', async () => {
+    delete process.env.TENANT_ISOLATION_STRICT;
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk-env';
+    process.env.LANGFUSE_SECRET_KEY = 'sk-env';
+    const { buildLangfuseConfig } = await import('./config');
+
+    const built = buildLangfuseConfig({
+      runId: 'run-1',
+      tenantId: 'tenant-7',
+      appConfig: {
+        langfuse: { privacy: { mode: 'full' } },
+      } as unknown as AppConfig,
+    });
+
+    expect(built).not.toHaveProperty('privacy');
+    expect(built).toEqual(
+      expect.objectContaining({
+        metadata: { 'librechat.tenant.id': 'tenant-7' },
+        tags: ['tenant:tenant-7'],
+      }),
+    );
   });
 });

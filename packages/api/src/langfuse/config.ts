@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { RunConfig } from '@librechat/agents';
 import type { LangfuseTraceContext, LangfuseTraceUser } from './identity';
@@ -5,6 +6,7 @@ import {
   hasLangfuseEnvCredentials,
   isLangfuseCentralMediaUploadDisabled,
   isLangfuseFanoutEnabled,
+  isLangfusePrivacyMaskingSupported,
   isLangfuseTenantExportEnabled,
   isLangfuseTraceSampled,
   isLangfuseTracingEnabled,
@@ -18,10 +20,17 @@ import { normalizeString } from '~/utils/text';
 import { traceIdForMessage } from './trace';
 
 type LangfuseRunConfig = NonNullable<RunConfig['langfuse']>;
+type LangfusePrivacyPolicy = { mode: 'metricsOnly'; redactionText?: string };
 type LangfuseRunConfigWithTraceAttributes = LangfuseRunConfig & {
   librechatTraceAttributes?: Record<string, string | number | boolean | null | undefined>;
   mediaUploadEnabled?: boolean;
   additionalHeaders?: Record<string, string>;
+  /**
+   * Content privacy policy enforced by the span processor. Requires
+   * `@librechat/agents` >= 3.6.9; older runtimes ignore the field, which the
+   * fail-closed gate below turns into disabled export.
+   */
+  privacy?: LangfusePrivacyPolicy;
 };
 type LangfuseTenantDestination = NonNullable<ReturnType<typeof resolveLangfuseTenantDestination>>;
 type TenantExportBlockReason =
@@ -89,6 +98,34 @@ function applyCentralEnvConfig(langfuse: LangfuseRunConfigWithTraceAttributes): 
       normalizeString(process.env.LANGFUSE_BASEURL) ??
       DEFAULT_BASE_URL;
   }
+}
+
+/** Active only for `metricsOnly`; `full` and absent both keep current behavior. */
+function resolveActivePrivacy(
+  privacy?: NonNullable<AppConfig['langfuse']>['privacy'],
+): LangfusePrivacyPolicy | undefined {
+  if (privacy?.mode !== 'metricsOnly') {
+    return undefined;
+  }
+  const redactionText = normalizeString(privacy.redactionText);
+  return redactionText != null ? { mode: 'metricsOnly', redactionText } : { mode: 'metricsOnly' };
+}
+
+let privacySupportWarningLogged = false;
+
+/**
+ * A privacy mode the runtime cannot enforce must not degrade into a full
+ * export: the run's trace export is disabled instead, and the operator hears
+ * about it once per process rather than once per run.
+ */
+function failClosedForUnsupportedPrivacy(langfuse: LangfuseRunConfigWithTraceAttributes): void {
+  if (!privacySupportWarningLogged) {
+    privacySupportWarningLogged = true;
+    logger.warn(
+      'langfuse.privacy.mode "metricsOnly" requires @librechat/agents >= 3.6.9 to mask trace content; disabling Langfuse trace export until the runtime is upgraded',
+    );
+  }
+  langfuse.enabled = false;
 }
 
 /**
@@ -269,19 +306,29 @@ export function buildLangfuseConfig({
 } = {}): LangfuseRunConfig {
   const normalizedTenantId = normalizeString(tenantId);
   const config = appConfig?.langfuse;
+  const privacy = resolveActivePrivacy(config?.privacy);
 
   const langfuse: LangfuseRunConfigWithTraceAttributes = {
     deterministicTraceId: true,
   };
-  const traceUserId = resolveLangfuseTraceUserId(config?.trace, user);
+  if (privacy != null) {
+    langfuse.privacy = privacy;
+  }
+  // metricsOnly suppresses app-derived trace data outright: allowlisted user
+  // and request fields, the userId override, and tenant tags are skipped at
+  // the source, so the trace keeps only the internal user id.
+  const traceUserId = privacy == null ? resolveLangfuseTraceUserId(config?.trace, user) : undefined;
   if (traceUserId != null) {
     langfuse.userId = traceUserId;
   }
-  const metadata = mergeTraceMetadata(
-    buildLangfuseTraceMetadata({ trace: config?.trace, user, context: traceContext }),
-    normalizedTenantId,
-  );
-  const tags = mergeTags(undefined, normalizedTenantId);
+  const metadata =
+    privacy == null
+      ? mergeTraceMetadata(
+          buildLangfuseTraceMetadata({ trace: config?.trace, user, context: traceContext }),
+          normalizedTenantId,
+        )
+      : undefined;
+  const tags = mergeTags(undefined, privacy == null ? normalizedTenantId : undefined);
   if (metadata) {
     langfuse.metadata = metadata;
   }
@@ -294,6 +341,11 @@ export function buildLangfuseConfig({
     (runId != null && !isLangfuseTraceSampled(traceIdForMessage(runId)))
   ) {
     langfuse.enabled = false;
+    return langfuse;
+  }
+
+  if (privacy != null && !isLangfusePrivacyMaskingSupported()) {
+    failClosedForUnsupportedPrivacy(langfuse);
     return langfuse;
   }
 
