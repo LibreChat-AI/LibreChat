@@ -258,6 +258,33 @@ test.describe('conversation management', () => {
     await expect(dialog).toBeVisible();
   });
 
+  for (const missingProtocol of [false, true]) {
+    test(`fences running rename with ${missingProtocol ? 'an older replica' : 'deployment opt-out'}`, async ({
+      page,
+    }) => {
+      await page.route('**/api/config', async (route) => {
+        const response = await route.fetch();
+        const config = await response.json();
+        if (missingProtocol) delete config.conversationTitleOwnershipVersion;
+        else config.interface = { ...config.interface, runningChatRename: false };
+        await route.fulfill({ response, json: config });
+      });
+      await openMockChat(page);
+      const label = uniqueLabel('rollout-fence');
+      await sendAndExpectReply(page, label);
+      expect((await sendMessage(page, `E2E_SLOW_REPLY:${label}`)).ok()).toBeTruthy();
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toBeVisible();
+      const row = firstConversation(page);
+      await row.click({ button: 'right' });
+      await expect(page.getByRole('menuitem', { name: 'Rename', exact: true })).toBeDisabled();
+      await expect(page.getByRole('menuitem', { name: 'Pin', exact: true })).toBeEnabled();
+      await expect(page.getByRole('menuitem', { name: 'Archive', exact: true })).toBeEnabled();
+      await expect(row.getByRole('img', { name: 'Generating' })).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(row.getByRole('button', { name: 'Conversation Menu Options' })).toBeFocused();
+    });
+  }
+
   test('returns focus after right-clicking an unopened running menu on a small screen', async ({
     page,
   }) => {
@@ -285,7 +312,7 @@ test.describe('conversation management', () => {
     await expect(trigger).toBeFocused();
   });
 
-  for (const timing of ['immediate', 'final'] as const) {
+  for (const timing of ['immediate', 'final', 'unchanged'] as const) {
     test(`preserves a first-turn rename over a pending ${timing} automatic title`, async ({
       page,
       request,
@@ -293,7 +320,8 @@ test.describe('conversation management', () => {
       test.skip(process.env.E2E_TITLE_CONVO !== 'true', 'Requires the title-enabled mock profile');
       test.setTimeout(40000);
       const label = uniqueLabel(`first-rename-${timing}`);
-      const renamedTitle = `Renamed ${label}`;
+      const renamedTitle = timing === 'unchanged' ? 'New Chat' : `Renamed ${label}`;
+      const titleTiming = timing === 'unchanged' ? 'final' : timing;
       const fixture = `http://127.0.0.1:${process.env.E2E_LABEL_PORT ?? '8889'}`;
       await request.post(`${fixture}/__e2e/reset`);
       await request.post(`${fixture}/__e2e/behavior`, {
@@ -302,8 +330,8 @@ test.describe('conversation management', () => {
       try {
         await page.goto(NEW_CHAT_PATH);
         await selectMockEndpoint(page, {
-          label: `Mock Titles ${timing}`,
-          model: `mock-titles-${timing}`,
+          label: `Mock Titles ${titleTiming}`,
+          model: `mock-titles-${titleTiming}`,
         });
         const titleFetch = page.waitForRequest((request) =>
           new URL(request.url()).pathname.startsWith('/api/convos/gen_title/'),
@@ -321,7 +349,21 @@ test.describe('conversation management', () => {
         await row.click({ button: 'right' });
         await page.getByRole('menuitem', { name: 'Rename' }).click();
         await row.getByRole('textbox', { name: 'New Conversation Title' }).fill(renamedTitle);
-        await row.getByRole('button', { name: 'Save' }).click();
+        const [renameResponse] = await Promise.all([
+          page.waitForResponse(
+            (response) =>
+              new URL(response.url()).pathname === '/api/convos/update' &&
+              response.request().method() === 'POST',
+          ),
+          row.getByRole('button', { name: 'Save' }).click(),
+        ]);
+        expect(renameResponse.ok()).toBeTruthy();
+        expect(await renameResponse.json()).toEqual(
+          expect.objectContaining({
+            title: renamedTitle,
+            titleSetByUser: true,
+          }),
+        );
         await expect(row).toContainText(renamedTitle);
         const titleRequest = async () => {
           const body = await (await request.get(`${fixture}/__e2e/requests`)).json();
@@ -346,8 +388,8 @@ test.describe('conversation management', () => {
         await expect(row).toContainText(renamedTitle);
         await page.reload();
         await expect(
-          page.getByTestId('convo-item').filter({ hasText: renamedTitle }),
-        ).toBeVisible();
+          page.locator(`[data-testid="convo-item"][data-conversation-id="${conversationId}"]`),
+        ).toContainText(renamedTitle);
       } finally {
         await request.post(`${fixture}/__e2e/reset`, { timeout: 2000 }).catch(() => undefined);
       }

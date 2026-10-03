@@ -4,6 +4,9 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 
 let mockIsSmallScreen = true;
+let mockOwnershipEnabled = true;
+let mockOwnershipVersion: number | undefined = 1;
+const mockRename = jest.fn().mockResolvedValue({});
 const mockConvoOptionsProps: { isPopoverActive: boolean }[] = [];
 let mockCloseMenu: () => void = () => undefined;
 
@@ -23,8 +26,14 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: { sharedLinksEnabled: false } }),
-  useUpdateConversationMutation: () => ({ mutateAsync: jest.fn() }),
+  useGetStartupConfig: () => ({
+    data: {
+      sharedLinksEnabled: false,
+      interface: { runningChatRename: mockOwnershipEnabled },
+      conversationTitleOwnershipVersion: mockOwnershipVersion,
+    },
+  }),
+  useUpdateConversationMutation: () => ({ mutateAsync: mockRename }),
   usePinConversationMutation: () => ({ mutate: jest.fn() }),
 }));
 
@@ -45,13 +54,25 @@ jest.mock('~/utils', () => ({
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
   logger: { error: jest.fn() },
   isConversationUnseen: () => false,
+  hasRealTitle: (title: string) => !!title && title !== 'New Chat',
 }));
 
 jest.mock('../ConvoOptions', () => ({
-  ConvoOptions: (props: { isPopoverActive: boolean; setIsPopoverActive: (o: boolean) => void }) => {
+  ConvoOptions: (props: {
+    isPopoverActive: boolean;
+    canRename: boolean;
+    renameHandler: () => void;
+    setIsPopoverActive: (o: boolean) => void;
+  }) => {
     mockConvoOptionsProps.push(props);
     mockCloseMenu = () => props.setIsPopoverActive(false);
-    return <div data-testid="convo-options" data-open={props.isPopoverActive} />;
+    return (
+      <div data-testid="convo-options" data-open={props.isPopoverActive}>
+        <button disabled={!props.canRename} onClick={props.renameHandler}>
+          {'Rename'}
+        </button>
+      </div>
+    );
   },
 }));
 
@@ -67,7 +88,17 @@ jest.mock('../ConvoLink', () => ({
 
 jest.mock('../RenameForm', () => ({
   __esModule: true,
-  default: () => <form data-testid="rename-form" />,
+  default: ({
+    titleInput,
+    onSubmit,
+  }: {
+    titleInput: string;
+    onSubmit: (title: string) => void;
+  }) => (
+    <button data-testid="rename-form" onClick={() => onSubmit(titleInput)}>
+      {'Save'}
+    </button>
+  ),
 }));
 
 import Conversation from '../Convo';
@@ -77,11 +108,11 @@ const conversation = {
   title: 'Mobile UI redesign',
 } as TConversation;
 
-const renderRow = (isGenerating = false) =>
+const renderRow = (isGenerating = false, row = conversation) =>
   render(
     <DndProvider backend={HTML5Backend}>
       <Conversation
-        conversation={conversation}
+        conversation={row}
         isGenerating={isGenerating}
         retainView={jest.fn()}
         toggleNav={jest.fn()}
@@ -203,5 +234,51 @@ describe('Conversation context menu on small screens', () => {
     act(() => mockCloseMenu());
     expect(screen.getByTestId('convo-options')).toBeInTheDocument();
     expect(screen.queryByTestId('convo-options-trigger')).not.toBeInTheDocument();
+  });
+});
+
+describe('Conversation title ownership rollout', () => {
+  beforeEach(() => {
+    mockRename.mockClear();
+    mockOwnershipEnabled = true;
+    mockOwnershipVersion = 1;
+  });
+  afterEach(() => {
+    mockOwnershipEnabled = true;
+    mockOwnershipVersion = 1;
+  });
+
+  it.each([
+    [false, 1],
+    [true, undefined],
+  ])('disables rename on unsafe running rows (enabled %s, protocol %s)', (enabled, version) => {
+    mockOwnershipEnabled = enabled;
+    mockOwnershipVersion = version;
+    renderRow(true);
+    fireEvent.contextMenu(screen.getByTestId('convo-item'));
+    expect(screen.getByRole('button', { name: 'Rename' })).toBeDisabled();
+  });
+  it('also fences an unowned placeholder after a final-timing stream ends', () => {
+    mockOwnershipEnabled = false;
+    renderRow(false, { ...conversation, title: 'New Chat' });
+    fireEvent.contextMenu(screen.getByTestId('convo-item'));
+    expect(screen.getByRole('button', { name: 'Rename' })).toBeDisabled();
+  });
+  it.each([false, true])(
+    'claims an unchanged unowned title (generating %s)',
+    async (generating) => {
+      renderRow(generating, { ...conversation, title: 'New Chat' });
+      fireEvent.contextMenu(screen.getByTestId('convo-item'));
+      fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+      await act(async () => fireEvent.click(screen.getByTestId('rename-form')));
+      expect(mockRename).toHaveBeenCalledWith({ conversationId: 'convo-1', title: 'New Chat' });
+    },
+  );
+  it('keeps unchanged owned titles as a no-op', async () => {
+    renderRow(false, { ...conversation, titleSetByUser: true });
+    fireEvent.contextMenu(screen.getByTestId('convo-item'));
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    await act(async () => fireEvent.click(screen.getByTestId('rename-form')));
+    expect(mockRename).not.toHaveBeenCalled();
   });
 });

@@ -22,17 +22,16 @@ const {
   backgroundTaskRegistry,
   createSubagentThreadViewHandler,
   createGeneratedTitleHandler,
+  createRenameConversationHandler,
   createMarkConvoSeenHandler,
   createMarkConvoUnreadHandler,
   resolveImportMaxFileSize,
   restoreTenantContextFromReq,
   deleteAllSharedLinksWithCleanup,
   deleteConvoSharedLinksWithCleanup,
-  inspectContent,
   createContentFilter,
   isContentFilterError,
   isConversationImportError,
-  contentFilterBlockResponse,
   extractConversationTitleContent,
   extractStoredMessageContent,
   GenerationJobManager,
@@ -696,62 +695,17 @@ router.post('/seen', validateConvoAccess, markConvoSeenHandler);
 
 router.post('/unread', validateConvoAccess, markConvoUnreadHandler);
 
-/** Maximum allowed length for conversation titles */
-const MAX_CONVO_TITLE_LENGTH = 1024;
-
-/**
- * Updates a conversation's title.
- * @route POST /update
- * @param {string} req.body.arg.conversationId - The conversation ID to update.
- * @param {string} req.body.arg.title - The new title for the conversation.
- * @returns {object} 201 - The updated conversation object.
- */
-router.post('/update', validateConvoAccess, configMiddleware, async (req, res) => {
-  const { conversationId, title } = req.body?.arg ?? {};
-
-  if (!conversationId) {
-    return res.status(400).json({ error: 'conversationId is required' });
-  }
-
-  if (title === undefined) {
-    return res.status(400).json({ error: 'title is required' });
-  }
-
-  if (typeof title !== 'string') {
-    return res.status(400).json({ error: 'title must be a string' });
-  }
-
-  const sanitizedTitle = title.trim().slice(0, MAX_CONVO_TITLE_LENGTH);
-  if (req.config?.filters != null) {
-    const finding = inspectContent(extractConversationTitleContent({ title: sanitizedTitle }), {
-      filters: req.config.filters,
-    });
-    if (finding != null) {
-      return res.status(400).json(contentFilterBlockResponse(finding));
-    }
-  }
-
-  try {
-    const dbResponse = await db.saveConvo(
-      {
-        userId: req?.user?.id,
-        isTemporary: req?.resolvedConversation?.isTemporary,
-        expiredAt: req?.resolvedConversation?.expiredAt,
-        interfaceConfig: req?.config?.interfaceConfig,
-      },
-      { conversationId, title: sanitizedTitle },
-      {
-        context: `POST /api/convos/update ${conversationId}`,
-        titleSource: 'manual',
-        appendMessageIds: [],
-      },
-    );
-    res.status(201).json(dbResponse);
-  } catch (error) {
-    logger.error('Error updating conversation', error);
-    res.status(500).send('Error updating conversation');
-  }
-});
+router.post(
+  '/update',
+  validateConvoAccess,
+  configMiddleware,
+  createRenameConversationHandler({
+    saveConvo: db.saveConvo,
+    getActiveRunIds:
+      GenerationJobManager.getCleanupBlockingJobIdsForConversations.bind(GenerationJobManager),
+    logger,
+  }),
+);
 
 const { importIpLimiter, importUserLimiter } = createImportLimiters();
 /** Fork and duplicate share one rate-limit budget (same "clone" operation class) */

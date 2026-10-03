@@ -9,6 +9,7 @@ export type ConvoActionsProps = {
   conversationId: string | null;
   chatProjectId?: string | null;
   title: string | null;
+  canRename?: boolean;
   isPinned?: boolean;
   isArchived?: boolean;
   isUnseen?: boolean;

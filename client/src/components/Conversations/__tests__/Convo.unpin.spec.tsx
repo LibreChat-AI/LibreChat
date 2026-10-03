@@ -57,6 +57,7 @@ jest.mock('~/store', () => ({
 }));
 
 jest.mock('~/utils', () => ({
+  hasRealTitle: (title: string) => !!title && title !== 'New Chat',
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
   logger: { error: jest.fn() },
   setDocumentTitle: jest.fn(),

@@ -56,6 +56,7 @@ function ConvoOptions({
   isUnseen = false,
   retainView,
   renameHandler,
+  canRename = true,
   isPopoverActive,
   setIsPopoverActive,
   isActiveConvo,
@@ -72,6 +73,7 @@ function ConvoOptions({
   isUnseen?: boolean;
   retainView: () => void;
   renameHandler: (e: MouseEvent) => void;
+  canRename?: boolean;
   isPopoverActive: boolean;
   setIsPopoverActive: (open: boolean) => void;
   isActiveConvo: boolean;
@@ -358,6 +360,7 @@ function ConvoOptions({
       {
         label: localize('com_ui_rename'),
         onClick: renameHandler,
+        disabled: !canRename,
         icon: <Pen className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
       },
       {
@@ -418,6 +421,7 @@ function ConvoOptions({
       shareHandler,
       startupConfig,
       renameHandler,
+      canRename,
       deleteHandler,
       isArchiveLoading,
       isArchived,
@@ -559,6 +563,7 @@ export default memo(ConvoOptions, (prevProps, nextProps) => {
   return (
     prevProps.conversationId === nextProps.conversationId &&
     prevProps.title === nextProps.title &&
+    prevProps.canRename === nextProps.canRename &&
     prevProps.chatProjectId === nextProps.chatProjectId &&
     prevProps.isPinned === nextProps.isPinned &&
     prevProps.isArchived === nextProps.isArchived &&

@@ -155,6 +155,10 @@ projects:
 # Custom interface configuration
 interface:
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
+  # After ALL API replicas are upgraded and old title-generation jobs have drained:
+  # runningChatRename: true
+  # Keep false (default) during rolling upgrades. Missing server capability disables
+  # rename for running chats and unowned placeholder titles; other actions stay available.
   # Minimum interval between syntax-highlighting passes while streamed code changes (default: 300 ms)
   # codeHighlightThrottleMs: 300
   # Deployment theme applied to every user, in both light and dark mode (default: unset).

@@ -3,8 +3,8 @@ import { useDrag } from 'react-dnd';
 import { Link2 } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
 import { useParams } from 'react-router-dom';
-import { Constants } from 'librechat-data-provider';
 import { useToastContext, useMediaQuery } from '@librechat/client';
+import { Constants, supportsConversationTitleOwnership } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationDragItem } from './dnd';
 import {
@@ -12,7 +12,7 @@ import {
   usePinConversationMutation,
   useUpdateConversationMutation,
 } from '~/data-provider';
-import { cn, logger, setDocumentTitle, isConversationUnseen } from '~/utils';
+import { cn, logger, setDocumentTitle, isConversationUnseen, hasRealTitle } from '~/utils';
 import { useNavigateToConvo, useLocalize, useShiftKey } from '~/hooks';
 import ConversationEndpointIcon from './ConversationEndpointIcon';
 import { focusableInRow, resolveRowBeside } from './focus';
@@ -73,6 +73,9 @@ function Conversation({
   const isUnseen = isConversationUnseen(conversation);
   const isShiftHeld = useShiftKey();
   const { conversationId, title = '' } = conversation;
+  const canRename =
+    supportsConversationTitleOwnership(startupConfig) ||
+    (!isGenerating && (conversation.titleSetByUser === true || hasRealTitle(title)));
 
   const [titleInput, setTitleInput] = useState(title || '');
   const [renaming, setRenamingState] = useState(false);
@@ -141,6 +144,7 @@ function Conversation({
   }, [currentConvoId, conversationId, activeConvos]);
 
   const handleRename = () => {
+    if (!canRename) return;
     setIsPopoverActive(false);
     setContextMenuPosition(undefined);
     setTitleInput(title as string);
@@ -148,7 +152,11 @@ function Conversation({
   };
 
   const handleRenameSubmit = async (newTitle: string) => {
-    if (!conversationId || newTitle === title) {
+    if (
+      !canRename ||
+      !conversationId ||
+      (newTitle === title && conversation.titleSetByUser === true)
+    ) {
       setRenaming(false);
       return;
     }
@@ -274,6 +282,7 @@ function Conversation({
     isArchived: conversation.isArchived === true,
     retainView,
     renameHandler: handleRename,
+    canRename,
     isActiveConvo,
     isUnseen,
     conversationId,

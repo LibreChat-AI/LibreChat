@@ -2058,19 +2058,24 @@ describe('Convos Routes', () => {
   });
 
   describe('POST /update running chat rename', () => {
-    it('writes only title metadata while message persistence is active', async () => {
-      const conversationId = 'running-rename';
-      saveConvo.mockResolvedValueOnce({ conversationId, title: 'Renamed', titleRevision: 1 });
-      const response = await request(app)
-        .post('/api/convos/update')
-        .send({
-          arg: { conversationId, title: 'Renamed' },
-        });
-      expect(response.status).toBe(201);
-      expect(saveConvo).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: 'test-user-123' }),
-        { conversationId, title: 'Renamed' },
-        expect.objectContaining({ titleSource: 'manual', appendMessageIds: [] }),
+    it('delegates rename semantics to the injected TypeScript handler', async () => {
+      const { renameConversationHandler, renameHandlerInputs } = require(MOCKS);
+      const arg = { conversationId: 'running-rename', title: 'Renamed' };
+      expect((await request(app).post('/api/convos/update').send({ arg })).status).toBe(204);
+      expect(renameConversationHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: { arg },
+          user: expect.objectContaining({ id: 'test-user-123' }),
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(renameHandlerInputs.at(-1)).toEqual(
+        expect.objectContaining({
+          saveConvo,
+          getActiveRunIds: expect.any(Function),
+          logger: expect.anything(),
+        }),
       );
     });
   });
