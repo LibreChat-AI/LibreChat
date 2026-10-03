@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { inOneProject, repoRoot } from './lint.helpers';
@@ -16,6 +16,7 @@ type DryTask = {
   hash: string;
   dependencies: string[];
   inputs: Record<string, string>;
+  resolvedTaskDefinition: { inputs: string[] };
 };
 
 const TURBO = resolve(repoRoot, 'node_modules/.bin/turbo');
@@ -99,6 +100,14 @@ test.describe('the cached test runner', () => {
       '@librechat/backend#test:ci',
     ).hash;
     expect(on).not.toBe(off);
+
+    /** responses.spec.js reads its live credential from the ignored root `.env`,
+     *  which may be absent here, so the resolved globs are checked as well. */
+    const backend = get(plan('test:ci'), '@librechat/backend#test:ci');
+    expect(backend.resolvedTaskDefinition.inputs).toContain('../.env');
+    if (existsSync(resolve(repoRoot, '.env'))) {
+      expect(Object.keys(backend.inputs)).toContain('../.env');
+    }
   });
 
   test('a package build hashes its shipped assets but not its specs @scenario:a-spec-edit-keeps-the-package-build-cached', () => {

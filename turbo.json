@@ -44,6 +44,7 @@
         "$TURBO_DEFAULT$",
         "test/.env.test",
         "$TURBO_ROOT$/config/jest*.{js,cjs}",
+        "$TURBO_ROOT$/.env",
         "$TURBO_ROOT$/config/connect.js",
         "$TURBO_ROOT$/config/migrate-orphaned-agent-files.js"
       ],
