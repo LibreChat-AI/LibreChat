@@ -1372,3 +1372,114 @@ for (const eventDriven of [false, true]) {
     },
   );
 }
+
+for (const mode of ['chat', 'always'] as const) {
+  for (const eventDriven of [false, true]) {
+    test.each(['approve', 'edit'] as const)(
+      `${mode} reviewed templated %s refuses background dispatch; event-driven=${eventDriven}`,
+      async (decision) => {
+        const connection = {
+          type: 'streamable-http' as const,
+          source: 'yaml' as const,
+          url: 'https://mcp.example.test/mcp',
+          headers: { 'X-Workspace': '{{WORKSPACE}}' },
+          customUserVars: { WORKSPACE: { title: 'Workspace', description: 'Selected workspace' } },
+        };
+        expect(buildMCPToolApprovalBinding('fixture', connection)).toBeUndefined();
+        const authority = buildMCPToolReviewAuthority({
+          serverName: 'fixture',
+          config: connection,
+          customUserVars: { WORKSPACE: 'workspace-a' },
+        });
+        const reviewDefinition = bindToolApprovalIdentity(
+          bindToolReviewAuthority(
+            { name, serverName: 'fixture', parameters: { type: 'object' } },
+            authority,
+          ),
+          'echo',
+          { type: 'object' },
+        );
+        const source: AgentApprovalSource = {
+          id: 'agent-a',
+          tool_options: {
+            [name]: {
+              approval_mode: mode,
+              approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+            },
+          },
+          toolDefinitions: [reviewDefinition],
+        };
+        const saver = new MemorySaver();
+        const chat = `review-background-${mode}-${eventDriven}-${decision}`;
+        const rewrite = { text: 'reviewed', run_in_background: true };
+        const executionTool = createProbe(null, 'echo', authority);
+        const first = await build({
+          source,
+          chat,
+          saver,
+          eventDriven,
+          background: true,
+          executionTool,
+          rewrite,
+          callId: 'review-background-call',
+        });
+        await first.processStream({ messages: [new HumanMessage('run')] }, config(chat));
+        const payload = first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload;
+        expect(payload.action_requests[0].arguments).toMatchObject({ run_in_background: true });
+        const bindings = captureRunToolApprovalBindings(first, payload)!;
+        const reviewed = {
+          bindings,
+          decisions: [{ tool_call_id: 'review-background-call', decision }],
+        };
+        const session = createAgentToolApprovalSession({
+          agents: [source],
+          storage,
+          scope: { userId: '652000000000000000000001', conversationId: chat },
+          reviewed,
+        });
+        let dispatched = false;
+        let finish!: () => void;
+        const settled = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        const note = session.noteDispatch;
+        session.noteDispatch = (invocation) => {
+          dispatched = invocation.background === true;
+          note?.(invocation);
+        };
+        const complete = session.finishDispatch;
+        session.finishDispatch = (invocation) => {
+          complete?.(invocation);
+          finish();
+        };
+        const resumed = await build({
+          source,
+          chat,
+          saver,
+          eventDriven,
+          background: true,
+          executionTool,
+          rewrite,
+          sharedSession: session,
+        });
+        const invocationConfig = config(chat);
+        if (!eventDriven) {
+          Object.assign(invocationConfig.configurable, {
+            __librechatBackgroundToolInvocation: true,
+          });
+        }
+        const answer =
+          decision === 'edit'
+            ? { type: 'edit' as const, updatedInput: rewrite }
+            : { type: 'approve' as const };
+        await resumed.resume({ 'review-background-call': answer }, invocationConfig);
+        if (eventDriven) {
+          expect(dispatched).toBe(true);
+          await settled;
+        }
+        expect(executions).toBe(0);
+        expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+      },
+    );
+  }
+}
