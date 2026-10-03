@@ -15,6 +15,7 @@ const {
   loadToolDefinitions,
   buildMCPToolApprovalBinding,
   attachMCPToolApprovalBindings,
+  getMCPToolApprovalAuthKind,
   buildMCPToolReviewAuthority,
   createSafeUser,
   GenerationJobManager,
@@ -1171,6 +1172,7 @@ async function loadToolDefinitionsWrapper({
    *  spellings itself (direct identity first, alias fallback), so this
    *  closure must look up EXACTLY the name it is given. */
   const approvalBindings = new Map();
+  const approvalAuthKinds = new Map();
   const reviewAuthorities = new Map();
   const getOrFetchMCPServerTools = async (userId, serverName) => {
     const addPendingOAuthServer = async () => {
@@ -1210,6 +1212,7 @@ async function loadToolDefinitionsWrapper({
     }
 
     approvalBindings.set(serverName, buildMCPToolApprovalBinding(serverName, serverConfig));
+    approvalAuthKinds.set(serverName, getMCPToolApprovalAuthKind(serverConfig));
     const customUserVars = userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`];
     reviewAuthorities.set(
       serverName,
@@ -1623,7 +1626,12 @@ async function loadToolDefinitionsWrapper({
     }
   }
 
-  attachMCPToolApprovalBindings(toolDefinitions, approvalBindings, reviewAuthorities);
+  attachMCPToolApprovalBindings(
+    toolDefinitions,
+    approvalBindings,
+    reviewAuthorities,
+    approvalAuthKinds,
+  );
   return {
     toolRegistry,
     mcpAvailableTools,

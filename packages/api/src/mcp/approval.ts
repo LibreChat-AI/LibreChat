@@ -1,9 +1,12 @@
 import { digestMCPAuthorityValue } from '@librechat/data-schemas';
+import type { ToolApprovalAuthKind } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { ParsedServerConfig } from './types';
 import type { RequestBody } from '~/types';
+import { isDirectOpenIDBearerRecoveryEnabled } from './openid';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
 import { applyRequestHeaders } from './utils';
+import { isOAuthServer } from './utils';
 
 export interface MCPToolReviewAuthorityInput {
   serverName: string;
@@ -24,6 +27,19 @@ export interface MCPToolReviewAuthorityInput {
   >;
   body?: RequestBody;
   customUserVars?: Record<string, string>;
+}
+
+/** Match the configured factory path, not the existence of old stored tokens. */
+export function getMCPToolApprovalAuthKind(
+  config: ParsedServerConfig | undefined,
+): ToolApprovalAuthKind | undefined {
+  if (!config) return undefined;
+  const effective = applyRequestHeaders(config);
+  return !effective.obo &&
+    !isDirectOpenIDBearerRecoveryEnabled(effective) &&
+    isOAuthServer(effective)
+    ? 'oauth'
+    : 'other';
 }
 
 /** Registry timestamps and inspection summaries do not change executable authority. */

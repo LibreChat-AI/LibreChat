@@ -4,6 +4,7 @@ const { Providers, Constants: AgentConstants } = require('@librechat/agents');
 const {
   sendEvent,
   buildMCPToolApprovalBinding,
+  getMCPToolApprovalAuthKind,
   bindToolApproval,
   bindToolApprovalIdentity,
   bindToolReviewAuthority,
@@ -1497,6 +1498,9 @@ function createToolInstance({
     currentToolName != null
       ? `${currentToolName}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`
       : normalizedToolKey,
+    undefined,
+    undefined,
+    getMCPToolApprovalAuthKind(capturedServerConfig),
   );
   bindToolReviewAuthority(
     toolInstance,

@@ -14,6 +14,7 @@ import {
   withToolApprovalTransport,
   assertToolApprovalTransportEpoch,
 } from './approval';
+import { getToolApprovalAuthKind } from './approval';
 
 test('connection-derived bindings survive local copies without reaching JSON or provider payloads', () => {
   const definition = bindToolApproval(
@@ -108,4 +109,18 @@ test('private dispatch ownership survives metadata copies and binds the exact tr
     expect.objectContaining({ ownership: token, toolCallId: 'call_0' }),
     false,
   );
+});
+
+test('effective auth kind stays private while surviving definition copies', () => {
+  const def = bindToolApproval(
+    { name: 'query_mcp_db' },
+    'source',
+    undefined,
+    undefined,
+    undefined,
+    'other',
+  );
+  expect(getToolApprovalAuthKind({ ...def })).toBe('other');
+  expect(getToolApprovalAuthKind(JSON.parse(JSON.stringify(def)))).toBeUndefined();
+  expect(JSON.stringify(def)).toBe('{"name":"query_mcp_db"}');
 });

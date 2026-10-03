@@ -2578,7 +2578,7 @@ describe('ToolService - Action Capability Gating', () => {
     });
 
     it('approval binding follows the user-tier authority instead of a same-name config candidate', async () => {
-      const { getToolApprovalBinding, buildMCPToolApprovalBinding } =
+      const { getToolApprovalBinding, buildMCPToolApprovalBinding, getToolApprovalAuthKind } =
         jest.requireActual('@librechat/api');
       const serverName = 'shared-server';
       const name = `query${Constants.mcp_delimiter}${serverName}`;
@@ -2614,6 +2614,7 @@ describe('ToolService - Action Capability Gating', () => {
         agent: { id: 'agent-a', tools: [name] },
         definitionsOnly: true,
       });
+      expect(getToolApprovalAuthKind(first.toolDefinitions[0])).toBe('other');
       expect(getToolApprovalBinding(first.toolDefinitions[0])).toBe(
         buildMCPToolApprovalBinding(serverName, firstAuthority),
       );
@@ -2623,6 +2624,7 @@ describe('ToolService - Action Capability Gating', () => {
       mockGetServerConfig.mockResolvedValue({
         ...firstAuthority,
         url: 'https://new-user.example.com/mcp',
+        requiresOAuth: true,
       });
       const second = await loadAgentTools({
         req,
@@ -2630,6 +2632,7 @@ describe('ToolService - Action Capability Gating', () => {
         agent: { id: 'agent-a', tools: [name] },
         definitionsOnly: true,
       });
+      expect(getToolApprovalAuthKind(second.toolDefinitions[0])).toBe('oauth');
       expect(getToolApprovalBinding(second.toolDefinitions[0])).not.toBe(
         getToolApprovalBinding(first.toolDefinitions[0]),
       );

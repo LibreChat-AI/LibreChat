@@ -1,16 +1,19 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { digestMCPAuthorityValue } from '@librechat/data-schemas';
+import type { ToolApprovalAuthKind } from 'librechat-data-provider';
 import type { SubagentExecutionContext } from '@librechat/agents';
 const invocationKey: unique symbol = Symbol('toolApprovalInvocation');
 const bindingKey: unique symbol = Symbol.for('librechat.toolApprovalBinding');
 const nameKey: unique symbol = Symbol.for('librechat.toolApprovalName');
 const identityKey: unique symbol = Symbol.for('librechat.toolApprovalIdentity');
+const authKindKey: unique symbol = Symbol.for('librechat.toolApprovalAuthKind');
 const reviewAuthorityKey: unique symbol = Symbol.for('librechat.toolReviewAuthority');
 type BoundTool = {
   [bindingKey]?: string;
   [nameKey]?: string;
   [identityKey]?: string;
   [reviewAuthorityKey]?: string;
+  [authKindKey]?: ToolApprovalAuthKind;
 };
 
 /** Object spreads retain the binding; JSON/provider payloads cannot expose it. */
@@ -20,12 +23,18 @@ export function bindToolApproval<T extends object>(
   name?: string,
   identity?: string,
   reviewAuthority?: string,
+  authKind?: ToolApprovalAuthKind,
 ): T {
   if (binding != null) (tool as BoundTool)[bindingKey] = binding;
   if (name != null) (tool as BoundTool)[nameKey] = name;
   if (identity != null) (tool as BoundTool)[identityKey] = identity;
   if (reviewAuthority != null) (tool as BoundTool)[reviewAuthorityKey] = reviewAuthority;
+  if (authKind != null) (tool as BoundTool)[authKindKey] = authKind;
   return tool;
+}
+
+export function getToolApprovalAuthKind(tool: object): ToolApprovalAuthKind | undefined {
+  return (tool as BoundTool)[authKindKey];
 }
 
 export function getToolApprovalBinding(tool: object): string | undefined {
