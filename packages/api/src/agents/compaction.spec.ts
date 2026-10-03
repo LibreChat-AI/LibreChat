@@ -15,6 +15,7 @@ import {
   dropUnusableSummaryParts,
   findCheckpointSummaryPart,
   getSummaryPartText,
+  markAbortedCompactionContent,
   markCompactionOutcome,
   resolveFailedTurnContent,
   resolveCheckpointMessage,
@@ -314,6 +315,120 @@ describe('resolveCheckpointMessage', () => {
     expect(
       resolveCheckpointMessage({ content: [{ type: ContentTypes.TEXT, text: 'x' }] }),
     ).toBeNull();
+  });
+});
+
+describe('markAbortedCompactionContent', () => {
+  const partialSummary = (text: string): TMessageContentParts => ({
+    type: ContentTypes.SUMMARY,
+    /** Streamed deltas never carry a boundary; a stopped round keeps them. */
+    content: [{ type: ContentTypes.TEXT, text }],
+    summarizing: true,
+  });
+
+  /** The summarizer opens the part when its round starts, so a stop can land
+   *  between that and the first delta. */
+  const emptySummaryPlaceholder = (): TMessageContentParts => ({
+    type: ContentTypes.SUMMARY,
+    content: [],
+    summarizing: true,
+  });
+
+  const completedSummary = (text: string): TMessageContentParts => ({
+    type: ContentTypes.SUMMARY,
+    content: [{ type: ContentTypes.TEXT, text }],
+    boundary: completedBoundary,
+  });
+
+  /** The abort path owns a cancelled run's row: its partial summary must still
+   *  carry the marker, or on a branch ending in a user message the row keeps a
+   *  Regenerate that answers that user turn instead of redoing the compaction.
+   *  The truncated prefix is kept but marked failed, or its label presents it
+   *  as a finished checkpoint. */
+  it('marks the partial summary a stopped compaction had streamed as failed', () => {
+    const parts = [partialSummary('Half a summary')];
+
+    markAbortedCompactionContent(parts, true);
+
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toMatchObject({ initiatedBy: 'user', failed: true, summarizing: true });
+  });
+
+  /** A round that finished before the Stop landed is a real checkpoint: the
+   *  race is not a failure. */
+  it('marks a summary that completed before the stop without failing it', () => {
+    const parts = [completedSummary('Finished before the stop.')];
+
+    markAbortedCompactionContent(parts, true);
+
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toMatchObject({ initiatedBy: 'user' });
+    expect(parts[0]).not.toHaveProperty('failed');
+  });
+
+  /** Every part that can carry the marker gets it: the row's identity must not
+   *  depend on which of its parts a reader inspects first. */
+  it('marks an error part the stopped run had already recorded', () => {
+    const parts: TMessageContentParts[] = [
+      partialSummary('Half a summary'),
+      { type: ContentTypes.ERROR, error: 'Something else failed first' },
+    ];
+
+    markAbortedCompactionContent(parts, true);
+
+    expect(parts[0]).toMatchObject({ initiatedBy: 'user', failed: true });
+    expect(parts[1]).toMatchObject({ initiatedBy: 'user' });
+  });
+
+  /** A summary placeholder with no text is not an outcome: nothing of the
+   *  round survived to show, so the typed failure is the row's whole
+   *  outcome. */
+  it('replaces a summary placeholder that streamed nothing with the typed failure', () => {
+    const parts = [emptySummaryPlaceholder()];
+
+    markAbortedCompactionContent(parts, true);
+
+    expect(parts).toEqual([
+      {
+        type: ContentTypes.ERROR,
+        error: JSON.stringify({ type: ErrorTypes.COMPACTION_FAILED }),
+        initiatedBy: 'user',
+      },
+    ]);
+  });
+
+  /** A run stopped before any part streamed still needs an identifiable row:
+   *  an empty one reads as an answer to the message it hangs off. */
+  it('records the typed failure when nothing streamed before the stop', () => {
+    const parts: TMessageContentParts[] = [];
+
+    markAbortedCompactionContent(parts, true);
+
+    expect(parts).toEqual([
+      {
+        type: ContentTypes.ERROR,
+        error: JSON.stringify({ type: ErrorTypes.COMPACTION_FAILED }),
+        initiatedBy: 'user',
+      },
+    ]);
+  });
+
+  /** The disconnect save runs while the generation is still live and the
+   *  completion path overwrites the row: it stamps identity and rewrites
+   *  nothing else, not even the failure flag of a still-streaming part. */
+  it('marks a non-terminal snapshot without failing or synthesizing anything', () => {
+    const parts: TMessageContentParts[] = [partialSummary('Half a summary')];
+
+    markAbortedCompactionContent(parts, true, { synthesizeFailure: false });
+
+    expect(parts).toEqual([{ ...partialSummary('Half a summary'), initiatedBy: 'user' }]);
+  });
+
+  it('returns content from a turn that was not a compaction unchanged', () => {
+    const parts = [partialSummary('An automatic detour partial')];
+
+    expect(markAbortedCompactionContent(parts, false)).toBe(parts);
+    expect(parts[0]).not.toHaveProperty('initiatedBy');
   });
 });
 

@@ -789,6 +789,10 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
            * its parent and the preliminary-parent fence correctly rejects it. */
           const shouldPersistAbortedTurn =
             hasPersistableAbortContent(content) || jobData?.createdEventEmitted === true;
+          /** A compaction's `userMessage` is the already-persisted leaf
+           *  projected for identity only; upserting it would erase a user
+           *  leaf's text or turn an assistant leaf into an empty user row. */
+          const shouldPersistAnchor = jobData?.compact !== true;
 
           if (
             jobData?.userMessage?.messageId &&
@@ -852,23 +856,26 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
              * with neither row stored. Both writes are idempotent upserts;
              * await the user prerequisite first, but still attempt the child
              * write and checkpoint cleanup so every independently useful
-             * operation gets a chance to succeed. */
+             * operation gets a chance to succeed. A compaction skips the
+             * prerequisite: its anchor is the persisted leaf itself. */
             let persistedRequestId;
-            try {
-              const persistedRequest = await saveAbortedUserMessage(
-                { saveMessage, getPersistedPrivateTextId, getPrivateMessageTexts },
-                messageContext,
-                requestMessage,
-                { context: 'api/server/routes/agents/index.js - abort user prerequisite' },
-                req.user?.tenantId,
-                pendingAbortResult.finalEvent,
-              );
-              if (!persistedRequest) {
-                throw new Error('Abort user prerequisite was not persisted');
+            if (shouldPersistAnchor) {
+              try {
+                const persistedRequest = await saveAbortedUserMessage(
+                  { saveMessage, getPersistedPrivateTextId, getPrivateMessageTexts },
+                  messageContext,
+                  requestMessage,
+                  { context: 'api/server/routes/agents/index.js - abort user prerequisite' },
+                  req.user?.tenantId,
+                  pendingAbortResult.finalEvent,
+                );
+                if (!persistedRequest) {
+                  throw new Error('Abort user prerequisite was not persisted');
+                }
+                persistedRequestId = persistedRequest._id;
+              } catch (error) {
+                persistenceErrors.push(error);
               }
-              persistedRequestId = persistedRequest._id;
-            } catch (error) {
-              persistenceErrors.push(error);
             }
 
             try {

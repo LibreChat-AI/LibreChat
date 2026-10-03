@@ -380,6 +380,69 @@ describe('Agent Abort Endpoint', () => {
           }),
         ).resolves.toBe(false);
       });
+
+      /** A compaction's `userMessage` is the persisted leaf projected for
+       *  identity only (`projectCompactionAnchor`), so upserting it would
+       *  erase a user leaf's text or turn an assistant leaf into an empty
+       *  user row: Stop writes only the aborted response. */
+      it('skips the anchor prerequisite when an aborted compaction persists its row', async () => {
+        const jobStreamId = 'test-stream-compact';
+        const anchorId = 'persisted-leaf-1';
+        const compactionRowId = 'compaction-response-1';
+
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'test-user-123', generationProtocolVersion: 2 },
+        });
+
+        const abortResult = {
+          success: true,
+          jobData: {
+            compact: true,
+            createdEventEmitted: true,
+            userMessage: {
+              messageId: anchorId,
+              parentMessageId: 'older-response',
+              conversationId: jobStreamId,
+              text: '',
+            },
+            responseMessageId: compactionRowId,
+            conversationId: jobStreamId,
+            endpoint: 'agents',
+            sender: 'TestAgent',
+            model: 'agent-1',
+          },
+          content: [
+            {
+              type: 'error',
+              error: JSON.stringify({ type: 'compaction_failed' }),
+              initiatedBy: 'user',
+            },
+          ],
+          text: '',
+        };
+        mockGenerationJobManager.abortJob.mockImplementation(async (_streamId, options) => {
+          await options.beforePublish(abortResult);
+          return abortResult;
+        });
+
+        const response = await request(app)
+          .post('/api/agents/chat/abort')
+          .set('X-LibreChat-Generation-Protocol', '2')
+          .send({ conversationId: jobStreamId, generationProtocolVersion: 2 });
+
+        expect(response.status).toBe(200);
+        expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+        expect(mockSaveMessage).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            messageId: compactionRowId,
+            parentMessageId: anchorId,
+            unfinished: true,
+            isCreatedByUser: false,
+          }),
+          expect.objectContaining({ context: expect.stringContaining('abort endpoint') }),
+        );
+      });
     });
 
     describe('Partial Response Saving', () => {
