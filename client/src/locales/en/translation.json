@@ -3161,6 +3161,7 @@
   "com_ui_updated_file": "Updated {{0}}",
   "com_ui_updates": "Updates",
   "com_ui_updating": "Updating...",
+  "com_ui_updating_latest_version": "Updating to the latest version…",
   "com_ui_upload": "Upload",
   "com_ui_upload_agent_avatar": "Successfully updated agent avatar",
   "com_ui_upload_agent_avatar_label": "Upload agent avatar image",
