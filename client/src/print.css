@@ -1,0 +1,134 @@
+/**
+ * Ctrl/Cmd+P prints the full conversation thread as a clean, paginated
+ * document (users can choose "Save as PDF" as the print destination).
+ *
+ * `[data-testid="screenshot-target"]` is the wrapper already used by the
+ * screenshot export feature to scope its capture to the message tree
+ * (client/src/components/Chat/Messages/MessagesView.tsx); reused here
+ */
+@media print {
+
+  /*
+   * `:has()` gates this rule to routes that actually render the print
+   * target. Without it, a route lacking `[data-testid='screenshot-target']`
+   * (e.g. the read-only Share view, which uses `data-testid="messages-view"`
+   * instead) would hide the whole page here with nothing left to reveal,
+   * printing blank. Wrapped in `:where()` so the gate adds no specificity —
+   * otherwise this rule would outrank (and defeat) the plain attribute
+   * selector below that un-hides the target itself.
+   */
+  :where(body:has([data-testid='screenshot-target'])) * {
+    visibility: hidden;
+  }
+
+  [data-testid='screenshot-target'],
+  [data-testid='screenshot-target'] * {
+    visibility: visible;
+  }
+
+  /*
+   * The transcript lives inside several nested scroll/clip containers
+   * (overflow-hidden / overflow-y-auto paired with h-full or an explicit
+   * height), none of which expand for print by default — a fixed-height,
+   * clipped box stays clipped to one page's worth of content instead of
+   * flowing across pages. Reset overflow/height site-wide within print
+   * media so the transcript can paginate naturally; this is safe globally
+   * because every other such container in the app (menus, dialogs, other
+   * scroll regions) is already invisible from the rule above.
+   *
+   * `.mermaid-viewport` and everything inside it
+   * (client/src/components/Messages/Content/Mermaid/Mermaid.tsx) are
+   * excluded: the viewport's inline height and `overflow-hidden` are
+   * load-bearing, and the rendered diagram `<img>` beneath it is sized by
+   * an inline pixel height — forcing `height: auto` on either collapses
+   * the diagram to zero height, and it disappears from the printed page
+   * entirely.
+   *
+   * The `overflow` reset is split into its own rule with one more
+   * exclusion, `.mermaid-card` (the diagram's outer wrapper): it relies on
+   * its own `overflow-hidden` to clip `MermaidHeader`'s square corners to
+   * the card's rounded border. Forcing `overflow: visible` there doesn't
+   * clip anything taller (the card has no fixed height), it only lets
+   * those square corners show past the rounded clip in print — so `height`
+   * still resets for it, but `overflow` doesn't.
+   */
+  html,
+  body,
+  #root,
+  #root *:not(.mermaid-viewport, .mermaid-viewport *) {
+    height: auto !important;
+    max-height: none !important;
+  }
+
+  html,
+  body,
+  #root,
+  #root *:not(.mermaid-card, .mermaid-viewport, .mermaid-viewport *) {
+    overflow: visible !important;
+  }
+
+  [data-testid='screenshot-target'] {
+    width: 100% !important;
+  }
+
+  /*
+   * `visibility: hidden` above removes paint but not layout — the sidebar
+   * and the artifacts/subagent side panel are flex/resizable siblings of
+   * the transcript pane and would still reserve their on-screen width,
+   * squeezing the printed column into a narrow strip with blank space on
+   * either side. Collapse them outright using structural hooks that
+   * already exist for other purposes — `#messages-view`
+   * (client/src/components/SidePanel/SidePanelGroup.tsx) and the semantic
+   * `<aside>` sidebar landmark (client/src/components/UnifiedSidebar/UnifiedSidebar.tsx)
+   * — rather than adding new markup just for print.
+   */
+  div:has(> aside):has(#messages-view)>aside {
+    display: none !important;
+  }
+
+  #messages-view~* {
+    display: none !important;
+  }
+
+  #messages-view {
+    width: 100% !important;
+    flex: 1 1 100% !important;
+    max-width: none !important;
+  }
+
+  /*
+   * Resets a panned/zoomed Mermaid diagram to its default view for print.
+   * Scoped to the pan/zoom wrapper itself (`.mermaid-pan-zoom`, applied in
+   * client/src/components/Messages/Content/Mermaid/Mermaid.tsx) rather than
+   * every element, so it can't also strip `transform` off unrelated inline
+   * SVG content elsewhere in a message (e.g. KaTeX renders some glyphs as
+   * SVG with internally `transform`-positioned paths).
+   */
+  .mermaid-pan-zoom {
+    transform: none !important;
+  }
+
+  /*
+   * Keeps the whole diagram card — header toolbar plus diagram body —
+   * together rather than letting the page break fall between them or
+   * mid-diagram. Targets `.mermaid-card` (the outer wrapper that contains
+   * both `MermaidHeader` and `.mermaid-viewport`), not `.mermaid-viewport`
+   * alone: `break-inside: avoid` only protects the element it's applied to,
+   * so scoping it to just the diagram body let the header get stranded on
+   * the previous page while the diagram moved to the next. Only takes
+   * effect when the whole card fits within one page — a diagram taller
+   * than a page still has to split somewhere.
+   */
+  .mermaid-card {
+    break-inside: avoid;
+  }
+
+  [data-testid='screenshot-target'] svg {
+    max-width: 100%;
+    height: auto;
+  }
+
+  @page {
+    margin: 12mm;
+  }
+}

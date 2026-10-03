@@ -6,6 +6,7 @@ import App from './App';
 import '@librechat/client/style.css';
 import './style.css';
 import './mobile.css';
+import './print.css';
 import { ApiErrorBoundaryProvider } from './hooks/ApiErrorBoundaryContext';
 import 'katex/dist/katex.min.css';
 import 'katex/dist/contrib/copy-tex.js';

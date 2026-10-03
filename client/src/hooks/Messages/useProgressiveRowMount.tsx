@@ -8,7 +8,11 @@ import {
   useLayoutEffect,
   startTransition,
 } from 'react';
+import { flushSync } from 'react-dom';
 import type { ReactNode, RefObject } from 'react';
+
+const activeCompleters = new Set<() => Promise<void>>();
+const activeFlushers = new Set<() => void>();
 
 /**
  * Depth range (inclusive) of visible-path rows allowed to mount; `null` means
@@ -178,15 +182,23 @@ export function useProgressiveRowMount({
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       });
     activeCompleters.add(complete);
+    /** Synchronous counterpart for callers that cannot await — namely the
+     *  `beforeprint` listener, since the browser never waits on a handler's
+     *  returned promise. `flushSync` forces the commit before returning, so
+     *  by the time the (unawaited) call site regains control the full
+     *  thread is already in the DOM. Kept as a separate registration so
+     *  `completeProgressiveRowMounts` and its async/rAF behavior for the
+     *  screenshot path are untouched. */
+    const flush = () => flushSync(() => setMountWindow(null));
+    activeFlushers.add(flush);
     return () => {
       activeCompleters.delete(complete);
+      activeFlushers.delete(flush);
     };
   }, [isWindowActive]);
 
   return mountWindow;
 }
-
-const activeCompleters = new Set<() => Promise<void>>();
 
 /**
  * Forces every in-flight progressive mount to completion and resolves after
@@ -199,4 +211,18 @@ export async function completeProgressiveRowMounts(): Promise<void> {
     return;
   }
   await Promise.all([...activeCompleters].map((complete) => complete()));
+}
+
+/**
+ * Synchronous counterpart to `completeProgressiveRowMounts`, for callers
+ * that cannot await a promise — the `beforeprint` listener, since the
+ * browser dispatches that event synchronously and never waits on a
+ * handler's return value. Forces every in-flight progressive mount to
+ * completion via `flushSync`, so the full thread is committed to the DOM
+ * before this function returns.
+ */
+export function flushProgressiveRowMounts(): void {
+  for (const flush of [...activeFlushers]) {
+    flush();
+  }
 }
