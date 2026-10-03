@@ -42,6 +42,7 @@ import {
 import { MCP_APPS_CAPABILITY_PROFILE, STANDARD_MCP_CAPABILITY_PROFILE } from './capabilities';
 import { createSSRFSafeUndiciConnect, isSSRFTarget, resolveHostnameSSRF } from '~/auth';
 import { projectMCPAppRuntimeTarget, type MCPAppRuntimeTarget } from './apps/binding';
+import { assertToolApprovalTransportEpoch } from '~/tools/approval';
 import { reserveMCPToolsChangedRevision } from './toolsChanged';
 import { runOutsideTracing } from '~/utils/tracing';
 import { mediaTypeEssence } from '~/utils/headers';
@@ -2303,6 +2304,12 @@ export class MCPConnection extends EventEmitter {
         this.lastPingTime = Date.now();
       }
       const method = 'method' in msg ? msg.method : undefined;
+      if (method === 'tools/call') {
+        await assertToolApprovalTransportEpoch(
+          this.serverName,
+          this.oauthTokens?.credential_set_id ?? null,
+        );
+      }
       const id = 'id' in msg ? (msg as { id: string | number | null }).id : undefined;
       logger.debug(
         `${this.getLogPrefix()} Transport sending: method=${method ?? 'response'} id=${id ?? 'none'}`,

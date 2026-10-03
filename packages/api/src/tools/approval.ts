@@ -81,11 +81,56 @@ export function getToolApprovalExecutionScope(
 
 export interface ToolApprovalExecution {
   validateExecution: (tool: { name: string }, invocation: ToolApprovalInvocation) => Promise<void>;
+  validateTransport?: (
+    serverName: string,
+    oauthEpoch: string | null,
+    invocation: ToolApprovalInvocation,
+    checkStorage: boolean,
+  ) => Promise<void>;
   noteDispatch?: (invocation: ToolApprovalInvocation) => void;
   finishDispatch?: (invocation: ToolApprovalInvocation) => void;
 }
 
 const executionContext = new AsyncLocalStorage<ToolApprovalExecution>();
+const transportContext = new AsyncLocalStorage<{
+  execution: ToolApprovalExecution;
+  invocation: ToolApprovalInvocation;
+}>();
+
+type InvocationConfig = Parameters<typeof assertToolApprovalExecution>[1];
+function getInvocation(config: InvocationConfig): ToolApprovalInvocation {
+  return {
+    agentId:
+      config?.metadata?.executingAgentId ??
+      config?.metadata?.activeAgentId ??
+      config?.metadata?.agentId,
+    toolCallId: config?.toolCall?.id,
+    executionScope: getToolApprovalExecutionScope(config?.metadata?.executionContext),
+    background: config?.configurable?.__librechatBackgroundToolInvocation === true,
+  };
+}
+
+export function withToolApprovalTransport<T>(config: InvocationConfig, invoke: () => T): T {
+  const execution = executionContext.getStore();
+  return execution
+    ? transportContext.run({ execution, invocation: getInvocation(config) }, invoke)
+    : invoke();
+}
+
+/** Reconnect and SDK-internal retries cannot change the credential generation a call approved. */
+export async function assertToolApprovalTransportEpoch(
+  serverName: string,
+  oauthEpoch: string | null,
+  checkStorage = false,
+): Promise<void> {
+  const context = transportContext.getStore();
+  await context?.execution.validateTransport?.(
+    serverName,
+    oauthEpoch,
+    context.invocation,
+    checkStorage,
+  );
+}
 
 /** Async context keeps policy capabilities out of checkpoint, request and model data. */
 export function withToolApprovalExecution<T>(execution: ToolApprovalExecution, invoke: () => T): T {
@@ -107,15 +152,7 @@ export async function assertToolApprovalExecution(
 ): Promise<void> {
   const execution = executionContext.getStore();
   if (!execution) return;
-  await execution.validateExecution(tool, {
-    agentId:
-      config?.metadata?.executingAgentId ??
-      config?.metadata?.activeAgentId ??
-      config?.metadata?.agentId,
-    toolCallId: config?.toolCall?.id,
-    executionScope: getToolApprovalExecutionScope(config?.metadata?.executionContext),
-    background: config?.configurable?.__librechatBackgroundToolInvocation === true,
-  });
+  await execution.validateExecution(tool, getInvocation(config));
 }
 
 export function noteToolApprovalDispatch(invocation: ToolApprovalInvocation): void {
