@@ -114,7 +114,8 @@ test.describe('conversation management', () => {
         await page.getByRole('link', { name: 'New chat', exact: true }).click();
         await expect(page).toHaveURL(/\/c\/new$/);
       }
-      const row = page.getByTestId('convo-item').filter({ hasText: originalTitle });
+      const row = firstConversation(page);
+      await expect(row).toContainText(originalTitle);
       await expect(row.getByRole('img', { name: 'Generating' })).toBeVisible();
       await row.click({ button: 'right' });
       const menu = page.getByRole('menu');
