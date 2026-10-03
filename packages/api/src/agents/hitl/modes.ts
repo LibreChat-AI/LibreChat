@@ -239,6 +239,11 @@ export function createAgentToolApprovalSession({
         calls.set(input.toolUseId, null);
         return { decision: 'ask' };
       }
+      if (input.toolInput.run_in_background === true) {
+        binding.canRemember = false;
+        binding.unavailable = 'background';
+        ready.delete(input.toolUseId);
+      }
       calls.set(input.toolUseId, binding);
       const status = await approved(binding);
       binding.revocation = status.revocation;

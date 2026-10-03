@@ -146,6 +146,7 @@ endpoints:
     # existing file-authoring, steering, background-tool, or MCP specs.
     toolApproval:
       enabled: true
+      agentModes: true
       mode: bypass
       ask:
         - approval_probe_mcp_e2e-memory

@@ -208,8 +208,13 @@ export function extractMCPToolDefinition(tool: MCPToolInstance): ToolDefinition 
     def.serverToolName = tool.mcpServerToolName;
   }
 
-  if (tool.mcpCurrentToolName) {
+  if (tool.mcpCurrentToolName && serverName) {
     def.currentToolName = tool.mcpCurrentToolName;
+    bindToolApproval(
+      def,
+      getToolApprovalBinding(def),
+      `${tool.mcpCurrentToolName}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`,
+    );
   }
 
   return def;

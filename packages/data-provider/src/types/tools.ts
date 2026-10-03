@@ -88,7 +88,7 @@ export interface ToolApprovalGrantBinding {
   scope: 'chat' | 'always';
   revocation?: string;
   canRemember?: boolean;
-  unavailable?: 'connection' | 'disabled' | 'storage';
+  unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
 }
 
 export interface ToolApprovalGrantScope {

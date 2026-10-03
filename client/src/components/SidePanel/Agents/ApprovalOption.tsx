@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useId, useState, useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { useMutation } from '@tanstack/react-query';
 import { dataService, MutationKeys } from 'librechat-data-provider';
@@ -48,6 +48,17 @@ export default function ApprovalOption({
   const reset = useMutation(dataService.resetToolApprovalGrants, {
     mutationKey: [MutationKeys.resetToolApprovalGrants],
   });
+  useEffect(() => {
+    if (!open) return;
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      // OGDialog prevents the native Escape before Ariakit can dismiss its popup.
+      event.preventDefault();
+      setOpen(false);
+    };
+    document.addEventListener('keydown', dismiss);
+    return () => document.removeEventListener('keydown', dismiss);
+  }, [open]);
   const selected = mode ?? 'inherit';
   const items = MODES.map((value) => ({
     id: `${menuId}-${value}`,

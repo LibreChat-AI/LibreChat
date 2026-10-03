@@ -97,6 +97,7 @@ export default function ToolApproval({
     connection: 'com_ui_tool_approval_connection_unavailable',
     disabled: 'com_ui_tool_approval_remember_disabled',
     storage: 'com_ui_tool_approval_storage_unavailable',
+    background: 'com_ui_tool_approval_background_unavailable',
   };
   const conversationId = useContext(ChatContext)?.conversation?.conversationId;
   const composerPresents = useComposerPresentsApproval(conversationId, actionId);

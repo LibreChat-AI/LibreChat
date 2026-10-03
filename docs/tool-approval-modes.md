@@ -13,7 +13,7 @@ Selections belong to the agent, not the shared MCP server.
 | Ask once, then always approve | Remember it for this user and agent across chats.                            |
 
 Remembered approval covers different arguments. The approval view discloses that scope.
-Reject, edit, respond, failed execution and expired approvals do not create grants.
+Reject, edit, respond, failed execution, detached launches and expired approvals do not create grants.
 A changed connection, schema or mode revision requires fresh approval. Request-scoped, templated or
 unresolved connections cannot retain approval. Reset in the tool menu revokes your grants
 across chats. In-flight approvals cannot restore a revoked grant. Refresh and reconnect do not reset a chat.
