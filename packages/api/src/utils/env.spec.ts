@@ -554,6 +554,33 @@ describe('resolveHeaders', () => {
     expect(result['X-Conversation']).toBe('conv-123');
   });
 
+  it('should resolve {{LIBRECHAT_BODY_AGENTID}} from body when present', () => {
+    const body = {
+      conversationId: 'conv-123',
+      agentId: 'agent-456',
+    };
+    const headers = {
+      'X-Conversation': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+      'X-Agent-Id': '{{LIBRECHAT_BODY_AGENTID}}',
+    };
+    const result = resolveHeaders({ headers, body });
+    expect(result['X-Conversation']).toBe('conv-123');
+    expect(result['X-Agent-Id']).toBe('agent-456');
+  });
+
+  it('should resolve {{LIBRECHAT_BODY_AGENTID}} to empty string when absent from body', () => {
+    const body = {
+      conversationId: 'conv-123',
+    };
+    const headers = {
+      'X-Conversation': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+      'X-Agent-Id': '{{LIBRECHAT_BODY_AGENTID}}',
+    };
+    const result = resolveHeaders({ headers, body });
+    expect(result['X-Conversation']).toBe('conv-123');
+    expect(result['X-Agent-Id']).toBe('');
+  });
+
   it('should not resolve env vars introduced via LIBRECHAT_BODY placeholders', () => {
     const body = {
       conversationId: '${TEST_API_KEY}',
