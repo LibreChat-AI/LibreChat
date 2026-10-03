@@ -26,15 +26,13 @@ const paths = require('~/config/paths');
  */
 async function saveLocalFile(file, outputPath, outputFilename) {
   try {
-    if (!fs.existsSync(outputPath)) {
-      fs.mkdirSync(outputPath, { recursive: true });
-    }
+    await fs.promises.mkdir(outputPath, { recursive: true });
 
     const fileExtension = path.extname(file.originalname);
     const filenameWithExt = outputFilename + fileExtension;
     const outputFilePath = path.join(outputPath, filenameWithExt);
-    fs.copyFileSync(file.path, outputFilePath);
-    fs.unlinkSync(file.path);
+    await fs.promises.copyFile(file.path, outputFilePath);
+    await fs.promises.unlink(file.path);
 
     return outputFilePath;
   } catch (error) {
@@ -81,9 +79,7 @@ async function saveLocalBuffer({ userId, buffer, fileName, basePath = 'images' }
     const directoryPath =
       basePath === 'images' ? path.join(publicPath, basePath, userId) : path.join(uploads, userId);
 
-    if (!fs.existsSync(directoryPath)) {
-      fs.mkdirSync(directoryPath, { recursive: true });
-    }
+    await fs.promises.mkdir(directoryPath, { recursive: true });
 
     const resolvedDir = path.resolve(directoryPath);
     const resolvedPath = path.resolve(resolvedDir, fileName);
@@ -91,7 +87,7 @@ async function saveLocalBuffer({ userId, buffer, fileName, basePath = 'images' }
     if (rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(`..${path.sep}`)) {
       throw new Error('Path traversal detected in filename');
     }
-    fs.writeFileSync(resolvedPath, buffer);
+    await fs.promises.writeFile(resolvedPath, buffer);
 
     const filePath = path.posix.join('/', basePath, userId, fileName);
 
@@ -143,9 +139,7 @@ async function saveFileFromURL({ userId, URL, fileName, basePath = 'images' }) {
     const outputPath = path.join(paths.publicPath, basePath, userId.toString());
 
     // Check if the output directory exists, if not, create it
-    if (!fs.existsSync(outputPath)) {
-      fs.mkdirSync(outputPath, { recursive: true });
-    }
+    await fs.promises.mkdir(outputPath, { recursive: true });
 
     // Replace or append the correct extension
     const extRegExp = new RegExp(path.extname(fileName) + '$');
@@ -156,7 +150,7 @@ async function saveFileFromURL({ userId, URL, fileName, basePath = 'images' }) {
 
     // Save the file to the output path
     const outputFilePath = path.join(outputPath, fileName);
-    fs.writeFileSync(outputFilePath, buffer);
+    await fs.promises.writeFile(outputFilePath, buffer);
 
     return {
       bytes,
@@ -304,9 +298,7 @@ async function uploadLocalFile({ req, file, file_id }) {
   const { uploads } = appConfig.paths;
   const userPath = path.join(uploads, req.user.id);
 
-  if (!fs.existsSync(userPath)) {
-    fs.mkdirSync(userPath, { recursive: true });
-  }
+  await fs.promises.mkdir(userPath, { recursive: true });
 
   const fileName = `${file_id}__${path.basename(inputFilePath)}`;
   const newPath = path.join(userPath, fileName);
