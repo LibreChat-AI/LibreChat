@@ -1,3 +1,4 @@
+const { loadModelsResponse } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { loadDefaultModels, loadConfigModels } = require('~/server/services/Config');
 
@@ -13,7 +14,11 @@ async function loadModels(req) {
 
 async function modelController(req, res) {
   try {
-    const modelConfig = await loadModels(req);
+    const modelConfig = await loadModelsResponse(req, {
+      loadDefaultModels,
+      loadConfigModels,
+    });
+
     res.send(modelConfig);
   } catch (error) {
     logger.error('Error fetching models:', error);

@@ -1,8 +1,19 @@
-import { render, screen } from '@testing-library/react';
+import { render as rtlRender, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TEndpointsConfig } from 'librechat-data-provider';
+import type { ReactElement } from 'react';
 import type { FavoriteModel } from '~/store/favorites';
 import FavoriteItem from '../FavoriteItem';
 
+function render(ui: ReactElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, cacheTime: 0 },
+    },
+  });
+
+  return rtlRender(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
 /** Renders the real MinimalIcon so the provider resolution is exercised, unlike
  *  FavoriteItem.spec.tsx which stubs it to assert layout. */
 jest.mock('~/hooks', () => ({

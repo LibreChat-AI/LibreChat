@@ -1,5 +1,6 @@
 import React from 'react';
 import { EModelEndpoint } from 'librechat-data-provider';
+import { useGetModelLabelsQuery } from 'librechat-data-provider/react-query';
 import type { Agent, TModelSpec, TEndpointsConfig } from 'librechat-data-provider';
 import type { FavoriteModel } from '~/store/favorites';
 import SpecIcon from '~/components/Chat/Menus/Endpoints/components/SpecIcon';
@@ -49,6 +50,7 @@ type FavoriteItemProps = AgentFavoriteProps | ModelFavoriteProps | SpecFavoriteP
 export default function FavoriteItem(props: FavoriteItemProps) {
   const { onRemoveFocus, keyShortcuts } = props;
   const localize = useLocalize();
+  const { data: modelLabels } = useGetModelLabelsQuery();
   const { removeFavoriteAgent, removeFavoriteModel, removeFavoriteSpec } = useFavorites();
 
   const handleSelect = () => {
@@ -126,7 +128,7 @@ export default function FavoriteItem(props: FavoriteItemProps) {
     name = props.item.label;
     typeLabel = localize('com_ui_model_spec');
   } else {
-    name = props.item.model;
+    name = modelLabels?.[props.item.endpoint]?.[props.item.model] ?? props.item.model;
     typeLabel = localize('com_ui_model');
   }
   const ariaLabel = `${name} (${typeLabel})`;

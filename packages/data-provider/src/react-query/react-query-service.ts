@@ -187,18 +187,46 @@ export const useRevokeAllUserKeysMutation = (): UseMutationResult<unknown> => {
   });
 };
 
-export const useGetModelsQuery = (
-  config?: UseQueryOptions<t.TModelsConfig>,
-): QueryObserverResult<t.TModelsConfig> => {
-  return useQuery<t.TModelsConfig>([QueryKeys.models], () => dataService.getModels(), {
-    initialData: initialModelsConfig,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    refetchOnMount: false,
-    staleTime: Infinity,
-    ...config,
-  });
+type ModelsResponse = Awaited<ReturnType<typeof dataService.getModelsWithLabels>>;
+type ModelLabels = ModelsResponse['modelLabels'];
+
+const initialModelsResponse: ModelsResponse = {
+  models: initialModelsConfig,
+  modelLabels: {},
 };
+
+export const useGetModelsQuery = (
+  config?: Omit<
+    UseQueryOptions<ModelsResponse, unknown, t.TModelsConfig>,
+    'queryKey' | 'queryFn' | 'select'
+  >,
+): QueryObserverResult<t.TModelsConfig> =>
+  useQuery<ModelsResponse, unknown, t.TModelsConfig>(
+    [QueryKeys.models],
+    () => dataService.getModelsWithLabels(),
+    {
+      initialData: initialModelsResponse,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      refetchOnMount: false,
+      staleTime: Infinity,
+      ...config,
+      select: (response) => response.models,
+    },
+  );
+
+/** Observe labels from the shared models cache without initiating a fetch. */
+export const useGetModelLabelsQuery = (): QueryObserverResult<ModelLabels> =>
+  useQuery<ModelsResponse, unknown, ModelLabels>(
+    [QueryKeys.models],
+    () => dataService.getModelsWithLabels(),
+    {
+      enabled: false,
+      initialData: initialModelsResponse,
+      staleTime: Infinity,
+      select: (response) => response.modelLabels,
+    },
+  );
 
 export const useCreatePresetMutation = (): UseMutationResult<
   s.TPreset,

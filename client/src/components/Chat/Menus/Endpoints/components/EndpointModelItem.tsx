@@ -49,7 +49,7 @@ function EndpointModelItemComponent({
 
   const { ref: itemRef, isActive } = useActiveItem<HTMLDivElement>();
 
-  let modelName = modelId;
+  let modelName = endpoint.modelLabels?.[modelId ?? ''] ?? modelId;
   const avatarUrl = endpoint?.modelIcons?.[modelId ?? ''] || null;
 
   // Use custom names if available

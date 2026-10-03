@@ -1105,6 +1105,190 @@ describe('fetchModels caching behavior', () => {
   });
 });
 
+describe('fetchModels display names', () => {
+  const options = {
+    apiKey: 'test-label-key',
+    baseURL: 'https://labels.example/v1',
+    name: 'CustomAPI',
+    createTokenConfig: false,
+  };
+
+  beforeEach(() => {
+    mockedAxios.get.mockReset();
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('returns IDs while passing trimmed display names to the callback', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { data: [{ id: 'model-1', name: ' Friendly model ' }] },
+    });
+    const onModelLabels = jest.fn();
+
+    const models = await fetchModels({ ...options, onModelLabels });
+
+    expect(models).toEqual(['model-1']);
+    expect(onModelLabels).toHaveBeenCalledWith({ 'model-1': 'Friendly model' });
+  });
+
+  it('preserves distinct IDs when two models have the same name', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        data: [
+          { id: 'model-1', name: 'Friendly' },
+          { id: 'model-2', name: 'Friendly' },
+        ],
+      },
+    });
+    const onModelLabels = jest.fn();
+
+    expect(await fetchModels({ ...options, onModelLabels })).toEqual(['model-1', 'model-2']);
+    expect(onModelLabels).toHaveBeenCalledWith({
+      'model-1': 'Friendly',
+      'model-2': 'Friendly',
+    });
+  });
+
+  it('falls back to IDs for missing, empty and whitespace-only names', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        data: [{ id: 'a' }, { id: 'b', name: '' }, { id: 'c', name: '   ' }],
+      },
+    });
+    const onModelLabels = jest.fn();
+
+    expect(await fetchModels({ ...options, onModelLabels })).toEqual(['a', 'b', 'c']);
+    expect(onModelLabels).toHaveBeenCalledWith({ a: 'a', b: 'b', c: 'c' });
+  });
+
+  it('caches names with the same TTL as IDs and restores them without an HTTP request', async () => {
+    const cache = new Map<string, string[] | Record<string, string>>();
+    mockCacheGet.mockImplementation(async (key: string) => cache.get(key));
+    mockCacheSet.mockImplementation(
+      async (key: string, value: string[] | Record<string, string>) => {
+        cache.set(key, value);
+        return true;
+      },
+    );
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { data: [{ id: 'model-1', name: 'Friendly' }] },
+    });
+
+    // A caller that only needs IDs also populates labels for the later UI request.
+    expect(await fetchModels(options)).toEqual(['model-1']);
+    const onModelLabels = jest.fn();
+    expect(await fetchModels({ ...options, onModelLabels })).toEqual(['model-1']);
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    expect(onModelLabels).toHaveBeenCalledWith({ 'model-1': 'Friendly' });
+    expect(mockCacheSet).toHaveBeenCalledWith(
+      expect.stringMatching(/:labels$/),
+      { 'model-1': 'Friendly' },
+      Time.TWO_MINUTES,
+    );
+    expect(mockCacheSet).toHaveBeenCalledWith(expect.any(String), ['model-1'], Time.TWO_MINUTES);
+  });
+
+  it('fetches names if a legacy cache contains only IDs', async () => {
+    mockCacheGet.mockImplementation(async (key: string) =>
+      key.endsWith(':labels') ? undefined : ['old-model'],
+    );
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { data: [{ id: 'model-1', name: 'Friendly' }] },
+    });
+    const onModelLabels = jest.fn();
+
+    expect(await fetchModels({ ...options, onModelLabels })).toEqual(['model-1']);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    expect(onModelLabels).toHaveBeenCalledWith({ 'model-1': 'Friendly' });
+  });
+
+  it('does not share cached names between API keys', async () => {
+    const cache = new Map<string, string[] | Record<string, string>>();
+    mockCacheGet.mockImplementation(async (key: string) => cache.get(key));
+    mockCacheSet.mockImplementation(
+      async (key: string, value: string[] | Record<string, string>) => {
+        cache.set(key, value);
+        return true;
+      },
+    );
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { data: [{ id: 'id', name: 'First account' }] },
+    });
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { data: [{ id: 'id', name: 'Second account' }] },
+    });
+    const first = jest.fn();
+    const second = jest.fn();
+
+    await fetchModels({ ...options, onModelLabels: first });
+    await fetchModels({ ...options, apiKey: 'other-key', onModelLabels: second });
+
+    expect(first).toHaveBeenCalledWith({ id: 'First account' });
+    expect(second).toHaveBeenCalledWith({ id: 'Second account' });
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { skipCache: true },
+    { userIdQuery: true, user: 'user-1' },
+    { headers: { 'X-User': 'user-1' }, userObject: { id: 'user-1' } },
+  ])('does not share name caches for user-scoped requests: %j', async (scope) => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { data: [{ id: 'id', name: 'First name' }] },
+    });
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { data: [{ id: 'id', name: 'Updated name' }] },
+    });
+    const onModelLabels = jest.fn();
+
+    await fetchModels({ ...options, ...scope, onModelLabels });
+    await fetchModels({ ...options, ...scope, onModelLabels });
+
+    expect(onModelLabels).toHaveBeenLastCalledWith({ id: 'Updated name' });
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    expect(mockCacheGet).not.toHaveBeenCalled();
+    expect(mockCacheSet).not.toHaveBeenCalled();
+  });
+
+  it('does not publish names when the provider request fails', async () => {
+    mockedAxios.get.mockRejectedValueOnce(new Error('Provider unavailable'));
+    const onModelLabels = jest.fn();
+
+    expect(await fetchModels({ ...options, onModelLabels })).toEqual([]);
+    expect(onModelLabels).not.toHaveBeenCalled();
+    expect(mockCacheSet).not.toHaveBeenCalled();
+  });
+
+  it('returns an empty label map for an empty model list', async () => {
+    mockedAxios.get.mockResolvedValueOnce({ data: { data: [] } });
+    const onModelLabels = jest.fn();
+
+    expect(await fetchModels({ ...options, onModelLabels })).toEqual([]);
+    expect(onModelLabels).toHaveBeenCalledWith({});
+    expect(mockCacheSet).not.toHaveBeenCalled();
+  });
+
+  it('preserves native Ollama model IDs and caches an empty display-name map', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { models: [{ name: 'llama:latest' }] },
+    });
+    const onModelLabels = jest.fn();
+
+    expect(await fetchModels({ ...options, name: 'Ollama', onModelLabels })).toEqual([
+      'llama:latest',
+    ]);
+    expect(onModelLabels).toHaveBeenCalledWith({});
+    expect(mockCacheSet).toHaveBeenCalledWith(
+      expect.stringMatching(/:labels$/),
+      {},
+      Time.TWO_MINUTES,
+    );
+  });
+});
+
 describe('configured model lists skip provider discovery', () => {
   let originalEnv: NodeJS.ProcessEnv;
 

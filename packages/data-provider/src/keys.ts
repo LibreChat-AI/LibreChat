@@ -19,6 +19,7 @@ export enum QueryKeys {
   passkeys = 'passkeys',
   name = 'name', // user key name
   models = 'models',
+  modelLabels = 'modelLabels',
   balance = 'balance',
   endpoints = 'endpoints',
   tokenConfig = 'tokenConfig',
