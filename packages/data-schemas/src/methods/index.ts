@@ -1,4 +1,6 @@
+import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
 import type { ScheduleMCPConsentStorage } from './scheduleConsent';
+import { createToolApprovalGrantMethods } from './toolApprovalGrant';
 import { createScheduleMCPConsentStorage } from './scheduleConsent';
 export { createScheduleMCPConsentStorage } from './scheduleConsent';
 export type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from './scheduleConsent';
@@ -246,7 +248,8 @@ export {
   AgentQueuedTurnLaneRetiredError,
 };
 
-export type AllMethods = UserMethods &
+export type AllMethods = ToolApprovalGrantStorage &
+  UserMethods &
   SessionMethods &
   TokenMethods &
   RefreshTokenBridgeMethods &
@@ -484,6 +487,7 @@ export function createMethods(
   const agentMethods = createAgentMethods(mongoose, agentDeps);
   return {
     ...createUserMethods(mongoose, { getCache: deps.getCache }),
+    ...createToolApprovalGrantMethods(mongoose),
     ...createSessionMethods(mongoose),
     ...createTokenMethods(mongoose),
     ...createRefreshTokenBridgeMethods(mongoose),

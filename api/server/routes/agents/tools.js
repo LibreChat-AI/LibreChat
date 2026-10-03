@@ -1,6 +1,7 @@
 const express = require('express');
 const {
   reportLocatorTraversalFailure,
+  createResetToolApprovalController,
   createContentFilter,
   extractToolArgumentContent,
 } = require('@librechat/api');
@@ -8,7 +9,9 @@ const { callTool, verifyToolAuth, getToolCalls } = require('~/server/controllers
 const { getAvailableTools } = require('~/server/controllers/PluginController');
 const { toolCallLimiter } = require('~/server/middleware');
 
+const approvalStorage = require('~/models');
 const router = express.Router();
+router.post('/approvals/reset', createResetToolApprovalController(approvalStorage));
 const filterToolArguments = createContentFilter({
   onTraversalFailure: reportLocatorTraversalFailure,
   getFilters: (req) => req.config?.filters,

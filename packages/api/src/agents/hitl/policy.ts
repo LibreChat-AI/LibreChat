@@ -949,6 +949,7 @@ export function toClientPendingAction(
     requestFingerprintV2: _requestFingerprintV2,
     resumeContext: _resumeContext,
     codeExecutionBinding: _codeExecutionBinding,
+    toolApprovalBindings: _toolApprovalBindings,
     ...clientSafe
   } = pendingAction;
   return clientSafe;
