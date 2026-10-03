@@ -8,18 +8,25 @@ export interface LocalStoragePaths {
 }
 
 /**
- * Writes through a sibling temp file and a rename, so concurrent writers to one path each
- * land whole (last rename wins) instead of interleaving bytes in a shared truncated file.
+ * Fills a sibling temp file and renames it into place, so concurrent writers to one path each
+ * land whole (last rename wins) and readers never see a partly written file.
  */
-export async function writeFileAtomic(filePath: string, data: Buffer | string): Promise<void> {
+async function replaceAtomically(
+  filePath: string,
+  fill: (tempPath: string) => Promise<void>,
+): Promise<void> {
   const tempPath = `${filePath}.${crypto.randomUUID()}.tmp`;
   try {
-    await writeFile(tempPath, data);
+    await fill(tempPath);
     await rename(tempPath, filePath);
   } catch (error) {
     await unlink(tempPath).catch(() => undefined);
     throw error;
   }
+}
+
+export async function writeFileAtomic(filePath: string, data: Buffer | string): Promise<void> {
+  await replaceAtomically(filePath, (tempPath) => writeFile(tempPath, data));
 }
 
 /** Creates `directory` if needed and writes `data` to `fileName` inside it atomically. */
@@ -42,7 +49,7 @@ export async function moveLocalFile(
 ): Promise<string> {
   await mkdir(directory, { recursive: true });
   const filePath = path.join(directory, fileName);
-  await copyFile(sourcePath, filePath);
+  await replaceAtomically(filePath, (tempPath) => copyFile(sourcePath, tempPath));
   await unlink(sourcePath);
   return filePath;
 }

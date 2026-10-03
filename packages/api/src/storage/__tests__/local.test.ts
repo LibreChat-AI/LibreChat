@@ -68,6 +68,25 @@ describe('local storage writes', () => {
     expect(await fs.readdir(dir)).toEqual([]);
   });
 
+  it('leaves one whole file when two uploads move to one path at once', async () => {
+    const large = path.join(dir, 'large.tmp');
+    const small = path.join(dir, 'small.tmp');
+    const largeData = Buffer.alloc(4 * 1024 * 1024, 'a');
+    const smallData = Buffer.alloc(1024, 'b');
+    await fs.writeFile(large, largeData);
+    await fs.writeFile(small, smallData);
+
+    const out = path.join(dir, 'out');
+    await Promise.all([
+      moveLocalFile(large, out, 'image.png'),
+      moveLocalFile(small, out, 'image.png'),
+    ]);
+
+    const written = await fs.readFile(path.join(out, 'image.png'));
+    expect(written.equals(largeData) || written.equals(smallData)).toBe(true);
+    expect(await fs.readdir(out)).toEqual(['image.png']);
+  });
+
   it('moves a temp upload into a new directory', async () => {
     const source = path.join(dir, 'upload.tmp');
     await fs.writeFile(source, 'content');
