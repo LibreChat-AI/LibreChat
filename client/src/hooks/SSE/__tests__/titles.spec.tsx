@@ -6,6 +6,7 @@ import { act, renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, EModelEndpoint, QueryKeys } from 'librechat-data-provider';
 import type { EventSubmission, TConversation } from 'librechat-data-provider';
+import { markTitleGenerationProcessed } from '~/data-provider/SSE/queries';
 import useEventHandlers from '../useEventHandlers';
 
 jest.mock('~/hooks/Agents', () => ({ useApplyAgentTemplate: () => jest.fn() }));
@@ -146,6 +147,21 @@ describe('stream title reconciliation', () => {
       ).toBe('Renamed while running');
     },
   );
+
+  it('ignores a pending or replayed automatic title after an explicit rename', () => {
+    const { result, queryClient, rename } = setup();
+    rename('New Chat');
+    markTitleGenerationProcessed('saved-chat');
+    act(() =>
+      result.current.titleHandler({
+        event: 'title',
+        data: { conversationId: 'saved-chat', title: 'Late generated title' },
+      }),
+    );
+    expect(
+      queryClient.getQueryData<TConversation>([QueryKeys.conversation, 'saved-chat'])?.title,
+    ).toBe('New Chat');
+  });
 
   it('accepts the final server title when no local title is available', () => {
     const { result, queryClient } = setup();

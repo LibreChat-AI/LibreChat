@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useState, useEffect } from 'react';
 import { Ellipsis } from 'lucide-react';
 import { Button, Spinner, useMediaQuery } from '@librechat/client';
 import type { MouseEvent } from 'react';
@@ -62,6 +62,12 @@ function ConvoActions({
   const localize = useLocalize();
   const isSmallScreen = useMediaQuery('(max-width: 768px)');
   const [hasOpenedMenu, setHasOpenedMenu] = useState(false);
+
+  useEffect(() => {
+    if (isPopoverActive) {
+      setHasOpenedMenu(true);
+    }
+  }, [isPopoverActive]);
 
   const handleOpenChange = (open: boolean) => {
     if (open) {

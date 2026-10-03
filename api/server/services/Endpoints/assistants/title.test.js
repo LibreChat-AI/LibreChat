@@ -2,6 +2,7 @@ const mockCache = {
   set: jest.fn(),
 };
 const mockSaveConvo = jest.fn();
+const mockGetConvo = jest.fn();
 const mockInitializeClient = jest.fn();
 
 jest.mock('@librechat/api', () => ({
@@ -23,6 +24,7 @@ jest.mock(
 );
 jest.mock('~/models', () => ({
   saveConvo: (...args) => mockSaveConvo(...args),
+  getConvo: (...args) => mockGetConvo(...args),
 }));
 
 const addTitle = require('./title');
@@ -30,6 +32,8 @@ const addTitle = require('./title');
 describe('assistants addTitle content policy', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSaveConvo.mockImplementation(async (_ctx, data) => data);
+    mockGetConvo.mockResolvedValue(null);
   });
 
   it('skips the title provider, cache, and save for a normalized temporary request', async () => {

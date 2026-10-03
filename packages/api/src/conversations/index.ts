@@ -7,3 +7,4 @@ export * from './lineage';
 export * from './read';
 export * from './retention';
 export * from './save';
+export * from './title';

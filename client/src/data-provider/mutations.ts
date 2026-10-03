@@ -26,6 +26,7 @@ import useUpdateTagsInConvo from '~/hooks/Conversations/useUpdateTagsInConvo';
 import { chatFilterTagsAtom } from '~/components/Conversations/chatFilters';
 import { updateConversationTag } from '~/utils/conversationTags';
 import { isTemporaryConversation } from '~/utils/conversation';
+import { markTitleGenerationProcessed } from './SSE/queries';
 import { useConversationTagsQuery } from './queries';
 
 export const useUpdateConversationMutation = (
@@ -42,6 +43,7 @@ export const useUpdateConversationMutation = (
     {
       onSuccess: (updatedConvo, payload) => {
         const targetId = payload.conversationId || id;
+        markTitleGenerationProcessed(targetId);
         /* A rename carries only a title, so only the title is taken from its
          * response. Writing the whole conversation would also restore its
          * pre-request copy of every other field, undoing a concurrent change

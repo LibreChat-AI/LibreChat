@@ -193,3 +193,15 @@ describe('Conversation context menu', () => {
     expect(screen.getByTestId('convo-options')).toHaveAttribute('data-open', 'true');
   });
 });
+
+describe('Conversation context menu on small screens', () => {
+  it('keeps the real trigger mounted after an externally opened menu closes', () => {
+    mockIsSmallScreen = true;
+    renderRow(true);
+    fireEvent.contextMenu(screen.getByTestId('convo-item'), { clientX: 120, clientY: 80 });
+    expect(screen.getByTestId('convo-options')).toHaveAttribute('data-open', 'true');
+    act(() => mockCloseMenu());
+    expect(screen.getByTestId('convo-options')).toBeInTheDocument();
+    expect(screen.queryByTestId('convo-options-trigger')).not.toBeInTheDocument();
+  });
+});

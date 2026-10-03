@@ -10,6 +10,7 @@ import {
   sendMessage,
   sendMessageAndWaitForCompletion,
 } from './helpers';
+import { openSidebar } from './scenarios/sidebar';
 
 const firstConversation = (page: Page) => page.getByTestId('convo-item').first();
 
@@ -120,10 +121,17 @@ test.describe('conversation management', () => {
       await row.click({ button: 'right' });
       const menu = page.getByRole('menu');
       await expect(menu).toBeVisible();
+      await expect(menu).toBeFocused();
+      await page.keyboard.press('ArrowDown');
+      await expect(menu.getByRole('menuitem').first()).toBeFocused();
       const expectedOptions = ['Share', 'Pin'];
       if (background) expectedOptions.push('Mark as unread');
       expectedOptions.push('Rename', 'Duplicate', 'Change project', 'Archive', 'Delete');
       await expect(menu.getByRole('menuitem')).toHaveText(expectedOptions);
+      await test.info().attach('running-chat-menu', {
+        body: await page.screenshot(),
+        contentType: 'image/png',
+      });
       await expect(page).toHaveURL(background ? /\/c\/new$/ : conversationUrl);
       await expect(row.getByRole('img', { name: 'Generating' })).toBeVisible();
       await page.keyboard.press('Escape');
@@ -157,6 +165,100 @@ test.describe('conversation management', () => {
       );
       await page.reload({ timeout: 10000 });
       await expect(renamedRow).toBeVisible();
+    });
+  }
+
+  test('returns focus after right-clicking an unopened running menu on a small screen', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 900 });
+    const label = uniqueLabel('running-small');
+    await openMockChat(page);
+    await sendAndExpectReply(page, label);
+    const run = await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
+    expect(run.ok()).toBeTruthy();
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeVisible();
+    await openSidebar(page);
+    await page.getByRole('link', { name: 'New chat', exact: true }).click();
+    await openSidebar(page);
+    const row = firstConversation(page);
+    await expect(row.getByRole('img', { name: 'Generating' })).toBeVisible();
+    await row.click({ button: 'right' });
+    await expect(page.getByRole('menu')).toBeVisible();
+    const trigger = row.getByRole('button', { name: 'Conversation Menu Options' });
+    const originalTrigger = await trigger.elementHandle();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toBeHidden();
+    expect(await originalTrigger?.evaluate((element) => element.isConnected)).toBe(true);
+    await expect(trigger).toBeFocused();
+  });
+
+  for (const timing of ['immediate', 'final'] as const) {
+    test(`preserves a first-turn rename over a pending ${timing} automatic title`, async ({
+      page,
+      request,
+    }) => {
+      test.skip(process.env.E2E_TITLE_CONVO !== 'true', 'Requires the title-enabled mock profile');
+      test.setTimeout(40000);
+      const label = uniqueLabel(`first-rename-${timing}`);
+      const renamedTitle = `Renamed ${label}`;
+      const fixture = `http://127.0.0.1:${process.env.E2E_LABEL_PORT ?? '8889'}`;
+      await request.post(`${fixture}/__e2e/reset`);
+      await request.post(`${fixture}/__e2e/behavior`, {
+        data: { label: `Generated ${label}`, hold: true, holdModel: 'mock-title-model' },
+      });
+      try {
+        await page.goto(NEW_CHAT_PATH);
+        await selectMockEndpoint(page, {
+          label: `Mock Titles ${timing}`,
+          model: `mock-titles-${timing}`,
+        });
+        const titleFetch = page.waitForRequest((request) =>
+          new URL(request.url()).pathname.startsWith('/api/convos/gen_title/'),
+        );
+        const run = await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
+        await titleFetch;
+        expect(run.ok()).toBeTruthy();
+        await expect(page.getByRole('button', { name: 'Stop generating' })).toBeVisible();
+        const { conversationId } = await run.json();
+        await expect(messagesView(page).getByText('chunk-010')).toBeVisible();
+        const row = page.locator(
+          `[data-testid="convo-item"][data-conversation-id="${conversationId}"]`,
+        );
+        await expect(row.getByRole('img', { name: 'Generating' })).toBeVisible();
+        await row.click({ button: 'right' });
+        await page.getByRole('menuitem', { name: 'Rename' }).click();
+        await row.getByRole('textbox', { name: 'New Conversation Title' }).fill(renamedTitle);
+        await row.getByRole('button', { name: 'Save' }).click();
+        await expect(row).toContainText(renamedTitle);
+        const titleRequest = async () => {
+          const body = await (await request.get(`${fixture}/__e2e/requests`)).json();
+          return body.requests.find(
+            (record: { prompt: string; model: string }) =>
+              record.model === 'mock-title-model' && record.prompt.includes(label),
+          );
+        };
+        await expect.poll(async () => !!(await titleRequest())).toBe(true);
+        const published = page.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname.startsWith('/api/convos/gen_title/') &&
+            response.status() === 200,
+          { timeout: 30000 },
+        );
+        await request.post(`${fixture}/__e2e/release`);
+        expect((await (await published).json()).title).toBe(renamedTitle);
+        await expect.poll(async () => (await titleRequest())?.completed === true).toBe(true);
+        await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
+          timeout: 30000,
+        });
+        await expect(row).toContainText(renamedTitle);
+        await page.reload();
+        await expect(
+          page.getByTestId('convo-item').filter({ hasText: renamedTitle }),
+        ).toBeVisible();
+      } finally {
+        await request.post(`${fixture}/__e2e/reset`, { timeout: 2000 }).catch(() => undefined);
+      }
     });
   }
 

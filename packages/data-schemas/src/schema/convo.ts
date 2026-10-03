@@ -30,6 +30,7 @@ const convoSchema: Schema<IConversation> = new Schema(
       default: 'New Chat',
       meiliIndex: true,
     },
+    titleSetByUser: { type: Boolean, select: false },
     user: {
       type: String,
       index: true,

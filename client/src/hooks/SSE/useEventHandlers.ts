@@ -48,6 +48,7 @@ import {
   startupConfigKey,
   queueTitleGeneration,
   markTitleGenerationProcessed,
+  isTitleGenerationProcessed,
   useReconcileConversationCodeEnvironmentMutation,
 } from '~/data-provider';
 import {
@@ -546,7 +547,10 @@ export const getConvoTitle = ({
     QueryKeys.conversation,
     conversationId,
   ]);
-  if (hasRealTitle(cachedConvo?.title)) {
+  if (
+    cachedConvo &&
+    (hasRealTitle(cachedConvo.title) || isTitleGenerationProcessed(conversationId))
+  ) {
     return cachedConvo.title;
   }
   const listedConvo = findConvoInAllQueries(queryClient, conversationId);
@@ -979,7 +983,7 @@ export default function useEventHandlers({
   const titleHandler = useCallback(
     (event: TTitleEvent) => {
       const { conversationId, title } = event.data ?? {};
-      if (!conversationId || !hasRealTitle(title)) {
+      if (!conversationId || !hasRealTitle(title) || isTitleGenerationProcessed(conversationId)) {
         return;
       }
 

@@ -482,6 +482,8 @@ function ConvoOptions({
         }
         menuId={menuId}
         focusLoop={true}
+        finalFocus={menuButtonRef}
+        autoFocusOnShow={true}
         className="z-[125]"
         unmountOnHide={true}
         isOpen={isPopoverActive}

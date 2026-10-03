@@ -880,14 +880,6 @@
   "client/src/components/Conversations/Convo.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
-  "client/src/components/Conversations/ConvoActions.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
     }
   },
   "client/src/components/Conversations/ConvoLink.tsx": {

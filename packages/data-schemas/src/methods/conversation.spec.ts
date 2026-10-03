@@ -655,6 +655,64 @@ describe('Conversation Operations', () => {
       expect(result?.conversationId).toBe(mockConversationData.conversationId);
     });
 
+    describe('generated title ownership', () => {
+      const generated = { titleSource: 'generated' as const, appendMessageIds: [] };
+      const manual = { titleSource: 'manual' as const, appendMessageIds: [] };
+
+      it('does not upsert a missing conversation', async () => {
+        const conversationId = uuidv4();
+        expect(
+          await saveConvo(mockCtx, { conversationId, title: 'Generated' }, generated),
+        ).toBeNull();
+        expect(await Conversation.countDocuments({ conversationId })).toBe(0);
+      });
+
+      it.each(['Renamed', 'New Chat', ''])('preserves an explicit rename to %s', async (title) => {
+        const conversationId = uuidv4();
+        await saveConvo(mockCtx, { conversationId });
+        await saveConvo(mockCtx, { conversationId, title }, manual);
+        expect(
+          await saveConvo(mockCtx, { conversationId, title: 'Generated' }, generated),
+        ).toBeNull();
+        expect((await getConvo(mockCtx.userId, conversationId))?.title).toBe(title);
+        await saveConvo(mockCtx, { conversationId, titleSetByUser: false });
+        expect(await saveConvo(mockCtx, { conversationId, title: 'Later' }, generated)).toBeNull();
+      });
+
+      it('preserves renamed legacy rows without an ownership flag', async () => {
+        await saveConvo(mockCtx, mockConversationData);
+        expect(
+          await saveConvo(mockCtx, { ...mockConversationData, title: 'Generated' }, generated),
+        ).toBeNull();
+      });
+
+      it('atomically preserves a rename that races generation', async () => {
+        const conversationId = uuidv4();
+        await saveConvo(mockCtx, { conversationId });
+        await Promise.all([
+          saveConvo(mockCtx, { conversationId, title: 'Generated' }, generated),
+          saveConvo(mockCtx, { conversationId, title: 'Renamed' }, manual),
+        ]);
+        expect((await getConvo(mockCtx.userId, conversationId))?.title).toBe('Renamed');
+      });
+
+      it('publishes a generated title without moving activity or messages', async () => {
+        const conversationId = uuidv4();
+        const initial = await saveConvo(mockCtx, { conversationId });
+        const saved = await saveConvo(
+          mockCtx,
+          { conversationId, title: 'Generated' },
+          {
+            ...generated,
+            preserveUpdatedAt: true,
+          },
+        );
+        expect(saved?.title).toBe('Generated');
+        expect(saved?.updatedAt).toEqual(initial?.updatedAt);
+        expect(saved?.messages).toEqual(initial?.messages);
+      });
+    });
+
     it('should still upsert by default when noUpsert is not provided', async () => {
       const newId = uuidv4();
       const result = await saveConvo(mockCtx, {

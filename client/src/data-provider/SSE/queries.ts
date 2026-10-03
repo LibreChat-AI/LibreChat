@@ -83,6 +83,10 @@ export function queueTitleGeneration(conversationId: string) {
   }
 }
 
+export function isTitleGenerationProcessed(conversationId: string): boolean {
+  return processedTitles.has(conversationId);
+}
+
 export function markTitleGenerationProcessed(conversationId: string) {
   processedTitles.add(conversationId);
   titleQueue.delete(conversationId);
