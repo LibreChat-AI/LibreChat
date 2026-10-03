@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { EventEmitter } from 'events';
 import type { FiltersConfig } from 'librechat-data-provider';
 import type { UploadFallbackTextExtractors } from './fallback';
 import {
@@ -134,7 +135,7 @@ describe('resolveUploadFallbackText', () => {
     expect(text).toContain('| Data | on | first | sheet |');
     expect(text).toContain('## Second Sheet');
     expect(text).toContain('| Second | Sheet |');
-    expect(extractors.parseDocument).toHaveBeenCalledWith({ file });
+    expect(extractors.parseDocument).toHaveBeenCalledWith(expect.objectContaining({ file }));
     expect(extractors.parseTextNative).not.toHaveBeenCalled();
   });
 
@@ -236,6 +237,52 @@ describe('resolveUploadFallbackText', () => {
     expect(extractors.parseDocument).toHaveBeenCalledWith(
       expect.objectContaining({ file, maxFileSize: 1, timeoutMs: 5_000, maxPageCount: 3 }),
     );
+  });
+
+  it('plans a document reported under a generic type by its resolved type', async () => {
+    const extractors = spiedExtractors();
+    const file = {
+      originalname: 'sample.xlsx',
+      path: path.join(__dirname, '../documents/sample.xlsx'),
+      mimetype: 'application/octet-stream',
+    } as Express.Multer.File;
+
+    await resolveUploadFallbackText({ ...route, file, fileId: 'file-1', extractors });
+    expect(extractors.parseDocument).toHaveBeenCalledWith(expect.objectContaining({ file }));
+  });
+
+  it('cancels the parse when the upload closes, and does not report it as a missing fallback', async () => {
+    const connection = new EventEmitter();
+    const file = {
+      originalname: 'report.pdf',
+      path: '/tmp/report.pdf',
+      mimetype: 'application/pdf',
+    } as Express.Multer.File;
+    let received: AbortSignal | undefined;
+    const extractors = {
+      parseDocument: jest.fn(
+        ({ signal }: { signal?: AbortSignal }) =>
+          new Promise<{ text: string }>((_resolve, reject) => {
+            received = signal;
+            signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          }),
+      ),
+      parseTextNative: jest.fn(parseTextNative),
+    } satisfies UploadFallbackTextExtractors;
+
+    const pending = resolveUploadFallbackText({
+      ...route,
+      file,
+      fileId: 'file-1',
+      connection,
+      extractors,
+    });
+    await Promise.resolve();
+    connection.emit('close');
+
+    await expect(pending).rejects.toThrow('aborted');
+    expect(received?.aborted).toBe(true);
+    expect(connection.listenerCount('close')).toBe(0);
   });
 
   it('stores incomplete text only while no blocking policy needs the whole document', async () => {

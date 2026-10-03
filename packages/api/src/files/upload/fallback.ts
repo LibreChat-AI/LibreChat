@@ -1,5 +1,9 @@
 import { logger } from '@librechat/data-schemas';
-import { isNativelyReadableText, documentParserMimeTypes } from 'librechat-data-provider';
+import {
+  isNativelyReadableText,
+  documentParserMimeTypes,
+  resolveEffectiveMimeType,
+} from 'librechat-data-provider';
 import type {
   FileConfig,
   FiltersConfig,
@@ -51,6 +55,7 @@ export interface UploadFallbackTextExtractors {
   parseDocument: (
     params: {
       file: Express.Multer.File;
+      signal?: AbortSignal;
       maxFileSize?: number;
     } & Omit<DocumentParserLimits, 'fileSizeLimit'>,
   ) => Promise<ExtractedText>;
@@ -107,6 +112,7 @@ export async function resolveUploadFallbackText({
   fileId,
   filters,
   documentParser,
+  connection,
   extractors = builtInExtractors,
   ...route
 }: Omit<UploadFallbackTextRoute, 'mimeType'> & {
@@ -115,12 +121,23 @@ export async function resolveUploadFallbackText({
   filters?: FiltersConfig;
   /** The merged `fileConfig.documentParser`, so fallback parses honor the deployment's bounds. */
   documentParser?: FileConfig['documentParser'];
+  /** The upload's response: closing it cancels the parse and frees its admission slot,
+   * the way it does for the primary Context parse. */
+  connection?: Pick<NodeJS.EventEmitter, 'once' | 'off'>;
   extractors?: UploadFallbackTextExtractors;
 }): Promise<string | undefined> {
-  const plan = getUploadFallbackTextPlan({ ...route, mimeType: file.mimetype });
+  /* Planned on the type the upload path resolves, so a DOCX or PDF a browser reports as
+   * `application/octet-stream` or `application/zip` gets the same parser it would there. */
+  const plan = getUploadFallbackTextPlan({
+    ...route,
+    mimeType: resolveEffectiveMimeType(file.originalname ?? '', file.mimetype ?? ''),
+  });
   if (plan == null) {
     return undefined;
   }
+  const cancellation = new AbortController();
+  const abortOnDisconnect = () => cancellation.abort();
+  connection?.once('close', abortOnDisconnect);
   const skip = (reason: string, error?: unknown): undefined => {
     const { fileLabel, errorMetadata } = getFileExtractionLogDetails({
       filters,
@@ -141,6 +158,7 @@ export async function resolveUploadFallbackText({
         plan === UPLOAD_FALLBACK_TEXT_PLANS.documentParser
           ? extractors.parseDocument({
               file,
+              signal: cancellation.signal,
               maxFileSize: documentParser?.fileSizeLimit,
               timeoutMs: documentParser?.timeoutMs,
               maxPageCount: documentParser?.maxPageCount,
@@ -178,6 +196,12 @@ export async function resolveUploadFallbackText({
     }
     return text;
   } catch (error) {
+    /* A cancelled upload is not a missing fallback: nothing should go on to store it. */
+    if (cancellation.signal.aborted) {
+      throw error;
+    }
     return skip('extraction failed', error);
+  } finally {
+    connection?.off('close', abortOnDisconnect);
   }
 }
