@@ -118,7 +118,7 @@ async function build({
     createAgentToolApprovalSession({
       agents: sessionAgents ?? [source],
       storage,
-      scope: { userId: 'sdk-user', conversationId: chat },
+      scope: { userId: '652000000000000000000001', conversationId: chat },
       reviewed,
     });
   const wiring = buildHITLRunWiring(
@@ -195,7 +195,7 @@ async function build({
 const config = (chat: string) => ({
   configurable: {
     thread_id: chat,
-    user_id: 'sdk-user',
+    user_id: '652000000000000000000001',
     ...buildToolApprovalExecutionConfig(`response-${chat}`, 1),
   },
   streamMode: 'values' as const,
@@ -382,9 +382,10 @@ test.each(['authority', 'upstream', 'revocation'] as const)(
       seed,
       seed.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
     )!;
-    await storage.rememberToolApprovalGrants({ userId: 'sdk-user', conversationId: 'seed-chat' }, [
-      bindings['seed-call'],
-    ]);
+    await storage.rememberToolApprovalGrants(
+      { userId: '652000000000000000000001', conversationId: 'seed-chat' },
+      [bindings['seed-call']],
+    );
     let reset: Promise<void> | undefined;
     let target = guarded;
     if (change === 'authority') target = createProbe('source-two');
@@ -399,7 +400,7 @@ test.each(['authority', 'upstream', 'revocation'] as const)(
       beforeLoad:
         change === 'revocation'
           ? () => {
-              reset = storage.resetToolApprovalGrants('sdk-user', source.id, name);
+              reset = storage.resetToolApprovalGrants('652000000000000000000001', source.id, name);
               return reset;
             }
           : undefined,
@@ -595,7 +596,7 @@ test.each(['allow', 'chat', 'always'] as const)(
       toolDefinitions: [definition()],
     }));
     const chat = 'parallel-chat';
-    const scope = { userId: 'sdk-user', conversationId: chat };
+    const scope = { userId: '652000000000000000000001', conversationId: chat };
     if (mode !== 'allow')
       await storage.rememberToolApprovalGrants(
         scope,
@@ -780,7 +781,7 @@ test.each(['ask', 'chat', 'always'] as const)(
     const sharedSession = createAgentToolApprovalSession({
       agents: sources,
       storage,
-      scope: { userId: 'sdk-user', conversationId: chat },
+      scope: { userId: '652000000000000000000001', conversationId: chat },
     });
     const a = await build({
       source: sources[0],
@@ -822,6 +823,14 @@ test.each(['ask', 'chat', 'always'] as const)(
 
 test('hook-rewritten background launch never teaches approval before the detached failure', async () => {
   let release!: () => void;
+  let markStarted!: () => void;
+  let markFailed!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const failed = new Promise<void>((resolve) => {
+    markFailed = resolve;
+  });
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
@@ -829,7 +838,9 @@ test('hook-rewritten background launch never teaches approval before the detache
     createMCPStructuredTool(
       async () => {
         executions++;
+        markStarted();
         await gate;
+        markFailed();
         throw new Error('Scripted detached failure');
       },
       {
@@ -882,9 +893,11 @@ test('hook-rewritten background launch never teaches approval before the detache
       reviewed: { bindings, decisions: [{ tool_call_id: 'background-call', decision: 'approve' }] },
     });
     await resumed.resume({ 'background-call': { type: 'approve' } }, config(chat));
+    await started;
     expect(executions).toBe(1);
     expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
     release();
+    await failed;
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
     expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
@@ -976,13 +989,13 @@ test.each([false, true])(
     const authorityA = buildMCPToolReviewAuthority({
       serverName: 'fixture',
       config: selected,
-      user: { id: 'sdk-user', openidId: 'subject-a' },
+      user: { id: '652000000000000000000001', openidId: 'subject-a' },
       customUserVars: { WORKSPACE: 'workspace-a' },
     });
     const authorityB = buildMCPToolReviewAuthority({
       serverName: 'fixture',
       config: selected,
-      user: { id: 'sdk-user', openidId: 'subject-a' },
+      user: { id: '652000000000000000000001', openidId: 'subject-a' },
       customUserVars: { WORKSPACE: 'workspace-b' },
     });
     const targetDefinition = (authority?: string) =>
@@ -1036,3 +1049,123 @@ test.each([false, true])(
     expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
   },
 );
+
+async function oauthCredential(epoch: string) {
+  await mongoose.models.Token.deleteMany({ userId: '652000000000000000000001' });
+  return mongoose.models.Token.create({
+    userId: '652000000000000000000001',
+    type: 'mcp_oauth',
+    identifier: 'mcp:fixture',
+    token: 'synthetic-oauth-token',
+    expiresAt: new Date(Date.now() + 60000),
+    metadata: { credential_set_id: epoch },
+  });
+}
+
+test.each(['chat', 'always'] as const)(
+  'a changed OAuth account cannot reuse a learned %s grant',
+  async (mode) => {
+    const source: AgentApprovalSource = {
+      id: 'agent-a',
+      tool_options: {
+        [name]: { approval_mode: mode, approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05' },
+      },
+      toolDefinitions: [definition()],
+    };
+    const token = await oauthCredential('account-a');
+    const saver = new MemorySaver();
+    const first = await build({
+      source,
+      chat: 'oauth-consent-chat',
+      saver,
+      eventDriven: true,
+      callId: 'oauth-call',
+    });
+    await first.processStream(
+      { messages: [new HumanMessage('run')] },
+      config('oauth-consent-chat'),
+    );
+    const bindings = captureRunToolApprovalBindings(
+      first,
+      first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+    )!;
+    expect(bindings['oauth-call'].oauthEpoch).toBe('account-a');
+    const resumed = await build({
+      source,
+      chat: 'oauth-consent-chat',
+      saver,
+      eventDriven: true,
+      reviewed: { bindings, decisions: [{ tool_call_id: 'oauth-call', decision: 'approve' }] },
+    });
+    await resumed.resume({ 'oauth-call': { type: 'approve' } }, config('oauth-consent-chat'));
+    expect(executions).toBe(1);
+    await mongoose.models.Token.updateOne(
+      { _id: token._id },
+      { $set: { 'metadata.credential_set_id': 'account-b' } },
+    );
+    const next = await build({
+      source,
+      chat: 'oauth-consent-chat',
+      saver: new MemorySaver(),
+      eventDriven: true,
+      callId: 'next-oauth-call',
+    });
+    await next.processStream(
+      { messages: [new HumanMessage('run again')] },
+      config('oauth-consent-chat'),
+    );
+    expect(next.getInterrupt()?.payload.type).toBe('tool_approval');
+    expect(executions).toBe(1);
+    await mongoose.models.Token.deleteOne({ _id: token._id });
+  },
+);
+
+test('OAuth replacement after pre-tool approval is refused before invocation', async () => {
+  const source: AgentApprovalSource = {
+    id: 'agent-a',
+    tool_options: {
+      [name]: {
+        approval_mode: 'always',
+        approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+      },
+    },
+    toolDefinitions: [definition()],
+  };
+  const token = await oauthCredential('account-a');
+  const saver = new MemorySaver();
+  const first = await build({
+    source,
+    chat: 'oauth-dispatch-chat',
+    saver,
+    eventDriven: true,
+    callId: 'dispatch-oauth-call',
+  });
+  await first.processStream({ messages: [new HumanMessage('run')] }, config('oauth-dispatch-chat'));
+  const bindings = captureRunToolApprovalBindings(
+    first,
+    first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+  )!;
+  const resumed = await build({
+    source,
+    chat: 'oauth-dispatch-chat',
+    saver,
+    eventDriven: true,
+    beforeLoad: async () => {
+      await mongoose.models.Token.updateOne(
+        { _id: token._id },
+        { $set: { 'metadata.credential_set_id': 'account-b' } },
+      );
+    },
+    reviewed: {
+      bindings,
+      decisions: [{ tool_call_id: 'dispatch-oauth-call', decision: 'approve' }],
+    },
+  });
+  await resumed.resume(
+    { 'dispatch-oauth-call': { type: 'approve' } },
+    config('oauth-dispatch-chat'),
+  );
+  expect(executions).toBe(0);
+  expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+  await mongoose.models.Token.deleteOne({ _id: token._id });
+});

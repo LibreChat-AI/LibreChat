@@ -2772,6 +2772,7 @@ export async function createRun({
   const agentApprovalSession = createAgentToolApprovalSession({
     agents: [...codeFileAgents.values()],
     storage: toolApprovalPolicy?.agentModes === true ? toolApprovalStorage : undefined,
+    authorizationStorage: toolApprovalStorage,
     reviewed: reviewedToolApprovals,
     policy: effectiveToolApprovalPolicy,
     lookupTimeoutMs: toolApprovalPolicy?.grantLookupTimeoutMs,

@@ -84,6 +84,9 @@ export interface ToolApprovalGrantBinding {
   instanceName: string;
   /** SDK child execution identity; never part of remembered consent scope. */
   executionScope?: string;
+  serverName?: string;
+  /** Server-only OAuth authorization generation, not renewable token bytes. */
+  oauthEpoch?: string | null;
   agentId: string;
   toolName: string;
   binding: string;
@@ -103,7 +106,9 @@ export interface ToolApprovalGrantStorage {
   getToolApprovalGrants: (
     scope: ToolApprovalGrantScope,
     bindings: readonly ToolApprovalGrantBinding[],
-  ) => Promise<Array<{ binding: string; approved: boolean; revocation?: string }>>;
+  ) => Promise<
+    Array<{ binding: string; approved: boolean; revocation?: string; oauthEpoch?: string | null }>
+  >;
   rememberToolApprovalGrants: (
     scope: ToolApprovalGrantScope,
     grants: readonly ToolApprovalGrantBinding[],
