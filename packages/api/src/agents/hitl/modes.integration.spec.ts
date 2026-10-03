@@ -17,6 +17,7 @@ import {
   describeRememberedToolApprovals,
   resolveAgentToolGrantBinding,
 } from './modes';
+import { ServerConfigsCacheInMemory } from '~/mcp/registry/cache/ServerConfigsCacheInMemory';
 import { buildHITLRunWiring, buildToolApprovalExecutionConfig } from './runtime';
 import { bindToolApproval, bindToolApprovalIdentity } from '~/tools/approval';
 import { assertToolApprovalTransportEpoch } from '~/tools/approval';
@@ -114,7 +115,7 @@ async function build({
   executionTool?: typeof guarded;
   beforeLoad?: () => void | Promise<void>;
   sharedSession?: AgentToolApprovalSession;
-  rewrite?: { text: string };
+  rewrite?: { text: string; run_in_background?: boolean };
   sessionAgents?: AgentApprovalSource[];
   background?: boolean;
 }) {
@@ -1483,3 +1484,194 @@ for (const mode of ['chat', 'always'] as const) {
     );
   }
 }
+
+test('old detached settlement cannot erase a newer reused call ID’s OAuth transport fence', async () => {
+  const token = await oauthCredential('account-a');
+  const source: AgentApprovalSource = {
+    id: 'agent-a',
+    tool_options: {
+      [name]: {
+        approval_mode: 'always',
+        approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+      },
+    },
+    toolDefinitions: [definition()],
+  };
+  const chat = 'reused-background-provider-id';
+  const grantScope = { userId: '652000000000000000000001', conversationId: chat };
+  await storage.rememberToolApprovalGrants(grantScope, [
+    { ...resolveAgentToolGrantBinding(source, name, grantScope)!, oauthEpoch: 'account-a' },
+  ]);
+  const session = createAgentToolApprovalSession({ agents: [source], storage, scope: grantScope });
+  let releaseOld!: () => void;
+  let markOldStarted!: () => void;
+  let markNewStarted!: () => void;
+  let markOldFinished!: () => void;
+  const oldGate = new Promise<void>((resolve) => {
+    releaseOld = resolve;
+  });
+  const oldStarted = new Promise<void>((resolve) => {
+    markOldStarted = resolve;
+  });
+  const newStarted = new Promise<void>((resolve) => {
+    markNewStarted = resolve;
+  });
+  const oldFinished = new Promise<void>((resolve) => {
+    markOldFinished = resolve;
+  });
+  const complete = session.finishDispatch;
+  session.finishDispatch = (invocation) => {
+    complete?.(invocation);
+    markOldFinished();
+  };
+  const probe = (invoke: () => Promise<unknown>) =>
+    bindToolApprovalIdentity(
+      bindToolApproval(
+        Object.assign(
+          createMCPStructuredTool(invoke, {
+            name,
+            description: 'Ownership fixture',
+            schema: fixtureSchema,
+            responseFormat: 'content_and_artifact',
+          }),
+          { schema: fixtureSchema },
+        ),
+        'source-one',
+      ),
+      'echo',
+      { type: 'object' },
+    );
+  const oldTool = probe(async () => {
+    markOldStarted();
+    await oldGate;
+    return formatToolContent({ content: [{ type: 'text', text: 'old settled' }] }, 'openai');
+  });
+  let newSideEffects = 0;
+  const newTool = probe(async () => {
+    markNewStarted();
+    await oldFinished;
+    await mongoose.models.Token.updateOne(
+      { _id: token._id },
+      { $set: { 'metadata.credential_set_id': 'account-b' } },
+    );
+    await assertToolApprovalTransportEpoch('fixture', 'account-b', true);
+    newSideEffects++;
+    return formatToolContent({ content: [{ type: 'text', text: 'unsafe new retry' }] }, 'openai');
+  });
+  let newTurn: Promise<void> | undefined;
+  try {
+    const old = await build({
+      source,
+      chat,
+      saver: new MemorySaver(),
+      sharedSession: session,
+      eventDriven: true,
+      background: true,
+      rewrite: { text: 'old', run_in_background: true },
+      executionTool: oldTool,
+      callId: 'call_0',
+    });
+    await old.processStream({ messages: [new HumanMessage('old background')] }, config(chat));
+    await oldStarted;
+    const newer = await build({
+      source,
+      chat,
+      saver: new MemorySaver(),
+      sharedSession: session,
+      eventDriven: true,
+      executionTool: newTool,
+      callId: 'call_0',
+    });
+    newTurn = newer
+      .processStream({ messages: [new HumanMessage('new foreground')] }, config(chat))
+      .then(() => {});
+    await newStarted;
+    releaseOld();
+    await newTurn;
+    expect(newSideEffects).toBe(0);
+    expect(JSON.stringify(newer.getRunMessages())).toContain('OAuth authorization changed');
+  } finally {
+    releaseOld();
+    await newTurn;
+    await mongoose.models.Token.deleteOne({ _id: token._id });
+  }
+});
+
+test.each([false, true])(
+  'registry reinspection preserves paused review and learned consent (event-driven=%s)',
+  async (eventDriven) => {
+    const registry = new ServerConfigsCacheInMemory();
+    const declared = {
+      type: 'streamable-http' as const,
+      source: 'yaml' as const,
+      url: 'https://mcp.example.test/mcp',
+    };
+    await registry.add('fixture', { ...declared, initDuration: 1 });
+    const target = async () => {
+      const selected = await registry.get('fixture');
+      const binding = buildMCPToolApprovalBinding('fixture', selected);
+      const authority = buildMCPToolReviewAuthority({ serverName: 'fixture', config: selected });
+      return {
+        source: {
+          id: 'agent-a',
+          tool_options: {
+            [name]: {
+              approval_mode: 'always' as const,
+              approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+            },
+          },
+          toolDefinitions: [
+            bindToolApprovalIdentity(
+              bindToolReviewAuthority(
+                bindToolApproval(
+                  { name, serverName: 'fixture', parameters: { type: 'object' } },
+                  binding,
+                ),
+                authority,
+              ),
+              'echo',
+              { type: 'object' },
+            ),
+          ],
+        },
+        executionTool: createProbe(binding, 'echo', authority),
+      };
+    };
+    const initial = await target();
+    const saver = new MemorySaver();
+    const chat = `registry-consent-${eventDriven}`;
+    const first = await build({ ...initial, chat, saver, eventDriven, callId: 'registry-call' });
+    await first.processStream({ messages: [new HumanMessage('run')] }, config(chat));
+    const bindings = captureRunToolApprovalBindings(
+      first,
+      first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+    )!;
+    await registry.update('fixture', {
+      ...declared,
+      initDuration: 900,
+      tools: 'reinspected',
+      capabilities: 'new summary',
+    });
+    const refreshed = await target();
+    const resumed = await build({
+      ...refreshed,
+      chat,
+      saver,
+      eventDriven,
+      reviewed: { bindings, decisions: [{ tool_call_id: 'registry-call', decision: 'approve' }] },
+    });
+    await resumed.resume({ 'registry-call': { type: 'approve' } }, config(chat));
+    expect(executions).toBe(1);
+    await registry.update('fixture', { ...declared, initDuration: 2 });
+    const again = await build({
+      ...(await target()),
+      chat,
+      saver: new MemorySaver(),
+      eventDriven,
+      callId: 'registry-next',
+    });
+    await again.processStream({ messages: [new HumanMessage('run again')] }, config(chat));
+    expect(again.getInterrupt()).toBeUndefined();
+    expect(executions).toBe(2);
+  },
+);

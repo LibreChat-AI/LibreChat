@@ -17,6 +17,7 @@ import { withToolApprovalExecution, getToolApprovalIdentity } from '~/tools/appr
 import { bindToolReviewAuthority, getToolReviewAuthority } from '~/tools/approval';
 import { getToolApprovalExecutionScope } from '~/tools/approval';
 import { requiresEphemeralUserConnection } from '~/mcp/utils';
+import { projectMCPApprovalAuthority } from '~/mcp/approval';
 import { mapToolApprovalPolicy } from './policy';
 
 export interface AgentApprovalDefinition {
@@ -37,6 +38,7 @@ export function buildMCPToolApprovalBinding(
   serverName: string,
   config: ParsedServerConfig | undefined,
 ): string | undefined {
+  if (config) config = projectMCPApprovalAuthority(config);
   if (
     !config ||
     requiresEphemeralUserConnection(config) ||
@@ -199,6 +201,7 @@ export function createAgentToolApprovalSession({
       toolName: string;
       executionScope?: string;
       dispatched: boolean;
+      ownership: symbol;
     }
   >();
   const callCandidates = (callId: string, toolName: string): string[] =>
@@ -209,8 +212,14 @@ export function createAgentToolApprovalSession({
   const executed = new Set<string>();
   const policyChecks = new Map<string, { agentId: string; toolName: string }>();
   const dispositions = new Map<string, boolean>();
-  const retireCall = (key: string): void => {
+  const transportWitnesses = new Map<
+    symbol,
+    { consent?: ToolApprovalGrantBinding; automatic: boolean }
+  >();
+  const retireCall = (key: string, ownership?: symbol, keepTransport = false): void => {
     const proposal = proposals.get(key);
+    if (ownership && proposal?.ownership !== ownership) return;
+    if (!keepTransport && proposal) transportWitnesses.delete(proposal.ownership);
     if (proposal) {
       const candidates = callOwners.get(proposal.callId);
       candidates?.delete(key);
@@ -297,6 +306,10 @@ export function createAgentToolApprovalSession({
         invocation.executionScope,
       );
       const proposal = proposals.get(key);
+      if (invocation.ownership && invocation.ownership !== proposal?.ownership) {
+        throw new Error('Tool approval invocation ownership changed. Request approval again.');
+      }
+      invocation.ownership = proposal?.ownership;
       if (proposal) proposal.dispatched = true;
       dispositions.set(key, invocation.background === true);
       if (invocation.background === true) {
@@ -305,9 +318,11 @@ export function createAgentToolApprovalSession({
       }
     },
     finishDispatch(invocation) {
-      if (invocation.background !== true || !invocation.toolCallId) return;
+      if (invocation.background !== true || !invocation.toolCallId || !invocation.ownership) return;
+      transportWitnesses.delete(invocation.ownership);
       retireCall(
         approvalCallKey(invocation.agentId, invocation.toolCallId, invocation.executionScope),
+        invocation.ownership,
       );
     },
     async settleBatchHook(input) {
@@ -366,9 +381,22 @@ export function createAgentToolApprovalSession({
       if (!check || check.agentId !== owner?.id || check.toolName !== tool.name) {
         throw new Error('Tool policy could not be verified. Run this tool in the foreground.');
       }
-      policyChecks.delete(key);
       const proposal = proposals.get(key);
-      if (proposal) proposal.dispatched = true;
+      if (!proposal || (invocation.ownership && invocation.ownership !== proposal.ownership)) {
+        throw new Error('Tool approval invocation ownership changed. Request approval again.');
+      }
+      invocation.ownership = proposal.ownership;
+      const pinTransport = (consent?: ToolApprovalGrantBinding, automatic = false) => {
+        if (proposals.get(key)?.ownership !== invocation.ownership) {
+          throw new Error('Tool approval invocation ownership changed. Request approval again.');
+        }
+        proposal.dispatched = true;
+        transportWitnesses.set(proposal.ownership, {
+          consent: consent && { ...consent },
+          automatic,
+        });
+      };
+      policyChecks.delete(key);
       dispositions.set(key, invocation.background === true);
       if (invocation.background === true) {
         ready.delete(key);
@@ -402,7 +430,10 @@ export function createAgentToolApprovalSession({
           )
         : undefined;
       if (baseline?.decision === 'deny') throw new Error('Administrator policy blocks this tool.');
-      if (options.approval_mode === 'allow' && baseline?.decision !== 'ask') return;
+      if (options.approval_mode === 'allow' && baseline?.decision !== 'ask') {
+        pinTransport(undefined, true);
+        return;
+      }
       const consent = calls.get(key);
       const current = consent && (await approved(consent));
       if (
@@ -424,6 +455,7 @@ export function createAgentToolApprovalSession({
         const reviewTarget = owner && scope && resolveToolReviewBinding(owner, tool.name, scope);
         if (callId && reviewTarget && calls.has(key) && permittedDecisions.has(key)) {
           permittedDecisions.delete(key);
+          pinTransport(consent ?? undefined);
           return;
         }
         throw new Error('Tool approval is required. Run this tool in the foreground for review.');
@@ -442,6 +474,7 @@ export function createAgentToolApprovalSession({
           approvedDecisions.has(key)
         )
           executed.add(key);
+        pinTransport(consent ?? undefined);
         return;
       }
       if (expected.scope === 'once' || baseline?.decision === 'ask') {
@@ -451,22 +484,22 @@ export function createAgentToolApprovalSession({
         ready.delete(key);
         throw new Error('Tool approval is required or was revoked. Request approval again.');
       }
+      pinTransport(consent ?? undefined);
     },
     async validateTransport(serverName, oauthEpoch, invocation, checkStorage) {
-      const key = approvalCallKey(
-        invocation.agentId,
-        invocation.toolCallId ?? '',
-        invocation.executionScope,
-      );
-      const consent = calls.get(key);
-      if (!consent) return;
-      const owner = owners.get(consent.agentId);
-      // Always approve is an explicit local preference, unless an upstream rule required review.
-      if (
-        owner?.tool_options?.[consent.instanceName]?.approval_mode === 'allow' &&
-        !reviewedBindings.has(key)
-      )
+      const witness = invocation.ownership && transportWitnesses.get(invocation.ownership);
+      if (!witness) {
+        if (invocation.ownership) {
+          throw new Error(
+            'Tool approval invocation could not be verified before transport dispatch.',
+          );
+        }
         return;
+      }
+      if (witness.automatic) return;
+      const consent = witness.consent;
+      if (!consent)
+        throw new Error('Tool approval consent is unavailable before transport dispatch.');
       if (consent.serverName !== serverName || consent.oauthEpoch !== oauthEpoch) {
         throw new Error(
           'The approved MCP OAuth authorization changed before transport dispatch. Request approval again.',
@@ -493,6 +526,7 @@ export function createAgentToolApprovalSession({
       );
       // A launch handle is not the detached invocation's successful completion.
       if (dispositions.get(key) === true) return {};
+      const ownership = proposals.get(key)?.ownership;
       const grant = ready.get(key);
       try {
         if (
@@ -517,7 +551,7 @@ export function createAgentToolApprovalSession({
       } catch {
         logger.warn('[Tool approvals] Could not remember approval; future calls require review.');
       } finally {
-        retireCall(key);
+        retireCall(key, ownership);
       }
       return {};
     },
@@ -527,6 +561,10 @@ export function createAgentToolApprovalSession({
       if (!agent || mode == null) return {};
       const executionScope = getToolApprovalExecutionScope(input.executionContext);
       const key = approvalCallKey(agent.id, input.toolUseId, executionScope);
+      const previous = proposals.get(key);
+      if (previous?.dispatched) retireCall(key, previous.ownership, dispositions.get(key) === true);
+      const ownership =
+        previous?.dispatched === false ? previous.ownership : Symbol('toolInvocation');
       const target = scope && resolveToolReviewBinding(agent, input.toolName, scope);
       const status = target ? await approved(target) : undefined;
       if (target) {
@@ -563,6 +601,7 @@ export function createAgentToolApprovalSession({
         agentId: agent.id,
         callId: input.toolUseId,
         dispatched: false,
+        ownership,
         toolName: input.toolName,
         executionScope,
       });

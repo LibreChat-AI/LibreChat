@@ -644,18 +644,15 @@ test('actual background dispatch cannot teach from a synthetic success handle', 
     },
   });
   await session.hook(input(), new AbortController().signal);
-  session.noteDispatch?.({ agentId: source.id, toolCallId: 'call-a', background: true });
-  await session.validateExecution(source.toolDefinitions![0], {
-    agentId: source.id,
-    toolCallId: 'call-a',
-    background: true,
-  });
+  const invocation = { agentId: source.id, toolCallId: 'call-a', background: true };
+  session.noteDispatch?.(invocation);
+  await session.validateExecution(source.toolDefinitions![0], invocation);
   await session.rememberHook(
     { ...input(), hook_event_name: 'PostToolUse', toolOutput: 'Task launched' },
     new AbortController().signal,
   );
   expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
-  session.finishDispatch?.({ agentId: source.id, toolCallId: 'call-a', background: true });
+  session.finishDispatch?.(invocation);
 });
 
 test('synthetic responses retire call candidates at the settled batch boundary', async () => {
@@ -801,3 +798,93 @@ for (const mode of ['ask', 'chat', 'always'] as const) {
     },
   );
 }
+
+test('old detached completion cannot retire a newer reused provider ID or its transport witness', async () => {
+  const source = agent('always');
+  const storage = store();
+  await storage.rememberToolApprovalGrants(scope, [
+    resolveAgentToolGrantBinding(source, name, scope)!,
+  ]);
+  const session = createAgentToolApprovalSession({ agents: [source], scope, storage });
+  const old = { agentId: source.id, toolCallId: 'call_0', background: true };
+  await session.hook(input(source.id, 'call_0'), new AbortController().signal);
+  session.noteDispatch?.(old);
+  await session.validateExecution(source.toolDefinitions![0], old);
+  const newer = { agentId: source.id, toolCallId: 'call_0' };
+  await session.hook(input(source.id, 'call_0'), new AbortController().signal);
+  await session.validateExecution(source.toolDefinitions![0], newer);
+  await expect(session.validateTransport!('db', 'account-b', newer, false)).rejects.toThrow(
+    'OAuth authorization changed',
+  );
+  session.finishDispatch?.(old);
+  session.finishDispatch?.(old);
+  await expect(session.validateTransport!('db', 'account-b', newer, false)).rejects.toThrow(
+    'OAuth authorization changed',
+  );
+  await expect(session.validateTransport!('db', null, newer, true)).resolves.toBeUndefined();
+  await expect(session.validateTransport!('db', null, old, false)).rejects.toThrow(
+    'invocation could not be verified',
+  );
+});
+
+test('an old detached call retains its pinned OAuth epoch while a newer call is reviewed', async () => {
+  const source = agent('always');
+  const storage = store();
+  await storage.rememberToolApprovalGrants(scope, [
+    resolveAgentToolGrantBinding(source, name, scope)!,
+  ]);
+  let epoch = 'account-a';
+  jest
+    .spyOn(storage, 'getToolApprovalGrants')
+    .mockImplementation(async (_scope, grants) =>
+      grants.map((grant) => ({ binding: grant.binding, approved: true, oauthEpoch: epoch })),
+    );
+  const session = createAgentToolApprovalSession({ agents: [source], scope, storage });
+  const old = { agentId: source.id, toolCallId: 'call_0', background: true };
+  await session.hook(input(source.id, 'call_0'), new AbortController().signal);
+  session.noteDispatch?.(old);
+  await session.validateExecution(source.toolDefinitions![0], old);
+  epoch = 'account-b';
+  const newer = { agentId: source.id, toolCallId: 'call_0' };
+  await session.hook(input(source.id, 'call_0'), new AbortController().signal);
+  await session.validateExecution(source.toolDefinitions![0], newer);
+  await expect(session.validateTransport!('db', 'account-b', newer, true)).resolves.toBeUndefined();
+  await expect(session.validateTransport!('db', 'account-b', old, false)).rejects.toThrow(
+    'OAuth authorization changed',
+  );
+  session.finishDispatch?.(old);
+  await expect(session.validateTransport!('db', 'account-b', newer, true)).resolves.toBeUndefined();
+});
+
+test('registry reinspection metadata does not change learned tool authority', () => {
+  const selected = {
+    type: 'streamable-http' as const,
+    source: 'yaml' as const,
+    url: 'https://mcp.example.test',
+    updatedAt: 1,
+    initDuration: 4,
+    tools: 'old summary',
+    capabilities: 'old',
+    resolvedInstructions: 'old',
+  };
+  const first = buildMCPToolApprovalBinding('db', selected);
+  expect(first).toEqual(expect.any(String));
+  expect(
+    buildMCPToolApprovalBinding('db', {
+      ...selected,
+      updatedAt: 999,
+      initDuration: 50,
+      tools: 'new summary',
+      capabilities: 'new',
+      resolvedInstructions: 'new',
+      inspectionFailed: false,
+    }),
+  ).toBe(first);
+  expect(buildMCPToolApprovalBinding('db', { ...selected, source: 'config' })).not.toBe(first);
+  expect(buildMCPToolApprovalBinding('db', { ...selected, dbId: 'another-source' })).not.toBe(
+    first,
+  );
+  expect(
+    buildMCPToolApprovalBinding('db', { ...selected, url: 'https://different.example.test' }),
+  ).not.toBe(first);
+});

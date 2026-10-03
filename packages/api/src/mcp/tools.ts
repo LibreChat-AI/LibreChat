@@ -44,11 +44,12 @@ export function createMCPStructuredTool(
           executionContext?: SubagentExecutionContext;
         };
       };
-      await assertToolApprovalExecution(tool, invocation);
+      const approvalInvocation = await assertToolApprovalExecution(tool, invocation);
       const childConfig = patchConfig(config, { callbacks: runManager?.getChild() });
       const result = await AsyncLocalStorageProviderSingleton.runWithConfig(
         pickRunnableConfigKeys(childConfig),
-        () => withToolApprovalTransport(invocation, () => func(input, childConfig)),
+        () =>
+          withToolApprovalTransport(invocation, () => func(input, childConfig), approvalInvocation),
       );
       if (Array.isArray(result) && result.length === 2 && isMCPToolResultError(result)) {
         return [

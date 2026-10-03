@@ -26,6 +26,21 @@ export interface MCPToolReviewAuthorityInput {
   customUserVars?: Record<string, string>;
 }
 
+/** Registry timestamps and inspection summaries do not change executable authority. */
+export function projectMCPApprovalAuthority(config: ParsedServerConfig): ParsedServerConfig {
+  const {
+    updatedAt: _updatedAt,
+    initDuration: _duration,
+    capabilities: _capabilities,
+    tools: _tools,
+    toolFunctions: _functions,
+    resolvedInstructions: _instructions,
+    inspectionFailed: _failed,
+    ...authority
+  } = config;
+  return authority;
+}
+
 /** Renewable bearer bytes are not authority; routing, principal and provider configuration are. */
 export function buildMCPToolReviewAuthority({
   serverName,
@@ -35,35 +50,18 @@ export function buildMCPToolReviewAuthority({
   customUserVars,
 }: MCPToolReviewAuthorityInput): string | undefined {
   if (!config) return undefined;
-  config = applyRequestHeaders(config);
+  config = projectMCPApprovalAuthority(applyRequestHeaders(config));
   const renewableMarker =
     /\{\{LIBRECHAT_(?:OPENID_(?:(?:ACCESS|ID)_)?TOKEN|GRAPH_ACCESS_TOKEN)\}\}/g;
   const mask = (value: string): string =>
     value.replace(renewableMarker, 'review-only-renewable-bearer');
-  const maskFields = (fields: Record<string, string>): Record<string, string> =>
-    Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, mask(value)]));
-  const resolutionInput = structuredClone(config);
-  // Mask only renewable fragments; processMCPEnv still resolves routing and principal fields.
-  if ('env' in resolutionInput && resolutionInput.env)
-    resolutionInput.env = maskFields(resolutionInput.env);
-  if ('args' in resolutionInput && resolutionInput.args)
-    resolutionInput.args = resolutionInput.args.map(mask);
-  if ('headers' in resolutionInput && resolutionInput.headers)
-    resolutionInput.headers = maskFields(resolutionInput.headers);
-  if ('oauth_headers' in resolutionInput && resolutionInput.oauth_headers)
-    resolutionInput.oauth_headers = maskFields(resolutionInput.oauth_headers);
-  if ('url' in resolutionInput && resolutionInput.url)
-    resolutionInput.url = mask(resolutionInput.url);
-  if (resolutionInput.apiKey?.key) resolutionInput.apiKey.key = mask(resolutionInput.apiKey.key);
-  if (resolutionInput.oauth) {
-    resolutionInput.oauth = Object.fromEntries(
-      Object.entries(resolutionInput.oauth).map(([key, value]) => [
-        key,
-        typeof value === 'string' ? mask(value) : value,
-      ]),
-    );
-  }
-  const resolved = processMCPEnv({ options: resolutionInput, user, body, customUserVars });
+  const resolved = processMCPEnv({
+    options: config,
+    user,
+    body,
+    customUserVars,
+    beforeCredentialResolution: mask,
+  });
   const projected = { ...resolved } as typeof resolved & {
     headers?: Record<string, string>;
     oauth_headers?: Record<string, string>;

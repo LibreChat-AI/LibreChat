@@ -52,3 +52,5 @@ Shared-agent viewers can reset their consent from agent details or the read-only
 Reset accepts the same tenant-scoped `manage:agents` capability or VIEW ACL as normal agent access. It always resets the authenticated user’s consent.
 
 Renewable OpenID/Graph credential placeholders are excluded from review authority in env, arguments, URLs, OAuth fields and headers. Surrounding routing and principal values remain bound. Persistence rechecks OAuth generation and compares the stored epoch atomically, so stale completions cannot replace newer-account consent.
+
+Approval ownership is invocation-specific. A delayed background completion cannot retire a newer call with the same provider ID. Registry timestamps and inspection summaries do not change authority. Renewable placeholders introduced by environment or custom-variable substitution are masked before credential resolution, without changing normal transport resolution.

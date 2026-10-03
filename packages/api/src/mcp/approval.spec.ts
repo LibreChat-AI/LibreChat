@@ -1,5 +1,7 @@
+import { ServerConfigsCacheInMemory } from './registry/cache/ServerConfigsCacheInMemory';
 import { buildMCPToolApprovalBinding } from '~/agents/hitl/modes';
 import { buildMCPToolReviewAuthority } from './approval';
+import { processMCPEnv } from '~/utils/env';
 
 const config = {
   type: 'streamable-http' as const,
@@ -275,4 +277,90 @@ test('an injected renewable API key is masked without ignoring declared credenti
       user: tokenPrincipal('synthetic-b'),
     }),
   ).not.toBe(a);
+});
+
+test('real registry timestamps and inspection summaries do not change review authority', async () => {
+  const registry = new ServerConfigsCacheInMemory();
+  await registry.add('db', { ...config, initDuration: 2 });
+  const before = buildMCPToolReviewAuthority({
+    serverName: 'db',
+    config: await registry.get('db'),
+  });
+  await registry.update('db', {
+    ...config,
+    initDuration: 200,
+    capabilities: 'reinspected',
+    tools: 'new summary',
+    resolvedInstructions: 'new instructions',
+  });
+  expect(buildMCPToolReviewAuthority({ serverName: 'db', config: await registry.get('db') })).toBe(
+    before,
+  );
+  expect(
+    buildMCPToolReviewAuthority({ serverName: 'db', config: { ...config, source: 'user' } }),
+  ).not.toBe(before);
+});
+
+test.each(['header', 'env', 'argument', 'url'] as const)(
+  'environment-expanded renewable %s is stable before refresh and still binds routing',
+  (field) => {
+    const saved = process.env.TEST_MCP_APPROVAL_TEMPLATE;
+    process.env.TEST_MCP_APPROVAL_TEMPLATE = '{{WORKSPACE}}:{{LIBRECHAT_OPENID_ACCESS_TOKEN}}';
+    const template = '${TEST_MCP_APPROVAL_TEMPLATE}';
+    const selected =
+      field === 'env' || field === 'argument'
+        ? {
+            type: 'stdio' as const,
+            source: 'yaml' as const,
+            command: 'node',
+            args: field === 'argument' ? [template] : ['server.js'],
+            env: field === 'env' ? { UPSTREAM_TOKEN: template } : undefined,
+          }
+        : {
+            ...config,
+            headers: field === 'header' ? { Authorization: template } : undefined,
+            url: field === 'url' ? `https://mcp.example.test/${template}` : config.url,
+          };
+    const authority = (access_token: string, expires_at: number, WORKSPACE = 'a') =>
+      buildMCPToolReviewAuthority({
+        serverName: 'db',
+        config: selected,
+        user: { ...tokenPrincipal(access_token), openidTokens: { access_token, expires_at } },
+        customUserVars: { WORKSPACE },
+      });
+    try {
+      const first = authority('synthetic-a', Math.floor(Date.now() / 1000) + 3600);
+      expect(first).toEqual(expect.any(String));
+      expect(authority('synthetic-b', 0)).toBe(first);
+      expect(authority('synthetic-b', 0, 'b')).not.toBe(first);
+      expect(() =>
+        processMCPEnv({
+          options: selected,
+          user: {
+            ...tokenPrincipal('synthetic-b'),
+            openidTokens: { access_token: 'synthetic-b', expires_at: 0 },
+          },
+        }),
+      ).toThrow('re-authentication');
+    } finally {
+      if (saved == null) delete process.env.TEST_MCP_APPROVAL_TEMPLATE;
+      else process.env.TEST_MCP_APPROVAL_TEMPLATE = saved;
+    }
+  },
+);
+
+test('renewable placeholders introduced by operator substitution are masked after routing resolves', () => {
+  const selected = { ...config, headers: { Authorization: '{{AUTH_TEMPLATE}}' } };
+  const authority = (token: string, WORKSPACE: string) =>
+    buildMCPToolReviewAuthority({
+      serverName: 'db',
+      config: selected,
+      user: tokenPrincipal(token),
+      customUserVars: {
+        AUTH_TEMPLATE: '{{WORKSPACE}}:{{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
+        WORKSPACE,
+      },
+    });
+  expect(authority('synthetic-b', 'a')).toBe(authority('synthetic-a', 'a'));
+  expect(authority('synthetic-b', 'b')).not.toBe(authority('synthetic-a', 'a'));
 });

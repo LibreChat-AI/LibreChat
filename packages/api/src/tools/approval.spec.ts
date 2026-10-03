@@ -8,6 +8,12 @@ import {
   bindToolReviewAuthority,
   getToolReviewAuthority,
 } from './approval';
+import {
+  bindToolApprovalInvocation,
+  noteToolApprovalDispatch,
+  withToolApprovalTransport,
+  assertToolApprovalTransportEpoch,
+} from './approval';
 
 test('connection-derived bindings survive local copies without reaching JSON or provider payloads', () => {
   const definition = bindToolApproval(
@@ -68,4 +74,38 @@ test('invocation-only authority stays private while surviving internal definitio
   const definition = bindToolReviewAuthority({ name: 'query_mcp_db' }, 'private-review-authority');
   expect(getToolReviewAuthority({ ...definition })).toBe('private-review-authority');
   expect(JSON.stringify(definition)).not.toContain('private-review-authority');
+});
+
+test('private dispatch ownership survives metadata copies and binds the exact transport invocation', async () => {
+  const token = Symbol('invocation');
+  const dispatch = { agentId: 'agent-a', toolCallId: 'call_0', background: true };
+  const execution = {
+    validateExecution: jest.fn(async () => {}),
+    noteDispatch: (invocation: import('./approval').ToolApprovalInvocation) => {
+      invocation.ownership = token;
+    },
+    validateTransport: jest.fn(async () => {}),
+  };
+  await withToolApprovalExecution(execution, async () => {
+    noteToolApprovalDispatch(dispatch);
+    const metadata = { ...bindToolApprovalInvocation({ agentId: 'agent-a' }, dispatch) };
+    expect(JSON.stringify(metadata)).toBe('{"agentId":"agent-a"}');
+    const config = {
+      toolCall: { id: 'call_0' },
+      metadata,
+      configurable: { __librechatBackgroundToolInvocation: true },
+    };
+    const approved = await assertToolApprovalExecution({ name: 'query_mcp_db' }, config);
+    await withToolApprovalTransport(
+      config,
+      () => assertToolApprovalTransportEpoch('db', null),
+      approved,
+    );
+  });
+  expect(execution.validateTransport).toHaveBeenCalledWith(
+    'db',
+    null,
+    expect.objectContaining({ ownership: token, toolCallId: 'call_0' }),
+    false,
+  );
 });
