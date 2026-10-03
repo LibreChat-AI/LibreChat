@@ -8,6 +8,7 @@ const {
 const { callTool, verifyToolAuth, getToolCalls } = require('~/server/controllers/tools');
 const { ResourceType, PermissionBits } = require('librechat-data-provider');
 const { checkPermission } = require('~/server/services/PermissionService');
+const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { getAvailableTools } = require('~/server/controllers/PluginController');
 const { toolCallLimiter } = require('~/server/middleware');
 
@@ -18,6 +19,7 @@ router.post(
   toolCallLimiter,
   createResetToolApprovalController({
     storage: approvalStorage,
+    hasCapability,
     getAgent: approvalStorage.getAgent,
     canAccessAgent: (agent, user) =>
       checkPermission({

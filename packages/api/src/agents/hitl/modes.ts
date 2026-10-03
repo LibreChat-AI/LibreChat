@@ -503,7 +503,8 @@ export function createAgentToolApprovalSession({
           if (
             current.available !== false &&
             current.oauthEpoch !== undefined &&
-            current.oauthEpoch === grant.oauthEpoch
+            current.oauthEpoch === grant.oauthEpoch &&
+            current.revocation === grant.revocation
           ) {
             await storage.rememberToolApprovalGrants(scope, [grant]);
           }

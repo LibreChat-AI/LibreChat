@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
 
@@ -7,17 +8,34 @@ interface StoredGrant {
   conversationId: string;
   binding?: string;
   revocation?: string;
+  generation?: number;
   approvedRevocation?: string;
   oauthEpoch?: string | null;
 }
 
 /** Canonical MCP tool keys include their source; `*` is reserved for the agent-wide fence. */
 const AGENT_FENCE_TOOL = '*';
+const epochSchema = z.tuple([
+  z.string(),
+  z.string(),
+  z.number().int().nonnegative(),
+  z.number().int().nonnegative(),
+]);
+
+function epochGenerations(revocation?: string): readonly [number, number] | undefined {
+  if (revocation == null) return [0, 0];
+  try {
+    const epoch = epochSchema.safeParse(JSON.parse(revocation));
+    return epoch.success ? [epoch.data[2], epoch.data[3]] : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export function createToolApprovalGrantMethods(
   mongoose: typeof import('mongoose'),
 ): ToolApprovalGrantStorage {
-  return {
+  const methods: ToolApprovalGrantStorage = {
     async getToolApprovalGrants(scope, bindings) {
       if (bindings.length === 0) return [];
       const recordsQuery = mongoose.models.ToolApprovalGrant.find({
@@ -37,7 +55,7 @@ export function createToolApprovalGrantMethods(
         ],
       })
         .select(
-          'agentId toolName conversationId binding revocation approvedRevocation oauthEpoch -_id',
+          'agentId toolName conversationId binding revocation generation approvedRevocation oauthEpoch -_id',
         )
         .lean<StoredGrant[]>();
       const servers = [
@@ -91,15 +109,14 @@ export function createToolApprovalGrantMethods(
           values.size === 1 && typeof value === 'string' && value.length > 0 ? value : undefined,
         );
       }
-      const agentRevocations = new Map<string, string | undefined>();
-      const revocations = new Map<string, string | undefined>();
+      const agentRevocations = new Map<string, StoredGrant>();
+      const revocations = new Map<string, StoredGrant>();
       const granted = new Map<string, StoredGrant>();
       const key = (agentId: string, toolName: string) => JSON.stringify([agentId, toolName]);
       for (const record of records) {
         if (record.conversationId === '') {
-          if (record.toolName === AGENT_FENCE_TOOL)
-            agentRevocations.set(record.agentId, record.revocation);
-          else revocations.set(key(record.agentId, record.toolName), record.revocation);
+          if (record.toolName === AGENT_FENCE_TOOL) agentRevocations.set(record.agentId, record);
+          else revocations.set(key(record.agentId, record.toolName), record);
         }
         if (record.binding) granted.set(record.binding, record);
       }
@@ -107,9 +124,14 @@ export function createToolApprovalGrantMethods(
         const toolRevocation = revocations.get(key(grant.agentId, grant.toolName));
         const agentRevocation = agentRevocations.get(grant.agentId);
         const revocation =
-          agentRevocation == null
-            ? toolRevocation
-            : JSON.stringify([agentRevocation, toolRevocation ?? '']);
+          agentRevocation?.revocation == null && toolRevocation?.revocation == null
+            ? undefined
+            : JSON.stringify([
+                agentRevocation?.revocation ?? '',
+                toolRevocation?.revocation ?? '',
+                agentRevocation?.generation ?? 0,
+                toolRevocation?.generation ?? 0,
+              ]);
         const record = granted.get(grant.binding);
         const oauthEpoch = grant.serverName ? epochs.get(grant.serverName) : null;
         return {
@@ -125,24 +147,61 @@ export function createToolApprovalGrantMethods(
       });
     },
     async rememberToolApprovalGrants(scope, grants) {
+      if (grants.some((grant) => grant.scope === 'once'))
+        throw new TypeError('One-time approvals cannot be remembered.');
+      const current = new Map(
+        (await methods.getToolApprovalGrants(scope, grants)).map((status) => [
+          status.binding,
+          status,
+        ]),
+      );
       await Promise.all(
         grants.map(async (grant) => {
-          if (grant.scope === 'once')
-            throw new TypeError('One-time approvals cannot be remembered.');
+          if (current.get(grant.binding)?.revocation !== grant.revocation) return;
+          const generations = epochGenerations(grant.revocation);
+          if (!generations) return;
+          const [agentGeneration, toolGeneration] = generations;
+          // Monotonic predicates protect renewal if reset lands after the batched fence read.
           const filter = {
             user: scope.userId,
             tenantId: scope.tenantId ?? null,
             agentId: grant.agentId,
             toolName: grant.toolName,
             conversationId: grant.scope === 'chat' ? scope.conversationId : '',
+            $and: [
+              {
+                $or: [
+                  { approvedAgentGeneration: { $lte: agentGeneration } },
+                  { approvedAgentGeneration: { $exists: false } },
+                ],
+              },
+              {
+                $or: [
+                  { approvedToolGeneration: { $lte: toolGeneration } },
+                  { approvedToolGeneration: { $exists: false } },
+                ],
+              },
+              // Persistent grants share the targeted reset fence's document.
+              {
+                $or: [{ generation: { $lte: toolGeneration } }, { generation: { $exists: false } }],
+              },
+            ],
           };
           const update = {
             $set: {
               binding: grant.binding,
               approvedRevocation: grant.revocation ?? '',
               oauthEpoch: grant.oauthEpoch ?? null,
+              approvedAgentGeneration: agentGeneration,
+              approvedToolGeneration: toolGeneration,
             },
-            $setOnInsert: filter,
+            $setOnInsert: {
+              user: scope.userId,
+              tenantId: scope.tenantId ?? null,
+              agentId: grant.agentId,
+              toolName: grant.toolName,
+              conversationId: filter.conversationId,
+            },
           };
           try {
             await mongoose.models.ToolApprovalGrant.updateOne(filter, update, {
@@ -170,6 +229,7 @@ export function createToolApprovalGrantMethods(
         filter,
         {
           $set: { revocation: randomUUID() },
+          $inc: { generation: 1 },
           $unset: { binding: 1, approvedRevocation: 1 },
           $setOnInsert: filter,
         },
@@ -177,4 +237,5 @@ export function createToolApprovalGrantMethods(
       );
     },
   };
+  return methods;
 }

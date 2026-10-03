@@ -3,7 +3,7 @@ import request from 'supertest';
 import type { ToolApprovalGrantStorage, Agent } from 'librechat-data-provider';
 import { createResetToolApprovalController } from './controller';
 
-function fixture(user?: { id: string }) {
+function fixture(user?: { id: string; role?: string }) {
   const storage: ToolApprovalGrantStorage = {
     getToolApprovalGrants: async () => [],
     rememberToolApprovalGrants: async () => {},
@@ -18,9 +18,15 @@ function fixture(user?: { id: string }) {
     }),
   );
   const canAccessAgent = jest.fn(async () => true);
-  const controller = createResetToolApprovalController({ storage, getAgent, canAccessAgent });
+  const hasCapability = jest.fn(async () => false);
+  const controller = createResetToolApprovalController({
+    storage,
+    getAgent,
+    canAccessAgent,
+    hasCapability,
+  });
   app.post('/reset', (req, res) => controller(Object.assign(req, { user }), res));
-  return { storage, app, getAgent, canAccessAgent };
+  return { storage, app, getAgent, canAccessAgent, hasCapability };
 }
 
 const reset = { agentId: 'agent-a', toolName: 'query_mcp_db' };
@@ -75,4 +81,37 @@ test('a VIEW-only caller resets all personal learned modes without requesting au
   f.canAccessAgent.mockResolvedValue(false);
   await request(f.app).post('/reset').send({ agentId: 'agent-a' }).expect(403);
   expect(f.storage.resetToolApprovalGrants).toHaveBeenCalledTimes(1);
+});
+
+test.each([undefined, 'query_mcp_db'])(
+  'manage:agents authorizes personal reset with tool=%s without a resource ACL',
+  async (toolName) => {
+    const f = fixture({ id: 'manager-a', role: 'USER' });
+    f.hasCapability.mockResolvedValue(true);
+    f.canAccessAgent.mockResolvedValue(false);
+    await request(f.app)
+      .post('/reset')
+      .send({ agentId: 'agent-a', toolName })
+      .expect(200, { reset: true });
+    expect(f.hasCapability).toHaveBeenCalledWith(
+      { id: 'manager-a', role: 'USER' },
+      'manage:agents',
+    );
+    expect(f.canAccessAgent).not.toHaveBeenCalled();
+    expect(f.storage.resetToolApprovalGrants).toHaveBeenCalledWith(
+      'manager-a',
+      'agent-a',
+      toolName,
+    );
+  },
+);
+
+test('a failed capability lookup never grants access and preserves the normal ACL fallback', async () => {
+  const f = fixture({ id: 'viewer-a', role: 'USER' });
+  f.hasCapability.mockRejectedValue(new Error('synthetic capability failure'));
+  f.canAccessAgent.mockResolvedValue(false);
+  await request(f.app).post('/reset').send({ agentId: 'agent-a' }).expect(403);
+  expect(f.storage.resetToolApprovalGrants).not.toHaveBeenCalled();
+  f.canAccessAgent.mockResolvedValue(true);
+  await request(f.app).post('/reset').send({ agentId: 'agent-a' }).expect(200);
 });

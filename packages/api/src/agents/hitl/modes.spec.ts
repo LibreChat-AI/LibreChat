@@ -174,6 +174,7 @@ test('changed agent, user, tenant, connection, schema and revision invalidate a 
 test('only a verified, manually approved successful invocation creates a grant', async () => {
   const source = agent('chat');
   const binding = resolveAgentToolGrantBinding(source, name, scope)!;
+  binding.revocation = 'epoch-a';
   const payload = buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]);
   const storage = store();
   for (const decision of ['reject', 'edit', 'respond', 'approve'] as const) {
@@ -530,6 +531,7 @@ test('reviewed consent and success witnesses stay on the reviewed agent when cal
   const a = agent('chat', 'agent-a');
   const b = agent('allow', 'agent-b');
   const binding = resolveAgentToolGrantBinding(a, name, scope)!;
+  binding.revocation = 'epoch-a';
   const storage = store();
   const session = createAgentToolApprovalSession({
     agents: [a, b],
@@ -717,3 +719,33 @@ test.each(['ask', 'allow', 'chat', 'always'] as const)(
     }
   },
 );
+
+test('a successful reviewed call cannot learn consent after its reset epoch changes', async () => {
+  const source = agent('chat');
+  const binding = { ...resolveAgentToolGrantBinding(source, name, scope)!, revocation: 'epoch-a' };
+  const storage = store();
+  const session = createAgentToolApprovalSession({
+    agents: [source],
+    scope,
+    storage,
+    reviewed: {
+      bindings: { 'call-a': binding },
+      decisions: [{ tool_call_id: 'call-a', decision: 'approve' }],
+    },
+  });
+  await session.hook(input(), new AbortController().signal);
+  await session.validateExecution(source.toolDefinitions![0], {
+    agentId: source.id,
+    toolCallId: 'call-a',
+  });
+  jest
+    .spyOn(storage, 'getToolApprovalGrants')
+    .mockResolvedValue([
+      { binding: binding.binding, approved: false, revocation: 'epoch-b', oauthEpoch: null },
+    ]);
+  await session.rememberHook(
+    { ...input(), hook_event_name: 'PostToolUse', toolOutput: 'success' },
+    new AbortController().signal,
+  );
+  expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+});

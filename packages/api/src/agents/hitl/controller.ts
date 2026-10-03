@@ -1,6 +1,9 @@
 import { z } from 'zod';
+import { ResourceType } from 'librechat-data-provider';
+import { logger, ResourceCapabilityMap } from '@librechat/data-schemas';
 import type { ToolApprovalGrantStorage, Agent } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
+import type { HasCapabilityFn } from '~/middleware/capabilities';
 
 const resetSchema = z
   .object({ agentId: z.string().min(1).max(256), toolName: z.string().min(1).max(256).optional() })
@@ -8,6 +11,7 @@ const resetSchema = z
 
 interface ResetDependencies {
   storage: ToolApprovalGrantStorage;
+  hasCapability?: HasCapabilityFn;
   getAgent: (filter: {
     id: string;
   }) => Promise<Pick<Agent, 'id' | 'tool_options'> | null | undefined>;
@@ -19,6 +23,7 @@ interface ResetDependencies {
 
 export function createResetToolApprovalController({
   storage,
+  hasCapability,
   getAgent,
   canAccessAgent,
 }: ResetDependencies): (
@@ -41,7 +46,21 @@ export function createResetToolApprovalController({
     try {
       const { agentId, toolName } = parsed.data;
       const agent = await getAgent({ id: agentId });
-      if (!agent || !(await canAccessAgent(agent, req.user))) {
+      if (!agent) {
+        res.status(403).json({ code: 'APPROVAL_RESET_FORBIDDEN' });
+        return;
+      }
+      let managesAgents = false;
+      const capability = ResourceCapabilityMap[ResourceType.AGENT];
+      try {
+        managesAgents =
+          capability != null &&
+          req.user.role != null &&
+          (await hasCapability?.({ ...req.user, role: req.user.role }, capability)) === true;
+      } catch {
+        logger.warn('[Tool approvals] Capability lookup failed; checking resource access.');
+      }
+      if (!managesAgents && !(await canAccessAgent(agent, req.user))) {
         res.status(403).json({ code: 'APPROVAL_RESET_FORBIDDEN' });
         return;
       }
