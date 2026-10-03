@@ -1,17 +1,20 @@
 import { logger } from '@librechat/data-schemas';
 import { isNativelyReadableText, documentParserMimeTypes } from 'librechat-data-provider';
 import type {
+  FileConfig,
   FiltersConfig,
   EndpointFileConfig,
   TDefaultLLMDeliveryPath,
 } from 'librechat-data-provider';
+import type { ExtractedDocumentText } from '~/files/documents/outcome';
 import {
   extractInspectableFileText,
   getFileExtractionLogDetails,
   MAX_STORED_EXTRACTED_TEXT_BYTES,
 } from '~/files/extract';
+import { getBlockedUninspectableFileField, hasActiveFileFieldPolicy } from '~/protection/files';
 import { extractFileContent } from '~/protection/adapters/submissions';
-import { hasActiveFileFieldPolicy } from '~/protection/files';
+import { isPartialDocumentText } from '~/files/documents/outcome';
 import { parseDocument } from '~/files/documents/crud';
 import { inspectContent } from '~/protection/runtime';
 import { parseTextNative } from '~/files/text';
@@ -36,13 +39,21 @@ export interface UploadFallbackTextRoute {
   endpointConfig?: Pick<EndpointFileConfig, 'textFallbackWithoutTools'>;
 }
 
-interface ExtractedText {
+interface ExtractedText
+  extends Partial<Pick<ExtractedDocumentText, 'pagesNeedingOcr' | 'mayOmitContent'>> {
   readonly text?: string | null;
 }
 
+type DocumentParserLimits = Omit<NonNullable<FileConfig['documentParser']>, 'supportedMimeTypes'>;
+
 /** The built-in readers fallback text comes from. */
 export interface UploadFallbackTextExtractors {
-  parseDocument: (params: { file: Express.Multer.File }) => Promise<ExtractedText>;
+  parseDocument: (
+    params: {
+      file: Express.Multer.File;
+      maxFileSize?: number;
+    } & Omit<DocumentParserLimits, 'fileSizeLimit'>,
+  ) => Promise<ExtractedText>;
   parseTextNative: (file: Express.Multer.File) => Promise<ExtractedText>;
 }
 
@@ -95,12 +106,15 @@ export async function resolveUploadFallbackText({
   file,
   fileId,
   filters,
+  documentParser,
   extractors = builtInExtractors,
   ...route
 }: Omit<UploadFallbackTextRoute, 'mimeType'> & {
   file: Express.Multer.File;
   fileId: string;
   filters?: FiltersConfig;
+  /** The merged `fileConfig.documentParser`, so fallback parses honor the deployment's bounds. */
+  documentParser?: FileConfig['documentParser'];
   extractors?: UploadFallbackTextExtractors;
 }): Promise<string | undefined> {
   const plan = getUploadFallbackTextPlan({ ...route, mimeType: file.mimetype });
@@ -125,12 +139,32 @@ export async function resolveUploadFallbackText({
       filters,
       extract: () =>
         plan === UPLOAD_FALLBACK_TEXT_PLANS.documentParser
-          ? extractors.parseDocument({ file })
+          ? extractors.parseDocument({
+              file,
+              maxFileSize: documentParser?.fileSizeLimit,
+              timeoutMs: documentParser?.timeoutMs,
+              maxPageCount: documentParser?.maxPageCount,
+              archiveEntrySizeLimit: documentParser?.archiveEntrySizeLimit,
+              archiveTotalSizeLimit: documentParser?.archiveTotalSizeLimit,
+              archiveEntryCountLimit: documentParser?.archiveEntryCountLimit,
+              maxRecoveredPageCount: documentParser?.maxRecoveredPageCount,
+              maxConcurrentParsers: documentParser?.maxConcurrentParsers,
+              maxQueuedParsers: documentParser?.maxQueuedParsers,
+              classifierTimeoutMs: documentParser?.classifierTimeoutMs,
+            })
           : extractors.parseTextNative(file),
     });
     const text = result?.text;
     if (typeof text !== 'string' || text.trim().length === 0) {
       return undefined;
+    }
+    /* The primary Context route fails closed on text with holes in it under this policy;
+     * fallback text is best effort, so it is dropped instead. */
+    if (
+      getBlockedUninspectableFileField(filters, ['extracted_text']) != null &&
+      isPartialDocumentText(result)
+    ) {
+      return skip('extracted text is incomplete and the uninspectable-content policy blocks it');
     }
     if (Buffer.byteLength(text, 'utf8') > MAX_STORED_EXTRACTED_TEXT_BYTES) {
       return skip('extracted text exceeds the storage limit');

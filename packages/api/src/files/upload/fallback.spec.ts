@@ -215,4 +215,54 @@ describe('resolveUploadFallbackText', () => {
       }),
     ).resolves.toBeUndefined();
   });
+
+  it('parses with the deployment parser bounds instead of the defaults', async () => {
+    const extractors = spiedExtractors();
+    const file = {
+      originalname: 'sample.xlsx',
+      path: path.join(__dirname, '../documents/sample.xlsx'),
+      mimetype: XLSX_MIME,
+    } as Express.Multer.File;
+
+    await expect(
+      resolveUploadFallbackText({
+        ...route,
+        file,
+        fileId: 'file-1',
+        documentParser: { fileSizeLimit: 1, timeoutMs: 5_000, maxPageCount: 3 },
+        extractors,
+      }),
+    ).resolves.toBeUndefined();
+    expect(extractors.parseDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ file, maxFileSize: 1, timeoutMs: 5_000, maxPageCount: 3 }),
+    );
+  });
+
+  it('stores incomplete text only while no blocking policy needs the whole document', async () => {
+    const file = {
+      originalname: 'report.pdf',
+      path: '/tmp/report.pdf',
+      mimetype: 'application/pdf',
+    } as Express.Multer.File;
+    const extractors = {
+      parseDocument: jest.fn(async () => ({ text: 'page one', pagesNeedingOcr: [2] })),
+      parseTextNative: jest.fn(parseTextNative),
+    } satisfies UploadFallbackTextExtractors;
+    const blocking: FiltersConfig = {
+      files: { pii: { fields: ['extracted_text'], starterPatterns: [], uninspectable: 'block' } },
+    };
+
+    await expect(
+      resolveUploadFallbackText({ ...route, file, fileId: 'file-1', extractors }),
+    ).resolves.toBe('page one');
+    await expect(
+      resolveUploadFallbackText({
+        ...route,
+        file,
+        fileId: 'file-1',
+        filters: blocking,
+        extractors,
+      }),
+    ).resolves.toBeUndefined();
+  });
 });

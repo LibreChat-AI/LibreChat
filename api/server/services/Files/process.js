@@ -1312,6 +1312,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     isMessageAttachment: messageAttachment,
     endpointConfig,
     filters: appConfig?.filters,
+    documentParser: fileConfig.documentParser,
   });
 
   // Dual storage pattern for RAG files: Storage + Vector DB

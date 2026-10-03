@@ -97,7 +97,13 @@ export type ExtractedDocumentText = Pick<
  * document inspected, so every route that persists one fails closed while the
  * uninspectable-content policy is active.
  */
-export function isPartialDocumentText(result?: ExtractedDocumentText | null): boolean {
+export function isPartialDocumentText(
+  result?:
+    | (Pick<ExtractedDocumentText, 'pagesNeedingOcr' | 'mayOmitContent'> & {
+        text?: string | null;
+      })
+    | null,
+): boolean {
   return !!result?.pagesNeedingOcr?.length || result?.mayOmitContent === true;
 }
 
