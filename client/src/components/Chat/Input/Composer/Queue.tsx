@@ -2,9 +2,17 @@ import { memo, useId, useRef, useMemo, useState, useCallback } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { createPortal } from 'react-dom';
-import { useDrag, useDrop } from 'react-dnd';
 import * as Ariakit from '@ariakit/react';
+import { useDrag, useDrop } from 'react-dnd';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import {
+  Button,
+  IconButton,
+  TooltipAnchor,
+  DropdownPopup,
+  useMediaQuery,
+  useToastContext,
+} from '@librechat/client';
 import {
   Clock,
   Trash2,
@@ -17,14 +25,6 @@ import {
   TriangleAlert,
   MessageSquarePlus,
 } from 'lucide-react';
-import {
-  Button,
-  IconButton,
-  TooltipAnchor,
-  DropdownPopup,
-  useMediaQuery,
-  useToastContext,
-} from '@librechat/client';
 import type { MenuItemProps } from '@librechat/client';
 import type { RestoreToComposer } from '~/Providers/ComposerRestoreContext';
 import type { SteeringControls } from '~/hooks/Chat/useSteering';
