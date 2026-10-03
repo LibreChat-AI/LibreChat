@@ -2823,6 +2823,8 @@ export type TRumConfig = {
   advancedNetworkCapture?: boolean;
   sampleRate?: number;
   environment?: string;
+  /** Proxy mode only: export client logger warnings/errors as OTLP logs through the RUM proxy. */
+  clientLogs?: boolean;
 };
 
 export type StartupConfigContext = 'share';

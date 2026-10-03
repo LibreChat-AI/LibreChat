@@ -1,5 +1,11 @@
 const express = require('express');
-const { getRumProxyBodyLimit, isRumProxyEnabled, proxyRumRequest } = require('@librechat/api');
+const {
+  limiterCache,
+  proxyRumRequest,
+  isRumProxyEnabled,
+  getRumProxyBodyLimit,
+  createRumProxyLimiter,
+} = require('@librechat/api');
 const { requireRumProxyAuth } = require('~/server/middleware');
 
 const router = express.Router();
@@ -16,9 +22,17 @@ function requireRumProxyEnabled(_req, res, next) {
   return next();
 }
 
+const rumProxyLimiter = createRumProxyLimiter({ store: limiterCache('rum_proxy_user_limiter') });
 const proxyTelemetry = (req, res) => proxyRumRequest(req, res, process.env.RUM_PROXY_AUTHORIZATION);
+const telemetryPipeline = [
+  requireRumProxyEnabled,
+  requireRumProxyAuth,
+  rumProxyLimiter,
+  rawOtlpBody,
+  proxyTelemetry,
+];
 
-router.post('/v1/traces', requireRumProxyEnabled, requireRumProxyAuth, rawOtlpBody, proxyTelemetry);
-router.post('/v1/logs', requireRumProxyEnabled, requireRumProxyAuth, rawOtlpBody, proxyTelemetry);
+router.post('/v1/traces', ...telemetryPipeline);
+router.post('/v1/logs', ...telemetryPipeline);
 
 module.exports = router;

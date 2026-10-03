@@ -4,6 +4,16 @@ const request = require('supertest');
 const mockRequireRumProxyAuth = jest.fn((_req, _res, next) => next());
 const mockIsRumProxyEnabled = jest.fn();
 const mockProxyRumRequest = jest.fn((_req, res) => res.status(202).send());
+const mockRumProxyLimiter = jest.fn((_req, _res, next) => next());
+const mockLimiterSetup = [];
+const mockCreateRumProxyLimiter = jest.fn((options) => {
+  mockLimiterSetup.push(['createRumProxyLimiter', options]);
+  return mockRumProxyLimiter;
+});
+const mockLimiterCache = jest.fn((prefix) => {
+  mockLimiterSetup.push(['limiterCache', prefix]);
+  return 'limiter-store';
+});
 
 jest.mock('~/server/middleware', () => ({
   requireRumProxyAuth: (...args) => mockRequireRumProxyAuth(...args),
@@ -11,6 +21,8 @@ jest.mock('~/server/middleware', () => ({
 
 jest.mock('@librechat/api', () => ({
   getRumProxyBodyLimit: jest.fn(() => '3mb'),
+  limiterCache: (...args) => mockLimiterCache(...args),
+  createRumProxyLimiter: (...args) => mockCreateRumProxyLimiter(...args),
   isRumProxyEnabled: (...args) => mockIsRumProxyEnabled(...args),
   proxyRumRequest: (...args) => mockProxyRumRequest(...args),
 }));
@@ -29,6 +41,7 @@ describe('RUM proxy routes', () => {
     mockRequireRumProxyAuth.mockClear();
     mockIsRumProxyEnabled.mockReset();
     mockProxyRumRequest.mockClear();
+    mockRumProxyLimiter.mockClear();
   });
 
   afterEach(() => {
@@ -99,5 +112,47 @@ describe('RUM proxy routes', () => {
     expect(response.status).toBe(202);
     expect(mockRequireRumProxyAuth).toHaveBeenCalledTimes(1);
     expect(mockProxyRumRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('builds the per-user limiter on the shared limiter store', () => {
+    expect(mockLimiterSetup).toEqual([
+      ['limiterCache', 'rum_proxy_user_limiter'],
+      ['createRumProxyLimiter', { store: 'limiter-store' }],
+    ]);
+  });
+
+  it.each(['traces', 'logs'])('rate limits %s after auth and before proxying', async (signal) => {
+    mockIsRumProxyEnabled.mockReturnValue(true);
+    const order = [];
+    mockRequireRumProxyAuth.mockImplementationOnce((_req, _res, next) => {
+      order.push('auth');
+      next();
+    });
+    mockRumProxyLimiter.mockImplementationOnce((_req, res) => {
+      order.push('limit');
+      res.status(429).json({ message: 'Too many RUM telemetry requests' });
+    });
+
+    const response = await request(app)
+      .post(`/api/rum/v1/${signal}`)
+      .set('Content-Type', 'application/json')
+      .send({ resourceLogs: [] });
+
+    expect(response.status).toBe(429);
+    expect(order).toEqual(['auth', 'limit']);
+    expect(mockProxyRumRequest).not.toHaveBeenCalled();
+  });
+
+  it('skips the limiter when session authentication drops the request', async () => {
+    mockIsRumProxyEnabled.mockReturnValue(true);
+    mockRequireRumProxyAuth.mockImplementationOnce((_req, res) => res.status(204).end());
+
+    const response = await request(app)
+      .post('/api/rum/v1/logs')
+      .set('Content-Type', 'application/json')
+      .send({ resourceLogs: [] });
+
+    expect(response.status).toBe(204);
+    expect(mockRumProxyLimiter).not.toHaveBeenCalled();
   });
 });

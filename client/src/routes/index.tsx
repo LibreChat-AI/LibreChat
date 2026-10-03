@@ -11,6 +11,7 @@ import {
 } from '~/components/Auth';
 import { OAuthSuccess, OAuthError } from '~/components/OAuth';
 import { AuthContextProvider } from '~/hooks/AuthContext';
+import { importWithRecovery } from '~/lib/assets/lazy';
 import RouteErrorBoundary from './RouteErrorBoundary';
 import StartupLayout from './Layouts/Startup';
 import MarketplaceRoute from './Marketplace';
@@ -32,27 +33,27 @@ const AuthLayout = () => (
 );
 
 const loadInlinePromptsView = () =>
-  import('~/components/Prompts/layouts/InlinePromptsView').then((m) => ({
+  importWithRecovery(() => import('~/components/Prompts/layouts/InlinePromptsView')).then((m) => ({
     Component: m.default,
   }));
 
 const loadSkillsView = () =>
-  import('~/components/Skills/layouts/SkillsView').then((m) => ({
+  importWithRecovery(() => import('~/components/Skills/layouts/SkillsView')).then((m) => ({
     Component: m.default,
   }));
 
 const loadInsightsView = () =>
-  import('~/components/Insights').then((m) => ({
+  importWithRecovery(() => import('~/components/Insights')).then((m) => ({
     Component: m.default,
   }));
 
 const loadProjectsView = () =>
-  import('~/components/Projects').then((m) => ({
+  importWithRecovery(() => import('~/components/Projects')).then((m) => ({
     Component: m.ProjectsView,
   }));
 
 const loadProjectWorkspace = () =>
-  import('~/components/Projects').then((m) => ({
+  importWithRecovery(() => import('~/components/Projects')).then((m) => ({
     Component: m.ProjectWorkspace,
   }));
 

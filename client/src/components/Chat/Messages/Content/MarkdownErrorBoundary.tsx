@@ -6,6 +6,7 @@ import rehypeHighlight from 'rehype-highlight';
 import type { PluggableList } from 'unified';
 import { code, codeNoExecution, a, p, img, table } from './MarkdownComponents';
 import { langSubset, remarkApproxTilde } from '~/utils';
+import { reportBoundaryError } from '~/lib/rum/logs';
 import { CodeBlockProvider } from '~/Providers';
 
 interface ErrorBoundaryState {
@@ -34,6 +35,7 @@ class MarkdownErrorBoundary extends React.Component<
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error('Markdown rendering error:', error, errorInfo);
+    reportBoundaryError('markdown', error);
   }
 
   componentDidUpdate(prevProps: MarkdownErrorBoundaryProps) {

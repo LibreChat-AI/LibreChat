@@ -8,6 +8,7 @@ import {
   restoreRumEmitter,
   startRumDiagnostics,
 } from './diagnostics';
+import { startClientLogs, stopClientLogs } from './logs';
 import { useGetStartupConfig } from '~/data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { normalizeRumPath } from './routes';
@@ -17,6 +18,7 @@ const PROXY_API_KEY = 'librechat-rum-proxy';
 
 let rumProxyToken: string | undefined;
 let rumProxyFetchPatched = false;
+let hyperDxClient: HyperDXBrowser | undefined;
 
 type HyperDXBrowser = HyperDXActionClient & {
   init: (config: {
@@ -29,6 +31,7 @@ type HyperDXBrowser = HyperDXActionClient & {
     url: string;
   }) => void;
   setGlobalAttributes: (attributes: Record<string, string>) => void;
+  getSessionId?: () => string | undefined;
 };
 
 function shouldInitializeRum(config: TRumConfig | undefined, token: string | undefined): boolean {
@@ -56,6 +59,26 @@ function isProxyRumWaitingForToken(
     !token &&
     !config.publicToken
   );
+}
+
+/**
+ * Client logs ride the authenticated proxy only: the browser never holds a collector URL or
+ * ingestion key for them, so public-token deployments keep just the RUM SDK's own signals.
+ */
+function syncClientLogs(config: TRumConfig): void {
+  if (config.authMode !== 'proxy' || !config.clientLogs) {
+    stopClientLogs();
+    return;
+  }
+
+  startClientLogs({
+    endpoint: `${config.url}/v1/logs`,
+    serviceName: config.serviceName,
+    environment: config.environment,
+    buildId: getClientBuildId() ?? 'unknown',
+    getToken: () => rumProxyToken,
+    getSessionId: () => hyperDxClient?.getSessionId?.(),
+  });
 }
 
 function getApiKey(config: TRumConfig, token: string | undefined): string {
@@ -162,11 +185,13 @@ export default function useRum(): void {
     if (!rumConfig) {
       if (startupConfigFetched) {
         discardEarlyRumQueue();
+        stopClientLogs();
       }
       return;
     }
 
     if (!shouldInitializeRum(rumConfig, token)) {
+      stopClientLogs();
       if (rumConfig?.authMode === 'proxy') {
         rumProxyToken = undefined;
       }
@@ -189,6 +214,7 @@ export default function useRum(): void {
       if (hyperDxRef.current) {
         restoreRumEmitter(hyperDxRef.current);
       }
+      syncClientLogs(config);
       return;
     }
 
@@ -200,8 +226,11 @@ export default function useRum(): void {
 
     if (!sampledInRef.current) {
       discardEarlyRumQueue();
+      stopClientLogs();
       return;
     }
+
+    syncClientLogs(config);
 
     let cancelled = false;
 
@@ -222,6 +251,7 @@ export default function useRum(): void {
         });
 
         hyperDxRef.current = HyperDX;
+        hyperDxClient = HyperDX;
         initializedKeyRef.current = initKey;
         HyperDX.setGlobalAttributes(buildGlobalAttributes(user, config, routeRef.current));
         startRumDiagnostics(HyperDX, () => routeRef.current);

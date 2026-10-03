@@ -206,10 +206,18 @@
             return false;
           }
         }
+        /* Every caller in this page shares one recovery: once a reload is underway, later
+         * chunk failures (Vite preload, unhandled rejection, error boundary) join it instead
+         * of tripping the loop guard and painting the error page before the reload lands. */
         window.__lcRecoverStaleAssets = function () {
+          if (window.__lcStaleAssetRecoveryPending === true) {
+            return true;
+          }
           if (!shouldRecover()) {
+            window.__lcRumPush('stale-asset-recovery-declined');
             return false;
           }
+          window.__lcStaleAssetRecoveryPending = true;
           window.__lcRumPush('stale-asset-recovery-start');
           var reload = function () {
             window.__lcRumPush('stale-asset-recovery-reload');

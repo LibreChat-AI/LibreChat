@@ -1,5 +1,6 @@
 import type { FCPMetricWithAttribution } from 'web-vitals/attribution';
 import { normalizeRumPath } from './routes';
+import { recordClientEvent } from './logs';
 import { getClientBuildId } from './build';
 
 export type RumActionAttributes = Record<string, string | number | boolean>;
@@ -213,6 +214,7 @@ function emitEarlyRumEvent(HyperDX: HyperDXActionClient, event: RumQueuedEvent):
   }
 
   const actionName = event.type === 'spa-route-change' ? event.type : `early-${event.type}`;
+  const attributes = sanitizeQueuedAttributes(event.attributes);
   try {
     HyperDX.addAction(
       actionName,
@@ -220,12 +222,13 @@ function emitEarlyRumEvent(HyperDX: HyperDXActionClient, event: RumQueuedEvent):
         at: round(event.at),
         visibilityState: nonEmptyString(event.visibilityState),
         clientBuildId: 'unknown',
-        ...sanitizeQueuedAttributes(event.attributes),
+        ...attributes,
       }),
     );
   } catch {
     /* Diagnostics should never affect app behavior or stale-asset recovery. */
   }
+  recordClientEvent(event.type, attributes);
 }
 
 export function queueSpaRouteChange(

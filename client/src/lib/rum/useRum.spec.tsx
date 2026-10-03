@@ -27,6 +27,13 @@ jest.mock('./diagnostics', () => ({
 const { discardEarlyRumQueue, queueSpaRouteChange, restoreRumEmitter, startRumDiagnostics } =
   jest.requireMock('./diagnostics');
 
+jest.mock('./logs', () => ({
+  startClientLogs: jest.fn(),
+  stopClientLogs: jest.fn(),
+}));
+
+const { startClientLogs, stopClientLogs } = jest.requireMock('./logs');
+
 jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => mockUseGetStartupConfig(),
 }));
@@ -312,5 +319,98 @@ describe('useRum', () => {
     rerender();
 
     expect(queueSpaRouteChange).toHaveBeenCalledWith('/c/:conversationId', '/login');
+  });
+  describe('client logs', () => {
+    const proxyRum = {
+      provider: 'hyperdx',
+      enabled: true,
+      url: '/api/rum',
+      serviceName: 'librechat-web',
+      authMode: 'proxy',
+      environment: 'demo',
+      clientLogs: true,
+    };
+
+    it('starts proxy-mode client logs on the same-origin logs path with the session token', () => {
+      mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: { rum: proxyRum } });
+
+      renderHook(() => useRum());
+
+      expect(startClientLogs).toHaveBeenCalledWith(
+        expect.objectContaining({
+          endpoint: '/api/rum/v1/logs',
+          serviceName: 'librechat-web',
+          environment: 'demo',
+        }),
+      );
+      const [{ getToken }] = startClientLogs.mock.calls[0];
+      expect(getToken()).toBe('jwt-token');
+    });
+
+    it('keeps client logs off when the server leaves them disabled', () => {
+      mockUseGetStartupConfig.mockReturnValue({
+        isFetched: true,
+        data: { rum: { ...proxyRum, clientLogs: false } },
+      });
+
+      renderHook(() => useRum());
+
+      expect(startClientLogs).not.toHaveBeenCalled();
+      expect(stopClientLogs).toHaveBeenCalled();
+    });
+
+    it('never starts client logs in public-token mode', () => {
+      mockUseGetStartupConfig.mockReturnValue({
+        isFetched: true,
+        data: {
+          rum: {
+            ...proxyRum,
+            url: 'https://rum.example.com',
+            authMode: 'publicToken',
+            publicToken: 'public-token',
+          },
+        },
+      });
+
+      renderHook(() => useRum());
+
+      expect(startClientLogs).not.toHaveBeenCalled();
+    });
+
+    it('follows RUM session sampling', () => {
+      mockUseGetStartupConfig.mockReturnValue({
+        isFetched: true,
+        data: { rum: { ...proxyRum, sampleRate: 0 } },
+      });
+
+      renderHook(() => useRum());
+
+      expect(startClientLogs).not.toHaveBeenCalled();
+      expect(stopClientLogs).toHaveBeenCalled();
+    });
+
+    it('stops client logs when the session token goes away', () => {
+      mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: { rum: proxyRum } });
+      const { rerender } = renderHook(() => useRum());
+      expect(startClientLogs).toHaveBeenCalledTimes(1);
+
+      mockUseAuthContext.mockReturnValue({
+        isAuthenticated: false,
+        token: undefined,
+        user: undefined,
+      });
+      rerender();
+
+      expect(stopClientLogs).toHaveBeenCalled();
+    });
+
+    it('stops client logs when startup config has no RUM config', () => {
+      mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: {} });
+
+      renderHook(() => useRum());
+
+      expect(startClientLogs).not.toHaveBeenCalled();
+      expect(stopClientLogs).toHaveBeenCalled();
+    });
   });
 });

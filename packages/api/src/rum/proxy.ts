@@ -9,6 +9,12 @@ const DEFAULT_PROXY_PATH = '/api/rum';
 const DEFAULT_BODY_LIMIT = '3mb';
 const DEFAULT_TIMEOUT_MS = 10_000;
 const OTLP_PATHS = new Set(['/v1/traces', '/v1/logs']);
+/** OTLP/HTTP encodings; anything else is refused before a body is forwarded. */
+const OTLP_CONTENT_TYPES = new Set([
+  'application/json',
+  'application/x-protobuf',
+  'application/octet-stream',
+]);
 
 function normalizeBasePath(pathname: string): string {
   if (pathname === '/') {
@@ -63,6 +69,16 @@ export function isRumProxyEnabled(): boolean {
   );
 }
 
+/**
+ * Whether browsers export client logger warnings/errors as OTLP logs. Proxy mode only, so the
+ * logs reach the collector through session auth and never with a browser-held ingestion key;
+ * on by default there, `RUM_CLIENT_LOGS=false` turns it off.
+ */
+export function isRumClientLogsEnabled(): boolean {
+  const setting = process.env.RUM_CLIENT_LOGS?.trim();
+  return isRumProxyEnabled() && (!setting || isEnabled(setting));
+}
+
 export function resolveRumProxyTarget(path: string): string | undefined {
   if (!OTLP_PATHS.has(path)) {
     return undefined;
@@ -79,7 +95,7 @@ export function resolveRumProxyTarget(path: string): string | undefined {
 }
 
 // Keep in sync with api/server/middleware/requireJwtAuth.js; auth drops are recorded there.
-function getRumProxyEndpoint(path: string): RumProxyEndpoint {
+export function getRumProxyEndpoint(path: string): RumProxyEndpoint {
   if (path === '/v1/traces') {
     return 'traces';
   }
@@ -122,6 +138,11 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+function isOtlpContentType(req: Request): boolean {
+  const mediaType = getHeader(req, 'content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+  return mediaType != null && OTLP_CONTENT_TYPES.has(mediaType);
+}
+
 function getProxyHeaders(
   req: Request,
   body: Buffer | string,
@@ -156,6 +177,12 @@ export async function proxyRumRequest(
   if (!target) {
     recordRumProxyRequest(endpoint, 'not_configured');
     res.status(404).json({ message: 'RUM proxy is not configured' });
+    return;
+  }
+
+  if (!isOtlpContentType(req)) {
+    recordRumProxyRequest(endpoint, 'unsupported_media_type');
+    res.status(415).json({ message: 'Unsupported RUM payload content type' });
     return;
   }
 

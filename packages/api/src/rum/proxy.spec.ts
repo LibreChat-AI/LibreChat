@@ -16,7 +16,10 @@ import {
   isRumProxyEnabled,
   proxyRumRequest,
   resolveRumProxyTarget,
+  isRumClientLogsEnabled,
 } from './proxy';
+
+const PROTOBUF_HEADERS = { 'content-type': 'application/x-protobuf' };
 
 const makeResponse = () => {
   const res = {
@@ -80,6 +83,49 @@ describe('RUM proxy configuration', () => {
     expect(isRumProxyEnabled()).toBe(false);
   });
 
+  it('enables client logs only in proxy mode unless RUM_CLIENT_LOGS turns them off', () => {
+    process.env.RUM_ENABLED = 'true';
+    process.env.RUM_AUTH_MODE = 'proxy';
+    process.env.RUM_PROXY_TARGET_URL = 'http://otel-collector:4318';
+    delete process.env.RUM_CLIENT_LOGS;
+    expect(isRumClientLogsEnabled()).toBe(true);
+
+    process.env.RUM_CLIENT_LOGS = '';
+    expect(isRumClientLogsEnabled()).toBe(true);
+
+    process.env.RUM_CLIENT_LOGS = 'false';
+    expect(isRumClientLogsEnabled()).toBe(false);
+
+    process.env.RUM_CLIENT_LOGS = 'true';
+    process.env.RUM_AUTH_MODE = 'publicToken';
+    expect(isRumClientLogsEnabled()).toBe(false);
+  });
+
+  it.each([undefined, 'text/plain', 'multipart/form-data; boundary=x', 'application/xml'])(
+    'refuses %p payloads with 415 before contacting the collector',
+    async (contentType) => {
+      process.env.RUM_ENABLED = 'true';
+      process.env.RUM_AUTH_MODE = 'proxy';
+      process.env.RUM_PROXY_TARGET_URL = 'http://otel-collector:4318';
+      const fetchMock = jest.spyOn(global, 'fetch');
+      const res = makeResponse();
+
+      await proxyRumRequest(
+        {
+          path: '/v1/logs',
+          body: Buffer.from('payload'),
+          headers: contentType ? { 'content-type': contentType } : {},
+        } as never,
+        res as never,
+      );
+
+      expect(res.status).toHaveBeenCalledWith(415);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(recordRumProxyRequest).toHaveBeenCalledWith('logs', 'unsupported_media_type');
+      fetchMock.mockRestore();
+    },
+  );
+
   it('rejects unsafe collector target URLs', () => {
     process.env.RUM_PROXY_TARGET_URL = 'https://user:pass@collector.example.com';
     expect(getRumProxyTargetBaseUrl()).toBeUndefined();
@@ -138,7 +184,10 @@ describe('RUM proxy configuration', () => {
     const missingBodyRes = makeResponse();
     const unsupportedPathRes = makeResponse();
 
-    await proxyRumRequest({ path: '/v1/traces', headers: {} } as never, missingBodyRes as never);
+    await proxyRumRequest(
+      { path: '/v1/traces', headers: { 'content-type': 'application/x-protobuf' } } as never,
+      missingBodyRes as never,
+    );
     await proxyRumRequest(
       { path: '/v1/metrics', body: Buffer.from('payload'), headers: {} } as never,
       unsupportedPathRes as never,
@@ -158,7 +207,7 @@ describe('RUM proxy configuration', () => {
     const res = makeResponse();
 
     await proxyRumRequest(
-      { path: '/v1/traces', body: Buffer.from('payload'), headers: {} } as never,
+      { path: '/v1/traces', body: Buffer.from('payload'), headers: PROTOBUF_HEADERS } as never,
       res as never,
     );
 
@@ -177,7 +226,7 @@ describe('RUM proxy configuration', () => {
     const res = makeResponse();
 
     await proxyRumRequest(
-      { path: '/v1/logs', body: Buffer.from('payload'), headers: {} } as never,
+      { path: '/v1/logs', body: Buffer.from('payload'), headers: PROTOBUF_HEADERS } as never,
       res as never,
     );
 
@@ -266,6 +315,61 @@ describe('RUM proxy upstream HTTP contract', () => {
       expect(recordRumProxyRequest).toHaveBeenCalledWith(signal, 'success');
     },
   );
+
+  it('forwards OTLP/JSON log records unchanged after the app JSON parser and never logs them', async () => {
+    const records = {
+      resourceLogs: [
+        {
+          resource: {
+            attributes: [{ key: 'service.name', value: { stringValue: 'librechat-web' } }],
+          },
+          scopeLogs: [
+            {
+              scope: { name: 'librechat.client', version: '1' },
+              logRecords: [
+                {
+                  timeUnixNano: '1790000000000000000',
+                  severityNumber: 17,
+                  severityText: 'ERROR',
+                  body: { stringValue: 'payload-marker' },
+                  attributes: [{ key: 'log.repeat_count', value: { intValue: '3' } }],
+                  traceId: 'a'.repeat(32),
+                  spanId: 'b'.repeat(16),
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    let receivedBody = '';
+    let receivedType: string | undefined;
+    collector.on('request', (req, res) => {
+      receivedType = req.headers['content-type'];
+      req.on('data', (chunk: Buffer) => {
+        receivedBody += chunk.toString();
+      });
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{}');
+      });
+    });
+    const logSpy = jest.spyOn(logger, 'warn');
+    const app = express();
+    app.use(express.json({ limit: '3mb' }));
+    app.post('/v1/:signal', (req, res) => proxyRumRequest(req, res));
+
+    const response = await request(app)
+      .post('/v1/logs')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify(records));
+
+    expect(response.status).toBe(200);
+    expect(receivedType).toBe('application/json');
+    expect(JSON.parse(receivedBody)).toEqual(records);
+    expect(JSON.stringify(logSpy.mock.calls)).not.toContain('payload-marker');
+    logSpy.mockRestore();
+  });
 
   it.each([undefined, '', '   '])(
     'preserves unauthenticated collectors with authorization %p',
