@@ -14,7 +14,9 @@ export default function List({
   isChatRoute?: boolean;
 }) {
   const localize = useLocalize();
-  const { data: permissionsMap } = useGetAllEffectivePermissionsQuery(ResourceType.PROMPTGROUP);
+  const { data: permissionsMap } = useGetAllEffectivePermissionsQuery(ResourceType.PROMPTGROUP, {
+    enabled: groups.length > 0,
+  });
 
   const renderContent = () => {
     if (groups.length === 0) {
