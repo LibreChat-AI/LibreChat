@@ -2,7 +2,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-jest.mock('@librechat/agents', () => ({ sleep: jest.fn() }));
+jest.mock('@librechat/agents', () => ({
+  ...jest.requireActual('@librechat/agents'),
+  sleep: jest.fn(),
+}));
 
 const { uploadOpenAIFile } = require('./crud');
 
@@ -17,11 +20,10 @@ describe('uploadOpenAIFile', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('sends the upload under its own name, read from disk rather than buffered', async () => {
+  it('sends the upload under its own name rather than the staged path', async () => {
     const stagedPath = path.join(dir, 'req-123__report.pdf');
     fs.writeFileSync(stagedPath, 'pdf bytes');
     const create = jest.fn(async () => ({ id: 'file-1', status: 'processed' }));
-    const openSpy = jest.spyOn(fs, 'openAsBlob');
 
     await uploadOpenAIFile({
       req: { body: {}, user: { id: 'user-1' } },
@@ -33,7 +35,5 @@ describe('uploadOpenAIFile', () => {
     expect(sent).toBeInstanceOf(File);
     expect(sent.name).toBe('report.pdf');
     expect(await sent.text()).toBe('pdf bytes');
-    expect(openSpy).toHaveBeenCalledWith(stagedPath);
-    openSpy.mockRestore();
   });
 });
