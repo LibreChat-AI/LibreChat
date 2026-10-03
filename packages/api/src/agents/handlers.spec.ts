@@ -6880,6 +6880,78 @@ describe('createToolExecuteHandler', () => {
       );
     });
 
+    describe('attached path rejections', () => {
+      const notFoundBody = '{"error":"Workspace path does not exist","code":"NOT_FOUND"}';
+      const mappedNotFoundBody = '{"error":"Workspace path does not exist","code":"INVALID_PATH"}';
+      const legacyBody = '{"error":"Invalid workspace path","code":"INVALID_PATH"}';
+      const missingParent =
+        '. A parent directory of "workspace/src/new/file.ts" does not exist. Create it first (for example with mkdir -p), then retry.';
+      const unwritable =
+        '. The worker could not write "workspace/src/new/file.ts". Its parent directory may not exist yet, so create it first (for example with mkdir -p) and retry; otherwise the path is a symlink or passes through one.';
+      const missingFile =
+        '. "workspace/src/new/file.ts" does not exist. If a command is still writing it, wait for that command to finish before reading it again; otherwise list its directory to find the right path.';
+      const unopenable =
+        '. The worker could not open "workspace/src/new/file.ts". The file may not exist yet (a command may still be writing it), or the path is a directory or a symlink, or passes through one. List its directory to check before retrying.';
+
+      async function rejectAuthoring(name: 'create_file' | 'edit_file', body: string) {
+        const rejection = jest.fn(async () => {
+          throw new WorkspaceToolHttpError('rejected', 422, body);
+        });
+        const handler = makeSandboxAuthoringHandler(
+          name === 'create_file'
+            ? { writeWorkspaceFile: rejection }
+            : { editWorkspaceFile: rejection },
+          negotiatedEditContext(),
+        );
+        const [result] = await invokeHandler(handler, [
+          {
+            id: `call_${name}_path_rejection`,
+            name,
+            args:
+              name === 'create_file'
+                ? { path: 'workspace/src/new/file.ts', content: 'export {};' }
+                : { path: 'workspace/src/new/file.ts', old_text: 'a', new_text: 'b' },
+          },
+        ]);
+        expect(rejection).toHaveBeenCalledTimes(1);
+        expect(result.status).toBe('error');
+        return result.errorMessage ?? '';
+      }
+
+      it.each([
+        ['create_file', 'a current worker', notFoundBody, missingParent],
+        [
+          'create_file',
+          'a current worker behind an older Code API',
+          mappedNotFoundBody,
+          missingParent,
+        ],
+        ['create_file', 'an older worker', legacyBody, unwritable],
+        ['edit_file', 'a current worker', notFoundBody, missingFile],
+        ['edit_file', 'a current worker behind an older Code API', mappedNotFoundBody, missingFile],
+        ['edit_file', 'an older worker', legacyBody, unopenable],
+      ] as const)('%s explains a path rejection from %s', async (name, _worker, body, hint) => {
+        const message = await rejectAuthoring(name, body);
+
+        expect(message).toContain('upstreamStatus: 422');
+        expect(message.endsWith(hint)).toBe(true);
+      });
+
+      it.each(['create_file', 'edit_file'] as const)(
+        '%s leaves other 422 rejections unexplained',
+        async (name) => {
+          const message = await rejectAuthoring(
+            name,
+            '{"error":"Workspace file is not UTF-8 text","code":"INVALID_REQUEST"}',
+          );
+
+          expect(message).toContain('INVALID_REQUEST');
+          expect(message).not.toContain('does not exist');
+          expect(message).not.toContain('could not');
+        },
+      );
+    });
+
     it('blocks protected attached edit content before worker dispatch', async () => {
       const previewWorkspaceEdit = jest.fn(async () => ({
         protocolVersion: 1 as const,
@@ -8637,6 +8709,90 @@ describe('createToolExecuteHandler', () => {
         );
       },
     );
+
+    describe('attached path rejections', () => {
+      const attachedContext: CodeExecutionContext = {
+        baseUrl: 'https://code.example.com',
+        codeSessionKey: 'attached',
+        executionProfile: 'stateful',
+        statefulSessions: true,
+        environmentType: 'attached',
+      };
+      const notFoundBody = '{"error":"Workspace path does not exist","code":"NOT_FOUND"}';
+      const mappedNotFoundBody = '{"error":"Workspace path does not exist","code":"INVALID_PATH"}';
+      const legacyBody = '{"error":"Invalid workspace path","code":"INVALID_PATH"}';
+      const missingLog =
+        '. "workspace/.checks/tests.log" does not exist. If a command is still writing it, wait for that command to finish before reading it again; otherwise list its directory to find the right path.';
+      const missingScope =
+        '. "workspace/.checks" does not exist. List a parent directory to find the right path.';
+      const argsByTool = {
+        read_file: { path: 'workspace/.checks/tests.log' },
+        list_workspace_files: { path: '.checks' },
+        search_workspace: { query: 'FAIL', path: '.checks' },
+      };
+
+      async function reject(
+        name: 'read_file' | 'list_workspace_files' | 'search_workspace',
+        body: string,
+      ) {
+        const rejection = jest.fn(async () => {
+          throw new WorkspaceToolHttpError('rejected', 422, body);
+        });
+        const handler = makeReadFileHandler({
+          codeEnvAvailable: true,
+          codeExecutionContext: attachedContext,
+          readWorkspaceFile: rejection,
+          listWorkspaceFiles: rejection,
+          searchWorkspace: rejection,
+        });
+        const [result] = await invokeHandler(handler, [
+          { id: `call_${name}_path_rejection`, name, args: argsByTool[name] },
+        ]);
+        expect(rejection).toHaveBeenCalledTimes(1);
+        expect(result.status).toBe('error');
+        return result.errorMessage ?? '';
+      }
+
+      it.each([
+        ['read_file', 'a current worker', notFoundBody, missingLog],
+        ['read_file', 'a current worker behind an older Code API', mappedNotFoundBody, missingLog],
+        [
+          'read_file',
+          'an older worker',
+          legacyBody,
+          '. The worker could not open "workspace/.checks/tests.log". The file may not exist yet (a command may still be writing it), or the path is a directory or a symlink, or passes through one. List its directory to check before retrying.',
+        ],
+        ['list_workspace_files', 'a current worker', notFoundBody, missingScope],
+        [
+          'list_workspace_files',
+          'a current worker behind an older Code API',
+          mappedNotFoundBody,
+          missingScope,
+        ],
+        ['search_workspace', 'a current worker', notFoundBody, missingScope],
+        [
+          'search_workspace',
+          'a current worker behind an older Code API',
+          mappedNotFoundBody,
+          missingScope,
+        ],
+      ] as const)('%s explains a missing path from %s', async (name, _worker, body, hint) => {
+        const message = await reject(name, body);
+
+        expect(message).toContain('upstreamStatus: 422');
+        expect(message.endsWith(hint)).toBe(true);
+      });
+
+      it.each(['list_workspace_files', 'search_workspace'] as const)(
+        "%s does not guess at an older worker's ambiguous path rejection",
+        async (name) => {
+          const message = await reject(name, legacyBody);
+
+          expect(message).toContain('Invalid workspace path');
+          expect(message.endsWith('"}"')).toBe(true);
+        },
+      );
+    });
 
     it('lists files through the selected attached worker and forwards cancellation', async () => {
       const controller = new AbortController();

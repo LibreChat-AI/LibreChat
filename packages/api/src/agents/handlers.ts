@@ -143,6 +143,7 @@ import { formatEditConflict, parseEditConflict } from '~/code/edits';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
 import { toolValidationFeedback } from './validationFeedback';
+import { explainWorkspacePathRejection } from '~/code/paths';
 import { createSkillContentDigest } from './compatibility';
 import { isMissingSandboxPathError } from '~/files/code';
 import { applyHostTextEdits } from './files/processing';
@@ -2404,7 +2405,9 @@ async function handleWorkspaceFileRead(
       }),
     );
   } catch (error) {
-    if (error instanceof WorkspaceToolHttpError) throw error;
+    if (error instanceof WorkspaceToolHttpError) {
+      throw explainWorkspacePathRejection(error, 'read', `workspace/${filePath}`);
+    }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn(
       '[handleWorkspaceFileRead] Attached workspace read failed',
@@ -2498,7 +2501,13 @@ async function handleWorkspaceSearchCall(
       content: truncated ? `${content}${truncationNotice}` : content,
     };
   } catch (error) {
-    if (error instanceof WorkspaceToolHttpError) throw error;
+    if (error instanceof WorkspaceToolHttpError) {
+      throw explainWorkspacePathRejection(
+        error,
+        'search',
+        `workspace/${typeof args.path === 'string' ? args.path : ''}`,
+      );
+    }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn(
       '[handleWorkspaceSearchCall] Attached workspace search failed',
@@ -2608,7 +2617,13 @@ async function handleWorkspaceListCall(
       content: `${content}${truncationNotice}`,
     };
   } catch (error) {
-    if (error instanceof WorkspaceToolHttpError) throw error;
+    if (error instanceof WorkspaceToolHttpError) {
+      throw explainWorkspacePathRejection(
+        error,
+        'list',
+        `workspace/${typeof args.path === 'string' ? args.path : ''}`,
+      );
+    }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn(
       '[handleWorkspaceListCall] Attached workspace file listing failed',
@@ -3919,7 +3934,7 @@ async function handleAttachedWorkspaceCreateFileCall({
       if (error.upstreamStatus === 409 && !overwrite) {
         error.message += '. File already exists. Pass overwrite: true to replace.';
       }
-      throw error;
+      throw explainWorkspacePathRejection(error, 'write', `workspace/${path.filePath}`);
     }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn('[file_authoring] Attached workspace write failed', getSafeErrorMetadata(error));
@@ -4100,7 +4115,7 @@ async function handleAttachedWorkspaceEditFileCall({
       if (error.upstreamStatus === 409) {
         throw sanitizedEditConflict(error, describeAttachedEditConflict(path.filePath, error));
       }
-      throw error;
+      throw explainWorkspacePathRejection(error, 'edit', `workspace/${path.filePath}`);
     }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn('[file_authoring] Attached workspace edit failed', getSafeErrorMetadata(error));
