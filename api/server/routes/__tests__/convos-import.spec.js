@@ -567,6 +567,36 @@ describe('conversation import job API (real router, real Mongo)', () => {
     }
   });
 
+  it('keeps the report of a finished run when its completion write fails', async () => {
+    const uploaded = await request(app)
+      .post('/api/convos/import')
+      .attach('file', bareChatGptExport(), 'bare-export.json')
+      .expect(202);
+    const realPatch = ImportJobStore.prototype.patch;
+    let injectedFailure = false;
+    const patchSpy = jest
+      .spyOn(ImportJobStore.prototype, 'patch')
+      .mockImplementation(function (owner, jobId, patch) {
+        if (!injectedFailure && patch.status === 'completed') {
+          injectedFailure = true;
+          return Promise.reject(new Error('transient terminal write failure'));
+        }
+        return realPatch.call(this, owner, jobId, patch);
+      });
+
+    try {
+      await request(app).post(`/api/convos/import/jobs/${uploaded.body.jobId}/start`).expect(202);
+      const failed = await waitForTerminal(app, uploaded.body.jobId);
+
+      expect(injectedFailure).toBe(true);
+      expect(failed.body.phase).toBe('failed');
+      expect(failed.body.report.imported).toBe(1);
+      expect(await Conversation.countDocuments({ user: userId })).toBe(1);
+    } finally {
+      patchSpy.mockRestore();
+    }
+  });
+
   it('stores the final progress snapshot when every intermediate write is throttled', async () => {
     const uploaded = await request(app)
       .post('/api/convos/import')

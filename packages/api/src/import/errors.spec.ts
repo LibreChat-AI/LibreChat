@@ -1,6 +1,11 @@
 import { logger } from '@librechat/data-schemas';
 import type { TImportError } from 'librechat-data-provider';
-import { MAX_REPORT_ERRORS, recordItemError, sanitizeImportError } from './errors';
+import {
+  MAX_REPORT_ERRORS,
+  MAX_IMPORT_TEXT_LENGTH,
+  recordItemError,
+  sanitizeImportError,
+} from './errors';
 
 describe('sanitizeImportError', () => {
   it('strips the server filepath from a Node fs error', () => {
@@ -81,6 +86,28 @@ describe('recordItemError', () => {
         code: 'errors_truncated',
         params: { count: 250 },
       });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('bounds export-supplied text in the stored location and in what it logs', () => {
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    try {
+      const name = `${'x'.repeat(5000)}\n\u001b[31mforged`;
+      const errors: TImportError[] = [];
+      recordItemError(errors, new Error(`Entry ${name} exceeds the limit`), `import ${name}`, name);
+
+      expect(errors[0].location?.length).toBe(MAX_IMPORT_TEXT_LENGTH);
+      const [message, logged] = errorSpy.mock.calls[0] as unknown as [
+        string,
+        Record<string, string>,
+      ];
+      expect(message.length).toBeLessThanOrEqual(MAX_IMPORT_TEXT_LENGTH + '[import] '.length);
+      expect(logged).not.toBeInstanceOf(Error);
+      expect(logged.message.length).toBe(MAX_IMPORT_TEXT_LENGTH);
+      expect(JSON.stringify(logged)).not.toContain('forged');
+      expect(logged.stack).not.toContain('xxxx');
     } finally {
       errorSpy.mockRestore();
     }

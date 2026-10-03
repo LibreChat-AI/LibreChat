@@ -52,6 +52,31 @@ function errorCode(error: Error): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
+/** Stack frames kept in a logged import error. */
+const MAX_LOGGED_FRAMES = 10;
+/** A V8 stack frame line. The header before the frames repeats the message,
+ * which can itself span several lines, so frames are matched, not counted. */
+const STACK_FRAME = /^\s+at /;
+
+/**
+ * A loggable copy of an import error. Archive and entry names reach the
+ * message of errors such as `ZipBombError`, and the first stack line repeats
+ * that message, so the message is bounded like any export-supplied text and
+ * only the frame lines, which are source locations, are kept from the stack.
+ */
+function boundedErrorLog(error: Error): Record<string, string | undefined> {
+  return {
+    name: error.name,
+    code: errorCode(error),
+    message: boundImportText(error.message),
+    stack: error.stack
+      ?.split('\n')
+      .filter((line) => STACK_FRAME.test(line))
+      .slice(0, MAX_LOGGED_FRAMES)
+      .join('\n'),
+  };
+}
+
 /**
  * Classifies a raw import failure into one of a small set of stable,
  * non-revealing codes before it is stored on a job record or returned
@@ -59,7 +84,8 @@ function errorCode(error: Error): string | undefined {
  * server's absolute upload path in `.message`, and a raw `ZipBombError`
  * or archive-parsing error can embed attacker-controlled entry names;
  * none of that detail is ever forwarded. The original error is logged
- * here, server-side, and only here; callers should not also log it.
+ * here, server-side, and only here, as a bounded copy; callers should not
+ * also log it.
  */
 export function classifyImportError(
   error: unknown,
@@ -68,7 +94,7 @@ export function classifyImportError(
 ): TImportFailureCode {
   const normalized = error instanceof Error ? error : new Error(String(error));
   if (log) {
-    logger.error(`[import] ${boundImportText(context)}`, normalized);
+    logger.error(`[import] ${boundImportText(context)}`, boundedErrorLog(normalized));
   }
 
   const code = errorCode(normalized);

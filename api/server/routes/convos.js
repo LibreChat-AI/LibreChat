@@ -994,6 +994,9 @@ function resolveJobTarget(job) {
 async function runImportJob(context, job) {
   const { userId, userRole, tenantId, appConfig } = context;
   let latestProgress = job.progress;
+  /** Set once `runImport` returns, so a failed completion write still keeps
+   * the report of an import whose conversations are all saved. */
+  let completedReport;
   try {
     /**
      * `sweepStaleTempUploads` deletes temp uploads by mtime alone, and the job
@@ -1132,6 +1135,7 @@ async function runImportJob(context, job) {
         }
       },
     });
+    completedReport = report;
 
     /**
      * `runImport` returns normally when the cancel flag breaks its loop, so
@@ -1161,7 +1165,7 @@ async function runImportJob(context, job) {
      * rejection here would escape a function nobody awaits. */
     /** Batches committed before the failure stay saved, so the report they
      * produced goes on the job: the user sees what was kept before retrying. */
-    const report = partialImportReport(error);
+    const report = completedReport ?? partialImportReport(error);
     await importJobs
       .patch(userId, job.jobId, {
         phase: 'failed',
