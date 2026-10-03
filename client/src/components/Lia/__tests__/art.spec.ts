@@ -1,5 +1,7 @@
 import type { FaceState } from '../engine/face';
 import {
+  SX,
+  SY,
   ARMS,
   POSES,
   GRID_W,
@@ -146,11 +148,16 @@ describe("Lia's pixel art", () => {
       const copies: number[][] = [];
       c.drawImage = ((...args: unknown[]) => {
         if (args.length === 9) {
-          copies.push(args.slice(5) as number[]);
+          copies.push(args.slice(1) as number[]);
         }
       }) as CanvasRenderingContext2D['drawImage'];
       drawScreen(c, 'glitch', t, 0.5, BASE);
-      for (const [x, y, w, h] of copies) {
+      for (const [sx, sy, sw, sh, x, y, w, h] of copies) {
+        /* The source is read from the whole canvas, so it must lie on the screen at (SX, SY). */
+        expect(sx).toBeGreaterThanOrEqual(SX);
+        expect(sy).toBeGreaterThanOrEqual(SY);
+        expect(sx + sw).toBeLessThanOrEqual(SX + SCREEN_W);
+        expect(sy + sh).toBeLessThanOrEqual(SY + SCREEN_H);
         expect(x).toBeGreaterThanOrEqual(0);
         expect(y).toBeGreaterThanOrEqual(0);
         expect(x + w).toBeLessThanOrEqual(SCREEN_W);
