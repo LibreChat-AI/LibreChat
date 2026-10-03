@@ -28,6 +28,7 @@ import { chatFacetParamsAtom, useFreshLocalDay } from '~/components/Conversation
 import ProjectsSection from '~/components/Conversations/ProjectsSection';
 import ChatFilterMenu from '~/components/Conversations/ChatFilterMenu';
 import PinnedSection from '~/components/Conversations/PinnedSection';
+import ProjectNamesProvider from '~/Providers/ProjectNamesContext';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import { Conversations } from '~/components/Conversations';
 import { cn, collectPinnedConversations } from '~/utils';
@@ -217,75 +218,77 @@ const ConversationsSection = memo(() => {
   }, [isSearching, scrollViewport]);
 
   return (
-    <div
-      className="flex h-full min-h-0 flex-col overflow-hidden pt-2 pb-3"
-      role="region"
-      aria-label={localize('com_ui_chat_history')}
-    >
-      {/* The search field owns this row alone; filtering and ordering moved beside the
+    <ProjectNamesProvider data={projectsData} isPending={!projectsLoaded && !projectsFailed}>
+      <div
+        className="flex h-full min-h-0 flex-col overflow-hidden pt-2 pb-3"
+        role="region"
+        aria-label={localize('com_ui_chat_history')}
+      >
+        {/* The search field owns this row alone; filtering and ordering moved beside the
           Chats heading, where the list they act on is labelled. On mobile the field
           itself lives in the drawer's bottom bar, within thumb reach. */}
-      {!isSmallScreen && search.enabled && (
-        <div className="flex items-center px-3">
-          <SearchBar isSmallScreen={isSmallScreen} />
-        </div>
-      )}
-      <div className="relative flex min-h-0 flex-1 flex-col">
-        <div
-          ref={setScrollViewportNode}
-          className="min-h-0 flex-1 scrollbar-gutter-stable overflow-x-hidden overflow-y-auto"
-        >
-          {/* `min-h-full` keeps the sections filling a tall sidebar, so the chats
+        {!isSmallScreen && search.enabled && (
+          <div className="flex items-center px-3">
+            <SearchBar isSmallScreen={isSmallScreen} />
+          </div>
+        )}
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <div
+            ref={setScrollViewportNode}
+            className="min-h-0 flex-1 scrollbar-gutter-stable overflow-x-hidden overflow-y-auto"
+          >
+            {/* `min-h-full` keeps the sections filling a tall sidebar, so the chats
             list still claims the space below them when there is little to show. */}
-          <div ref={setScrollContent} className="flex min-h-full flex-col">
-            {!search.query && (
-              <ProjectsSection toggleNav={toggleNav} isAuthenticated={isAuthenticated} />
-            )}
-            {!search.query && (
-              <PinnedSection
-                conversations={pinnedConversations}
-                toggleNav={toggleNav}
-                isSmallScreen={isSmallScreen}
-                /* Only a successful drain proves the list is whole: a failed later
+            <div ref={setScrollContent} className="flex min-h-full flex-col">
+              {!search.query && (
+                <ProjectsSection toggleNav={toggleNav} isAuthenticated={isAuthenticated} />
+              )}
+              {!search.query && (
+                <PinnedSection
+                  conversations={pinnedConversations}
+                  toggleNav={toggleNav}
+                  isSmallScreen={isSmallScreen}
+                  /* Only a successful drain proves the list is whole: a failed later
                  page still publishes partial data and stops fetching. The Chats filters
                  never reach this query, so nothing else can truncate it. */
-                membershipComplete={isPinnedComplete}
-                /* When that drain last ran, which decides whether it is current
+                  membershipComplete={isPinnedComplete}
+                  /* When that drain last ran, which decides whether it is current
                  enough to prune the stored order against. */
-                membershipUpdatedAt={pinnedUpdatedAt}
+                  membershipUpdatedAt={pinnedUpdatedAt}
+                />
+              )}
+              <Conversations
+                conversations={conversations}
+                moveToTop={moveToTop}
+                toggleNav={toggleNav}
+                containerRef={conversationsRef}
+                loadMoreConversations={loadMoreConversations}
+                isLoading={isFetchingNextPage || isLoading}
+                isSearchLoading={isSearchLoading || isPreviousData}
+                isChatsExpanded={isChatsExpanded}
+                setIsChatsExpanded={setIsChatsExpanded}
+                hasNextPage={computedHasNextPage}
+                isError={isError}
+                onRetry={retryConversations}
+                chatsHeaderTrailing={chatsHeaderTrailing}
+                accountHasProjects={scopeToUnassigned && hasProjects}
+                scrollViewport={scrollViewport}
+                scrollContent={scrollContent}
               />
-            )}
-            <Conversations
-              conversations={conversations}
-              moveToTop={moveToTop}
-              toggleNav={toggleNav}
-              containerRef={conversationsRef}
-              loadMoreConversations={loadMoreConversations}
-              isLoading={isFetchingNextPage || isLoading}
-              isSearchLoading={isSearchLoading || isPreviousData}
-              isChatsExpanded={isChatsExpanded}
-              setIsChatsExpanded={setIsChatsExpanded}
-              hasNextPage={computedHasNextPage}
-              isError={isError}
-              onRetry={retryConversations}
-              chatsHeaderTrailing={chatsHeaderTrailing}
-              accountHasProjects={scopeToUnassigned && hasProjects}
-              scrollViewport={scrollViewport}
-              scrollContent={scrollContent}
-            />
+            </div>
           </div>
-        </div>
-        {/* The last row fades rather than being cut off, so a list that continues
+          {/* The last row fades rather than being cut off, so a list that continues
           below the fold says so without a scrollbar having to appear. */}
-        <div
-          aria-hidden="true"
-          className={cn(
-            'from-surface-primary-alt pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t to-transparent transition-opacity duration-200 motion-reduce:transition-none',
-            hasMoreBelow ? 'opacity-100' : 'opacity-0',
-          )}
-        />
+          <div
+            aria-hidden="true"
+            className={cn(
+              'from-surface-primary-alt pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t to-transparent transition-opacity duration-200 motion-reduce:transition-none',
+              hasMoreBelow ? 'opacity-100' : 'opacity-0',
+            )}
+          />
+        </div>
       </div>
-    </div>
+    </ProjectNamesProvider>
   );
 });
 

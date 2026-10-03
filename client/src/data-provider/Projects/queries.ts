@@ -1,5 +1,6 @@
+import { useContext } from 'react';
 import { dataService, QueryKeys } from 'librechat-data-provider';
-import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type {
   ProjectAvailableFilesParams,
   ProjectAvailableFilesResponse,
@@ -9,11 +10,12 @@ import type {
   TChatProjectFile,
 } from 'librechat-data-provider';
 import type {
-  InfiniteData,
   UseInfiniteQueryOptions,
   QueryObserverResult,
   UseQueryOptions,
 } from '@tanstack/react-query';
+
+import { ProjectNamesContext } from '~/Providers/ProjectNamesContext';
 
 export const useProjectsInfiniteQuery = (
   params: ProjectListParams = {},
@@ -61,24 +63,11 @@ export const useProjectQuery = (
  * list is fetched, once per id. A record written by id (a rename) still wins.
  */
 export const useProjectName = (projectId?: string | null): string | undefined => {
-  const queryClient = useQueryClient();
-  let listedName: string | undefined;
-  if (projectId) {
-    for (const [, data] of queryClient.getQueriesData<InfiniteData<ProjectListResponse>>([
-      QueryKeys.projects,
-    ])) {
-      for (const page of data?.pages ?? []) {
-        listedName = page?.projects?.find((project) => project._id === projectId)?.name;
-        if (listedName != null) {
-          break;
-        }
-      }
-      if (listedName != null) {
-        break;
-      }
-    }
-  }
-  const { data: project } = useProjectQuery(projectId, { enabled: listedName == null });
+  const listed = useContext(ProjectNamesContext);
+  const listedName = projectId ? listed?.names.get(projectId) : undefined;
+  const { data: project } = useProjectQuery(projectId, {
+    enabled: Boolean(projectId) && !listed?.isPending && listedName == null,
+  });
   return project?.name ?? listedName;
 };
 export const useProjectFilesQuery = (

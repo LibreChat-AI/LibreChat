@@ -307,6 +307,7 @@ function Conversation({
   return (
     <div
       ref={containerRef}
+      data-conversation-id={conversationId}
       className={cn(
         'group focus-visible:ring-text-primary relative flex h-12 w-full items-center rounded-lg outline-hidden focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset md:h-9',
         isActiveConvo || isPopoverActive
