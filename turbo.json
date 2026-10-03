@@ -32,9 +32,11 @@
         "RUN_*_LIVE_TESTS",
         "LIBRECHAT_CODE_TEST_*",
         "GRAPH_SUBAGENT_*",
-        "ANTHROPIC_USAGE_LIVE_MODEL"
+        "ANTHROPIC_USAGE_LIVE_MODEL",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY"
       ],
-      "passThroughEnv": ["TMPDIR", "TMP", "TEMP", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
     },
     "@librechat/data-schemas#build": {
       "dependsOn": ["^build", "librechat-data-provider#build"],
