@@ -330,7 +330,7 @@ function summarizeExcerpt(excerpt: EditConflictExcerpt): string {
     describeExcerptLines(excerptLinesWith(excerpt, 'changed'), ''),
     describeExcerptLines(excerptLinesWith(excerpt, 'whitespace'), ' only in whitespace'),
   ].filter((part): part is string => part != null);
-  return `the closest match is at ${where}${differences.length > 0 ? `, where ${differences.join(' and ')}` : ''}; copy old_text from the current text below`;
+  return `the closest match is at ${where}${differences.length > 0 ? `, where ${differences.join(' and ')}` : ''}; correct old_text against the current text below (it may leave out lines or shorten them with "…"; read_file shows them in full)`;
 }
 
 const EXCERPT_GUTTER: Readonly<Record<EditConflictExcerptMark, string>> = {

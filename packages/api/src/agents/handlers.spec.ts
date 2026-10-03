@@ -6924,7 +6924,7 @@ describe('createToolExecuteHandler', () => {
       expect(result.status).toBe('error');
       expect(result.errorMessage).toBe(
         [
-          'The edit to "workspace/src/app.ts" did not apply, so nothing was written: old_text was not found; its first line is at line 1, but the lines after it differ; the closest match is at lines 1-3, where line 2 differs; copy old_text from the current text below.',
+          'The edit to "workspace/src/app.ts" did not apply, so nothing was written: old_text was not found; its first line is at line 1, but the lines after it differ; the closest match is at lines 1-3, where line 2 differs; correct old_text against the current text below (it may leave out lines or shorten them with "…"; read_file shows them in full).',
           'Current text (! text differs, ~ only whitespace differs):',
           '  1 | function load(user) {',
           '! 2 |   return fetchUser(user.id);',

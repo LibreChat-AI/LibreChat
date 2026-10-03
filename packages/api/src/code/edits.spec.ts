@@ -135,7 +135,7 @@ describe('worker edit conflict reports', () => {
       );
       expect(formatEditConflict('workspace/a.ts', report!, true)).toBe(
         [
-          'The edit to "workspace/a.ts" did not apply, so nothing was written: old_text was not found; its first line is at line 40, but the lines after it differ; the closest match is at lines 40-43, where line 42 differs and line 41 differs only in whitespace; copy old_text from the current text below.',
+          'The edit to "workspace/a.ts" did not apply, so nothing was written: old_text was not found; its first line is at line 40, but the lines after it differ; the closest match is at lines 40-43, where line 42 differs and line 41 differs only in whitespace; correct old_text against the current text below (it may leave out lines or shorten them with "…"; read_file shows them in full).',
           'Current text (! text differs, ~ only whitespace differs):',
           '  40 | if (ready) {',
           '~ 41 |     start();',
@@ -169,7 +169,7 @@ describe('worker edit conflict reports', () => {
       expect(formatEditConflict('workspace/a.ts', report!, true)).toBe(
         [
           '2 of 3 edits to "workspace/a.ts" did not apply, so nothing was written; every other edit matched.',
-          'Edit 1: old_text was not found; the closest line is line 7; the closest match is at line 7, where line 7 differs; copy old_text from the current text below.',
+          'Edit 1: old_text was not found; the closest line is line 7; the closest match is at line 7, where line 7 differs; correct old_text against the current text below (it may leave out lines or shorten them with "…"; read_file shows them in full).',
           'Current text for edit 1 (! text differs, ~ only whitespace differs):',
           '! 7 | const total = items.length;',
           'Edit 3: old_text matched 2 locations at lines 4, 9; include more surrounding lines, or set replace_all to change every location.',
@@ -197,6 +197,27 @@ describe('worker edit conflict reports', () => {
         ),
       );
       expect(report?.failures).toEqual([{ edit: 1, kind: 'not_found', hints: [{ kind: 'crlf' }] }]);
+    });
+
+    it('presents a windowed excerpt with shortened lines as partial, verbatim', () => {
+      const wide = `${'w'.repeat(160)}…`;
+      const report = parseEditConflict(
+        single(
+          `old_text was not found; ${excerptHint(
+            'lines 13-20',
+            Array.from(
+              { length: 8 },
+              (_, i) => `${13 + i}|${i === 1 ? '!' : ' '}${i === 2 ? wide : `step(${12 + i});`}`,
+            ),
+          )}`,
+        ),
+      );
+      const rendered = formatEditConflict('workspace/a.ts', report!, true);
+      expect(rendered).toContain(
+        'the closest match is at lines 13-20, where line 14 differs; correct old_text against the current text below (it may leave out lines or shorten them with "…"; read_file shows them in full).',
+      );
+      expect(rendered).toContain(`\n  15 | ${wide}\n`);
+      expect(rendered.split('\n')).toHaveLength(10);
     });
 
     it('keeps tabs in quoted source lines', () => {
