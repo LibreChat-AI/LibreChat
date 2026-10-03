@@ -92,6 +92,8 @@ export interface ToolApprovalGrantBinding {
   binding: string;
   scope: 'once' | 'chat' | 'always';
   revocation?: string;
+  /** Existing consent at review capture; server-only compare-and-set witness. */
+  consentBinding?: string | null;
   canRemember?: boolean;
   unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
 }
@@ -107,7 +109,13 @@ export interface ToolApprovalGrantStorage {
     scope: ToolApprovalGrantScope,
     bindings: readonly ToolApprovalGrantBinding[],
   ) => Promise<
-    Array<{ binding: string; approved: boolean; revocation?: string; oauthEpoch?: string | null }>
+    Array<{
+      binding: string;
+      approved: boolean;
+      revocation?: string;
+      oauthEpoch?: string | null;
+      consentBinding?: string | null;
+    }>
   >;
   rememberToolApprovalGrants: (
     scope: ToolApprovalGrantScope,
