@@ -294,20 +294,41 @@ opportunistic, not one-turn-per-conversation election.
 injection, rolling-upgrade isolation, and an 8-conversation × 4-result storage stress
 harness. Its latency measures receipt admission, not model turns or deployment latency.
 
-Receipt batching defaults off. Deploy compatible receipt and manual-poll consumers on
-**every replica**, then enable:
+Receipt batching is on by default. An explicit `completionReceiptBatching: false` stops
+new v3 production; new receipts are then admitted as v2 with task-local delivery.
+
+**Rolling upgrades.** No fleet-wide gate decides when v3 is safe. Replicas from releases
+before receipt batching never advertise what they can read, so a new replica cannot prove
+they are gone. Queue capability fencing keeps them from claiming v3 rows, but they still
+serve manual polls, pending-task listings, and conversation deletion for any
+conversation, and those paths read only v2 rows. While old and new replicas serve traffic together:
+
+- An old replica's manual poll cannot see the v3 receipt, so its manual claim on the
+  message projection looks uncontested and it returns the result. Old polls never mark
+  receipt reconciliation, so the v3 collector treats that claim as speculative: once the
+  polling generation is no longer active, it releases the claim and delivers the result
+  again in a wake-up. The model sees one result twice.
+- Old pending-task listings omit v3 deliveries.
+- Conversation deletion on an old replica neither erases nor fences v3 receipts. Their
+  stored output remains until the delivery row expires.
+
+No result is lost on these paths; new replicas still deliver every v3 receipt.
+Single-instance deployments and stop-then-start rollouts never mix versions. For a rolling
+upgrade from a release without receipt batching, keep it off until every replica runs a
+release that has it, then remove the override in a second rollout:
 
 ```yaml
 endpoints:
   agents:
     backgroundTasks:
-      completionReceiptBatching: true
+      completionReceiptBatching: false
 ```
 
 Older manual-poll workers cannot read v3 ownership. Queue capability fencing alone does
 not protect that path. Disabling batching stops new v3 production, not existing
 ownership. Do not downgrade poll consumers while v3 receipts remain, including delivered
-receipts. A successor lease resumes interrupted cleanup before dispatch.
+receipts. Because batching is the default, this applies to any deployment that ran with
+it unset. A successor lease resumes interrupted cleanup before dispatch.
 
 Every plan, receipt claim, and message claim carries a physical batch identity. Cleanup
 matches that identity; its final plan deletion also matches a release identity and the
