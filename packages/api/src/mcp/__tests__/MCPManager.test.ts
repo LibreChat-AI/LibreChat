@@ -27,6 +27,7 @@ import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { MCPAuthenticationRejectedError } from '~/mcp/errors';
+import { getMCPToolApprovalAuthKind } from '~/mcp/approval';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
 import { isMCPDomainAllowed } from '~/auth/domain';
 import * as toolsChanged from '~/mcp/toolsChanged';
@@ -7787,6 +7788,7 @@ describe('MCPManager', () => {
       });
       (MCPConnectionFactory.create as jest.Mock).mockResolvedValue(mockConnection);
 
+      expect(getMCPToolApprovalAuthKind(runtimeUrlConfig)).toBeUndefined();
       const manager = await MCPManager.createInstance(newMCPServersConfig());
       await manager.getUserConnection({
         serverName,
@@ -7807,6 +7809,10 @@ describe('MCPManager', () => {
         }),
         expect.objectContaining({ useOAuth: true }),
       );
+      const runtime = (MCPConnectionFactory.create as jest.Mock).mock.calls[0][0];
+      expect(runtime.serverDefinition).toBe(runtimeUrlConfig);
+      expect(getMCPToolApprovalAuthKind(runtime.serverDefinition)).toBeUndefined();
+      expect(getMCPToolApprovalAuthKind(runtime.serverConfig)).toBe('oauth');
     });
 
     it('should reject disallowed runtime URLs before OAuth detection probes them', async () => {

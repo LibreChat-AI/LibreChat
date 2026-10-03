@@ -3,10 +3,10 @@ import type { ToolApprovalAuthKind } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { ParsedServerConfig } from './types';
 import type { RequestBody } from '~/types';
+import { isOAuthServer, hasRuntimeUrlPlaceholders } from './utils';
 import { isDirectOpenIDBearerRecoveryEnabled } from './openid';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
 import { applyRequestHeaders } from './utils';
-import { isOAuthServer } from './utils';
 
 export interface MCPToolReviewAuthorityInput {
   serverName: string;
@@ -35,11 +35,16 @@ export function getMCPToolApprovalAuthKind(
 ): ToolApprovalAuthKind | undefined {
   if (!config) return undefined;
   const effective = applyRequestHeaders(config);
-  return !effective.obo &&
-    !isDirectOpenIDBearerRecoveryEnabled(effective) &&
-    isOAuthServer(effective)
-    ? 'oauth'
-    : 'other';
+  if (effective.obo || isDirectOpenIDBearerRecoveryEnabled(effective)) return 'other';
+  if (isOAuthServer(effective)) return 'oauth';
+  // UserConnectionManager detects auth only after a trusted runtime URL resolves.
+  if (
+    effective.requiresOAuth == null &&
+    effective.apiKey == null &&
+    hasRuntimeUrlPlaceholders(effective)
+  )
+    return undefined;
+  return 'other';
 }
 
 /** Registry timestamps and inspection summaries do not change executable authority. */

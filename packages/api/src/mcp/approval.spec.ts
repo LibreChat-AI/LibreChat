@@ -402,3 +402,58 @@ test('approval authentication kind follows effective factory auth, not retained 
     }),
   ).toBe('oauth');
 });
+
+test.each(['yaml', 'config'] as const)(
+  '%s runtime URL keeps OAuth provenance unresolved until detection',
+  (source) => {
+    const selected = {
+      type: 'streamable-http' as const,
+      source,
+      url: 'https://mcp.example.test/users/{{LIBRECHAT_USER_ID}}/mcp',
+    };
+    expect(getMCPToolApprovalAuthKind(selected)).toBeUndefined();
+    expect(getMCPToolApprovalAuthKind({ ...selected, requiresOAuth: true })).toBe('oauth');
+    expect(getMCPToolApprovalAuthKind({ ...selected, requiresOAuth: false })).toBe('other');
+    expect(getMCPToolApprovalAuthKind({ ...selected, oauth: { client_id: 'configured' } })).toBe(
+      'oauth',
+    );
+    expect(
+      getMCPToolApprovalAuthKind({
+        ...selected,
+        apiKey: { source: 'admin', key: 'synthetic-key', authorization_type: 'bearer' },
+      }),
+    ).toBe('other');
+    expect(
+      getMCPToolApprovalAuthKind({
+        ...selected,
+        headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+      }),
+    ).toBe('other');
+    expect(
+      getMCPToolApprovalAuthKind({ ...selected, obo: { scopes: 'api://scope/.default' } }),
+    ).toBe('other');
+    expect(getMCPToolApprovalAuthKind({ ...selected, source: 'user', dbId: 'user-config' })).toBe(
+      'other',
+    );
+    expect(getMCPToolApprovalAuthKind({ ...selected, source: 'plugin' })).toBe('other');
+  },
+);
+
+test('body-bound and environment-indirected runtime URLs retain conservative OAuth checks', () => {
+  const selected = {
+    type: 'streamable-http' as const,
+    source: 'yaml' as const,
+    url: 'https://mcp.example.test/{{LIBRECHAT_BODY_CONVERSATIONID}}',
+  };
+  expect(getMCPToolApprovalAuthKind(selected)).toBeUndefined();
+  const saved = process.env.TEST_MCP_DYNAMIC_URL;
+  process.env.TEST_MCP_DYNAMIC_URL = 'https://mcp.example.test/{{LIBRECHAT_USER_ID}}';
+  try {
+    expect(
+      getMCPToolApprovalAuthKind({ ...selected, url: '${TEST_MCP_DYNAMIC_URL}' }),
+    ).toBeUndefined();
+  } finally {
+    if (saved == null) delete process.env.TEST_MCP_DYNAMIC_URL;
+    else process.env.TEST_MCP_DYNAMIC_URL = saved;
+  }
+});
