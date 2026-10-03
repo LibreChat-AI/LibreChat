@@ -213,3 +213,66 @@ test('agent-wide reset cannot cross tenant scope for the same user and tools', a
     ).map((status) => status.approved),
   ).toEqual([true, true]);
 });
+
+for (const mode of ['chat', 'always'] as const) {
+  for (const resetScope of ['tool', 'agent'] as const) {
+    test(`${mode} consent renewed after ${resetScope} reset survives a late stale completion`, async () => {
+      const pending = { ...grant, scope: mode };
+      await storage.rememberToolApprovalGrants(scope, [pending]);
+      await storage.resetToolApprovalGrants(
+        scope.userId,
+        grant.agentId,
+        resetScope === 'tool' ? grant.toolName : undefined,
+      );
+      const current = (await storage.getToolApprovalGrants(scope, [pending]))[0];
+      const renewed = { ...pending, revocation: current.revocation };
+      await storage.rememberToolApprovalGrants(scope, [renewed]);
+      await storage.rememberToolApprovalGrants(scope, [pending]);
+      expect((await storage.getToolApprovalGrants(scope, [renewed]))[0].approved).toBe(true);
+    });
+
+    test.each([false, true])(
+      `${mode} ${resetScope} reset between fence read and write cannot clobber renewal; first grant=%s`,
+      async (firstGrant) => {
+        const pending = { ...grant, scope: mode };
+        if (!firstGrant) await storage.rememberToolApprovalGrants(scope, [pending]);
+        let resumeWrite!: () => void;
+        let readComplete!: () => void;
+        const suspended = new Promise<void>((resolve) => {
+          resumeWrite = resolve;
+        });
+        const read = new Promise<void>((resolve) => {
+          readComplete = resolve;
+        });
+        const realLookup = storage.getToolApprovalGrants;
+        const lookup = jest
+          .spyOn(storage, 'getToolApprovalGrants')
+          .mockImplementationOnce(async (...args) => {
+            const statuses = await realLookup(...args);
+            readComplete();
+            await suspended;
+            return statuses;
+          });
+        const staleWrite = storage.rememberToolApprovalGrants(scope, [pending]);
+        await read;
+        try {
+          await storage.resetToolApprovalGrants(
+            scope.userId,
+            grant.agentId,
+            resetScope === 'tool' ? grant.toolName : undefined,
+          );
+          const status = (await storage.getToolApprovalGrants(scope, [pending]))[0];
+          const renewed = { ...pending, revocation: status.revocation };
+          await storage.rememberToolApprovalGrants(scope, [renewed]);
+          resumeWrite();
+          await staleWrite;
+          expect((await storage.getToolApprovalGrants(scope, [renewed]))[0].approved).toBe(true);
+        } finally {
+          resumeWrite();
+          await staleWrite;
+          lookup.mockRestore();
+        }
+      },
+    );
+  }
+}

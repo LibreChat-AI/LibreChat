@@ -10,6 +10,9 @@ interface ToolApprovalGrantRecord {
   conversationId: string;
   binding?: string;
   revocation?: string;
+  generation?: number;
+  approvedAgentGeneration?: number;
+  approvedToolGeneration?: number;
   approvedRevocation?: string;
   oauthEpoch?: string | null;
 }
@@ -23,6 +26,9 @@ const schema: Schema<ToolApprovalGrantRecord> = new Schema<ToolApprovalGrantReco
     conversationId: { type: String, default: '' },
     binding: { type: String },
     revocation: { type: String },
+    generation: { type: Number, min: 0 },
+    approvedAgentGeneration: { type: Number, min: 0 },
+    approvedToolGeneration: { type: Number, min: 0 },
     approvedRevocation: { type: String },
     oauthEpoch: { type: String, default: null },
   },

@@ -47,4 +47,6 @@ rules and stop active runs. Do not downgrade into a bypass baseline that ignores
 
 ## Personal reset
 
-Shared-agent viewers can reset their consent from agent details or the read-only agent panel. Reset does not require EDIT permission or reveal tool configuration. It changes no agent options. Agent-wide reset fences all tools, including unseen in-flight approvals; the per-tool shield menu still supports targeted reset.
+Shared-agent viewers can reset their consent from agent details or the read-only agent panel. Reset does not require EDIT permission or reveal tool configuration. It changes no agent options. Agent-wide reset fences all tools, including unseen in-flight approvals. Stale completions cannot overwrite consent renewed after reset; the per-tool shield menu still supports targeted reset.
+
+Reset accepts the same tenant-scoped `manage:agents` capability or VIEW ACL as normal agent access. It always resets the authenticated user’s consent.
