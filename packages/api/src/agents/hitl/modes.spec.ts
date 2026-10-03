@@ -46,6 +46,7 @@ function store(): ToolApprovalGrantStorage {
         binding: candidate.binding,
         approved: grants.has(candidate.binding),
         revocation: 'epoch-a',
+        oauthEpoch: null,
       })),
     ),
     rememberToolApprovalGrants: jest.fn(async (_scope, candidates) => {

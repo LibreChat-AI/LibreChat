@@ -4,6 +4,7 @@ import type { ToolApprovalGrantBinding } from 'librechat-data-provider';
 import { createToolApprovalGrantModel } from '../models/toolApprovalGrant';
 import { createToolApprovalGrantMethods } from './toolApprovalGrant';
 import { tenantStorage } from '~/config/tenantContext';
+import { createModels } from '../models';
 
 let mongo: MongoMemoryServer;
 const scope = { userId: 'user-a', conversationId: 'chat-a' };
@@ -19,6 +20,7 @@ const storage = createToolApprovalGrantMethods(mongoose);
 beforeAll(async () => {
   mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
   await mongoose.connect(mongo.getUri());
+  createModels(mongoose);
   await createToolApprovalGrantModel(mongoose).syncIndexes();
 }, 60000);
 afterAll(async () => {
@@ -109,4 +111,34 @@ test('one-time review bindings cannot become stored grants', async () => {
     storage.rememberToolApprovalGrants(scope, [{ ...grant, scope: 'once' }]),
   ).rejects.toThrow('One-time');
   expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+});
+
+test('OAuth consent is generation-bound without hashing renewable token bytes', async () => {
+  const owner = new mongoose.Types.ObjectId().toString();
+  const authScope = { userId: owner, conversationId: 'oauth-chat' };
+  const bound = { ...grant, serverName: 'db', oauthEpoch: 'grant-a' };
+  const row = await mongoose.models.Token.create({
+    userId: owner,
+    type: 'mcp_oauth',
+    identifier: 'mcp:db',
+    token: 'synthetic-token-a',
+    expiresAt: new Date(Date.now() + 60000),
+    metadata: { credential_set_id: 'grant-a' },
+  });
+  await storage.rememberToolApprovalGrants(authScope, [bound]);
+  expect((await storage.getToolApprovalGrants(authScope, [bound]))[0].approved).toBe(true);
+  await mongoose.models.Token.updateOne(
+    { _id: row._id },
+    { $set: { token: 'synthetic-refreshed-token' } },
+  );
+  expect((await storage.getToolApprovalGrants(authScope, [bound]))[0].approved).toBe(true);
+  await mongoose.models.Token.updateOne(
+    { _id: row._id },
+    { $set: { 'metadata.credential_set_id': 'grant-b' } },
+  );
+  const changed = (await storage.getToolApprovalGrants(authScope, [bound]))[0];
+  expect(changed.oauthEpoch).toBe('grant-b');
+  expect(changed.approved).toBe(false);
+  expect(JSON.stringify(changed)).not.toContain('synthetic-refreshed-token');
+  await mongoose.models.Token.deleteOne({ _id: row._id });
 });

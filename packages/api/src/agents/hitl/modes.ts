@@ -80,6 +80,8 @@ export function resolveAgentToolGrantBinding(
   return {
     canRemember: options.approval_mode === 'chat' || options.approval_mode === 'always',
     instanceName: toolName,
+    serverName: definition.serverName,
+    oauthEpoch: null,
     agentId: agent.id,
     toolName: canonicalName,
     scope:
@@ -119,6 +121,8 @@ function resolveToolReviewBinding(
   if (!definition || !getToolReviewAuthority(definition)) return undefined;
   return {
     instanceName: toolName,
+    serverName: definition.serverName,
+    oauthEpoch: null,
     agentId: agent.id,
     toolName: getToolApprovalName(definition) ?? toolName,
     scope: 'once',
@@ -152,6 +156,7 @@ export function createAgentToolApprovalSession({
   agents,
   scope,
   storage,
+  authorizationStorage = storage,
   lookupTimeoutMs = 3000,
   reviewed,
   policy,
@@ -162,6 +167,7 @@ export function createAgentToolApprovalSession({
   agents: readonly AgentApprovalSource[];
   scope?: ToolApprovalGrantScope;
   storage?: ToolApprovalGrantStorage;
+  authorizationStorage?: Pick<ToolApprovalGrantStorage, 'getToolApprovalGrants'>;
 }): AgentToolApprovalSession {
   const owners = new Map(agents.map((agent) => [agent.id, agent]));
   const calls = new Map<string, ToolApprovalGrantBinding | null>();
@@ -225,6 +231,7 @@ export function createAgentToolApprovalSession({
     binding: string;
     approved: boolean;
     revocation?: string;
+    oauthEpoch?: string | null;
     available?: boolean;
   };
   let pending: Array<{ grant: ToolApprovalGrantBinding; resolve: (status: GrantStatus) => void }> =
@@ -253,11 +260,11 @@ export function createAgentToolApprovalSession({
           for (const item of batch)
             item.resolve({ binding: item.grant.binding, approved: false, available: false });
         };
-        if (!storage || !scope) {
+        if (!authorizationStorage || !scope) {
           decline();
           return;
         }
-        void storage
+        void authorizationStorage
           .getToolApprovalGrants(
             scope,
             batch.map((item) => item.grant),
@@ -396,6 +403,16 @@ export function createAgentToolApprovalSession({
         : undefined;
       if (baseline?.decision === 'deny') throw new Error('Administrator policy blocks this tool.');
       if (options.approval_mode === 'allow' && baseline?.decision !== 'ask') return;
+      const consent = calls.get(key);
+      const current = consent && (await approved(consent));
+      if (
+        !current ||
+        current.available === false ||
+        current.oauthEpoch === undefined ||
+        current.oauthEpoch !== consent?.oauthEpoch
+      ) {
+        throw new Error('The MCP OAuth authorization changed. Request approval again.');
+      }
       const expected = owner && scope && resolveAgentToolGrantBinding(owner, tool.name, scope);
       if (!expected) {
         // Unresolvable connections cannot learn consent. Only a reviewed SDK call may execute.
@@ -425,8 +442,7 @@ export function createAgentToolApprovalSession({
       if (expected.scope === 'once' || baseline?.decision === 'ask') {
         throw new Error('Tool approval is required. Run this tool in the foreground for review.');
       }
-      const status = await approved(actual);
-      if (!status.approved) {
+      if (!current.approved || !storage) {
         ready.delete(key);
         throw new Error('Tool approval is required or was revoked. Request approval again.');
       }
@@ -450,7 +466,14 @@ export function createAgentToolApprovalSession({
           storage &&
           scope
         ) {
-          await storage.rememberToolApprovalGrants(scope, [grant]);
+          const current = await approved(grant);
+          if (
+            current.available !== false &&
+            current.oauthEpoch !== undefined &&
+            current.oauthEpoch === grant.oauthEpoch
+          ) {
+            await storage.rememberToolApprovalGrants(scope, [grant]);
+          }
         }
       } catch {
         logger.warn('[Tool approvals] Could not remember approval; future calls require review.');
@@ -462,83 +485,74 @@ export function createAgentToolApprovalSession({
     async hook(input) {
       const agent = input.executingAgentId == null ? undefined : owners.get(input.executingAgentId);
       const mode = agent?.tool_options?.[input.toolName]?.approval_mode;
+      if (!agent || mode == null) return {};
       const executionScope = getToolApprovalExecutionScope(input.executionContext);
-      const key = approvalCallKey(input.executingAgentId, input.toolUseId, executionScope);
+      const key = approvalCallKey(agent.id, input.toolUseId, executionScope);
+      const target = scope && resolveToolReviewBinding(agent, input.toolName, scope);
+      const status = target ? await approved(target) : undefined;
+      if (target) {
+        target.executionScope = executionScope;
+        target.oauthEpoch = status?.oauthEpoch;
+        target.revocation = status?.revocation;
+      }
       const reviewedBinding = reviewedBindings.get(key);
-      // Older pauses without owner metadata are safe only for a single known agent.
-      if (agent && owners.size === 1 && legacyDecisions.has(input.toolUseId)) {
+      if (
+        reviewedBinding &&
+        (target?.binding !== reviewedBinding.binding ||
+          target?.oauthEpoch !== reviewedBinding.oauthEpoch)
+      ) {
+        return {
+          decision: 'deny',
+          reason:
+            'The reviewed tool or OAuth authorization changed. Please request approval again.',
+        };
+      }
+      // Older owner-less pauses remain usable only for a single known agent.
+      if (owners.size === 1 && legacyDecisions.has(input.toolUseId)) {
         const decision = legacyDecisions.get(input.toolUseId);
         legacyDecisions.delete(input.toolUseId);
         if (decision === 'approve' || decision === 'edit') permittedDecisions.add(key);
       }
-      if (reviewedBinding) {
-        const current = agent && scope && resolveToolReviewBinding(agent, input.toolName, scope);
-        if (
-          current?.binding !== reviewedBinding.binding ||
-          current.agentId !== reviewedBinding.agentId
-        ) {
-          return {
-            decision: 'deny',
-            reason: 'The reviewed tool binding changed. Please request approval again.',
-          };
-        }
-        if (approvedDecisions.has(key) && reviewedBinding.canRemember === true)
-          ready.set(key, reviewedBinding);
+      if (reviewedBinding && approvedDecisions.has(key) && reviewedBinding.canRemember === true) {
+        ready.set(key, reviewedBinding);
       }
-      if (mode == null) return {};
-      if (agent) {
-        policyChecks.set(key, { agentId: agent.id, toolName: input.toolName });
-        const candidates = callOwners.get(input.toolUseId) ?? new Set<string>();
-        candidates.add(key);
-        callOwners.set(input.toolUseId, candidates);
-        proposals.set(key, {
-          agentId: agent.id,
-          callId: input.toolUseId,
-          dispatched: false,
-          toolName: input.toolName,
-          executionScope,
-        });
-      }
-      if (mode === 'ask' || mode === 'allow') {
-        const target = agent && scope && resolveToolReviewBinding(agent, input.toolName, scope);
-        if (target) target.executionScope = executionScope;
-        calls.set(key, target ?? null);
-        return { decision: mode === 'ask' ? 'ask' : 'allow' };
-      }
-      const binding = agent && scope && resolveAgentToolGrantBinding(agent, input.toolName, scope);
-      if (!binding) {
-        const fallback =
-          agent && scope ? resolveToolReviewBinding(agent, input.toolName, scope) : undefined;
-        if (fallback) fallback.executionScope = executionScope;
-        calls.set(key, fallback ?? null);
+      policyChecks.set(key, { agentId: agent.id, toolName: input.toolName });
+      const candidates = callOwners.get(input.toolUseId) ?? new Set<string>();
+      candidates.add(key);
+      callOwners.set(input.toolUseId, candidates);
+      proposals.set(key, {
+        agentId: agent.id,
+        callId: input.toolUseId,
+        dispatched: false,
+        toolName: input.toolName,
+        executionScope,
+      });
+      if (!target) {
+        calls.set(key, null);
         unavailable.set(key, 'connection');
-        return { decision: 'ask' };
-      }
-      binding.executionScope = executionScope;
-      if (!storage) {
-        binding.canRemember = false;
-        binding.unavailable = 'disabled';
-        calls.set(key, binding);
-        return { decision: 'ask' };
+        return { decision: mode === 'allow' ? 'allow' : 'ask' };
       }
       const prior = calls.get(key);
-      if (prior !== undefined && prior?.binding !== binding.binding) {
+      if (prior && (prior.binding !== target.binding || prior.oauthEpoch !== target.oauthEpoch)) {
         calls.set(key, null);
         return { decision: 'ask' };
       }
+      if (status?.available === false || status?.oauthEpoch === undefined) {
+        target.canRemember = false;
+        target.unavailable = 'storage';
+      } else if (!storage) {
+        target.canRemember = false;
+        target.unavailable = 'disabled';
+      }
       if (input.toolInput.run_in_background === true) {
-        binding.canRemember = false;
-        binding.unavailable = 'background';
+        target.canRemember = false;
+        target.unavailable = 'background';
         ready.delete(key);
       }
-      calls.set(key, binding);
-      const status = await approved(binding);
-      binding.revocation = status.revocation;
-      if (status.available === false) {
-        binding.canRemember = false;
-        binding.unavailable = 'storage';
-      }
-      return { decision: status.approved ? 'allow' : 'ask' };
+      calls.set(key, target);
+      if (mode === 'allow') return { decision: 'allow' };
+      if (mode === 'ask') return { decision: 'ask' };
+      return { decision: storage && status?.approved === true ? 'allow' : 'ask' };
     },
   };
 }

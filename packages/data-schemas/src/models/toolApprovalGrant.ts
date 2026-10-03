@@ -11,6 +11,7 @@ interface ToolApprovalGrantRecord {
   binding?: string;
   revocation?: string;
   approvedRevocation?: string;
+  oauthEpoch?: string | null;
 }
 
 const schema: Schema<ToolApprovalGrantRecord> = new Schema<ToolApprovalGrantRecord>(
@@ -23,6 +24,7 @@ const schema: Schema<ToolApprovalGrantRecord> = new Schema<ToolApprovalGrantReco
     binding: { type: String },
     revocation: { type: String },
     approvedRevocation: { type: String },
+    oauthEpoch: { type: String, default: null },
   },
   { timestamps: true },
 );

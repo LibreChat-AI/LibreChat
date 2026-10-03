@@ -8,6 +8,7 @@ interface StoredGrant {
   binding?: string;
   revocation?: string;
   approvedRevocation?: string;
+  oauthEpoch?: string | null;
 }
 
 export function createToolApprovalGrantMethods(
@@ -16,7 +17,7 @@ export function createToolApprovalGrantMethods(
   return {
     async getToolApprovalGrants(scope, bindings) {
       if (bindings.length === 0) return [];
-      const records = await mongoose.models.ToolApprovalGrant.find({
+      const recordsQuery = mongoose.models.ToolApprovalGrant.find({
         user: scope.userId,
         tenantId: scope.tenantId ?? null,
         $or: [
@@ -27,8 +28,61 @@ export function createToolApprovalGrantMethods(
           ...bindings.map(({ agentId, toolName }) => ({ agentId, toolName, conversationId: '' })),
         ],
       })
-        .select('agentId toolName conversationId binding revocation approvedRevocation -_id')
+        .select(
+          'agentId toolName conversationId binding revocation approvedRevocation oauthEpoch -_id',
+        )
         .lean<StoredGrant[]>();
+      const servers = [
+        ...new Set(bindings.flatMap((binding) => (binding.serverName ? [binding.serverName] : []))),
+      ];
+      const identities = servers.flatMap((server) => [
+        { server, type: 'mcp_oauth', identifier: `mcp:${server}` },
+        { server, type: 'mcp_oauth_refresh', identifier: `mcp:${server}:refresh` },
+        { server, type: 'mcp_oauth_client', identifier: `mcp:${server}:client` },
+      ]);
+      const [records, tokens] = await Promise.all([
+        recordsQuery,
+        identities.length === 0
+          ? Promise.resolve([])
+          : mongoose.models.Token.find({
+              userId: scope.userId,
+              tenantId: scope.tenantId ?? null,
+              $or: identities.map(({ type, identifier }) => ({ type, identifier })),
+            })
+              .select('type identifier metadata.credential_set_id -_id')
+              .lean<
+                Array<{
+                  type: string;
+                  identifier: string;
+                  metadata?: { credential_set_id?: string };
+                }>
+              >({ flattenMaps: true }),
+      ]);
+      const identityKey = (type: string, identifier: string) => JSON.stringify([type, identifier]);
+      const owners = new Map(
+        identities.map(({ server, type, identifier }) => [identityKey(type, identifier), server]),
+      );
+      const generations = new Map<string, Set<string | undefined>>();
+      for (const token of tokens) {
+        const server = owners.get(identityKey(token.type, token.identifier));
+        if (!server) continue;
+        const values = generations.get(server) ?? new Set<string | undefined>();
+        values.add(token.metadata?.credential_set_id);
+        generations.set(server, values);
+      }
+      const epochs = new Map<string, string | null | undefined>();
+      for (const server of servers) {
+        const values = generations.get(server);
+        if (!values) {
+          epochs.set(server, null);
+          continue;
+        }
+        const value = values.values().next().value;
+        epochs.set(
+          server,
+          values.size === 1 && typeof value === 'string' && value.length > 0 ? value : undefined,
+        );
+      }
       const revocations = new Map<string, string | undefined>();
       const granted = new Map<string, StoredGrant>();
       const key = (agentId: string, toolName: string) => JSON.stringify([agentId, toolName]);
@@ -40,10 +94,16 @@ export function createToolApprovalGrantMethods(
       return bindings.map((grant) => {
         const revocation = revocations.get(key(grant.agentId, grant.toolName));
         const record = granted.get(grant.binding);
+        const oauthEpoch = grant.serverName ? epochs.get(grant.serverName) : null;
         return {
           binding: grant.binding,
           revocation,
-          approved: record != null && (record.approvedRevocation ?? '') === (revocation ?? ''),
+          oauthEpoch,
+          approved:
+            oauthEpoch !== undefined &&
+            record != null &&
+            (record.oauthEpoch ?? null) === oauthEpoch &&
+            (record.approvedRevocation ?? '') === (revocation ?? ''),
         };
       });
     },
@@ -60,7 +120,11 @@ export function createToolApprovalGrantMethods(
             conversationId: grant.scope === 'chat' ? scope.conversationId : '',
           };
           const update = {
-            $set: { binding: grant.binding, approvedRevocation: grant.revocation ?? '' },
+            $set: {
+              binding: grant.binding,
+              approvedRevocation: grant.revocation ?? '',
+              oauthEpoch: grant.oauthEpoch ?? null,
+            },
             $setOnInsert: filter,
           };
           try {
