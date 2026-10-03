@@ -1272,14 +1272,111 @@ function preserveListFlags(next: TConversation, found: TConversation): TConversa
   return merged;
 }
 
+export type ConvoSnapshotFence = { superseded: boolean };
+
+type ConvoReadAuthority = {
+  readToken?: number;
+  snapshots: Set<ConvoSnapshotFence>;
+};
+
+const convoReadAuthorities = new WeakMap<QueryClient, Map<string, ConvoReadAuthority>>();
+
+function convoReadAuthority(queryClient: QueryClient, conversationId: string): ConvoReadAuthority {
+  let records = convoReadAuthorities.get(queryClient);
+  if (!records) {
+    records = new Map();
+    convoReadAuthorities.set(queryClient, records);
+  }
+  let authority = records.get(conversationId);
+  if (!authority) {
+    authority = { snapshots: new Set() };
+    records.set(conversationId, authority);
+  }
+  return authority;
+}
+
+function releaseConvoReadAuthority(queryClient: QueryClient, conversationId: string): void {
+  const records = convoReadAuthorities.get(queryClient);
+  const authority = records?.get(conversationId);
+  if (authority?.readToken == null && authority?.snapshots.size === 0) {
+    records?.delete(conversationId);
+  }
+}
+
+/** Authority records live only while a read write or server snapshot is pending. */
+export function beginConvoSnapshot(
+  queryClient: QueryClient,
+  conversationId: string,
+): ConvoSnapshotFence {
+  const authority = convoReadAuthority(queryClient, conversationId);
+  const fence = { superseded: authority.readToken != null };
+  authority.snapshots.add(fence);
+  return fence;
+}
+
+export function endConvoSnapshot(
+  queryClient: QueryClient,
+  conversationId: string,
+  fence: ConvoSnapshotFence | undefined,
+): void {
+  if (fence) convoReadAuthorities.get(queryClient)?.get(conversationId)?.snapshots.delete(fence);
+  releaseConvoReadAuthority(queryClient, conversationId);
+}
+
+export function supersedeConvoSnapshots(
+  queryClient: QueryClient,
+  conversationId: string,
+  readToken: number,
+): void {
+  const authority = convoReadAuthority(queryClient, conversationId);
+  authority.readToken = readToken;
+  for (const fence of authority.snapshots) fence.superseded = true;
+}
+
+export function endConvoReadIntent(
+  queryClient: QueryClient,
+  conversationId: string,
+  readToken: number | undefined,
+): void {
+  const authority = convoReadAuthorities.get(queryClient)?.get(conversationId);
+  if (authority && authority.readToken === readToken) delete authority.readToken;
+  releaseConvoReadAuthority(queryClient, conversationId);
+}
+
+export async function fetchConvoSnapshot(
+  queryClient: QueryClient,
+  conversationId: string,
+  fetch: () => Promise<TConversation>,
+): Promise<TConversation> {
+  const fence = beginConvoSnapshot(queryClient, conversationId);
+  try {
+    const record = await fetch();
+    return record == null
+      ? record
+      : mergeConvoSnapshot(
+          record,
+          findConvoInAllQueries(queryClient, conversationId),
+          fence.superseded,
+        );
+  } finally {
+    endConvoSnapshot(queryClient, conversationId, fence);
+  }
+}
+
 /** Full server snapshots clear omitted read fields; partial UI patches preserve them. */
 export function mergeConvoSnapshot(
   snapshot: TConversation,
   cached?: TConversation,
+  preferCachedReadState = false,
 ): TConversation {
   const state =
     cached?.lastResponseAt != null &&
-    (snapshot.lastResponseAt == null || snapshot.lastResponseAt < cached.lastResponseAt)
+    (snapshot.lastResponseAt == null ||
+      snapshot.lastResponseAt < cached.lastResponseAt ||
+      (snapshot.lastResponseAt === cached.lastResponseAt &&
+        (preferCachedReadState ||
+          (snapshot.lastSeenAt === UNSEEN_REPLY_WATERMARK &&
+            cached.lastSeenAt !== UNSEEN_REPLY_WATERMARK))))
       ? cached
       : snapshot;
   return {

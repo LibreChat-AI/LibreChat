@@ -1,3 +1,4 @@
+import { fetchConvoSnapshot } from '~/utils/convos';
 /* Scheduled chats */
 import { QueryKeys, dataService } from 'librechat-data-provider';
 import type { TUser, TConversation } from 'librechat-data-provider';
@@ -111,7 +112,9 @@ async function admit(queryClient: QueryClient, conversationId: string): Promise<
     }
     let conversation: TConversation;
     try {
-      conversation = await dataService.getConversationById(conversationId);
+      conversation = await fetchConvoSnapshot(queryClient, conversationId, () =>
+        dataService.getConversationById(conversationId),
+      );
     } catch (error) {
       if (isTerminalProbeFailure(error)) {
         return false;

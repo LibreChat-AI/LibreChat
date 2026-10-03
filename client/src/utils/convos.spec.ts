@@ -5,6 +5,11 @@ import type { ConversationCursorData } from './convos';
 import {
   dateKeys,
   mergeConvoSnapshot,
+  beginConvoSnapshot,
+  endConvoSnapshot,
+  endConvoReadIntent,
+  supersedeConvoSnapshots,
+  fetchConvoSnapshot,
   storeEndpointSettings,
   addConversationToInfinitePages,
   updateInfiniteConvoPage,
@@ -1219,6 +1224,13 @@ describe('Conversation Utilities', () => {
         expect(merged.lastResponseMessageId).toBe('reply');
         const older = { ...server, lastResponseAt: '2026-08-16T09:00:00.000Z' };
         expect(mergeConvoSnapshot(older, cached).lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
+        const read = { ...cached, lastSeenAt: cached.lastResponseAt };
+        expect(mergeConvoSnapshot(cached, read, true).lastSeenAt).toBe(read.lastSeenAt);
+        expect(mergeConvoSnapshot(cached, read).lastSeenAt).toBe(read.lastSeenAt);
+        const reminder = { ...cached, lastSeenAt: undefined, isMarkedUnread: true };
+        expect(mergeConvoSnapshot(cached, reminder).isMarkedUnread).toBe(true);
+        const later = { ...cached, lastResponseAt: '2026-08-16T11:00:00.000Z' };
+        expect(mergeConvoSnapshot(later, read, true).lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
       });
 
       it.each([true, false])(
@@ -1790,5 +1802,74 @@ describe('Conversation Utilities', () => {
         ).toHaveLength(0);
       });
     });
+  });
+});
+
+describe('conversation snapshot read authority', () => {
+  it('fences reads already pending at request start and drops settled records', () => {
+    const client = new QueryClient();
+    supersedeConvoSnapshots(client, 'convo', 1);
+    const fence = beginConvoSnapshot(client, 'convo');
+    expect(fence.superseded).toBe(true);
+    endConvoReadIntent(client, 'convo', 1);
+    endConvoSnapshot(client, 'convo', fence);
+    const fresh = beginConvoSnapshot(client, 'convo');
+    expect(fresh.superseded).toBe(false);
+    endConvoSnapshot(client, 'convo', fresh);
+    client.clear();
+  });
+
+  it('isolates concurrent snapshots by request, conversation and query client', () => {
+    const client = new QueryClient();
+    const other = new QueryClient();
+    const completed = beginConvoSnapshot(client, 'convo');
+    const pending = beginConvoSnapshot(client, 'convo');
+    endConvoSnapshot(client, 'convo', completed);
+    supersedeConvoSnapshots(other, 'convo', 1);
+    supersedeConvoSnapshots(client, 'another', 1);
+    expect(pending.superseded).toBe(false);
+    supersedeConvoSnapshots(client, 'convo', 2);
+    expect(completed.superseded).toBe(false);
+    expect(pending.superseded).toBe(true);
+    endConvoReadIntent(client, 'convo', 1);
+    const during = beginConvoSnapshot(client, 'convo');
+    expect(during.superseded).toBe(true);
+    endConvoReadIntent(client, 'convo', 2);
+    endConvoSnapshot(client, 'convo', pending);
+    endConvoSnapshot(client, 'convo', during);
+    endConvoReadIntent(client, 'another', 1);
+    endConvoReadIntent(other, 'convo', 1);
+    client.clear();
+    other.clear();
+  });
+
+  it('a snapshot fetch preserves same-reply read intent that settles during the request', async () => {
+    const client = new QueryClient();
+    const repliedAt = '2026-08-16T10:00:00.000Z';
+    const confirmed = {
+      conversationId: 'convo',
+      lastResponseAt: repliedAt,
+      lastSeenAt: UNSEEN_REPLY_WATERMARK,
+      isMarkedUnread: false,
+    } as TConversation;
+    client.setQueryData(['conversation', 'convo'], confirmed);
+    let complete!: (value: TConversation) => void;
+    const pending = fetchConvoSnapshot(
+      client,
+      'convo',
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    supersedeConvoSnapshots(client, 'convo', 1);
+    client.setQueryData(['conversation', 'convo'], { ...confirmed, lastSeenAt: repliedAt });
+    endConvoReadIntent(client, 'convo', 1);
+    complete(confirmed);
+    expect((await pending).lastSeenAt).toBe(repliedAt);
+    const fresh = beginConvoSnapshot(client, 'convo');
+    expect(fresh.superseded).toBe(false);
+    endConvoSnapshot(client, 'convo', fresh);
+    client.clear();
   });
 });

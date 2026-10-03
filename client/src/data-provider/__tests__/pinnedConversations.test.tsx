@@ -10,18 +10,20 @@ import type {
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
+  useConversationTagMutation,
+  useDeleteConversationMutation,
+  useDeleteConversationTagMutation,
+  usePinConversationMutation,
+  useMarkConversationSeenMutation,
+  useMarkConversationUnreadMutation,
+} from '../mutations';
+import {
   removeConvoFromAllQueries,
   updateConvoInAllQueries,
   upsertConvoInAllQueries,
   collectPinnedConversations,
   withoutListFlags,
 } from '~/utils/convos';
-import {
-  useConversationTagMutation,
-  useDeleteConversationMutation,
-  useDeleteConversationTagMutation,
-  usePinConversationMutation,
-} from '../mutations';
 import {
   pinnedConversationsPageSize,
   useConversationsInfiniteQuery,
@@ -37,6 +39,8 @@ jest.mock('librechat-data-provider', () => {
       ...actual.dataService,
       listConversations: jest.fn(),
       pinConversation: jest.fn(),
+      markConversationSeen: jest.fn(),
+      markConversationUnread: jest.fn(),
       deleteConversation: jest.fn(),
       updateConversationTag: jest.fn(),
       deleteConversationTag: jest.fn(),
@@ -301,6 +305,66 @@ describe('pinned list cache synchronization', () => {
       expect(chats?.pages[0].conversations[0].lastSeenAt).toBeUndefined();
       expect(chats?.pages[0].conversations[0].isMarkedUnread).toBe(false);
       expect(readPinnedCache(queryClient)?.conversations).toEqual([]);
+    },
+  );
+
+  it.each(['seen', 'unread'] as const)(
+    'does not overwrite later %s intent when an old pin snapshot settles',
+    async (intent) => {
+      const queryClient = createQueryClient();
+      const repliedAt = '2026-08-16T10:00:00.000Z';
+      const confirmed = {
+        ...pinnedConvo,
+        lastResponseAt: repliedAt,
+        lastResponseMessageId: 'reply',
+        isMarkedUnread: false,
+        lastSeenAt: UNSEEN_REPLY_WATERMARK,
+      } as TConversation;
+      queryClient.setQueryData([QueryKeys.pinnedConversations], listResponse([confirmed]));
+      queryClient.setQueryData([QueryKeys.allConversations], {
+        pages: [listResponse([confirmed])],
+        pageParams: [null],
+      });
+      let releasePin!: (value: TConversation) => void;
+      pinConversation.mockReturnValue(
+        new Promise((resolve) => {
+          releasePin = resolve;
+        }),
+      );
+      jest.mocked(dataService.markConversationSeen).mockResolvedValue({ modified: true });
+      jest.mocked(dataService.markConversationUnread).mockResolvedValue({
+        modified: true,
+        lastResponseAt: repliedAt,
+        isMarkedUnread: true,
+      });
+      const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+      const { result } = renderHook(
+        () => ({
+          pin: usePinConversationMutation(),
+          seen: useMarkConversationSeenMutation(),
+          unread: useMarkConversationUnreadMutation(),
+        }),
+        { wrapper: createWrapper(queryClient) },
+      );
+      await act(async () => {
+        const pending = result.current.pin.mutateAsync({
+          conversationId: pinnedConversationId,
+          pinned: false,
+        });
+        await waitFor(() => expect(pinConversation).toHaveBeenCalledTimes(1));
+        await result.current[intent].mutateAsync({ conversationId: pinnedConversationId });
+        releasePin({ ...confirmed, pinned: false });
+        await pending;
+      });
+      const chats = queryClient.getQueryData<{ pages: ConversationListResponse[] }>([
+        QueryKeys.allConversations,
+      ]);
+      const row = chats?.pages[0].conversations[0];
+      expect(row?.pinned).toBe(false);
+      expect(row?.lastSeenAt).toBe(intent === 'seen' ? repliedAt : undefined);
+      expect(row?.isMarkedUnread).toBe(intent === 'unread');
+      expect(invalidate).toHaveBeenCalledWith([QueryKeys.allConversations]);
+      queryClient.clear();
     },
   );
 

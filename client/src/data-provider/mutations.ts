@@ -14,6 +14,10 @@ import {
   addConvoToAllQueries,
   markRunningRemoval,
   mergeConvoSnapshot,
+  beginConvoSnapshot,
+  endConvoSnapshot,
+  endConvoReadIntent,
+  supersedeConvoSnapshots,
   findPinnedConversation,
   findConvoInAllQueries,
   findConversationInInfinite,
@@ -230,12 +234,22 @@ export const usePinConversationMutation = (
   options?: t.PinConversationOptions,
 ): UseMutationResult<t.TPinConversationResponse, unknown, t.TPinConversationRequest, unknown> => {
   const queryClient = useQueryClient();
-  const { onSuccess, onError, ..._options } = options || {};
+  const { onSuccess, onError, onMutate, onSettled } = options || {};
 
   return useMutation(
     [MutationKeys.convoPin],
     (payload: t.TPinConversationRequest) => dataService.pinConversation(payload),
     {
+      onMutate: async (vars) => {
+        const fence = beginConvoSnapshot(queryClient, vars.conversationId);
+        try {
+          await onMutate?.(vars);
+          return fence;
+        } catch (error) {
+          endConvoSnapshot(queryClient, vars.conversationId, fence);
+          throw error;
+        }
+      },
       onSuccess: async (data, vars, context) => {
         /** A project drop can start a list refresh before its following unpin.
          * Cancel that older snapshot before publishing the authoritative pin result. */
@@ -251,15 +265,13 @@ export const usePinConversationMutation = (
         const snapshot = mergeConvoSnapshot(
           data,
           findConvoInAllQueries(queryClient, vars.conversationId),
+          context?.superseded === true,
         );
         const next =
           snapshot.isShared === undefined && cachedPin?.isShared !== undefined
             ? { ...snapshot, isShared: cachedPin.isShared }
             : snapshot;
         updateConvoInAllQueries(queryClient, vars.conversationId, () => next);
-        /* Pinned state is list-relevant in both active and archived views. The
-         * archived variants carry filter/sort parameters, so invalidate by prefix. */
-        queryClient.invalidateQueries({ queryKey: [QueryKeys.archivedConversations] });
         /** An older pin may exist only in the dedicated pinned cache. Unpinning
          * it has to put the returned row onto the chats list; later pages
          * cannot recover a conversation whose updatedAt just jumped ahead of
@@ -268,13 +280,20 @@ export const usePinConversationMutation = (
         if (next.pinned !== true) {
           addConvoToAllQueries(queryClient, next);
         }
-        /** The pinned section has its own fetch, so a new pin is only visible once
-         * that list is refetched; unpins are already dropped from its cache above. */
-        queryClient.invalidateQueries([QueryKeys.pinnedConversations]);
-        onSuccess?.(data, vars, context);
+        if (context?.superseded) {
+          refreshConvoReadCaches(queryClient, vars.conversationId);
+        } else {
+          /* Pinned state affects both views; invalidate archived variants by prefix. */
+          queryClient.invalidateQueries({ queryKey: [QueryKeys.archivedConversations] });
+          queryClient.invalidateQueries([QueryKeys.pinnedConversations]);
+        }
+        onSuccess?.(data, vars);
       },
-      onError,
-      ..._options,
+      onError: (error, vars) => onError?.(error, vars),
+      onSettled: (data, error, vars, context) => {
+        endConvoSnapshot(queryClient, vars.conversationId, context);
+        return onSettled?.(data, error, vars);
+      },
     },
   );
 };
@@ -392,6 +411,7 @@ const getReadWriteState = (queryClient: QueryClient): ReadWriteState => {
 const claimReadWrite = (queryClient: QueryClient, conversationId: string): number => {
   const state = getReadWriteState(queryClient);
   state.next += 1;
+  supersedeConvoSnapshots(queryClient, conversationId, state.next);
   state.latest.set(conversationId, state.next);
   return state.next;
 };
@@ -411,6 +431,7 @@ const releaseReadWrite = (
   if (isLatestReadWrite(queryClient, conversationId, token)) {
     getReadWriteState(queryClient).latest.delete(conversationId);
   }
+  endConvoReadIntent(queryClient, conversationId, token);
 };
 
 /**
