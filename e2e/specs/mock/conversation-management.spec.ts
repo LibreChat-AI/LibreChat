@@ -321,7 +321,7 @@ test.describe('conversation management', () => {
       test.setTimeout(40000);
       const label = uniqueLabel(`first-rename-${timing}`);
       const renamedTitle = timing === 'unchanged' ? 'New Chat' : `Renamed ${label}`;
-      const titleTiming = timing === 'unchanged' ? 'final' : timing;
+      const titleTiming = timing === 'unchanged' ? 'immediate' : timing;
       const fixture = `http://127.0.0.1:${process.env.E2E_LABEL_PORT ?? '8889'}`;
       await request.post(`${fixture}/__e2e/reset`);
       await request.post(`${fixture}/__e2e/behavior`, {
@@ -346,6 +346,15 @@ test.describe('conversation management', () => {
           `[data-testid="convo-item"][data-conversation-id="${conversationId}"]`,
         );
         await expect(row.getByRole('img', { name: 'Generating' })).toBeVisible();
+        const titleRequest = async () => {
+          const body = await (await request.get(`${fixture}/__e2e/requests`)).json();
+          return body.requests.find(
+            (record: { prompt: string; model: string }) =>
+              record.model === 'mock-title-model' && record.prompt.includes(label),
+          );
+        };
+        if (timing === 'unchanged')
+          await expect.poll(async () => !!(await titleRequest())).toBe(true);
         await row.click({ button: 'right' });
         await page.getByRole('menuitem', { name: 'Rename' }).click();
         await row.getByRole('textbox', { name: 'New Conversation Title' }).fill(renamedTitle);
@@ -365,13 +374,6 @@ test.describe('conversation management', () => {
           }),
         );
         await expect(row).toContainText(renamedTitle);
-        const titleRequest = async () => {
-          const body = await (await request.get(`${fixture}/__e2e/requests`)).json();
-          return body.requests.find(
-            (record: { prompt: string; model: string }) =>
-              record.model === 'mock-title-model' && record.prompt.includes(label),
-          );
-        };
         await expect.poll(async () => !!(await titleRequest())).toBe(true);
         const published = page.waitForResponse(
           (response) =>
