@@ -75,6 +75,17 @@ describe("Lia's pixel art", () => {
     }
   });
 
+  it('keeps every face inside the screen while its entrance plays', () => {
+    for (const e of EXPRESSIONS) {
+      for (let elapsed = 0; elapsed <= 600; elapsed += 15) {
+        for (const r of paint((c) => drawFace(c, { ...BASE, face: e.key, elapsed }))) {
+          expect(r.y).toBeGreaterThanOrEqual(0);
+          expect(r.y + r.h).toBeLessThanOrEqual(SCREEN_H);
+        }
+      }
+    }
+  });
+
   it('closes open eyes when blinking and leaves closed ones alone', () => {
     expect(signature('neutral', { blink: true })).not.toBe(signature('neutral'));
     expect(signature('happy', { blink: true })).toBe(signature('happy'));

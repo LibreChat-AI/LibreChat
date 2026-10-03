@@ -74,17 +74,20 @@ test.describe("Lia's pixel art", () => {
       for (const e of face.EXPRESSIONS) {
         /* Every direction Lia can look, including the diagonals. */
         for (const [dx, dy] of [-1, 0, 1].flatMap((x) => [-1, 0, 1].map((y) => [x, y]))) {
-          check(`face ${e.key}`, face.SCREEN_W, face.SCREEN_H, (c) =>
-            face.drawFace(c, {
-              face: e.key,
-              elapsed: 2000,
-              dx,
-              dy,
-              feather: true,
-              t: 1000,
-              blink: false,
-            }),
-          );
+          /* From the first frame of the entrance (sunglasses dropping in) to long after. */
+          for (const elapsed of [0, 30, 200, 2000]) {
+            check(`face ${e.key} at ${elapsed}ms`, face.SCREEN_W, face.SCREEN_H, (c) =>
+              face.drawFace(c, {
+                face: e.key,
+                elapsed,
+                dx,
+                dy,
+                feather: true,
+                t: 1000,
+                blink: false,
+              }),
+            );
+          }
         }
       }
       check('body, feet and arms', body.GRID_W, body.GRID_H, (c) => {

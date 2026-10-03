@@ -490,7 +490,7 @@ const EXTRAS: Record<Extra, (c: Ctx, fs: FaceState) => void> = {
   },
   shades: (c, fs) => {
     /* The glasses drop in from above when the expression starts. */
-    const y = 8 + Math.min(0, -9 + Math.floor(fs.elapsed / 45));
+    const y = 8 + Math.min(0, -8 + Math.floor(fs.elapsed / 45));
     rect(c, 6, y, 8, 4, C.EYE);
     rect(c, 19, y, 8, 4, C.EYE);
     rect(c, 14, y + 1, 5, 1, C.EYE);
