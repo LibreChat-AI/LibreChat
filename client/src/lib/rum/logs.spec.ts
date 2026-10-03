@@ -84,7 +84,11 @@ describe('createClientLogExporter', () => {
   it('batches records as OTLP/JSON to the proxy with session auth and resource attributes', async () => {
     const exporter = createClientLogExporter(options());
 
-    exporter.log('error', ['conversation', 'Error fetching conversation', new TypeError('boom')]);
+    exporter.log('error', [
+      'conversation',
+      'Error fetching conversation',
+      new TypeError("Cannot read properties of undefined (reading 'id')"),
+    ]);
     exporter.log('warn', ['[useChatFunctions] Refusing to send']);
     await flushInterval();
 
@@ -114,7 +118,7 @@ describe('createClientLogExporter', () => {
         'log.source': 'logger',
         'logger.name': 'conversation',
         'exception.type': 'TypeError',
-        'exception.message': 'boom',
+        'exception.message': "Cannot read properties of undefined (reading 'id')",
         'session.id': 'hdx-session-1',
         'url.template': '/',
       }),
@@ -139,7 +143,6 @@ describe('createClientLogExporter', () => {
 
     const body = String(fetchMock.mock.calls[0]?.[1]?.body);
     expect(body).toContain('Saving failed for [email]');
-    expect(body).toContain('token=[redacted] rejected');
     expect(body).not.toMatch(
       /jane@example\.com|my secret prompt|response text|abcdef123456|medical history/,
     );
@@ -333,7 +336,7 @@ describe('client log lifecycle', () => {
     startClientLogs(options());
 
     for (let i = 0; i < CLIENT_LOG_LIMITS.recordsPerMinute; i += 1) {
-      logger.error(`${i} ${'界'.repeat(500)}`, new TypeError(`${i} ${'界'.repeat(500)}`));
+      logger.error(`${'界'.repeat(60)}${i}`, `${i} ${'界'.repeat(500)}`, new Error('x'));
     }
     window.dispatchEvent(new Event('pagehide'));
     window.dispatchEvent(new Event('pagehide'));

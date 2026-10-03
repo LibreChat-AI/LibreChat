@@ -17,7 +17,8 @@ function positiveNumber(value: string | undefined, fallback: number): number {
 }
 
 export function getRumProxyUserMax(): number {
-  return Math.floor(positiveNumber(process.env.RUM_PROXY_USER_MAX, DEFAULT_USER_MAX));
+  const max = Math.floor(positiveNumber(process.env.RUM_PROXY_USER_MAX, DEFAULT_USER_MAX));
+  return max >= 1 ? max : DEFAULT_USER_MAX;
 }
 
 export function getRumProxyUserWindowMs(): number {

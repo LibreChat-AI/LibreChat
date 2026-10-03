@@ -248,7 +248,8 @@ describe('forwardQueuedAssetEvents', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     testExports.resetDiagnosticsState();
-    fetchMock.mockClear();
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(() => Promise.resolve({ status: 200 }));
     sessionStorage.clear();
     window.__lcRumQueue = [
       {
@@ -283,6 +284,9 @@ describe('forwardQueuedAssetEvents', () => {
 
     forwardQueuedAssetEvents();
     forwardQueuedAssetEvents();
+    expect(window.__lcRumQueue?.[0]).not.toHaveProperty('logged');
+
+    await jest.advanceTimersByTimeAsync(5_000);
 
     expect(window.__lcRumQueue?.[0]).toEqual(expect.objectContaining({ logged: true }));
     expect(window.__lcRumQueue?.[1]).not.toHaveProperty('logged');
@@ -292,6 +296,25 @@ describe('forwardQueuedAssetEvents', () => {
     await jest.advanceTimersByTimeAsync(5_000);
 
     expect(loggedEventNames()).toEqual(['stale_asset.recovery_start']);
+  });
+
+  it('keeps an undelivered event eligible for replay on the next page', async () => {
+    fetchMock.mockImplementation(() => Promise.resolve({ status: 503 }));
+    startClientLogs({
+      endpoint: '/api/rum/v1/logs',
+      serviceName: 'librechat-web',
+      buildId: 'index-New2.js',
+      getToken: () => 'session-jwt',
+      fetch: fetchMock,
+    });
+
+    forwardQueuedAssetEvents();
+    await jest.advanceTimersByTimeAsync(5_000);
+    stopClientLogs();
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(window.__lcRumQueue?.[0]).not.toHaveProperty('logged');
+    expect(sessionStorage.getItem('lc-rum-queue')).toBeNull();
   });
 
   it('leaves events unmarked when client logs are off', () => {

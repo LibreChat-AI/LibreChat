@@ -89,6 +89,8 @@ type LogEntry = {
   attempts: number;
   state: 'queued' | 'sending' | 'done';
   trace?: TraceContext;
+  /** Run once the collector accepted the record (2xx), never for a dropped record. */
+  onDelivered: Array<() => void>;
 };
 
 type Batch = { entries: LogEntry[]; body: string };
@@ -97,6 +99,7 @@ type DedupeEntry = {
   expiresAt: number;
   entry: LogEntry;
   suppressed: number;
+  suppressedCallbacks: Array<() => void>;
 };
 
 type OtlpAnyValue = { stringValue: string } | { boolValue: boolean } | { intValue: string };
@@ -135,7 +138,7 @@ export type ClientLogsOptions = {
 
 export type ClientLogExporter = {
   log: (level: 'warn' | 'error', args: unknown[]) => void;
-  event: (type: string, attributes?: ClientEventAttributes) => void;
+  event: (type: string, attributes?: ClientEventAttributes, onDelivered?: () => void) => void;
   boundary: (boundary: string, error: unknown, chunkLoad: boolean) => void;
   flush: (keepalive: boolean) => void;
   dispose: () => void;
@@ -340,6 +343,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
             count: item.suppressed,
             attempts: 0,
             state: 'queued',
+            onDelivered: item.suppressedCallbacks,
           },
           now,
         );
@@ -367,8 +371,10 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     if (existing) {
       if (existing.entry.state === 'queued') {
         existing.entry.count += 1;
+        existing.entry.onDelivered.push(...entry.onDelivered);
       } else {
         existing.suppressed += 1;
+        existing.suppressedCallbacks.push(...entry.onDelivered);
         schedule(existing.expiresAt);
       }
       return;
@@ -382,7 +388,12 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
         dedupe.delete(oldest);
       }
     }
-    dedupe.set(entry.key, { expiresAt: now + limits.dedupeWindowMs, entry, suppressed: 0 });
+    dedupe.set(entry.key, {
+      expiresAt: now + limits.dedupeWindowMs,
+      entry,
+      suppressed: 0,
+      suppressedCallbacks: [],
+    });
     enqueue(entry, now);
   };
 
@@ -450,6 +461,13 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       consecutiveFailures = 0;
       batch.forEach((entry) => {
         entry.state = 'done';
+        entry.onDelivered.splice(0).forEach((callback) => {
+          try {
+            callback();
+          } catch {
+            /* Telemetry must never affect the caller. */
+          }
+        });
       });
       return;
     }
@@ -550,6 +568,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       attempts: 0,
       state: 'queued',
       trace: getActiveTraceContext(),
+      onDelivered: [],
     };
   };
 
@@ -571,22 +590,27 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     add(createEntry(level, String(body), attributes));
   };
 
-  const event = (type: string, attributes: ClientEventAttributes = {}) => {
+  const event = (
+    type: string,
+    attributes: ClientEventAttributes = {},
+    onDelivered?: () => void,
+  ) => {
     const definition = ASSET_EVENTS.get(type);
     if (!definition) {
       return;
     }
-    add(
-      createEntry(definition.level, definition.name, {
-        ...baseAttributes('asset'),
-        'event.name': definition.name,
-        'asset.path': stringAttribute(attributes.assetPath, MAX_MESSAGE_LENGTH),
-        'asset.tag': stringAttribute(attributes.tagName, MAX_NAME_LENGTH),
-        'asset.optional':
-          typeof attributes.optional === 'boolean' ? attributes.optional : undefined,
-        'event.build_id': stringAttribute(attributes.clientBuildId, MAX_NAME_LENGTH),
-      }),
-    );
+    const entry = createEntry(definition.level, definition.name, {
+      ...baseAttributes('asset'),
+      'event.name': definition.name,
+      'asset.path': stringAttribute(attributes.assetPath, MAX_MESSAGE_LENGTH),
+      'asset.tag': stringAttribute(attributes.tagName, MAX_NAME_LENGTH),
+      'asset.optional': typeof attributes.optional === 'boolean' ? attributes.optional : undefined,
+      'event.build_id': stringAttribute(attributes.clientBuildId, MAX_NAME_LENGTH),
+    });
+    if (onDelivered) {
+      entry.onDelivered.push(onDelivered);
+    }
+    add(entry);
   };
 
   const boundary = (name: string, error: unknown, chunkLoad: boolean) => {
@@ -670,15 +694,19 @@ export function isClientEventType(type: unknown): boolean {
 }
 
 /**
- * Forwards an allowlisted stale-asset diagnostic event. Returns `true` only when an active
- * exporter accepted it, so callers can tell a delivered event from one to keep for later.
+ * Forwards an allowlisted stale-asset diagnostic event. Returns `true` when an active exporter
+ * took it; `onDelivered` runs only after the collector accepted the record that carries it.
  */
-export function recordClientEvent(type: string, attributes?: ClientEventAttributes): boolean {
+export function recordClientEvent(
+  type: string,
+  attributes?: ClientEventAttributes,
+  onDelivered?: () => void,
+): boolean {
   if (!exporter || !isClientEventType(type)) {
     return false;
   }
   try {
-    exporter.event(type, attributes);
+    exporter.event(type, attributes, onDelivered);
     return true;
   } catch {
     return false;

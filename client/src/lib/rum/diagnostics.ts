@@ -63,6 +63,8 @@ declare global {
   }
 }
 
+/** Queued events handed to the log exporter and not yet acknowledged by the collector. */
+const forwardingEvents = new WeakSet<RumQueuedEvent>();
 let fcpAttributionRegistered = false;
 let earlyQueueFlushed = false;
 
@@ -230,38 +232,51 @@ function emitEarlyRumEvent(HyperDX: HyperDXActionClient, event: RumQueuedEvent):
   } catch {
     /* Diagnostics should never affect app behavior or stale-asset recovery. */
   }
-  if (event.logged !== true) {
+  if (event.logged !== true && !forwardingEvents.has(event)) {
     recordClientEvent(event.type, attributes);
   }
 }
 
-/**
- * Delivers queued stale-asset events as client log records as soon as the log exporter runs,
- * independent of the RUM SDK loading. Delivered events stay queued for the SDK but are marked,
- * in memory and in the persisted copy, so neither path sends them as logs twice.
- */
-export function forwardQueuedAssetEvents(): void {
+function markEventLogged(event: RumQueuedEvent): void {
+  forwardingEvents.delete(event);
+  event.logged = true;
   const queue = window.__lcRumQueue;
-  if (!queue) {
-    return;
-  }
-  let delivered = false;
-  for (const event of queue) {
-    if (event.logged === true || !isClientEventType(event.type) || typeof event.type !== 'string') {
-      continue;
-    }
-    if (recordClientEvent(event.type, sanitizeQueuedAttributes(event.attributes))) {
-      event.logged = true;
-      delivered = true;
-    }
-  }
-  if (!delivered) {
+  if (!queue?.includes(event)) {
     return;
   }
   try {
     sessionStorage.setItem(EARLY_RUM_QUEUE_STORAGE_KEY, JSON.stringify(queue));
   } catch {
     /* Diagnostics should never affect app behavior. */
+  }
+}
+
+/**
+ * Delivers queued stale-asset events as client log records as soon as the log exporter runs,
+ * independent of the RUM SDK loading. An event in flight is skipped by the SDK path; once the
+ * collector accepts it, it is marked in memory and in the persisted copy so no later page logs
+ * it again. An event that is never delivered stays unmarked and replays on the next load.
+ */
+export function forwardQueuedAssetEvents(): void {
+  const queue = window.__lcRumQueue;
+  if (!queue) {
+    return;
+  }
+  for (const event of queue) {
+    if (
+      event.logged === true ||
+      forwardingEvents.has(event) ||
+      typeof event.type !== 'string' ||
+      !isClientEventType(event.type)
+    ) {
+      continue;
+    }
+    const accepted = recordClientEvent(event.type, sanitizeQueuedAttributes(event.attributes), () =>
+      markEventLogged(event),
+    );
+    if (accepted) {
+      forwardingEvents.add(event);
+    }
   }
 }
 

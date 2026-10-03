@@ -52,6 +52,9 @@ describe('RUM proxy per-user limiter', () => {
     expect(getRumProxyUserMax()).toBe(240);
     expect(getRumProxyUserWindowMs()).toBe(60_000);
 
+    process.env.RUM_PROXY_USER_MAX = '0.5';
+    expect(getRumProxyUserMax()).toBe(240);
+
     process.env.RUM_PROXY_USER_MAX = '30';
     process.env.RUM_PROXY_USER_WINDOW = '5';
     expect(getRumProxyUserMax()).toBe(30);

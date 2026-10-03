@@ -58,7 +58,7 @@ describe('reduceStack', () => {
 
 describe('summarizeError', () => {
   it('reads only name, generated message, stack and status from errors', () => {
-    const error = Object.assign(new Error('Request failed for jane@example.com'), {
+    const error = Object.assign(new Error('Request failed with status code 503'), {
       name: 'AxiosError',
       response: { status: 503, data: { prompt: 'secret prompt' } },
       config: { headers: { Authorization: 'Bearer abcdefghijklmnop' } },
@@ -68,7 +68,7 @@ describe('summarizeError', () => {
 
     expect(summary).toEqual({
       type: 'AxiosError',
-      message: 'Request failed for [email]',
+      message: 'Request failed with status code 503',
       stacktrace: expect.any(String),
       statusCode: 503,
     });
@@ -85,18 +85,27 @@ describe('summarizeError', () => {
 
   it.each([
     [new TypeError("Cannot read properties of undefined (reading 'default')"), true],
-    [new SyntaxError(`Unexpected token 'h', "hello there" is not valid JSON`), true],
+    [new TypeError('e.map is not a function'), true],
+    [new TypeError("undefined is not an object (evaluating 'n.default')"), true],
+    [new TypeError('Failed to fetch dynamically imported module: /assets/Panel-x.js'), true],
     [new Error('Unable to preload CSS for /assets/panel.css'), true],
     [new DOMException('The operation was aborted.', 'AbortError'), true],
+    [new TypeError('Failed to fetch'), true],
+    [new SyntaxError(`Unexpected token 'h', "hello there" is not valid JSON`), false],
+    [new TypeError('my medical history is not a function'), false],
+    [new TypeError('Model rejected prompt: hello there'), false],
     [Object.assign(new Error('Prompt too long'), { name: 'ProviderError' }), false],
-  ])('keeps generated messages only (%p)', (error, kept) => {
+  ])('keeps only known generated message shapes (%p)', (error, kept) => {
     const message = summarizeError(error)?.message;
     expect(message !== undefined).toBe(kept);
     expect(message ?? '').not.toContain('hello there');
   });
 
   it('truncates long messages', () => {
-    const summary = summarizeError(new TypeError('x '.repeat(1000)));
+    const summary = summarizeError(
+      new TypeError(`Failed to fetch dynamically imported module: /assets/${'x'.repeat(800)}.js`),
+    );
+    expect(summary?.message).toBeDefined();
     expect(summary?.message?.length).toBeLessThanOrEqual(512);
   });
 
