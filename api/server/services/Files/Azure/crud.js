@@ -8,13 +8,20 @@ const {
   assertRemoteFileURL,
   getSafeErrorMetadata,
   getAzureContainerClient,
+  initializeAzureBlobService,
   getRemoteFileFetchMaxBytes,
   getRemoteFileFetchTimeoutMs,
   assertRemoteFileContentLength,
+  sanitizeContentDispositionFilename,
 } = require('@librechat/api');
 
 const defaultBasePath = 'images';
 const { AZURE_STORAGE_PUBLIC_ACCESS = 'true', AZURE_CONTAINER_NAME = 'files' } = process.env;
+/** Lifetime of a generated SAS URL, in seconds. */
+const azureUrlExpirySeconds =
+  parseInt(process.env.AZURE_STORAGE_URL_EXPIRY_SECONDS ?? '', 10) || 3600;
+/** How far in the past a SAS URL starts, to absorb host clock drift. */
+const sasClockSkewMs = 5 * 60 * 1000;
 
 /**
  * Uploads a buffer to Azure Blob Storage.
@@ -293,6 +300,104 @@ async function getAzureFileStream(_req, fileURL, { signal } = {}) {
   }
 }
 
+/**
+ * Resolves the blob name (the path within the container) from a stored filepath.
+ * Records hold the absolute blob URL, but a container-relative path is accepted too.
+ *
+ * @param {import('@azure/storage-blob').ContainerClient} containerClient
+ * @param {string} fileURL - The stored blob URL or container-relative path.
+ * @returns {string} The blob name.
+ */
+function getBlobName(containerClient, fileURL) {
+  if (!fileURL) {
+    throw new Error('No file path provided');
+  }
+
+  if (!/^https?:\/\//i.test(fileURL)) {
+    return fileURL.replace(/^\/+/, '');
+  }
+
+  const { pathname } = new URL(fileURL);
+  const blobPath = decodeURIComponent(pathname).replace(/^\/+/, '');
+  const containerPrefix = `${containerClient.containerName}/`;
+  return blobPath.startsWith(containerPrefix) ? blobPath.slice(containerPrefix.length) : blobPath;
+}
+
+/**
+ * Generates a short-lived, read-only SAS URL for a blob, so private containers can
+ * serve direct downloads the way S3 presigned URLs do.
+ *
+ * Signs with the account key when one is configured, and falls back to a user
+ * delegation key (Managed Identity) when it is not.
+ *
+ * @param {object} params
+ * @param {MongoFile} params.file - The file object.
+ * @param {string | null} [params.customFilename] - Optional download filename.
+ * @param {string | null} [params.contentType] - Optional response content type.
+ * @returns {Promise<string>} The SAS URL.
+ */
+async function getAzureDownloadURL({ file, customFilename = null, contentType = null }) {
+  try {
+    const containerClient = await getAzureContainerClient();
+    if (!containerClient) {
+      throw new Error('Azure Blob Service not initialized');
+    }
+
+    const { BlobSASPermissions, SASProtocol, generateBlobSASQueryParameters } = await import(
+      '@azure/storage-blob'
+    );
+
+    const blobName = getBlobName(containerClient, file.filepath);
+    const blobClient = containerClient.getBlobClient(blobName);
+
+    const now = Date.now();
+    /** Azure validates `st`/`se` against its own clock, so start in the past to
+     * absorb clock drift on the host rather than returning "Signature not valid
+     * in the specified time frame". */
+    const startsOn = new Date(now - sasClockSkewMs);
+    const expiresOn = new Date(now + azureUrlExpirySeconds * 1000);
+
+    /** @type {import('@azure/storage-blob').BlobGenerateSasUrlOptions} */
+    const options = {
+      permissions: BlobSASPermissions.parse('r'),
+      /** Read-only and HTTPS-only: the token must not be replayable over plaintext HTTP */
+      protocol: SASProtocol.Https,
+      startsOn,
+      expiresOn,
+    };
+    if (customFilename) {
+      const safeFilename = sanitizeContentDispositionFilename(customFilename);
+      options.contentDisposition = `attachment; filename="${safeFilename}"`;
+    }
+    if (contentType) {
+      options.contentType = contentType;
+    }
+
+    try {
+      return await blobClient.generateSasUrl(options);
+    } catch (error) {
+      logger.debug(
+        '[getAzureDownloadURL] No account key available for signing, using a user delegation key',
+        error?.message,
+      );
+      const serviceClient = await initializeAzureBlobService();
+      if (!serviceClient) {
+        throw new Error('Azure Blob Service not initialized');
+      }
+      const userDelegationKey = await serviceClient.getUserDelegationKey(startsOn, expiresOn);
+      const sasToken = generateBlobSASQueryParameters(
+        { containerName: containerClient.containerName, blobName, ...options },
+        userDelegationKey,
+        containerClient.accountName,
+      ).toString();
+      return `${blobClient.url}?${sasToken}`;
+    }
+  } catch (error) {
+    logger.error('[getAzureDownloadURL] Error generating SAS URL:', error);
+    throw error;
+  }
+}
+
 module.exports = {
   saveBufferToAzure,
   saveURLToAzure,
@@ -300,4 +405,5 @@ module.exports = {
   deleteFileFromAzure,
   uploadFileToAzure,
   getAzureFileStream,
+  getAzureDownloadURL,
 };

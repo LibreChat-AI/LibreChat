@@ -67,6 +67,7 @@ const {
   deleteFileFromAzure,
   uploadFileToAzure,
   getAzureFileStream,
+  getAzureDownloadURL,
   uploadImageToAzure,
   prepareAzureImageURL,
   processAzureAvatar,
@@ -155,6 +156,7 @@ const azureStrategy = () => ({
   processAvatar: processAzureAvatar,
   handleImageUpload: uploadImageToAzure,
   getDownloadStream: getAzureFileStream,
+  getDownloadURL: getAzureDownloadURL,
 });
 
 /**
