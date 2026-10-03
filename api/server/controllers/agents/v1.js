@@ -2129,8 +2129,10 @@ const revertAgentVersionHandler = async (req, res) => {
  */
 const getAgentCategories = async (_req, res) => {
   try {
-    const categories = await db.getCategoriesWithCounts();
-    const promotedCount = await db.countPromotedAgents();
+    const [categories, promotedCount] = await Promise.all([
+      db.getCategoriesWithCounts(),
+      db.countPromotedAgents(),
+    ]);
     const formattedCategories = categories.map((category) => ({
       value: category.value,
       label: category.label,

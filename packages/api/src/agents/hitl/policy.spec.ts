@@ -441,6 +441,7 @@ describe('toClientPendingAction', () => {
         version: 1,
         targets: [{ agentId: 'agent-1', targetHash: 'a'.repeat(64) }],
       },
+      toolApprovalAliases: [{ name: 'shell', aliasName: 'legacy_shell' }],
     });
 
     const clientSafe = toClientPendingAction(full);
@@ -449,6 +450,7 @@ describe('toClientPendingAction', () => {
     expect(clientSafe?.requestFingerprint).toBeUndefined();
     expect(clientSafe?.requestFingerprintV2).toBeUndefined();
     expect(clientSafe?.codeExecutionBinding).toBeUndefined();
+    expect(clientSafe?.toolApprovalAliases).toBeUndefined();
     expect(clientSafe?.projectContextKey).toBeUndefined();
     expect(clientSafe?.actionId).toBe(full.actionId);
     expect(clientSafe?.streamId).toBe('stream-1');
@@ -462,6 +464,7 @@ describe('toClientPendingAction', () => {
       targets: [{ agentId: 'agent-1', targetHash: 'a'.repeat(64) }],
     });
     expect(full.projectContextKey).toBe('project:p1:r2');
+    expect(full.toolApprovalAliases).toEqual([{ name: 'shell', aliasName: 'legacy_shell' }]);
   });
 
   test('passes through nullish input', () => {

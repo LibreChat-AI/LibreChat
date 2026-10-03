@@ -641,6 +641,8 @@ router.post('/archive', validateConvoAccess, async (req, res) => {
         preserveUpdatedAt: true,
         /** Without timestamps, an upsert would insert a conversation that has none. */
         noUpsert: true,
+        /** Metadata-only: skip rebuilding `messages` so a concurrent append is not erased. */
+        appendMessageIds: [],
       },
     );
 

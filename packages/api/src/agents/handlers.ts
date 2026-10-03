@@ -137,9 +137,9 @@ import {
   stripIntentLabelsFromToolDefinitions,
   INTENT_ARG,
 } from './intent';
+import { editConflictExcerptText, formatEditConflict, parseEditConflict } from '~/code/edits';
 import { buildSkillPrimeMessage, isSkillFilePath, SKILL_FILE_PREFIX } from './skills';
 import { resolveCallerCapabilityProjectionSnapshot } from './callerCapabilities';
-import { formatEditConflict, parseEditConflict } from '~/code/edits';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
 import { toolValidationFeedback } from './validationFeedback';
@@ -896,7 +896,11 @@ function getSafeToolError(
   message: string;
   logContext: Record<string, unknown>;
 } {
-  const rawMessage = feedback ?? getThrownValueMessage(error);
+  const thrownMessage = feedback ?? getThrownValueMessage(error);
+  /** File text an attached edit conflict quotes goes to the model only, never to the logs. */
+  const rawMessage =
+    !feedback && error instanceof AttachedEditRejectionError ? error.modelMessage : thrownMessage;
+  const logMessage = truncateMiddle(thrownMessage, MAX_TOOL_ERROR_MESSAGE_CHARS);
   const message = truncateMiddle(rawMessage, MAX_TOOL_ERROR_MESSAGE_CHARS);
   const stack = !feedback && error instanceof Error && error.stack ? error.stack : undefined;
 
@@ -911,7 +915,7 @@ function getSafeToolError(
             upstreamBodyTruncated: error.upstreamBodyTruncated,
           }
         : {}),
-      errorMessage: message,
+      errorMessage: logMessage,
       messageLength: rawMessage.length,
       messageTruncated: message.length !== rawMessage.length,
       stack: stack ? truncateMiddle(stack, MAX_TOOL_ERROR_STACK_CHARS) : undefined,
@@ -3959,33 +3963,75 @@ function describeAttachedEdit(filePath: string, result: WorkspaceEditResult): st
 }
 
 /**
- * A worker is outside LibreChat's trust boundary, so its conflict text is never forwarded: only the
- * facts a strict parse recovers from it (which edits failed, how, and on which lines) reach the
- * model, in LibreChat's own words. Anything else gets the generic retry guidance.
+ * A rejected attached edit that keeps its status and code but none of its body, so logs never
+ * retain upstream text. `message` is what logs keep; `modelMessage` may add the current file text
+ * a worker quoted, which the model sees just as it would see a read_file result.
  */
-function describeAttachedEditConflict(filePath: string, error: WorkspaceToolHttpError): string {
-  const conflict = error.editConflict;
-  if (conflict?.startsWith('Workspace file changed')) {
-    return `"workspace/${filePath}" changed while this edit was being applied, so nothing was written. Re-read the file and retry.`;
+class AttachedEditRejectionError extends WorkspaceToolHttpError {
+  constructor(
+    reason: WorkspaceToolHttpError['reason'],
+    message: string,
+    public readonly modelMessage: string,
+    code = 'EDIT_CONFLICT',
+  ) {
+    super(reason, 409, JSON.stringify({ code }));
+    this.message = message;
   }
-  const report = conflict == null ? undefined : parseEditConflict(conflict);
-  if (report) {
-    return formatEditConflict(`workspace/${filePath}`, report);
-  }
-  return `The edit to "workspace/${filePath}" did not apply, so nothing was written. The requested text did not match exactly once; re-read the file and retry.`;
 }
 
-/** The only body a sanitized conflict carries, so logs never retain worker-supplied text. */
-const SANITIZED_EDIT_CONFLICT_BODY = JSON.stringify({ code: 'EDIT_CONFLICT' });
-
-/** A copy of a worker conflict that keeps its status but none of its body or message. */
-function sanitizedEditConflict(
+/**
+ * Any other 409, such as a quarantined workspace, is not a text mismatch the model can fix by
+ * re-reading. Only its validated code is kept, in host words.
+ */
+function attachedEditRejection(
+  filePath: string,
   error: WorkspaceToolHttpError,
-  message: string,
-): WorkspaceToolHttpError {
-  const sanitized = new WorkspaceToolHttpError(error.reason, 409, SANITIZED_EDIT_CONFLICT_BODY);
-  sanitized.message = message;
-  return sanitized;
+  code: string,
+): AttachedEditRejectionError {
+  const guidance =
+    code === 'WORKSPACE_QUARANTINED'
+      ? ' The workspace is quarantined after an earlier operation did not finish; it must be reset on its machine before edits can apply, so retrying will not help.'
+      : '';
+  const message = `The edit to "workspace/${filePath}" was rejected by the code environment (${code}), so nothing was written.${guidance}`;
+  return new AttachedEditRejectionError(error.reason, message, message, code);
+}
+
+/**
+ * A worker is outside LibreChat's trust boundary, so its conflict text is never forwarded: only the
+ * facts a strict parse recovers from it (which edits failed, how, and on which lines) reach the
+ * model, in LibreChat's own words. The one exception is a well-formed excerpt of the edited file's
+ * current text, which is file content like any read_file result: it is quoted only when the selected
+ * workspace allows read_file, and only after it passes the same file-content policy. Anything else
+ * gets the generic retry guidance.
+ */
+function attachedEditConflict(
+  tc: ToolCallRequest,
+  req: ServerRequest | undefined,
+  filePath: string,
+  error: WorkspaceToolHttpError,
+  canRead: boolean,
+): AttachedEditRejectionError {
+  const conflict = error.editConflict;
+  const settle = (message: string, modelMessage = message) =>
+    new AttachedEditRejectionError(error.reason, message, modelMessage);
+  if (conflict?.startsWith('Workspace file changed')) {
+    return settle(
+      `"workspace/${filePath}" changed while this edit was being applied, so nothing was written. Re-read the file and retry.`,
+    );
+  }
+  const report = conflict == null ? undefined : parseEditConflict(conflict);
+  if (!report) {
+    return settle(
+      `The edit to "workspace/${filePath}" did not apply, so nothing was written. The requested text did not match exactly once; re-read the file and retry.`,
+    );
+  }
+  const path = `workspace/${filePath}`;
+  const message = formatEditConflict(path, report);
+  const excerpts = editConflictExcerptText(report);
+  if (!canRead || !excerpts || filteredFileResult(tc, req, filePath, excerpts) != null) {
+    return settle(message);
+  }
+  return settle(message, formatEditConflict(path, report, true));
 }
 
 async function handleAttachedWorkspaceEditFileCall({
@@ -4112,10 +4158,19 @@ async function handleAttachedWorkspaceEditFileCall({
     });
   } catch (error) {
     if (error instanceof WorkspaceToolHttpError) {
-      if (error.upstreamStatus === 409) {
-        throw sanitizedEditConflict(error, describeAttachedEditConflict(path.filePath, error));
+      if (error.upstreamStatus !== 409) {
+        throw explainWorkspacePathRejection(error, 'edit', `workspace/${path.filePath}`);
       }
-      throw explainWorkspacePathRejection(error, 'edit', `workspace/${path.filePath}`);
+      const code = error.upstreamCode;
+      throw code == null || code === 'EDIT_CONFLICT'
+        ? attachedEditConflict(
+            tc,
+            req,
+            path.filePath,
+            error,
+            selectedWorkspaceId(codeExecutionContext, 'read_file') != null,
+          )
+        : attachedEditRejection(path.filePath, error, code);
     }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn('[file_authoring] Attached workspace edit failed', getSafeErrorMetadata(error));

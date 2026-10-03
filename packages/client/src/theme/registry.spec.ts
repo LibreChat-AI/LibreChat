@@ -1141,7 +1141,29 @@ describe('theme registry', () => {
       iconButtonSizeSm: '2rem',
       fieldHeightLg: '3rem',
       checkboxSize: '1rem',
+      listMinWidth: '8rem',
+      listMaxHeight: '24rem',
     });
+  });
+
+  it("bounds a Select list's width and scroll height", () => {
+    const issues = (appearance: Record<string, string>) =>
+      validateThemeDefinition({
+        version: 1,
+        name: 'list-values',
+        modes: { light: { appearance } },
+      });
+
+    expect(issues({ listMinWidth: '0', listMaxHeight: '8rem' })).toEqual([]);
+    expect(issues({ listMinWidth: '12rem', listMaxHeight: '640px' })).toEqual([]);
+    [
+      { listMinWidth: 'auto' },
+      { listMinWidth: '-1rem' },
+      { listMaxHeight: '0' },
+      { listMaxHeight: '7rem' },
+      { listMaxHeight: '41rem' },
+      { listMaxHeight: '50vh' },
+    ].forEach((appearance) => expect(issues(appearance)).toHaveLength(1));
   });
 
   it('rejects a pointer target under 24px and a size that is not a positive length', () => {

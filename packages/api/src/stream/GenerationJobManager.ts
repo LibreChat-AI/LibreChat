@@ -82,6 +82,7 @@ import { synthesizeReasoningLabelGapEvents } from '~/agents/reasoningLabels';
 import { InMemoryEventTransport } from './implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from './implementations/InMemoryJobStore';
 import { attachAskUserQuestionAnswers, normalizeResumeRunStepIndices } from '~/agents/hitl/resume';
+import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { emitChunkWithReceipt } from './internal/chunkPublication';
 import { resolveCoalesceWindowMs } from './internal/coalescing';
 import {
@@ -367,6 +368,93 @@ function getSteerUserSubmittedPaths(content: readonly TMessageContentParts[]): s
     }
   }
   return paths;
+}
+
+/** Rewrites `/content/N/...` paths recorded against the unfiltered content onto
+ * the filtered abort content, dropping paths whose part was filtered out. A
+ * path past the end of the content names no part and is left as recorded. */
+function remapContentPath(
+  path: string,
+  contentLength: number,
+  indexMap: ReadonlyMap<number, number>,
+): string | null {
+  const match = /^\/content\/(\d+)(\/.*)?$/.exec(path);
+  if (match == null || Number(match[1]) >= contentLength) {
+    return path;
+  }
+  const index = indexMap.get(Number(match[1]));
+  return index == null ? null : `/content/${index}${match[2] ?? ''}`;
+}
+
+/** A tool-call path the latest approval claim added is user-authored only once
+ * its decision reached this content: the resumed call completed (a string
+ * output, which may be empty for a void tool) or the abort route stamped the
+ * answer. An unanswered `ask_user_question` already holds an empty output, so
+ * only a non-empty one counts as its answer. Other claimed paths (steers already
+ * in the seed content) need no decision to apply and are kept. Paths are checked
+ * against the unfiltered content they were recorded on, then remapped onto the
+ * filtered abort content that the final event and the persisted row carry. */
+function getPublishedProvenance(
+  jobData: SerializableJobData,
+  content: readonly unknown[],
+  abortContent: readonly unknown[],
+): Pick<SerializableJobData, 'userSubmittedPaths' | 'userSubmittedMessageFieldPaths'> {
+  const claimedPaths = jobData.userSubmittedPaths ?? [];
+  const claimedFieldPaths = jobData.userSubmittedMessageFieldPaths ?? [];
+  const preResume = jobData.preResumeProvenance;
+  const prePaths = new Set(preResume?.userSubmittedPaths ?? []);
+  const preFieldPaths = new Set(
+    (preResume?.userSubmittedMessageFieldPaths ?? []).map(({ path, field }) => `${field}:${path}`),
+  );
+  const isAppliedPath = (path: string): boolean => {
+    if (preResume == null) {
+      return true;
+    }
+    const match = /^\/content\/(\d+)\/tool_call\//.exec(path);
+    if (match == null) {
+      return true;
+    }
+    const part = content[Number(match[1])] as TMessageContentParts | undefined;
+    if (part?.type !== 'tool_call') {
+      return false;
+    }
+    const toolCall = part.tool_call as { name?: unknown; output?: unknown } | undefined;
+    const output = toolCall?.output;
+    if (typeof output !== 'string') {
+      return false;
+    }
+    return output.length > 0 || toolCall?.name !== ASK_USER_QUESTION_TOOL_NAME;
+  };
+  /** The filter keeps part references in order, so a forward scan maps them. */
+  const indexMap = new Map<number, number>();
+  for (let index = 0, filtered = 0; index < content.length; index++) {
+    if (filtered < abortContent.length && content[index] === abortContent[filtered]) {
+      indexMap.set(index, filtered++);
+    }
+  }
+  const userSubmittedPaths: string[] = [];
+  for (const path of claimedPaths) {
+    const remapped =
+      prePaths.has(path) || isAppliedPath(path)
+        ? remapContentPath(path, content.length, indexMap)
+        : null;
+    if (remapped != null) {
+      userSubmittedPaths.push(remapped);
+    }
+  }
+  const userSubmittedMessageFieldPaths: NonNullable<
+    SerializableJobData['userSubmittedMessageFieldPaths']
+  > = [];
+  for (const entry of claimedFieldPaths) {
+    const remapped =
+      preFieldPaths.has(`${entry.field}:${entry.path}`) || isAppliedPath(entry.path)
+        ? remapContentPath(entry.path, content.length, indexMap)
+        : null;
+    if (remapped != null) {
+      userSubmittedMessageFieldPaths.push({ ...entry, path: remapped });
+    }
+  }
+  return { userSubmittedPaths, userSubmittedMessageFieldPaths };
 }
 
 function getToolCallName(toolCall: unknown): unknown {
@@ -4816,6 +4904,12 @@ class GenerationJobManagerClass {
 
       /** Final event for abort */
       const userMessageId = jobData.userMessage?.messageId;
+      /** The final event and the persisted row (`beforePublish` reads
+       * `jobData`) must label the same content, so both take this selection. */
+      jobData = {
+        ...jobData,
+        ...getPublishedProvenance(jobData, content, abortContent),
+      };
       const userSubmittedPaths = [
         ...new Set([
           ...(jobData.userSubmittedPaths ?? []),

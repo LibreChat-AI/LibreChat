@@ -1097,6 +1097,23 @@ export const toolApprovalPolicySchema = z
     /** Optional reason template surfaced in the prompt; `{tool}` is interpolated. */
     reason: z.string().optional(),
     /**
+     * Offer "Always allow" on the approval card. Choosing it auto-approves that exact tool
+     * (MCP names include their server) for the rest of the conversation. The server stores
+     * and enforces the choice; `deny` and `ask` rules and programmatic hooks still win, and
+     * stored choices are ignored under `mode: 'dontAsk'` or once this is turned off.
+     * Defaults to `false`: every paused call keeps prompting. Enable it only once every
+     * replica runs a version that supports it: older replicas ignore the choice and keep
+     * prompting, so during a rolling upgrade it may not stick.
+     */
+    allowAlways: z.boolean().optional(),
+    /**
+     * Most tools one conversation may remember with "Always allow". Once reached, the card
+     * stops offering the choice for new tools. Defaults to 64.
+     */
+    allowAlwaysMaxTools: z.number().int().min(1).max(1024).optional(),
+    /** Longest tool name that may be remembered. Defaults to 256. */
+    allowAlwaysMaxToolNameLength: z.number().int().min(1).max(1024).optional(),
+    /**
      * Programmatic policy hooks loaded from modules at startup. They layer on top of the
      * static lists above for dynamic, context-aware decisions the lists can't express
      * (per-args, per-agent, per-user). See {@link toolApprovalHookConfigSchema}.

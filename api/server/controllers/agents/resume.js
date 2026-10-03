@@ -14,6 +14,9 @@ const {
   GENERATION_RECOVERY_FAILED_ERROR,
   isPendingActionStale,
   resolveToolApprovalResume,
+  recordToolApprovalAllows,
+  resolveRequestTenantId,
+  getPluginHookSource,
   resolveAskUserQuestionResume,
   buildResolvedAskUserQuestion,
   appendResolvedAskUserQuestion,
@@ -68,6 +71,7 @@ const {
   saveMessage,
   getConvo,
   getChatProject,
+  addConvoToolApprovalAllows,
   getMessages,
   getProjectFiles,
   getFiles,
@@ -1553,6 +1557,8 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           providerExecutionId,
           providerDrained: true,
           ...(resolvedAskUserQuestion && { resolvedAskUserQuestions }),
+          ...(userSubmittedPaths.length > 0 && { userSubmittedPaths }),
+          ...(userSubmittedMessageFieldPaths.length > 0 && { userSubmittedMessageFieldPaths }),
         },
         job.createdAt,
       );
@@ -1928,18 +1934,6 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       if (userSubmittedMessageFieldPaths.length > 0) {
         job.metadata.userSubmittedMessageFieldPaths = userSubmittedMessageFieldPaths;
       }
-      if (userSubmittedPaths.length > 0 || userSubmittedMessageFieldPaths.length > 0) {
-        await GenerationJobManager.getJobStore().updateJob(
-          streamId,
-          {
-            ...(userSubmittedPaths.length > 0 && { userSubmittedPaths }),
-            ...(userSubmittedMessageFieldPaths.length > 0 && {
-              userSubmittedMessageFieldPaths,
-            }),
-          },
-          job.createdAt,
-        );
-      }
 
       const mcpRequestBody =
         job.metadata.mcpRequestBody ??
@@ -1965,11 +1959,12 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       });
       client = result.client;
 
+      const reachableAgents = collectReachableAgents([
+        client.options?.agent,
+        ...(client.agentConfigs?.values() ?? []),
+      ]);
       // Re-resolve the approved code target before provider/tool execution on this replica.
-      assertCodeExecutionApprovalBinding(
-        pendingAction.codeExecutionBinding,
-        collectReachableAgents([client.options?.agent, ...(client.agentConfigs?.values() ?? [])]),
-      );
+      assertCodeExecutionApprovalBinding(pendingAction.codeExecutionBinding, reachableAgents);
 
       // Bind the rebuilt client to the in-flight turn's identity (no new user message).
       client.conversationId = streamId;
@@ -2013,6 +2008,23 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           code: 'RUN_REPLACED',
         });
       }
+      await recordToolApprovalAllows({
+        userId,
+        conversationId,
+        policy: req.config?.endpoints?.[EModelEndpoint.agents]?.toolApproval,
+        pendingAction,
+        resolutions: req.body.decisions,
+        agents: reachableAgents,
+        hookContext: {
+          userId,
+          conversationId,
+          tenantId: resolveRequestTenantId(req),
+          appConfig: req.config,
+        },
+        pluginHookSource: getPluginHookSource(),
+        request: req,
+        addConvoToolApprovalAllows,
+      });
       if (eventActorResumePromise == null) {
         await resumeClient();
       } else {

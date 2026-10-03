@@ -2367,6 +2367,7 @@ async function loadToolsForExecution({
               workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
               workspaceInstanceId: codeExecutionContext.codeWorkspace.workspaceInstanceId,
               linkedWorktrees: codeExecutionContext.codeWorkspace.linkedWorktrees,
+              nativeSandbox: codeExecutionContext.codeWorkspace.nativeSandbox,
               environment: codeExecutionContext.codeWorkspace.environment,
               gitIdentity: agent?.git_identity,
               maxTimeoutMs: resolveAttachedWorkspaceCommandTimeoutMax(

@@ -2,7 +2,7 @@ import { AxiosError } from 'axios';
 import { Provider, createStore } from 'jotai';
 import userEvent from '@testing-library/user-event';
 import { dataService } from 'librechat-data-provider';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, within, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TConversation } from 'librechat-data-provider';
 import type { AxiosResponse } from 'axios';
@@ -618,6 +618,91 @@ describe('CodeWorkspaceMenu', () => {
         ],
       });
     }
+  });
+
+  test.each([false, true])(
+    'keeps changing workspace requirements out of the composer layout (locked: %s)',
+    (locked) => {
+      const requiredBy = [
+        { id: 'lia', name: 'Lia' },
+        { id: 'reviewer', name: 'PR Reviewer' },
+      ];
+      const graph = workspace({ locked });
+      const setter = jest.fn();
+      const { rerenderMenu } = renderMenu(
+        <CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />,
+      );
+      for (const state of ['loading', 'choose', 'unavailable', 'missing'] as const) {
+        const pending = workspace({
+          locked,
+          state,
+          canSubmit: false,
+          environments: [{ environment, state, workspaces: [], requiredBy }],
+        });
+        rerenderMenu(
+          <CodeWorkspaceMenu setConversation={setter} workspace={pending} disabled={false} />,
+        );
+        const button = screen.getByTestId(
+          locked ? 'code-workspace-locked-status' : 'code-workspace',
+        );
+        const requirements = document.getElementById(button.getAttribute('aria-describedby')!);
+        expect(requirements).toHaveClass('sr-only');
+        expect(requirements).toHaveAttribute('role', 'status');
+        expect(requirements).toHaveAttribute('aria-live', 'polite');
+        expect(requirements).toHaveTextContent('Lia');
+        expect(requirements).toHaveTextContent('PR Reviewer');
+        expect(button.parentElement).not.toHaveClass('flex-col');
+      }
+      rerenderMenu(
+        <CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />,
+      );
+      expect(screen.queryByText(/Every coding agent/)).not.toBeInTheDocument();
+      expect(setter).not.toHaveBeenCalled();
+    },
+  );
+
+  test('shows pending workspace requirements in the menu without a second live region', async () => {
+    const graph = workspace({ state: 'loading', canSubmit: false });
+    graph.environments[0] = {
+      environment,
+      state: 'loading',
+      workspaces: [],
+      requiredBy: [
+        { id: 'lia', name: 'Lia' },
+        { id: 'reviewer', name: 'PR Reviewer' },
+      ],
+    };
+    renderMenu(
+      <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
+    );
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    const detail = within(screen.getByRole('menu')).getByText(
+      'Every coding agent in this chat needs a workspace, including subagents.',
+    );
+    expect(detail).toBeVisible();
+    expect(detail.parentElement).not.toHaveClass('sr-only');
+    expect(detail.parentElement).not.toHaveAttribute('aria-live');
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+  });
+
+  test('keeps multi-machine checkout summaries in the menu instead of extra composer rows', async () => {
+    const graph = workspace();
+    graph.environments[0].selected!.checkout = 'source';
+    graph.environments.push({
+      environment: { ...environment, id: 'reviewer-vm', name: 'Reviewer VM' },
+      state: 'ready',
+      workspaces: [{ id: 'review', name: 'Review' }],
+      selected: { environmentId: 'reviewer-vm', workspaceId: 'review', checkout: 'isolated' },
+    });
+    renderMenu(
+      <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
+    );
+    const summary = 'Reviewer VM · Review · com_ui_code_checkout_isolated';
+    expect(screen.getByText(summary).parentElement).toHaveClass('sr-only');
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    const detail = within(screen.getByRole('menu')).getByText(summary);
+    expect(detail).toBeVisible();
+    expect(detail.parentElement).not.toHaveClass('sr-only');
   });
 
   test('explains the missing reviewer workspace while the selected primary workspace is ready', async () => {

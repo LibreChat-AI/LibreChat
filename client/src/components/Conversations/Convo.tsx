@@ -61,7 +61,7 @@ function Conversation({
   const currentConvoId = useMemo(() => params.conversationId, [params.conversationId]);
   const updateConvoMutation = useUpdateConversationMutation(currentConvoId ?? '');
   const unpinMutation = usePinConversationMutation();
-  const activeConvos = useRecoilValue(store.allConversationsSelector);
+  const activeConversationId = useRecoilValue(store.conversationIdByIndex(0));
   const isSmallScreen = useMediaQuery('(max-width: 768px)');
   /* A deployment with shared links off leaves existing links in the database but stops
      serving them, so the row must not advertise one that no longer resolves. */
@@ -138,10 +138,9 @@ function Conversation({
     if (currentConvoId !== Constants.NEW_CONVO) {
       return currentConvoId === conversationId;
     } else {
-      const latestConvo = activeConvos?.[0];
-      return latestConvo === conversationId;
+      return activeConversationId === conversationId;
     }
-  }, [currentConvoId, conversationId, activeConvos]);
+  }, [currentConvoId, conversationId, activeConversationId]);
 
   const handleRename = () => {
     if (!canRename) return;

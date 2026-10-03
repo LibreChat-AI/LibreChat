@@ -111,9 +111,19 @@ export const useAutoSave = ({
 
       // Retrieve files stored in localStorage from files in fileList and set them to `setFiles`
       // If a file is found with `temp_file_id`, use `temp_file_id` as a key in `setFiles`
+      const filesById = new Map<string, TFile>();
+      const filesByTempId = new Map<string, TFile>();
+      for (const f of fileList) {
+        if (!filesById.has(f.file_id)) {
+          filesById.set(f.file_id, f);
+        }
+        if (f.temp_file_id != null && !filesByTempId.has(f.temp_file_id)) {
+          filesByTempId.set(f.temp_file_id, f);
+        }
+      }
       filesDraft.fileIds.forEach((fileId) => {
-        const fileData = fileList?.find((f) => f.file_id === fileId);
-        const tempFileData = fileList?.find((f) => f.temp_file_id === fileId);
+        const fileData = filesById.get(fileId);
+        const tempFileData = filesByTempId.get(fileId);
         const { fileToRecover, fileIdToRecover } = fileData
           ? { fileToRecover: fileData, fileIdToRecover: fileId }
           : {
