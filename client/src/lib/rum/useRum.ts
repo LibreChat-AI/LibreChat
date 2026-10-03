@@ -5,6 +5,7 @@ import type { HyperDXActionClient } from './diagnostics';
 import {
   discardEarlyRumQueue,
   queueSpaRouteChange,
+  forwardQueuedAssetEvents,
   restoreRumEmitter,
   startRumDiagnostics,
 } from './diagnostics';
@@ -79,6 +80,7 @@ function syncClientLogs(config: TRumConfig): void {
     getToken: () => rumProxyToken,
     getSessionId: () => hyperDxClient?.getSessionId?.(),
   });
+  forwardQueuedAssetEvents();
 }
 
 function getApiKey(config: TRumConfig, token: string | undefined): string {

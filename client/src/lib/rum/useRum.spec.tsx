@@ -20,6 +20,7 @@ jest.mock('@hyperdx/browser', () => ({
 jest.mock('./diagnostics', () => ({
   discardEarlyRumQueue: jest.fn(),
   queueSpaRouteChange: jest.fn(),
+  forwardQueuedAssetEvents: jest.fn(),
   restoreRumEmitter: jest.fn(),
   startRumDiagnostics: jest.fn(),
 }));

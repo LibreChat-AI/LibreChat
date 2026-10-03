@@ -83,18 +83,21 @@ describe('RUM proxy configuration', () => {
     expect(isRumProxyEnabled()).toBe(false);
   });
 
-  it('enables client logs only in proxy mode unless RUM_CLIENT_LOGS turns them off', () => {
+  it('keeps client logs opt-in and limited to proxy mode', () => {
     process.env.RUM_ENABLED = 'true';
     process.env.RUM_AUTH_MODE = 'proxy';
     process.env.RUM_PROXY_TARGET_URL = 'http://otel-collector:4318';
     delete process.env.RUM_CLIENT_LOGS;
-    expect(isRumClientLogsEnabled()).toBe(true);
+    expect(isRumClientLogsEnabled()).toBe(false);
 
     process.env.RUM_CLIENT_LOGS = '';
-    expect(isRumClientLogsEnabled()).toBe(true);
+    expect(isRumClientLogsEnabled()).toBe(false);
 
     process.env.RUM_CLIENT_LOGS = 'false';
     expect(isRumClientLogsEnabled()).toBe(false);
+
+    process.env.RUM_CLIENT_LOGS = 'true';
+    expect(isRumClientLogsEnabled()).toBe(true);
 
     process.env.RUM_CLIENT_LOGS = 'true';
     process.env.RUM_AUTH_MODE = 'publicToken';

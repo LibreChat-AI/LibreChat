@@ -6,7 +6,9 @@ import {
   registerFcpAttribution,
   restoreRumEmitter,
   testExports,
+  forwardQueuedAssetEvents,
 } from './diagnostics';
+import { startClientLogs, stopClientLogs } from './logs';
 
 const mockOnFCP = jest.fn();
 
@@ -237,5 +239,65 @@ describe('rum diagnostics', () => {
     await registerFcpAttribution({ addAction }, () => '/c/new');
 
     expect(mockOnFCP).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('forwardQueuedAssetEvents', () => {
+  const fetchMock = jest.fn((_url: string, _init: RequestInit) => Promise.resolve({ status: 200 }));
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    testExports.resetDiagnosticsState();
+    fetchMock.mockClear();
+    sessionStorage.clear();
+    window.__lcRumQueue = [
+      {
+        type: 'stale-asset-recovery-start',
+        at: 10,
+        attributes: { clientBuildId: 'index-Old1.js' },
+      },
+      { type: 'pageshow', at: 11, attributes: { persisted: false } },
+    ];
+  });
+
+  afterEach(() => {
+    stopClientLogs();
+    jest.useRealTimers();
+  });
+
+  const loggedEventNames = () =>
+    fetchMock.mock.calls.flatMap(([, init]) =>
+      JSON.parse(String(init.body)).resourceLogs[0].scopeLogs[0].logRecords.map(
+        (record: { body: { stringValue: string } }) => record.body.stringValue,
+      ),
+    );
+
+  it('delivers queued stale-asset events without the RUM SDK and never twice', async () => {
+    startClientLogs({
+      endpoint: '/api/rum/v1/logs',
+      serviceName: 'librechat-web',
+      buildId: 'index-New2.js',
+      getToken: () => 'session-jwt',
+      fetch: fetchMock,
+    });
+
+    forwardQueuedAssetEvents();
+    forwardQueuedAssetEvents();
+
+    expect(window.__lcRumQueue?.[0]).toEqual(expect.objectContaining({ logged: true }));
+    expect(window.__lcRumQueue?.[1]).not.toHaveProperty('logged');
+    expect(JSON.parse(sessionStorage.getItem('lc-rum-queue') ?? '[]')[0].logged).toBe(true);
+
+    flushEarlyRumQueue({ addAction: jest.fn() });
+    await jest.advanceTimersByTimeAsync(5_000);
+
+    expect(loggedEventNames()).toEqual(['stale_asset.recovery_start']);
+  });
+
+  it('leaves events unmarked when client logs are off', () => {
+    forwardQueuedAssetEvents();
+
+    expect(window.__lcRumQueue?.[0]).not.toHaveProperty('logged');
+    expect(sessionStorage.getItem('lc-rum-queue')).toBeNull();
   });
 });

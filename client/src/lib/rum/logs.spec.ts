@@ -132,14 +132,19 @@ describe('createClientLogExporter', () => {
       'second string with response text',
     ]);
     exporter.log('error', [
-      Object.assign(new Error('token=abcdef123456 rejected'), { config: { data: 'body' } }),
+      Object.assign(new TypeError('token=abcdef123456 rejected'), { config: { data: 'body' } }),
     ]);
+    exporter.log('error', [new Error('Model rejected prompt: my medical history')]);
     await flushInterval();
 
     const body = String(fetchMock.mock.calls[0]?.[1]?.body);
     expect(body).toContain('Saving failed for [email]');
     expect(body).toContain('token=[redacted] rejected');
-    expect(body).not.toMatch(/jane@example\.com|my secret prompt|response text|abcdef123456/);
+    expect(body).not.toMatch(
+      /jane@example\.com|my secret prompt|response text|abcdef123456|medical history/,
+    );
+    const [, , applicationError] = recordsAt(0);
+    expect(applicationError.body.stringValue).toBe('Error');
     exporter.dispose();
   });
 
@@ -309,6 +314,37 @@ describe('client log lifecycle', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[1]?.keepalive).toBe(true);
+  });
+
+  it('drains every queued record that fits the keepalive quota on page hide', async () => {
+    startClientLogs(options());
+
+    for (let i = 0; i < 25; i += 1) {
+      logger.error(`Queued before unload ${i}`);
+    }
+    window.dispatchEvent(new Event('pagehide'));
+    await jest.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(recordsAt(0)).toHaveLength(25);
+  });
+
+  it('measures batches in encoded bytes so multibyte text stays under the keepalive quota', async () => {
+    startClientLogs(options());
+
+    for (let i = 0; i < CLIENT_LOG_LIMITS.recordsPerMinute; i += 1) {
+      logger.error(`${i} ${'界'.repeat(500)}`, new TypeError(`${i} ${'界'.repeat(500)}`));
+    }
+    window.dispatchEvent(new Event('pagehide'));
+    window.dispatchEvent(new Event('pagehide'));
+    await jest.advanceTimersByTimeAsync(0);
+
+    const sizes = fetchMock.mock.calls.map(
+      ([, init]) => new TextEncoder().encode(String(init.body)).length,
+    );
+    expect(sizes.length).toBeGreaterThan(1);
+    sizes.forEach((size) => expect(size).toBeLessThanOrEqual(CLIENT_LOG_LIMITS.maxPayloadBytes));
+    expect(allRecords()).toHaveLength(CLIENT_LOG_LIMITS.recordsPerMinute);
   });
 
   it('refuses a cross-origin endpoint', async () => {

@@ -70,13 +70,13 @@ export function isRumProxyEnabled(): boolean {
 }
 
 /**
- * Whether browsers export client logger warnings/errors as OTLP logs. Proxy mode only, so the
- * logs reach the collector through session auth and never with a browser-held ingestion key;
- * on by default there, `RUM_CLIENT_LOGS=false` turns it off.
+ * Whether browsers export client logger warnings/errors as OTLP logs. Opt-in with
+ * `RUM_CLIENT_LOGS=true`, like console capture, so enabling RUM never starts a new log stream on
+ * its own; proxy mode only, so the logs reach the collector through session auth and never with
+ * a browser-held ingestion key.
  */
 export function isRumClientLogsEnabled(): boolean {
-  const setting = process.env.RUM_CLIENT_LOGS?.trim();
-  return isRumProxyEnabled() && (!setting || isEnabled(setting));
+  return isRumProxyEnabled() && isEnabled(process.env.RUM_CLIENT_LOGS);
 }
 
 export function resolveRumProxyTarget(path: string): string | undefined {

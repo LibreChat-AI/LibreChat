@@ -69,6 +69,13 @@ const ASSET_EVENTS = new Map<string, { name: string; level: ClientLogLevel }>([
   ['dynamic-import-error', { name: 'asset.dynamic_import_error', level: 'warn' }],
 ]);
 
+const RECORDS_PLACEHOLDER = '__librechat_log_records__';
+const encoder = new TextEncoder();
+
+function byteLength(text: string): number {
+  return encoder.encode(text).length;
+}
+
 /** Statuses that drop the batch and stop exporting for this page (proxy off or not allowed). */
 const FATAL_STATUSES = new Set([401, 403, 404, 405]);
 
@@ -83,6 +90,8 @@ type LogEntry = {
   state: 'queued' | 'sending' | 'done';
   trace?: TraceContext;
 };
+
+type Batch = { entries: LogEntry[]; body: string };
 
 type DedupeEntry = {
   expiresAt: number;
@@ -240,6 +249,21 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     },
   };
 
+  const [envelopeHead, envelopeTail] = JSON.stringify({
+    resourceLogs: [
+      {
+        ...resource,
+        scopeLogs: [
+          {
+            scope: { name: 'librechat.client', version: '1' },
+            logRecords: [RECORDS_PLACEHOLDER],
+          },
+        ],
+      },
+    ],
+  }).split(JSON.stringify(RECORDS_PLACEHOLDER));
+  const envelopeBytes = byteLength(envelopeHead) + byteLength(envelopeTail);
+
   let queue: LogEntry[] = [];
   const dedupe = new Map<string, DedupeEntry>();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -362,25 +386,37 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     enqueue(entry, now);
   };
 
-  const takeBatch = (): LogEntry[] => {
-    const batch: LogEntry[] = [];
-    let bytes = 512;
+  /**
+   * Takes the queued records that fit one request, measured in encoded UTF-8 bytes of the exact
+   * body that will be sent, so a `keepalive` request never exceeds the browser's quota.
+   */
+  const takeBatch = (maxRecords: number): Batch => {
+    const entries: LogEntry[] = [];
+    const records: string[] = [];
+    let bytes = envelopeBytes;
+    let taken = 0;
     for (const entry of queue) {
-      if (batch.length >= limits.maxBatchRecords) {
+      if (entries.length >= maxRecords) {
         break;
       }
-      const size = JSON.stringify(toOtlpRecord(entry)).length + 1;
-      if (batch.length > 0 && bytes + size > limits.maxPayloadBytes) {
-        break;
+      const record = JSON.stringify(toOtlpRecord(entry));
+      const size = byteLength(record) + (records.length > 0 ? 1 : 0);
+      if (bytes + size > limits.maxPayloadBytes) {
+        if (entries.length > 0) {
+          break;
+        }
+        entry.state = 'done';
+        taken += 1;
+        continue;
       }
       bytes += size;
-      batch.push(entry);
-    }
-    queue = queue.slice(batch.length);
-    batch.forEach((entry) => {
+      taken += 1;
       entry.state = 'sending';
-    });
-    return batch;
+      entries.push(entry);
+      records.push(record);
+    }
+    queue = queue.slice(taken);
+    return { entries, body: `${envelopeHead}${records.join(',')}${envelopeTail}` };
   };
 
   const disable = () => {
@@ -424,7 +460,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     onFailure(batch, status === 408 || status === 429 || status >= 500);
   };
 
-  const transmit = (batch: LogEntry[], keepalive: boolean): Promise<void> => {
+  const transmit = ({ entries: batch, body }: Batch, keepalive: boolean): Promise<void> => {
     const token = options.getToken();
     if (!token || batch.length === 0) {
       batch.forEach((entry) => {
@@ -432,19 +468,6 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       });
       return Promise.resolve();
     }
-    const body = JSON.stringify({
-      resourceLogs: [
-        {
-          ...resource,
-          scopeLogs: [
-            {
-              scope: { name: 'librechat.client', version: '1' },
-              logRecords: batch.map(toOtlpRecord),
-            },
-          ],
-        },
-      ],
-    });
     return send(options.endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
@@ -464,7 +487,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     const now = Date.now();
     collectExpiredDuplicates(now);
     if (keepalive) {
-      void transmit(takeBatch(), true).catch(() => undefined);
+      void transmit(takeBatch(Number.POSITIVE_INFINITY), true).catch(() => undefined);
       return;
     }
     if (inFlight || queue.length === 0) {
@@ -475,7 +498,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       return;
     }
     inFlight = true;
-    transmit(takeBatch(), false)
+    transmit(takeBatch(limits.maxBatchRecords), false)
       .catch(() => undefined)
       .finally(() => {
         inFlight = false;
@@ -642,12 +665,23 @@ export function stopClientLogs(): void {
   window.removeEventListener('pagehide', onPageHide);
 }
 
-/** Forwards an allowlisted stale-asset diagnostic event; ignored when exporting is off. */
-export function recordClientEvent(type: string, attributes?: ClientEventAttributes): void {
+export function isClientEventType(type: unknown): boolean {
+  return typeof type === 'string' && ASSET_EVENTS.has(type);
+}
+
+/**
+ * Forwards an allowlisted stale-asset diagnostic event. Returns `true` only when an active
+ * exporter accepted it, so callers can tell a delivered event from one to keep for later.
+ */
+export function recordClientEvent(type: string, attributes?: ClientEventAttributes): boolean {
+  if (!exporter || !isClientEventType(type)) {
+    return false;
+  }
   try {
-    exporter?.event(type, attributes);
+    exporter.event(type, attributes);
+    return true;
   } catch {
-    /* Telemetry must never affect the caller. */
+    return false;
   }
 }
 

@@ -2823,7 +2823,7 @@ export type TRumConfig = {
   advancedNetworkCapture?: boolean;
   sampleRate?: number;
   environment?: string;
-  /** Proxy mode only: export client logger warnings/errors as OTLP logs through the RUM proxy. */
+  /** Opt-in, proxy mode only: export client logger warnings/errors as OTLP logs via the RUM proxy. */
   clientLogs?: boolean;
 };
 

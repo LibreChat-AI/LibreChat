@@ -1,6 +1,6 @@
 import type { FCPMetricWithAttribution } from 'web-vitals/attribution';
+import { isClientEventType, recordClientEvent } from './logs';
 import { normalizeRumPath } from './routes';
-import { recordClientEvent } from './logs';
 import { getClientBuildId } from './build';
 
 export type RumActionAttributes = Record<string, string | number | boolean>;
@@ -14,6 +14,8 @@ type RumQueuedEvent = {
   at?: unknown;
   visibilityState?: unknown;
   attributes?: Record<string, unknown>;
+  /** Already delivered as a client log record; persisted so a later page does not resend it. */
+  logged?: unknown;
 };
 
 type NavigationTimingLike = {
@@ -228,7 +230,39 @@ function emitEarlyRumEvent(HyperDX: HyperDXActionClient, event: RumQueuedEvent):
   } catch {
     /* Diagnostics should never affect app behavior or stale-asset recovery. */
   }
-  recordClientEvent(event.type, attributes);
+  if (event.logged !== true) {
+    recordClientEvent(event.type, attributes);
+  }
+}
+
+/**
+ * Delivers queued stale-asset events as client log records as soon as the log exporter runs,
+ * independent of the RUM SDK loading. Delivered events stay queued for the SDK but are marked,
+ * in memory and in the persisted copy, so neither path sends them as logs twice.
+ */
+export function forwardQueuedAssetEvents(): void {
+  const queue = window.__lcRumQueue;
+  if (!queue) {
+    return;
+  }
+  let delivered = false;
+  for (const event of queue) {
+    if (event.logged === true || !isClientEventType(event.type) || typeof event.type !== 'string') {
+      continue;
+    }
+    if (recordClientEvent(event.type, sanitizeQueuedAttributes(event.attributes))) {
+      event.logged = true;
+      delivered = true;
+    }
+  }
+  if (!delivered) {
+    return;
+  }
+  try {
+    sessionStorage.setItem(EARLY_RUM_QUEUE_STORAGE_KEY, JSON.stringify(queue));
+  } catch {
+    /* Diagnostics should never affect app behavior. */
+  }
 }
 
 export function queueSpaRouteChange(

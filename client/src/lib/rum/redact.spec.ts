@@ -57,8 +57,9 @@ describe('reduceStack', () => {
 });
 
 describe('summarizeError', () => {
-  it('reads only name, message, stack and status from errors', () => {
+  it('reads only name, generated message, stack and status from errors', () => {
     const error = Object.assign(new Error('Request failed for jane@example.com'), {
+      name: 'AxiosError',
       response: { status: 503, data: { prompt: 'secret prompt' } },
       config: { headers: { Authorization: 'Bearer abcdefghijklmnop' } },
     });
@@ -66,7 +67,7 @@ describe('summarizeError', () => {
     const summary = summarizeError(error);
 
     expect(summary).toEqual({
-      type: 'Error',
+      type: 'AxiosError',
       message: 'Request failed for [email]',
       stacktrace: expect.any(String),
       statusCode: 503,
@@ -74,8 +75,28 @@ describe('summarizeError', () => {
     expect(JSON.stringify(summary)).not.toMatch(/secret prompt|abcdefghijklmnop/);
   });
 
+  it('drops application error messages, which can echo prompt or response content', () => {
+    const summary = summarizeError(new Error('Model rejected prompt: my medical history'));
+
+    expect(summary?.type).toBe('Error');
+    expect(summary?.message).toBeUndefined();
+    expect(JSON.stringify(summary)).not.toContain('medical history');
+  });
+
+  it.each([
+    [new TypeError("Cannot read properties of undefined (reading 'default')"), true],
+    [new SyntaxError(`Unexpected token 'h', "hello there" is not valid JSON`), true],
+    [new Error('Unable to preload CSS for /assets/panel.css'), true],
+    [new DOMException('The operation was aborted.', 'AbortError'), true],
+    [Object.assign(new Error('Prompt too long'), { name: 'ProviderError' }), false],
+  ])('keeps generated messages only (%p)', (error, kept) => {
+    const message = summarizeError(error)?.message;
+    expect(message !== undefined).toBe(kept);
+    expect(message ?? '').not.toContain('hello there');
+  });
+
   it('truncates long messages', () => {
-    const summary = summarizeError(new Error('x '.repeat(1000)));
+    const summary = summarizeError(new TypeError('x '.repeat(1000)));
     expect(summary?.message?.length).toBeLessThanOrEqual(512);
   });
 
