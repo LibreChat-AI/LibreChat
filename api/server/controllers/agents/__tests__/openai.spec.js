@@ -26,6 +26,11 @@ const mockCompletionUsage = {
   subagent: { prompt_tokens: 25, completion_tokens: 10, total_tokens: 35 },
 };
 const mockBuildCompletionUsage = jest.fn().mockReturnValue(mockCompletionUsage);
+const mockReleaseReservation = jest.fn().mockResolvedValue(undefined);
+const mockReserveRemoteAgentBalance = jest
+  .fn()
+  .mockResolvedValue({ release: mockReleaseReservation });
+const mockAddEstimatedUsageIfUnreported = jest.fn().mockResolvedValue(undefined);
 const mockEnrollAgentExecution = jest.fn();
 let mockExecution;
 
@@ -267,6 +272,8 @@ jest.mock('@librechat/api', () => ({
   createErrorResponse: jest.fn(),
   getTransactionsConfig: mockGetTransactionsConfig,
   recordCollectedUsage: mockRecordCollectedUsage,
+  reserveRemoteAgentBalance: mockReserveRemoteAgentBalance,
+  addEstimatedUsageIfUnreported: mockAddEstimatedUsageIfUnreported,
   createSubagentUsageSink: jest.fn().mockReturnValue(jest.fn()),
   resolveAgentTokenConfig: jest.fn(({ agentId, byAgentId, fallback }) =>
     agentId != null && byAgentId?.has(agentId) ? byAgentId.get(agentId) : fallback,
@@ -471,6 +478,9 @@ jest.mock('~/models', () => ({
   spendStructuredTokens: mockSpendStructuredTokens,
   getMultiplier: mockGetMultiplier,
   getCacheMultiplier: mockGetCacheMultiplier,
+  reserveBalance: jest.fn(),
+  renewBalanceReservation: jest.fn(),
+  releaseBalanceReservation: jest.fn(),
   getConvoFiles: jest.fn().mockResolvedValue([]),
   getFormattedMemories: jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' }),
   getConvo: jest.fn().mockResolvedValue(null),
@@ -2015,6 +2025,101 @@ describe('OpenAIChatCompletionController', () => {
           model: 'gpt-4',
         }),
       );
+    });
+  });
+
+  describe('unreported usage', () => {
+    it('estimates usage the provider did not report before recording it', async () => {
+      const api = require('@librechat/api');
+      const runMessages = [{ role: 'assistant', content: 'pong' }];
+      api.validateRequest.mockReturnValueOnce({ request: req.body });
+      api.createRun.mockResolvedValueOnce({
+        processStream: mockProcessStream,
+        getRunMessages: () => runMessages,
+      });
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(mockAddEstimatedUsageIfUnreported).toHaveBeenCalledWith(
+        expect.objectContaining({ messages: req.body.messages, runMessages }),
+      );
+      const [{ collectedUsage }] = mockAddEstimatedUsageIfUnreported.mock.calls[0];
+      expect(mockRecordCollectedUsage.mock.calls[0][1].collectedUsage).toBe(collectedUsage);
+      expect(mockAddEstimatedUsageIfUnreported.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRecordCollectedUsage.mock.invocationCallOrder[0],
+      );
+    });
+  });
+
+  describe('balance admission', () => {
+    it("reserves the primary agent's prompt cost before the run", async () => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      mockGetBalanceConfig.mockReturnValue({ enabled: true, startBalance: 500 });
+      api.validateRequest.mockReturnValueOnce({ request: req.body });
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(mockReserveRemoteAgentBalance).toHaveBeenCalledWith(
+        expect.objectContaining({
+          req,
+          res,
+          user: 'user-123',
+          balanceConfig: { enabled: true, startBalance: 500 },
+          model: 'gpt-4',
+          messages: req.body.messages,
+        }),
+        expect.objectContaining({
+          getMultiplier: mockGetMultiplier,
+          reserveBalance: db.reserveBalance,
+          renewBalanceReservation: db.renewBalanceReservation,
+          releaseBalanceReservation: db.releaseBalanceReservation,
+        }),
+      );
+      expect(mockReserveRemoteAgentBalance.mock.invocationCallOrder[0]).toBeLessThan(
+        api.createRun.mock.invocationCallOrder[0],
+      );
+    });
+
+    it.each([false, true])(
+      'refuses a request the balance cannot cover with insufficient_quota (stream=%s)',
+      async (stream) => {
+        const api = require('@librechat/api');
+        req.body.stream = stream;
+        api.validateRequest.mockReturnValueOnce({ request: req.body });
+        mockReserveRemoteAgentBalance.mockRejectedValueOnce(
+          new Error(JSON.stringify({ type: 'token_balance', balance: 0, tokenCost: 20 })),
+        );
+
+        await OpenAIChatCompletionController(req, res);
+
+        expect(res.status).toHaveBeenCalledWith(429);
+        expect(api.createErrorResponse).toHaveBeenCalledWith(
+          expect.any(String),
+          'insufficient_quota',
+          'insufficient_quota',
+        );
+        expect(res.flushHeaders).not.toHaveBeenCalled();
+        expect(api.createRun).not.toHaveBeenCalled();
+      },
+    );
+
+    it('releases the reservation only after usage is recorded', async () => {
+      await OpenAIChatCompletionController(req, res);
+
+      expect(mockReleaseReservation).toHaveBeenCalledTimes(1);
+      expect(mockReleaseReservation.mock.invocationCallOrder[0]).toBeGreaterThan(
+        mockRecordCollectedUsage.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('releases the reservation when the run fails', async () => {
+      mockProcessStream.mockRejectedValueOnce(new Error('provider failed'));
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(mockRecordCollectedUsage).not.toHaveBeenCalled();
+      expect(mockReleaseReservation).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -8,6 +8,7 @@ const {
   EModelEndpoint,
   ResourceType,
   PermissionBits,
+  ViolationTypes,
   hasPermissions,
   AgentCapabilities,
 } = require('librechat-data-provider');
@@ -36,6 +37,8 @@ const {
   extractManualSkills,
   createErrorResponse,
   recordCollectedUsage,
+  reserveRemoteAgentBalance,
+  addEstimatedUsageIfUnreported,
   createSubagentUsageSink,
   getTransactionsConfig,
   resolveAgentTokenConfig,
@@ -391,6 +394,10 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
   /** @type {Promise<import('librechat-data-provider').TAttachment | null>[]} */
   const artifactPromises = [];
   let artifactWritesCovered = false;
+  /** @type {import('@librechat/api').BalanceReservation | undefined} */
+  let balanceReservation;
+  /** @type {Promise<unknown> | undefined} */
+  let usageRecording;
   return executeAgentRun({
     envelope,
     runId: responseId,
@@ -421,6 +428,12 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
             );
           }),
         );
+      }
+      if (balanceReservation) {
+        /** Credits stay held until the turn's usage is recorded, so a concurrent request
+         * cannot be admitted against them in between. */
+        const reservation = balanceReservation;
+        execution.track(Promise.resolve(usageRecording).then(() => reservation.release()));
       }
     },
     onSettlementError: (error) => {
@@ -824,6 +837,40 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         files: collectModelBoundAgentFiles(modelBoundAgents),
       });
 
+      try {
+        balanceReservation = await reserveRemoteAgentBalance(
+          {
+            req,
+            res,
+            user: principal.userId,
+            balanceConfig: getBalanceConfig(appConfig),
+            model: primaryConfig.model || agent.model_parameters?.model,
+            endpoint: primaryConfig.endpoint,
+            endpointTokenConfig: primaryConfig.endpointTokenConfig,
+            instructions: primaryConfig.instructions,
+            messages: request.messages,
+          },
+          {
+            getMultiplier: db.getMultiplier,
+            reserveBalance: db.reserveBalance,
+            renewBalanceReservation: db.renewBalanceReservation,
+            releaseBalanceReservation: db.releaseBalanceReservation,
+            logViolation,
+          },
+        );
+      } catch (error) {
+        if (error?.message?.includes(ViolationTypes.TOKEN_BALANCE)) {
+          return sendErrorResponse(
+            res,
+            429,
+            'Insufficient token balance for this request',
+            'insufficient_quota',
+            'insufficient_quota',
+          );
+        }
+        throw error;
+      }
+
       // Determine if streaming is enabled (check both request and agent config)
       const streamingDisabled = !!primaryConfig.model_parameters?.disableStreaming;
       const isStreaming = request.stream === true && !streamingDisabled;
@@ -1163,10 +1210,17 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           },
         });
 
+        await addEstimatedUsageIfUnreported({
+          collectedUsage,
+          instructions: primaryConfig.instructions,
+          messages: request.messages,
+          runMessages: run.getRunMessages?.(),
+        });
+
         // Record token usage against balance
         const balanceConfig = getBalanceConfig(appConfig);
         const transactionsConfig = getTransactionsConfig(appConfig);
-        execution.track(
+        usageRecording = execution.track(
           recordCollectedUsage(
             {
               spendTokens: db.spendTokens,

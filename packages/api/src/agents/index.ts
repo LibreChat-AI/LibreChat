@@ -51,6 +51,7 @@ export * from './openai';
 export * from './transactions';
 export * from './traversal';
 export * from './usage';
+export * from './remoteBalance';
 export * from './resources';
 export * from './responses';
 export * from './skills';
