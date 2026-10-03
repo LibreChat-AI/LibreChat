@@ -30,7 +30,6 @@ import ConversationStarters from './Input/ConversationStarters';
 import { pendingApprovalActionFamily } from './approval/state';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { composerLiftFamily } from './Input/Composer/state';
-import { showComposerTipsAtom } from '~/store/composerTips';
 import { OwnerTextProvider } from './Messages/PrivateText';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import Footer, { useConfiguredFooter } from './Footer';
@@ -69,7 +68,6 @@ function ChatView({
   const rootSubmission = useRecoilValue(store.submissionByIndex(index));
   const isSubmitting = useRecoilValue(store.isSubmittingFamily(index));
   const saveDrafts = useRecoilValue(store.saveDrafts);
-  const showComposerTips = useAtomValue(showComposerTipsAtom);
   const enterToSend = useRecoilValue(store.enterToSend);
   const autoSendText = useRecoilValue(store.autoSendText);
   const speechSettingsInitialized = useRecoilValue(store.speechSettingsInitialized);
@@ -264,7 +262,6 @@ function ChatView({
                                 placeholder={chatFormPlaceholder}
                                 project={isProjectLandingPage ? project : undefined}
                                 isLandingPage={isLandingPage}
-                                showComposerTips={showComposerTips}
                                 enterToSend={enterToSend}
                                 autoSendText={autoSendText}
                                 speechSettingsInitialized={speechSettingsInitialized}

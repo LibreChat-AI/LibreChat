@@ -40,7 +40,7 @@ test.describe('composer redesign contracts', () => {
     await openComposer(page);
     await startRun(page, `interrupt-hint-${Date.now()}`);
     await messageInput(page).fill('interrupt hint');
-    await expect(page.getByTestId('composer-hints')).toContainText(/interrupt/i);
+    await expect(page.locator('#composer-hint-0')).toContainText(/interrupt/i);
   });
 
   test('Staged reasoning relabels steer as a new turn @scenario:staged-reasoning-relabels-steer-as-a-new-turn', async ({
