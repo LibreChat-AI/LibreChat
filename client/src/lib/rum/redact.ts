@@ -20,7 +20,17 @@ const HEX_PATTERN = /\b[0-9a-f]{16,}\b/gi;
 const TOKEN_LIKE_PATTERN = /[A-Za-z0-9+_-]{32,}={0,2}/g;
 const DOUBLE_QUOTED_PATTERN = /"[^"\n]+"/g;
 const LONG_SINGLE_QUOTED_PATTERN = /'[^'\n]{24,}'/g;
-const STACK_FRAME_PATTERN = /^at\s|:\d+(?::\d+)?\)?$/;
+const FRAME_LOCATION = String.raw`(?:[a-z][\w+.-]*:\/\/|\/|[a-z]:\\)[^\s()]*?(?::\d+){1,2}`;
+/**
+ * Complete frame shapes only, each ending in a URL or absolute path with a line number:
+ * V8 (`at fn (https://…/a.js:1:2)`, `at https://…/a.js:1:2`) and Gecko/WebKit
+ * (`fn@https://…/a.js:1:2`). A message line that merely ends in `:123` matches neither.
+ */
+const STACK_FRAME_PATTERNS: readonly RegExp[] = [
+  new RegExp(String.raw`^at (?:[^()]{1,300} \()?${FRAME_LOCATION}\)?$`, 'i'),
+  /^at (?:[^()]{1,300} \()?(?:native|<anonymous>)\)?$/,
+  new RegExp(String.raw`^[\w$.<>/*[\] -]{0,300}@${FRAME_LOCATION}$`, 'i'),
+];
 const IDENTIFIER = String.raw`(?:\(intermediate value\))?[\w$.[\]]{1,120}`;
 /**
  * Message shapes the JS engine, the browser or a library generates from code identifiers.
@@ -113,12 +123,20 @@ export function scrubField(value: string, maxLength: number): string {
   return truncate(scrubText(value), maxLength);
 }
 
-/** Keeps only stack frames (never the leading message line), with URLs reduced to paths. */
-export function reduceStack(stack: string): string | undefined {
-  const frames = stack
+/** V8 prefixes the stack with `name: message`, which can span lines; it is never a frame. */
+function stripStackHeader(stack: string, header?: string): string {
+  return header && stack.startsWith(header) ? stack.slice(header.length) : stack;
+}
+
+/**
+ * Keeps only complete stack frames, with URLs reduced to paths. The `name: message` header is
+ * removed first, so neither it nor any line of a multi-line message can pass as a frame.
+ */
+export function reduceStack(stack: string, header?: string): string | undefined {
+  const frames = stripStackHeader(stack, header)
     .split('\n')
     .map((line) => line.trim())
-    .filter((line) => STACK_FRAME_PATTERN.test(line))
+    .filter((line) => STACK_FRAME_PATTERNS.some((pattern) => pattern.test(line)))
     .slice(0, MAX_FRAMES)
     .map((line) => scrubField(line, MAX_FRAME_LENGTH));
   return frames.length > 0 ? frames.join('\n') : undefined;
@@ -127,6 +145,12 @@ export function reduceStack(stack: string): string | undefined {
 function statusCodeOf(error: ErrorShape): number | undefined {
   const status = error.response?.status ?? error.status;
   return typeof status === 'number' && Number.isInteger(status) ? status : undefined;
+}
+
+function stackHeader(error: ErrorShape): string | undefined {
+  const name = typeof error.name === 'string' ? error.name : 'Error';
+  const message = typeof error.message === 'string' ? error.message : '';
+  return message ? `${name}: ${message}` : name;
 }
 
 export function isErrorLike(value: unknown): value is ErrorShape {
@@ -160,7 +184,8 @@ export function summarizeError(error: unknown): ErrorSummary | undefined {
   return {
     type: typeof error.name === 'string' ? scrubField(error.name, MAX_NAME_LENGTH) : undefined,
     message,
-    stacktrace: typeof error.stack === 'string' ? reduceStack(error.stack) : undefined,
+    stacktrace:
+      typeof error.stack === 'string' ? reduceStack(error.stack, stackHeader(error)) : undefined,
     statusCode: statusCodeOf(error),
   };
 }

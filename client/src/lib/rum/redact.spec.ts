@@ -57,6 +57,42 @@ describe('reduceStack', () => {
 });
 
 describe('summarizeError', () => {
+  it.each([
+    ['my medical history:123'],
+    ['first line\nat home with my medical history:12'],
+    ['history@/notes/medical:4:2'],
+  ])('never exports message text through the stack (%p)', (message) => {
+    const error = new Error(message);
+    error.stack = [
+      `Error: ${message}`,
+      '    at Panel (https://chat.example.com/assets/index-Ab12Cd.js:10:20)',
+    ].join('\n');
+
+    const stacktrace = summarizeError(error)?.stacktrace ?? '';
+
+    expect(stacktrace).toBe('at Panel (/assets/index-Ab12Cd.js:10:20)');
+    expect(stacktrace).not.toMatch(/medical|home/);
+  });
+
+  it('keeps V8, Gecko and WebKit frames but not header-like lines', () => {
+    const stack = [
+      'my medical history:123',
+      'at home with my medical history:12',
+      'render@https://chat.example.com/assets/vendor-Xy.js:5:6',
+      'global code@https://chat.example.com/assets/index-Ab.js:1:2',
+      '    at async Promise.all (index 0)',
+      '    at new Thing (/assets/a.js:3:4)',
+      '    at <anonymous>',
+    ].join('\n');
+
+    expect(reduceStack(stack)?.split('\n')).toEqual([
+      'render@/assets/vendor-Xy.js:5:6',
+      'global code@/assets/index-Ab.js:1:2',
+      'at new Thing (/assets/a.js:3:4)',
+      'at <anonymous>',
+    ]);
+  });
+
   it('reads only name, generated message, stack and status from errors', () => {
     const error = Object.assign(new Error('Request failed with status code 503'), {
       name: 'AxiosError',
