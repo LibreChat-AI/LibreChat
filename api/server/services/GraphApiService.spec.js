@@ -248,6 +248,140 @@ describe('GraphApiService', () => {
     });
   });
 
+  describe('proxy-aware token exchange', () => {
+    const http = require('http');
+    const proxyEnvKeys = [
+      'PROXY',
+      'proxy',
+      'http_proxy',
+      'HTTP_PROXY',
+      'https_proxy',
+      'HTTPS_PROXY',
+      'no_proxy',
+      'NO_PROXY',
+    ];
+    let savedProxyEnv;
+    let tokenServer;
+    let tokenUrl;
+
+    beforeAll(async () => {
+      // Local stand-in for the IdP token endpoint. Plain HTTP keeps the probe
+      // hermetic: no external network, no live proxy required.
+      tokenServer = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ access_token: 'direct-token' }));
+      });
+      await new Promise((resolve) => {
+        tokenServer.listen(0, '127.0.0.1', resolve);
+      });
+      tokenUrl = `http://127.0.0.1:${tokenServer.address().port}/token`;
+    });
+
+    afterAll(async () => {
+      await new Promise((resolve) => {
+        tokenServer.close(resolve);
+      });
+    });
+
+    beforeEach(() => {
+      savedProxyEnv = {};
+      for (const key of proxyEnvKeys) {
+        savedProxyEnv[key] = process.env[key];
+        delete process.env[key];
+      }
+    });
+
+    afterEach(() => {
+      for (const key of proxyEnvKeys) {
+        if (savedProxyEnv[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = savedProxyEnv[key];
+        }
+      }
+    });
+
+    it('should install a proxy-aware fetch on configurations that lack one', async () => {
+      mockTokensCache.get.mockResolvedValue(null);
+      expect(mockOpenIdConfig[client.customFetch]).toBeUndefined();
+
+      // Reason: capture the configuration state at call time to prove the
+      // fetch is installed BEFORE the exchange runs, not after.
+      let fetchAtCallTime;
+      client.genericGrantRequest.mockImplementationOnce(async (config) => {
+        fetchAtCallTime = typeof config[client.customFetch];
+        return { access_token: 'mocked-graph-token', expires_in: 3600 };
+      });
+
+      await GraphApiService.exchangeTokenForGraphAccess(
+        mockOpenIdConfig,
+        'test-token',
+        'test-user',
+      );
+
+      if (client.genericGrantRequest) {
+        expect(client.genericGrantRequest).toHaveBeenCalledWith(
+          mockOpenIdConfig,
+          'urn:ietf:params:oauth:grant-type:jwt-bearer',
+          expect.objectContaining({ assertion: 'test-token' }),
+        );
+        // Reason: genericGrantRequest offers no per-call fetch override (its
+        // fourth argument only carries DPoP options), so the exchange must
+        // inherit the proxy-aware fetch from the configuration itself.
+        expect(client.genericGrantRequest.mock.calls[0]).toHaveLength(3);
+      }
+      expect(fetchAtCallTime).toBe('function');
+      expect(typeof mockOpenIdConfig[client.customFetch]).toBe('function');
+    });
+
+    it('should preserve an existing custom fetch on the configuration', async () => {
+      mockTokensCache.get.mockResolvedValue(null);
+      const existingFetch = jest.fn();
+      mockOpenIdConfig[client.customFetch] = existingFetch;
+
+      await GraphApiService.exchangeTokenForGraphAccess(
+        mockOpenIdConfig,
+        'test-token',
+        'test-user',
+      );
+
+      expect(mockOpenIdConfig[client.customFetch]).toBe(existingFetch);
+    });
+
+    it('should send the exchange through the configured proxy', async () => {
+      // Reason: the local server answers direct requests, so routing the
+      // request at a dead proxy proves the dispatcher is attached: only a
+      // proxied request can fail here.
+      process.env.PROXY = 'http://127.0.0.1:9';
+      mockTokensCache.get.mockResolvedValue(null);
+
+      await GraphApiService.exchangeTokenForGraphAccess(
+        mockOpenIdConfig,
+        'test-token',
+        'test-user',
+      );
+
+      const exchangeFetch = mockOpenIdConfig[client.customFetch];
+      expect(typeof exchangeFetch).toBe('function');
+      await expect(exchangeFetch(tokenUrl, { method: 'POST' })).rejects.toThrow();
+    });
+
+    it('should reach the token endpoint directly when no proxy is configured', async () => {
+      mockTokensCache.get.mockResolvedValue(null);
+
+      await GraphApiService.exchangeTokenForGraphAccess(
+        mockOpenIdConfig,
+        'test-token',
+        'test-user',
+      );
+
+      const exchangeFetch = mockOpenIdConfig[client.customFetch];
+      expect(typeof exchangeFetch).toBe('function');
+      const response = await exchangeFetch(tokenUrl, { method: 'POST' });
+      expect(response.status).toBe(200);
+    });
+  });
+
   describe('searchEntraIdPrincipals', () => {
     // Mock data used by multiple tests
     const mockContactsResponse = {
