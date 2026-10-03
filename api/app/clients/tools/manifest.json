@@ -173,5 +173,18 @@
         "optional": true
       }
     ]
+  },
+  {
+    "name": "Sora Video Generation",
+    "pluginKey": "sora",
+    "description": "[Sora] Create high-quality video scenes from natural language descriptions via Azure OpenAI or OpenAI.",
+    "icon": "assets/openai.svg",
+    "authConfig": [
+      {
+        "authField": "SORA_API_KEY||AZURE_OPENAI_API_KEY",
+        "label": "API Key",
+        "description": "API Key for Azure OpenAI or OpenAI Sora video generation."
+      }
+    ]
   }
 ]
