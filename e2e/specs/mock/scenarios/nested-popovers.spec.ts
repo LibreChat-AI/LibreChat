@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { NEW_CHAT_PATH } from '../helpers';
+import { openSidebar } from './sidebar';
 
 /**
  * A modal dialog parks `pointer-events: none` on the body, so a list portaled out of it inherits
@@ -62,7 +63,9 @@ async function offerStatefulSessions(page: Page) {
 
 async function openWorkspaceSelect(page: Page): Promise<Locator> {
   await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
-  await page.getByTestId('nav-user').click();
+  /** Mobile keeps the account menu in the drawer. */
+  await openSidebar(page);
+  await page.getByTestId('nav-user').locator('visible=true').first().click();
   await page.getByRole('menuitem', { name: 'Settings' }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible({
@@ -74,6 +77,22 @@ async function openWorkspaceSelect(page: Page): Promise<Locator> {
   await trigger.click();
   await expect(page.getByRole('listbox')).toBeVisible();
   return trigger;
+}
+
+/** The checked option's indicator box is `expected` square and its glyph fills it exactly. */
+async function expectIndicator(page: Page, expected: string) {
+  const checked = page.getByRole('option', { selected: true });
+  const box = checked.locator('> span').first();
+  const glyph = checked.locator('svg');
+  await expect(glyph).toBeVisible();
+  const [boxRect, glyphRect] = await Promise.all([box.boundingBox(), glyph.boundingBox()]);
+  expect(boxRect).not.toBeNull();
+  expect(glyphRect).not.toBeNull();
+  expect(`${boxRect?.width}px`).toBe(expected);
+  expect(`${boxRect?.height}px`).toBe(expected);
+  /** The glyph sits inside its box rather than spilling past it. */
+  expect(glyphRect?.width).toBe(boxRect?.width);
+  expect(glyphRect?.x).toBe(boxRect?.x);
 }
 
 test.describe('popovers inside a modal dialog', () => {
@@ -128,29 +147,21 @@ test.describe('popovers inside a modal dialog', () => {
     await expect(trigger).toHaveText(next as string);
   });
 
-  for (const [label, definition, expected] of [
-    ['default', undefined, '16px'],
-    ['reference', REFERENCE_ICON_THEME, '20px'],
-  ] as const) {
-    test(`the Select check indicator box follows the icon size role, ${label} theme @scenario:select-indicator-icon-role-${label}`, async ({
-      page,
-    }) => {
-      await offerStatefulSessions(page);
-      await useTheme(page, 'light', definition);
-      await openWorkspaceSelect(page);
+  test('the Select check indicator box takes the default icon size @scenario:select-indicator-icon-role-default', async ({
+    page,
+  }) => {
+    await offerStatefulSessions(page);
+    await useTheme(page, 'light');
+    await openWorkspaceSelect(page);
+    await expectIndicator(page, '16px');
+  });
 
-      const checked = page.getByRole('option', { selected: true });
-      const box = checked.locator('> span').first();
-      const glyph = checked.locator('svg');
-      await expect(glyph).toBeVisible();
-      const [boxRect, glyphRect] = await Promise.all([box.boundingBox(), glyph.boundingBox()]);
-      expect(boxRect).not.toBeNull();
-      expect(glyphRect).not.toBeNull();
-      expect(`${boxRect?.width}px`).toBe(expected);
-      expect(`${boxRect?.height}px`).toBe(expected);
-      /** The glyph sits inside its box rather than spilling past it. */
-      expect(glyphRect?.width).toBe(boxRect?.width);
-      expect(glyphRect?.x).toBe(boxRect?.x);
-    });
-  }
+  test('the Select check indicator box follows a theme icon size @scenario:select-indicator-icon-role-reference', async ({
+    page,
+  }) => {
+    await offerStatefulSessions(page);
+    await useTheme(page, 'light', REFERENCE_ICON_THEME);
+    await openWorkspaceSelect(page);
+    await expectIndicator(page, '20px');
+  });
 });
