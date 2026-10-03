@@ -593,16 +593,22 @@ const CODE_READ_FILE_DEF: LCTool = Object.freeze({
   responseFormat: ReadFileToolDefinition.responseFormat,
 }) as LCTool;
 
+/**
+ * `attachedCommands` is true only when the attached `bash_tool` is registered
+ * beside this definition: the skill-file warning names it.
+ */
 function createAttachedWorkspaceReadFileDef(
   includeSkillFileInstructions: boolean,
   defaultReadFileLines: number = CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+  attachedCommands = false,
 ): LCTool {
   const baseDescription = includeSkillFileInstructions
     ? SKILL_READ_FILE_DESCRIPTION
     : CODE_READ_FILE_DESCRIPTION;
-  const attachedInstructions = includeSkillFileInstructions
-    ? `${ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS} ${ATTACHED_WORKSPACE_SKILL_FILE_INSTRUCTIONS}`
-    : ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS;
+  const attachedInstructions =
+    includeSkillFileInstructions && attachedCommands
+      ? `${ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS} ${ATTACHED_WORKSPACE_SKILL_FILE_INSTRUCTIONS}`
+      : ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS;
   return Object.freeze({
     name: ReadFileToolDefinition.name,
     toolType: 'builtin',
@@ -626,8 +632,13 @@ function createAttachedWorkspaceReadFileDef(
 
 const ATTACHED_CODE_READ_FILE_DEF = createAttachedWorkspaceReadFileDef(false);
 const ATTACHED_SKILL_READ_FILE_DEF = createAttachedWorkspaceReadFileDef(true);
+const ATTACHED_SKILL_COMMAND_READ_FILE_DEF = createAttachedWorkspaceReadFileDef(
+  true,
+  CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+  true,
+);
 
-/** Skill-only `read_file` for an attached workspace whose worker does not offer `read_file`. */
+/** Skill-only `read_file` beside the attached `bash_tool` when the worker does not offer `read_file`. */
 const ATTACHED_SKILL_ONLY_READ_FILE_DEF: LCTool = Object.freeze({
   ...READ_FILE_DEF,
   description: `${SKILL_READ_FILE_DESCRIPTION}\n\n${ATTACHED_WORKSPACE_SKILL_FILE_INSTRUCTIONS}`,
@@ -1035,14 +1046,20 @@ function buildReadFileDef(
   includeSkillFileInstructions: boolean,
   workspaceTools: boolean,
   defaultReadFileLines: number = CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+  attachedCommands = false,
 ): LCTool {
   if (workspaceTools) {
     if (defaultReadFileLines !== CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES) {
-      return createAttachedWorkspaceReadFileDef(includeSkillFileInstructions, defaultReadFileLines);
+      return createAttachedWorkspaceReadFileDef(
+        includeSkillFileInstructions,
+        defaultReadFileLines,
+        attachedCommands,
+      );
     }
-    return includeSkillFileInstructions
-      ? ATTACHED_SKILL_READ_FILE_DEF
-      : ATTACHED_CODE_READ_FILE_DEF;
+    if (!includeSkillFileInstructions) {
+      return ATTACHED_CODE_READ_FILE_DEF;
+    }
+    return attachedCommands ? ATTACHED_SKILL_COMMAND_READ_FILE_DEF : ATTACHED_SKILL_READ_FILE_DEF;
   }
   return includeSkillFileInstructions ? READ_FILE_DEF : CODE_READ_FILE_DEF;
 }
@@ -1221,14 +1238,21 @@ export function registerCodeExecutionTools(
   const supportsWorkspaceOperation = (operation: CodeWorkspaceOperation): boolean =>
     !workspaceTools || workspaceOperations?.has(operation) === true;
   const candidates: LCTool[] = [];
+  const bashAvailable = includeBash && supportsWorkspaceOperation('execute_command');
+  const attachedCommands = workspaceTools && bashAvailable;
   if (!workspaceTools || supportsWorkspaceOperation('read_file')) {
     candidates.push(
-      buildReadFileDef(includeSkillFileInstructions, workspaceTools, workspaceReadFileDefaultLines),
+      buildReadFileDef(
+        includeSkillFileInstructions,
+        workspaceTools,
+        workspaceReadFileDefaultLines,
+        attachedCommands,
+      ),
     );
   } else if (includeSkillFileInstructions) {
-    candidates.push(ATTACHED_SKILL_ONLY_READ_FILE_DEF);
+    candidates.push(attachedCommands ? ATTACHED_SKILL_ONLY_READ_FILE_DEF : READ_FILE_DEF);
   }
-  if (includeBash && supportsWorkspaceOperation('execute_command')) {
+  if (bashAvailable) {
     candidates.push(
       buildBashToolDef({
         enableToolOutputReferences,

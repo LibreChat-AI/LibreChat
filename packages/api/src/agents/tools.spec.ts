@@ -93,6 +93,9 @@ import {
 /** Portable ceiling for OpenAI-compatible tool description validators. */
 const TOOL_DESCRIPTION_ADVISORY_MAX_LENGTH = 1024;
 
+const ATTACHED_SKILL_FILE_SENTENCE =
+  'Skill files are not on the attached machine, so bash_tool cannot run them by path; to run a skill script there, read it and write it into the workspace first.';
+
 function filePathDescription(tool?: LCTool): string {
   const parameters = tool?.parameters as
     | { properties?: { path?: { description?: string } } }
@@ -751,51 +754,64 @@ describe('registerCodeExecutionTools', () => {
     );
   });
 
-  it('tells attached runs that skill files must be copied into the workspace to run there', () => {
-    const skillSentence =
-      'Skill files are not on the attached machine, so bash_tool cannot run them by path; to run a skill script there, read it and write it into the workspace first.';
-    const readFileDescription = (
-      includeSkillFileInstructions: boolean,
-      workspaceTools: boolean,
-      workspaceReadFileDefaultLines?: number,
-    ): string | undefined =>
-      registerCodeExecutionTools({
+  it.each([
+    {
+      operations: ['read_file', 'execute_command'],
+      includeBash: true,
+      lines: undefined,
+      warns: true,
+    },
+    { operations: ['read_file', 'execute_command'], includeBash: true, lines: 50, warns: true },
+    { operations: ['execute_command'], includeBash: true, lines: undefined, warns: true },
+    {
+      operations: ['read_file', 'execute_command'],
+      includeBash: false,
+      lines: undefined,
+      warns: false,
+    },
+    { operations: ['read_file'], includeBash: true, lines: undefined, warns: false },
+    { operations: ['read_file'], includeBash: true, lines: 50, warns: false },
+    { operations: ['list_files', 'write_file'], includeBash: true, lines: undefined, warns: false },
+  ] as const)(
+    'names bash_tool in the skill-file warning only when it is registered: %j',
+    ({ operations, includeBash, lines, warns }) => {
+      const result = registerCodeExecutionTools({
         toolRegistry: undefined,
         toolDefinitions: [],
-        includeBash: false,
+        includeBash,
+        includeSkillFileInstructions: true,
+        workspaceTools: true,
+        workspaceOperations: new Set(operations),
+        workspaceReadFileDefaultLines: lines,
+      });
+      const names = result.toolDefinitions.map((def) => def.name);
+      const readFile = result.toolDefinitions.find((def) => def.name === 'read_file');
+
+      expect(names.includes('bash_tool')).toBe(warns);
+      expect(readFile?.description).toContain('skills/{skillName}/...');
+      expect(readFile?.description?.includes(ATTACHED_SKILL_FILE_SENTENCE)).toBe(warns);
+    },
+  );
+
+  it.each([
+    { includeSkillFileInstructions: false, workspaceTools: true },
+    { includeSkillFileInstructions: true, workspaceTools: false },
+  ])(
+    'omits the skill-file warning outside attached skill runs: %j',
+    ({ includeSkillFileInstructions, workspaceTools }) => {
+      const readFile = registerCodeExecutionTools({
+        toolRegistry: undefined,
+        toolDefinitions: [],
+        includeBash: true,
         includeSkillFileInstructions,
         workspaceTools,
-        workspaceOperations: new Set(['read_file']),
-        workspaceReadFileDefaultLines,
-      }).toolDefinitions.find((def) => def.name === 'read_file')?.description;
+        workspaceOperations: new Set(['read_file', 'execute_command']),
+      }).toolDefinitions.find((def) => def.name === 'read_file');
 
-    expect(readFileDescription(true, true)).toContain(skillSentence);
-    expect(readFileDescription(true, true, 50)).toContain(skillSentence);
-    expect(readFileDescription(false, true)).not.toContain('Skill files are not on');
-    expect(readFileDescription(true, false)).not.toContain('Skill files are not on');
-  });
+      expect(readFile?.description).not.toContain('Skill files are not on');
+    },
+  );
 
-  it('keeps the skill-copy warning on the skill-only read_file of a command-only workspace', () => {
-    const result = registerCodeExecutionTools({
-      toolRegistry: undefined,
-      toolDefinitions: [],
-      includeBash: true,
-      includeSkillFileInstructions: true,
-      workspaceTools: true,
-      workspaceOperations: new Set(['execute_command']),
-    });
-    const readFile = result.toolDefinitions.find((def) => def.name === 'read_file');
-
-    expect(result.toolDefinitions.map((def) => def.name).sort()).toEqual([
-      'bash_tool',
-      'read_file',
-    ]);
-    expect(readFile?.description).toContain('skills/{skillName}/...');
-    expect(readFile?.description).toContain(
-      'Skill files are not on the attached machine, so bash_tool cannot run them by path',
-    );
-    expect(readFile?.description).not.toContain('workspace/{relativePath}');
-  });
   const makeRegistry = (): LCToolRegistry => new Map() as unknown as LCToolRegistry;
 
   describe('fresh run (no pre-existing defs or registry entries)', () => {
