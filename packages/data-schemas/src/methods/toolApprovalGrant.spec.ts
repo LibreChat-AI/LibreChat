@@ -103,3 +103,10 @@ test('reset before the first stored grant fences a late approved execution', asy
   await storage.rememberToolApprovalGrants(scope, [{ ...grant, revocation: initial.revocation }]);
   expect((await storage.getToolApprovalGrants(scope, [grant]))[0].approved).toBe(false);
 });
+
+test('one-time review bindings cannot become stored grants', async () => {
+  await expect(
+    storage.rememberToolApprovalGrants(scope, [{ ...grant, scope: 'once' }]),
+  ).rejects.toThrow('One-time');
+  expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+});

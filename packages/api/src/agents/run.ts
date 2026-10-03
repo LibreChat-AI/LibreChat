@@ -2752,6 +2752,7 @@ export async function createRun({
     agents: [...codeFileAgents.values()],
     storage: toolApprovalPolicy?.agentModes === true ? toolApprovalStorage : undefined,
     reviewed: reviewedToolApprovals,
+    policy: effectiveToolApprovalPolicy,
     lookupTimeoutMs: toolApprovalPolicy?.grantLookupTimeoutMs,
     scope:
       user?.id && (conversationId ?? requestBody?.conversationId)

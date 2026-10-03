@@ -376,3 +376,81 @@ test.each(['authority', 'upstream', 'revocation'] as const)(
     expect(executions).toBe(0);
   },
 );
+
+test.each([false, true])(
+  'editing a reviewed call can execute once but never teaches approval (event-driven: %s)',
+  async (eventDriven) => {
+    const source: AgentApprovalSource = {
+      id: 'agent-a',
+      tool_options: {
+        [name]: {
+          approval_mode: 'always',
+          approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+        },
+      },
+      toolDefinitions: [definition()],
+    };
+    const saver = new MemorySaver();
+    const first = await build({
+      source,
+      chat: 'edit-chat',
+      saver,
+      eventDriven,
+      callId: 'edit-call',
+    });
+    await first.processStream({ messages: [new HumanMessage('run')] }, config('edit-chat'));
+    const bindings = captureRunToolApprovalBindings(
+      first,
+      first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+    )!;
+    const resumed = await build({
+      source,
+      chat: 'edit-chat',
+      saver,
+      eventDriven,
+      reviewed: {
+        bindings,
+        decisions: [
+          { tool_call_id: 'edit-call', decision: 'edit', editedArguments: { text: 'edited' } },
+        ],
+      },
+    });
+    await resumed.resume(
+      { 'edit-call': { type: 'edit', updatedInput: { text: 'edited' } } },
+      config('edit-chat'),
+    );
+    expect(executions).toBe(1);
+    expect(
+      JSON.stringify((resumed.getRunMessages() ?? []).map((message) => message.content)),
+    ).toContain('edited');
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+  },
+);
+
+test.each([false, true])(
+  'always-ask still permits an exact manually approved call (event-driven: %s)',
+  async (eventDriven) => {
+    const source: AgentApprovalSource = {
+      id: 'agent-a',
+      tool_options: { [name]: { approval_mode: 'ask' } },
+      toolDefinitions: [definition()],
+    };
+    const saver = new MemorySaver();
+    const first = await build({ source, chat: 'ask-chat', saver, eventDriven, callId: 'ask-call' });
+    await first.processStream({ messages: [new HumanMessage('run')] }, config('ask-chat'));
+    const bindings = captureRunToolApprovalBindings(
+      first,
+      first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+    )!;
+    const resumed = await build({
+      source,
+      chat: 'ask-chat',
+      saver,
+      eventDriven,
+      reviewed: { bindings, decisions: [{ tool_call_id: 'ask-call', decision: 'approve' }] },
+    });
+    await resumed.resume({ 'ask-call': { type: 'approve' } }, config('ask-chat'));
+    expect(executions).toBe(1);
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+  },
+);
