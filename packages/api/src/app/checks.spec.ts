@@ -12,8 +12,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 import { handleRateLimits } from './limits';
-import { checkInterfaceConfig, checkWebSearchConfig } from './checks';
-import type { AppConfig } from '@librechat/data-schemas';
+import { checkWebSearchConfig } from './checks';
 import { logger } from '@librechat/data-schemas';
 import { extractVariableName as extract } from 'librechat-data-provider';
 
@@ -367,34 +366,5 @@ describe('handleRateLimits', () => {
 
     expect(process.env.AGENT_EVENT_USER_MAX).toEqual('80');
     expect(process.env.AGENT_EVENT_USER_WINDOW).toEqual('2');
-  });
-});
-
-describe('checkInterfaceConfig native web search', () => {
-  const nativeSpec = { name: 'gpt-native', label: 'GPT', preset: { web_search: true } };
-  const buildConfig = (webSearch: boolean | undefined, list: unknown[] = [nativeSpec]) =>
-    ({ interfaceConfig: { webSearch }, modelSpecs: { list } }) as unknown as AppConfig;
-  const nativeWarnings = () =>
-    jest
-      .mocked(logger.warn)
-      .mock.calls.filter(([message]) => String(message).includes('provider-native web search'));
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
-  it('warns when interface.webSearch: false blocks model specs that request native search', () => {
-    checkInterfaceConfig(buildConfig(false));
-    const warnings = nativeWarnings();
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0][0]).toContain('gpt-native');
-    expect(warnings[0][0]).toContain('endpoints.agents.capabilities');
-  });
-
-  it('does not warn when web search is allowed or no spec requests native search', () => {
-    checkInterfaceConfig(buildConfig(true));
-    checkInterfaceConfig(buildConfig(undefined));
-    checkInterfaceConfig(buildConfig(false, [{ name: 'plain', label: 'Plain', preset: {} }]));
-    expect(nativeWarnings()).toHaveLength(0);
   });
 });

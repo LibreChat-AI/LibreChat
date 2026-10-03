@@ -336,33 +336,9 @@ export function checkInterfaceConfig(appConfig: AppConfig): void {
     if (i === 0) i++;
   }
 
-  checkNativeWebSearchConfig(appConfig);
-
   if (i > 0) {
     logSettings();
   }
-}
-
-/**
- * `interface.webSearch` syncs the `WEB_SEARCH.USE` role permission, which gates provider-native
- * search (`web_search` model parameter) as well as LibreChat's `web_search` tool. Warns when model
- * specs ask for native search that this setting blocks for every role it applies to.
- */
-function checkNativeWebSearchConfig(appConfig: AppConfig): void {
-  if (appConfig.interfaceConfig?.webSearch !== false) {
-    return;
-  }
-  const specs = (appConfig.modelSpecs?.list ?? [])
-    .filter((spec) => spec.preset?.web_search === true)
-    .map((spec) => spec.name);
-  if (specs.length === 0) {
-    return;
-  }
-  logger.warn(
-    `Model specs request provider-native web search (\`preset.web_search: true\`), but \`interface.webSearch: false\` denies the \`WEB_SEARCH\` permission, which also blocks native search: ${specs.join(', ')}. ` +
-      "To offer native search without LibreChat's search tool, set `interface.webSearch: true` and remove `web_search` from `endpoints.agents.capabilities`. " +
-      'Removing `interface.webSearch` alone keeps the stored role permission; set it explicitly or update the role in the admin settings.',
-  );
 }
 
 /**
