@@ -1,6 +1,6 @@
 import { QueryClient } from '@tanstack/react-query';
-import { Constants, QueryKeys } from 'librechat-data-provider';
-import type { TMessage, TConversation } from 'librechat-data-provider';
+import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
+import type { TMessage, TConversation, TMessageContentParts } from 'librechat-data-provider';
 import type { TEndpointsConfig } from 'librechat-data-provider';
 import type { LocalizeFunction, TMessageProps } from '~/common';
 import {
@@ -8,6 +8,7 @@ import {
   clearArchivedConversationMessagesCache,
   clearDeletedConversationMessagesCache,
   isValidTimestamp,
+  getAllContentText,
   getMessageAriaLabel,
   getMessageTimestamp,
   getHeaderPrefixForScreenReader,
@@ -166,6 +167,82 @@ describe('clearArchivedConversationMessagesCache', () => {
     expect(queryClient.getQueryData([QueryKeys.messages, Constants.NEW_CONVO])).toEqual(
       newConversationMessages,
     );
+  });
+});
+
+describe('getAllContentText', () => {
+  it('returns an empty string for a missing message', () => {
+    expect(getAllContentText(null)).toBe('');
+  });
+
+  it('falls back to `text` when there are no content parts', () => {
+    expect(getAllContentText(makeMessage({ text: 'legacy reply' }))).toBe('legacy reply');
+  });
+
+  it('falls back to `text` when content holds no readable text parts', () => {
+    const msg = makeMessage({
+      text: 'flattened reply',
+      content: [
+        { type: ContentTypes.TOOL_CALL, tool_call: { name: 'search' } },
+      ] as unknown as TMessageContentParts[],
+    });
+    expect(getAllContentText(msg)).toBe('flattened reply');
+  });
+
+  /** a11y: the error text stays available to announce, so the THINK guard must
+   *  stay keyed to reasoning rather than skipping every non-text part. */
+  it('falls back to `text` for error-only content', () => {
+    const msg = makeMessage({
+      text: 'Something went wrong.',
+      content: [
+        { type: ContentTypes.ERROR, error: 'Something went wrong.' },
+      ] as unknown as TMessageContentParts[],
+    });
+    expect(getAllContentText(msg)).toBe('Something went wrong.');
+  });
+
+  /** Aborting before the first answer token leaves `text` holding only the
+   *  reasoning, so there is nothing safe to fall back to. */
+  it('returns an empty string for reasoning-only content', () => {
+    const msg = makeMessage({
+      text: 'reasoning only',
+      content: [
+        { type: ContentTypes.THINK, think: 'reasoning only' },
+      ] as unknown as TMessageContentParts[],
+    });
+    expect(getAllContentText(msg)).toBe('');
+  });
+
+  it('returns an empty string when reasoning is paired only with a tool call', () => {
+    const msg = makeMessage({
+      text: 'reasoning only',
+      content: [
+        { type: ContentTypes.THINK, think: 'reasoning only' },
+        { type: ContentTypes.TOOL_CALL, tool_call: { name: 'search' } },
+      ] as unknown as TMessageContentParts[],
+    });
+    expect(getAllContentText(msg)).toBe('');
+  });
+
+  it('prefers content parts over `text`, dropping reasoning from aborted runs', () => {
+    const msg = makeMessage({
+      text: 'reasoning leak Partial answer.',
+      content: [
+        { type: ContentTypes.THINK, think: 'reasoning leak' },
+        { type: ContentTypes.TEXT, text: 'Partial answer.' },
+      ] as unknown as TMessageContentParts[],
+    });
+    expect(getAllContentText(msg)).toBe('Partial answer.');
+  });
+
+  it('joins every text part in order', () => {
+    const msg = makeMessage({
+      content: [
+        { type: ContentTypes.TEXT, text: 'first' },
+        { type: ContentTypes.TEXT, text: { value: 'second' } },
+      ] as unknown as TMessageContentParts[],
+    });
+    expect(getAllContentText(msg)).toBe('first\nsecond');
   });
 });
 
