@@ -1,0 +1,128 @@
+# Minimal OpenShift-specific values for LibreChat
+# This mounts your existing librechat.yaml configuration
+
+# Application replica count
+replicaCount: 1
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 3080
+
+# Ingress - DISABLE for OpenShift (we'll create a Route instead)
+ingress:
+  enabled: false
+
+# Persistence for LibreChat images
+persistence:
+  enabled: true
+  storageClassName: ocs-storagecluster-cephfs
+  accessMode: ReadWriteOnce
+  size: 11Gi
+
+# Resource limits - minimal for testing
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+# MongoDB configuration
+mongodb:
+  enabled: true
+  image:
+    registry: docker.io
+    repository: bitnami/mongodb
+    tag: "latest"
+  auth:
+    enabled: true
+    rootPassword: "librechat-mongo-root-pass"
+    username: librechat
+    password: "librechat-mongo-user-pass"
+    database: LibreChat
+  persistence:
+    enabled: true
+    storageClass: ocs-storagecluster-ceph-rbd
+    size: 8Gi
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+
+# Meilisearch configuration
+meilisearch:
+  enabled: true
+  image:
+    tag: v1.7.3
+  persistence:
+    enabled: true
+    storageClass: ocs-storagecluster-ceph-rbd
+    size: 10Gi
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  environment:
+    MEILI_ENV: production
+    MEILI_NO_ANALYTICS: true
+
+# LibreChat RAG API - disabled for minimal deployment
+librechat-rag-api:
+  enabled: false
+
+# Deployment strategy - Recreate to avoid RWO PVC conflicts during rollouts
+updateStrategy:
+  type: Recreate
+
+# Liveness probe - restart pod if hung for 2 minutes
+# (30s initial delay + 4 failures * 30s interval = ~150s before restart)
+livenessProbe:
+  httpGet:
+    path: /api/health
+    port: 3080
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 4
+
+# Readiness probe - stop routing traffic if unhealthy
+readinessProbe:
+  httpGet:
+    path: /api/health
+    port: 3080
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Mount the existing ConfigMap with librechat.yaml
+librechat:
+  # Use existing secret for environment variables
+  existingSecret: librechat-credentials-env
+
+  # Mount the librechat.yaml config from ConfigMap
+  extraVolumes:
+    - name: librechat-config-volume
+      configMap:
+        name: librechat-config
+
+  extraVolumeMounts:
+    - name: librechat-config-volume
+      mountPath: /app/librechat.yaml
+      subPath: librechat.yaml
+
+  # Basic environment variables
+  configEnv:
+    ALLOW_EMAIL_LOGIN: "true"
+    ALLOW_REGISTRATION: "true"
+    APP_TITLE: "AI Agent PoC Portal"
+    HOST: "0.0.0.0"
+    PORT: "3080"
