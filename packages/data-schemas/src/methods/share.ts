@@ -430,25 +430,28 @@ function showsConfiguredSender(message: t.IMessage): boolean {
 }
 
 /**
- * Commit a lazy snapshot backfill only while the link still has none or has an older
- * snapshot version. An owner can
- * republish the same shareId while a viewer's first read is in flight, and an
- * unconditional write would restore the snapshot that republish just replaced,
- * re-authorizing the stable URL of a file they removed. The stored snapshot wins any
- * race; `timestamps: false` keeps a migration from looking like a publication, since
+ * Commit a lazy snapshot backfill only while the link still holds exactly the snapshot
+ * the viewer read (or none), at an older snapshot version. An owner can republish the
+ * same shareId while a viewer's first read is in flight, and an unconditional write
+ * would restore the snapshot that republish just replaced, re-authorizing the stable URL
+ * of a file they removed. A version check alone is not enough during a rolling deploy:
+ * an older replica republishes without `snapshotVersion`, which still reads as stale, so
+ * the read array itself is the compare-and-set. The stored snapshot wins any race;
+ * `timestamps: false` keeps a migration from looking like a publication, since
  * `updatedAt` is the revision a viewer's fork request is validated against.
  */
 async function persistBackfilledSnapshots(
   SharedLink: Model<t.ISharedLink>,
   filter: FilterQuery<t.ISharedLink>,
+  readSnapshots: t.SharedFileSnapshot[] | undefined,
   fileSnapshots: t.SharedFileSnapshot[],
 ): Promise<t.SharedFileSnapshot[]> {
   const result = await SharedLink.updateOne(
     {
       ...filter,
       snapshotFiles: { $ne: false },
+      fileSnapshots: readSnapshots === undefined ? { $exists: false } : readSnapshots,
       $or: [
-        { fileSnapshots: { $exists: false } },
         { snapshotVersion: { $exists: false } },
         { snapshotVersion: { $lt: FILE_SNAPSHOT_VERSION } },
       ],
@@ -1102,6 +1105,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         await persistBackfilledSnapshots(
           SharedLink,
           { _id: share._id, shareId: resolvedShareId },
+          originalFileSnapshots,
           fileSnapshots ?? [],
         );
       } else if (
@@ -1690,6 +1694,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       const fileSnapshots = await persistBackfilledSnapshots(
         SharedLink,
         { shareId },
+        share.fileSnapshots,
         mergeFileSnapshots(
           share.fileSnapshots,
           await buildFileSnapshots(mongoose, messages, share.user),

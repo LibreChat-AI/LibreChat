@@ -3675,6 +3675,51 @@ describe('Share Methods', () => {
       expect(republished?.fileSnapshots).toEqual([]);
     });
 
+    test('keeps a legacy replica republish that lands during a version upgrade', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      await seedConversation(userId, conversationId);
+      const docId = await createFile(userId);
+      const message = await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: 'legacy file',
+        isCreatedByUser: true,
+        files: [{ file_id: docId, filename: 'report.pdf', type: 'application/pdf' }],
+      });
+      const shareId = `share_${nanoid()}`;
+      /* A version-1 link: snapshots present, no `snapshotVersion`, so the read upgrades it. */
+      await SharedLink.create({
+        shareId,
+        conversationId,
+        user: userId,
+        messages: [message._id],
+        fileSnapshots: [
+          {
+            file_id: docId,
+            source: 'local',
+            filepath: `/uploads/${userId}/${docId}`,
+            filename: 'report.pdf',
+            type: 'application/pdf',
+            bytes: 1024,
+          },
+        ],
+      });
+
+      /* An older replica republishes without the file and, knowing no versions, leaves
+       * `snapshotVersion` absent: the link still looks stale to a version check. */
+      await shareMethods.getSharedMessages(shareId, undefined, {
+        preflight: async () => {
+          await SharedLink.updateOne({ shareId }, { $set: { fileSnapshots: [] } });
+        },
+      });
+
+      const saved = await SharedLink.findOne({ shareId }).lean();
+      expect(saved?.fileSnapshots).toEqual([]);
+      expect(saved?.snapshotVersion).toBeUndefined();
+    });
+
     test('does not enrich an existing snapshot after its file revision changes', async () => {
       const userId = new mongoose.Types.ObjectId().toString();
       const conversationId = `conv_${nanoid()}`;
