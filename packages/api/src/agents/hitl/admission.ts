@@ -1,4 +1,5 @@
 import type { TToolApprovalPolicy } from 'librechat-data-provider';
+import type { AgentToolOptions } from 'librechat-data-provider';
 import type { PluginHookSource } from '~/agents/hooks/source';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { ResolvedToolApprovalHook } from './hooks';
@@ -22,6 +23,7 @@ interface ApprovalSubagentGraph {
 
 export interface ToolApprovalAdmissionAgent {
   readonly id?: string;
+  readonly tool_options?: AgentToolOptions;
   readonly tools?: readonly (string | ApprovalToolReference)[];
   readonly toolRegistry?: ApprovalToolRegistry;
   readonly toolDefinitions?: readonly ApprovalToolReference[];
@@ -108,6 +110,17 @@ export function canAgentGraphPause({
   }
 
   const approvalGraph = collectApprovalAgents(agents);
+  if (
+    approvalGraph.agents.some((agent) =>
+      Object.entries(agent.tool_options ?? {}).some(
+        ([name, options]) =>
+          options.approval_mode != null &&
+          options.approval_mode !== 'allow' &&
+          !isToolDeniedByApprovalPolicy(policy, name),
+      ),
+    )
+  )
+    return true;
   const toolOwners = new Map<string, Set<string | undefined>>();
   const aliases: MCPToolAlias[] = [];
   const aliasesByToolName = new Map<string, string[]>();

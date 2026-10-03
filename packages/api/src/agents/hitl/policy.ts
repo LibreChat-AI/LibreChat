@@ -953,6 +953,7 @@ export function toClientPendingAction(
     resumeContext: _resumeContext,
     codeExecutionBinding: _codeExecutionBinding,
     toolApprovalAliases: _toolApprovalAliases,
+    toolApprovalBindings: _toolApprovalBindings,
     ...clientSafe
   } = pendingAction;
   return clientSafe;

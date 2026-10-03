@@ -906,6 +906,11 @@ endpoints:
   #   # "tool_intents" enables live model-written labels for native tools and opted-in MCP tools.
   #   # (optional) Require user approval before matching tool calls. Disabled by default.
   #   toolApproval:
+  #     # Opt in after all replicas have been upgraded. Agent tool rows then expose
+  #     # Always ask, Always approve, Ask once per chat, and Ask once then always approve.
+  #     # Explicit administrator ask/deny rules and hooks remain authoritative.
+  #     agentModes: false
+  #     grantLookupTimeoutMs: 3000
   #     enabled: true
   #     mode: default # default, dontAsk, or bypass
   #     allow: ["mcp:trusted-server:read_*"]

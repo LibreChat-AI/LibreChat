@@ -1,3 +1,4 @@
+import { bindToolApproval, getToolApprovalBinding } from './approval';
 /**
  * @fileoverview Utility functions for building tool registries from agent tool_options.
  * Tool classification (deferred_tools, allowed_callers) is configured via the agent UI.
@@ -158,6 +159,7 @@ export function buildToolRegistryFromAgentOptions(
       toolDef.serverName = tool.serverName;
     }
 
+    bindToolApproval(toolDef, getToolApprovalBinding(tool));
     registry.set(name, toolDef);
   }
 
@@ -192,6 +194,7 @@ export function extractMCPToolDefinition(tool: MCPToolInstance): ToolDefinition 
     def.description = tool.description;
   }
 
+  bindToolApproval(def, getToolApprovalBinding(tool));
   if (tool.mcpJsonSchema) {
     def.parameters = tool.mcpJsonSchema;
   }

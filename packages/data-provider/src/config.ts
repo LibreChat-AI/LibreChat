@@ -1100,6 +1100,10 @@ export const toolApprovalPolicySchema = z
   .object({
     enabled: z.boolean().optional(),
     mode: toolApprovalModeSchema.optional(),
+    /** Enable after all replicas support agent-scoped approval modes and grants. */
+    agentModes: z.boolean().optional(),
+    /** Bounded grant lookups fail back to manual review, never automatic approval. */
+    grantLookupTimeoutMs: z.number().int().min(100).max(5000).optional(),
     allow: z.array(z.string()).optional(),
     deny: z.array(z.string()).optional(),
     ask: z.array(z.string()).optional(),
