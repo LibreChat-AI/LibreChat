@@ -60,12 +60,24 @@ async function gracefulExit(code = 0) {
 (async () => {
   await connect();
 
+  const args = process.argv.slice(2);
+  let yesCount = 0;
+  const filteredArgs = args.filter((arg) => {
+    if (arg === '-y') {
+      yesCount++;
+      return false;
+    }
+    return true;
+  });
+  const confirmDelete = yesCount >= 1;
+  const confirmTxDelete = yesCount >= 2;
+
   console.purple('---------------');
   console.purple('Deleting a user and all related data');
   console.purple('---------------');
 
   // 1) Get email
-  let email = process.argv[2]?.trim();
+  let email = filteredArgs[0]?.trim();
   if (!email) {
     email = (await askQuestion('Email:')).trim();
   }
@@ -78,17 +90,22 @@ async function gracefulExit(code = 0) {
   }
 
   // 3) Confirm full deletion
-  const confirmAll = await askQuestion(
-    `Really delete user ${user.email} (${user._id}) and ALL their data? (y/N)`,
-  );
-  if (confirmAll.toLowerCase() !== 'y') {
-    console.yellow('Aborted.');
-    return gracefulExit(0);
+  if (!confirmDelete) {
+    const confirmAll = await askQuestion(
+      `Really delete user ${user.email} (${user._id}) and ALL their data? (y/N)`,
+    );
+    if (confirmAll.toLowerCase() !== 'y') {
+      console.yellow('Aborted.');
+      return gracefulExit(0);
+    }
   }
 
   // 4) Ask specifically about transactions
-  const confirmTx = await askQuestion('Also delete all transaction history for this user? (y/N)');
-  const deleteTx = confirmTx.toLowerCase() === 'y';
+  let deleteTx = confirmTxDelete;
+  if (!confirmTxDelete) {
+    const confirmTx = await askQuestion('Also delete all transaction history for this user? (y/N)');
+    deleteTx = confirmTx.toLowerCase() === 'y';
+  }
 
   const uid = user._id.toString();
 
