@@ -128,13 +128,21 @@ export type LitRail = { rail: HTMLElement; length: number; end: boolean };
 /** The glyph of the row at `y` among the rows this panel holds itself, or the nearest
  *  one above it when the pointer is inside a row's open body. Rows are in document
  *  order top to bottom, so a binary search reads a handful of rects. */
-function glyphAt(panel: Element, y: number): Element | null {
-  const glyphs: Element[] = [];
-  panel.querySelectorAll(FOLD_GLYPH_SELECTOR).forEach((glyph) => {
-    if (glyph.closest(FOLD_PANEL) === panel) {
-      glyphs.push(glyph);
+function glyphAt(
+  panel: Element,
+  y: number,
+  glyphsByPanel: WeakMap<Element, Element[]>,
+): Element | null {
+  let glyphs = glyphsByPanel.get(panel);
+  if (glyphs == null) {
+    glyphs = [];
+    for (const glyph of panel.querySelectorAll(FOLD_GLYPH_SELECTOR)) {
+      if (glyph.closest(FOLD_PANEL) === panel) {
+        glyphs.push(glyph);
+      }
     }
-  });
+    glyphsByPanel.set(panel, glyphs);
+  }
   let found: Element | null = null;
   let low = 0;
   let high = glyphs.length - 1;
@@ -156,7 +164,12 @@ function glyphAt(panel: Element, y: number): Element | null {
  * Empty over a rail itself, whose own hover shows what it collapses, and over any
  * header that no fold of `root` holds.
  */
-export function litFoldPath(root: Element, target: Element, y: number): LitRail[] {
+export function litFoldPath(
+  root: Element,
+  target: Element,
+  y: number,
+  glyphsByPanel = new WeakMap<Element, Element[]>(),
+): LitRail[] {
   if (target.closest(FOLD_RAIL) != null) {
     return [];
   }
@@ -164,7 +177,7 @@ export function litFoldPath(root: Element, target: Element, y: number): LitRail[
   if (innermost == null || !root.contains(innermost)) {
     return [];
   }
-  const glyph = glyphAt(innermost, y);
+  const glyph = glyphAt(innermost, y, glyphsByPanel);
   if (glyph == null) {
     return [];
   }
@@ -216,6 +229,7 @@ export function useFoldPath(rootRef: RefObject<HTMLElement>, hasBody: boolean) {
     if (!hasBody || root == null || root.parentElement?.closest(FOLD_ROOT) != null) {
       return;
     }
+    let glyphsByPanel = new WeakMap<Element, Element[]>();
     let lit: LitRail[] = [];
     let frame = 0;
     let pointer: { target: Element; y: number } | null = null;
@@ -224,7 +238,7 @@ export function useFoldPath(rootRef: RefObject<HTMLElement>, hasBody: boolean) {
       if (pointer == null) {
         return;
       }
-      const next = litFoldPath(root, pointer.target, pointer.y);
+      const next = litFoldPath(root, pointer.target, pointer.y, glyphsByPanel);
       paintFoldPath(lit, next);
       lit = next;
     };
@@ -245,18 +259,55 @@ export function useFoldPath(rootRef: RefObject<HTMLElement>, hasBody: boolean) {
         frame = requestAnimationFrame(paint);
       }
     };
-    /** A press usually opens or closes a fold, which moves every row under it. */
-    const onDown = () => {
-      paintFoldPath(lit, []);
-      lit = [];
-    };
+    const mutations = new MutationObserver((records) => {
+      let changed = false;
+      let structureChanged = false;
+      for (const record of records) {
+        /** Painting the rail's own style does not change row geometry. */
+        if (
+          record.type === 'attributes' &&
+          record.attributeName === 'style' &&
+          record.target instanceof Element &&
+          record.target.matches(FOLD_RAIL)
+        ) {
+          continue;
+        }
+        changed = true;
+        structureChanged ||= record.type === 'childList' || record.type === 'attributes';
+      }
+      if (structureChanged) {
+        glyphsByPanel = new WeakMap();
+      }
+      if (changed) {
+        clear();
+      }
+    });
+    mutations.observe(root, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'open', 'data-fold-panel'],
+    });
+    const resize = new ResizeObserver(clear);
+    resize.observe(root);
+    const message = root.closest('.message-render');
+    if (message != null && message !== root) {
+      resize.observe(message);
+    }
     root.addEventListener('pointermove', onMove);
     root.addEventListener('pointerleave', clear);
-    root.addEventListener('pointerdown', onDown);
+    root.addEventListener('pointerdown', clear);
+    window.addEventListener('scroll', clear, true);
+    window.addEventListener('resize', clear);
     return () => {
       root.removeEventListener('pointermove', onMove);
       root.removeEventListener('pointerleave', clear);
-      root.removeEventListener('pointerdown', onDown);
+      root.removeEventListener('pointerdown', clear);
+      window.removeEventListener('scroll', clear, true);
+      window.removeEventListener('resize', clear);
+      mutations.disconnect();
+      resize.disconnect();
       clear();
     };
   }, [rootRef, hasBody]);

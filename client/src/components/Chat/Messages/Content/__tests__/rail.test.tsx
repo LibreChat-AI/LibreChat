@@ -234,18 +234,35 @@ describe('litFoldPath', () => {
 
 describe('useFoldPath', () => {
   let frames: FrameRequestCallback[] = [];
-  /** Moves are coalesced into the next frame, as a browser would run them. */
-  const pointer = (type: string, target: Element, clientY: number, pointerType = 'mouse') => {
-    const event = new Event(type, { bubbles: type !== 'pointerleave' });
-    Object.assign(event, { clientY, pointerType });
-    target.dispatchEvent(event);
+  let resize: ResizeObserverCallback;
+  const disconnect = jest.fn();
+  const flushFrames = () => {
     const pending = frames;
     frames = [];
     pending.forEach((callback) => callback(0));
   };
+  /** Moves are coalesced into the next frame, as a browser would run them. */
+  const pointer = (
+    type: string,
+    target: Element,
+    clientY: number,
+    pointerType = 'mouse',
+    flush = true,
+  ) => {
+    const event = new Event(type, { bubbles: type !== 'pointerleave' });
+    Object.assign(event, { clientY, pointerType });
+    target.dispatchEvent(event);
+    if (flush) {
+      flushFrames();
+    }
+  };
 
   beforeEach(() => {
     frames = [];
+    jest.spyOn(window, 'ResizeObserver').mockImplementation((callback) => {
+      resize = callback;
+      return { observe: jest.fn(), unobserve: jest.fn(), disconnect };
+    });
     jest.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
       frames.push(callback);
       return frames.length;
@@ -291,6 +308,105 @@ describe('useFoldPath', () => {
     expect(a.rail.dataset.foldLit).toBe('end');
     pointer('pointerdown', rows.a1, 55);
     expect(a.rail.dataset.foldLit).toBeUndefined();
+  });
+
+  it('cancels a queued paint when the pointer presses before the frame', () => {
+    const { root, a, b, rows } = foldFixture();
+    renderHook(() => useFoldPath({ current: root }, true));
+    pointer('pointermove', rows.b2, 150, 'mouse', false);
+    expect(frames).toHaveLength(1);
+    pointer('pointerdown', rows.b2, 150);
+    expect(window.cancelAnimationFrame).toHaveBeenCalledWith(1);
+    expect(frames).toHaveLength(0);
+    expect(a.rail.dataset.foldLit).toBeUndefined();
+    expect(b.rail.dataset.foldLit).toBeUndefined();
+  });
+
+  it('reuses the panel glyph list across pointer frames', async () => {
+    const { root, b, rows } = foldFixture();
+    const query = jest.spyOn(b.el, 'querySelectorAll');
+    renderHook(() => useFoldPath({ current: root }, true));
+    pointer('pointermove', rows.b1, 120);
+    await Promise.resolve();
+    expect(b.rail.dataset.foldLit).toBe('end');
+    pointer('pointermove', rows.b2, 150);
+    pointer('pointermove', rows.b3, 180);
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(b.rail.style.getPropertyValue('--fold-lit')).toBe('82px');
+  });
+
+  it('clears on streamed text changes without relighting a queued frame', async () => {
+    const { root, b, rows } = foldFixture();
+    rows.b1.append(document.createTextNode('output'));
+    renderHook(() => useFoldPath({ current: root }, true));
+    pointer('pointermove', rows.b2, 150);
+    await Promise.resolve();
+    pointer('pointermove', rows.b2, 150, 'mouse', false);
+    rows.b1.firstChild!.textContent = 'growing output';
+    await Promise.resolve();
+    flushFrames();
+    expect(b.rail.dataset.foldLit).toBeUndefined();
+    expect(b.rail.style.getPropertyValue('--fold-lit')).toBe('');
+  });
+
+  it('rebuilds cached glyphs after rows are inserted or removed', async () => {
+    const { root, b, rows } = foldFixture();
+    const query = jest.spyOn(b.el, 'querySelectorAll');
+    renderHook(() => useFoldPath({ current: root }, true));
+    pointer('pointermove', rows.b1, 120);
+    const added = rows.b2.cloneNode() as HTMLElement;
+    added.getBoundingClientRect = () => ({ top: 210, height: 20 }) as DOMRect;
+    b.el.append(added);
+    await Promise.resolve();
+    expect(b.rail.dataset.foldLit).toBeUndefined();
+    pointer('pointermove', added, 215);
+    expect(b.rail.style.getPropertyValue('--fold-lit')).toBe('114px');
+    added.remove();
+    await Promise.resolve();
+    pointer('pointermove', rows.b3, 180);
+    expect(b.rail.style.getPropertyValue('--fold-lit')).toBe('82px');
+    expect(query).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['class', 'style', 'hidden', 'open'])(
+    'clears on a disclosure %s change',
+    async (attribute) => {
+      const { root, b, rows } = foldFixture();
+      renderHook(() => useFoldPath({ current: root }, true));
+      pointer('pointermove', rows.b2, 150);
+      rows.b1.setAttribute(attribute, 'changed');
+      await Promise.resolve();
+      expect(b.rail.dataset.foldLit).toBeUndefined();
+    },
+  );
+
+  it('clears when resizing or scrolling moves the hovered row', () => {
+    const { root, b, rows } = foldFixture();
+    renderHook(() => useFoldPath({ current: root }, true));
+    pointer('pointermove', rows.b2, 150);
+    resize([], {} as ResizeObserver);
+    expect(b.rail.dataset.foldLit).toBeUndefined();
+    pointer('pointermove', rows.b2, 150);
+    root.dispatchEvent(new Event('scroll'));
+    expect(b.rail.dataset.foldLit).toBeUndefined();
+    pointer('pointermove', rows.b2, 150);
+    window.dispatchEvent(new Event('resize'));
+    expect(b.rail.dataset.foldLit).toBeUndefined();
+  });
+
+  it('disconnects observers and cancels pending work on unmount', async () => {
+    const { root, b, rows } = foldFixture();
+    const { unmount } = renderHook(() => useFoldPath({ current: root }, true));
+    pointer('pointermove', rows.b2, 150);
+    pointer('pointermove', rows.b3, 180, 'mouse', false);
+    unmount();
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(frames).toHaveLength(0);
+    expect(b.rail.dataset.foldLit).toBeUndefined();
+    rows.b1.remove();
+    await Promise.resolve();
+    pointer('pointermove', rows.b2, 150);
+    expect(b.rail.dataset.foldLit).toBeUndefined();
   });
 
   it('leaves a fold nested in another to the outer one', () => {

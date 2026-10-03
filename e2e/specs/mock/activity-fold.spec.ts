@@ -176,6 +176,30 @@ test.describe('activity fold', () => {
     expect(glyph).not.toBeNull();
     expect(Math.abs(elbow!.y + elbow!.height - (glyph!.y + glyph!.height / 2))).toBeLessThan(2);
     await shot(page, 'lit-path');
+
+    await failedCall.evaluate((row) => {
+      const { top, height } = row.getBoundingClientRect();
+      row.dispatchEvent(
+        new PointerEvent('pointermove', {
+          bubbles: true,
+          pointerType: 'mouse',
+          clientY: top + height / 2,
+        }),
+      );
+      row.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    });
+    await expect(groupRail).not.toHaveAttribute('data-fold-lit');
+    await expect(phaseRail).not.toHaveAttribute('data-fold-lit');
+    await failedCall.hover();
+    await expect(groupRail).toHaveAttribute('data-fold-lit', 'end');
+    await groupPanel.locator('> div > div').evaluate((rows) => {
+      (rows as HTMLElement).style.paddingTop = '12px';
+    });
+    await expect(groupRail).not.toHaveAttribute('data-fold-lit');
+    await expect(phaseRail).not.toHaveAttribute('data-fold-lit');
+    await groupPanel.locator('> div > div').evaluate((rows) => {
+      (rows as HTMLElement).style.removeProperty('padding-top');
+    });
     await page.mouse.move(0, 0);
     await expect(groupRail).not.toHaveAttribute('data-fold-lit');
     await expect(phaseRail).not.toHaveAttribute('data-fold-lit');
