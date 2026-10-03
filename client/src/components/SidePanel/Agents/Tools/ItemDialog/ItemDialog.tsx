@@ -17,7 +17,7 @@ export default function ItemDialog({ item, agentId, onClose }: Props) {
       <OGDialogContent
         className={cn(
           'w-11/12 gap-0 overflow-hidden rounded-2xl p-0 md:max-h-[85dvh]',
-          isAction ? 'max-w-5xl' : 'max-w-[560px]',
+          isAction ? 'max-w-5xl' : 'max-w-[35rem]',
         )}
         data-testid="item-dialog"
       >
@@ -26,7 +26,7 @@ export default function ItemDialog({ item, agentId, onClose }: Props) {
             <ItemDialogHeader item={item} />
             <div
               className={cn(
-                'px-6 pb-6 pt-2',
+                'px-6 pt-2 pb-6',
                 isAction
                   ? 'flex min-h-0 flex-1 flex-col overflow-hidden'
                   : 'flex-1 overflow-y-auto',

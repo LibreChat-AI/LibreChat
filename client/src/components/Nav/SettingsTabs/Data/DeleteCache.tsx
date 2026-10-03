@@ -58,7 +58,7 @@ export const DeleteCache = ({ disabled = false }: { disabled?: boolean }) => {
         <OGDialogTemplate
           showCloseButton={false}
           title={localize('com_nav_confirm_clear')}
-          className="max-w-[450px]"
+          className="max-w-[28.125rem]"
           main={
             <Label className="text-left text-sm font-medium">
               {localize('com_nav_clear_cache_confirm_message')}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSprings, animated, SpringConfig } from '@react-spring/web';
+import useRemScale from '~/hooks/useRemScale';
 
 interface SegmenterOptions {
   granularity?: 'grapheme' | 'word' | 'sentence';
@@ -76,6 +77,7 @@ const SplitText: React.FC<SplitTextProps> = ({
   const [inView, setInView] = useState(false);
   const ref = useRef<HTMLParagraphElement>(null);
   const animatedCount = useRef(0);
+  const remScale = useRemScale();
 
   const [springs] = useSprings(
     letters.length,
@@ -117,21 +119,17 @@ const SplitText: React.FC<SplitTextProps> = ({
   }, [threshold, rootMargin]);
 
   useEffect(() => {
-    if (ref.current && inView) {
-      const element = ref.current;
-      setTimeout(() => {
-        const lineHeight =
-          parseInt(getComputedStyle(element).lineHeight) ||
-          parseInt(getComputedStyle(element).fontSize) * 1.2;
-        const height = element.offsetHeight;
-        const lines = Math.round(height / lineHeight);
-
-        if (onLineCountChange) {
-          onLineCountChange(lines);
-        }
-      }, 100);
+    const element = ref.current;
+    if (!element || !inView || !onLineCountChange) {
+      return;
     }
-  }, [inView, text, onLineCountChange]);
+    const timeout = setTimeout(() => {
+      const style = getComputedStyle(element);
+      const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
+      onLineCountChange(Math.round(element.offsetHeight / lineHeight));
+    }, 100);
+    return () => clearTimeout(timeout);
+  }, [inView, text, onLineCountChange, remScale]);
 
   return (
     <>

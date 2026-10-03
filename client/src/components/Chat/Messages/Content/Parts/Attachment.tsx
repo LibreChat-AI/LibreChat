@@ -1,6 +1,6 @@
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Button } from '@librechat/client';
 import { Tools } from 'librechat-data-provider';
+import { Button, useRemScale } from '@librechat/client';
 import { Loader2, AlertCircle, Download, ChevronDown, Files as FilesIcon } from 'lucide-react';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { ToolArtifactType } from '~/utils/artifacts';
@@ -25,6 +25,7 @@ import { useAttachmentLink } from './LogLink';
 import { cn } from '~/utils';
 
 const COLLAPSED_MAX_HEIGHT = 320;
+const OVERFLOW_TOLERANCE = 1;
 
 /**
  * Row placeholder for a code-execution office file whose inline preview
@@ -294,13 +295,13 @@ const TextAttachment = memo(
     showFileChip?: boolean;
   }) => {
     const localize = useLocalize();
+    const remScale = useRemScale();
+    const collapsedMaxHeight = COLLAPSED_MAX_HEIGHT * remScale;
+    const overflowTolerance = OVERFLOW_TOLERANCE * remScale;
     const preId = useId();
     const preRef = useRef<HTMLPreElement>(null);
     const [isVisible, setIsVisible] = useState(false);
     const [expanded, setExpanded] = useState(false);
-    // Decided once after layout: does the text actually overflow the collapsed
-    // height? Char count is a poor proxy (a 100-char file with many newlines can
-    // overflow; 800 chars of dense single-line text may not), so we measure.
     const [overflowed, setOverflowed] = useState(false);
     const file = attachment as TFile & TAttachmentMetadata;
     const { handleDownload } = useAttachmentLink({
@@ -324,8 +325,8 @@ const TextAttachment = memo(
       if (!el) {
         return;
       }
-      setOverflowed(el.scrollHeight > COLLAPSED_MAX_HEIGHT + 1);
-    }, [text]);
+      setOverflowed(el.scrollHeight > collapsedMaxHeight + overflowTolerance);
+    }, [text, collapsedMaxHeight, overflowTolerance]);
 
     const isClamped = overflowed && !expanded;
 
@@ -379,7 +380,7 @@ const TextAttachment = memo(
                 'text-text-primary font-mono text-sm leading-6 break-words whitespace-pre-wrap',
                 isClamped ? 'overflow-hidden' : 'overflow-auto',
               )}
-              style={isClamped ? { maxHeight: COLLAPSED_MAX_HEIGHT } : undefined}
+              style={isClamped ? { maxHeight: collapsedMaxHeight } : undefined}
             >
               {text}
             </pre>

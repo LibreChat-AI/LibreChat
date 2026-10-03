@@ -46,6 +46,7 @@ import { TermsAndConditionsModal } from '~/components/ui';
 import useDrawerSwipe from '~/hooks/Nav/useDrawerSwipe';
 import ChatSettingsProvider from './ChatSettings';
 import { useHealthCheck } from '~/data-provider';
+import Settings from '~/components/Nav/Settings';
 import { Banner } from '~/components/Banners';
 import store from '~/store';
 
@@ -146,6 +147,14 @@ function RootLayout() {
     }
   }, [termsData]);
 
+  /** The overscroll guard in style.css keys off this attribute: drawer mode is decided
+   *  against the scaled root font size, which a media query cannot read. */
+  useEffect(() => {
+    const root = document.documentElement;
+    root.toggleAttribute('data-drawer-nav', isSmallScreen);
+    return () => root.removeAttribute('data-drawer-nav');
+  }, [isSmallScreen]);
+
   const handleAcceptTerms = () => {
     setShowTerms(false);
   };
@@ -231,6 +240,7 @@ function RootLayout() {
                   </div>
                 </div>
               </PromptGroupsProvider>
+              <Settings />
               <KeyboardShortcutsProvider />
               <ReplyNotifications />
             </AgentsMapContext.Provider>

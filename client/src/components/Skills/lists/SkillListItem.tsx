@@ -1,6 +1,7 @@
 import { memo, useState, useMemo, useCallback } from 'react';
 import { FixedSizeTree } from 'react-vtree';
 import { useNavigate } from 'react-router-dom';
+import { useRemScale } from '@librechat/client';
 import { ScrollText, ChevronDown, ChevronRight, Folder, Pin } from 'lucide-react';
 import type { FixedSizeNodeData, TreeWalkerValue, TreeWalker } from 'react-vtree';
 import type { TSkillSummary, TSkillFile } from 'librechat-data-provider';
@@ -139,12 +140,12 @@ function FileTreeNode({
 }) {
   const isFolder = data.nodeType === 'folder';
   const isFileActive = !isFolder && treeData?.activeFile === data.path;
-  const indent = data.depth * 16 + (isFolder ? 8 : 24);
+  const indentRem = (data.depth * 16 + (isFolder ? 8 : 24)) / 16;
 
   return (
     <button
       type="button"
-      style={{ ...style, paddingLeft: `${indent}px` }}
+      style={{ ...style, paddingLeft: `${indentRem}rem` }}
       onClick={(e) => {
         e.stopPropagation();
         if (isFolder) {
@@ -198,7 +199,8 @@ function InlineFileTree({
 
   const visibleCount = useMemo(() => countVisible(treeEntries, openIds), [treeEntries, openIds]);
 
-  const height = Math.min(visibleCount * ITEM_SIZE, MAX_HEIGHT);
+  const remScale = useRemScale();
+  const height = Math.min(visibleCount * ITEM_SIZE, MAX_HEIGHT) * remScale;
 
   const handleToggle = useCallback((id: string, isOpen: boolean) => {
     setOpenIds((prev) => {
@@ -241,7 +243,7 @@ function InlineFileTree({
   return (
     <FixedSizeTree<FileNodeData>
       treeWalker={treeWalker}
-      itemSize={ITEM_SIZE}
+      itemSize={ITEM_SIZE * remScale}
       height={height}
       width="100%"
       itemData={callbacks}

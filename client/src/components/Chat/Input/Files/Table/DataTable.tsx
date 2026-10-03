@@ -132,7 +132,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
             setRowSelection({});
           }}
           disabled={!table.getFilteredSelectedRowModel().rows.length || isDeleting}
-          className={cn('min-w-[40px] transition-all duration-200', isSmallScreen && 'px-2 py-1')}
+          className={cn('min-w-[2.5rem] transition-all duration-200', isSmallScreen && 'px-2 py-1')}
         >
           {isDeleting ? (
             <Spinner className="size-3.5 sm:size-4" />
@@ -166,7 +166,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
         <Table
           unwrapped
           aria-rowcount={rows.length > 0 ? rows.length + 1 : undefined}
-          className="w-full min-w-[300px] border-separate border-spacing-0"
+          className="w-full min-w-[18.75rem] border-separate border-spacing-0"
         >
           <TableHeader sticky>
             {table.getHeaderGroups().map((headerGroup) => (

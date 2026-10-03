@@ -168,7 +168,7 @@ export default function OutputRenderer({
     <div>
       <div className="group/copy relative">
         {isJson ? (
-          <pre className="max-h-[300px] overflow-auto rounded text-xs">
+          <pre className="max-h-[18.75rem] overflow-auto rounded text-xs">
             <code className="hljs language-json !break-words !whitespace-pre-wrap">
               {displayText}
             </code>
@@ -178,7 +178,7 @@ export default function OutputRenderer({
             ref={outputRef}
             onScroll={terminal ? handleOutputScroll : undefined}
             className={cn(
-              'max-h-[300px] overflow-auto text-xs break-words whitespace-pre-wrap',
+              'max-h-[18.75rem] overflow-auto text-xs break-words whitespace-pre-wrap',
               error && 'text-status-error font-mono',
               !error && structured && 'font-mono',
               !error && structured && (terminal ? 'text-text-primary' : 'text-text-secondary'),
@@ -215,7 +215,7 @@ export default function OutputRenderer({
         </Button>
       )}
       {showErrorDetails && rawError && (
-        <pre className="text-status-error mt-2 max-h-[200px] overflow-auto font-mono text-xs break-words whitespace-pre-wrap">
+        <pre className="text-status-error mt-2 max-h-[12.5rem] overflow-auto font-mono text-xs break-words whitespace-pre-wrap">
           {rawError}
         </pre>
       )}

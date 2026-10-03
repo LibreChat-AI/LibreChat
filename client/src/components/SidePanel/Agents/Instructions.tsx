@@ -21,7 +21,7 @@ export default function Instructions() {
             onBlur={field.onBlur}
             inputRef={field.ref}
             placeholder={localize('com_agents_instructions_placeholder')}
-            className="min-h-[88px] resize-y"
+            className="min-h-[5.5rem] resize-y"
             labelClassName="block text-[11px] font-medium uppercase tracking-wide text-text-secondary"
             rows={3}
             required={true}
@@ -29,7 +29,7 @@ export default function Instructions() {
           />
           {error && (
             <span
-              className="mt-1 text-xs text-text-destructive transition duration-300 ease-in-out"
+              className="text-text-destructive mt-1 text-xs transition duration-300 ease-in-out"
               role="alert"
             >
               {localize('com_ui_field_required')}

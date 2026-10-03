@@ -4,7 +4,7 @@ import throttle from 'lodash/throttle';
 import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { List, CellMeasurer, CellMeasurerCache } from 'react-virtualized';
-import { Button, EmptyState, Spinner, useMediaQuery, buttonVariants } from '@librechat/client';
+import { Button, EmptyState, Spinner, useRemScale, buttonVariants } from '@librechat/client';
 import {
   Archive,
   ChevronDown,
@@ -36,6 +36,7 @@ import { unlistedRunningIds, RUNNING_CHATS_GROUP, groupConversationsWithRunning 
 import { useLocalize, TranslationKeys, useElementSize, useOuterScrollWindow } from '~/hooks';
 import { useActiveJobs, useRunningConversationsQuery } from '~/data-provider';
 import { facetFilterCountAtom, resetFacetsAtom } from './facets';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { groupConversations, cn } from '~/utils';
 import Convo from './Convo';
 import store from '~/store';
@@ -236,7 +237,7 @@ const Conversations: FC<ConversationsProps> = ({
     resetFilters();
     resetFacets();
   }, [resetFilters, resetFacets]);
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
   /* Dropping a chat on the Chats section makes it an ordinary chat: out of its
    * project, and unpinned. A root-list chat that is not pinned already is one,
    * so it is rejected rather than given a drop that would do nothing. */
@@ -273,6 +274,7 @@ const Conversations: FC<ConversationsProps> = ({
   });
   dropRef(chatsRegionRef);
   const convoHeight = isSmallScreen ? 44 : 34;
+  const remScale = useRemScale();
   const { ref: listContainerRef, width: listWidth } = useElementSize<HTMLDivElement>();
   /** The list does not scroll: the sidebar's one scroll container does, and the
    *  list virtualizes against the slice of it the rows currently occupy. */
@@ -423,7 +425,7 @@ const Conversations: FC<ConversationsProps> = ({
     () =>
       new CellMeasurerCache({
         fixedWidth: true,
-        defaultHeight: convoHeight,
+        defaultHeight: Math.round(convoHeight * remScale),
         keyMapper: (index) => {
           const item = flattenedItemsRef.current[index];
           if (!item) {
@@ -441,9 +443,12 @@ const Conversations: FC<ConversationsProps> = ({
           return `unknown-${index}`;
         },
       }),
-    [convoHeight],
+    [convoHeight, remScale],
   );
 
+  /** Rows are sized in rem, so a UI scale change resizes them without changing the
+   *  sidebar's physical width: pinned at its cap, the width effect below never fires
+   *  and every cached height stays stale. */
   useEffect(() => {
     const frameId = requestAnimationFrame(() => {
       cache.clearAll();
@@ -452,7 +457,7 @@ const Conversations: FC<ConversationsProps> = ({
       }
     });
     return () => cancelAnimationFrame(frameId);
-  }, [search.query, cache, containerRef]);
+  }, [search.query, remScale, cache, containerRef]);
 
   /** Grid only re-derives row offsets when the row count changes; reorders that
    *  keep the count (e.g. a convo bumped across date groups) need an explicit recompute. */

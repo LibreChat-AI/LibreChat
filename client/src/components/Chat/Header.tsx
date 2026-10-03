@@ -10,6 +10,7 @@ import {
 } from 'librechat-data-provider';
 import { OpenSidebar, PresetsMenu, NewChat, HeaderMenu } from './Menus';
 import { TemporaryChat, TemporaryChatIndicator } from './TemporaryChat';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import ModelSelector from './Menus/Endpoints/ModelSelector';
 import { BackgroundTasksButton } from './BackgroundTasks';
 import { TraceButton, useTraceControl } from './Trace';
@@ -24,12 +25,7 @@ import store from '~/store';
 
 const defaultInterface = getConfigDefaults().interface;
 
-/**
- * Three zones in a single DOM order that serves both layouts: hidden items
- * generate no flex gap, so each breakpoint collapses to the right row without
- * reordering. Branching is CSS-only — `useMediaQuery` resolves after paint and
- * would pop the row a frame late on every mount.
- */
+/** Keep one DOM order while sharing the sidebar's scaled drawer breakpoint. */
 function Header({
   parentConversationId,
   readOnly = false,
@@ -40,6 +36,7 @@ function Header({
   const { data: startupConfig } = useGetStartupConfig();
   const navVisible = useRecoilValue(store.sidebarExpanded);
   const isSubmitting = useRecoilValue(store.isSubmittingFamily(0));
+  const isSmallScreen = useDrawerViewport();
 
   /** The mobile row only offers a new chat when there is one to leave. Read
    *  from the route rather than the context conversation, which still holds the
@@ -81,19 +78,20 @@ function Header({
   });
 
   /** The drawer covers the header on mobile; keep its controls out of the tab order. */
-  const hiddenBehindNav = navVisible === true && 'max-md:hidden';
+  const hiddenBehindNav = navVisible === true && isSmallScreen && 'hidden';
 
   return (
     /* The composer review is in a z-10 stacking context. Keep header controls
        above it when a tall review reaches the top of a short viewport. */
-    <div className="from-surface-primary-alt via-surface-primary-alt/70 text-text-primary md:from-surface-primary-alt/80 md:via-surface-primary-alt/50 2xl:from-surface-primary-alt/0 absolute top-0 z-20 flex h-[52px] w-full items-center gap-2 bg-gradient-to-b to-transparent p-2 font-semibold 2xl:via-transparent">
-      <div className="flex flex-shrink-0 items-center md:hidden">
+    <div className="from-surface-primary-alt via-surface-primary-alt/70 text-text-primary md:from-surface-primary-alt/80 md:via-surface-primary-alt/50 2xl:from-surface-primary-alt/0 absolute top-0 z-20 flex h-[3.25rem] w-full items-center gap-2 bg-gradient-to-b to-transparent p-2 font-semibold 2xl:via-transparent">
+      <div className={cn('flex-shrink-0 items-center', isSmallScreen ? 'flex' : 'hidden')}>
         <OpenSidebar testId="header-open-sidebar-button" />
       </div>
 
       <div
         className={cn(
-          'flex min-w-0 flex-1 items-center gap-2 md:pl-3 md:transition-all md:duration-200 md:ease-in-out',
+          'flex min-w-0 flex-1 items-center gap-2',
+          !isSmallScreen && 'pl-3 transition-all duration-200 ease-in-out',
           hiddenBehindNav,
         )}
       >
@@ -105,12 +103,12 @@ function Header({
           <PresetsMenu />
         )}
         {hasAccessToBookmarks === true && (
-          <div className="hidden items-center md:flex">
+          <div className={cn('items-center', isSmallScreen ? 'hidden' : 'flex')}>
             <BookmarkMenu />
           </div>
         )}
         {hasAccessToMultiConvo === true && (
-          <div className="hidden items-center md:flex">
+          <div className={cn('items-center', isSmallScreen ? 'hidden' : 'flex')}>
             <AddMultiConvo />
           </div>
         )}
@@ -118,7 +116,7 @@ function Header({
 
       <div className={cn('flex shrink-0 items-center gap-2', hiddenBehindNav)}>
         {showTemporaryChat && <TemporaryChatIndicator />}
-        {!isNewChat && <NewChat className="md:hidden" />}
+        {!isNewChat && <NewChat className={isSmallScreen ? undefined : 'hidden'} />}
         {!isNewChat && parentConversationId == null && (
           <BackgroundTasksButton
             key={routeConversationId}
@@ -126,8 +124,12 @@ function Header({
             isSubmitting={isSubmitting}
           />
         )}
-        <HeaderMenu startupConfig={startupConfig} trace={trace} className="md:hidden" />
-        <div className="hidden items-center gap-2 md:flex">
+        <HeaderMenu
+          startupConfig={startupConfig}
+          trace={trace}
+          className={isSmallScreen ? undefined : 'hidden'}
+        />
+        <div className={cn('items-center gap-2', isSmallScreen ? 'hidden' : 'flex')}>
           {trace.show && <TraceButton onClick={trace.open} />}
           <ExportAndShareMenu isSharedButtonEnabled={startupConfig?.sharedLinksEnabled ?? false} />
           {showTemporaryChat && <TemporaryChat />}

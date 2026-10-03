@@ -26,7 +26,6 @@ import {
   ResizablePanelGroup,
   Spinner,
   TooltipAnchor,
-  useMediaQuery,
 } from '@librechat/client';
 import type { ConversationListResponse } from 'librechat-data-provider';
 import {
@@ -37,6 +36,7 @@ import {
 import ProjectInstructionsDialog from './ProjectInstructionsDialog';
 import { useElementSize, useLocalize, useNewConvo } from '~/hooks';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import ProjectDeleteDialog from './ProjectDeleteDialog';
 import ProjectResources from './ProjectResources';
 import ProjectChatList from './ProjectChatList';
@@ -91,7 +91,7 @@ export default function ProjectWorkspace() {
   const conversation = useRecoilValue(store.conversationByIndex(0));
   const { newConversation } = useNewConvo();
   const activeProjectId = project?._id;
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
 
   /** Panel sizes are a workspace-wide preference, so they persist per browser
    *  rather than per project; the files panel keys its own layout so hiding it
@@ -438,7 +438,7 @@ export default function ProjectWorkspace() {
           {detailsHeader}
           <div className="h-72 shrink-0">{instructionsSection}</div>
           {filesSection != null && <div className="h-72 shrink-0">{filesSection}</div>}
-          <div className="flex min-h-[420px] flex-col">{chatsSection}</div>
+          <div className="flex min-h-[26.25rem] flex-col">{chatsSection}</div>
         </div>
       ) : (
         <ResizablePanelGroup
