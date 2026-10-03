@@ -2413,6 +2413,7 @@ export function createConversationMethods(
       delete update.lastResponseMessageId;
       delete update.initial_agent_id;
       delete update.titleSetByUser;
+      delete update.titleRevision;
       if (metadata?.titleSource === 'manual') {
         update.titleSetByUser = true;
       }
@@ -2438,6 +2439,7 @@ export function createConversationMethods(
       delete unsetFields.lastResponseAt;
       delete unsetFields.initial_agent_id;
       delete unsetFields.titleSetByUser;
+      delete unsetFields.titleRevision;
       delete unsetFields.codeEnvironmentRevision;
       delete unsetFields.codeEnvironmentMode;
       delete unsetFields.codeWorkspaces;
@@ -2556,6 +2558,9 @@ export function createConversationMethods(
 
       const buildOperation = (setFields: Record<string, unknown>) => {
         const operation: Record<string, unknown> = { $set: setFields };
+        if (metadata?.titleSource === 'manual') {
+          operation.$inc = { titleRevision: 1 };
+        }
         if (appendMessageIds != null && appendMessageIds.length > 0) {
           operation.$addToSet = { messages: { $each: appendMessageIds } };
         }
@@ -3475,7 +3480,7 @@ export function createConversationMethods(
            the sidebar lists archived and unarchived chats in the same session, and the
            active list also carries the unarchived pins beside them. */
         .select(
-          'conversationId endpoint title createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual lastSeenAt',
+          'conversationId endpoint title titleSetByUser titleRevision createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual lastSeenAt',
         )
         .sort(sortObj)
         .limit(pageSize + 1)

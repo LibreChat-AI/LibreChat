@@ -679,6 +679,35 @@ describe('Conversation Operations', () => {
         expect(await saveConvo(mockCtx, { conversationId, title: 'Later' }, generated)).toBeNull();
       });
 
+      it('projects manual title authority and atomically orders repeated renames', async () => {
+        const conversationId = uuidv4();
+        await saveConvo(mockCtx, { conversationId });
+        await Promise.all([
+          saveConvo(mockCtx, { conversationId, title: 'First' }, manual),
+          saveConvo(mockCtx, { conversationId, title: 'New Chat' }, manual),
+        ]);
+        const current = await getConvo(mockCtx.userId, conversationId);
+        expect(current?.titleRevision).toBe(2);
+        const page = await getConvosByCursor(mockCtx.userId);
+        expect(page.conversations.find((row) => row.conversationId === conversationId)).toEqual(
+          expect.objectContaining({ titleSetByUser: true, titleRevision: 2 }),
+        );
+        await saveConvo(
+          mockCtx,
+          { conversationId, titleRevision: 99, titleSetByUser: false },
+          {
+            unsetFields: { titleRevision: 1, titleSetByUser: 1 },
+            appendMessageIds: [],
+          },
+        );
+        expect(await getConvo(mockCtx.userId, conversationId)).toEqual(
+          expect.objectContaining({
+            titleSetByUser: true,
+            titleRevision: 2,
+          }),
+        );
+      });
+
       it('preserves renamed legacy rows without an ownership flag', async () => {
         await saveConvo(mockCtx, mockConversationData);
         expect(

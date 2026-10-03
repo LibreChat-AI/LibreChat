@@ -31,6 +31,7 @@ const convoSchema: Schema<IConversation> = new Schema(
       meiliIndex: true,
     },
     titleSetByUser: { type: Boolean },
+    titleRevision: { type: Number },
     user: {
       type: String,
       index: true,

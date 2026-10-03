@@ -122,4 +122,28 @@ describe('assistants addTitle content policy', () => {
       expect.objectContaining({ noUpsert: true }),
     );
   });
+  it.each(['database', 'cache'])('owns a detached fallback %s failure', async (boundary) => {
+    mockInitializeClient.mockResolvedValue({
+      openai: {
+        chat: { completions: { create: jest.fn().mockRejectedValue(new Error('provider')) } },
+      },
+    });
+    const failure = new Error('secret-provider-payload');
+    if (boundary === 'database') mockSaveConvo.mockRejectedValueOnce(failure);
+    else mockCache.set.mockRejectedValueOnce(failure);
+    await expect(
+      addTitle(
+        { user: { id: 'user-1' }, body: {} },
+        {
+          text: 'fallback',
+          responseText: 'response',
+          conversationId: 'fallback-chat',
+        },
+      ),
+    ).resolves.toBeUndefined();
+    const { logger } = require('@librechat/data-schemas');
+    expect(logger.error).toHaveBeenCalledWith('[addTitle] Fallback publication failed', {
+      type: 'Error',
+    });
+  });
 });

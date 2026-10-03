@@ -414,4 +414,23 @@ describe('agents addTitle', () => {
     expect(mockCacheStore.get('user-1-new-row')).toBe('Renamed');
     expect(onTitleGenerated).toHaveBeenCalledTimes(1);
   });
+  it('retries a missed immediate write when the following read sees the new row', async () => {
+    mockSaveConvo.mockResolvedValueOnce(null);
+    mockGetConvo.mockResolvedValueOnce({ conversationId: 'insert-race', title: 'New Chat' });
+    const onTitleGenerated = jest.fn();
+    await addTitle(makeReq(), {
+      text: 'hello',
+      client: makeClient('Generated title'),
+      conversationId: 'insert-race',
+      immediate: true,
+      convoReady: Promise.resolve(),
+      onTitleGenerated,
+    });
+    expect(mockSaveConvo).toHaveBeenCalledTimes(2);
+    expect(mockCacheStore.get('user-1-insert-race')).toBe('Generated title');
+    expect(onTitleGenerated).toHaveBeenCalledWith({
+      conversationId: 'insert-race',
+      title: 'Generated title',
+    });
+  });
 });

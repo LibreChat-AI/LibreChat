@@ -56,15 +56,21 @@ export const useUpdateConversationMutation = (
          * pre-request copy of every other field, undoing a concurrent change
          * whose response happened to land first: an assignment moving the chat
          * to another project would silently revert here. */
-        const applyRename = (previous?: t.TConversation): t.TConversation =>
-          previous
-            ? {
-                ...previous,
-                title: updatedConvo.title,
-                titleSetByUser: true,
-                updatedAt: updatedConvo.updatedAt,
-              }
-            : { ...updatedConvo, titleSetByUser: true };
+        const applyRename = (previous?: t.TConversation): t.TConversation => {
+          if (
+            previous &&
+            (previous.titleRevision ?? 0) > (updatedConvo.titleRevision ?? Infinity)
+          ) {
+            return previous;
+          }
+          return {
+            ...(previous ?? updatedConvo),
+            title: updatedConvo.title,
+            titleSetByUser: true,
+            titleRevision: updatedConvo.titleRevision ?? (previous?.titleRevision ?? 0) + 1,
+            updatedAt: updatedConvo.updatedAt,
+          };
+        };
         queryClient.setQueryData<t.TConversation>([QueryKeys.conversation, targetId], applyRename);
         updateConvoInAllQueries(queryClient, targetId, applyRename);
         /* A title-keyset cursor encodes the old ordering; patching loaded rows

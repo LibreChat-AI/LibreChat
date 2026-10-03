@@ -213,6 +213,32 @@ test.describe('conversation management', () => {
     await expect(page.getByTestId('convo-item').filter({ hasText: renamedTitle })).toBeVisible();
   });
 
+  test('adopts a newer rename from another tab when the next stream finishes', async ({ page }) => {
+    test.setTimeout(45000);
+    const label = uniqueLabel('cross-tab-rename');
+    const firstTitle = `First ${label}`;
+    const secondTitle = `Second ${label}`;
+    await openMockChat(page);
+    await sendAndExpectReply(page, label);
+    await renameConversation(page, firstConversation(page), firstTitle);
+    const url = page.url();
+    const otherTab = await page.context().newPage();
+    try {
+      await otherTab.goto(url);
+      await expect(otherTab.getByRole('textbox', { name: 'Message input' })).toBeVisible();
+      await renameConversation(otherTab, firstConversation(otherTab), secondTitle);
+      await expect(firstConversation(page)).toContainText(firstTitle);
+      expect(
+        (await sendMessageAndWaitForCompletion(page, replyPrompt(`${label}-next`))).ok(),
+      ).toBeTruthy();
+      await expect(firstConversation(page)).toContainText(secondTitle);
+      await page.reload();
+      await expect(page.getByTestId('convo-item').filter({ hasText: secondTitle })).toBeVisible();
+    } finally {
+      await otherTab.close();
+    }
+  });
+
   test('leaves the native context menu available on a portaled shared-link input', async ({
     page,
   }) => {

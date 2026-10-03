@@ -1,5 +1,6 @@
 import type { ConversationMethods } from '@librechat/data-schemas';
 import type { ConversationWriteContext } from './save';
+import { getSafeErrorMetadata } from '~/utils/errors';
 
 type TitleCache = {
   get: (key: string) => Promise<string | undefined>;
@@ -60,15 +61,17 @@ export async function publishConversationTitle(
   let saved = await commit();
   let current = saved ?? (await getConvo(ctx.userId, conversationId));
   let publishedEarly = false;
-  if (current == null && convoReady != null) {
-    await titleCache.set(key, title, 120000);
-    if (!signal?.aborted) {
-      await onTitleGenerated?.({ conversationId, title });
+  if (saved == null && convoReady != null) {
+    if (current == null) {
+      await titleCache.set(key, title, 120000);
+      if (!signal?.aborted) {
+        await onTitleGenerated?.({ conversationId, title });
+      }
+      publishedEarly = true;
     }
-    publishedEarly = true;
     await convoReady;
     if (discardSignal?.aborted) {
-      if ((await titleCache.get(key)) === title) {
+      if (publishedEarly && (await titleCache.get(key)) === title) {
         await titleCache.delete(key);
       }
       return;
@@ -84,5 +87,19 @@ export async function publishConversationTitle(
   }
   if (saved && !publishedEarly && !signal?.aborted) {
     await onTitleGenerated?.({ conversationId, title: current.title });
+  }
+}
+
+/** Detached fallback publication owns its failure after the response has ended. */
+export async function publishFallbackConversationTitle(
+  deps: Parameters<typeof publishConversationTitle>[0] & {
+    logger: { error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
+  },
+  publication: TitlePublication,
+): Promise<void> {
+  try {
+    await publishConversationTitle(deps, publication);
+  } catch (error) {
+    deps.logger.error('[addTitle] Fallback publication failed', getSafeErrorMetadata(error));
   }
 }

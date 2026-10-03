@@ -530,37 +530,51 @@ export const buildRecoveryPreset = (
     ),
   );
 
+type ConvoTitleState = Pick<TConversation, 'title' | 'titleSetByUser' | 'titleRevision'>;
+
 export const getConvoTitle = ({
   queryClient,
   currentTitle,
   conversationId,
   titleSetByUser,
+  titleRevision,
 }: {
   queryClient: ReturnType<typeof useQueryClient>;
   currentTitle?: string | null;
   conversationId?: string | null;
   titleSetByUser?: boolean;
-}): string | null | undefined => {
+  titleRevision?: number;
+}): ConvoTitleState => {
+  const incoming = { title: currentTitle ?? null, titleSetByUser, titleRevision };
   if (!conversationId) {
-    return currentTitle;
+    return incoming;
   }
-  const cachedConvo = queryClient.getQueryData<TConversation>([
-    QueryKeys.conversation,
-    conversationId,
-  ]);
-  if (cachedConvo?.titleSetByUser) {
-    return cachedConvo.title;
+  const cached = queryClient.getQueryData<TConversation>([QueryKeys.conversation, conversationId]);
+  const listed = findConvoInAllQueries(queryClient, conversationId);
+  let owned: ConvoTitleState | undefined;
+  for (const candidate of [cached, listed, incoming]) {
+    if (
+      candidate?.titleSetByUser &&
+      (!owned || (candidate.titleRevision ?? 0) >= (owned.titleRevision ?? 0))
+    ) {
+      owned = candidate;
+    }
   }
-  if (titleSetByUser && currentTitle != null) {
-    return currentTitle;
+  let selected = owned;
+  if (!selected) {
+    if (hasRealTitle(cached?.title)) {
+      selected = cached;
+    } else if (hasRealTitle(listed?.title)) {
+      selected = listed;
+    } else {
+      selected = incoming;
+    }
   }
-  if (hasRealTitle(cachedConvo?.title)) {
-    return cachedConvo.title;
-  }
-  const listedConvo = findConvoInAllQueries(queryClient, conversationId);
-  return listedConvo?.titleSetByUser || hasRealTitle(listedConvo?.title)
-    ? listedConvo.title
-    : currentTitle;
+  return {
+    title: selected?.title ?? null,
+    titleSetByUser: selected?.titleSetByUser,
+    titleRevision: selected?.titleRevision,
+  };
 };
 
 export default function useEventHandlers({
@@ -842,17 +856,19 @@ export default function useEventHandlers({
       let update = {} as TConversation;
       if (setConversation && !isAddedRequest) {
         setConversation((prevState) => {
-          const title = getConvoTitle({
+          const titleState = getConvoTitle({
             queryClient,
             conversationId,
             currentTitle: prevState?.title,
+            titleSetByUser: prevState?.titleSetByUser,
+            titleRevision: prevState?.titleRevision,
           });
           update = tConvoUpdateSchema.parse({
             ...prevState,
             ...acknowledgedCodeEnvironment(prevState, submission),
             conversationId,
             thread_id,
-            title,
+            ...titleState,
             messages: [requestMessage.messageId, responseMessage.messageId],
           }) as TConversation;
           return update;
@@ -925,16 +941,18 @@ export default function useEventHandlers({
       let update = {} as TConversation;
       if (setConversation && !isAddedRequest) {
         setConversation((prevState) => {
-          const title = getConvoTitle({
+          const titleState = getConvoTitle({
             queryClient,
             conversationId,
             currentTitle: prevState?.title,
+            titleSetByUser: prevState?.titleSetByUser,
+            titleRevision: prevState?.titleRevision,
           });
           update = tConvoUpdateSchema.parse({
             ...prevState,
             ...acknowledgedCodeEnvironment(prevState, submission),
             conversationId,
-            title,
+            ...titleState,
           }) as TConversation;
           return update;
         });
@@ -992,17 +1010,21 @@ export default function useEventHandlers({
       if (!conversationId || !hasRealTitle(generatedTitle)) {
         return;
       }
-      const title =
-        getConvoTitle({
-          queryClient,
-          conversationId,
-          currentTitle: generatedTitle,
-        }) ?? generatedTitle;
+      const titleState = getConvoTitle({
+        queryClient,
+        conversationId,
+        currentTitle: generatedTitle,
+      });
+      const title = titleState.title ?? generatedTitle;
 
       queryClient.setQueryData<TConversation>([QueryKeys.conversation, conversationId], (convo) =>
-        convo ? { ...convo, title } : convo,
+        convo ? { ...convo, ...titleState, title } : convo,
       );
-      updateConvoInAllQueries(queryClient, conversationId, (convo) => ({ ...convo, title }));
+      updateConvoInAllQueries(queryClient, conversationId, (convo) => ({
+        ...convo,
+        ...titleState,
+        title,
+      }));
       markTitleGenerationProcessed(conversationId);
 
       if (location.pathname.includes(conversationId)) {
@@ -1020,6 +1042,7 @@ export default function useEventHandlers({
           return {
             ...prevState,
             conversationId,
+            ...titleState,
             title,
           };
         });
@@ -1251,19 +1274,25 @@ export default function useEventHandlers({
             if (prevState?.model != null && prevState.model !== submissionConvo.model) {
               update.model = prevState.model;
             }
-            update.title =
-              getConvoTitle({
-                queryClient,
-                conversationId: conversation.conversationId,
-                titleSetByUser: conversation.titleSetByUser,
-                currentTitle:
-                  !hasRealTitle(conversation.title) &&
-                  prevState?.conversationId === conversation.conversationId &&
-                  hasRealTitle(prevState.title)
-                    ? prevState.title
-                    : conversation.title,
-              }) ?? null;
+            const titleState = getConvoTitle({
+              queryClient,
+              conversationId: conversation.conversationId,
+              titleSetByUser: conversation.titleSetByUser,
+              titleRevision: conversation.titleRevision,
+              currentTitle:
+                !conversation.titleSetByUser &&
+                !hasRealTitle(conversation.title) &&
+                prevState?.conversationId === conversation.conversationId &&
+                hasRealTitle(prevState.title)
+                  ? prevState.title
+                  : conversation.title,
+            });
+            Object.assign(update, titleState);
             if (conversation.conversationId) {
+              updateConvoInAllQueries(queryClient, conversation.conversationId, (convo) => ({
+                ...convo,
+                ...titleState,
+              }));
               queryClient.setQueryData<TConversation>(
                 [QueryKeys.conversation, conversation.conversationId],
                 (cachedConvo) => {
@@ -1274,7 +1303,7 @@ export default function useEventHandlers({
                       : cachedConvo,
                     conversation.conversationId,
                   );
-                  merged.title = update.title;
+                  Object.assign(merged, titleState);
                   return merged;
                 },
               );

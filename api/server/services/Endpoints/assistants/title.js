@@ -3,6 +3,7 @@ const {
   sanitizeTitle,
   getAttachmentTitleText,
   publishConversationTitle,
+  publishFallbackConversationTitle,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
@@ -99,8 +100,8 @@ const addTitle = async (req, { text, responseText, conversationId }) => {
     if (fallbackTitle == null) {
       return;
     }
-    await publishConversationTitle(
-      { saveConvo, getConvo, titleCache },
+    await publishFallbackConversationTitle(
+      { saveConvo, getConvo, titleCache, logger },
       {
         ctx: {
           userId: req?.user?.id,

@@ -126,4 +126,26 @@ describe('useUpdateConversationMutation', () => {
     });
     expect(activeQueryClient.getQueryData(key)).toEqual(old);
   });
+  it('does not let an older rename response roll back a newer committed revision', async () => {
+    const { result } = renderHook(() => useUpdateConversationMutation('revision-chat'), {
+      wrapper,
+    });
+    const key = [QueryKeys.conversation, 'revision-chat'];
+    const current = {
+      conversationId: 'revision-chat',
+      title: 'Newer rename',
+      titleSetByUser: true,
+      titleRevision: 3,
+    } as TConversation;
+    activeQueryClient.setQueryData(key, current);
+    updateConversation.mockResolvedValueOnce({
+      ...current,
+      title: 'Older rename',
+      titleRevision: 2,
+    });
+    await act(async () =>
+      result.current.mutateAsync({ conversationId: 'revision-chat', title: 'Older rename' }),
+    );
+    expect(activeQueryClient.getQueryData(key)).toEqual(current);
+  });
 });

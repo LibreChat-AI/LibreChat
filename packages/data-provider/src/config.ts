@@ -132,6 +132,7 @@ export const excludedKeys = new Set([
   'subagentThread',
   'title',
   'titleSetByUser',
+  'titleRevision',
   'iconURL',
   'greeting',
   'endpoint',

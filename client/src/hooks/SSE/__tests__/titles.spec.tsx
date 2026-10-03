@@ -197,6 +197,117 @@ describe('stream title reconciliation', () => {
     expect(result.current.conversation?.title).toBe('Persisted rename');
   });
 
+  it.each([
+    [1, 2],
+    [3, 2],
+  ])(
+    'chooses the newer manual revision (cache %s, server %s)',
+    (cachedRevision, serverRevision) => {
+      const { result, queryClient } = setup();
+      queryClient.setQueryData([QueryKeys.conversation, 'saved-chat'], {
+        ...initialConversation,
+        title: 'Cached rename',
+        titleSetByUser: true,
+        titleRevision: cachedRevision,
+      });
+      act(() =>
+        result.current.finalHandler(
+          {
+            conversation: {
+              ...initialConversation,
+              title: 'Remote rename',
+              titleSetByUser: true,
+              titleRevision: serverRevision,
+            },
+            requestMessage: submission.userMessage,
+            responseMessage: { ...submission.initialResponse, text: 'Finished reply' },
+          },
+          submission,
+        ),
+      );
+      const expected = {
+        title: serverRevision >= cachedRevision ? 'Remote rename' : 'Cached rename',
+        titleSetByUser: true,
+        titleRevision: Math.max(cachedRevision, serverRevision),
+      };
+      expect(result.current.conversation).toEqual(expect.objectContaining(expected));
+      expect(queryClient.getQueryData([QueryKeys.conversation, 'saved-chat'])).toEqual(
+        expect.objectContaining(expected),
+      );
+      expect(
+        queryClient.getQueryData<{ pages: { conversations: TConversation[] }[] }>([
+          QueryKeys.allConversations,
+        ])?.pages[0].conversations[0],
+      ).toEqual(expect.objectContaining(expected));
+    },
+  );
+
+  it('preserves a sidebar-only manual placeholder on a replayed title event', () => {
+    const { result, queryClient } = setup();
+    queryClient.removeQueries([QueryKeys.conversation, 'saved-chat']);
+    queryClient.setQueryData([QueryKeys.allConversations], {
+      pages: [
+        {
+          conversations: [
+            { ...initialConversation, title: 'New Chat', titleSetByUser: true, titleRevision: 1 },
+          ],
+          nextCursor: null,
+        },
+      ],
+      pageParams: [],
+    });
+    act(() =>
+      result.current.titleHandler({
+        event: 'title',
+        data: { conversationId: 'saved-chat', title: 'Old generated title' },
+      }),
+    );
+    expect(result.current.conversation?.title).toBe('New Chat');
+    expect(
+      queryClient.getQueryData<{ pages: { conversations: TConversation[] }[] }>([
+        QueryKeys.allConversations,
+      ])?.pages[0].conversations[0],
+    ).toEqual(
+      expect.objectContaining({
+        title: 'New Chat',
+        titleSetByUser: true,
+        titleRevision: 1,
+      }),
+    );
+  });
+
+  it('accepts a newer remote rename to the default placeholder', () => {
+    const { result, queryClient } = setup();
+    queryClient.setQueryData([QueryKeys.conversation, 'saved-chat'], {
+      ...initialConversation,
+      title: 'First rename',
+      titleSetByUser: true,
+      titleRevision: 1,
+    });
+    act(() =>
+      result.current.finalHandler(
+        {
+          conversation: {
+            ...initialConversation,
+            title: 'New Chat',
+            titleSetByUser: true,
+            titleRevision: 2,
+          },
+          requestMessage: submission.userMessage,
+          responseMessage: { ...submission.initialResponse, text: 'Finished reply' },
+        },
+        submission,
+      ),
+    );
+    expect(result.current.conversation).toEqual(
+      expect.objectContaining({
+        title: 'New Chat',
+        titleSetByUser: true,
+        titleRevision: 2,
+      }),
+    );
+  });
+
   it('does not mistake a processed automatic title for a manual placeholder rename', () => {
     const { result, queryClient } = setup();
     markTitleGenerationProcessed('saved-chat');
