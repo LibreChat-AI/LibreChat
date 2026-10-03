@@ -2581,6 +2581,8 @@ export const interfaceSchema = z
     /** Tool keys (and `'mcp'` or an MCP server name) pinned to the prompt bar by default */
     defaultPinnedTools: z.array(z.string()).optional(),
     buildInfo: z.boolean().optional(),
+    /** Allows Lia, the welcome screen mascot. Users still opt in from Settings. */
+    mascot: z.boolean().optional(),
     remoteAgents: z
       .object({
         use: z.boolean().optional(),
@@ -2767,6 +2769,7 @@ export const interfaceSchema = z
     fileSearch: true,
     fileCitations: true,
     buildInfo: true,
+    mascot: true,
     remoteAgents: {
       use: false,
       create: false,

@@ -378,6 +378,13 @@ react('r-love', 'com_ui_lia_act_r_love', [
 react('r-drag', 'com_ui_lia_act_r_drag', [
   step(20000, { s: 'file', a: 'reachBoth', o: 'bounce', b: { say: 'ready' } }),
 ]);
+react('r-held', 'com_ui_lia_act_r_held', [
+  step(60000, { a: 'out', f: 'startled', o: 'wobble', b: null }),
+]);
+react('r-landed', 'com_ui_lia_act_r_landed', [
+  step(500, { f: 'startled' }),
+  step(1100, { f: 'happy', a: 'thumbs' }),
+]);
 react('r-drop', 'com_ui_lia_act_r_drop', [
   step(300, { a: 'catch', f: 'startled', b: null }),
   step(1300, { f: 'chewing' }),

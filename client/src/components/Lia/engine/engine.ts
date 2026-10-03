@@ -126,6 +126,8 @@ export class LiaEngine {
   private gx = 0;
   private gy = 0;
   private placed = false;
+  /** Where the user holds her by, as her feet's position, while she is being dragged. */
+  private held: Point | null = null;
   private move: Move | null = null;
   private landAt = -1e9;
   private pose: Required<PoseOffset> = { ox: 0, oy: 0, rot: 0, sx: 1, sy: 1 };
@@ -200,6 +202,28 @@ export class LiaEngine {
 
   get position(): Point {
     return { x: this.gx, y: this.gy };
+  }
+
+  /** Lia is picked up and carried with her feet at `feet`; call again as the pointer moves. */
+  hold(feet: Point, now = performance.now()) {
+    if (!this.held) {
+      this.noteActivity(true, now);
+      this.stopRun();
+      this.play('r-held', 5, now);
+    }
+    this.held = feet;
+  }
+
+  /** Lia is let go above `x` and lands on the platform under it. */
+  release(x: number, now = performance.now()) {
+    if (!this.held) {
+      return;
+    }
+    this.held = null;
+    this.gx = x;
+    this.landAt = now;
+    this.stopRun();
+    this.play('r-landed', 4, now);
   }
 
   attention(now = performance.now()): Attention {
@@ -474,8 +498,8 @@ export class LiaEngine {
   private updateMotion(dt: number, now: number, platform: Platform) {
     const S = this.scale;
     const pose = { ox: 0, oy: 0, rot: 0, sx: 1, sy: 1 };
-    this.gy = platform.y;
-    const move = this.move;
+    this.gy = this.held?.y ?? platform.y;
+    const move = this.held ? null : this.move;
     if (move) {
       const style = STYLES[move.style];
       /* The platform can shrink mid-walk; aim for the nearest end Lia can still reach. */
@@ -504,7 +528,7 @@ export class LiaEngine {
         }
       }
     }
-    this.gx = clamp(this.gx, platform.x0, platform.x1);
+    this.gx = this.held ? this.held.x : clamp(this.gx, platform.x0, platform.x1);
 
     if (!this.reducedMotion) {
       const overlay = this.overlay && now < this.overlay.until ? this.overlay : null;

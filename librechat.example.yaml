@@ -246,6 +246,8 @@ interface:
     create: true
     share: false
     public: false
+  # Allow Lia, the welcome screen mascot. Users still opt in from Settings (default: true).
+  mascot: true
   # Scheduled chats are experimental and disabled unless explicitly enabled.
   # A deployment with Redis-backed resumable streams can run this on every replica.
   # A single-process deployment without Redis must also set

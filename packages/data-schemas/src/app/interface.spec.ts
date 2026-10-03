@@ -75,6 +75,18 @@ describe('loadDefaultInterface', () => {
     expect(configuredInterface?.queuedTurnReconciliationTimeoutMs).toBe(180_000);
   });
 
+  it('allows the mascot by default and preserves an explicit opt-out', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({ config: {}, configDefaults });
+    expect(defaultInterface?.mascot).toBe(true);
+
+    const disabledInterface = await loadDefaultInterface({
+      config: { interface: { mascot: false } },
+      configDefaults,
+    });
+    expect(disabledInterface?.mascot).toBe(false);
+  });
+
   it('uses and preserves the schema default for the queued-send lock expiry', async () => {
     const configDefaults = getConfigDefaults();
     const defaultInterface = await loadDefaultInterface({
