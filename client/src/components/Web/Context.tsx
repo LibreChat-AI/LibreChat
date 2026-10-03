@@ -29,6 +29,8 @@ const refTypeMap: Record<string | SearchRefType, string> = {
   ref: 'references',
   news: 'topStories',
   file: 'references',
+  image: 'images',
+  video: 'videos',
 };
 
 export function useCitation({

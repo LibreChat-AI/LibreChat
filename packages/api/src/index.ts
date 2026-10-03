@@ -102,6 +102,7 @@ export * from './files';
 export * from './images';
 /* Storage */
 export * from './storage';
+export type { SaveBufferFn } from './storage';
 /* Tools */
 export * from './tools';
 /* web search */
@@ -125,6 +126,8 @@ export * from './shared-links/protection';
 export * from './shared-links/session';
 /* Stream */
 export * from './stream';
+/* Import */
+export * from './import';
 /* Diagnostics */
 export { memoryDiagnostics } from './utils/memory';
 /* RUM */
@@ -135,4 +138,5 @@ export type { OpenApiRouterDeps } from './openapi/router';
 /* types */
 export type * from './mcp/types';
 export type * from './flow/types';
+export type * from './import/types';
 export type * from './types';

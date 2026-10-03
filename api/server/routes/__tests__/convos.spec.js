@@ -13,6 +13,7 @@ const {
   subagentActivityHandlerInputs,
   checkpointRows,
   resetCheckpointRows,
+  uploadPath,
 } = require(MOCKS);
 
 const priorLimitMessageIp = process.env.LIMIT_MESSAGE_IP;
@@ -48,6 +49,12 @@ jest.mock('~/server/middleware/requireJwtAuth', () => require(MOCKS).requireJwtA
 jest.mock('~/server/middleware', () => require(MOCKS).middlewarePassthrough());
 jest.mock('~/server/utils/import/fork', () => require(MOCKS).forkUtils());
 jest.mock('~/server/utils/import', () => require(MOCKS).importUtils());
+jest.mock('~/server/utils/import/defaults', () => require(MOCKS).importDefaults());
+jest.mock('~/server/utils/import/importBatchBuilder', () =>
+  require(MOCKS).importBatchBuilderUtil(),
+);
+jest.mock('~/server/services/Files/strategies', () => require(MOCKS).filesStrategies());
+jest.mock('~/server/utils/getFileStrategy', () => require(MOCKS).getFileStrategyUtil());
 jest.mock('~/cache/getLogStores', () => require(MOCKS).logStores());
 jest.mock('~/server/routes/files/multer', () => require(MOCKS).multerSetup());
 jest.mock('multer', () => require(MOCKS).multerLib());
@@ -238,7 +245,21 @@ describe('Convos Routes', () => {
   });
 
   describe('POST /import', () => {
+    const fs = require('fs');
+    const { inspectExport } = require('@librechat/api');
     const { importConversations } = require('~/server/utils/import');
+
+    /** These cover the synchronous legacy importer, which the route reaches
+     * only after inspection rejects the upload as no supported archive format,
+     * and which reads the upload's first bytes to rule out a zip. */
+    beforeEach(() => {
+      inspectExport.mockRejectedValue(new Error('Unsupported import type'));
+      fs.writeFileSync(uploadPath, '{"conversationId":"legacy","messages":[]}');
+    });
+
+    afterEach(() => {
+      fs.rmSync(uploadPath, { force: true });
+    });
 
     it('passes source-aware filters into conversation import', async () => {
       importConversations.mockResolvedValue();
@@ -247,7 +268,7 @@ describe('Convos Routes', () => {
 
       expect(response.status).toBe(201);
       expect(importConversations).toHaveBeenCalledWith({
-        filepath: '/tmp/test-file.json',
+        filepath: uploadPath,
         requestUserId: 'test-user-123',
         userRole: 'USER',
         interfaceConfig: undefined,

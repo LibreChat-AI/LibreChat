@@ -1,8 +1,12 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { EModelEndpoint, FileSources } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
   sweepExpiredFiles,
   startExpiredFileSweep,
+  sweepStaleTempUploads,
   createClusteredFileSweep,
   getExpiredFileRetryDelay,
   getFileRetentionMaxAttempts,
@@ -301,13 +305,90 @@ describe('expired file sweep helpers', () => {
     expect(getFileRetentionSweepInterval('0.5')).toBe(60 * 60 * 1000);
   });
 
-  it('does not start the interval when the sweep is disabled', () => {
+  describe('sweepStaleTempUploads', () => {
+    let uploadsDir: string;
+
+    beforeEach(() => {
+      uploadsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-sweep-uploads-'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(uploadsDir, { recursive: true, force: true });
+    });
+
+    it('is a no-op when no uploads path is configured', async () => {
+      const result = await sweepStaleTempUploads(undefined, { logger });
+      expect(result).toEqual({ scanned: 0, deleted: 0, failed: 0 });
+    });
+
+    it('is a no-op when the temp directory does not exist yet', async () => {
+      const result = await sweepStaleTempUploads(uploadsDir, { logger });
+      expect(result).toEqual({ scanned: 0, deleted: 0, failed: 0 });
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('deletes stale uploads but keeps recent ones', async () => {
+      const userDir = path.join(uploadsDir, 'temp', 'user-123');
+      fs.mkdirSync(userDir, { recursive: true });
+
+      const staleFile = path.join(userDir, 'stale-export.zip');
+      fs.writeFileSync(staleFile, 'stale');
+      const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+      fs.utimesSync(staleFile, staleTime, staleTime);
+
+      const freshFile = path.join(userDir, 'fresh-export.zip');
+      fs.writeFileSync(freshFile, 'fresh');
+
+      const result = await sweepStaleTempUploads(uploadsDir, {
+        logger,
+        maxAgeMs: 24 * 60 * 60 * 1000,
+      });
+
+      expect(result).toEqual({ scanned: 2, deleted: 1, failed: 0 });
+      expect(fs.existsSync(staleFile)).toBe(false);
+      expect(fs.existsSync(freshFile)).toBe(true);
+    });
+
+    it('removes stale legacy extraction directories but keeps recent ones', async () => {
+      const userDir = path.join(uploadsDir, 'temp', 'user-123');
+      fs.mkdirSync(userDir, { recursive: true });
+
+      const staleDirectory = fs.mkdtempSync(path.join(userDir, 'legacy-'));
+      const staleFile = path.join(staleDirectory, 'legacy.json');
+      fs.writeFileSync(staleFile, 'stale');
+      const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+      fs.utimesSync(staleDirectory, staleTime, staleTime);
+
+      const freshDirectory = fs.mkdtempSync(path.join(userDir, 'legacy-'));
+      const freshFile = path.join(freshDirectory, 'legacy.json');
+      fs.writeFileSync(freshFile, 'fresh');
+
+      const result = await sweepStaleTempUploads(uploadsDir, {
+        logger,
+        maxAgeMs: 24 * 60 * 60 * 1000,
+      });
+
+      expect(result).toEqual({ scanned: 2, deleted: 1, failed: 0 });
+      expect(fs.existsSync(staleDirectory)).toBe(false);
+      expect(fs.existsSync(freshDirectory)).toBe(true);
+      expect(fs.existsSync(freshFile)).toBe(true);
+    });
+  });
+
+  it('keeps stale cleanup running when the retention sweep is disabled', async () => {
+    jest.useFakeTimers();
     process.env.FILE_RETENTION_SWEEP_INTERVAL_MS = '0';
+    const sweepStaleTempUploads = jest.fn().mockResolvedValue({
+      scanned: 0,
+      deleted: 0,
+      failed: 0,
+    });
 
     const interval = startExpiredFileSweep(
       { appConfig: {} as AppConfig },
       {
         sweepExpiredFiles: jest.fn(),
+        sweepStaleTempUploads,
         runAsSystem: jest.fn((fn) => fn()),
         isLeader: jest.fn().mockResolvedValue(true),
         logger,
@@ -315,6 +396,9 @@ describe('expired file sweep helpers', () => {
     );
 
     expect(interval).toBeNull();
+    expect(sweepStaleTempUploads).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(sweepStaleTempUploads).toHaveBeenCalledTimes(2);
     expect(logger.info).toHaveBeenCalledWith(
       '[sweepExpiredFiles] Disabled by FILE_RETENTION_SWEEP_INTERVAL_MS=0',
     );
@@ -404,22 +488,25 @@ describe('expired file sweep helpers', () => {
     const sweep = jest.fn().mockResolvedValue({ scanned: 0, deleted: 0, failed: 0 });
     const runAsSystem = jest.fn((fn) => fn());
     const isLeader = jest.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    /** Temp uploads live on each process's own disk, so that sweep is never
+     * leader-gated; only the shared expired-file sweep is. */
+    const sweepStaleTempUploads = jest.fn().mockResolvedValue(undefined);
 
     const interval = startExpiredFileSweep(
       { appConfig: {} as AppConfig },
-      { sweepExpiredFiles: sweep, runAsSystem, isLeader, logger },
+      { sweepExpiredFiles: sweep, sweepStaleTempUploads, runAsSystem, isLeader, logger },
     );
     await jest.advanceTimersByTimeAsync(0);
 
     expect(isLeader).toHaveBeenCalledTimes(1);
-    expect(runAsSystem).not.toHaveBeenCalled();
+    expect(sweepStaleTempUploads).toHaveBeenCalledTimes(1);
     expect(sweep).not.toHaveBeenCalled();
 
     await jest.advanceTimersByTimeAsync(1000);
 
     expect(isLeader).toHaveBeenCalledTimes(2);
-    expect(runAsSystem).toHaveBeenCalledTimes(1);
     expect(sweep).toHaveBeenCalledTimes(1);
+    expect(runAsSystem).toHaveBeenCalledWith(expect.any(Function));
     clearInterval(interval ?? undefined);
   });
 });

@@ -6,12 +6,15 @@ import { useFileMapContext, useShareContext } from '~/Providers';
 import FilePreviewDialog from './FilePreviewDialog';
 import Image from './Image';
 
-const Files = ({ message }: { message?: TMessage }) => {
+/** Takes the file list rather than the message: the content-part renderer has
+ * to show the non-image half of it without handing the whole message object to
+ * a memoized subtree. */
+const Files = ({ files: messageFiles }: { files?: TMessage['files'] }) => {
   const fileMap = useFileMapContext();
   const { shareId } = useShareContext();
   const files = useMemo(
-    () => hydrateFileDeliveryMetadata(message?.files, undefined, shareId ? undefined : fileMap),
-    [message?.files, fileMap, shareId],
+    () => hydrateFileDeliveryMetadata(messageFiles, undefined, shareId ? undefined : fileMap),
+    [messageFiles, fileMap, shareId],
   );
   const imageFiles = useMemo(() => {
     return files?.filter(usesImagePreview) || [];

@@ -5,6 +5,9 @@ const generationJobManager = {
   getCleanupBlockingJobIdsForUser: jest.fn().mockResolvedValue([]),
   getCleanupBlockingJobIdsForConversations: jest.fn().mockResolvedValue([]),
 };
+/** Per process, so parallel Jest workers that both reach the import route never
+ * read or unlink each other's upload. */
+const uploadPath = `/tmp/convos-route-upload-${process.pid}.json`;
 const subagentActivityHandlerInputs = [];
 const moderatedTexts = [];
 const moderateText = jest.fn((req, _res, next) => {
@@ -59,6 +62,7 @@ const markConvoSeenHandler = jest.fn();
 const markConvoUnreadHandler = jest.fn();
 
 module.exports = {
+  uploadPath,
   archiveAllHandler,
   ownerPrefix,
   generationJobManager,
@@ -116,6 +120,7 @@ module.exports = {
         .resolveConversationListFilters,
     ),
     resolveImportMaxFileSize: jest.fn(() => 262144000),
+    resolveImportMaxConcurrency: jest.fn(() => 3),
     createAxiosInstance: jest.fn(() => ({
       get: jest.fn(),
       post: jest.fn(),
@@ -206,6 +211,15 @@ module.exports = {
     deleteOwnedAgentCheckpoints,
     openCheckpointDeletion,
     isConversationImportError: jest.fn((error) => error?.name === 'ConversationImportError'),
+    runImport: jest.fn(),
+    inspectExport: jest.fn(),
+    ImportJobStore: jest.fn().mockImplementation(() => ({
+      create: jest.fn(),
+      get: jest.fn(),
+      patch: jest.fn(),
+      cancel: jest.fn(),
+      isCancelled: jest.fn(),
+    })),
     ...overrides,
   }),
 
@@ -227,10 +241,11 @@ module.exports = {
   dataProvider: (overrides = {}) => ({
     conversationListConfigSchema:
       jest.requireActual('librechat-data-provider').conversationListConfigSchema,
-    CacheKeys: { GEN_TITLE: 'GEN_TITLE' },
+    CacheKeys: { GEN_TITLE: 'GEN_TITLE', IMPORT_JOBS: 'IMPORT_JOBS' },
     EModelEndpoint: {
       azureAssistants: 'azureAssistants',
       assistants: 'assistants',
+      openAI: 'openAI',
     },
     ...overrides,
   }),
@@ -288,6 +303,14 @@ module.exports = {
 
   importUtils: () => ({ importConversations: jest.fn() }),
 
+  filesStrategies: () => ({ getStrategyFunctions: jest.fn(() => ({ saveBuffer: jest.fn() })) }),
+
+  getFileStrategyUtil: () => ({ getFileStrategy: jest.fn() }),
+
+  importDefaults: () => ({ resolveImportDefaultModel: jest.fn() }),
+
+  importBatchBuilderUtil: () => ({ createImportBatchBuilder: jest.fn() }),
+
   logStores: () => jest.fn(),
 
   multerSetup: () => ({
@@ -298,7 +321,7 @@ module.exports = {
   multerLib: () =>
     jest.fn(() => ({
       single: jest.fn(() => (req, res, next) => {
-        req.file = { path: '/tmp/test-file.json' };
+        req.file = { path: uploadPath };
         next();
       }),
     })),
