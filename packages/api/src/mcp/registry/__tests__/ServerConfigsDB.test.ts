@@ -2504,6 +2504,79 @@ describe('ServerConfigsDB', () => {
       // Key should be removed due to decryption failure
       expect(retrieved?.apiKey?.key).toBeUndefined();
     });
+
+    describe('encryption failure surfaces a CREDS_KEY hint', () => {
+      /**
+       * Loads a ServerConfigsDB whose `encryptV2` rejects, without disturbing the real
+       * crypto used by the rest of this suite.
+       */
+      const withFailingEncryption = async (
+        message: string,
+        run: (db: ServerConfigsDBType) => Promise<void>,
+      ): Promise<void> => {
+        await jest.isolateModulesAsync(async () => {
+          jest.doMock('@librechat/data-schemas', () => {
+            const actual = jest.requireActual('@librechat/data-schemas');
+            return {
+              ...actual,
+              encryptV2: jest.fn().mockRejectedValue(new Error(message)),
+            };
+          });
+
+          const { ServerConfigsDB: IsolatedServerConfigsDB } = await import(
+            '../db/ServerConfigsDB'
+          );
+          await run(new IsolatedServerConfigsDB(mongoose));
+        });
+
+        jest.dontMock('@librechat/data-schemas');
+      };
+
+      it('should include the CREDS_KEY hint when encrypting apiKey.key fails with Invalid key length', async () => {
+        const config: ParsedServerConfig = {
+          type: 'sse',
+          url: 'https://example.com/mcp',
+          title: 'Invalid Key Length Test',
+          apiKey: {
+            source: 'admin',
+            authorization_type: 'bearer',
+            key: 'test-api-key',
+          },
+        };
+
+        await withFailingEncryption('Invalid key length', async (db) => {
+          await expect(db.add('temp-name', config, userId)).rejects.toThrow(
+            "Failed to encrypt MCP server configuration (the server's CREDS_KEY environment variable is misconfigured — it must be a 64-character hex string)",
+          );
+        });
+      });
+
+      it('should include the CREDS_KEY hint when encrypting client_secret fails with Invalid key length', async () => {
+        const config = createSSEConfig('Invalid Key Length OAuth Test', 'Test', {
+          client_id: 'test-client',
+          client_secret: 'test-secret',
+        });
+
+        await withFailingEncryption('Invalid key length', async (db) => {
+          await expect(db.add('temp-oauth', config, userId)).rejects.toThrow(
+            "(the server's CREDS_KEY environment variable is misconfigured — it must be a 64-character hex string)",
+          );
+        });
+      });
+
+      it('should not add the CREDS_KEY hint for unrelated encryption failures', async () => {
+        const config = createSSEConfig('Generic Encryption Failure', 'Test', {
+          client_id: 'test-client',
+          client_secret: 'test-secret',
+        });
+
+        await withFailingEncryption('boom', async (db) => {
+          await expect(db.add('temp-generic', config, userId)).rejects.toThrow(
+            /^Failed to encrypt MCP server configuration$/,
+          );
+        });
+      });
+    });
   });
 
   describe('DB layer returns decrypted secrets (redaction is at controller layer)', () => {

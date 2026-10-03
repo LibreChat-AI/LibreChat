@@ -33,6 +33,31 @@ const DANGEROUS_CREDENTIAL_PATTERNS = [
 
 const BLOCKED_USER_OAUTH_ENDPOINT_PARAMS = ['audience', 'resource'] as const;
 
+const ENCRYPTION_FAILURE_MESSAGE = 'Failed to encrypt MCP server configuration';
+const INVALID_KEY_HINT =
+  "(the server's CREDS_KEY environment variable is misconfigured — it must be a 64-character hex string)";
+
+/** Safely extracts a message from an unknown thrown value. */
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
+/**
+ * Builds the thrown encryption error message, appending a CREDS_KEY hint when the
+ * underlying cause is WebCrypto rejecting a malformed AES key.
+ */
+function encryptionErrorMessage(error: unknown): string {
+  if (!getErrorMessage(error).includes('Invalid key length')) {
+    return ENCRYPTION_FAILURE_MESSAGE;
+  }
+
+  return `${ENCRYPTION_FAILURE_MESSAGE} ${INVALID_KEY_HINT}`;
+}
+
 type OAuthConfig = NonNullable<ParsedServerConfig['oauth']>;
 
 /**
@@ -730,8 +755,11 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
           key: await encryptV2(result.apiKey.key),
         };
       } catch (error) {
-        logger.error('[ServerConfigsDB.encryptConfig] Failed to encrypt apiKey.key', error);
-        throw new Error('Failed to encrypt MCP server configuration');
+        logger.error(
+          `[ServerConfigsDB.encryptConfig] Failed to encrypt apiKey.key: ${getErrorMessage(error)}`,
+          error,
+        );
+        throw new Error(encryptionErrorMessage(error));
       }
     }
 
@@ -745,8 +773,11 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
           },
         };
       } catch (error) {
-        logger.error('[ServerConfigsDB.encryptConfig] Failed to encrypt client_secret', error);
-        throw new Error('Failed to encrypt MCP server configuration');
+        logger.error(
+          `[ServerConfigsDB.encryptConfig] Failed to encrypt client_secret: ${getErrorMessage(error)}`,
+          error,
+        );
+        throw new Error(encryptionErrorMessage(error));
       }
     }
 
