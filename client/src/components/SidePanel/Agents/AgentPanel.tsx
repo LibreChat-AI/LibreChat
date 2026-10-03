@@ -38,6 +38,7 @@ import { useResourcePermissions } from '~/hooks/useResourcePermissions';
 import { useSelectAgent, useLocalize, useAuthContext } from '~/hooks';
 import { useAgentPanelContext } from '~/Providers/AgentPanelContext';
 import { resolveCapabilityTools } from './Tools/items/capabilities';
+import ResetApprovals from '~/components/Agents/ResetApprovals';
 import AgentPanelSkeleton from './AgentPanelSkeleton';
 import AdvancedPanel from './Advanced/AdvancedPanel';
 import { Panel, isEphemeralAgent } from '~/common';
@@ -851,6 +852,7 @@ export default function AgentPanel() {
                   {localize('com_agents_not_available')}
                 </h2>
                 <p className="text-text-secondary">{localize('com_agents_no_access')}</p>
+                {agentQuery.data?.id && <ResetApprovals agentId={agentQuery.data.id} />}
               </div>
             </div>
           )}

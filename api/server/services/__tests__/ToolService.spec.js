@@ -257,7 +257,7 @@ describe('ToolService - Action Capability Gating', () => {
     mockGetCachedTools.mockResolvedValue(null);
     mockGetUserMCPAuthMap.mockResolvedValue({});
     mockGetRoleByName.mockResolvedValue(buildRole());
-    mockGetServerConfig.mockResolvedValue(undefined);
+    mockGetServerConfig.mockImplementation(async (name, _userId, candidates) => candidates?.[name]);
     mockFlowManager.getFlowState.mockResolvedValue(undefined);
     mockResolveConfigServers.mockResolvedValue({});
     mockResolveMcpServerNames.mockResolvedValue([]);
@@ -2577,7 +2577,68 @@ describe('ToolService - Action Capability Gating', () => {
       expect(authDeltaEvent?.data.delta.expires_at).toBe(createdAt + PENDING_STALE_MS);
     });
 
-    it('should use request-scoped MCP config before falling back to the registry', async () => {
+    it('approval binding follows the user-tier authority instead of a same-name config candidate', async () => {
+      const { getToolApprovalBinding, buildMCPToolApprovalBinding, getToolApprovalAuthKind } =
+        jest.requireActual('@librechat/api');
+      const serverName = 'shared-server';
+      const name = `query${Constants.mcp_delimiter}${serverName}`;
+      const req = createMockReq([AgentCapabilities.tools]);
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig([AgentCapabilities.tools]));
+      const candidate = {
+        type: 'streamable-http',
+        source: 'config',
+        url: 'https://config.example.com/mcp',
+      };
+      const firstAuthority = {
+        type: 'streamable-http',
+        source: 'user',
+        url: 'https://user.example.com/mcp',
+        dbId: 'server-id',
+      };
+      mockResolveConfigServers.mockResolvedValue({ [serverName]: candidate });
+      mockGetServerConfig.mockResolvedValue(firstAuthority);
+      mockGetMCPServerTools.mockResolvedValue({
+        [name]: { function: { name, parameters: { type: 'object' } } },
+      });
+      mockLoadToolDefinitions.mockImplementation(async (params, deps) => {
+        await deps.getOrFetchMCPServerTools(params.userId, serverName);
+        return {
+          toolDefinitions: [{ name, serverName, parameters: { type: 'object' } }],
+          toolRegistry: new Map(),
+          hasDeferredTools: false,
+        };
+      });
+      const first = await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent-a', tools: [name] },
+        definitionsOnly: true,
+      });
+      expect(getToolApprovalAuthKind(first.toolDefinitions[0])).toBe('other');
+      expect(getToolApprovalBinding(first.toolDefinitions[0])).toBe(
+        buildMCPToolApprovalBinding(serverName, firstAuthority),
+      );
+      expect(getToolApprovalBinding(first.toolDefinitions[0])).not.toBe(
+        buildMCPToolApprovalBinding(serverName, candidate),
+      );
+      mockGetServerConfig.mockResolvedValue({
+        ...firstAuthority,
+        url: 'https://new-user.example.com/mcp',
+        requiresOAuth: true,
+      });
+      const second = await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent-a', tools: [name] },
+        definitionsOnly: true,
+      });
+      expect(getToolApprovalAuthKind(second.toolDefinitions[0])).toBe('oauth');
+      expect(getToolApprovalBinding(second.toolDefinitions[0])).not.toBe(
+        getToolApprovalBinding(first.toolDefinitions[0]),
+      );
+    });
+
+    it('resolves request-scoped MCP candidates through the effective registry', async () => {
       const serverName = 'config-server';
       const mcpTool = `search${Constants.mcp_delimiter}${serverName}`;
       const capabilities = [AgentCapabilities.tools];
@@ -2592,6 +2653,9 @@ describe('ToolService - Action Capability Gating', () => {
           },
         },
       });
+      mockGetServerConfig.mockImplementation(
+        async (_name, _userId, candidates) => candidates[serverName],
+      );
       mockGetUserMCPAuthMap.mockResolvedValue({
         [`${Constants.mcp_prefix}${serverName}`]: { TOKEN: 'secret' },
       });
@@ -2621,7 +2685,11 @@ describe('ToolService - Action Capability Gating', () => {
       });
 
       expect(result.toolDefinitions).toEqual([mcpTool]);
-      expect(mockGetServerConfig).not.toHaveBeenCalled();
+      expect(mockGetServerConfig).toHaveBeenCalledWith(
+        serverName,
+        req.user.id,
+        expect.objectContaining({ [serverName]: expect.any(Object) }),
+      );
       expect(mockGetMCPServerTools).toHaveBeenCalledWith(
         req.user.id,
         serverName,

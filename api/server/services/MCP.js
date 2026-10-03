@@ -3,6 +3,13 @@ const { logger, getTenantId } = require('@librechat/data-schemas');
 const { Providers, Constants: AgentConstants } = require('@librechat/agents');
 const {
   sendEvent,
+  buildMCPToolApprovalBinding,
+  getMCPToolApprovalAuthKind,
+  bindToolApproval,
+  bindToolApprovalIdentity,
+  bindToolReviewAuthority,
+  buildMCPToolReviewAuthority,
+  createSafeUser,
   PENDING_STALE_MS,
   MCPOAuthHandler,
   MCPTokenStorage,
@@ -1232,6 +1239,7 @@ async function createMCPTool({
     currentToolName: matchedToolKey === strippedToolKey ? strippedToolName : undefined,
     serverName,
     serverConfig,
+    customUserVars: userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`],
     toolDefinition: toolEntry['function'],
     upstreamTokenProvider,
     upstreamTokenProviderResolver,
@@ -1254,6 +1262,7 @@ function createToolInstance({
   currentToolName,
   serverName,
   serverConfig: capturedServerConfig,
+  customUserVars: capturedCustomUserVars,
   toolDefinition,
   provider: capturedProvider,
   upstreamTokenProvider: capturedUpstreamTokenProvider = null,
@@ -1473,6 +1482,32 @@ function createToolInstance({
   });
   toolInstance.mcp = true;
   toolInstance.mcpRawServerName = serverName;
+  bindToolApproval(
+    toolInstance,
+    buildMCPToolApprovalBinding(serverName, capturedServerConfig),
+    currentToolName != null
+      ? `${currentToolName}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`
+      : normalizedToolKey,
+    undefined,
+    undefined,
+    getMCPToolApprovalAuthKind(capturedServerConfig),
+  );
+  bindToolReviewAuthority(
+    toolInstance,
+    buildMCPToolReviewAuthority({
+      serverName,
+      config: capturedServerConfig,
+      user: createSafeUser(capturedUser),
+      body: capturedRequestBody,
+      customUserVars: capturedCustomUserVars,
+    }),
+  );
+  bindToolApprovalIdentity(
+    toolInstance,
+    serverToolName,
+    normalizeJsonSchema(resolveJsonSchemaRefs(parameters ?? { type: 'object', properties: {} })),
+    description || undefined,
+  );
   if (serverToolName !== toolName) {
     /** Upstream identity for stripped keys — lets the options aliasing in
      *  `buildToolClassification` heal legacy `tool_options` spellings. */

@@ -50,6 +50,7 @@ import type {
 } from 'librechat-data-provider';
 import type { AppConfig, IAgentFadingTier, IUser } from '@librechat/data-schemas';
 import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
+import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Callbacks } from '@langchain/core/callbacks/manager';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
@@ -61,6 +62,7 @@ import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { MCPToolAlias } from '~/tools/classification';
+import type { ReviewedToolApprovals } from './hitl/modes';
 import type { SubagentUsageEvent } from '~/agents/usage';
 import type { ProvisionState } from '~/agents/resources';
 import type { RunFileSession } from './files/session';
@@ -108,6 +110,7 @@ import {
 import { resolveToolApprovalPolicy, exemptAskUserQuestionFromApproval } from '~/agents/hitl/policy';
 import { applyCustomHandoffPromptKeyCompatibility } from '~/agents/handoffPromptKeyCompatibility';
 import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/agents/intent';
+import { createAgentToolApprovalSession, bindRunToolApprovalSession } from './hitl/modes';
 import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils/headers';
 import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
@@ -2129,6 +2132,8 @@ export async function createRun({
   eventActorCheckpointing = false,
   hitlCapable = false,
   resolvedToolApprovalHooks,
+  toolApprovalStorage,
+  reviewedToolApprovals,
   toolApprovalAllows,
   toolInputValidationErrors,
   sessionStartSource,
@@ -2276,6 +2281,8 @@ export async function createRun({
    * Reuse them here so a context-aware factory is evaluated exactly once for the run.
    */
   resolvedToolApprovalHooks?: readonly ResolvedToolApprovalHook[];
+  toolApprovalStorage?: ToolApprovalGrantStorage;
+  reviewedToolApprovals?: ReviewedToolApprovals;
   /** Plugin-hook SessionStart lifecycle source: 'startup' (default) or 'resume' on HITL-rebuild paths. */
   sessionStartSource?: string;
   /** Request-scoped tool input failures consumed by the completion handler. */
@@ -2753,6 +2760,22 @@ export async function createRun({
       ASK_USER_QUESTION_TOOL_NAME,
     );
   const nativeEditFileAgentIds = collectNativeEditFileAgentIds(agents);
+  const agentApprovalSession = createAgentToolApprovalSession({
+    agents: [...codeFileAgents.values()],
+    storage: toolApprovalPolicy?.agentModes === true ? toolApprovalStorage : undefined,
+    authorizationStorage: toolApprovalStorage,
+    reviewed: reviewedToolApprovals,
+    policy: effectiveToolApprovalPolicy,
+    lookupTimeoutMs: toolApprovalPolicy?.grantLookupTimeoutMs,
+    scope:
+      user?.id && (conversationId ?? requestBody?.conversationId)
+        ? {
+            userId: user.id,
+            tenantId: tenantId ?? user.tenantId,
+            conversationId: (conversationId ?? requestBody?.conversationId)!,
+          }
+        : undefined,
+  });
   const approvalWiring = buildHITLRunWiring(
     // The ask tool is exempt from the approval prompt (unless explicitly
     // listed by the admin) — approving the right to ask a question is a
@@ -2770,6 +2793,7 @@ export async function createRun({
     },
     mcpToolAliases,
     [
+      { hook: agentApprovalSession.hook },
       ...(resolvedToolApprovalHooks ??
         buildToolApprovalHooks({
           userId: user?.id,
@@ -2791,8 +2815,13 @@ export async function createRun({
     ],
     nativeEditFileAgentIds,
   );
+  approvalWiring?.hooks.register('PostToolUse', { hooks: [agentApprovalSession.rememberHook] });
+  approvalWiring?.hooks.register('PostToolBatch', {
+    hooks: [agentApprovalSession.settleBatchHook],
+  });
   const hitl = hitlCapable ? approvalWiring : undefined;
   registerResolvedMCPToolAliases = (resolvedAgent) => {
+    agentApprovalSession.addAgent(resolvedAgent);
     for (const agentId of collectNativeEditFileAgentIds([resolvedAgent])) {
       nativeEditFileAgentIds.add(agentId);
     }
@@ -3047,6 +3076,7 @@ export async function createRun({
     ...(streamLimits && { streamLimits }),
   };
   const run = await Run.create(runConfig);
+  if (approvalWiring != null) bindRunToolApprovalSession(run, agentApprovalSession);
   runMCPToolAliases.set(run, mcpToolAliases);
 
   applyCustomHandoffPromptKeyCompatibility(run, runConfig.graphConfig);

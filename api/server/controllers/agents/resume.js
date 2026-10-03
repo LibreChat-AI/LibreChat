@@ -1985,6 +1985,10 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       const resumeClient = () =>
         client.resumeCompletion({
           resumeValue: mapped.resumeValue,
+          reviewedToolApprovals: {
+            bindings: pendingAction.toolApprovalBindings,
+            decisions: req.body.decisions ?? [],
+          },
           seedContent,
           runSteps: resumeState?.runSteps ?? [],
           storedMessages,
@@ -2008,6 +2012,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           code: 'RUN_REPLACED',
         });
       }
+
       await recordToolApprovalAllows({
         userId,
         conversationId,
