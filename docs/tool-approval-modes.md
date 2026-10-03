@@ -54,3 +54,5 @@ Reset accepts the same tenant-scoped `manage:agents` capability or VIEW ACL as n
 Renewable OpenID/Graph credential placeholders are excluded from review authority in env, arguments, URLs, OAuth fields and headers. Surrounding routing and principal values remain bound. Persistence rechecks OAuth generation and atomically compares the captured consent binding, so stale completions cannot replace consent for a new account, connection, schema or approval revision.
 
 Approval ownership is invocation-specific. A delayed background completion cannot retire a newer call with the same provider ID. Registry timestamps and inspection summaries do not change authority. Renewable placeholders introduced by environment or custom-variable substitution are masked before credential resolution, without changing normal transport resolution.
+
+Scheduled-run pause admission checks each agent’s reachable tools and verified aliases. Options retained for deselected tools do not make an initialized run pause-capable. Unresolved lazy tool surfaces remain fail-closed.
