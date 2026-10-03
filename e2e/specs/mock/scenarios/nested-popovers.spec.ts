@@ -11,8 +11,6 @@ import { openSidebar } from './sidebar';
  * theme that resizes icons resizes the box with the glyph inside it.
  */
 
-type Mode = 'light' | 'dark';
-
 /** Names an icon size apart from the default, so a box still drawn at a fixed size shows. */
 const REFERENCE_ICON_THEME = {
   version: 1,
@@ -23,22 +21,19 @@ const REFERENCE_ICON_THEME = {
   },
 } as const;
 
-async function useTheme(page: Page, mode: Mode, definition?: { name: string }) {
-  await page.addInitScript(
-    ([colorTheme, stored]) => {
-      localStorage.setItem('color-theme', colorTheme as string);
-      localStorage.removeItem('theme-colors');
-      localStorage.removeItem('theme-name');
-      if (stored) {
-        localStorage.setItem('theme-definition', JSON.stringify(stored));
-        localStorage.setItem('theme-source', 'definition');
-      } else {
-        localStorage.removeItem('theme-definition');
-        localStorage.removeItem('theme-source');
-      }
-    },
-    [mode, definition ?? null] as [string, unknown],
-  );
+/** Leaves the color mode to the project (light, dark or mobile), so every scenario runs in each. */
+async function useTheme(page: Page, definition?: { name: string }) {
+  await page.addInitScript((stored) => {
+    localStorage.removeItem('theme-colors');
+    localStorage.removeItem('theme-name');
+    if (stored) {
+      localStorage.setItem('theme-definition', JSON.stringify(stored));
+      localStorage.setItem('theme-source', 'definition');
+    } else {
+      localStorage.removeItem('theme-definition');
+      localStorage.removeItem('theme-source');
+    }
+  }, definition ?? null);
 }
 
 /** The stateful workspace Select only renders when the agents endpoint offers stateful sessions;
@@ -100,7 +95,7 @@ test.describe('popovers inside a modal dialog', () => {
     page,
   }) => {
     await offerStatefulSessions(page);
-    await useTheme(page, 'light');
+    await useTheme(page);
     const trigger = await openWorkspaceSelect(page);
 
     /** The dialog really is modal, so the list's own pointer events are what keep it usable. */
@@ -119,7 +114,7 @@ test.describe('popovers inside a modal dialog', () => {
   test('the role menu inside Admin Settings takes a mouse pick @scenario:menu-in-dialog-takes-pointer', async ({
     page,
   }) => {
-    await useTheme(page, 'dark');
+    await useTheme(page);
     await page.goto('/agents/all', { timeout: 15000 });
     await page.getByRole('button', { name: 'Admin Settings' }).click();
     const dialog = page.getByRole('dialog');
@@ -151,7 +146,7 @@ test.describe('popovers inside a modal dialog', () => {
     page,
   }) => {
     await offerStatefulSessions(page);
-    await useTheme(page, 'light');
+    await useTheme(page);
     await openWorkspaceSelect(page);
     await expectIndicator(page, '16px');
   });
@@ -160,7 +155,7 @@ test.describe('popovers inside a modal dialog', () => {
     page,
   }) => {
     await offerStatefulSessions(page);
-    await useTheme(page, 'light', REFERENCE_ICON_THEME);
+    await useTheme(page, REFERENCE_ICON_THEME);
     await openWorkspaceSelect(page);
     await expectIndicator(page, '20px');
   });
