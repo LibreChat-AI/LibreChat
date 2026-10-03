@@ -250,7 +250,7 @@ function createMocks(overrides?: {
     getToolFilesByIds: jest.fn().mockResolvedValue([]),
   };
 
-  return { agent, req, res, loadTools, db };
+  return { agent, req, res, loadTools, db, getOptions: mockGetOptions };
 }
 
 function countNamedWebSearchTools(tools: unknown[] | undefined): number {
@@ -2526,6 +2526,62 @@ describe('initializeAgent — maxContextTokens', () => {
     // baseContextTokens = 1100 - 1050 = 50, formula would give ~47.5 rounded
     // but Math.max(1024, ...) clamps it
     expect(result.maxContextTokens).toBe(1024);
+  });
+});
+
+describe('initializeAgent — request generation params', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('forwards UI/preset params from endpointOption onto the provider request', async () => {
+    const { agent, req, res, loadTools, db, getOptions } = createMocks({
+      model: 'claude-sonnet-5',
+      maxContextTokens: undefined,
+      modelDefault: 200000,
+      maxOutputTokens: 4096,
+    });
+    mockExtractLibreChatParams.mockImplementation(realUtils.extractLibreChatParams);
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: {
+          endpoint: EModelEndpoint.agents,
+          model_parameters: {
+            model: 'client-override-model',
+            maxContextTokens: 1000000,
+            temperature: 0.3,
+            topP: 0.9,
+            thinking: true,
+            thinkingDisplay: 'summarized',
+            effort: 'high',
+          },
+        },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.maxContextTokens).toBe(1000000);
+    expect(getOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model_parameters: expect.objectContaining({
+          model: 'claude-sonnet-5',
+          temperature: 0.3,
+          topP: 0.9,
+          thinking: true,
+          thinkingDisplay: 'summarized',
+          effort: 'high',
+        }),
+      }),
+    );
+    expect(getOptions.mock.calls[0][0].model_parameters.model).toBe('claude-sonnet-5');
+    expect(getOptions.mock.calls[0][0].model_parameters.maxContextTokens).toBeUndefined();
   });
 });
 

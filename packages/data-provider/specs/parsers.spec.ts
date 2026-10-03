@@ -10,7 +10,7 @@ import {
   parseEphemeralAgentId,
 } from '../src/parsers';
 import { specialVariables } from '../src/config';
-import { EModelEndpoint, Providers } from '../src/schemas';
+import { EModelEndpoint, Providers, ThinkingDisplay, AnthropicEffort } from '../src/schemas';
 import { ContentTypes } from '../src/types/runs';
 import type { TMessageContentParts } from '../src/types/content';
 import type { TUser, TConversation } from '../src/types';
@@ -302,6 +302,60 @@ describe('parseCompactConvo', () => {
       expect(result).not.toBeNull();
       expect(result?.['iconURL']).toBeUndefined();
       expect(result?.model).toBe('gpt-4');
+    });
+  });
+
+  describe('agents generation params', () => {
+    const generationParams = {
+      agent_id: 'agent_123',
+      spec: 'claude-sonnet-5',
+      model: 'claude-sonnet-5',
+      maxContextTokens: 1000000,
+      temperature: 0.3,
+      topP: 0.9,
+      top_p: 0.85,
+      thinking: true,
+      thinkingDisplay: ThinkingDisplay.summarized,
+      effort: AnthropicEffort.high,
+      maxOutputTokens: 8192,
+      max_tokens: 4096,
+    } satisfies Partial<TConversation>;
+
+    test('preserves UI generation params and omits model', () => {
+      const result = parseCompactConvo({
+        endpoint: EModelEndpoint.agents,
+        conversation: generationParams,
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.agent_id).toBe('agent_123');
+      expect(result?.spec).toBe('claude-sonnet-5');
+      expect(result?.maxContextTokens).toBe(1000000);
+      expect(result?.temperature).toBe(0.3);
+      expect(result?.topP).toBe(0.9);
+      expect(result?.top_p).toBe(0.85);
+      expect(result?.thinking).toBe(true);
+      expect(result?.thinkingDisplay).toBe(ThinkingDisplay.summarized);
+      expect(result?.effort).toBe(AnthropicEffort.high);
+      expect(result?.maxOutputTokens).toBe(8192);
+      expect(result?.max_tokens).toBe(4096);
+      expect(result?.model).toBeUndefined();
+    });
+
+    test('drops unknown request fields the way other compact schemas do', () => {
+      const result = parseCompactConvo({
+        endpoint: EModelEndpoint.agents,
+        conversation: {
+          ...generationParams,
+          conversationId: 'convo-1',
+          title: 'New Chat',
+        },
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.maxContextTokens).toBe(1000000);
+      expect(result?.conversationId).toBeUndefined();
+      expect(result?.title).toBeUndefined();
     });
   });
 });
