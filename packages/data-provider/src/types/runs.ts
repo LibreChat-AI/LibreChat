@@ -575,6 +575,8 @@ export interface SubagentUpdateEvent {
   activityEventId?: string;
   /** Host-assigned monotonic sequence within one detached child run. */
   activitySequence?: number;
+  /** Host omission marker, counted only when its event is folded. */
+  activityDroppedCount?: number;
   /** Parent-side `tool_call_id` for the `subagent` tool invocation that
    *  triggered this run. Surfaces from the SDK (`3.1.67-dev.2`+) so hosts
    *  can correlate child progress to the parent tool call deterministically. */

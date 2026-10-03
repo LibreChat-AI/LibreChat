@@ -246,75 +246,108 @@ describe('legacyDomainEncode', () => {
 });
 
 describe('createActionTool OAuth events', () => {
-  it('fences resumable login and completion deltas to the owning job epoch', async () => {
-    const streamId = 'action-oauth-stream';
-    const jobCreatedAt = 1234;
-    const preparedExecutor = {
-      setAuth: jest.fn().mockResolvedValue(undefined),
-      execute: jest.fn().mockResolvedValue({ data: { ok: true } }),
-    };
-    const requestBuilder = {
-      createExecutor: jest.fn(() => ({
-        setParams: jest.fn(() => preparedExecutor),
-      })),
-    };
-    mockFindToken.mockResolvedValue(null);
-    mockActionFlowManager.createFlowWithHandler.mockImplementation(
-      async (_flowId, _type, handler) => handler(),
-    );
-    mockActionFlowManager.createFlow.mockResolvedValue({
-      access_token: 'access-token',
-      refresh_token: 'refresh-token',
-      expires_in: 3600,
-    });
+  const originalEnv = process.env;
+  beforeEach(() => {
+    process.env = { ...originalEnv, DOMAIN_CLIENT: 'https://client.example/ui/' };
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+  });
 
-    const actionTool = await createActionTool({
-      userId: 'action-user',
-      res: {},
-      action: {
-        action_id: 'action-1',
-        metadata: {
-          domain: 'https://api.example.com',
-          oauth_client_id: 'client-id',
-          auth: {
-            type: 'oauth',
-            authorization_url: 'https://auth.example.com/authorize',
-            client_url: 'https://auth.example.com/token',
-            scope: 'read',
+  it.each([
+    [undefined, 'http://localhost:3080'],
+    ['https://server.example', 'https://server.example'],
+    ['https://server.example/', 'https://server.example'],
+    ['https://server.example///', 'https://server.example'],
+    ['https://server.example/chat', 'https://server.example/chat'],
+    ['https://server.example/chat/', 'https://server.example/chat'],
+    ['https://server.example/chat///', 'https://server.example/chat'],
+    ['https://server.example/apps/librechat/', 'https://server.example/apps/librechat'],
+  ])(
+    'fences OAuth events and uses one canonical callback for %s',
+    async (domainServer, baseUrl) => {
+      if (domainServer === undefined) {
+        delete process.env.DOMAIN_SERVER;
+      } else {
+        process.env.DOMAIN_SERVER = domainServer;
+      }
+      const streamId = 'action-oauth-stream';
+      const jobCreatedAt = 1234;
+      const preparedExecutor = {
+        setAuth: jest.fn().mockResolvedValue(undefined),
+        execute: jest.fn().mockResolvedValue({ data: { ok: true } }),
+      };
+      const requestBuilder = {
+        createExecutor: jest.fn(() => ({
+          setParams: jest.fn(() => preparedExecutor),
+        })),
+      };
+      let authorizationUrl;
+      mockEmitChunk.mockImplementation(async (_streamId, event) => {
+        authorizationUrl ??= event.data?.delta?.auth;
+      });
+      mockFindToken.mockResolvedValue(null);
+      mockActionFlowManager.createFlowWithHandler.mockImplementation(
+        async (_flowId, _type, handler) => handler(),
+      );
+      mockActionFlowManager.createFlow.mockResolvedValue({
+        access_token: 'access-token',
+        refresh_token: 'refresh-token',
+        expires_in: 3600,
+      });
+
+      const actionTool = await createActionTool({
+        userId: 'action-user',
+        res: {},
+        action: {
+          action_id: 'action-1',
+          metadata: {
+            domain: 'https://api.example.com',
+            oauth_client_id: 'client-id',
+            auth: {
+              type: 'oauth',
+              authorization_url: 'https://auth.example.com/authorize',
+              client_url: 'https://auth.example.com/token',
+              scope: 'read',
+            },
           },
         },
-      },
-      requestBuilder,
-      encrypted: {
-        oauth_client_id: 'encrypted-client-id',
-        oauth_client_secret: 'encrypted-client-secret',
-      },
-      streamId,
-      jobCreatedAt,
-    });
-
-    await actionTool._call(
-      {},
-      {
-        metadata: {
-          thread_id: 'thread-1',
-          run_id: 'run-1',
+        requestBuilder,
+        encrypted: {
+          oauth_client_id: 'encrypted-client-id',
+          oauth_client_secret: 'encrypted-client-secret',
         },
-        toolCall: {
-          id: 'tool-call-1',
-          stepId: 'step-1',
-          name: 'action-tool',
-          type: 'tool_call',
-        },
-      },
-    );
+        streamId,
+        jobCreatedAt,
+      });
 
-    expect(mockEmitChunk).toHaveBeenCalledTimes(2);
-    for (const [emittedStreamId, , options] of mockEmitChunk.mock.calls) {
-      expect(emittedStreamId).toBe(streamId);
-      expect(options).toEqual({ expectedCreatedAt: jobCreatedAt });
-    }
-  });
+      await actionTool._call(
+        {},
+        {
+          metadata: {
+            thread_id: 'thread-1',
+            run_id: 'run-1',
+          },
+          toolCall: {
+            id: 'tool-call-1',
+            stepId: 'step-1',
+            name: 'action-tool',
+            type: 'tool_call',
+          },
+        },
+      );
+
+      const expectedRedirectUri = `${baseUrl}/api/actions/action-1/oauth/callback`;
+      const [, , flowMetadata] = mockActionFlowManager.createFlow.mock.calls[0];
+      expect(flowMetadata.redirect_uri).toBe(expectedRedirectUri);
+      expect(new URL(authorizationUrl).searchParams.get('redirect_uri')).toBe(expectedRedirectUri);
+      expect(mockEmitChunk).toHaveBeenCalledTimes(2);
+      for (const [emittedStreamId, , options] of mockEmitChunk.mock.calls) {
+        expect(emittedStreamId).toBe(streamId);
+        expect(options).toEqual({ expectedCreatedAt: jobCreatedAt });
+      }
+    },
+  );
 });
 
 describe('createActionTool OAuth flow cancellation', () => {

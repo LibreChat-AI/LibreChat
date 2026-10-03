@@ -2,16 +2,16 @@ import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useSt
 import * as Ariakit from '@ariakit/react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Ellipsis, Folder, FolderPlus, Pencil, Trash2 } from 'lucide-react';
-import { Button, DropdownPopup, Skeleton, Spinner } from '@librechat/client';
+import { Button, Spinner, Skeleton, DropdownPopup, buttonVariants } from '@librechat/client';
 import type { TChatProject } from 'librechat-data-provider';
 import type { ProjectSort } from './ProjectsSortMenu';
 import type { MenuItemProps } from '~/common';
 import { useProjectsInfiniteQuery } from '~/data-provider';
 import ProjectCreateDialog from './ProjectCreateDialog';
 import ProjectDeleteDialog from './ProjectDeleteDialog';
+import ProjectEditDialog from './ProjectEditDialog';
 import ProjectsSortMenu from './ProjectsSortMenu';
 import ProjectsNavBar from './ProjectsNavBar';
-import ProjectEditor from './ProjectEditor';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -36,10 +36,17 @@ function ProjectCard({
 }) {
   const localize = useLocalize();
   const menuId = useId();
-  const navigationButtonRef = useRef<HTMLButtonElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const editMenuRef = useRef<HTMLButtonElement>(null);
   const deleteMenuRef = useRef<HTMLButtonElement>(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  /** The dialog items keep the menu open so it does not steal focus from the
+   *  dialog mounting beside it; closing the dialog closes the menu too. */
+  const closeMenuWith = (setOpen: (open: boolean) => void, open: boolean) => {
+    setOpen(open);
+    if (!open) {
+      setIsMenuOpen(false);
+    }
+  };
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const activity = formatActivity(project);
@@ -50,6 +57,9 @@ function ProjectCard({
         label: localize('com_ui_edit_project'),
         icon: <Pencil className="text-text-secondary size-4" aria-hidden="true" />,
         onClick: () => setIsEditOpen(true),
+        hideOnClick: false,
+        ref: editMenuRef,
+        render: (props) => <button {...props} />,
       },
       {
         id: `${menuId}-delete`,
@@ -69,67 +79,50 @@ function ProjectCard({
       className={cn(
         'group/project border-border-light bg-surface-secondary relative flex min-h-[9.5rem] max-w-full min-w-0 flex-col rounded-2xl border',
         'hover:bg-surface-hover transition-colors duration-150 ease-out',
+        isMenuOpen && 'bg-surface-hover',
       )}
     >
-      {isEditOpen ? (
-        <div className="min-w-0 p-4 pr-12">
-          <ProjectEditor
-            project={project}
-            layout="card"
-            inputRef={inputRef}
-            onDone={() => {
-              setIsEditOpen(false);
-              requestAnimationFrame(() => navigationButtonRef.current?.focus());
-            }}
-          />
-        </div>
-      ) : (
-        <Button
-          ref={navigationButtonRef}
-          type="button"
-          variant="card"
-          size="tile"
-          className="min-h-[9.5rem] w-full max-w-full min-w-0 flex-1 flex-col items-stretch"
-          onClick={() => onOpen(project._id)}
-        >
-          <span className="bg-surface-tertiary text-text-secondary group-hover/project:text-text-primary flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-colors">
-            <Folder className="h-5 w-5" aria-hidden="true" />
+      <Button
+        type="button"
+        variant="card"
+        size="tile"
+        className="min-h-[9.5rem] w-full max-w-full min-w-0 flex-1 flex-col items-stretch"
+        onClick={() => onOpen(project._id)}
+      >
+        <span className="bg-surface-tertiary text-text-secondary group-hover/project:text-text-primary flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-colors">
+          <Folder className="h-5 w-5" aria-hidden="true" />
+        </span>
+        <span className="text-text-primary mt-3 line-clamp-2 max-w-full min-w-0 text-base font-semibold tracking-tight wrap-anywhere md:line-clamp-1">
+          {project.name}
+        </span>
+        {project.description ? (
+          <span className="text-text-secondary mt-1 line-clamp-2 max-w-full min-w-0 text-sm leading-relaxed text-pretty wrap-anywhere">
+            {project.description}
           </span>
-          <span className="text-text-primary mt-3 line-clamp-2 max-w-full min-w-0 text-base font-semibold tracking-tight wrap-anywhere md:line-clamp-1">
-            {project.name}
+        ) : null}
+        <span className="text-text-secondary mt-auto flex max-w-full min-w-0 items-center gap-2 pt-4 text-xs tabular-nums">
+          <span>
+            {project.conversationCount === 1
+              ? localize('com_ui_project_chat_count_single')
+              : localize('com_ui_project_chat_count', {
+                  count: project.conversationCount,
+                })}
           </span>
-          {project.description ? (
-            <span className="text-text-secondary mt-1 line-clamp-2 max-w-full min-w-0 text-sm leading-relaxed text-pretty wrap-anywhere">
-              {project.description}
-            </span>
+          {activity ? (
+            <>
+              <span aria-hidden="true">·</span>
+              <time dateTime={project.lastConversationAt ?? project.updatedAt ?? project.createdAt}>
+                {activity}
+              </time>
+            </>
           ) : null}
-          <span className="text-text-secondary mt-auto flex max-w-full min-w-0 items-center gap-2 pt-4 text-xs tabular-nums">
-            <span>
-              {project.conversationCount === 1
-                ? localize('com_ui_project_chat_count_single')
-                : localize('com_ui_project_chat_count', {
-                    count: project.conversationCount,
-                  })}
-            </span>
-            {activity ? (
-              <>
-                <span aria-hidden="true">·</span>
-                <time
-                  dateTime={project.lastConversationAt ?? project.updatedAt ?? project.createdAt}
-                >
-                  {activity}
-                </time>
-              </>
-            ) : null}
-          </span>
-        </Button>
-      )}
+        </span>
+      </Button>
       <div className="absolute top-2 right-2">
         <DropdownPopup
           portal={true}
           focusLoop={true}
           unmountOnHide={true}
-          finalFocus={isEditOpen ? inputRef : undefined}
           menuId={menuId}
           isOpen={isMenuOpen}
           setIsOpen={setIsMenuOpen}
@@ -139,10 +132,9 @@ function ProjectCard({
             <Ariakit.MenuButton
               aria-label={localize('com_ui_more_options')}
               className={cn(
-                'text-text-secondary flex h-8 w-8 items-center justify-center rounded-lg outline-hidden transition-colors',
-                'hover:bg-surface-tertiary hover:text-text-primary',
-                'focus-visible:ring-text-primary focus-visible:ring-2',
-                isMenuOpen && 'bg-surface-tertiary text-text-primary',
+                buttonVariants({ variant: 'row-action', size: 'icon-sm' }),
+                'text-text-secondary rounded-lg',
+                isMenuOpen && 'bg-surface-hover-alt text-text-primary',
               )}
             >
               <Ellipsis className="h-4 w-4" aria-hidden="true" />
@@ -151,9 +143,15 @@ function ProjectCard({
           items={menuItems}
         />
       </div>
+      <ProjectEditDialog
+        open={isEditOpen}
+        onOpenChange={(open) => closeMenuWith(setIsEditOpen, open)}
+        project={project}
+        triggerRef={editMenuRef}
+      />
       <ProjectDeleteDialog
         open={isDeleteOpen}
-        onOpenChange={setIsDeleteOpen}
+        onOpenChange={(open) => closeMenuWith(setIsDeleteOpen, open)}
         project={project}
         triggerRef={deleteMenuRef}
       />

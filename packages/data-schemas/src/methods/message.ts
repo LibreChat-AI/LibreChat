@@ -567,7 +567,13 @@ export type BackgroundToolResultClaim =
   | { status: 'outcome_unknown'; toolName: string }
   | {
       status: 'claimed';
-      claim?: { kind: 'manual' | 'wakeup'; claimId: string; generationId?: string };
+      claim?: {
+        kind: 'manual' | 'wakeup';
+        claimId: string;
+        generationId?: string;
+        batchId?: string;
+        receiptReconciled?: true;
+      };
       messageId?: string;
     }
   | { status: 'acquired'; results: BackgroundToolResultRecord[]; messageId?: string };
@@ -846,6 +852,7 @@ export interface MessageMethods {
         claimId: string;
         claimedAt: Date;
         generationId?: string;
+        receiptReconciled?: true;
       };
     };
   }): Promise<{ matched: boolean; unfinished: boolean }>;
@@ -858,6 +865,8 @@ export interface MessageMethods {
     agentId?: string;
     kind: 'manual' | 'wakeup';
     claimId: string;
+    /** Physical receipt-batch identity, independent of its logical request. */
+    batchId?: string;
     /** Response generation that owns this manual result delivery. */
     generationId?: string;
     /** Manual owner-process takeover after automatic delivery was retired. */
@@ -866,12 +875,24 @@ export interface MessageMethods {
     /** Includes JSON escaping, delimiters, and empty result fields. */
     maxMetadataChars?: number;
   }): Promise<BackgroundToolResultClaim>;
+  confirmBackgroundToolResultClaim(params: {
+    userId: string;
+    conversationId: string;
+    messageId: string;
+    taskId: string;
+    claimId: string;
+  }): Promise<boolean>;
   releaseBackgroundToolResultClaims(params: {
     userId: string;
     conversationId: string;
     messageId: string;
     /** Omit to release every sibling owned by this exact batch claim. */
     taskIds?: string[];
+    /** Receipt-backed results can precede the message projection. */
+    allowMissingMessage?: true;
+    /** Manual rollback must not erase a committed receipt handoff. */
+    onlyIfUnreconciled?: true;
+    batchId?: string;
     kind: 'manual' | 'wakeup';
     claimId: string;
   }): Promise<boolean>;
@@ -1983,7 +2004,15 @@ export function createMessageMethods(
   function readBackgroundToolResultClaim(
     row: Pick<IMessage, 'content'>,
     taskId: string,
-  ): { kind: 'manual' | 'wakeup'; claimId: string; generationId?: string } | undefined {
+  ):
+    | {
+        kind: 'manual' | 'wakeup';
+        claimId: string;
+        generationId?: string;
+        batchId?: string;
+        receiptReconciled?: true;
+      }
+    | undefined {
     for (const part of row.content ?? []) {
       if (part == null || typeof part !== 'object' || Array.isArray(part)) {
         continue;
@@ -1993,7 +2022,13 @@ export function createMessageMethods(
           tool_call?: {
             backgroundTask?: {
               taskId?: unknown;
-              resultClaim?: { kind?: unknown; claimId?: unknown; generationId?: unknown };
+              resultClaim?: {
+                kind?: unknown;
+                claimId?: unknown;
+                generationId?: unknown;
+                batchId?: unknown;
+                receiptReconciled?: unknown;
+              };
             };
           };
         }
@@ -2010,6 +2045,8 @@ export function createMessageMethods(
         return {
           kind: claim.kind,
           claimId: claim.claimId,
+          ...(typeof claim.batchId === 'string' && { batchId: claim.batchId }),
+          ...(claim.receiptReconciled === true && { receiptReconciled: true }),
           ...(typeof claim.generationId === 'string' && claim.generationId.length > 0
             ? { generationId: claim.generationId }
             : {}),
@@ -2021,7 +2058,7 @@ export function createMessageMethods(
 
   function parseBackgroundToolResults(
     message: IMessage,
-    claim: { kind: 'manual' | 'wakeup'; claimId: string },
+    claim: { kind: 'manual' | 'wakeup'; claimId: string; batchId?: string },
   ): BackgroundToolResultRecord[] {
     const results: BackgroundToolResultRecord[] = [];
     for (const part of message.content ?? []) {
@@ -2040,7 +2077,7 @@ export function createMessageMethods(
             status?: unknown;
             cancelled?: unknown;
             settledAt?: unknown;
-            resultClaim?: { kind?: unknown; claimId?: unknown };
+            resultClaim?: { kind?: unknown; claimId?: unknown; batchId?: unknown };
           };
         };
       };
@@ -2052,7 +2089,8 @@ export function createMessageMethods(
         typeof task.toolName !== 'string' ||
         (task.status !== 'completed' && task.status !== 'error') ||
         task.resultClaim?.kind !== claim.kind ||
-        task.resultClaim.claimId !== claim.claimId
+        task.resultClaim.claimId !== claim.claimId ||
+        task.resultClaim.batchId !== claim.batchId
       ) {
         continue;
       }
@@ -2133,6 +2171,7 @@ export function createMessageMethods(
     kind,
     claimId,
     generationId,
+    batchId,
     allowUnfinished = false,
     limit = kind === 'wakeup' ? 8 : 1,
     maxMetadataChars,
@@ -2144,6 +2183,7 @@ export function createMessageMethods(
     if (
       (requestedMessageId != null &&
         (requestedMessageId.length === 0 || requestedMessageId.length > 256)) ||
+      (batchId != null && (batchId.length === 0 || batchId.length > 128 || kind !== 'wakeup')) ||
       taskId.length === 0 ||
       taskId.length > 256 ||
       claimId.length === 0 ||
@@ -2214,7 +2254,10 @@ export function createMessageMethods(
     }
     const recoveredSource = requestedMessageId == null ? { messageId: resolvedMessageId } : {};
     const requestedClaim = readBackgroundToolResultClaim(row, taskId);
-    const replaying = requestedClaim?.kind === kind && requestedClaim.claimId === claimId;
+    const replaying =
+      requestedClaim?.kind === kind &&
+      requestedClaim.claimId === claimId &&
+      requestedClaim.batchId === batchId;
     const candidates: string[] = [];
     const costs = new Map<string, number>();
     let receiptBacked = false;
@@ -2233,8 +2276,13 @@ export function createMessageMethods(
       }
       const terminal = task?.status === 'completed' || task?.status === 'error';
       const wakeupEligible = kind !== 'wakeup' || task?.completionWakeup === true;
-      const resultClaim = task?.resultClaim as { kind?: unknown; claimId?: unknown } | undefined;
-      const replay = resultClaim?.kind === kind && resultClaim.claimId === claimId;
+      const resultClaim = task?.resultClaim as
+        | { kind?: unknown; claimId?: unknown; batchId?: unknown }
+        | undefined;
+      const replay =
+        resultClaim?.kind === kind &&
+        resultClaim.claimId === claimId &&
+        resultClaim.batchId === batchId;
       const sameAgent =
         agentId == null ||
         partAgentId == null ||
@@ -2315,105 +2363,103 @@ export function createMessageMethods(
       kind,
       claimId,
       claimedAt,
+      ...(batchId != null && { batchId }),
       ...(kind === 'manual' && requestedGenerationId != null
         ? { generationId: requestedGenerationId }
         : {}),
     };
-    const updated = await Message.findOneAndUpdate(
-      {
-        user: userId,
-        conversationId,
-        messageId: resolvedMessageId,
-        ...(kind === 'manual' && allowUnfinished ? {} : { unfinished: { $ne: true } }),
-        content: {
-          $elemMatch: {
-            type: 'tool_call',
-            'tool_call.backgroundTask.taskId': taskId,
-            'tool_call.backgroundTask.status': { $in: ['completed', 'error'] },
-            ...(kind === 'wakeup' ? { 'tool_call.backgroundTask.completionWakeup': true } : {}),
-            ...(replaying
-              ? {
-                  'tool_call.backgroundTask.resultClaim.kind': kind,
-                  'tool_call.backgroundTask.resultClaim.claimId': claimId,
-                }
-              : /** Missing OR stored null: the in-memory claimable scan, the
-                 * claim arrayFilters, and the settle stamp all treat a null
-                 * claim as unclaimed, and the subfield-preserving settle write
-                 * keeps a persisted null a whole-object rewrite used to drop.
-                 * `$exists: false` here would strand such a part as terminal
-                 * but permanently unclaimable. */
-                { 'tool_call.backgroundTask.resultClaim': null }),
-          },
+    const claimFilter: FilterQuery<IMessage> = {
+      user: userId,
+      conversationId,
+      messageId: resolvedMessageId,
+      ...(kind === 'manual' && allowUnfinished ? {} : { unfinished: { $ne: true } }),
+      content: {
+        $elemMatch: {
+          type: 'tool_call',
+          'tool_call.backgroundTask.taskId': taskId,
+          'tool_call.backgroundTask.status': { $in: ['completed', 'error'] },
+          ...(kind === 'wakeup' ? { 'tool_call.backgroundTask.completionWakeup': true } : {}),
+          ...(replaying
+            ? {
+                'tool_call.backgroundTask.resultClaim.kind': kind,
+                'tool_call.backgroundTask.resultClaim.claimId': claimId,
+                'tool_call.backgroundTask.resultClaim.batchId': batchId ?? null,
+              }
+            : /** Missing OR stored null: the in-memory claimable scan, the
+               * claim arrayFilters, and the settle stamp all treat a null
+               * claim as unclaimed, and the subfield-preserving settle write
+               * keeps a persisted null a whole-object rewrite used to drop.
+               * `$exists: false` here would strand such a part as terminal
+               * but permanently unclaimable. */
+              { 'tool_call.backgroundTask.resultClaim': null }),
         },
-        ...(agentId != null
-          ? {
-              $expr: {
-                $anyElementTrue: {
-                  $map: {
-                    input: { $ifNull: ['$content', []] },
-                    as: 'candidate',
-                    in: {
-                      $and: [
-                        { $eq: ['$$candidate.tool_call.backgroundTask.taskId', taskId] },
-                        {
-                          $in: [
-                            {
-                              $ifNull: [
-                                {
-                                  $ifNull: ['$$candidate.agentId', '$$candidate.tool_call.agentId'],
-                                },
-                                null,
-                              ],
-                            },
-                            [null, agentId],
-                          ],
-                        },
-                      ],
-                    },
+      },
+      ...(agentId != null
+        ? {
+            $expr: {
+              $anyElementTrue: {
+                $map: {
+                  input: { $ifNull: ['$content', []] },
+                  as: 'candidate',
+                  in: {
+                    $and: [
+                      { $eq: ['$$candidate.tool_call.backgroundTask.taskId', taskId] },
+                      {
+                        $in: [
+                          {
+                            $ifNull: [
+                              {
+                                $ifNull: ['$$candidate.agentId', '$$candidate.tool_call.agentId'],
+                              },
+                              null,
+                            ],
+                          },
+                          [null, agentId],
+                        ],
+                      },
+                    ],
                   },
                 },
               },
-            }
-          : {}),
-      },
-      /** Stamps the claim onto every part this pass admitted. The filtered
-       * positional operator selects those parts by predicate, so the write
-       * touches only them instead of re-emitting the whole content array, and
-       * needs no read-modify-write. Amazon DocumentDB rejects the
-       * aggregation-pipeline form this replaces. */
-      { $set: { 'content.$[part].tool_call.backgroundTask.resultClaim': claimStamp } },
-      {
-        new: true,
-        projection: { content: 1 },
-        arrayFilters: [
+            },
+          }
+        : {}),
+    };
+    const updated = replaying
+      ? await Message.findOne(claimFilter).select({ content: 1 }).lean<IMessage | null>()
+      : await Message.findOneAndUpdate(
+          claimFilter,
+          /** Stamps the claim onto every part this pass admitted. The filtered
+           * positional operator selects those parts by predicate, so the write
+           * touches only them instead of re-emitting the whole content array, and
+           * needs no read-modify-write. Amazon DocumentDB rejects the
+           * aggregation-pipeline form this replaces. */
+          { $set: { 'content.$[part].tool_call.backgroundTask.resultClaim': claimStamp } },
           {
-            'part.type': 'tool_call',
-            'part.tool_call.backgroundTask.taskId': { $in: candidates },
-            'part.tool_call.backgroundTask.status': { $in: ['completed', 'error'] },
-            ...(kind === 'wakeup'
-              ? { 'part.tool_call.backgroundTask.completionWakeup': true }
-              : {}),
-            $and: [
+            new: true,
+            projection: { content: 1 },
+            arrayFilters: [
               {
-                /** Unclaimed, or already held by this exact claimant (replay). */
-                $or: [
-                  { 'part.tool_call.backgroundTask.resultClaim': null },
+                'part.type': 'tool_call',
+                'part.tool_call.backgroundTask.taskId': { $in: candidates },
+                'part.tool_call.backgroundTask.status': { $in: ['completed', 'error'] },
+                ...(kind === 'wakeup'
+                  ? { 'part.tool_call.backgroundTask.completionWakeup': true }
+                  : {}),
+                $and: [
                   {
-                    'part.tool_call.backgroundTask.resultClaim.kind': kind,
-                    'part.tool_call.backgroundTask.resultClaim.claimId': claimId,
+                    'part.tool_call.backgroundTask.resultClaim': null,
                   },
+                  ...(agentId == null ? [] : [agentOwnershipFilter('part.', agentId)]),
                 ],
               },
-              ...(agentId == null ? [] : [agentOwnershipFilter('part.', agentId)]),
             ],
           },
-        ],
-      },
-    ).lean<IMessage | null>();
+        ).lean<IMessage | null>();
     if (updated == null) {
       return { status: 'not_ready' };
     }
-    const results = parseBackgroundToolResults(updated, { kind, claimId });
+    const results = parseBackgroundToolResults(updated, { kind, claimId, batchId });
     const competingClaim = readBackgroundToolResultClaim(updated, taskId);
     return results.some((result) => result.taskId === taskId)
       ? { status: 'acquired', results, ...recoveredSource }
@@ -2424,21 +2470,82 @@ export function createMessageMethods(
         };
   }
 
+  /** Manual ownership is committed only after receipt arbitration completes. */
+  async function confirmBackgroundToolResultClaim(
+    input: Parameters<MessageMethods['confirmBackgroundToolResultClaim']>[0],
+  ): Promise<boolean> {
+    const Message = mongoose.models.Message as Model<IMessage>;
+    const identity = {
+      'tool_call.backgroundTask.taskId': input.taskId,
+      'tool_call.backgroundTask.resultClaim.kind': 'manual',
+      'tool_call.backgroundTask.resultClaim.claimId': input.claimId,
+    };
+    try {
+      const confirmed = await Message.updateOne(
+        {
+          user: input.userId,
+          conversationId: input.conversationId,
+          messageId: input.messageId,
+          content: { $elemMatch: identity },
+        },
+        {
+          $set: { 'content.$[part].tool_call.backgroundTask.resultClaim.receiptReconciled': true },
+        },
+        {
+          arrayFilters: [
+            {
+              'part.tool_call.backgroundTask.taskId': input.taskId,
+              'part.tool_call.backgroundTask.resultClaim.kind': 'manual',
+              'part.tool_call.backgroundTask.resultClaim.claimId': input.claimId,
+            },
+          ],
+        },
+      );
+      return confirmed.matchedCount === 1;
+    } catch (error) {
+      // A lost write reply is not an uncommitted handoff. Read only the exact
+      // manual claim, never manufacture success from another claimant.
+      const committed = await Message.exists({
+        user: input.userId,
+        conversationId: input.conversationId,
+        messageId: input.messageId,
+        content: {
+          $elemMatch: {
+            ...identity,
+            'tool_call.backgroundTask.resultClaim.receiptReconciled': true,
+          },
+        },
+      });
+      if (committed != null) return true;
+      throw error;
+    }
+  }
+
   async function releaseBackgroundToolResultClaims({
     userId,
     conversationId,
     messageId,
     taskIds,
+    allowMissingMessage,
+    onlyIfUnreconciled,
     kind,
     claimId,
+    batchId,
   }: {
     userId: string;
     conversationId: string;
     messageId: string;
     taskIds?: string[];
+    /** Receipt-backed results can precede the message projection. */
+    allowMissingMessage?: true;
+    /** Manual rollback must not erase a committed receipt handoff. */
+    onlyIfUnreconciled?: true;
+    batchId?: string;
     kind: 'manual' | 'wakeup';
     claimId: string;
   }): Promise<boolean> {
+    if (onlyIfUnreconciled === true && kind !== 'manual')
+      throw new TypeError('Unreconciled rollback requires a manual claim');
     if (taskIds?.length === 0) {
       return true;
     }
@@ -2460,6 +2567,10 @@ export function createMessageMethods(
           {
             'part.tool_call.backgroundTask.resultClaim.kind': kind,
             'part.tool_call.backgroundTask.resultClaim.claimId': claimId,
+            'part.tool_call.backgroundTask.resultClaim.batchId': batchId ?? null,
+            ...(onlyIfUnreconciled === true && {
+              'part.tool_call.backgroundTask.resultClaim.receiptReconciled': { $ne: true },
+            }),
             ...(taskIds == null
               ? {}
               : { 'part.tool_call.backgroundTask.taskId': { $in: taskIds } }),
@@ -2474,9 +2585,13 @@ export function createMessageMethods(
         messageId,
         content: { $not: { $type: 'array' } },
       });
-      return arraylessRow != null;
+      if (arraylessRow != null) return true;
+      return (
+        allowMissingMessage === true &&
+        (await Message.exists({ user: userId, conversationId, messageId })) == null
+      );
     }
-    const remaining = parseBackgroundToolResults(updated, { kind, claimId });
+    const remaining = parseBackgroundToolResults(updated, { kind, claimId, batchId });
     return taskIds == null
       ? remaining.length === 0
       : !remaining.some((result) => taskIds.includes(result.taskId));
@@ -4249,6 +4364,7 @@ export function createMessageMethods(
     updateMessageText,
     updateToolCallResult,
     claimBackgroundToolResults,
+    confirmBackgroundToolResultClaim,
     releaseBackgroundToolResultClaims,
     updateMessage,
     recordSubagentTaskControlReceipt,

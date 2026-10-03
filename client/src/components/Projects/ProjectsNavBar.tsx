@@ -13,7 +13,7 @@ export default function ProjectsNavBar({ onCreate, search, onSearchChange }: Pro
   const localize = useLocalize();
   const isSmallScreen = useMediaQuery('(max-width: 768px)');
   return (
-    <header className="border-border-light bg-presentation sticky top-0 z-10 border-b">
+    <header className="border-border-light bg-surface-primary-alt sticky top-0 z-10 border-b">
       <div className="flex min-h-14 w-full flex-wrap items-center gap-2 px-4 py-2.5 md:min-h-16 md:flex-nowrap md:px-6">
         {isSmallScreen ? <OpenSidebar className="size-9 shrink-0" /> : null}
         <h1 className="sr-only">{localize('com_ui_projects')}</h1>
@@ -23,7 +23,6 @@ export default function ProjectsNavBar({ onCreate, search, onSearchChange }: Pro
           value={search}
           onChange={(event) => onSearchChange(event.target.value)}
           label={localize('com_ui_search_projects')}
-          surface="presentation"
           containerClassName="order-last w-full min-w-0 md:order-none md:w-auto md:max-w-md md:flex-1"
         />
         <div className="ml-auto flex shrink-0 items-center gap-2">

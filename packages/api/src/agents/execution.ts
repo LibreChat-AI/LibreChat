@@ -13,6 +13,7 @@ import type {
   TAgentsEndpoint,
 } from 'librechat-data-provider';
 import type { WorkspaceEditFileFeature } from '~/code/edits';
+import { isCodeEnvironmentSelectionEnabled } from '~/code/protocol';
 import { CodeWorkspaceSelectionError } from '~/code/errors';
 
 export const CODE_API_EXPECTED_PROFILE_HEADER = 'X-CodeAPI-Expected-Profile';
@@ -92,6 +93,7 @@ export function getCodeWorkspaceSelections(
     selections.set(workspace.environmentId, {
       environmentId: workspace.environmentId,
       workspaceId: workspace.workspaceId,
+      ...(workspace.checkout == null ? {} : { checkout: workspace.checkout }),
       ...(workspace.agentIds == null ? {} : { agentIds: [...workspace.agentIds] }),
     });
   }
@@ -351,7 +353,8 @@ export function resolveCodeExecutionContext(params: {
   userId?: string | null;
   agentId?: string | null;
   conversationId?: string | null;
-  /** Deployment ceiling and the persisted agent machine allowlist are both required. */
+  /** Deployment ceiling (on unless `false` or the decision protocol is off) and a persisted
+   *  agent machine allowlist are both required. */
   allowEnvironmentSelection?: boolean;
   environmentIds?: readonly string[];
   workspaceSelections?: unknown;
@@ -372,7 +375,7 @@ export function resolveCodeExecutionContext(params: {
       (params.environmentId ? candidate.id === params.environmentId : candidate.default === true),
   );
   const allowSelection =
-    params.allowEnvironmentSelection === true &&
+    isCodeEnvironmentSelectionEnabled(params.allowEnvironmentSelection) &&
     (params.environmentIds?.length ?? 0) > 0 &&
     (defaultEnvironment?.type === 'attached' ||
       (defaultEnvironment == null && Boolean(params.environmentId)));

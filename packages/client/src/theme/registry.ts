@@ -606,6 +606,18 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors?.['rgb-avatar-placeholder'] === undefined && avatarPlaceholderSource !== undefined
       ? { 'rgb-avatar-placeholder': avatarPlaceholderSource }
       : {};
+  /**
+   * The mobile drawer drew its edge only in dark, in `border-xheavy`; in light the drawer's own
+   * fill. A theme that repaints the role its mode used keeps that edge.
+   */
+  const drawerEdgeSource =
+    mode === 'dark'
+      ? customColors?.['rgb-border-xheavy']
+      : customColors?.['rgb-surface-primary-alt'];
+  const drawerEdgeFallback: Partial<IThemeRGB> =
+    customColors?.['rgb-drawer-edge'] === undefined && drawerEdgeSource !== undefined
+      ? { 'rgb-drawer-edge': drawerEdgeSource }
+      : {};
   const chartWidgetSurfaceFallback: IThemeRGB =
     customColors?.['rgb-chart-widget-surface'] === undefined &&
     customColors?.['rgb-surface-primary'] !== undefined
@@ -711,6 +723,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...textMutedFallback,
       ...proseLinkFallback,
       ...avatarPlaceholderFallback,
+      ...drawerEdgeFallback,
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
       ...switchThumbFallback,

@@ -34,6 +34,7 @@ jest.mock('@librechat/agents', () => ({
 
 import { Providers } from '@librechat/agents';
 import { createHash } from 'node:crypto';
+import { logger } from '@librechat/data-schemas';
 import { createRepositoryInstructionLoader } from '../../code/instructions';
 import {
   Tools,
@@ -3531,11 +3532,12 @@ describe('initializeAgent — execute_code capability expansion', () => {
     );
   });
 
-  it('keeps legacy opt-out classification until the deployment protocol is enabled', async () => {
+  it('keeps legacy opt-out classification when the deployment opts out of the protocol', async () => {
     const { agent, req, res, loadTools, db } = createMocks();
     agent.tools = [Tools.execute_code];
     agent.stateful_code_sessions = true;
     delete agent.code_environment_id;
+    process.env.CODE_ENVIRONMENT_DECISION_VERSION = '0';
     process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = 'https://stateful-code.example.com/v1/';
     req.config = {
       endpoints: {
@@ -3568,6 +3570,7 @@ describe('initializeAgent — execute_code capability expansion', () => {
       expect(result.codeEnvAvailable).toBe(false);
       expect(result.statefulCodeSessions).toBe(false);
     } finally {
+      delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
       delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
     }
   });
@@ -3674,6 +3677,16 @@ describe('initializeAgent — execute_code capability expansion', () => {
     );
     expect(result.codeExecutionContext?.environmentId).toBe('runtime-vm');
     expect(agent.code_environment_id).toBe('application-vm');
+    /* The liveness probe inside priming authenticates to this route the way its uploads
+     * do, which needs the request to mint from and the route's worker to bind to. */
+    expect(primeResources).toHaveBeenCalledWith(
+      expect.objectContaining({
+        req,
+        codeBaseUrl: 'https://runtime-vm.example.com/v1',
+        codeExecutionProfile: 'stateful',
+        codeBridgeWorkerId: 'worker-runtime-vm',
+      }),
+    );
   });
 
   it.each([false, true])(
@@ -5235,6 +5248,10 @@ describe('initializeAgent — authorized run file snapshots', () => {
 describe('initializeAgent — provider-native web search role gate', () => {
   const OPENAI_SEARCH = { type: 'web_search' };
 
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   const roleWithWebSearch = (use: boolean) =>
     jest.fn().mockResolvedValue({
       name: 'USER',
@@ -5316,6 +5333,34 @@ describe('initializeAgent — provider-native web search role gate', () => {
     const result = await run({ getRoleByName: roleWithWebSearch(false) });
 
     expect(result.tools).not.toContainEqual(OPENAI_SEARCH);
+  });
+
+  it('keeps native search when the external pipeline capability is disabled', async () => {
+    const getRoleByName = roleWithWebSearch(true);
+    const result = await run({
+      getRoleByName,
+      params: {
+        req: {
+          ...roleGatedReq(),
+          config: { endpoints: { agents: { capabilities: [AgentCapabilities.file_search] } } },
+        } as ServerRequest,
+      },
+    });
+
+    expect(result.tools).toContainEqual(OPENAI_SEARCH);
+    expect(getRoleByName).toHaveBeenCalledTimes(1);
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('Restore the role grant'));
+  });
+
+  it('explains a blocked native request even when the caller supplies the denial', async () => {
+    const result = await run({
+      params: { resolveWebSearchGrant: jest.fn().mockResolvedValue(false) },
+    });
+
+    expect(result.tools).not.toContainEqual(OPENAI_SEARCH);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('removing interface.webSearch does not reset stored permissions'),
+    );
   });
 
   it('reads no role when the built config turns no native search on', async () => {

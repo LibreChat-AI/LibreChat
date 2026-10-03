@@ -1350,9 +1350,12 @@ export const codeEnvironmentUserConfigSchema = z
     workspaces: z
       .object({
         /** Run requests aimed at `.worktrees/<name>` in that worktree's own lane when the
-         * worker advertises linked-worktree lanes. Omission keeps every request scoped to
-         * its checkout. */
+         * worker advertises linked-worktree lanes. Omission allows it; `false` keeps every
+         * request scoped to its checkout. */
         linkedWorktrees: z.boolean().optional(),
+        /** Permit explicit per-conversation checkout choices after every API replica supports
+         * them. Omission preserves automatic worker isolation and hides the selector. */
+        allowCheckoutSelection: z.boolean().optional().default(false),
       })
       .strict()
       .optional(),
@@ -1395,11 +1398,50 @@ export const DEFAULT_MAX_PROVIDER_ERROR_CHARS = 2000;
 export const DEFAULT_AGENT_MODEL_RESPONSE_BODY_TIMEOUT_MS = 900_000;
 export const DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS = 300_000;
 
+export const HOST_FILE_EDIT_HARD_MAX_COUNT = 100;
+
+/** Host-side skill/sandbox edit budgets. Attached workers retain their own limits. */
+export const hostFileEditLimitsSchema = z
+  .object({
+    maxEdits: z
+      .number()
+      .int()
+      .min(1)
+      .max(HOST_FILE_EDIT_HARD_MAX_COUNT)
+      .default(HOST_FILE_EDIT_HARD_MAX_COUNT),
+    maxWorkBytes: z
+      .number()
+      .int()
+      .min(1024)
+      .max(256 * 1024 * 1024)
+      .default(64 * 1024 * 1024),
+    maxOccurrences: z.number().int().min(1).max(1_000_000).default(100_000),
+    timeoutMs: z.number().int().min(100).max(10_000).default(2000),
+    maxConcurrent: z.number().int().min(1).max(8).default(2),
+  })
+  .strict();
+
+export type HostFileEditLimits = z.infer<typeof hostFileEditLimitsSchema>;
+
+/** Server-side resource and recovery policy for ephemeral child activity. */
+export const subagentActivityConfigSchema = z.object({
+  replayTtlMs: z.number().int().min(1_000).max(86_400_000).default(300_000),
+  publicationTimeoutMs: z.number().int().min(100).max(60_000).default(1_000),
+  retryAttempts: z.number().int().min(1).max(10).default(3),
+  retryBaseDelayMs: z.number().int().min(1).max(10_000).default(100),
+  recoveryDelayMs: z.number().int().min(100).max(60_000).default(1_000),
+  memoryMaxStreams: z.number().int().min(1).max(100_000).default(1_000),
+  memoryMaxBytes: z.number().int().min(65_536).max(1_073_741_824).default(16_777_216),
+});
+
+export type TSubagentActivityConfig = z.infer<typeof subagentActivityConfigSchema>;
+
 export const agentsEndpointSchema = baseEndpointSchema
   .omit({ baseURL: true })
   .merge(
     z.object({
       /* agents specific */
+      hostFileEdits: hostFileEditLimitsSchema.optional(),
       /** Maximum provider error characters retained in unprotected terminal failures. */
       maxProviderErrorChars: z
         .number()
@@ -1464,6 +1506,8 @@ export const agentsEndpointSchema = baseEndpointSchema
         .max(MAX_SUBAGENTS_CEILING)
         .optional()
         .default(MAX_SUBAGENTS),
+      /** Live replay retention, publication recovery and process-local cache budgets. */
+      subagentActivity: subagentActivityConfigSchema.optional(),
       /** Run-scoped file access for explicitly opted-in subagent delegations. */
       fileSharing: z
         .object({
@@ -1511,8 +1555,8 @@ export const agentsEndpointSchema = baseEndpointSchema
       statefulCodeSessions: z
         .object({
           allowedEnvironments: z.array(z.enum(STATEFUL_CODE_ENVIRONMENTS)).min(1),
-          /** Allow agents with a machine allowlist to use a chat-owned machine instead of their default.
-           * Enable after every API replica supports per-chat machine routing. */
+          /** Let new chats pick a machine from their agent's saved allowlist instead of its default.
+           * Omission allows it; `false` keeps every agent on its fixed machine. */
           allowEnvironmentSelection: z.boolean().optional(),
           /** Maximum additional machine choices saved on an agent (wire ceiling: 128). */
           maxEnvironmentChoices: z
@@ -1721,8 +1765,9 @@ export const agentsEndpointSchema = baseEndpointSchema
             .max(AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX)
             .optional()
             .default(AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT),
-          /** Maximum message-backed sibling results in one continuation.
-           * Independent receipts retain task-local delivery ownership. */
+          /** Enable only after every replica has compatible receipt/poll consumers. */
+          completionReceiptBatching: z.boolean().optional().default(false),
+          /** Maximum compatible sibling results in one continuation. */
           completionResultBatchSize: z.number().int().min(1).max(16).optional().default(8),
           /** Cooperative cancellation for process-local ordinary tools. Off
            * by default so existing deployments opt into the new control. */

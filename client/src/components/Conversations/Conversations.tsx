@@ -32,11 +32,11 @@ import {
   useEffectiveProjectId,
   useUnpinDroppedConversation,
 } from './dnd';
+import { unlistedRunningIds, RUNNING_CHATS_GROUP, groupConversationsWithRunning } from './running';
 import { useLocalize, TranslationKeys, useElementSize, useOuterScrollWindow } from '~/hooks';
-import { groupConversationsWithRunning, RUNNING_CHATS_GROUP } from './running';
+import { useActiveJobs, useRunningConversationsQuery } from '~/data-provider';
 import { facetFilterCountAtom, resetFacetsAtom } from './facets';
 import { groupConversations, cn } from '~/utils';
-import { useActiveJobs } from '~/data-provider';
 import Convo from './Convo';
 import store from '~/store';
 
@@ -196,7 +196,7 @@ DateLabel.displayName = 'DateLabel';
 
 type FlattenedItem =
   | { type: 'header'; groupName: string }
-  | { type: 'convo'; convo: TConversation }
+  | { type: 'convo'; convo: TConversation; inRunningGroup: boolean }
   | { type: 'loading' };
 
 const Conversations: FC<ConversationsProps> = ({
@@ -324,15 +324,42 @@ const Conversations: FC<ConversationsProps> = ({
       }),
     [filteredConversations, includePinned, sort.direction, sort.field],
   );
+  /** Running chats this list holds no row for — filed in a project, pinned, or past the
+   *  loaded pages — join the Running group only while nothing narrows the list: a search
+   *  or filter result that grew rows it did not match would stop reading as that result. */
+  const isUnnarrowed =
+    !search.query && !isArchivedView && filterTags.length === 0 && facetFilterCount === 0;
+  const listsNewestFirst = sort.field === 'updatedAt' && sort.direction === 'desc';
+  const runningIdsToFetch = useMemo(
+    () =>
+      isUnnarrowed && isChatsExpanded && listsNewestFirst
+        ? unlistedRunningIds(datedConversations, activeJobIds)
+        : [],
+    [isUnnarrowed, isChatsExpanded, listsNewestFirst, datedConversations, activeJobIds],
+  );
+  const unlistedRunning = useRunningConversationsQuery(runningIdsToFetch);
   /** The archive keeps its server order, while search still promotes active matches. */
   const groupedConversations = useMemo(
     () =>
-      groupConversationsWithRunning(datedConversations, activeJobIds, {
-        field: sort.field,
-        direction: sort.direction,
-        includePinned: isArchivedView,
-      }),
-    [datedConversations, activeJobIds, isArchivedView, sort.direction, sort.field],
+      groupConversationsWithRunning(
+        datedConversations,
+        activeJobIds,
+        {
+          field: sort.field,
+          direction: sort.direction,
+          includePinned: isArchivedView,
+        },
+        isUnnarrowed ? unlistedRunning : undefined,
+      ),
+    [
+      datedConversations,
+      activeJobIds,
+      isArchivedView,
+      isUnnarrowed,
+      unlistedRunning,
+      sort.direction,
+      sort.field,
+    ],
   );
 
   /* Outside search, pins are stripped from the date groups. An all-pin page leaves
@@ -375,8 +402,9 @@ const Conversations: FC<ConversationsProps> = ({
     const items: FlattenedItem[] = [];
     if (isChatsExpanded) {
       groupedConversations.forEach(([groupName, convos]) => {
+        const inRunningGroup = groupName === RUNNING_CHATS_GROUP;
         items.push({ type: 'header', groupName });
-        items.push(...convos.map((convo) => ({ type: 'convo' as const, convo })));
+        items.push(...convos.map((convo) => ({ type: 'convo' as const, convo, inRunningGroup })));
       });
 
       if (isLoading) {
@@ -489,6 +517,7 @@ const Conversations: FC<ConversationsProps> = ({
               retainView={moveToTop}
               toggleNav={toggleNav}
               isGenerating={isGenerating}
+              showProjectBadge={item.inRunningGroup}
               draggable
             />
           </MeasuredRow>

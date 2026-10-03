@@ -1,3 +1,4 @@
+import { HOST_FILE_EDIT_HARD_MAX_COUNT } from 'librechat-data-provider';
 import {
   Constants as AgentConstants,
   CODE_EXECUTION_TOOLS,
@@ -827,6 +828,7 @@ const SKILL_EDIT_FILE_PARAMETERS: LCTool['parameters'] = Object.freeze({
     },
     edits: {
       type: 'array',
+      maxItems: HOST_FILE_EDIT_HARD_MAX_COUNT,
       description:
         'Optional batch of replacements. Each old_text must match exactly once unless its replace_all is true.',
       items: {
@@ -864,6 +866,7 @@ const CODE_EDIT_FILE_PARAMETERS: LCTool['parameters'] = Object.freeze({
     },
     edits: {
       type: 'array',
+      maxItems: HOST_FILE_EDIT_HARD_MAX_COUNT,
       description:
         'Optional batch of replacements. Each old_text must match exactly once unless its replace_all is true.',
       items: {

@@ -202,13 +202,8 @@ export default function ProgressText({
     <Wrapper popover={popover} failed={phase === 'failed'} rootRef={rootRef}>
       <Button
         type="button"
-        variant="ghost"
-        className={cn(
-          'group/disclosure inline-flex h-auto w-full items-center justify-start gap-2 rounded-none p-0 hover:bg-transparent hover:text-inherit disabled:opacity-100',
-          hasInput
-            ? 'focus-visible:ring-border-heavy focus-visible:ring-offset-0'
-            : 'pointer-events-none',
-        )}
+        variant="disclosure"
+        className="group/disclosure"
         disabled={!hasInput}
         tabIndex={hasInput ? 0 : -1}
         onClick={hasInput ? onClick : undefined}

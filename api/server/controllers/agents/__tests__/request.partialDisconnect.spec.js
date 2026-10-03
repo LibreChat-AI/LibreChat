@@ -82,7 +82,7 @@ jest.mock('@librechat/api', () => ({
   resolvePersistableCodeEnvironmentDecision: (...args) =>
     jest.requireActual('@librechat/api').resolvePersistableCodeEnvironmentDecision(...args),
   getSafeErrorMetadata: jest.requireActual('@librechat/api').getSafeErrorMetadata,
-  getSafeErrorText: jest.requireActual('@librechat/api').getSafeErrorText,
+  logGenerationStartFailure: jest.requireActual('@librechat/api').logGenerationStartFailure,
   startAgentProjectContextResolution:
     jest.requireActual('@librechat/api').startAgentProjectContextResolution,
   assertChatProjectInstructions: jest.requireActual('@librechat/api').assertChatProjectInstructions,

@@ -310,6 +310,7 @@ function MyComponent() {
 - `border-border-medium` - Medium border
 - `border-border-heavy` - Heavy border
 - `border-border-xheavy` - Extra heavy border
+- `border-drawer-edge` - The mobile drawer's trailing edge: the drawer's own fill in light, `border-xheavy` in dark
 - `border-border-destructive` - Destructive action border
 
 ### Status Colors

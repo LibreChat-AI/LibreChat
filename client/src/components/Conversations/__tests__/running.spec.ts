@@ -1,6 +1,10 @@
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationGroupOptions } from '~/utils/convos';
-import { groupConversationsWithRunning as partitionGroups, RUNNING_CHATS_GROUP } from '../running';
+import {
+  unlistedRunningIds,
+  RUNNING_CHATS_GROUP,
+  groupConversationsWithRunning as partitionGroups,
+} from '../running';
 import { groupConversations } from '~/utils/convos';
 
 const convo = (conversationId: string, daysAgo: number, pinned = false): TConversation =>
@@ -87,5 +91,108 @@ describe('groupConversationsWithRunning', () => {
     expect(groupConversationsWithRunning(conversations, new Set(['pinned']), options)).toEqual(
       groupConversations(conversations, options),
     );
+  });
+});
+
+describe('running chats the loaded rows do not hold', () => {
+  const projectChat = (conversationId: string, daysAgo: number): TConversation =>
+    ({ ...convo(conversationId, daysAgo), chatProjectId: 'project-1' }) as TConversation;
+
+  it('names only the running chats the groups do not already list', () => {
+    const dated = groupConversations([convo('listed', 1), convo('idle', 2)], newestFirst);
+    expect(unlistedRunningIds(dated, new Set(['listed', 'in-project']))).toEqual(['in-project']);
+  });
+
+  it('returns one shared empty list when nothing is missing', () => {
+    const dated = groupConversations([convo('listed', 1)], newestFirst);
+    const none = unlistedRunningIds(dated, new Set());
+    expect(none).toEqual([]);
+    expect(unlistedRunningIds(dated, new Set(['listed']))).toBe(none);
+  });
+
+  it('lists a running project chat above the date groups without touching them', () => {
+    const dated = groupConversations([convo('newer', 0), convo('older', 40)], newestFirst);
+    const inProject = projectChat('in-project', 10);
+
+    const groups = partitionGroups(dated, new Set(['in-project']), newestFirst, [inProject]);
+
+    expect(groups[0]).toEqual([RUNNING_CHATS_GROUP, [inProject]]);
+    expect(groups.slice(1)).toEqual(dated);
+    expect(groups[1]).toBe(dated[0]);
+  });
+
+  it('merges unlisted and loaded running chats newest first', () => {
+    const dated = groupConversations([convo('idle', 0), convo('loaded-running', 30)], newestFirst);
+    const recentProject = projectChat('recent-project', 5);
+    const oldPinned = convo('old-pinned', 60, true);
+
+    const groups = partitionGroups(
+      dated,
+      new Set(['loaded-running', 'recent-project', 'old-pinned']),
+      newestFirst,
+      [oldPinned, recentProject],
+    );
+
+    expect(groups[0][0]).toBe(RUNNING_CHATS_GROUP);
+    expect(groups[0][1].map((c) => c.conversationId)).toEqual([
+      'recent-project',
+      'loaded-running',
+      'old-pinned',
+    ]);
+    expect(ids(groups.slice(1))).toEqual(['idle']);
+  });
+
+  it('drops unlisted rows whose run finished or that the groups already list', () => {
+    const loaded = convo('loaded-running', 3);
+    const dated = groupConversations([loaded], newestFirst);
+    const finished = projectChat('finished', 1);
+    const duplicate = { ...loaded, title: 'stale copy' } as TConversation;
+
+    const groups = partitionGroups(dated, new Set(['loaded-running']), newestFirst, [
+      finished,
+      duplicate,
+    ]);
+
+    expect(groups).toEqual([[RUNNING_CHATS_GROUP, [loaded]]]);
+  });
+
+  it.each([{ isTemporary: true }, { expiredAt: '2026-12-31T00:00:00.000Z' }])(
+    'leaves a temporary chat out while its run continues: %j',
+    (retention) => {
+      const dated = groupConversations([convo('idle', 0)], newestFirst);
+      const temporary = { ...projectChat('temporary', 1), ...retention } as TConversation;
+
+      expect(partitionGroups(dated, new Set(['temporary']), newestFirst, [temporary])).toBe(dated);
+    },
+  );
+
+  it('keeps an explicitly non-temporary chat eligible even when it expires', () => {
+    const dated = groupConversations([convo('idle', 0)], newestFirst);
+    const expiring = {
+      ...projectChat('expiring', 1),
+      isTemporary: false,
+      expiredAt: '2026-12-31T00:00:00.000Z',
+    } as TConversation;
+
+    expect(partitionGroups(dated, new Set(['expiring']), newestFirst, [expiring])[0]).toEqual([
+      RUNNING_CHATS_GROUP,
+      [expiring],
+    ]);
+  });
+
+  it('leaves an archived chat out even while its run continues', () => {
+    const dated = groupConversations([convo('idle', 0)], newestFirst);
+    const archived = { ...projectChat('archived', 1), isArchived: true } as TConversation;
+
+    expect(partitionGroups(dated, new Set(['archived']), newestFirst, [archived])).toBe(dated);
+  });
+
+  it.each([
+    { field: 'createdAt' as const, direction: 'desc' as const },
+    { ...newestFirst, includePinned: true },
+  ])('adds nothing under $field $direction (includePinned: $includePinned)', (options) => {
+    const dated = groupConversations([convo('idle', 0)], options);
+    const unlisted = [projectChat('in-project', 1)];
+    expect(partitionGroups(dated, new Set(['in-project']), options, unlisted)).toBe(dated);
   });
 });

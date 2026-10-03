@@ -19,6 +19,7 @@ const mockQueuedTurnLifecycle = {
 
 jest.mock('@librechat/api', () => ({
   createCheckpointDeletionReclaimer: jest.fn((getJobs) => () => getJobs('owner', 'tenant')),
+  createBackgroundToolDeadClaimRecovery: jest.fn(() => jest.fn()),
   createAgentTriggerService: (...args) => mockCreateAgentTriggerService(...args),
   createAgentContinuationResolver: jest.fn(() => jest.fn()),
   createAgentEventContinueResolver: jest.fn(() => jest.fn()),

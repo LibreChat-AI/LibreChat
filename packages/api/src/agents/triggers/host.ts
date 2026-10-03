@@ -72,6 +72,8 @@ export type AgentTriggerContinuePreparation =
       releaseOnDefiniteFailure?: (error?: AgentTriggerExecutionError) => MaybePromise<void>;
       /** Commits the source handoff after generation admission. Failure is
        * outcome-ambiguous: the same delivery retries with the same request id. */
+      /** Durable possible-handoff marker written immediately before transport. */
+      beginDispatch?: () => MaybePromise<void>;
       settleOnAdmission?: (result: AgentTriggerContinueResult) => MaybePromise<void>;
     }
   | { status: 'settled' };
@@ -174,7 +176,13 @@ export interface AgentTriggerExecutionHostDeps {
 export interface AgentTriggerExecutionHost {
   dispatch: (
     envelope: unknown,
-    options?: { signal?: AbortSignal; attempt?: number; maxAttempts?: number },
+    options?: {
+      signal?: AbortSignal;
+      attempt?: number;
+      maxAttempts?: number;
+      deliveryClaimToken?: string;
+      requiredWorkerCapability?: string;
+    },
   ) => Promise<AgentTriggerExecutionResult>;
 }
 
@@ -638,6 +646,7 @@ async function startRun(
     const url = mode === 'fire' ? fireUrl(baseUrl) : continueUrl(baseUrl);
     const fetcher: AgentTriggerFetch = deps.fetch ?? globalThis.fetch;
     let response: Response;
+    await readyPreparation?.beginDispatch?.();
     try {
       response = await fetcher(url, {
         method: 'POST',

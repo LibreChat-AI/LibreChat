@@ -204,6 +204,30 @@ describe('usePaletteEntries', () => {
     expect(codeInterpreter.setIsPinned).toHaveBeenCalledWith(false);
   });
 
+  it.each([false, true])(
+    'withholds restored pinned search (active=%s) from both the palette and prompt bar when its capability is disabled',
+    (active) => {
+      const webSearch = toggle(active, true);
+      mockContext = { ...fullContext(), webSearch };
+      const { result, rerender } = entries();
+      expect(result.current.find((item) => item.key === 'builtin:web_search')).toEqual(
+        expect.objectContaining({ pinned: true, active }),
+      );
+
+      mockCapabilities = { ...allCapabilities, webSearchEnabled: false };
+      rerender();
+      expect(keysOf(result)).not.toContain('builtin:web_search');
+      expect(webSearch.setIsPinned).not.toHaveBeenCalled();
+      expect(webSearch.debouncedChange).not.toHaveBeenCalled();
+
+      mockCapabilities = { ...allCapabilities };
+      rerender();
+      expect(result.current.find((item) => item.key === 'builtin:web_search')).toEqual(
+        expect.objectContaining({ pinned: true, active }),
+      );
+    },
+  );
+
   describe('the two gates on every tool', () => {
     it.each([
       [PermissionTypes.WEB_SEARCH, 'builtin:web_search'],

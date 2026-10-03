@@ -458,7 +458,9 @@ const ChatForm = memo(function ChatForm({
     textAreaRef,
     submitButtonRef,
     setIsScrollable,
-    disabled: disableInputs || answerMode.composerLocked,
+    /* Only picks the missing-key placeholder; a batch lock is applied to the
+       textarea itself and keeps its own "answer above" placeholder. */
+    disabled: disableInputs,
     // The composer IS the free-form answer box while a question pause is live.
     placeholder: composerReserved ? answerPlaceholder : placeholder,
     // Enter stays live during a run when it can steer/queue instead of send.
@@ -864,6 +866,8 @@ const ChatForm = memo(function ChatForm({
                       'relative flex-1',
                       listening &&
                         '[&_textarea]:caret-transparent [&_textarea]:placeholder:text-transparent',
+                      /* Locked behind a question: the placeholder is a notice, not text. */
+                      answerMode.composerLocked && '[&_textarea]:select-none',
                     )}
                     style={
                       isCollapsed
@@ -1017,7 +1021,6 @@ const ChatForm = memo(function ChatForm({
             isSubmitting={isSubmitting}
             duringRunActive={steering.duringRunActive}
             canControlGeneration={steering.canControlGeneration}
-            canStop={canStop}
             steerInterruptsByDefault={steering.steerInterruptsByDefault}
             duringRunAction={steering.effectiveAction}
             /* A staged reasoning choice forces the message to queue, and the

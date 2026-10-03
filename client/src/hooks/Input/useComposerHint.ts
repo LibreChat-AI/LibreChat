@@ -2,7 +2,6 @@ import { useMemo } from 'react';
 import type { LocalizeFunction } from '~/common';
 import { isMacPlatform, bindingDisplayString, resolveComposerKeyDown } from '~/utils/shortcuts';
 import useComposerBindings from '~/hooks/Input/useComposerBindings';
-import { useShortcutDisplay } from '~/hooks/useKeyboardShortcuts';
 import useLocalize from '~/hooks/useLocalize';
 
 /** The effective `submitMessage` binding, reduced to what the hints need.
@@ -25,9 +24,6 @@ export interface ComposerHintState {
    *  later, and until it lands every chord that touches the live run refuses.
    *  Queueing is local, so it works throughout. */
   canControlGeneration: boolean;
-  /** Whether the stop control can act yet; the stop shortcut presses it, so
-   *  the key is named only once it does something. Defaults to reachable. */
-  canStop?: boolean;
   /** Which action Enter takes during a run, per the effective setting. */
   duringRunAction: 'steer' | 'queue';
   steerInterruptsByDefault?: boolean;
@@ -74,9 +70,6 @@ export function composeHint(
   state: ComposerHintState,
   localize: LocalizeFunction,
   isMac: boolean,
-  /** The live binding for `stopGenerating`, which the user can rebind or clear
-   *  outright, so the stop line is built from it rather than naming a key. */
-  stopShortcut: string,
   /** The live `submitMessage` binding, for the same reason: the send chords
    *  named below follow the customization instead of asserting the stock one. */
   sendBinding: SendBinding = DEFAULT_SEND_BINDING,
@@ -167,16 +160,10 @@ export function composeHint(
   }
 
   if (state.isSubmitting) {
-    /* Nothing to advertise when the binding has been cleared: the stop button
-       is right there, and naming a key that does nothing is worse than saying
-       only that a reply is running. */
-    return {
-      text:
-        stopShortcut && state.canStop !== false
-          ? `${stopShortcut} ${localize('com_ui_composer_hint_stop')}`
-          : localize('com_ui_composer_hint_running'),
-      kind: 'state',
-    };
+    /* The stop button is right there, so a plain running reply advertises
+       nothing under the composer; the line stays as ambient copy for screen
+       readers and for users who keep tips on. */
+    return { text: localize('com_ui_composer_hint_running'), kind: 'tip' };
   }
 
   if (state.hasText) {
@@ -207,7 +194,6 @@ export function composeHint(
 
 export default function useComposerHint(state: ComposerHintState): ComposerHint {
   const localize = useLocalize();
-  const stopShortcut = useShortcutDisplay('stopGenerating');
   const { shortcutsEnabled, submitOverride, yieldedChords } = useComposerBindings();
   const sendBinding = useMemo<SendBinding>(
     () => ({
@@ -241,5 +227,5 @@ export default function useComposerHint(state: ComposerHintState): ComposerHint 
       ) === 'interrupt',
     [shortcutsEnabled, state.enterToSend, submitOverride, yieldedChords],
   );
-  return composeHint(state, localize, isMacPlatform, stopShortcut, sendBinding, altEnterInterrupt);
+  return composeHint(state, localize, isMacPlatform, sendBinding, altEnterInterrupt);
 }

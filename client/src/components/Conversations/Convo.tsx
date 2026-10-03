@@ -1,4 +1,4 @@
-import React, { memo, useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { memo, useId, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useDrag } from 'react-dnd';
 import { Link2 } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
@@ -19,6 +19,7 @@ import { focusableInRow, resolveRowBeside } from './focus';
 import { areConversationRenderPropsEqual } from './utils';
 import { NotificationSeverity } from '~/common';
 import { CONVERSATION_DRAG_TYPE } from './dnd';
+import ProjectBadge from './ProjectBadge';
 import ConvoActions from './ConvoActions';
 import UnpinButton from './UnpinButton';
 import RenameForm from './RenameForm';
@@ -39,6 +40,8 @@ interface ConversationProps {
   /** Shortcuts an owning list handles for this row, declared on its focusable
    *  element so they are announced rather than left to be discovered. */
   keyShortcuts?: string;
+  /** Names the chat's project on rows listed outside that project. */
+  showProjectBadge?: boolean;
 }
 
 function Conversation({
@@ -49,6 +52,7 @@ function Conversation({
   draggable = false,
   onRenamingChange,
   keyShortcuts,
+  showProjectBadge = false,
 }: ConversationProps) {
   const params = useParams();
   const localize = useLocalize();
@@ -64,6 +68,8 @@ function Conversation({
   const { data: startupConfig } = useGetStartupConfig();
   const sharedLinksEnabled = startupConfig?.sharedLinksEnabled === true;
   const isSharedBadgeVisible = conversation.isShared === true && sharedLinksEnabled;
+  const projectLabelId = useId();
+  const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
   const isUnseen = isConversationUnseen(conversation);
   const isShiftHeld = useShiftKey();
   const { conversationId, title = '' } = conversation;
@@ -359,6 +365,7 @@ function Conversation({
           isSmallScreen={isSmallScreen}
           localize={localize}
           keyShortcuts={keyShortcuts}
+          describedBy={projectBadgeProjectId ? projectLabelId : undefined}
         >
           <ConversationEndpointIcon conversation={conversation} size={20} context="menu-item" />
         </ConvoLink>
@@ -370,6 +377,9 @@ function Conversation({
       )}
       {isSharedBadgeVisible && (
         <Link2 className="icon-sm text-text-secondary mr-1 shrink-0" aria-hidden="true" />
+      )}
+      {projectBadgeProjectId && (
+        <ProjectBadge projectId={projectBadgeProjectId} labelId={projectLabelId} />
       )}
       {conversation.pinned === true && (
         <UnpinButton

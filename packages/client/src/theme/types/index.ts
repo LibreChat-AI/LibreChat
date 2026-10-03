@@ -93,6 +93,11 @@ export interface IThemeRGB {
   'rgb-border-medium-alt'?: string;
   'rgb-border-heavy'?: string;
   'rgb-border-xheavy'?: string;
+  /** The mobile drawer's trailing edge. Its light default is the drawer's own fill, since the
+   *  scrim already separates it there; dark mode draws a visible edge because the scrim and the
+   *  drawer are both near-black. Follows `rgb-surface-primary-alt` (light) and
+   *  `rgb-border-xheavy` (dark) in a theme that does not set it. */
+  'rgb-drawer-edge'?: string;
   'rgb-border-destructive'?: string;
   /** The boundary of a form control (field, select trigger, OTP slot). Owes the
    *  3:1 non-text floor on every canvas, so it is kept apart from the separator
@@ -288,6 +293,7 @@ export interface IThemeVariables {
   '--border-heavy': string;
   '--border-heavy-alpha': string;
   '--border-xheavy': string;
+  '--drawer-edge': string;
   '--border-xheavy-alpha': string;
   '--border-destructive': string;
   '--border-control': string;
@@ -427,6 +433,7 @@ export interface IThemeColors {
   'border-medium-alt'?: string;
   'border-heavy'?: string;
   'border-xheavy'?: string;
+  'drawer-edge'?: string;
   'border-destructive'?: string;
   'border-control'?: string;
   'border-field-focus'?: string;
