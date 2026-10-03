@@ -8,6 +8,7 @@ const { Strategy: OpenIDStrategy } = require('openid-client/passport');
 const { CacheKeys, ErrorTypes, SystemRoles } = require('librechat-data-provider');
 const {
   isEnabled,
+  math,
   logHeaders,
   logOpenIdRequestBody,
   findOpenIDUser,
@@ -99,6 +100,15 @@ This violates RFC 7235 and may cause issues with strict OAuth clients. Removing 
     throw error;
   }
 }
+
+// Without retries, an IdP that is transiently unavailable at boot leaves the openid
+// strategy unregistered permanently, until a manual restart.
+const DEFAULT_OPENID_DISCOVERY_RETRIES = 5;
+const DEFAULT_OPENID_DISCOVERY_RETRY_DELAY_MS = 5000;
+/** setupOpenId() blocks app.listen, so cumulative retry waiting is capped. */
+const MAX_DISCOVERY_RETRY_TOTAL_WAIT_MS = 60000;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** @typedef {Configuration | null}  */
 let openidConfig = null;
@@ -922,16 +932,52 @@ async function setupOpenId() {
       clientMetadata.token_endpoint_auth_method = 'none';
     }
 
-    /** @type {Configuration} */
-    openidConfig = await client.discovery(
-      new URL(process.env.OPENID_ISSUER),
-      process.env.OPENID_CLIENT_ID,
-      clientMetadata,
-      undefined,
-      {
-        [client.customFetch]: customFetch,
-      },
+    const issuer = new URL(process.env.OPENID_ISSUER);
+    const delayMs = Math.max(
+      0,
+      math(process.env.OPENID_DISCOVERY_RETRY_DELAY_MS, DEFAULT_OPENID_DISCOVERY_RETRY_DELAY_MS),
     );
+    // A zero delay would hammer the provider in a tight loop, so treat it as "no retries".
+    const maxAttempts =
+      delayMs === 0
+        ? 1
+        : Math.min(
+            1 +
+              Math.max(
+                0,
+                math(process.env.OPENID_DISCOVERY_RETRIES, DEFAULT_OPENID_DISCOVERY_RETRIES),
+              ),
+            1 + Math.floor(MAX_DISCOVERY_RETRY_TOTAL_WAIT_MS / delayMs),
+          );
+
+    /** @type {Configuration | undefined} */
+    let discoveredConfig;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        /** @type {Configuration} */
+        discoveredConfig = await client.discovery(
+          issuer,
+          process.env.OPENID_CLIENT_ID,
+          clientMetadata,
+          undefined,
+          {
+            [client.customFetch]: customFetch,
+          },
+        );
+        break;
+      } catch (discoveryError) {
+        if (attempt === maxAttempts) {
+          throw discoveryError;
+        }
+        logger.warn(
+          `[openidStrategy] OIDC discovery failed (attempt ${attempt}/${maxAttempts}), retrying in ${delayMs}ms: ${discoveryError.message}`,
+        );
+        await sleep(delayMs);
+      }
+    }
+
+    openidConfig = discoveredConfig;
 
     logger.info(`[openidStrategy] OpenID authentication configuration`, {
       usePKCE,
@@ -959,6 +1005,34 @@ async function setupOpenId() {
   }
 }
 
+/** Memoizes an in-flight on-demand setup so concurrent logins share one discovery. */
+let openIdSetupInflight = null;
+
+/**
+ * Ensures OpenID Connect is configured before an authentication attempt.
+ *
+ * If boot-time discovery failed (provider down), the `openid` strategy was never
+ * registered and every login fails with "Unknown authentication strategy". Calling
+ * this before `passport.authenticate('openid' | 'openidAdmin')` re-runs discovery on
+ * demand, so SSO self-heals as soon as the provider recovers — no restart needed.
+ *
+ * Safe to call on every login: returns immediately when already configured, and
+ * concurrent calls share a single in-flight discovery.
+ *
+ * @returns {Promise<Configuration | null>} the config, or null if still unreachable.
+ */
+async function ensureOpenIdConfigured() {
+  if (openidConfig) {
+    return openidConfig;
+  }
+  if (!openIdSetupInflight) {
+    openIdSetupInflight = setupOpenId().finally(() => {
+      openIdSetupInflight = null;
+    });
+  }
+  return openIdSetupInflight;
+}
+
 /**
  * @function getOpenIdConfig
  * @description Returns the OpenID client instance.
@@ -975,6 +1049,7 @@ function getOpenIdConfig() {
 module.exports = {
   setupOpenId,
   getOpenIdConfig,
+  ensureOpenIdConfigured,
   getOpenIdEmail,
   getRoleSource,
 };
