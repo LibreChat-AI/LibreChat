@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import zlib from 'zlib';
 import JSZip from 'jszip';
 import crypto from 'crypto';
 import { ImportFileTooLargeError, sanitizeImportError } from './errors';
@@ -129,6 +130,51 @@ describe('openArchive', () => {
     fs.writeFileSync(filepath, await zip.generateAsync({ type: 'nodebuffer' }));
 
     const archive = await openArchive(filepath, { maxEntryBytes: 5000 });
+    await expect(archive.read('blob.bin')).resolves.toEqual(content);
+    archive.close();
+  });
+
+  /** Another compressor's layout for incompressible bytes can run past a
+   * stored-block estimate: zlib's fixed-Huffman strategy spends more than
+   * eight bits on most random bytes. The raw read must still admit it. */
+  it('reads a fixed-Huffman entry that sits exactly at the per-entry cap', async () => {
+    const content = crypto.randomBytes(65536);
+    const deflated = zlib.deflateRawSync(content, { strategy: zlib.constants.Z_FIXED });
+    expect(deflated.byteLength).toBeGreaterThan(content.byteLength + 10);
+
+    const name = Buffer.from('blob.bin');
+    const crc = zlib.crc32(content);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(deflated.byteLength, 18);
+    local.writeUInt32LE(content.byteLength, 22);
+    local.writeUInt16LE(name.byteLength, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(8, 10);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(deflated.byteLength, 20);
+    central.writeUInt32LE(content.byteLength, 24);
+    central.writeUInt16LE(name.byteLength, 28);
+    const centralOffset = local.byteLength + name.byteLength + deflated.byteLength;
+    const end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0);
+    end.writeUInt16LE(1, 8);
+    end.writeUInt16LE(1, 10);
+    end.writeUInt32LE(central.byteLength + name.byteLength, 12);
+    end.writeUInt32LE(centralOffset, 16);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-import-'));
+    createdDirs.push(dir);
+    const filepath = path.join(dir, 'export.zip');
+    fs.writeFileSync(filepath, Buffer.concat([local, name, deflated, central, name, end]));
+
+    const archive = await openArchive(filepath, { maxEntryBytes: content.byteLength });
     await expect(archive.read('blob.bin')).resolves.toEqual(content);
     archive.close();
   });

@@ -162,7 +162,10 @@ const IMPORT_JOB_LOCK_TTL = 60000;
  */
 export const importJobsCache = (): LockableCache =>
   attachRedisLock(
-    standardCache(CacheKeys.IMPORT_JOBS, Time.ONE_DAY),
+    /** Throwing, because `ImportJobStore` must tell an outage from an absent
+     * job: read as a miss, a failed poll answers 404 and the client drops a
+     * live import, and a failed terminal write looks like a saved one. */
+    standardCache(CacheKeys.IMPORT_JOBS, Time.ONE_DAY, undefined, { throwOnErrors: true }),
     CacheKeys.IMPORT_JOBS,
     IMPORT_JOB_LOCK_TTL,
   );

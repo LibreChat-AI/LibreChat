@@ -20,6 +20,7 @@ const {
 const { bareGrokExport, buildGrokExportZip, cleanupGrokExportZips } = require('~/test/grokExport');
 const { createModels, createMethods } = require('@librechat/data-schemas');
 const { ImportJobStore } = require('@librechat/api');
+const { ImportBatchBuilder } = require('~/server/utils/import/importBatchBuilder');
 const { FileSources, EModelEndpoint } = require('librechat-data-provider');
 
 jest.mock('~/server/middleware/requireJwtAuth', () => (req, res, next) => next());
@@ -493,6 +494,76 @@ describe('conversation import job API (real router, real Mongo)', () => {
       expect(await Conversation.countDocuments({ user: userId })).toBe(1);
     } finally {
       patchSpy.mockRestore();
+    }
+  });
+
+  it('answers a job-store read failure on poll and cancel as retryable, never as a lost job', async () => {
+    const get = jest
+      .spyOn(ImportJobStore.prototype, 'get')
+      .mockRejectedValue(new Error('redis connection reset'));
+    try {
+      const polled = await request(app).get('/api/convos/import/jobs/some-job').expect(503);
+      expect(polled.headers['retry-after']).toBeDefined();
+      expect(polled.body.message).not.toContain('redis');
+
+      await request(app).delete('/api/convos/import/jobs/some-job').expect(503);
+    } finally {
+      get.mockRestore();
+    }
+  });
+
+  it('continues importing when a phase-only job-store write fails', async () => {
+    const uploaded = await request(app)
+      .post('/api/convos/import')
+      .attach('file', bareChatGptExport(), 'bare-export.json')
+      .expect(202);
+    const realPatch = ImportJobStore.prototype.patch;
+    let injectedFailure = false;
+    const patchSpy = jest
+      .spyOn(ImportJobStore.prototype, 'patch')
+      .mockImplementation(function (owner, jobId, patch) {
+        if (!injectedFailure && patch.phase === 'assets') {
+          injectedFailure = true;
+          return Promise.reject(new Error('transient phase cache failure'));
+        }
+        return realPatch.call(this, owner, jobId, patch);
+      });
+
+    try {
+      await request(app).post(`/api/convos/import/jobs/${uploaded.body.jobId}/start`).expect(202);
+      const completed = await waitForTerminal(app, uploaded.body.jobId);
+
+      expect(injectedFailure).toBe(true);
+      expect(completed.body.phase).toBe('completed');
+      expect(completed.body.report.imported).toBe(1);
+    } finally {
+      patchSpy.mockRestore();
+    }
+  });
+
+  it('keeps the committed part of a run that fails on the job, counting only saved conversations', async () => {
+    const uploaded = await request(app)
+      .post('/api/convos/import')
+      .attach('file', await buildChatGptExportZip())
+      .expect(202);
+    const saveBatch = jest
+      .spyOn(ImportBatchBuilder.prototype, 'saveBatch')
+      .mockRejectedValueOnce(new Error('write concern timeout'));
+    const committed = jest
+      .spyOn(ImportBatchBuilder.prototype, 'getCommittedConversationCount')
+      .mockReturnValue(1);
+
+    try {
+      await request(app).post(`/api/convos/import/jobs/${uploaded.body.jobId}/start`).expect(202);
+      const failed = await waitForTerminal(app, uploaded.body.jobId);
+
+      expect(failed.body.phase).toBe('failed');
+      expect(failed.body.error).not.toContain('write concern');
+      expect(failed.body.report.imported).toBe(1);
+      expect(failed.body.progress.conversations.done).toBe(2);
+    } finally {
+      saveBatch.mockRestore();
+      committed.mockRestore();
     }
   });
 

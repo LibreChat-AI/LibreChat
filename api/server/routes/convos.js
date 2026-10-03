@@ -27,6 +27,7 @@ const {
   createMarkConvoSeenHandler,
   createMarkConvoUnreadHandler,
   runImport,
+  partialImportReport,
   GROK_SOURCE,
   GROK_ENDPOINT,
   inspectExport,
@@ -906,6 +907,17 @@ function handleUpload(req, res, next) {
 }
 
 /**
+ * Answers a request whose job-store read or write failed. The store surfaces
+ * Redis errors instead of reading them as a missing job, so this is an outage
+ * the client retries, never the 404 that tells a poller the job is gone.
+ */
+function respondImportStoreUnavailable(res, error, context) {
+  sanitizeImportError(error, context);
+  res.set('Retry-After', String(IMPORT_CLAIM_RETRY_AFTER_SECONDS));
+  res.status(503).json({ message: 'Import service is busy, try again shortly' });
+}
+
+/**
  * Existing `importedFrom.externalId` values already saved for this user, used
  * to skip conversations a prior (interrupted or re-run) import already wrote.
  * Scoped to the export's own source: a ChatGPT conversation id can never
@@ -981,6 +993,7 @@ function resolveJobTarget(job) {
  */
 async function runImportJob(context, job) {
   const { userId, userRole, tenantId, appConfig } = context;
+  let latestProgress = job.progress;
   try {
     /**
      * `sweepStaleTempUploads` deletes temp uploads by mtime alone, and the job
@@ -1065,7 +1078,6 @@ async function runImportJob(context, job) {
     });
 
     let lastProgressWrite = 0;
-    let latestProgress = job.progress;
     const report = await runImport({
       filepath: job.filepath,
       userId,
@@ -1104,10 +1116,20 @@ async function runImportJob(context, job) {
         }
       },
       onPhase: async (phase) => {
-        if (await importJobs.isCancelled(userId, job.jobId)) {
-          return;
+        /** Like progress, the phase is what the client displays, not what the
+         * run depends on: a transient store failure here must not abort an
+         * import whose database and file work is healthy. */
+        try {
+          if (await importJobs.isCancelled(userId, job.jobId)) {
+            return;
+          }
+          await importJobs.patch(userId, job.jobId, { phase });
+        } catch (error) {
+          logger.warn(
+            `[import] Could not persist phase ${phase} for job ${job.jobId} and user ${userId}`,
+            error,
+          );
         }
-        await importJobs.patch(userId, job.jobId, { phase });
       },
     });
 
@@ -1117,7 +1139,10 @@ async function runImportJob(context, job) {
      * `cancelled` phase and only gains the partial report describing what
      * was already written.
      */
-    const current = await importJobs.get(userId, job.jobId);
+    /** An unreadable job is patched as completed: the store's terminal guard
+     * already keeps a cancelled job's status, so failing a finished import
+     * over this read would only lose its result. */
+    const current = await importJobs.get(userId, job.jobId).catch(() => undefined);
     if (current?.status === 'cancelled') {
       await importJobs.patch(userId, job.jobId, { report, progress: latestProgress });
       return;
@@ -1134,8 +1159,16 @@ async function runImportJob(context, job) {
     /** The recovery patch is best-effort: it writes to the same store whose
      * unavailability is the likeliest reason we are in this catch, and a
      * rejection here would escape a function nobody awaits. */
+    /** Batches committed before the failure stay saved, so the report they
+     * produced goes on the job: the user sees what was kept before retrying. */
+    const report = partialImportReport(error);
     await importJobs
-      .patch(userId, job.jobId, { phase: 'failed', status: 'failed', error: message })
+      .patch(userId, job.jobId, {
+        phase: 'failed',
+        status: 'failed',
+        error: message,
+        ...(report ? { report, progress: latestProgress } : {}),
+      })
       .catch((patchError) =>
         logger.error(`[runImportJob] Could not record the failure of job ${job.jobId}`, patchError),
       );
@@ -1363,7 +1396,13 @@ router.post('/import/jobs/:jobId/start', configMiddleware, async (req, res) => {
    * still gets the honest 409 and an unknown job its 404. */
   const atUserLimit = activeImportCount(userId) >= MAX_CONCURRENT_IMPORTS_PER_USER;
   if (atUserLimit || atImportCapacity()) {
-    const job = await importJobs.get(userId, req.params.jobId);
+    let job;
+    try {
+      job = await importJobs.get(userId, req.params.jobId);
+    } catch (error) {
+      respondImportStoreUnavailable(res, error, `Could not read import job for user ${userId}`);
+      return;
+    }
     if (!job) {
       res.status(404).json({ message: 'Import job not found' });
       return;
@@ -1411,6 +1450,8 @@ router.post('/import/jobs/:jobId/start', configMiddleware, async (req, res) => {
 
     startImportJob(req, res, result.job);
     started = true;
+  } catch (error) {
+    respondImportStoreUnavailable(res, error, `Could not start import job for user ${userId}`);
   } finally {
     if (!started) {
       trackImportEnd(userId);
@@ -1459,7 +1500,13 @@ function startImportJob(req, res, job) {
  *   rather than hang waiting for a state that will never arrive)
  */
 router.get('/import/jobs/:jobId', async (req, res) => {
-  const job = await importJobs.get(req.user.id, req.params.jobId);
+  let job;
+  try {
+    job = await importJobs.get(req.user.id, req.params.jobId);
+  } catch (error) {
+    respondImportStoreUnavailable(res, error, `Could not read import job for user ${req.user.id}`);
+    return;
+  }
   if (!job) {
     res.status(404).json({ message: 'Import job not found' });
     return;
@@ -1480,12 +1527,24 @@ router.get('/import/jobs/:jobId', async (req, res) => {
  *   so the job and upload are untouched and the client should retry
  */
 router.delete('/import/jobs/:jobId', async (req, res) => {
-  const job = await importJobs.get(req.user.id, req.params.jobId);
+  let job;
+  let outcome;
+  try {
+    job = await importJobs.get(req.user.id, req.params.jobId);
+    outcome = job ? await importJobs.cancel(req.user.id, job.jobId) : undefined;
+  } catch (error) {
+    respondImportStoreUnavailable(
+      res,
+      error,
+      `Could not cancel import job for user ${req.user.id}`,
+    );
+    return;
+  }
   if (!job) {
     res.status(404).json({ message: 'Import job not found' });
     return;
   }
-  const { status, previousPhase } = await importJobs.cancel(req.user.id, job.jobId);
+  const { status, previousPhase } = outcome;
   if (status === 'lock_unavailable') {
     res.set('Retry-After', String(IMPORT_CLAIM_RETRY_AFTER_SECONDS));
     res.status(503).json({ message: 'Import service is busy, try again shortly' });

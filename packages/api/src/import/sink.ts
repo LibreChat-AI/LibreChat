@@ -66,6 +66,9 @@ export interface BatchSink {
   /** Reports whether the most recent rejected flush could have committed.
    * Sinks that cannot report an outcome leave pending assets unclaimed. */
   getLastFlushOutcome?(): FlushOutcome;
+  /** Conversations every flush so far has committed, for the report of a run
+   * that fails before its last flush. */
+  getCommittedConversationCount?(): number;
 }
 
 /** Everything a per-provider run needs from `runImport`. Providers whose

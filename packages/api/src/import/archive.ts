@@ -210,12 +210,20 @@ function openEntryStream(zipfile: yauzl.ZipFile, entry: yauzl.Entry): Promise<Re
   });
 }
 
-/** Deflate's stored-block fallback frames at most 65,535 bytes per block
- * behind a 5-byte header, so this is the largest raw stream an entry within
- * `maxEntryBytes` can produce. Capping the raw read at `maxEntryBytes` itself
- * would refuse an incompressible entry the decompressed cap allows. */
+/** The largest raw DEFLATE stream an entry within `maxEntryBytes` can be:
+ * zlib's conservative `deflateBound`, which holds for any compressor and block
+ * layout (stored blocks of any size, or fixed-Huffman blocks that spend nine
+ * bits on an incompressible byte). Capping the raw read at `maxEntryBytes`
+ * itself would refuse an incompressible entry the decompressed cap allows;
+ * the authoritative cap is still `inflateRaw`'s `maxOutputLength`. */
 function maxDeflatedBytes(maxEntryBytes: number): number {
-  return maxEntryBytes + Math.max(1, Math.ceil(maxEntryBytes / 65535)) * 5;
+  return (
+    maxEntryBytes +
+    Math.ceil(maxEntryBytes / 8) +
+    Math.ceil(maxEntryBytes / 256) +
+    Math.ceil(maxEntryBytes / 512) +
+    16
+  );
 }
 
 /**

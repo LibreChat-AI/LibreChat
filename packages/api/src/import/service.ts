@@ -293,6 +293,17 @@ async function releaseUnusedAssets(
   }
 }
 
+/** The report a failed run had accumulated, keyed by the error it threw. A
+ * run that fails after committing batches has still saved those
+ * conversations, and the caller needs the counts to tell the user so; the
+ * error itself is rethrown unchanged so its classification still holds. */
+const partialReports = new WeakMap<object, ImportReport>();
+
+/** The report a failed `runImport` had built before it threw, if any. */
+export function partialImportReport(error: unknown): ImportReport | undefined {
+  return typeof error === 'object' && error !== null ? partialReports.get(error) : undefined;
+}
+
 export async function runImport(input: RunImportInput): Promise<ImportReport> {
   const archive = await openArchive(input.filepath);
   /** Assets ingested this run, and the pointers a committed conversation
@@ -512,6 +523,14 @@ export async function runImport(input: RunImportInput): Promise<ImportReport> {
     return report;
   } catch (error) {
     logger.error('[import] Import run failed', error);
+    if (typeof error === 'object' && error !== null) {
+      /** `imported` counts conversations handed to the batch, and the batch
+       * that was pending when the run failed was not saved; only committed
+       * flushes count. An ambiguous last flush may have saved more, so this is
+       * a lower bound rather than an overstatement. */
+      const committed = input.batch.getCommittedConversationCount?.();
+      partialReports.set(error, committed == null ? report : { ...report, imported: committed });
+    }
     throw error;
   } finally {
     await releaseUnusedAssets(ingested, usedPointers, input);

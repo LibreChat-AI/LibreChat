@@ -7,7 +7,7 @@
  * consumers can depend on and this package then has to keep. Everything below
  * is consumed by `/api`; anything else is deliberately internal.
  */
-export { runImport } from './service';
+export { runImport, partialImportReport } from './service';
 export { inspectExport } from './inspect';
 export { ImportJobStore } from './job';
 export { isGrokExport } from './manifest';

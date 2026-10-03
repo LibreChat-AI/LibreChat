@@ -68,7 +68,7 @@ export function classifyImportError(
 ): TImportFailureCode {
   const normalized = error instanceof Error ? error : new Error(String(error));
   if (log) {
-    logger.error(`[import] ${context}`, normalized);
+    logger.error(`[import] ${boundImportText(context)}`, normalized);
   }
 
   const code = errorCode(normalized);
@@ -115,6 +115,28 @@ export function sanitizeImportError(error: unknown, context: string): string {
  * an import that told the user nothing more than the first hundred would. */
 export const MAX_REPORT_ERRORS = 100;
 
+/** Longest location or log context a report keeps. Locations are shard names
+ * and conversation ids taken from the uploaded export, so their size is the
+ * uploader's choice; the error count cap alone would still let one entry carry
+ * megabytes into the job record, every poll response, and the logs. */
+export const MAX_IMPORT_TEXT_LENGTH = 256;
+
+/** Strips control characters from export-supplied text and truncates it to
+ * `MAX_IMPORT_TEXT_LENGTH`, marking the cut with an ellipsis. */
+export function boundImportText(value: string): string {
+  const text = String(value);
+  const kept =
+    text.length <= MAX_IMPORT_TEXT_LENGTH
+      ? text
+      : `${text.slice(0, MAX_IMPORT_TEXT_LENGTH - 1)}\u2026`;
+  let clean = '';
+  for (const char of kept) {
+    const code = char.charCodeAt(0);
+    clean += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? ' ' : char;
+  }
+  return clean;
+}
+
 /**
  * Appends a failure to a report, keeping the first `MAX_REPORT_ERRORS` and
  * replacing the rest with a single running count. Returns nothing: callers
@@ -122,7 +144,9 @@ export const MAX_REPORT_ERRORS = 100;
  */
 export function recordError(errors: TImportError[], entry: TImportError): void {
   if (errors.length < MAX_REPORT_ERRORS) {
-    errors.push(entry);
+    errors.push(
+      entry.location == null ? entry : { ...entry, location: boundImportText(entry.location) },
+    );
     return;
   }
 
