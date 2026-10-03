@@ -4,6 +4,7 @@ const {
   proxyRumRequest,
   isRumProxyEnabled,
   getRumProxyBodyLimit,
+  isRumLogsEndpointEnabled,
   createRumProxyLimiter,
 } = require('@librechat/api');
 const { requireRumProxyAuth } = require('~/server/middleware');
@@ -32,7 +33,15 @@ const telemetryPipeline = [
   proxyTelemetry,
 ];
 
+function requireRumLogsEnabled(_req, res, next) {
+  if (!isRumLogsEndpointEnabled()) {
+    return res.status(404).json({ message: 'RUM logs are not enabled' });
+  }
+
+  return next();
+}
+
 router.post('/v1/traces', ...telemetryPipeline);
-router.post('/v1/logs', ...telemetryPipeline);
+router.post('/v1/logs', requireRumLogsEnabled, ...telemetryPipeline);
 
 module.exports = router;

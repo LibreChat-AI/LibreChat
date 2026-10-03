@@ -79,6 +79,24 @@ export function isRumClientLogsEnabled(): boolean {
   return isRumProxyEnabled() && isEnabled(process.env.RUM_CLIENT_LOGS);
 }
 
+/**
+ * Whether the proxy accepts OTLP logs at all. Only client logs, SDK console capture and SDK
+ * session replay produce browser logs, so with all three off the logs route refuses even tabs
+ * still holding an older startup config, which makes turning `RUM_CLIENT_LOGS` off authoritative.
+ */
+export function isRumLogsEndpointEnabled(): boolean {
+  if (!isRumProxyEnabled()) {
+    return false;
+  }
+  const replaySetting = process.env.RUM_DISABLE_REPLAY?.trim();
+  const replayEnabled = !!replaySetting && !isEnabled(replaySetting);
+  return (
+    isEnabled(process.env.RUM_CLIENT_LOGS) ||
+    isEnabled(process.env.RUM_CONSOLE_CAPTURE) ||
+    replayEnabled
+  );
+}
+
 export function resolveRumProxyTarget(path: string): string | undefined {
   if (!OTLP_PATHS.has(path)) {
     return undefined;

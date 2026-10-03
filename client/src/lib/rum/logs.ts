@@ -88,6 +88,8 @@ type LogEntry = {
   count: number;
   attempts: number;
   state: 'queued' | 'sending' | 'done';
+  /** The request currently carrying this record; responses to older requests ignore it. */
+  sendId: number;
   trace?: TraceContext;
   /** Run once the collector accepted the record (2xx), never for a dropped record. */
   onDelivered: Array<() => void>;
@@ -272,6 +274,9 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timerAt = Number.POSITIVE_INFINITY;
   let inFlight = false;
+  /** Records of the regular request in flight, re-sent by the page-hide flush if unanswered. */
+  let activeBatch: LogEntry[] = [];
+  let sendSeq = 0;
   let disabled = false;
   let backoffUntil = 0;
   let consecutiveFailures = 0;
@@ -343,6 +348,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
             count: item.suppressed,
             attempts: 0,
             state: 'queued',
+            sendId: 0,
             onDelivered: item.suppressedCallbacks,
           },
           now,
@@ -478,14 +484,21 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     onFailure(batch, status === 408 || status === 429 || status >= 500);
   };
 
-  const transmit = ({ entries: batch, body }: Batch, keepalive: boolean): Promise<void> => {
+  const transmit = ({ entries, body }: Batch, keepalive: boolean): Promise<void> => {
     const token = options.getToken();
-    if (!token || batch.length === 0) {
-      batch.forEach((entry) => {
+    if (!token || entries.length === 0) {
+      entries.forEach((entry) => {
         entry.state = 'done';
       });
       return Promise.resolve();
     }
+    sendSeq += 1;
+    const sendId = sendSeq;
+    entries.forEach((entry) => {
+      entry.sendId = sendId;
+    });
+    /** A record re-sent by a later request (the page-hide flush) belongs to that request. */
+    const owned = () => entries.filter((entry) => entry.sendId === sendId);
     return send(options.endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
@@ -493,8 +506,8 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       keepalive,
       credentials: 'same-origin',
     }).then(
-      (response) => handleStatus(batch, response.status),
-      () => onFailure(batch, true),
+      (response) => handleStatus(owned(), response.status),
+      () => onFailure(owned(), true),
     );
   };
 
@@ -505,6 +518,12 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     const now = Date.now();
     collectExpiredDuplicates(now);
     if (keepalive) {
+      const unacknowledged = activeBatch.filter((entry) => entry.state === 'sending');
+      unacknowledged.forEach((entry) => {
+        entry.state = 'queued';
+        entry.sendId = 0;
+      });
+      queue = [...unacknowledged, ...queue];
       void transmit(takeBatch(Number.POSITIVE_INFINITY), true).catch(() => undefined);
       return;
     }
@@ -516,10 +535,13 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       return;
     }
     inFlight = true;
-    transmit(takeBatch(limits.maxBatchRecords), false)
+    const batch = takeBatch(limits.maxBatchRecords);
+    activeBatch = batch.entries;
+    transmit(batch, false)
       .catch(() => undefined)
       .finally(() => {
         inFlight = false;
+        activeBatch = [];
         if (queue.length > 0) {
           schedule(Math.max(Date.now() + limits.flushIntervalMs, backoffUntil));
         }
@@ -567,6 +589,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       count: 1,
       attempts: 0,
       state: 'queued',
+      sendId: 0,
       trace: getActiveTraceContext(),
       onDelivered: [],
     };

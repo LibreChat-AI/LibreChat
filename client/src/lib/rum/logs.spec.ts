@@ -350,6 +350,33 @@ describe('client log lifecycle', () => {
     expect(allRecords()).toHaveLength(CLIENT_LOG_LIMITS.recordsPerMinute);
   });
 
+  it('re-sends an unanswered in-flight batch with keepalive when the page is hidden', async () => {
+    let answer: (value: { status: number }) => void = () => undefined;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    startClientLogs(options());
+
+    logger.error('In flight at unload');
+    await flushInterval();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    window.dispatchEvent(new Event('pagehide'));
+    await jest.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[1]?.keepalive).toBe(true);
+    expect(recordsAt(1).map((record) => record.body.stringValue)).toEqual(['In flight at unload']);
+
+    answer({ status: 503 });
+    await flushInterval();
+    await flushInterval();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('refuses a cross-origin endpoint', async () => {
     startClientLogs(options({ endpoint: 'https://collector.example.com/v1/logs' }));
 

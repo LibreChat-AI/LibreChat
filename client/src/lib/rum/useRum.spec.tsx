@@ -405,6 +405,16 @@ describe('useRum', () => {
       expect(stopClientLogs).toHaveBeenCalled();
     });
 
+    it('stops client logs when the authenticated layout unmounts', () => {
+      mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: { rum: proxyRum } });
+      const { unmount } = renderHook(() => useRum());
+      stopClientLogs.mockClear();
+
+      unmount();
+
+      expect(stopClientLogs).toHaveBeenCalledTimes(1);
+    });
+
     it('stops client logs when startup config has no RUM config', () => {
       mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: {} });
 

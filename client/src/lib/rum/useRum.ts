@@ -183,6 +183,9 @@ export default function useRum(): void {
     routeRef.current = route;
   }, [route, shouldBufferRoutes]);
 
+  /** Leaving the authenticated layout (e.g. for a share link) ends this session's log export. */
+  useEffect(() => stopClientLogs, []);
+
   useEffect(() => {
     if (!rumConfig) {
       if (startupConfigFetched) {

@@ -3,6 +3,7 @@ const request = require('supertest');
 
 const mockRequireRumProxyAuth = jest.fn((_req, _res, next) => next());
 const mockIsRumProxyEnabled = jest.fn();
+const mockIsRumLogsEndpointEnabled = jest.fn(() => true);
 const mockProxyRumRequest = jest.fn((_req, res) => res.status(202).send());
 const mockRumProxyLimiter = jest.fn((_req, _res, next) => next());
 const mockLimiterSetup = [];
@@ -24,6 +25,7 @@ jest.mock('@librechat/api', () => ({
   limiterCache: (...args) => mockLimiterCache(...args),
   createRumProxyLimiter: (...args) => mockCreateRumProxyLimiter(...args),
   isRumProxyEnabled: (...args) => mockIsRumProxyEnabled(...args),
+  isRumLogsEndpointEnabled: (...args) => mockIsRumLogsEndpointEnabled(...args),
   proxyRumRequest: (...args) => mockProxyRumRequest(...args),
 }));
 
@@ -42,6 +44,26 @@ describe('RUM proxy routes', () => {
     mockIsRumProxyEnabled.mockReset();
     mockProxyRumRequest.mockClear();
     mockRumProxyLimiter.mockClear();
+    mockIsRumLogsEndpointEnabled.mockReset();
+    mockIsRumLogsEndpointEnabled.mockReturnValue(true);
+  });
+
+  it('refuses logs, but not traces, when no browser log source is enabled', async () => {
+    mockIsRumProxyEnabled.mockReturnValue(true);
+    mockIsRumLogsEndpointEnabled.mockReturnValue(false);
+
+    const logs = await request(app)
+      .post('/api/rum/v1/logs')
+      .set('Content-Type', 'application/json')
+      .send({ resourceLogs: [] });
+    const traces = await request(app)
+      .post('/api/rum/v1/traces')
+      .set('Content-Type', 'application/json')
+      .send({ resourceSpans: [] });
+
+    expect(logs.status).toBe(404);
+    expect(traces.status).toBe(202);
+    expect(mockProxyRumRequest).toHaveBeenCalledTimes(1);
   });
 
   afterEach(() => {

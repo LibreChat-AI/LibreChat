@@ -17,6 +17,7 @@ import {
   proxyRumRequest,
   resolveRumProxyTarget,
   isRumClientLogsEnabled,
+  isRumLogsEndpointEnabled,
 } from './proxy';
 
 const PROTOBUF_HEADERS = { 'content-type': 'application/x-protobuf' };
@@ -102,6 +103,27 @@ describe('RUM proxy configuration', () => {
     process.env.RUM_CLIENT_LOGS = 'true';
     process.env.RUM_AUTH_MODE = 'publicToken';
     expect(isRumClientLogsEnabled()).toBe(false);
+  });
+
+  it.each([
+    [{}, false],
+    [{ RUM_CLIENT_LOGS: 'true' }, true],
+    [{ RUM_CONSOLE_CAPTURE: 'true' }, true],
+    [{ RUM_DISABLE_REPLAY: 'false' }, true],
+    [{ RUM_DISABLE_REPLAY: 'true', RUM_CLIENT_LOGS: 'false' }, false],
+  ])('accepts OTLP logs only when a browser log source is enabled (%p)', (env, expected) => {
+    process.env.RUM_ENABLED = 'true';
+    process.env.RUM_AUTH_MODE = 'proxy';
+    process.env.RUM_PROXY_TARGET_URL = 'http://otel-collector:4318';
+    delete process.env.RUM_CLIENT_LOGS;
+    delete process.env.RUM_CONSOLE_CAPTURE;
+    delete process.env.RUM_DISABLE_REPLAY;
+    Object.assign(process.env, env);
+
+    expect(isRumLogsEndpointEnabled()).toBe(expected);
+
+    process.env.RUM_AUTH_MODE = 'publicToken';
+    expect(isRumLogsEndpointEnabled()).toBe(false);
   });
 
   it.each([undefined, 'text/plain', 'multipart/form-data; boundary=x', 'application/xml'])(
