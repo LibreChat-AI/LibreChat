@@ -245,7 +245,7 @@ export class LiaEngine {
       return false;
     }
     this.stopRun();
-    this.run = {
+    const run: Run = {
       def,
       prio,
       index: -1,
@@ -257,12 +257,16 @@ export class LiaEngine {
       pending: null,
       poseStart: now,
     };
-    this.host.onAction?.(def.label);
+    this.run = run;
     this.recent.push(id);
     if (this.recent.length > 30) {
       this.recent.shift();
     }
-    this.nextStep(now);
+    this.host.onAction?.(def.label);
+    /* The host may have played another action from onAction; that run has already started. */
+    if (this.run === run) {
+      this.nextStep(now);
+    }
     return true;
   }
 

@@ -188,6 +188,30 @@ describe('LiaEngine', () => {
     expect(frames).toHaveLength(3);
   });
 
+  it('plays every step of an action the host starts from onAction', () => {
+    let chained = false;
+    const engine: LiaEngine = new LiaEngine(
+      document.createElement('canvas'),
+      {
+        platform: () => PLATFORM,
+        onBubble: () => undefined,
+        onAction: (label) => {
+          if (label && !chained) {
+            chained = true;
+            engine.play('feel-happy', 4, 0);
+          }
+        },
+      },
+      0,
+    );
+    engine.life = false;
+    engine.play('intro', 4, 0);
+    expect(engine.current?.id).toBe('feel-happy');
+    /* Its first step lasts at least 1.5 s; skipping it would end the action within 0.3 s. */
+    run(engine, 0, 1000);
+    expect(engine.current?.id).toBe('feel-happy');
+  });
+
   it('does the first move of a reduced-motion action where it snapped, before any frame', () => {
     const { engine } = setup();
     engine.life = false;
