@@ -3917,8 +3917,11 @@ describe('steady-state sync of an unchanged source', () => {
     const before = await getMirror();
 
     const deps = createDbDeps(repo);
-    await createGitHubSkillSyncRunner(deps).runOnce();
+    const result = await createGitHubSkillSyncRunner(deps).runOnce();
 
+    expect(result.sources[0]).toEqual(
+      expect.objectContaining({ status: 'succeeded', syncedSkillCount: 1, skippedSkillCount: 0 }),
+    );
     expect(repo.fetchFileContent).not.toHaveBeenCalled();
     expect(deps.updateSkill).not.toHaveBeenCalled();
     expect((await getMirror()).version).toBe(before.version);
