@@ -19,6 +19,7 @@ import {
   markCompactionOutcome,
   persistFinalizedCompactionTurn,
   isSettledJobRecord,
+  resolveDisconnectSnapshotMode,
   planAbortedTurnPersistence,
   resolveAbortedTurnPersistence,
   resolveAbortedTurnAnchorDecision,
@@ -1290,5 +1291,19 @@ describe('isSettledJobRecord', () => {
   it('ignores a record from another epoch', () => {
     expect(isSettledJobRecord({ createdAt: 2000, status: 'error' }, 1000)).toBe(false);
     expect(isSettledJobRecord({ createdAt: 1000, status: 'error' }, 1000)).toBe(true);
+  });
+});
+
+describe('resolveDisconnectSnapshotMode', () => {
+  it.each(['complete', 'error', 'aborted'])('withholds the snapshot of a %s job', (status) => {
+    expect(resolveDisconnectSnapshotMode({ createdAt: 1000, status }, 1000)).toBe('skip');
+  });
+
+  it('writes the snapshot for a live, missing, or other-epoch record', () => {
+    expect(resolveDisconnectSnapshotMode({ createdAt: 1000, status: 'running' }, 1000)).toBe(
+      'live',
+    );
+    expect(resolveDisconnectSnapshotMode(null, 1000)).toBe('live');
+    expect(resolveDisconnectSnapshotMode({ createdAt: 2000, status: 'error' }, 1000)).toBe('live');
   });
 });

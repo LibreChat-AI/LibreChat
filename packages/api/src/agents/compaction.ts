@@ -291,6 +291,27 @@ export function isSettledJobRecord(
   );
 }
 
+/** How the last-subscriber disconnect may persist this turn's snapshot. */
+export type DisconnectSnapshotMode =
+  /** The run is still live: the snapshot is written as the fallback row. */
+  | 'live'
+  /** A settling path owns the final row: the snapshot is withheld so it
+   *  cannot reopen the settled turn as an unfinished response. */
+  | 'skip';
+
+/**
+ * How the last-subscriber disconnect may persist this turn's snapshot, read
+ * from the same-epoch job record the caller already loaded. The guard reads
+ * the record the settling path writes, so the remaining window is that
+ * path's own commit span.
+ */
+export function resolveDisconnectSnapshotMode(
+  jobRecord: { createdAt?: number; status?: string } | null | undefined,
+  jobCreatedAt?: number,
+): DisconnectSnapshotMode {
+  return isSettledJobRecord(jobRecord, jobCreatedAt) ? 'skip' : 'live';
+}
+
 /** How the abort route persists a stopped turn's prerequisite rows. */
 export type AbortAnchorDecision = 'persist' | 'skip-anchor' | 'skip-turn';
 
