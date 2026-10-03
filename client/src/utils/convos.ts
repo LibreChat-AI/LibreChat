@@ -1472,29 +1472,34 @@ export function findManualConvoTitleInAllQueries(
   incoming?: ConvoTitleState,
 ): ConvoTitleState | undefined {
   let newest = incoming?.titleSetByUser ? incoming : undefined;
+  const consider = (candidate: TConversation | undefined | null) => {
+    if (
+      candidate?.conversationId === conversationId &&
+      candidate.titleSetByUser &&
+      (!newest || (candidate.titleRevision ?? 0) > (newest.titleRevision ?? 0))
+    ) {
+      newest = candidate;
+    }
+  };
   for (const query of queryClient.getQueryCache().getAll()) {
     const [root, id] = query.queryKey;
-    let candidate: TConversation | undefined;
     if (root === QueryKeys.allConversations || root === QueryKeys.archivedConversations) {
-      candidate = findConversationInInfinite(
-        queryClient.getQueryData<InfiniteData<ConversationCursorData>>(query.queryKey),
-        conversationId,
-      );
+      const data = queryClient.getQueryData<InfiniteData<ConversationCursorData>>(query.queryKey);
+      for (const page of data?.pages ?? []) {
+        for (const convo of page.conversations) {
+          consider(convo);
+        }
+      }
     } else if (root === QueryKeys.pinnedConversations) {
-      candidate = queryClient
-        .getQueryData<PinnedConversationsData>(query.queryKey)
-        ?.conversations.find((convo) => convo.conversationId === conversationId);
+      const data = queryClient.getQueryData<PinnedConversationsData>(query.queryKey);
+      for (const convo of data?.conversations ?? []) {
+        consider(convo);
+      }
     } else if (
       (root === QueryKeys.conversation || root === QueryKeys.runningConversation) &&
       id === conversationId
     ) {
-      candidate = queryClient.getQueryData<TConversation | null>(query.queryKey) ?? undefined;
-    }
-    if (
-      candidate?.titleSetByUser &&
-      (!newest || (candidate.titleRevision ?? 0) > (newest.titleRevision ?? 0))
-    ) {
-      newest = candidate;
+      consider(queryClient.getQueryData<TConversation | null>(query.queryKey));
     }
   }
   return (

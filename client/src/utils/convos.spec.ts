@@ -1280,6 +1280,23 @@ describe('Conversation Utilities', () => {
         },
       );
 
+      it('compares repeated rows within a paginated variant and a pinned cache', () => {
+        queryClient.clear();
+        const old = { ...convoA, title: 'Old owned title', titleSetByUser: true, titleRevision: 1 };
+        queryClient.setQueryData(['allConversations'], {
+          pages: [
+            { conversations: [old] },
+            { conversations: [{ ...old, title: 'Page rename', titleRevision: 2 }] },
+          ],
+          pageParams: [],
+        });
+        expect(findManualConvoTitleInAllQueries(queryClient, 'a')?.titleRevision).toBe(2);
+        queryClient.setQueryData(['pinnedConversations'], {
+          conversations: [old, { ...old, title: 'Pinned rename', titleRevision: 3 }],
+        });
+        expect(findManualConvoTitleInAllQueries(queryClient, 'a')?.titleRevision).toBe(3);
+      });
+
       it('uses durable revisions independently of server request ordering', async () => {
         queryClient.clear();
         const old = { ...convoA, title: 'Old owned title', titleSetByUser: true, titleRevision: 1 };
