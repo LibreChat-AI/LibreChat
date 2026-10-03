@@ -76,6 +76,7 @@ export default function useQueryParams({
   const promptTextRef = useRef<string | null>(null);
   const validSettingsRef = useRef<TPreset | null>(null);
   const settingsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestIdRef = useRef(0);
   const [submissionStatus, setSubmissionStatus] = useState<'idle' | 'preparing' | 'failed'>('idle');
 
   const routePendingRef = useRef(routePending);
@@ -92,6 +93,12 @@ export default function useQueryParams({
     params.sort();
     return params.toString();
   }, [searchParams]);
+  const requestIdentity = useMemo(() => {
+    const params = new URLSearchParams(searchIdentity);
+    params.delete(PROJECT_ID_SEARCH_PARAM);
+    return params.toString();
+  }, [searchIdentity]);
+  const previousRequestIdentityRef = useRef(requestIdentity);
   const route = {
     pathname: location.pathname,
     search: searchIdentity,
@@ -153,7 +160,8 @@ export default function useQueryParams({
   }, []);
 
   const ownsRequest = useCallback(
-    () =>
+    (requestId = requestIdRef.current) =>
+      requestId === requestIdRef.current &&
       mountedRef.current &&
       !cancelledRef.current &&
       ((routeRef.current.pathname === originRouteRef.current.pathname &&
@@ -182,6 +190,7 @@ export default function useQueryParams({
   }, []);
 
   const cancelRequest = useCallback(() => {
+    requestIdRef.current += 1;
     cancelledRef.current = true;
     processedRef.current = true;
     submissionHandledRef.current = true;
@@ -195,6 +204,29 @@ export default function useQueryParams({
   }, []);
 
   useEffect(() => {
+    const identityChanged = previousRequestIdentityRef.current !== requestIdentity;
+    previousRequestIdentityRef.current = requestIdentity;
+    const prompt = searchParams.get('prompt') || searchParams.get('q');
+    if (identityChanged && prompt) {
+      /** Project rewrites retain this identity; a new prompt URL starts a separate request. */
+      if (settingsTimeoutRef.current) {
+        clearTimeout(settingsTimeoutRef.current);
+        settingsTimeoutRef.current = null;
+      }
+      requestIdRef.current += 1;
+      attemptsRef.current = 0;
+      processedRef.current = false;
+      submissionHandledRef.current = false;
+      pendingSubmitRef.current = false;
+      validatingRef.current = false;
+      promptTextRef.current = null;
+      validSettingsRef.current = null;
+      originConversationRef.current = null;
+      destinationRef.current = null;
+      originRouteRef.current = routeRef.current;
+      cancelledRef.current = false;
+      setSubmissionStatus('idle');
+    }
     if (
       ((!submissionHandledRef.current || validatingRef.current) && !ownsRequest()) ||
       (submissionStatus === 'failed' && !ownsComposer())
@@ -205,6 +237,8 @@ export default function useQueryParams({
     location,
     conversation,
     searchIdentity,
+    requestIdentity,
+    searchParams,
     submissionStatus,
     ownsComposer,
     ownsRequest,
@@ -408,16 +442,20 @@ export default function useQueryParams({
     }
 
     restoreUrlPrompt();
+    const requestId = requestIdRef.current;
     validatingRef.current = true;
     const cleanUp = () => {
+      if (requestId !== requestIdRef.current) {
+        return;
+      }
       validatingRef.current = false;
-      if (ownsRequest()) {
+      if (ownsRequest(requestId)) {
         setSearchParamsRef.current(getPreservedSearchParams(), { replace: true });
       }
     };
     methods.handleSubmit(
       (data) => {
-        if (!ownsRequest()) {
+        if (!ownsRequest(requestId)) {
           return;
         }
         if (validSettingsRef.current && !areSettingsApplied()) {
@@ -435,7 +473,7 @@ export default function useQueryParams({
         cleanUp();
       },
       () => {
-        if (ownsRequest()) {
+        if (ownsRequest(requestId)) {
           setSubmissionStatus('idle');
           settlePrompt();
         }
@@ -470,7 +508,12 @@ export default function useQueryParams({
       return { decodedPrompt, validSettings, shouldAutoSubmit };
     };
 
+    const requestId = requestIdRef.current;
     const intervalId = setInterval(() => {
+      if (requestId !== requestIdRef.current) {
+        clearInterval(intervalId);
+        return;
+      }
       if (processedRef.current || attemptsRef.current >= maxAttempts) {
         clearInterval(intervalId);
         if (attemptsRef.current >= maxAttempts) {
@@ -546,6 +589,9 @@ export default function useQueryParams({
         } else {
           setSubmissionStatus('preparing');
           settingsTimeoutRef.current = setTimeout(() => {
+            if (requestId !== requestIdRef.current) {
+              return;
+            }
             settingsTimeoutRef.current = null;
             if (!ownsRequest()) {
               cancelRequest();
@@ -574,6 +620,7 @@ export default function useQueryParams({
     };
   }, [
     searchParams,
+    requestIdentity,
     methods,
     textAreaRef,
     onBeforePrompt,

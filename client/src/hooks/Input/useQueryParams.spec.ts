@@ -539,6 +539,54 @@ describe('useQueryParams', () => {
     expect(hook.mockSetSearchParams).not.toHaveBeenCalled();
   });
 
+  it.each(['valid', 'invalid'])(
+    'ignores superseded %s validation callbacks after a new prompt URL',
+    (outcome) => {
+      const hook = mountQuery({ agent_id: 'agent_test', q: 'old', submit: 'true' });
+      const completions: { valid: () => void; invalid: () => void }[] = [];
+      const methods = (useChatFormContext as jest.Mock).mock.results.at(-1)?.value;
+      methods.handleSubmit.mockImplementation(
+        (valid: (data: { text: string }) => void, invalid: () => void) => () => {
+          const text = hook.textAreaRef.current.value;
+          completions.push({ valid: () => valid({ text }), invalid });
+        },
+      );
+      hook.updateConversation({ endpoint: EModelEndpoint.agents, agent_id: 'agent_test' });
+      hook.rerender();
+      expect(completions).toHaveLength(1);
+      hook.updateRoute('/c/new', { q: 'new', submit: 'true' });
+      hook.rerender();
+      act(() => jest.advanceTimersByTime(100));
+      expect(completions).toHaveLength(2);
+      expect(hook.textAreaRef.current.value).toBe('new');
+      act(() => completions[0][outcome]());
+      expect(hook.mockSubmitMessage).not.toHaveBeenCalled();
+      expect(hook.mockSetSearchParams).not.toHaveBeenCalled();
+      expect(hook.result.current.isPreparing).toBe(true);
+      act(() => completions[1].valid());
+      expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+      expect(hook.mockSubmitMessage).toHaveBeenCalledWith({ text: 'new' });
+      expect(hook.mockSetSearchParams).toHaveBeenCalledTimes(1);
+      act(() => jest.advanceTimersByTime(4000));
+      expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('handles the same prompt URL again only after a separate navigation', () => {
+    const hook = mountQuery({ q: 'same', submit: 'true' });
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+    hook.updateRoute('/c/new', { submit: 'true', q: 'same' });
+    hook.rerender();
+    act(() => jest.advanceTimersByTime(100));
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+    hook.updateRoute('/c/new');
+    hook.rerender();
+    hook.updateRoute('/c/new', { q: 'same', submit: 'true' });
+    hook.rerender();
+    act(() => jest.advanceTimersByTime(100));
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(2);
+  });
+
   it('retains a refused auto-submission without retrying it', () => {
     const hook = mountQuery({ agent_id: 'agent_test', q: 'hi', submit: 'true' });
     hook.mockSubmitMessage.mockReturnValue(false);

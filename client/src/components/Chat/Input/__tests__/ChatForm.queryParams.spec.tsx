@@ -215,6 +215,76 @@ describe('ChatForm URL submission', () => {
     jest.useRealTimers();
   });
 
+  it('processes a queued prompt URL after ordinary conversation navigation without remounting', async () => {
+    const source = { ...initialConversation, conversationId: 'source-chat' };
+    const view = mountComposer(source, { query: '' });
+    await act(async () => jest.advanceTimersByTime(100));
+    const destinationAsk = jest.fn();
+    await act(async () => {
+      view.navigate('/c/new?prompt=queued+words&submit=true');
+      view.rerender(<Harness conversation={source} routePending onAsk={destinationAsk} />);
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(destinationAsk).not.toHaveBeenCalled();
+    await act(async () => {
+      view.rerender(<Harness conversation={initialConversation} onAsk={destinationAsk} />);
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(destinationAsk).toHaveBeenCalledTimes(1);
+    expect(destinationAsk).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'queued words' }),
+      expect.anything(),
+    );
+    expect(view.getLocation().search).toBe('');
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('processes a new agent URL once after a previous URL request has completed', async () => {
+    const view = mountComposer(initialConversation, { query: 'q=first&submit=true' });
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(ask).toHaveBeenCalledTimes(1);
+    await act(async () => view.navigate('/c/new?agent_id=agent_test&q=second&submit=true'));
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(screen.getByTestId('text-input')).toHaveValue('second');
+    expect(screen.getByText('Sending...')).toBeInTheDocument();
+    await act(async () => {
+      view.rerender(
+        <Harness
+          conversation={{
+            ...initialConversation,
+            endpoint: EModelEndpoint.agents,
+            agent_id: 'agent_test',
+            model: undefined,
+          }}
+        />,
+      );
+    });
+    expect(ask).toHaveBeenCalledTimes(2);
+    expect(ask).toHaveBeenLastCalledWith(
+      expect.objectContaining({ text: 'second' }),
+      expect.anything(),
+    );
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(ask).toHaveBeenCalledTimes(2);
+    expect(view.getLocation().search).toBe('');
+  });
+
+  it('replaces a pending URL request without replaying its timeout into the new request', async () => {
+    const view = mountComposer(initialConversation, {
+      query: 'agent_id=missing&q=old&submit=true',
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(screen.getByTestId('text-input')).toHaveValue('old');
+    await act(async () => view.navigate('/c/new?q=new&submit=true'));
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'new' }), expect.anything());
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
+    expect(view.getLocation().search).toBe('');
+  });
+
   it.each(['chat-a', 'chat-b'])(
     'waits for route reconciliation while %s remains in the store',
     async (sourceId) => {
