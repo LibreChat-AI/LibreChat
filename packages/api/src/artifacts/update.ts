@@ -75,16 +75,17 @@ const getCodeFence = (line: string): CodeFence | null => {
   };
 };
 
-const closePatternCache = new Map<string, RegExp>();
-
 const isClosingCodeFence = (line: string, openingFence: CodeFence): boolean => {
-  const key = `${openingFence.marker}${openingFence.length}`;
-  let closePattern = closePatternCache.get(key);
-  if (!closePattern) {
-    closePattern = new RegExp(`^\\${openingFence.marker}{${openingFence.length},}\\s*$`);
-    closePatternCache.set(key, closePattern);
+  const trimmed = line.trim();
+  if (trimmed.length < openingFence.length) {
+    return false;
   }
-  return closePattern.test(line.trim());
+  for (const char of trimmed) {
+    if (char !== openingFence.marker) {
+      return false;
+    }
+  }
+  return true;
 };
 
 const findArtifactClose = (text: string, start: number): ArtifactCloseRange | null => {
