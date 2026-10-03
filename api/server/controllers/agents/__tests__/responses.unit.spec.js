@@ -284,6 +284,7 @@ jest.mock('@librechat/api', () => ({
   createSafeUser: jest.fn().mockReturnValue({ id: 'user-123' }),
   initializeAgent: jest.fn().mockResolvedValue({
     id: 'agent-123',
+    provider: 'anthropic',
     model: 'claude-3',
     model_parameters: {},
     toolRegistry: {},
