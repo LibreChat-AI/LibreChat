@@ -1,5 +1,5 @@
 import { dataService, QueryKeys } from 'librechat-data-provider';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   ProjectAvailableFilesParams,
   ProjectAvailableFilesResponse,
@@ -9,6 +9,7 @@ import type {
   TChatProjectFile,
 } from 'librechat-data-provider';
 import type {
+  InfiniteData,
   UseInfiniteQueryOptions,
   QueryObserverResult,
   UseQueryOptions,
@@ -53,6 +54,32 @@ export const useProjectQuery = (
       ...config,
     },
   );
+};
+/**
+ * A project's name for a row that only carries its id. The sidebar already holds the
+ * recent projects, so a name found there costs no request; only a project past that
+ * list is fetched, once per id. A record written by id (a rename) still wins.
+ */
+export const useProjectName = (projectId?: string | null): string | undefined => {
+  const queryClient = useQueryClient();
+  let listedName: string | undefined;
+  if (projectId) {
+    for (const [, data] of queryClient.getQueriesData<InfiniteData<ProjectListResponse>>([
+      QueryKeys.projects,
+    ])) {
+      for (const page of data?.pages ?? []) {
+        listedName = page?.projects?.find((project) => project._id === projectId)?.name;
+        if (listedName != null) {
+          break;
+        }
+      }
+      if (listedName != null) {
+        break;
+      }
+    }
+  }
+  const { data: project } = useProjectQuery(projectId, { enabled: listedName == null });
+  return project?.name ?? listedName;
 };
 export const useProjectFilesQuery = (
   projectId?: string | null,
