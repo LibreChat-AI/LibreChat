@@ -118,6 +118,25 @@ describe('CodeWorkspaceMenu', () => {
     expect(setter).not.toHaveBeenCalled();
   });
 
+  test('cancels machine discovery with Escape without committing a decision', async () => {
+    const setter = jest.fn();
+    renderMenu(
+      <CodeWorkspaceMenu setConversation={setter} workspace={workspace()} disabled={false} />,
+    );
+    const machineButton = screen.getByTestId('code-machine');
+    machineButton.focus();
+    await userEvent.keyboard('{ArrowDown}');
+    await waitFor(() =>
+      expect(screen.getByRole('menu')).toContainElement(document.activeElement as HTMLElement),
+    );
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() =>
+      expect(screen.queryByRole('menu', { hidden: true })).not.toBeInTheDocument(),
+    );
+    expect(machineButton).toBeEnabled();
+    expect(setter).not.toHaveBeenCalled();
+  });
+
   test('opens the workspace menu with keyboard focus and cancels without committing', async () => {
     const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
     const read = jest.spyOn(dataService, 'getCodeEnvironmentStatus').mockResolvedValue({
@@ -137,16 +156,14 @@ describe('CodeWorkspaceMenu', () => {
     const machineButton = screen.getByTestId('code-machine');
     machineButton.focus();
     await userEvent.keyboard('{ArrowDown}');
-    await waitFor(() =>
-      expect(screen.getByRole('menu')).toContainElement(document.activeElement as HTMLElement),
-    );
-    await userEvent.keyboard('{Escape}');
-    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
-    expect(machineButton).toBeEnabled();
-    machineButton.focus();
-    await userEvent.keyboard('{ArrowDown}');
     const candidate = await screen.findByRole('menuitem', { name: alternate.name });
-    candidate.focus();
+    await waitFor(() =>
+      expect(candidate.closest('[role="menu"]')).toContainElement(
+        document.activeElement as HTMLElement,
+      ),
+    );
+    await userEvent.keyboard('{End}');
+    await waitFor(() => expect(candidate).toHaveFocus());
     await userEvent.keyboard('{Enter}');
     const folder = await screen.findByRole('menuitemradio', { name: /Runtime Project/ });
     await waitFor(() =>
@@ -155,7 +172,9 @@ describe('CodeWorkspaceMenu', () => {
       ),
     );
     await userEvent.keyboard('{Escape}');
-    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByRole('menu', { hidden: true })).not.toBeInTheDocument(),
+    );
     expect(screen.getByTestId('code-workspace')).toBeEnabled();
     expect(setter).not.toHaveBeenCalled();
     read.mockRestore();
@@ -303,6 +322,63 @@ describe('CodeWorkspaceMenu', () => {
       expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
     },
   );
+
+  describe.each([false, true])('checkout context with locked=%s', (locked) => {
+    test.each([
+      { checkout: 'source', capable: true, linked: undefined, allowed: true, expected: true },
+      { checkout: 'source', capable: true, linked: true, allowed: true, expected: true },
+      { checkout: 'source', capable: true, linked: false, allowed: true, expected: false },
+      { checkout: 'isolated', capable: true, linked: undefined, allowed: true, expected: false },
+      { checkout: 'isolated', capable: true, linked: true, allowed: true, expected: false },
+      { checkout: undefined, capable: true, linked: undefined, allowed: false, expected: false },
+      { checkout: undefined, capable: true, linked: true, allowed: true, expected: false },
+      { checkout: undefined, capable: false, linked: undefined, allowed: false, expected: true },
+      { checkout: undefined, capable: false, linked: true, allowed: false, expected: true },
+      { checkout: undefined, capable: false, linked: false, allowed: true, expected: false },
+      { checkout: 'source', capable: false, linked: undefined, allowed: true, expected: true },
+      { checkout: 'source', capable: true, linked: true, allowed: false, expected: false },
+      { checkout: 'isolated', capable: false, linked: true, allowed: true, expected: false },
+    ] as const)(
+      'reports available linked lanes without changing the checkout: %j',
+      ({ checkout, capable, linked, allowed, expected }) => {
+        const graph = workspace({ locked });
+        graph.environments[0].environment = {
+          ...environment,
+          configSchema: {
+            workspaces: { linkedWorktrees: linked, allowCheckoutSelection: allowed },
+          },
+        };
+        graph.environments[0].workspaces[0].workspaceInstances = capable
+          ? ['git_worktree']
+          : undefined;
+        graph.environments[0].workspaces[0].workspaceScopes = ['git_linked_worktree'];
+        const selected = {
+          environmentId: environment.id,
+          workspaceId: 'project-a',
+          checkout,
+          agentIds: ['lia'],
+        };
+        graph.environments[0].selected = selected;
+        const setter = jest.fn();
+        renderMenu(
+          <CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />,
+        );
+        expect(screen.queryByText('com_ui_code_linked_worktrees') != null).toBe(expected);
+        const control = screen.queryByRole('checkbox', { name: 'com_ui_code_worktree' });
+        if (capable || checkout != null) {
+          expect(control).toHaveAttribute(
+            'aria-checked',
+            checkout == null ? 'mixed' : String(checkout === 'isolated'),
+          );
+        } else {
+          expect(control).toBeNull();
+        }
+        expect(setter).not.toHaveBeenCalled();
+        expect(graph.rememberSelection).not.toHaveBeenCalled();
+        expect(graph.environments[0].selected).toEqual(selected);
+      },
+    );
+  });
 
   test('hides Git context when continuing without an attached workspace', () => {
     const graph = workspace({ mode: 'without_attached', state: 'without_attached' });

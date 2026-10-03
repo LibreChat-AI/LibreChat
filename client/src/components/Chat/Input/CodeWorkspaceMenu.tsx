@@ -1,12 +1,15 @@
 import { Fragment, useId, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { isCodeWorkspaceCheckoutAvailable } from 'librechat-data-provider';
 import {
   CheckboxGlyph,
   TooltipAnchor,
   composerControlClasses,
   useToastContext,
 } from '@librechat/client';
+import {
+  isCodeWorkspaceCheckoutAvailable,
+  isLinkedWorktreeRoutingAllowed,
+} from 'librechat-data-provider';
 import {
   Check,
   ChevronDown,
@@ -296,10 +299,15 @@ function GitContext({
   if (descriptor == null) return null;
   const supportsWorktree = descriptor.workspaceInstances?.includes('git_worktree') === true;
   const checkout = target.selected?.checkout;
-  const checkoutEditable =
-    !locked &&
-    supportsWorktree &&
+  const checkoutSelectionAllowed =
     target.environment.configSchema?.workspaces?.allowCheckoutSelection === true;
+  const checkoutEditable = !locked && supportsWorktree && checkoutSelectionAllowed;
+  const usesIsolation = checkout !== 'source' && supportsWorktree;
+  const showLinkedWorktrees =
+    !usesIsolation &&
+    descriptor.workspaceScopes?.includes('git_linked_worktree') &&
+    isLinkedWorktreeRoutingAllowed(target.environment.configSchema?.workspaces?.linkedWorktrees) &&
+    isCodeWorkspaceCheckoutAvailable({ checkout }, descriptor, checkoutSelectionAllowed);
   const worktreeInfo =
     checkout == null
       ? localize('com_ui_code_checkout_automatic_info')
@@ -359,17 +367,15 @@ function GitContext({
           )}
         </TooltipAnchor>
       )}
-      {!supportsWorktree &&
-        descriptor.workspaceScopes?.includes('git_linked_worktree') &&
-        target.environment.configSchema?.workspaces?.linkedWorktrees !== false && (
-          <TooltipAnchor
-            description={localize('com_ui_code_linked_worktrees_info')}
-            render={<span className={cn(composerControlClasses(), 'px-2.5')} />}
-          >
-            <GitFork className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-            <span>{localize('com_ui_code_linked_worktrees')}</span>
-          </TooltipAnchor>
-        )}
+      {showLinkedWorktrees && (
+        <TooltipAnchor
+          description={localize('com_ui_code_linked_worktrees_info')}
+          render={<span className={cn(composerControlClasses(), 'px-2.5')} />}
+        >
+          <GitFork className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+          <span>{localize('com_ui_code_linked_worktrees')}</span>
+        </TooltipAnchor>
+      )}
     </>
   );
 }
