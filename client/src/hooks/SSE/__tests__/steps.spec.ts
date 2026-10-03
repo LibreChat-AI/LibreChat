@@ -554,6 +554,35 @@ describe('steps', () => {
       expect(toolCallAt(completed, 1)).toMatchObject({ args: '{}', output: 'ok' });
     });
 
+    it('retains external execution ownership when completion omits it', () => {
+      const externalSearch = toolStep('step-external', 1, [
+        {
+          id: 'call-external',
+          name: 'workflow_tool',
+          args: '{"input":"streamed"}',
+          execution: { mode: 'external', provider: 'workflow-engine' },
+          type: ToolCallTypes.TOOL_CALL,
+        },
+      ]);
+      const opened = applyToolCallsStep(createResponse(), externalSearch, 0).message;
+      const completed = applyToolCallCompleted(
+        opened,
+        externalSearch,
+        toolEnd(externalSearch.id, {
+          id: 'call-external',
+          name: 'workflow_tool',
+          output: 'Completed externally',
+        }),
+        0,
+      );
+
+      expect(toolCallAt(completed, 1)).toMatchObject({
+        execution: { mode: 'external', provider: 'workflow-engine' },
+        output: 'Completed externally',
+        progress: 1,
+      });
+    });
+
     it('writes a completion into its step slot when the opening part is missing', () => {
       const completed = applyToolCallCompleted(
         createResponse(),

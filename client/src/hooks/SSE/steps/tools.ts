@@ -90,6 +90,7 @@ export function applyToolCallsStep(
         tool_call: {
           name: toolCall.name ?? '',
           args: toolCall.args,
+          execution: toolCall.execution,
           id,
           stepId: runStep.id,
           ...getTiming?.(id),

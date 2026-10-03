@@ -82,6 +82,7 @@ export const knownOpenAIParams: Set<string> = new Set([
   'verbose',
   'streaming',
   'streamUsage',
+  'externalToolExecution',
   'disableStreaming',
 ]);
 

@@ -1869,6 +1869,13 @@ export const paramDefinitionSchema = z.object({
   selectPlaceholderCode: z.boolean().optional(),
 });
 
+export const externalToolExecutionSchema = z
+  .object({
+    enabled: z.boolean(),
+    acceptedProviders: z.array(z.string().min(1)).min(1).optional(),
+  })
+  .strict();
+
 export const endpointSchema = baseEndpointSchema.merge(
   z.object({
     name: z.string().refine((value) => !eModelEndpointSchema.safeParse(value).success, {
@@ -1905,6 +1912,7 @@ export const endpointSchema = baseEndpointSchema.merge(
      */
     provider: z.literal(EModelEndpoint.anthropic).optional(),
     headers: z.record(z.string()).optional(),
+    externalToolExecution: externalToolExecutionSchema.optional(),
     addParams: addParamsSchema.optional(),
     dropParams: z.array(z.string()).optional(),
     customParams: z

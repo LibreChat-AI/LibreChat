@@ -342,6 +342,8 @@ export async function initializeCustom(
     if (options != null) {
       options.useLegacyContent = true;
       options.endpointTokenConfig = endpointTokenConfig;
+      (options.llmConfig as Record<string, unknown>).externalToolExecution =
+        endpointConfig.externalToolExecution;
     }
   }
 

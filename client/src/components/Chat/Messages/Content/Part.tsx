@@ -457,6 +457,7 @@ const Part = memo(function Part({
             name={toolCall.name || ''}
             toolCallId={toolCallId}
             output={toolCall.output ?? ''}
+            externalExecution={toolCall.execution?.mode === 'external'}
             initialProgress={toolCall.progress ?? 0.1}
             isSubmitting={isSubmitting}
             attachments={attachments}
