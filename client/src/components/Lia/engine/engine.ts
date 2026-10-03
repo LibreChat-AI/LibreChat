@@ -251,7 +251,10 @@ export class LiaEngine {
     if (!def || (this.run && this.run.prio > prio)) {
       return false;
     }
-    this.stopRun();
+    /* Replaced without a null notification: onAction below reports the new action, and a host
+       reacting to null here could start an action this call would then overwrite. */
+    this.run = null;
+    this.move = null;
     const run: Run = {
       def,
       prio,
@@ -307,10 +310,12 @@ export class LiaEngine {
   }
 
   tick(now: number) {
-    const dt = clamp((now - this.lastFrame) / 1000, 0, 0.05);
+    const prev = this.lastFrame;
+    const dt = clamp((now - prev) / 1000, 0, 0.05);
     this.lastFrame = now;
     const platform = this.host.platform();
     if (!platform) {
+      this.pauseRun(prev, now);
       return;
     }
     this.place(platform);
@@ -410,6 +415,19 @@ export class LiaEngine {
     run.pending = null;
     if (m) {
       this.startMove(m, run, now);
+    }
+  }
+
+  /** Holds the current step while there is no layout, so a step nobody saw is not skipped. */
+  private pauseRun(prev: number, now: number) {
+    const run = this.run;
+    if (!run) {
+      return;
+    }
+    const paused = now - Math.max(prev, run.stepStart);
+    if (paused > 0) {
+      run.stepStart += paused;
+      run.poseStart += paused;
     }
   }
 

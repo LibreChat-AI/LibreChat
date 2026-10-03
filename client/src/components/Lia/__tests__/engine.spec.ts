@@ -116,6 +116,48 @@ describe('LiaEngine', () => {
     expect(picks(5).some(toPointer)).toBe(true);
   });
 
+  it('holds a step while there is no layout and plays it once Lia is visible', () => {
+    let platform: typeof PLATFORM | null = null;
+    const engine = new LiaEngine(
+      document.createElement('canvas'),
+      { platform: () => platform, onBubble: () => undefined },
+      0,
+    );
+    engine.life = false;
+    engine.play('feel-happy', 2, 0);
+    run(engine, 0, 3000);
+    platform = PLATFORM;
+    /* Its first step lasts at least 1.5 s; a clock that kept running would end it at once. */
+    run(engine, 3016, 4000);
+    expect(engine.current?.id).toBe('feel-happy');
+  });
+
+  it('replaces an action without reporting a gap the host could fill', () => {
+    const labels: Array<string | null> = [];
+    const engine: LiaEngine = new LiaEngine(
+      document.createElement('canvas'),
+      {
+        platform: () => PLATFORM,
+        onBubble: () => undefined,
+        onAction: (label) => {
+          labels.push(label);
+          if (label == null) {
+            engine.play('r-crash', 3, 0);
+          }
+        },
+      },
+      0,
+    );
+    engine.life = false;
+    engine.play('intro', 4, 0);
+    engine.play('feel-happy', 4, 0);
+    expect(labels).toEqual([
+      ACTION_BY_ID.get('intro')?.label,
+      ACTION_BY_ID.get('feel-happy')?.label,
+    ]);
+    expect(engine.current?.id).toBe('feel-happy');
+  });
+
   it('escalates from petting to dizziness to a crash', () => {
     const { engine } = setup();
     engine.pet(0);
