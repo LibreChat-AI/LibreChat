@@ -75,8 +75,15 @@ const getCodeFence = (line: string): CodeFence | null => {
   };
 };
 
+const closePatternCache = new Map<string, RegExp>();
+
 const isClosingCodeFence = (line: string, openingFence: CodeFence): boolean => {
-  const closePattern = new RegExp(`^\\${openingFence.marker}{${openingFence.length},}\\s*$`);
+  const key = `${openingFence.marker}${openingFence.length}`;
+  let closePattern = closePatternCache.get(key);
+  if (!closePattern) {
+    closePattern = new RegExp(`^\\${openingFence.marker}{${openingFence.length},}\\s*$`);
+    closePatternCache.set(key, closePattern);
+  }
   return closePattern.test(line.trim());
 };
 
