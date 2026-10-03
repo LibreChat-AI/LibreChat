@@ -364,6 +364,7 @@ test('execution compares the loaded authority and rechecks revocation after pre-
     session.validateExecution(targetB, { agentId: source.id, toolCallId: 'call-a' }),
   ).rejects.toThrow('changed');
   await storage.resetToolApprovalGrants(scope.userId, source.id, name);
+  await session.hook(input(), new AbortController().signal);
   await expect(
     session.validateExecution(source.toolDefinitions![0], {
       agentId: source.id,
@@ -391,4 +392,57 @@ test('unverified success hooks cannot teach consent', async () => {
     new AbortController().signal,
   );
   expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+});
+
+test('always-ask cannot execute through an unreviewed inner invocation', async () => {
+  const source = agent('ask');
+  const session = createAgentToolApprovalSession({ agents: [source], scope, storage: store() });
+  await expect(
+    session.validateExecution(source.toolDefinitions![0], {
+      agentId: source.id,
+      toolCallId: 'inner-call',
+    }),
+  ).rejects.toThrow('foreground');
+});
+
+test.each(['ask', 'deny'] as const)(
+  'the final boundary retains administrator %s over a learned grant',
+  async (decision) => {
+    const source = agent('always');
+    const storage = store();
+    await storage.rememberToolApprovalGrants(scope, [
+      resolveAgentToolGrantBinding(source, name, scope)!,
+    ]);
+    const session = createAgentToolApprovalSession({
+      agents: [source],
+      scope,
+      storage,
+      policy: () => ({ enabled: true, mode: 'bypass', [decision]: [name] }),
+    });
+    await session.hook(input('agent-a', 'inner-call'), new AbortController().signal);
+    await expect(
+      session.validateExecution(source.toolDefinitions![0], {
+        agentId: source.id,
+        toolCallId: 'inner-call',
+      }),
+    ).rejects.toThrow();
+  },
+);
+
+test('an automatic mode cannot bypass a missing SDK policy evaluation', async () => {
+  const source = agent('allow');
+  const session = createAgentToolApprovalSession({ agents: [source], scope, storage: store() });
+  await expect(
+    session.validateExecution(source.toolDefinitions![0], {
+      agentId: source.id,
+      toolCallId: 'inner-call',
+    }),
+  ).rejects.toThrow('policy could not be verified');
+  await session.hook(input('agent-a', 'inner-call'), new AbortController().signal);
+  await expect(
+    session.validateExecution(source.toolDefinitions![0], {
+      agentId: source.id,
+      toolCallId: 'inner-call',
+    }),
+  ).resolves.toBeUndefined();
 });

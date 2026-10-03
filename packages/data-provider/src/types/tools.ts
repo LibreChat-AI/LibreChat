@@ -85,7 +85,7 @@ export interface ToolApprovalGrantBinding {
   agentId: string;
   toolName: string;
   binding: string;
-  scope: 'chat' | 'always';
+  scope: 'once' | 'chat' | 'always';
   revocation?: string;
   canRemember?: boolean;
   unavailable?: 'connection' | 'disabled' | 'storage' | 'background';

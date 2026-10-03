@@ -1,3 +1,4 @@
+import { createToolPolicyHook } from '@librechat/agents';
 import { digestMCPAuthorityValue, logger } from '@librechat/data-schemas';
 import type {
   AgentToolOptions,
@@ -6,6 +7,7 @@ import type {
   ToolApprovalGrantBinding,
   Agents,
 } from 'librechat-data-provider';
+import type { TToolApprovalPolicy } from 'librechat-data-provider';
 import type { HookCallback } from '@librechat/agents';
 import type { Run, IState } from '@librechat/agents';
 import type { ToolApprovalExecution } from '~/tools/approval';
@@ -13,6 +15,7 @@ import type { ParsedServerConfig } from '~/mcp/types';
 import { bindToolApproval, getToolApprovalBinding, getToolApprovalName } from '~/tools/approval';
 import { withToolApprovalExecution, getToolApprovalIdentity } from '~/tools/approval';
 import { requiresEphemeralUserConnection } from '~/mcp/utils';
+import { mapToolApprovalPolicy } from './policy';
 
 export interface AgentApprovalDefinition {
   name: string;
@@ -58,8 +61,9 @@ export function resolveAgentToolGrantBinding(
 ): ToolApprovalGrantBinding | undefined {
   const options = agent.tool_options?.[toolName];
   if (
-    (options?.approval_mode !== 'chat' && options?.approval_mode !== 'always') ||
-    options.approval_revision == null
+    options?.approval_mode == null ||
+    ((options.approval_mode === 'chat' || options.approval_mode === 'always') &&
+      options.approval_revision == null)
   )
     return undefined;
   const definition = executingTool ?? agent.toolDefinitions?.find((tool) => tool.name === toolName);
@@ -69,11 +73,14 @@ export function resolveAgentToolGrantBinding(
   if (!sourceBinding || !identity) return undefined;
   const canonicalName = getToolApprovalName(definition) ?? toolName;
   return {
-    canRemember: true,
+    canRemember: options.approval_mode === 'chat' || options.approval_mode === 'always',
     instanceName: toolName,
     agentId: agent.id,
     toolName: canonicalName,
-    scope: options.approval_mode,
+    scope:
+      options.approval_mode === 'ask' || options.approval_mode === 'allow'
+        ? 'once'
+        : options.approval_mode,
     binding: digestMCPAuthorityValue({
       userId: scope.userId,
       tenantId: scope.tenantId ?? null,
@@ -104,9 +111,11 @@ export function createAgentToolApprovalSession({
   storage,
   lookupTimeoutMs = 3000,
   reviewed,
+  policy,
 }: {
   lookupTimeoutMs?: number;
   reviewed?: ReviewedToolApprovals;
+  policy?: () => TToolApprovalPolicy;
   agents: readonly AgentApprovalSource[];
   scope?: ToolApprovalGrantScope;
   storage?: ToolApprovalGrantStorage;
@@ -119,8 +128,14 @@ export function createAgentToolApprovalSession({
       .filter((decision) => decision.decision === 'approve')
       .map((decision) => decision.tool_call_id),
   );
+  const permittedDecisions = new Set(
+    reviewed?.decisions
+      .filter((decision) => decision.decision === 'approve' || decision.decision === 'edit')
+      .map((decision) => decision.tool_call_id),
+  );
   const ready = new Map<string, ToolApprovalGrantBinding>();
   const executed = new Set<string>();
+  const policyChecks = new Map<string, { agentId: string; toolName: string }>();
   type GrantStatus = {
     binding: string;
     approved: boolean;
@@ -192,25 +207,65 @@ export function createAgentToolApprovalSession({
       if (
         !owner &&
         Array.from(owners.values()).some((agent) =>
-          ['chat', 'always'].includes(agent.tool_options?.[tool.name]?.approval_mode ?? ''),
+          ['ask', 'chat', 'always'].includes(agent.tool_options?.[tool.name]?.approval_mode ?? ''),
         )
       ) {
         throw new Error('MCP approval requires the executing agent identity.');
       }
       const options = owner?.tool_options?.[tool.name];
-      if (options?.approval_mode !== 'chat' && options?.approval_mode !== 'always') return;
-      const expected = owner && scope && resolveAgentToolGrantBinding(owner, tool.name, scope);
-      if (!expected) return;
-      const actual = resolveAgentToolGrantBinding(owner!, tool.name, scope!, tool);
+      if (options?.approval_mode == null) return;
       const callId = invocation.toolCallId;
+      const check = callId && policyChecks.get(callId);
+      if (!check || check.agentId !== owner?.id || check.toolName !== tool.name) {
+        throw new Error('Tool policy could not be verified. Run this tool in the foreground.');
+      }
+      policyChecks.delete(callId!);
+      const initialized = owner?.toolDefinitions?.find(
+        (definition) => definition.name === tool.name,
+      );
+      const expectedIdentity = initialized && getToolApprovalIdentity(initialized);
+      const actualIdentity = getToolApprovalIdentity(tool);
+      const expectedSource = initialized && getToolApprovalBinding(initialized);
+      if (
+        (expectedIdentity != null && actualIdentity !== expectedIdentity) ||
+        (expectedSource != null && getToolApprovalBinding(tool) !== expectedSource)
+      ) {
+        throw new Error('The advertised MCP tool or connection changed. Retry the run.');
+      }
+      const baseline = policy
+        ? await createToolPolicyHook(mapToolApprovalPolicy(policy()) ?? {})(
+            {
+              hook_event_name: 'PreToolUse',
+              runId: '',
+              executingAgentId: owner?.id,
+              toolName: tool.name,
+              toolInput: {},
+              toolUseId: callId ?? '',
+            },
+            new AbortController().signal,
+          )
+        : undefined;
+      if (baseline?.decision === 'deny') throw new Error('Administrator policy blocks this tool.');
+      if (options.approval_mode === 'allow' && baseline?.decision !== 'ask') return;
+      const expected = owner && scope && resolveAgentToolGrantBinding(owner, tool.name, scope);
+      if (!expected) {
+        // Unresolvable connections cannot learn consent. Only a reviewed SDK call may execute.
+        if (callId && calls.has(callId) && permittedDecisions.has(callId)) return;
+        throw new Error('Tool approval is required. Run this tool in the foreground for review.');
+      }
+      const actual = resolveAgentToolGrantBinding(owner!, tool.name, scope!, tool);
       if (actual?.binding !== expected.binding || !callId) {
         if (callId) ready.delete(callId);
         throw new Error('The approved MCP tool or connection changed. Request approval again.');
       }
       const manual = reviewed?.bindings?.[callId];
-      if (manual && approvedDecisions.has(callId) && manual.binding === actual.binding) {
-        if (manual.canRemember === true) executed.add(callId);
+      if (manual && permittedDecisions.has(callId) && manual.binding === actual.binding) {
+        permittedDecisions.delete(callId);
+        if (manual.canRemember === true && approvedDecisions.has(callId)) executed.add(callId);
         return;
+      }
+      if (expected.scope === 'once' || baseline?.decision === 'ask') {
+        throw new Error('Tool approval is required. Run this tool in the foreground for review.');
       }
       const status = await approved(actual);
       if (!status.approved) {
@@ -259,8 +314,12 @@ export function createAgentToolApprovalSession({
           ready.set(input.toolUseId, reviewedBinding);
       }
       if (mode == null) return {};
-      if (mode === 'ask') return { decision: 'ask' };
-      if (mode === 'allow') return { decision: 'allow' };
+      if (agent) policyChecks.set(input.toolUseId, { agentId: agent.id, toolName: input.toolName });
+      if (mode === 'ask' || mode === 'allow') {
+        const target = agent && scope && resolveAgentToolGrantBinding(agent, input.toolName, scope);
+        calls.set(input.toolUseId, target ?? null);
+        return { decision: mode === 'ask' ? 'ask' : 'allow' };
+      }
       const binding = agent && scope && resolveAgentToolGrantBinding(agent, input.toolName, scope);
       if (!binding) {
         unavailable.set(input.toolUseId, 'connection');
@@ -326,16 +385,20 @@ export function describeRememberedToolApprovals(
   if (payload.type !== 'tool_approval' || !bindings) return payload;
   return {
     ...payload,
-    review_configs: payload.review_configs.map((config) => ({
-      ...config,
-      remember_scope:
-        bindings[config.tool_call_id]?.canRemember === true
-          ? bindings[config.tool_call_id]?.scope
-          : undefined,
-      remember_unavailable:
-        bindings[config.tool_call_id]?.unavailable ??
-        (run ? sessions.get(run)?.unavailableFor(config.tool_call_id) : undefined),
-    })),
+    review_configs: payload.review_configs.map((config) => {
+      const binding = bindings[config.tool_call_id];
+      const scope = binding?.scope;
+      return {
+        ...config,
+        remember_scope:
+          binding?.canRemember === true && (scope === 'chat' || scope === 'always')
+            ? scope
+            : undefined,
+        remember_unavailable:
+          binding?.unavailable ??
+          (run ? sessions.get(run)?.unavailableFor(config.tool_call_id) : undefined),
+      };
+    }),
   };
 }
 

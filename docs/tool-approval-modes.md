@@ -34,7 +34,8 @@ endpoints:
 
 Explicit administrator deny/ask rules and hooks remain authoritative. Approval grants do not
 supply missing permissions or credentials. Hosts without a supported approval responder block
-calls requiring review. Input/output scripts are not part of this feature.
+calls requiring review. An inner/programmatic path that cannot evaluate the agent policy refuses
+execution rather than treating an automatic mode as a bypass. Input/output scripts are not part of this feature.
 
 ## Compatibility and rollback
 

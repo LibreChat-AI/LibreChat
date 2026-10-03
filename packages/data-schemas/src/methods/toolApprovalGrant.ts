@@ -50,6 +50,8 @@ export function createToolApprovalGrantMethods(
     async rememberToolApprovalGrants(scope, grants) {
       await Promise.all(
         grants.map(async (grant) => {
+          if (grant.scope === 'once')
+            throw new TypeError('One-time approvals cannot be remembered.');
           const filter = {
             user: scope.userId,
             tenantId: scope.tenantId ?? null,
