@@ -565,7 +565,9 @@ describe('Conversations: Running lists chats outside the Chats list', () => {
     ).toBeInTheDocument();
     const rows = screen.getAllByTestId('convo');
     expect(rows.map((row) => row.textContent)).toEqual(['Project chat', 'Idle chat']);
-    expect(rows.map((row) => row.getAttribute('data-project-badge'))).toEqual(['true', 'false']);
+    /* Project chats list under Chats too, so every row may badge; the row draws it only
+       for a chat that is filed in a project. */
+    expect(rows.map((row) => row.getAttribute('data-project-badge'))).toEqual(['true', 'true']);
   });
 
   it('fetches nothing under a sort that has no Running group', () => {

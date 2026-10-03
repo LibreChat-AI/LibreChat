@@ -1,9 +1,11 @@
+import { UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationGroupOptions } from '~/utils/convos';
 import {
   unlistedRunningIds,
   RUNNING_CHATS_GROUP,
-  groupConversationsWithRunning as partitionGroups,
+  FINISHED_CHATS_GROUP,
+  groupConversationsByStatus as partitionGroups,
 } from '../running';
 import { groupConversations } from '~/utils/convos';
 
@@ -26,7 +28,7 @@ const groupConversationsWithRunning = (
   options: ConversationGroupOptions,
 ) => partitionGroups(groupConversations(conversations, options), activeJobIds, options);
 
-describe('groupConversationsWithRunning', () => {
+describe('groupConversationsByStatus', () => {
   it('returns the same date groups when the polled jobs do not affect loaded rows', () => {
     const dated = groupConversations([convo('idle', 1)], newestFirst);
     expect(partitionGroups(dated, new Set(), newestFirst)).toBe(dated);
@@ -194,5 +196,124 @@ describe('running chats the loaded rows do not hold', () => {
     const dated = groupConversations([convo('idle', 0)], options);
     const unlisted = [projectChat('in-project', 1)];
     expect(partitionGroups(dated, new Set(['in-project']), options, unlisted)).toBe(dated);
+  });
+});
+
+describe('groupConversationsByStatus finished chats', () => {
+  const replied = (
+    conversationId: string,
+    daysAgo: number,
+    read: Partial<TConversation> = {},
+  ): TConversation =>
+    ({
+      ...convo(conversationId, daysAgo),
+      lastResponseAt: new Date(Date.now() - daysAgo * 86_400_000).toISOString(),
+      isMarkedUnread: false,
+      lastSeenAt: UNSEEN_REPLY_WATERMARK,
+      ...read,
+    }) as TConversation;
+
+  it('lists a reply that arrived unseen under Finished, after Running and before the dates', () => {
+    const newest = convo('newest', 0);
+    const running = convo('running', 1);
+    const unseen = replied('unseen', 3);
+    const seen = replied('seen', 2, { lastSeenAt: new Date().toISOString() });
+    const groups = groupConversationsWithRunning(
+      [newest, running, seen, unseen],
+      new Set(['running']),
+      newestFirst,
+    );
+
+    expect(groups[0]).toEqual([RUNNING_CHATS_GROUP, [running]]);
+    expect(groups[1]).toEqual([FINISHED_CHATS_GROUP, [unseen]]);
+    expect(ids(groups)).toEqual(['running', 'unseen', 'newest', 'seen']);
+  });
+
+  it('shows Finished with no chat running', () => {
+    const groups = groupConversationsWithRunning(
+      [convo('newest', 0), replied('unseen', 2)],
+      new Set(),
+      newestFirst,
+    );
+
+    expect(groups.map(([name]) => name)[0]).toBe(FINISHED_CHATS_GROUP);
+    expect(ids(groups)).toEqual(['unseen', 'newest']);
+  });
+
+  it('keeps a running chat under Running even while its previous reply is unseen', () => {
+    const groups = groupConversationsWithRunning(
+      [replied('busy', 1)],
+      new Set(['busy']),
+      newestFirst,
+    );
+
+    expect(groups).toEqual([
+      [RUNNING_CHATS_GROUP, [expect.objectContaining({ conversationId: 'busy' })]],
+    ]);
+  });
+
+  it.each([
+    { lastResponseIsManual: true },
+    { isMarkedUnread: true, lastResponseMessageId: 'real-reply' },
+  ])('leaves a chat marked unread by hand in its date group (%j)', (marker) => {
+    const manual = replied('manual', 1, marker);
+    const dated = groupConversations([manual], newestFirst);
+
+    expect(partitionGroups(dated, new Set(), newestFirst)).toBe(dated);
+  });
+
+  it.each([undefined, false])(
+    'keeps unknown legacy intent in date groups (synthetic flag: %s)',
+    (synthetic) => {
+      const legacy = replied('legacy', 1, {
+        isMarkedUnread: undefined,
+        lastResponseIsManual: synthetic,
+        lastResponseMessageId: 'existing-reply',
+        lastSeenAt: undefined,
+      });
+      const restored = JSON.parse(JSON.stringify(legacy)) as TConversation;
+      const dated = groupConversations([restored], newestFirst);
+      expect(partitionGroups(dated, new Set(), newestFirst)).toBe(dated);
+    },
+  );
+
+  it('keeps a reminder written by an older replica in its date group', () => {
+    const confirmed = replied('mixed-replica', 1);
+    expect(partitionGroups([['Today', [confirmed]]], new Set(), newestFirst)[0][0]).toBe(
+      FINISHED_CHATS_GROUP,
+    );
+    const seen = { ...confirmed, lastSeenAt: new Date().toISOString() };
+    const unread = { ...seen, lastSeenAt: undefined };
+    const restored = JSON.parse(JSON.stringify(unread)) as TConversation;
+    expect(restored.isMarkedUnread).toBe(false);
+    const dated = groupConversations([restored], newestFirst);
+    expect(partitionGroups(dated, new Set(), newestFirst)).toBe(dated);
+    const nextReply = { ...restored, lastSeenAt: UNSEEN_REPLY_WATERMARK };
+    expect(partitionGroups([['Today', [nextReply]]], new Set(), newestFirst)[0][0]).toBe(
+      FINISHED_CHATS_GROUP,
+    );
+  });
+
+  it('shows a new confirmed reply after an unknown legacy reminder', () => {
+    const legacy = replied('legacy', 1, { isMarkedUnread: undefined });
+    const confirmed = replied('confirmed', 0);
+    const dated = groupConversations([confirmed, legacy], newestFirst);
+    const groups = partitionGroups(dated, new Set(), newestFirst);
+    expect(groups[0]).toEqual([FINISHED_CHATS_GROUP, [confirmed]]);
+    expect(groups.slice(1)).toEqual(groupConversations([legacy], newestFirst));
+  });
+
+  it.each([
+    { field: 'updatedAt' as const, direction: 'asc' as const },
+    { field: 'title' as const, direction: 'asc' as const },
+  ])('keeps unseen chats in place under the $field $direction order', (options) => {
+    const dated = groupConversations([replied('unseen', 1), convo('other', 0)], options);
+    expect(partitionGroups(dated, new Set(), options)).toBe(dated);
+  });
+
+  it('keeps unseen chats in place when the list includes pins', () => {
+    const options = { ...newestFirst, includePinned: true };
+    const dated = groupConversations([replied('unseen', 1)], options);
+    expect(partitionGroups(dated, new Set(), options)).toBe(dated);
   });
 });

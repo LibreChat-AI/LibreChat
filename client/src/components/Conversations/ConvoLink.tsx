@@ -9,6 +9,8 @@ interface ConvoLinkProps {
   isHovered: boolean;
   isSharedBadgeVisible: boolean;
   isUnseen: boolean;
+  /** The avatar's ring is decorative, so the label carries the running state. */
+  isGenerating?: boolean;
   title: string | null;
   onRename: () => void;
   isSmallScreen: boolean;
@@ -42,6 +44,7 @@ const ConvoLink: React.FC<ConvoLinkProps> = ({
   isHovered,
   isSharedBadgeVisible,
   isUnseen,
+  isGenerating = false,
   title,
   onRename,
   isSmallScreen,
@@ -131,7 +134,7 @@ const ConvoLink: React.FC<ConvoLinkProps> = ({
     <button
       type="button"
       className={cn(
-        'focus-visible:ring-text-primary flex w-full min-w-0 grow cursor-pointer items-center gap-2 overflow-hidden rounded-lg px-2 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
+        'focus-visible:ring-text-primary flex w-full min-w-0 grow cursor-pointer items-center gap-2 self-stretch overflow-hidden rounded-lg px-2 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
         isActiveConvo || isPopoverActive ? 'bg-surface-active-alt' : '',
       )}
       aria-current={isActiveConvo ? 'page' : undefined}
@@ -144,13 +147,16 @@ const ConvoLink: React.FC<ConvoLinkProps> = ({
             })
           : localize('com_ui_conversation_label', {
               title: title || localize('com_ui_untitled'),
-            })) + (isUnseen ? `, ${localize('com_ui_unread')}` : '')
+            })) +
+        (isGenerating ? `, ${localize('com_ui_generating')}` : '') +
+        (isUnseen && !isGenerating ? `, ${localize('com_ui_unread')}` : '')
       }
     >
       {children}
       <span
         ref={titleRef}
         className={cn(
+          isUnseen && !isGenerating && 'font-semibold',
           'min-w-0 flex-1 overflow-hidden [mask-size:100%_100%] [mask-position:left] [mask-repeat:no-repeat] [text-align:start] whitespace-nowrap [transition-property:mask-size] [transition-duration:0ms] [transition-timing-function:linear] [--convo-title-fade-width:24px] [--convo-title-reveal-duration:800ms] [&:dir(rtl)]:[mask-position:right]',
           isOverflowing &&
             '[mask-image:linear-gradient(to_right,currentColor_calc(100%_-_var(--convo-title-fade-width)),transparent)] [&:dir(rtl)]:[mask-image:linear-gradient(to_left,currentColor_calc(100%_-_var(--convo-title-fade-width)),transparent)]',

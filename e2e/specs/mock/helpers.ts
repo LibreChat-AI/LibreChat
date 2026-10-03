@@ -529,3 +529,13 @@ export async function uploadViaLegacyOption(page: Page, optionName: string, file
   });
   return uploadResponse;
 }
+
+/** Identity stays stable when Running and Finished reorder the sidebar. */
+export const conversationRow = (page: Page, conversationUrl: string = page.url()) => {
+  const id = new URL(conversationUrl).pathname.split('/c/')[1];
+  expect(id).toMatch(/^[0-9a-f-]{36}$/i);
+  return page
+    .getByTestId('convo-item')
+    .and(page.locator(`[data-conversation-id="${id}"]`))
+    .first();
+};
