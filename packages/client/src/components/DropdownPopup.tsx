@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import type * as t from '~/common';
 import { usePopoverZIndex } from './OriginalDialog';
@@ -26,6 +26,8 @@ interface DropdownProps {
   mountByState?: boolean;
   unmountOnHide?: boolean;
   finalFocus?: React.RefObject<HTMLElement>;
+  autoFocusOnShow?: Ariakit.MenuProps['autoFocusOnShow'];
+  getAnchorRect?: Ariakit.MenuProps['getAnchorRect'];
 }
 
 type MenuProps = Omit<
@@ -40,21 +42,27 @@ const DropdownPopup: React.FC<DropdownProps> = ({
   setIsOpen,
   focusLoop,
   mountByState,
+  autoFocusOnShow,
   ...props
 }) => {
   const menu = Ariakit.useMenuStore({ open: isOpen, setOpen: setIsOpen, focusLoop });
+  useEffect(() => {
+    if (isOpen && autoFocusOnShow === true) {
+      menu.setAutoFocusOnShow(true);
+    }
+  }, [isOpen, autoFocusOnShow, menu]);
   if (mountByState) {
     return (
       <Ariakit.MenuProvider store={menu}>
         {trigger}
-        {isOpen && <Menu {...props} />}
+        {isOpen && <Menu {...props} autoFocusOnShow={autoFocusOnShow} />}
       </Ariakit.MenuProvider>
     );
   }
   return (
     <Ariakit.MenuProvider store={menu}>
       {trigger}
-      <Menu {...props} />
+      <Menu {...props} autoFocusOnShow={autoFocusOnShow} />
     </Ariakit.MenuProvider>
   );
 };

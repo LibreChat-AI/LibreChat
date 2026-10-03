@@ -2057,6 +2057,30 @@ describe('Convos Routes', () => {
     });
   });
 
+  describe('POST /update running chat rename', () => {
+    it('delegates rename semantics to the injected TypeScript handler', async () => {
+      const { renameConversationHandler, renameHandlerInputs } = require(MOCKS);
+      const arg = { conversationId: 'running-rename', title: 'Renamed' };
+      expect((await request(app).post('/api/convos/update').send({ arg })).status).toBe(204);
+      expect(renameConversationHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: { arg },
+          user: expect.objectContaining({ id: 'test-user-123' }),
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(renameHandlerInputs.at(-1)).toEqual(
+        expect.objectContaining({
+          saveConvo,
+          getConvo,
+          getActiveRunIds: expect.any(Function),
+          logger: expect.anything(),
+        }),
+      );
+    });
+  });
+
   describe('POST /archive', () => {
     it('should archive a conversation successfully', async () => {
       const mockConversationId = 'conv-123';
