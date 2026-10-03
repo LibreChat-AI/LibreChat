@@ -124,6 +124,17 @@ export type DocumentBlock =
   | OpenAIInputFileBlock
   | BedrockDocumentBlock;
 
+/** Why a provider-bound attachment was not sent to the model. */
+export type AttachmentOmissionReason = 'unsupported_type' | 'text_limit';
+
+/** A provider-bound attachment the model did not receive. */
+export interface OmittedAttachment {
+  file_id?: string;
+  filename: string;
+  type: string;
+  reason: AttachmentOmissionReason;
+}
+
 export interface DocumentResult {
   documents: DocumentBlock[];
   files: Array<{
@@ -134,6 +145,8 @@ export interface DocumentResult {
     filename: string;
     type: string;
   }>;
+  /** Attachments this call did not send, so the caller can reject or report them. */
+  omitted?: OmittedAttachment[];
 }
 
 /** Google audio block format */

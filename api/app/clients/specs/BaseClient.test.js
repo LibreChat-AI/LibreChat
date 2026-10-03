@@ -10,6 +10,8 @@ const {
   resolveTurnDeliveryRouting,
   buildSteerMedia,
   Tokenizer,
+  isAgentAttachmentLimitError,
+  AgentAttachmentUnsupportedError,
 } = require('@librechat/api');
 const { FakeClient, initializeFakeClient } = require('./FakeClient');
 
@@ -3288,7 +3290,9 @@ describe('BaseClient', () => {
         {},
       );
       expect(TestClient.addFileContextToMessage).toHaveBeenCalledWith(message, [ownerFile]);
-      expect(TestClient.processAttachments).toHaveBeenCalledWith(message, [ownerFile]);
+      expect(TestClient.processAttachments).toHaveBeenCalledWith(message, [ownerFile], undefined, {
+        historical: true,
+      });
       expect(message.fileContext).toBe('authorized owner text');
       expect(message.files).toEqual([
         expect.objectContaining({
@@ -3959,6 +3963,182 @@ describe('BaseClient', () => {
       });
     };
 
+    describe('provider documents under the inherited supportedMimeTypes list', () => {
+      /** A file the user sent through "Upload to Provider"; the endpoint sets no MIME list. */
+      const providerFile = (file_id, type) => ({
+        user: 'user1',
+        file_id,
+        filename: file_id,
+        filepath: `/uploads/${file_id}`,
+        type,
+        bytes: 100,
+        source: 'local',
+        llmDeliveryPath: 'provider',
+        metadata: { destinationChosen: true },
+      });
+
+      const withSupportedMimeTypes = (supportedMimeTypes) => {
+        TestClient.options.req = {
+          config: {
+            fileConfig: {
+              endpoints: { [EModelEndpoint.openAI]: { fileLimit: 10, supportedMimeTypes } },
+            },
+          },
+        };
+        TestClient.options.agent = routedAgent({
+          provider: EModelEndpoint.openAI,
+          endpoint: EModelEndpoint.openAI,
+        });
+      };
+
+      test('rejects a current-turn archive the endpoint does not list, naming the file', async () => {
+        withSupportedMimeTypes(undefined);
+        const sql = providerFile('query.sql', 'application/sql');
+        const zip = providerFile('archive.zip', 'application/zip');
+        const pdf = providerFile('report.pdf', 'application/pdf');
+
+        const rejection = TestClient.processAttachments({}, [sql, zip, pdf]);
+
+        await expect(rejection).rejects.toBeInstanceOf(AgentAttachmentUnsupportedError);
+        await expect(rejection).rejects.toMatchObject({
+          code: 'AGENT_ATTACHMENT_UNSUPPORTED',
+          message: expect.stringContaining('"archive.zip" (application/zip)'),
+          attachments: [
+            {
+              file_id: 'archive.zip',
+              filename: 'archive.zip',
+              type: 'application/zip',
+              reason: 'unsupported_type',
+            },
+          ],
+        });
+        expect(isAgentAttachmentLimitError(await rejection.catch((error) => error))).toBe(true);
+        expect(TestClient.addDocuments).toHaveBeenCalledWith(
+          expect.anything(),
+          [sql, pdf],
+          expect.any(Array),
+        );
+      });
+
+      test('rejects a current-turn file the document encoder leaves out', async () => {
+        /* A DOCX sent to Gemini passes routing but not the encoder, which used to leave the
+         * file on the message while the model received none of it. */
+        withSupportedMimeTypes(undefined);
+        const csv = providerFile('table.csv', 'text/csv');
+        TestClient.addDocuments = jest.fn(async (_message, _files, omissions) => {
+          omissions.push({
+            file_id: 'table.csv',
+            filename: 'table.csv',
+            type: 'text/csv',
+            reason: 'text_limit',
+          });
+          return [];
+        });
+
+        await expect(TestClient.processAttachments({}, [csv])).rejects.toMatchObject({
+          code: 'AGENT_ATTACHMENT_UNSUPPORTED',
+          message: expect.stringContaining('exceeds the file text limit'),
+        });
+      });
+
+      test('recovers a conversation whose earlier message holds an archive', async () => {
+        /* The archive that 400s on every later turn arrives through history, not this turn's
+         * upload, so the replay path has to skip it too. */
+        withSupportedMimeTypes(undefined);
+        TestClient.options.req.user = { id: 'user1' };
+        TestClient.options.resendFiles = true;
+        TestClient.addFileContextToMessage = jest.fn();
+        TestClient.assertHistoricalAttachmentLimits = undefined;
+        TestClient.checkVisionRequest = jest.fn();
+        TestClient.message_file_map = undefined;
+        const { logger } = require('@librechat/data-schemas');
+        const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+        const zip = providerFile('archive.zip', 'application/zip');
+        const pdf = providerFile('report.pdf', 'application/pdf');
+        getFiles.mockResolvedValueOnce([zip, pdf]);
+
+        try {
+          const [message] = await TestClient.addPreviousAttachments([
+            {
+              messageId: 'msg-earlier',
+              text: 'Here are the files',
+              files: [{ file_id: 'archive.zip' }, { file_id: 'report.pdf' }],
+            },
+          ]);
+
+          expect(TestClient.addDocuments).toHaveBeenCalledTimes(1);
+          expect(TestClient.addDocuments).toHaveBeenCalledWith(message, [pdf], expect.any(Array));
+          expect(TestClient.message_file_map['msg-earlier']).toEqual([pdf]);
+          /* The omission is explicit to the model and in the log, not silent. */
+          expect(message.documents).toEqual([
+            { type: 'file' },
+            {
+              type: 'text',
+              text: 'File "archive.zip" was attached to this message but was not sent to the model: this model cannot read application/zip.',
+            },
+          ]);
+          expect(warn).toHaveBeenCalledWith(
+            '[BaseClient] Attachments from history not sent to the model',
+            expect.objectContaining({
+              messageId: 'msg-earlier',
+              omitted: [expect.objectContaining({ file_id: 'archive.zip' })],
+            }),
+          );
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      test('leaves a file the encoder omitted from history out of the message file map', async () => {
+        withSupportedMimeTypes(undefined);
+        TestClient.options.req.user = { id: 'user1' };
+        TestClient.options.resendFiles = true;
+        TestClient.addFileContextToMessage = jest.fn();
+        TestClient.assertHistoricalAttachmentLimits = undefined;
+        TestClient.checkVisionRequest = jest.fn();
+        TestClient.message_file_map = undefined;
+        const docx = providerFile(
+          'report.docx',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        );
+        TestClient.addDocuments = jest.fn(async (_message, _files, omissions) => {
+          omissions.push({
+            file_id: docx.file_id,
+            filename: docx.filename,
+            type: docx.type,
+            reason: 'unsupported_type',
+          });
+          return [];
+        });
+        getFiles.mockResolvedValueOnce([docx]);
+
+        const [message] = await TestClient.addPreviousAttachments([
+          { messageId: 'msg-docx', text: 'Read this', files: [{ file_id: 'report.docx' }] },
+        ]);
+
+        expect(TestClient.message_file_map['msg-docx']).toEqual([]);
+        expect(message.documents).toEqual([
+          expect.objectContaining({
+            type: 'text',
+            text: expect.stringContaining('"report.docx" was attached to this message'),
+          }),
+        ]);
+      });
+
+      test('sends a binary type the endpoint lists explicitly', async () => {
+        withSupportedMimeTypes(['^application/zip$']);
+        const zip = providerFile('archive.zip', 'application/zip');
+
+        await TestClient.processAttachments({}, [zip]);
+
+        expect(TestClient.addDocuments).toHaveBeenCalledWith(
+          expect.anything(),
+          [zip],
+          expect.any(Array),
+        );
+      });
+    });
+
     test('keeps a none image in returned files without adding image URLs', async () => {
       routeTo('none', 'image/*');
       const message = {};
@@ -4532,7 +4712,7 @@ describe('BaseClient', () => {
 
       expect(result).toEqual([file]);
       expect(message.documents).toEqual([{ type: 'file' }]);
-      expect(TestClient.addDocuments).toHaveBeenCalledWith(message, [file]);
+      expect(TestClient.addDocuments).toHaveBeenCalledWith(message, [file], expect.any(Array));
     });
   });
 });

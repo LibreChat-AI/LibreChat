@@ -14,6 +14,8 @@ const {
   encodeAndFormatVideos,
   getTransactionsConfig,
   encodeAndFormatDocuments,
+  isProviderDocumentCandidate,
+  AgentAttachmentUnsupportedError,
   getLangfuseTraceMessageFields,
   isContentFilterError,
   assertModelBoundProviderContent,
@@ -1738,7 +1740,12 @@ class BaseClient {
     );
   }
 
-  async addDocuments(message, attachments) {
+  /**
+   * @param {TMessage} message
+   * @param {MongoFile[]} attachments
+   * @param {OmittedAttachment[]} [omissions] - Receives the files the encoder did not send.
+   */
+  async addDocuments(message, attachments, omissions) {
     const documentResult = await encodeAndFormatDocuments(
       this.options.req,
       attachments,
@@ -1754,6 +1761,9 @@ class BaseClient {
       documentResult.documents && documentResult.documents.length
         ? documentResult.documents
         : undefined;
+    if (omissions && documentResult.omitted?.length) {
+      omissions.push(...documentResult.omitted);
+    }
     return documentResult.files;
   }
 
@@ -1829,7 +1839,18 @@ class BaseClient {
     return resolveTurnLLMDeliveryPath(this.options.agent?.deliveryRouting, file, fileConsumers);
   }
 
-  async processAttachments(message, attachments, fileConsumers) {
+  /**
+   * A provider-bound file the model would not receive is rejected on the current turn with
+   * {@link AgentAttachmentUnsupportedError}, so the model never answers as if it had read
+   * it. On history replay the same file is left out with a note in the message instead:
+   * throwing there would fail every later turn of the conversation.
+   *
+   * @param {TMessage} message
+   * @param {MongoFile[]} attachments
+   * @param {TurnFileConsumers} [fileConsumers]
+   * @param {{ historical?: boolean }} [options]
+   */
+  async processAttachments(message, attachments, fileConsumers, options = {}) {
     const categorizedAttachments = {
       images: [],
       videos: [],
@@ -1837,6 +1858,8 @@ class BaseClient {
       documents: [],
     };
 
+    /** @type {OmittedAttachment[]} */
+    const omissions = [];
     const allFiles = [];
     const provider = this.options.agent?.provider ?? this.options.endpoint;
     const isBedrock = provider === EModelEndpoint.bedrock;
@@ -1882,15 +1905,21 @@ class BaseClient {
         categorizedAttachments.audios.push(file);
         allFiles.push(file);
       } else if (
-        file.type &&
-        deliveryRouting?.endpointConfig.supportedMimeTypes &&
-        deliveryRouting.fileConfig.checkType(
+        isProviderDocumentCandidate(
           file.type,
-          deliveryRouting.endpointConfig.supportedMimeTypes,
+          deliveryRouting?.fileConfig,
+          deliveryRouting?.endpointConfig.supportedMimeTypes,
         )
       ) {
         categorizedAttachments.documents.push(file);
         allFiles.push(file);
+      } else if (deliveryPath === 'provider') {
+        omissions.push({
+          ...(file.file_id && { file_id: file.file_id }),
+          filename: file.filename,
+          type: file.type,
+          reason: 'unsupported_type',
+        });
       }
     }
 
@@ -1899,7 +1928,7 @@ class BaseClient {
         ? this.addImageURLs(message, categorizedAttachments.images)
         : Promise.resolve([]),
       categorizedAttachments.documents.length > 0
-        ? this.addDocuments(message, categorizedAttachments.documents)
+        ? this.addDocuments(message, categorizedAttachments.documents, omissions)
         : Promise.resolve([]),
       categorizedAttachments.videos.length > 0
         ? this.addVideos(message, categorizedAttachments.videos)
@@ -1911,7 +1940,29 @@ class BaseClient {
 
     allFiles.push(...imageFiles);
 
-    const seenFileIds = new Set();
+    if (omissions.length > 0) {
+      if (!options.historical) {
+        throw new AgentAttachmentUnsupportedError(omissions);
+      }
+      logger.warn('[BaseClient] Attachments from history not sent to the model', {
+        messageId: message.messageId,
+        omitted: omissions,
+      });
+      message.documents = [
+        ...(message.documents ?? []),
+        ...omissions.map((file) => ({
+          type: 'text',
+          text: `File "${file.filename}" was attached to this message but was not sent to the model: ${
+            file.reason === 'text_limit'
+              ? 'the file text limit for this request was reached.'
+              : `this model cannot read ${file.type || 'this file type'}.`
+          }`,
+        })),
+      ];
+    }
+
+    const omittedFileIds = new Set(omissions.map((file) => file.file_id).filter(Boolean));
+    const seenFileIds = new Set(omittedFileIds);
     const uniqueFiles = [];
 
     for (const file of allFiles) {
@@ -2068,7 +2119,7 @@ class BaseClient {
 
       const [, processedFiles] = await Promise.all([
         this.addFileContextToMessage(message, contextFiles),
-        this.processAttachments(message, contextFiles),
+        this.processAttachments(message, contextFiles, undefined, { historical: true }),
       ]);
 
       const processedFileIds = new Set(

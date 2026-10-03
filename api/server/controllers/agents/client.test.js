@@ -7027,7 +7027,7 @@ describe('AgentClient - titleConvo', () => {
 
         const files = await client.processAttachments(message, [currentFile]);
 
-        expect(client.addDocuments).toHaveBeenCalledWith(message, [currentFile]);
+        expect(client.addDocuments).toHaveBeenCalledWith(message, [currentFile], []);
         expect(message.documents).toEqual([
           expect.objectContaining({
             type: 'input_file',
@@ -7037,6 +7037,27 @@ describe('AgentClient - titleConvo', () => {
         expect(files).toEqual([currentFile]);
       },
     );
+
+    it('rejects a current-turn archive the user sent to the provider, naming the file', async () => {
+      const currentFile = {
+        ...makeUploadedFile('zip-file', 'bundle.zip', 'application/zip'),
+        llmDeliveryPath: 'provider',
+        metadata: { destinationChosen: true },
+      };
+      client.addDocuments = jest.fn(async () => []);
+
+      await expect(
+        client.processAttachments(
+          { messageId: 'msg-1', text: 'Read this bundle.', isCreatedByUser: true },
+          [currentFile],
+        ),
+      ).rejects.toMatchObject({
+        code: 'AGENT_ATTACHMENT_UNSUPPORTED',
+        status: 415,
+        message: expect.stringContaining('"bundle.zip" (application/zip)'),
+      });
+      expect(client.addDocuments).not.toHaveBeenCalled();
+    });
 
     it.each(['current', 'history', 'history-disabled'])(
       'resolves %s tool-routed text only for an authorized handoff without a reader',
