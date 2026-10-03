@@ -627,6 +627,12 @@ function createAttachedWorkspaceReadFileDef(
 const ATTACHED_CODE_READ_FILE_DEF = createAttachedWorkspaceReadFileDef(false);
 const ATTACHED_SKILL_READ_FILE_DEF = createAttachedWorkspaceReadFileDef(true);
 
+/** Skill-only `read_file` for an attached workspace whose worker does not offer `read_file`. */
+const ATTACHED_SKILL_ONLY_READ_FILE_DEF: LCTool = Object.freeze({
+  ...READ_FILE_DEF,
+  description: `${SKILL_READ_FILE_DESCRIPTION}\n\n${ATTACHED_WORKSPACE_SKILL_FILE_INSTRUCTIONS}`,
+}) as LCTool;
+
 /**
  * The SDK constraint the authoring variant rewrites. Left alone it tells the
  * model that catalog names are the only legal `skillName`, which is false for a
@@ -1220,7 +1226,7 @@ export function registerCodeExecutionTools(
       buildReadFileDef(includeSkillFileInstructions, workspaceTools, workspaceReadFileDefaultLines),
     );
   } else if (includeSkillFileInstructions) {
-    candidates.push(buildReadFileDef(true, false));
+    candidates.push(ATTACHED_SKILL_ONLY_READ_FILE_DEF);
   }
   if (includeBash && supportsWorkspaceOperation('execute_command')) {
     candidates.push(

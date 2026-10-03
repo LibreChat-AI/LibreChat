@@ -774,6 +774,28 @@ describe('registerCodeExecutionTools', () => {
     expect(readFileDescription(false, true)).not.toContain('Skill files are not on');
     expect(readFileDescription(true, false)).not.toContain('Skill files are not on');
   });
+
+  it('keeps the skill-copy warning on the skill-only read_file of a command-only workspace', () => {
+    const result = registerCodeExecutionTools({
+      toolRegistry: undefined,
+      toolDefinitions: [],
+      includeBash: true,
+      includeSkillFileInstructions: true,
+      workspaceTools: true,
+      workspaceOperations: new Set(['execute_command']),
+    });
+    const readFile = result.toolDefinitions.find((def) => def.name === 'read_file');
+
+    expect(result.toolDefinitions.map((def) => def.name).sort()).toEqual([
+      'bash_tool',
+      'read_file',
+    ]);
+    expect(readFile?.description).toContain('skills/{skillName}/...');
+    expect(readFile?.description).toContain(
+      'Skill files are not on the attached machine, so bash_tool cannot run them by path',
+    );
+    expect(readFile?.description).not.toContain('workspace/{relativePath}');
+  });
   const makeRegistry = (): LCToolRegistry => new Map() as unknown as LCToolRegistry;
 
   describe('fresh run (no pre-existing defs or registry entries)', () => {
