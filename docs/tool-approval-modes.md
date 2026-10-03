@@ -44,3 +44,7 @@ stored manual-review requirements remain enforced while endpoint approvals are e
 Older clients can drop these fields when editing agents. Do not enable authoring during a rolling
 upgrade. Before downgrading the server, enforce affected tools through administrator ask/deny
 rules and stop active runs. Do not downgrade into a bypass baseline that ignores agent requirements.
+
+## Personal reset
+
+Shared-agent viewers can reset their consent from agent details or the read-only agent panel. Reset does not require EDIT permission or reveal tool configuration. It changes no agent options. Agent-wide reset fences all tools, including unseen in-flight approvals; the per-tool shield menu still supports targeted reset.

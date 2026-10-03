@@ -3,7 +3,7 @@ import type { ToolApprovalGrantStorage, Agent } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 
 const resetSchema = z
-  .object({ agentId: z.string().min(1).max(256), toolName: z.string().min(1).max(256) })
+  .object({ agentId: z.string().min(1).max(256), toolName: z.string().min(1).max(256).optional() })
   .strict();
 
 interface ResetDependencies {
@@ -41,16 +41,16 @@ export function createResetToolApprovalController({
     try {
       const { agentId, toolName } = parsed.data;
       const agent = await getAgent({ id: agentId });
-      const mode = agent?.tool_options?.[toolName]?.approval_mode;
-      if (
-        !agent ||
-        (mode !== 'chat' && mode !== 'always') ||
-        !(await canAccessAgent(agent, req.user))
-      ) {
+      if (!agent || !(await canAccessAgent(agent, req.user))) {
         res.status(403).json({ code: 'APPROVAL_RESET_FORBIDDEN' });
         return;
       }
-      await storage.resetToolApprovalGrants(req.user.id, parsed.data.agentId, parsed.data.toolName);
+      const mode = toolName == null ? undefined : agent.tool_options?.[toolName]?.approval_mode;
+      if (toolName != null && mode !== 'chat' && mode !== 'always') {
+        res.status(403).json({ code: 'APPROVAL_RESET_FORBIDDEN' });
+        return;
+      }
+      await storage.resetToolApprovalGrants(req.user.id, agentId, toolName);
       res.status(200).json({ reset: true });
     } catch {
       res.status(503).json({ code: 'APPROVAL_RESET_FAILED' });

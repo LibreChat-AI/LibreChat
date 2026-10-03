@@ -193,3 +193,81 @@ test('a real MCP batch learns approval only after review, then reuses it in the 
     await cleanupAgent(page, agent.id);
   }
 });
+
+test('a basic agent viewer can reset personal consent without loading authoring options', async ({
+  page,
+}) => {
+  test.setTimeout(60000);
+  await page.goto(NEW_CHAT_PATH);
+  const token = await getAccessToken(page);
+  const name = uniqueAgentName('Viewer consent reset');
+  const agent = await requestJson<{ id: string }>(page, {
+    path: '/api/agents',
+    method: 'POST',
+    token,
+    body: {
+      name,
+      description: 'Personal consent reset',
+      provider: MOCK_ENDPOINTS[0].label,
+      model: MOCK_ENDPOINTS[0].model,
+      tools: ['remember_fact_mcp_e2e-memory'],
+      tool_options: {
+        'remember_fact_mcp_e2e-memory': {
+          approval_mode: 'always',
+          approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+        },
+      },
+    },
+  });
+  let basicReads = 0;
+  await page.route(`**/api/agents/${agent.id}*`, async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    basicReads++;
+    await route.fulfill({
+      response,
+      json: {
+        id: body.id,
+        _id: body._id,
+        name: body.name,
+        description: body.description,
+        avatar: body.avatar,
+        created_at: body.created_at,
+      },
+    });
+  });
+  try {
+    await page.goto(`/agents/all?q=${encodeURIComponent(name)}`);
+    await page.getByRole('button', { name, exact: true }).click();
+    const dialog = page.getByRole('dialog');
+    const reset = dialog.getByRole('button', {
+      name: 'Reset my remembered approvals',
+      exact: true,
+    });
+    await expect(reset).toBeEnabled();
+    expect(basicReads).toBeGreaterThan(0);
+    await expect(dialog.getByRole('button', { name: 'Configure', exact: true })).toHaveCount(0);
+    await reset.click();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(dialog).toBeVisible();
+    await reset.click();
+    const [response] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith('/api/agents/tools/approvals/reset') &&
+          response.request().method() === 'POST',
+      ),
+      page.getByRole('menuitem', { name: 'Reset my remembered approvals', exact: true }).click(),
+    ]);
+    expect(response.ok()).toBe(true);
+    expect(response.request().postDataJSON()).toEqual({ agentId: agent.id });
+    await expect(
+      page.getByText('Your remembered approvals were reset.', { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole('menu')).toHaveCount(0);
+  } finally {
+    await cleanupAgent(page, agent.id);
+  }
+});

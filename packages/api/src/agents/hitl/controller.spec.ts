@@ -1,6 +1,6 @@
 import express from 'express';
 import request from 'supertest';
-import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
+import type { ToolApprovalGrantStorage, Agent } from 'librechat-data-provider';
 import { createResetToolApprovalController } from './controller';
 
 function fixture(user?: { id: string }) {
@@ -11,11 +11,12 @@ function fixture(user?: { id: string }) {
   };
   const app = express();
   app.use(express.json());
-  const getAgent = jest.fn(async () => ({
-    id: 'agent-a',
-    tools: ['query_mcp_db'],
-    tool_options: { query_mcp_db: { approval_mode: 'chat' as const } },
-  }));
+  const getAgent = jest.fn(
+    async (): Promise<Pick<Agent, 'id' | 'tool_options'>> => ({
+      id: 'agent-a',
+      tool_options: { query_mcp_db: { approval_mode: 'chat' as const } },
+    }),
+  );
   const canAccessAgent = jest.fn(async () => true);
   const controller = createResetToolApprovalController({ storage, getAgent, canAccessAgent });
   app.post('/reset', (req, res) => controller(Object.assign(req, { user }), res));
@@ -59,4 +60,19 @@ test('unknown tools and inaccessible agents cannot create reset fences', async (
   f.canAccessAgent.mockResolvedValue(false);
   await request(f.app).post('/reset').send(reset).expect(403);
   expect(f.storage.resetToolApprovalGrants).not.toHaveBeenCalled();
+});
+
+test('a VIEW-only caller resets all personal learned modes without requesting authoring data', async () => {
+  const f = fixture({ id: 'viewer-a' });
+  f.getAgent.mockResolvedValueOnce({ id: 'agent-a' });
+  await request(f.app).post('/reset').send({ agentId: 'agent-a' }).expect(200, { reset: true });
+  expect(f.canAccessAgent).toHaveBeenCalled();
+  expect(f.storage.resetToolApprovalGrants).toHaveBeenCalledWith('viewer-a', 'agent-a', undefined);
+  await request(f.app)
+    .post('/reset')
+    .send({ agentId: 'agent-a', tenantId: 'another-tenant' })
+    .expect(400);
+  f.canAccessAgent.mockResolvedValue(false);
+  await request(f.app).post('/reset').send({ agentId: 'agent-a' }).expect(403);
+  expect(f.storage.resetToolApprovalGrants).toHaveBeenCalledTimes(1);
 });

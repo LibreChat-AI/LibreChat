@@ -142,3 +142,74 @@ test('OAuth consent is generation-bound without hashing renewable token bytes', 
   expect(JSON.stringify(changed)).not.toContain('synthetic-refreshed-token');
   await mongoose.models.Token.deleteOne({ _id: row._id });
 });
+
+test('agent-wide personal reset fences every learned tool without touching another user or agent', async () => {
+  const persistent: ToolApprovalGrantBinding = {
+    ...grant,
+    toolName: 'other_mcp_db',
+    instanceName: 'other_mcp_db',
+    binding: 'digest-b',
+    scope: 'always',
+  };
+  const anotherAgent = { ...grant, agentId: 'agent-b', binding: 'digest-agent-b' };
+  await storage.rememberToolApprovalGrants(scope, [grant, persistent, anotherAgent]);
+  await storage.rememberToolApprovalGrants({ ...scope, userId: 'user-b' }, [grant]);
+  await storage.resetToolApprovalGrants(scope.userId, grant.agentId);
+  // A completed in-flight approval still carries the pre-reset epoch.
+  await storage.rememberToolApprovalGrants(scope, [grant, persistent]);
+  expect(
+    (await storage.getToolApprovalGrants(scope, [grant, persistent])).map(
+      (status) => status.approved,
+    ),
+  ).toEqual([false, false]);
+  expect((await storage.getToolApprovalGrants(scope, [anotherAgent]))[0].approved).toBe(true);
+  expect(
+    (await storage.getToolApprovalGrants({ ...scope, userId: 'user-b' }, [grant]))[0].approved,
+  ).toBe(true);
+});
+
+test('agent-wide reset before the first grant fences every unseen in-flight tool', async () => {
+  const pending: ToolApprovalGrantBinding = {
+    ...grant,
+    toolName: 'pending_mcp_db',
+    instanceName: 'pending_mcp_db',
+    binding: 'pending-binding',
+  };
+  await storage.resetToolApprovalGrants(scope.userId, grant.agentId);
+  await storage.rememberToolApprovalGrants(scope, [grant, pending]);
+  expect(
+    (await storage.getToolApprovalGrants(scope, [grant, pending])).map((status) => status.approved),
+  ).toEqual([false, false]);
+});
+
+test('agent-wide reset cannot cross tenant scope for the same user and tools', async () => {
+  const other: ToolApprovalGrantBinding = {
+    ...grant,
+    toolName: 'other_mcp_db',
+    instanceName: 'other_mcp_db',
+    binding: 'digest-b',
+  };
+  const a = { ...scope, tenantId: 'tenant-a' };
+  const b = { ...scope, tenantId: 'tenant-b' };
+  for (const current of [a, b])
+    await tenantStorage.run({ tenantId: current.tenantId }, () =>
+      storage.rememberToolApprovalGrants(current, [grant, other]),
+    );
+  await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+    storage.resetToolApprovalGrants(scope.userId, grant.agentId),
+  );
+  expect(
+    (
+      await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        storage.getToolApprovalGrants(a, [grant, other]),
+      )
+    ).map((status) => status.approved),
+  ).toEqual([false, false]);
+  expect(
+    (
+      await tenantStorage.run({ tenantId: 'tenant-b' }, () =>
+        storage.getToolApprovalGrants(b, [grant, other]),
+      )
+    ).map((status) => status.approved),
+  ).toEqual([true, true]);
+});

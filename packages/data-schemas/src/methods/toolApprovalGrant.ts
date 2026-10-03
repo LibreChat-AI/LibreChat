@@ -11,6 +11,9 @@ interface StoredGrant {
   oauthEpoch?: string | null;
 }
 
+/** Canonical MCP tool keys include their source; `*` is reserved for the agent-wide fence. */
+const AGENT_FENCE_TOOL = '*';
+
 export function createToolApprovalGrantMethods(
   mongoose: typeof import('mongoose'),
 ): ToolApprovalGrantStorage {
@@ -26,6 +29,11 @@ export function createToolApprovalGrantMethods(
             conversationId: { $in: ['', scope.conversationId] },
           },
           ...bindings.map(({ agentId, toolName }) => ({ agentId, toolName, conversationId: '' })),
+          {
+            agentId: { $in: [...new Set(bindings.map((grant) => grant.agentId))] },
+            toolName: AGENT_FENCE_TOOL,
+            conversationId: '',
+          },
         ],
       })
         .select(
@@ -83,16 +91,25 @@ export function createToolApprovalGrantMethods(
           values.size === 1 && typeof value === 'string' && value.length > 0 ? value : undefined,
         );
       }
+      const agentRevocations = new Map<string, string | undefined>();
       const revocations = new Map<string, string | undefined>();
       const granted = new Map<string, StoredGrant>();
       const key = (agentId: string, toolName: string) => JSON.stringify([agentId, toolName]);
       for (const record of records) {
-        if (record.conversationId === '')
-          revocations.set(key(record.agentId, record.toolName), record.revocation);
+        if (record.conversationId === '') {
+          if (record.toolName === AGENT_FENCE_TOOL)
+            agentRevocations.set(record.agentId, record.revocation);
+          else revocations.set(key(record.agentId, record.toolName), record.revocation);
+        }
         if (record.binding) granted.set(record.binding, record);
       }
       return bindings.map((grant) => {
-        const revocation = revocations.get(key(grant.agentId, grant.toolName));
+        const toolRevocation = revocations.get(key(grant.agentId, grant.toolName));
+        const agentRevocation = agentRevocations.get(grant.agentId);
+        const revocation =
+          agentRevocation == null
+            ? toolRevocation
+            : JSON.stringify([agentRevocation, toolRevocation ?? '']);
         const record = granted.get(grant.binding);
         const oauthEpoch = grant.serverName ? epochs.get(grant.serverName) : null;
         return {
@@ -143,7 +160,12 @@ export function createToolApprovalGrantMethods(
       );
     },
     async resetToolApprovalGrants(userId, agentId, toolName) {
-      const filter = { user: userId, agentId, toolName, conversationId: '' };
+      const filter = {
+        user: userId,
+        agentId,
+        toolName: toolName ?? AGENT_FENCE_TOOL,
+        conversationId: '',
+      };
       await mongoose.models.ToolApprovalGrant.updateOne(
         filter,
         {
