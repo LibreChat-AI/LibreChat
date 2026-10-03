@@ -34,6 +34,7 @@ jest.mock('~/hooks', () => ({
   useAddedResponse: () => ({}),
   useAdaptiveSSE: jest.fn(),
   useResumeOnLoad: jest.fn(),
+  useBranchOnLoad: jest.fn(),
   useQueueDrain: jest.fn(),
   useQueuedTurnReveal: jest.fn(),
   useScrollbarGutterSeed: jest.fn(),

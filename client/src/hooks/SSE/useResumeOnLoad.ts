@@ -20,7 +20,7 @@ import {
   mergeRestagedQuotes,
   applyPendingAction,
   carriedSteerContext,
-  getBranchSiblingIndexesForTarget,
+  restoreBranchForTarget,
   hydrateFileDeliveryMetadata,
   isCompactionAnchorProjection,
 } from '~/utils';
@@ -338,16 +338,14 @@ export default function useResumeOnLoad(
   const consumedHandoffGenerationRef = useRef<string | null>(null);
   const restoreResumeBranch = useCallback(
     (resumeState: Agents.ResumeState, messages: TMessage[], activeConversationId: string) => {
-      const targetMessageId = getResumeBranchTargetMessageId(resumeState, messages);
-      const branchIndexes = getBranchSiblingIndexesForTarget(
+      restoreBranchForTarget(
         messages,
-        targetMessageId,
+        getResumeBranchTargetMessageId(resumeState, messages),
         activeConversationId,
+        (parentMessageId, siblingIdx) => {
+          jotaiStore.set(siblingIdxFamily(siblingKey(parentMessageId)), siblingIdx);
+        },
       );
-
-      for (const { parentMessageId, siblingIdx } of branchIndexes) {
-        jotaiStore.set(siblingIdxFamily(siblingKey(parentMessageId)), siblingIdx);
-      }
     },
     [jotaiStore],
   );
