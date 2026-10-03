@@ -241,6 +241,7 @@ export function createAgentToolApprovalSession({
     approved: boolean;
     revocation?: string;
     oauthEpoch?: string | null;
+    consentBinding?: string | null;
     available?: boolean;
   };
   let pending: Array<{ grant: ToolApprovalGrantBinding; resolve: (status: GrantStatus) => void }> =
@@ -543,7 +544,9 @@ export function createAgentToolApprovalSession({
             current.available !== false &&
             current.oauthEpoch !== undefined &&
             current.oauthEpoch === grant.oauthEpoch &&
-            current.revocation === grant.revocation
+            current.revocation === grant.revocation &&
+            ((current.consentBinding ?? null) === (grant.consentBinding ?? null) ||
+              current.consentBinding === grant.binding)
           ) {
             await storage.rememberToolApprovalGrants(scope, [grant]);
           }
@@ -571,6 +574,7 @@ export function createAgentToolApprovalSession({
         target.executionScope = executionScope;
         target.oauthEpoch = status?.oauthEpoch;
         target.revocation = status?.revocation;
+        target.consentBinding = status?.consentBinding;
       }
       const reviewedBinding = reviewedBindings.get(key);
       if (

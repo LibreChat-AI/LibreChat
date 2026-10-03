@@ -886,3 +886,41 @@ test('registry reinspection metadata does not change learned tool authority', ()
     buildMCPToolApprovalBinding('db', { ...selected, url: 'https://different.example.test' }),
   ).not.toBe(first);
 });
+
+test('a late successful execution cannot learn over a replacement consent binding', async () => {
+  const source = agent('always');
+  const storage = store();
+  let consentBinding: string | null = null;
+  jest.spyOn(storage, 'getToolApprovalGrants').mockImplementation(async (_scope, grants) =>
+    grants.map((candidate) => ({
+      binding: candidate.binding,
+      approved: false,
+      revocation: 'epoch-a',
+      oauthEpoch: null,
+      consentBinding,
+    })),
+  );
+  const first = createAgentToolApprovalSession({ agents: [source], scope, storage });
+  await first.hook(input(), new AbortController().signal);
+  const bindings = first.bindingsFor(
+    buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+  );
+  expect(bindings['call-a'].consentBinding).toBeNull();
+  const resumed = createAgentToolApprovalSession({
+    agents: [source],
+    scope,
+    storage,
+    reviewed: { bindings, decisions: [{ tool_call_id: 'call-a', decision: 'approve' }] },
+  });
+  await resumed.hook(input(), new AbortController().signal);
+  await resumed.validateExecution(source.toolDefinitions![0], {
+    agentId: source.id,
+    toolCallId: 'call-a',
+  });
+  consentBinding = 'replacement-authority';
+  await resumed.rememberHook(
+    { ...input(), hook_event_name: 'PostToolUse', toolOutput: 'successful old call' },
+    new AbortController().signal,
+  );
+  expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+});

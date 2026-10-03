@@ -333,7 +333,11 @@ for (const mode of ['chat', 'always'] as const) {
     });
     try {
       await storage.rememberToolApprovalGrants(current, [original]);
-      const changed = { ...original, binding: 'changed-tool-schema' };
+      const changed = {
+        ...original,
+        binding: 'changed-tool-schema',
+        consentBinding: original.binding,
+      };
       await storage.rememberToolApprovalGrants(current, [changed]);
       expect((await storage.getToolApprovalGrants(current, [changed]))[0].approved).toBe(true);
       expect((await storage.getToolApprovalGrants(current, [original]))[0].approved).toBe(false);
@@ -388,4 +392,72 @@ for (const mode of ['chat', 'always'] as const) {
       },
     );
   }
+}
+
+for (const mode of ['chat', 'always'] as const) {
+  test.each(['connection', 'schema', 'revision'])(
+    `${mode} late completion cannot replace renewed %s consent`,
+    async (change) => {
+      const original = { ...grant, scope: mode };
+      await storage.rememberToolApprovalGrants(scope, [original]);
+      const snapshot = (await storage.getToolApprovalGrants(scope, [original]))[0];
+      const oldExecution = { ...original, consentBinding: snapshot.consentBinding };
+      const replacement = {
+        ...original,
+        binding: `replacement-${change}`,
+        consentBinding: snapshot.consentBinding,
+      };
+      await storage.rememberToolApprovalGrants(scope, [replacement]);
+      await storage.rememberToolApprovalGrants(scope, [oldExecution]);
+      expect(
+        (await storage.getToolApprovalGrants(scope, [original, replacement])).map(
+          (status) => status.approved,
+        ),
+      ).toEqual([false, true]);
+    },
+  );
+
+  test.each([false, true])(
+    `${mode} binding replacement between read and write wins; first grant=%s`,
+    async (firstGrant) => {
+      const original = { ...grant, scope: mode };
+      if (!firstGrant) await storage.rememberToolApprovalGrants(scope, [original]);
+      const snapshot = (await storage.getToolApprovalGrants(scope, [original]))[0];
+      const captured = { ...original, consentBinding: snapshot.consentBinding };
+      const pause = suspendGrantWrite();
+      const oldWrite = storage.rememberToolApprovalGrants(scope, [captured]);
+      await pause.started;
+      try {
+        const replacement = { ...captured, binding: 'new-current-authority' };
+        await storage.rememberToolApprovalGrants(scope, [replacement]);
+        pause.resume();
+        await oldWrite;
+        expect(
+          (await storage.getToolApprovalGrants(scope, [original, replacement])).map(
+            (status) => status.approved,
+          ),
+        ).toEqual([false, true]);
+      } finally {
+        pause.resume();
+        await oldWrite;
+        pause.restore();
+      }
+    },
+  );
+
+  test(`${mode} reviewed replacement can supersede a previous binding and parallel repeats remain idempotent`, async () => {
+    const original = { ...grant, scope: mode };
+    await storage.rememberToolApprovalGrants(scope, [original]);
+    const snapshot = (await storage.getToolApprovalGrants(scope, [original]))[0];
+    const replacement = {
+      ...original,
+      binding: 'reviewed-new-authority',
+      consentBinding: snapshot.consentBinding,
+    };
+    await Promise.all(
+      Array.from({ length: 4 }, () => storage.rememberToolApprovalGrants(scope, [replacement])),
+    );
+    expect((await storage.getToolApprovalGrants(scope, [replacement]))[0].approved).toBe(true);
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(1);
+  });
 }

@@ -161,6 +161,7 @@ export function createToolApprovalGrantMethods(
           binding: grant.binding,
           revocation,
           oauthEpoch,
+          consentBinding: previous?.binding ?? null,
           approved:
             oauthEpoch !== undefined &&
             record != null &&
@@ -187,7 +188,9 @@ export function createToolApprovalGrantMethods(
             !snapshot ||
             snapshot.status.revocation !== grant.revocation ||
             snapshot.status.oauthEpoch === undefined ||
-            snapshot.status.oauthEpoch !== (grant.oauthEpoch ?? null)
+            snapshot.status.oauthEpoch !== (grant.oauthEpoch ?? null) ||
+            (snapshot.status.consentBinding !== (grant.consentBinding ?? null) &&
+              snapshot.status.consentBinding !== grant.binding)
           )
             return;
           const generations = epochGenerations(grant.revocation);
@@ -202,6 +205,8 @@ export function createToolApprovalGrantMethods(
             conversationId: grant.scope === 'chat' ? scope.conversationId : '',
             // A replacement account's successful write wins even if this read preceded reauthorization.
             oauthEpoch: snapshot.previousOAuthEpoch,
+            // Idempotent same-authority completions cannot overwrite a replacement binding.
+            binding: { $in: [grant.consentBinding ?? null, grant.binding] },
             $and: [
               {
                 $or: [

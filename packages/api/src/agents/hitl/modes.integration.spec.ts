@@ -1675,3 +1675,154 @@ test.each([false, true])(
     expect(executions).toBe(2);
   },
 );
+
+for (const mode of ['chat', 'always'] as const) {
+  for (const eventDriven of [false, true]) {
+    test.each(['connection', 'schema', 'revision'])(
+      `${mode} superseded %s completion preserves replacement consent; event-driven=${eventDriven}`,
+      async (change) => {
+        let release!: () => void;
+        let markStarted!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const started = new Promise<void>((resolve) => {
+          markStarted = resolve;
+        });
+        const oldTool = bindToolApprovalIdentity(
+          bindToolApproval(
+            Object.assign(
+              createMCPStructuredTool(
+                async () => {
+                  markStarted();
+                  await gate;
+                  return formatToolContent(
+                    { content: [{ type: 'text', text: 'old completed' }] },
+                    'openai',
+                  );
+                },
+                {
+                  name,
+                  description: 'Old approved call',
+                  schema: fixtureSchema,
+                  responseFormat: 'content_and_artifact',
+                },
+              ),
+              { schema: fixtureSchema },
+            ),
+            'source-one',
+          ),
+          'echo',
+          { type: 'object' },
+        );
+        const original: AgentApprovalSource = {
+          id: 'agent-a',
+          tool_options: {
+            [name]: {
+              approval_mode: mode,
+              approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+            },
+          },
+          toolDefinitions: [definition()],
+        };
+        const parameters =
+          change === 'schema' ? { type: 'object', description: 'new schema' } : { type: 'object' };
+        const sourceBinding = change === 'connection' ? 'source-two' : 'source-one';
+        const changed: AgentApprovalSource = {
+          ...original,
+          tool_options: {
+            [name]: {
+              ...original.tool_options![name],
+              approval_revision:
+                change === 'revision'
+                  ? '2782f8d4-f52b-4a37-b65e-a60a5b5d4e5b'
+                  : original.tool_options![name].approval_revision,
+            },
+          },
+          toolDefinitions: [
+            bindToolApprovalIdentity(
+              bindToolApproval({ name, serverName: 'fixture', parameters }, sourceBinding),
+              'echo',
+              parameters,
+            ),
+          ],
+        };
+        const newTool = bindToolApprovalIdentity(createProbe(sourceBinding), 'echo', parameters);
+        const oldChat = `old-authority-${mode}-${eventDriven}-${change}`;
+        const newChat = mode === 'chat' ? oldChat : `new-authority-${eventDriven}-${change}`;
+        const oldSaver = new MemorySaver();
+        const newSaver = new MemorySaver();
+        let oldCompletion: Promise<void> | undefined;
+        try {
+          const first = await build({
+            source: original,
+            chat: oldChat,
+            saver: oldSaver,
+            eventDriven,
+            executionTool: oldTool,
+            callId: 'old-call',
+          });
+          await first.processStream({ messages: [new HumanMessage('old')] }, config(oldChat));
+          const oldBindings = captureRunToolApprovalBindings(
+            first,
+            first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+          )!;
+          const old = await build({
+            source: original,
+            chat: oldChat,
+            saver: oldSaver,
+            eventDriven,
+            executionTool: oldTool,
+            reviewed: {
+              bindings: oldBindings,
+              decisions: [{ tool_call_id: 'old-call', decision: 'approve' }],
+            },
+          });
+          oldCompletion = old
+            .resume({ 'old-call': { type: 'approve' } }, config(oldChat))
+            .then(() => {});
+          await started;
+          const second = await build({
+            source: changed,
+            chat: newChat,
+            saver: newSaver,
+            eventDriven,
+            executionTool: newTool,
+            callId: 'new-call',
+          });
+          await second.processStream({ messages: [new HumanMessage('new')] }, config(newChat));
+          const newBindings = captureRunToolApprovalBindings(
+            second,
+            second.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+          )!;
+          const newer = await build({
+            source: changed,
+            chat: newChat,
+            saver: newSaver,
+            eventDriven,
+            executionTool: newTool,
+            reviewed: {
+              bindings: newBindings,
+              decisions: [{ tool_call_id: 'new-call', decision: 'approve' }],
+            },
+          });
+          await newer.resume({ 'new-call': { type: 'approve' } }, config(newChat));
+          const scope = { userId: '652000000000000000000001', conversationId: newChat };
+          const oldGrant = resolveAgentToolGrantBinding(original, name, scope)!;
+          const newGrant = resolveAgentToolGrantBinding(changed, name, scope)!;
+          expect((await storage.getToolApprovalGrants(scope, [newGrant]))[0].approved).toBe(true);
+          release();
+          await oldCompletion;
+          expect(
+            (await storage.getToolApprovalGrants(scope, [oldGrant, newGrant])).map(
+              (status) => status.approved,
+            ),
+          ).toEqual([false, true]);
+        } finally {
+          release();
+          await oldCompletion;
+        }
+      },
+    );
+  }
+}
