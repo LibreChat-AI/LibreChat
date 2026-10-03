@@ -9,6 +9,7 @@ import {
 } from './modes';
 import { bindToolApproval, bindToolApprovalIdentity } from '~/tools/approval';
 import { buildToolApprovalPayload, toClientPendingAction } from './policy';
+import { bindToolReviewAuthority } from '~/tools/approval';
 
 const scope = { userId: 'user-a', tenantId: 'tenant-a', conversationId: 'chat-a' };
 const name = 'query_mcp_db';
@@ -450,7 +451,10 @@ test('an automatic mode cannot bypass a missing SDK policy evaluation', async ()
 test('non-rememberable review is agent/tool bound and single-use', async () => {
   const source = agent('chat');
   const definition = bindToolApprovalIdentity(
-    { name, serverName: 'db', parameters: { type: 'object' } },
+    bindToolReviewAuthority(
+      { name, serverName: 'db', parameters: { type: 'object' } },
+      'review-only-target',
+    ),
     'query',
     { type: 'object' },
   );
@@ -581,6 +585,14 @@ test('concurrent self-spawns retain separate witnesses and paused provenance', a
       ),
     ),
   );
+
+  const payload = {
+    ...buildToolApprovalPayload([{ name, tool_call_id: 'call_0', arguments: {} }]),
+    subagent: { agent_id: source.id, run_id: 'child-b' },
+  };
+  expect(session.bindingsFor(payload)['call_0'].executionScope).toBe('child-b');
+  const graphPayload = { ...payload, subagent: { agent_id: 'synthetic-team', run_id: 'child-b' } };
+  expect(session.bindingsFor(graphPayload)['call_0'].agentId).toBe(source.id);
   await expect(
     Promise.all(
       ['child-a', 'child-b'].map((executionScope) =>
@@ -592,13 +604,6 @@ test('concurrent self-spawns retain separate witnesses and paused provenance', a
       ),
     ),
   ).resolves.toEqual([undefined, undefined]);
-  const payload = {
-    ...buildToolApprovalPayload([{ name, tool_call_id: 'call_0', arguments: {} }]),
-    subagent: { agent_id: source.id, run_id: 'child-b' },
-  };
-  expect(session.bindingsFor(payload)['call_0'].executionScope).toBe('child-b');
-  const graphPayload = { ...payload, subagent: { agent_id: 'synthetic-team', run_id: 'child-b' } };
-  expect(session.bindingsFor(graphPayload)['call_0'].agentId).toBe(source.id);
 });
 
 test('rewritten arguments never select a colliding sibling’s original proposal', async () => {
@@ -618,4 +623,61 @@ test('rewritten arguments never select a colliding sibling’s original proposal
   expect(session.bindingsFor(payload)).toEqual({});
   const attributed = { ...payload, subagent: { agent_id: 'agent-a' } };
   expect(session.bindingsFor(attributed)['call_0']?.agentId).toBe('agent-a');
+});
+
+test('actual background dispatch cannot teach from a synthetic success handle', async () => {
+  const source = agent('chat');
+  const storage = store();
+  const binding = resolveAgentToolGrantBinding(source, name, scope)!;
+  const session = createAgentToolApprovalSession({
+    agents: [source],
+    scope,
+    storage,
+    reviewed: {
+      bindings: { 'call-a': binding },
+      decisions: [{ tool_call_id: 'call-a', decision: 'approve' }],
+    },
+  });
+  await session.hook(input(), new AbortController().signal);
+  session.noteDispatch?.({ agentId: source.id, toolCallId: 'call-a', background: true });
+  await session.validateExecution(source.toolDefinitions![0], {
+    agentId: source.id,
+    toolCallId: 'call-a',
+    background: true,
+  });
+  await session.rememberHook(
+    { ...input(), hook_event_name: 'PostToolUse', toolOutput: 'Task launched' },
+    new AbortController().signal,
+  );
+  expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+  session.finishDispatch?.({ agentId: source.id, toolCallId: 'call-a', background: true });
+});
+
+test('synthetic responses retire call candidates at the settled batch boundary', async () => {
+  const a = agent('ask', 'agent-a');
+  const b = agent('chat', 'agent-b');
+  const session = createAgentToolApprovalSession({ agents: [a, b], scope, storage: store() });
+  await session.hook(input(a.id, 'call_0'), new AbortController().signal);
+  await session.settleBatchHook(
+    {
+      hook_event_name: 'PostToolBatch',
+      runId: 'run-a',
+      executingAgentId: a.id,
+      entries: [
+        {
+          toolName: name,
+          toolUseId: 'call_0',
+          toolInput: {},
+          status: 'success',
+          toolOutput: 'synthetic',
+        },
+      ],
+    },
+    new AbortController().signal,
+  );
+  await session.hook(input(b.id, 'call_0'), new AbortController().signal);
+  expect(
+    session.bindingsFor(buildToolApprovalPayload([{ name, tool_call_id: 'call_0', arguments: {} }]))
+      .call_0?.agentId,
+  ).toBe(b.id);
 });

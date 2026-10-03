@@ -14,6 +14,7 @@ import type { ToolApprovalExecution } from '~/tools/approval';
 import type { ParsedServerConfig } from '~/mcp/types';
 import { bindToolApproval, getToolApprovalBinding, getToolApprovalName } from '~/tools/approval';
 import { withToolApprovalExecution, getToolApprovalIdentity } from '~/tools/approval';
+import { bindToolReviewAuthority, getToolReviewAuthority } from '~/tools/approval';
 import { getToolApprovalExecutionScope } from '~/tools/approval';
 import { requiresEphemeralUserConnection } from '~/mcp/utils';
 import { mapToolApprovalPolicy } from './policy';
@@ -48,9 +49,12 @@ export function buildMCPToolApprovalBinding(
 export function attachMCPToolApprovalBindings(
   definitions: AgentApprovalDefinition[],
   bindings: ReadonlyMap<string, string | undefined>,
+  reviewAuthorities?: ReadonlyMap<string, string | undefined>,
 ): void {
   for (const definition of definitions) {
-    if (definition.serverName) bindToolApproval(definition, bindings.get(definition.serverName));
+    if (!definition.serverName) continue;
+    bindToolApproval(definition, bindings.get(definition.serverName));
+    bindToolReviewAuthority(definition, reviewAuthorities?.get(definition.serverName));
   }
 }
 
@@ -112,7 +116,7 @@ function resolveToolReviewBinding(
   const grant = resolveAgentToolGrantBinding(agent, toolName, scope);
   if (grant) return grant;
   const definition = agent.toolDefinitions?.find((tool) => tool.name === toolName);
-  if (!definition) return undefined;
+  if (!definition || !getToolReviewAuthority(definition)) return undefined;
   return {
     instanceName: toolName,
     agentId: agent.id,
@@ -125,6 +129,7 @@ function resolveToolReviewBinding(
       agentId: agent.id,
       toolName,
       identity: getToolApprovalIdentity(definition),
+      authority: getToolReviewAuthority(definition),
       mode: agent.tool_options?.[toolName]?.approval_mode,
       revision: agent.tool_options?.[toolName]?.approval_revision,
     }),
@@ -134,6 +139,7 @@ function resolveToolReviewBinding(
 export interface AgentToolApprovalSession extends ToolApprovalExecution {
   hook: HookCallback<'PreToolUse'>;
   rememberHook: HookCallback<'PostToolUse'>;
+  settleBatchHook: HookCallback<'PostToolBatch'>;
   addAgent: (agent: AgentApprovalSource) => void;
   unavailableFor: (callId: string, toolName: string) => ToolApprovalGrantBinding['unavailable'];
   bindingsFor: (
@@ -181,15 +187,40 @@ export function createAgentToolApprovalSession({
   const callOwners = new Map<string, Set<string>>();
   const proposals = new Map<
     string,
-    { agentId: string; toolName: string; executionScope?: string }
+    {
+      agentId: string;
+      callId: string;
+      toolName: string;
+      executionScope?: string;
+      dispatched: boolean;
+    }
   >();
   const callCandidates = (callId: string, toolName: string): string[] =>
     Array.from(callOwners.get(callId) ?? []).filter(
-      (key) => proposals.get(key)?.toolName === toolName,
+      (key) => proposals.get(key)?.toolName === toolName && proposals.get(key)?.dispatched !== true,
     );
   const ready = new Map<string, ToolApprovalGrantBinding>();
   const executed = new Set<string>();
   const policyChecks = new Map<string, { agentId: string; toolName: string }>();
+  const dispositions = new Map<string, boolean>();
+  const retireCall = (key: string): void => {
+    const proposal = proposals.get(key);
+    if (proposal) {
+      const candidates = callOwners.get(proposal.callId);
+      candidates?.delete(key);
+      if (candidates?.size === 0) callOwners.delete(proposal.callId);
+    }
+    proposals.delete(key);
+    calls.delete(key);
+    unavailable.delete(key);
+    ready.delete(key);
+    executed.delete(key);
+    policyChecks.delete(key);
+    dispositions.delete(key);
+    reviewedBindings.delete(key);
+    approvedDecisions.delete(key);
+    permittedDecisions.delete(key);
+  };
   type GrantStatus = {
     binding: string;
     approved: boolean;
@@ -251,6 +282,35 @@ export function createAgentToolApprovalSession({
       const candidates = callCandidates(callId, toolName);
       return candidates.length === 1 ? unavailable.get(candidates[0]) : undefined;
     },
+    noteDispatch(invocation) {
+      if (!invocation.toolCallId) return;
+      const key = approvalCallKey(
+        invocation.agentId,
+        invocation.toolCallId,
+        invocation.executionScope,
+      );
+      const proposal = proposals.get(key);
+      if (proposal) proposal.dispatched = true;
+      dispositions.set(key, invocation.background === true);
+      if (invocation.background === true) {
+        ready.delete(key);
+        executed.delete(key);
+      }
+    },
+    finishDispatch(invocation) {
+      if (invocation.background !== true || !invocation.toolCallId) return;
+      retireCall(
+        approvalCallKey(invocation.agentId, invocation.toolCallId, invocation.executionScope),
+      );
+    },
+    async settleBatchHook(input) {
+      const executionScope = getToolApprovalExecutionScope(input.executionContext);
+      for (const entry of input.entries) {
+        const key = approvalCallKey(input.executingAgentId, entry.toolUseId, executionScope);
+        if (dispositions.get(key) !== true) retireCall(key);
+      }
+      return {};
+    },
     bindingsFor(payload) {
       const result: Record<string, ToolApprovalGrantBinding> = {};
       for (const request of payload.action_requests) {
@@ -271,7 +331,13 @@ export function createAgentToolApprovalSession({
         // The SDK binds finalized arguments. Owner/lineage must still identify exactly one call.
         if (candidates.length !== 1) continue;
         const binding = calls.get(candidates[0]);
-        if (binding?.instanceName === request.name) result[request.tool_call_id] = binding;
+        if (binding?.instanceName !== request.name) continue;
+        const argumentsValue =
+          typeof request.arguments === 'object' ? request.arguments : undefined;
+        result[request.tool_call_id] =
+          argumentsValue?.run_in_background === true
+            ? { ...binding, canRemember: false, unavailable: 'background' }
+            : binding;
       }
       return result;
     },
@@ -294,15 +360,24 @@ export function createAgentToolApprovalSession({
         throw new Error('Tool policy could not be verified. Run this tool in the foreground.');
       }
       policyChecks.delete(key);
+      const proposal = proposals.get(key);
+      if (proposal) proposal.dispatched = true;
+      dispositions.set(key, invocation.background === true);
+      if (invocation.background === true) {
+        ready.delete(key);
+        executed.delete(key);
+      }
       const initialized = owner?.toolDefinitions?.find(
         (definition) => definition.name === tool.name,
       );
       const expectedIdentity = initialized && getToolApprovalIdentity(initialized);
       const actualIdentity = getToolApprovalIdentity(tool);
       const expectedSource = initialized && getToolApprovalBinding(initialized);
+      const expectedAuthority = initialized && getToolReviewAuthority(initialized);
       if (
         (expectedIdentity != null && actualIdentity !== expectedIdentity) ||
-        (expectedSource != null && getToolApprovalBinding(tool) !== expectedSource)
+        (expectedSource != null && getToolApprovalBinding(tool) !== expectedSource) ||
+        (expectedAuthority != null && getToolReviewAuthority(tool) !== expectedAuthority)
       ) {
         throw new Error('The advertised MCP tool or connection changed. Retry the run.');
       }
@@ -324,7 +399,8 @@ export function createAgentToolApprovalSession({
       const expected = owner && scope && resolveAgentToolGrantBinding(owner, tool.name, scope);
       if (!expected) {
         // Unresolvable connections cannot learn consent. Only a reviewed SDK call may execute.
-        if (callId && calls.has(key) && permittedDecisions.has(key)) {
+        const reviewTarget = owner && scope && resolveToolReviewBinding(owner, tool.name, scope);
+        if (callId && reviewTarget && calls.has(key) && permittedDecisions.has(key)) {
           permittedDecisions.delete(key);
           return;
         }
@@ -338,7 +414,12 @@ export function createAgentToolApprovalSession({
       const manual = reviewedBindings.get(key);
       if (manual && permittedDecisions.has(key) && manual.binding === actual.binding) {
         permittedDecisions.delete(key);
-        if (manual.canRemember === true && approvedDecisions.has(key)) executed.add(key);
+        if (
+          invocation.background !== true &&
+          manual.canRemember === true &&
+          approvedDecisions.has(key)
+        )
+          executed.add(key);
         return;
       }
       if (expected.scope === 'once' || baseline?.decision === 'ask') {
@@ -356,23 +437,25 @@ export function createAgentToolApprovalSession({
         input.toolUseId,
         getToolApprovalExecutionScope(input.executionContext),
       );
+      // A launch handle is not the detached invocation's successful completion.
+      if (dispositions.get(key) === true) return {};
       const grant = ready.get(key);
-      if (
-        !grant ||
-        !executed.has(key) ||
-        grant.canRemember !== true ||
-        grant.agentId !== input.executingAgentId ||
-        grant.instanceName !== input.toolName ||
-        !storage ||
-        !scope
-      )
-        return {};
-      ready.delete(key);
-      executed.delete(key);
       try {
-        await storage.rememberToolApprovalGrants(scope, [grant]);
+        if (
+          grant &&
+          executed.has(key) &&
+          grant.canRemember === true &&
+          grant.agentId === input.executingAgentId &&
+          grant.instanceName === input.toolName &&
+          storage &&
+          scope
+        ) {
+          await storage.rememberToolApprovalGrants(scope, [grant]);
+        }
       } catch {
         logger.warn('[Tool approvals] Could not remember approval; future calls require review.');
+      } finally {
+        retireCall(key);
       }
       return {};
     },
@@ -410,6 +493,8 @@ export function createAgentToolApprovalSession({
         callOwners.set(input.toolUseId, candidates);
         proposals.set(key, {
           agentId: agent.id,
+          callId: input.toolUseId,
+          dispatched: false,
           toolName: input.toolName,
           executionScope,
         });

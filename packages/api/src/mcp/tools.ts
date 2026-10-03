@@ -36,6 +36,7 @@ export function createMCPStructuredTool(
     func: async (input, runManager, config) => {
       const invocation = config as typeof config & {
         toolCall?: { id?: string };
+        configurable?: { __librechatBackgroundToolInvocation?: boolean };
         metadata?: {
           executingAgentId?: string;
           activeAgentId?: string;

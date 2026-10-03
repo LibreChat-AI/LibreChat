@@ -5,6 +5,8 @@ import {
   getToolApprovalIdentity,
   assertToolApprovalExecution,
   withToolApprovalExecution,
+  bindToolReviewAuthority,
+  getToolReviewAuthority,
 } from './approval';
 
 test('connection-derived bindings survive local copies without reaching JSON or provider payloads', () => {
@@ -51,13 +53,19 @@ test('concurrent runs isolate the execution guard without a global run-id lookup
   ]);
   expect(first).toHaveBeenCalledWith(
     { name: 'query_mcp_db' },
-    { agentId: 'agent-a', toolCallId: 'first' },
+    { agentId: 'agent-a', toolCallId: 'first', background: false },
   );
   expect(second).toHaveBeenCalledWith(
     { name: 'query_mcp_db' },
-    { agentId: 'agent-b', toolCallId: 'second' },
+    { agentId: 'agent-b', toolCallId: 'second', background: false },
   );
   await assertToolApprovalExecution({ name: 'query_mcp_db' });
   expect(first).toHaveBeenCalledTimes(1);
   expect(second).toHaveBeenCalledTimes(1);
+});
+
+test('invocation-only authority stays private while surviving internal definition copies', () => {
+  const definition = bindToolReviewAuthority({ name: 'query_mcp_db' }, 'private-review-authority');
+  expect(getToolReviewAuthority({ ...definition })).toBe('private-review-authority');
+  expect(JSON.stringify(definition)).not.toContain('private-review-authority');
 });

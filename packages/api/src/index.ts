@@ -138,3 +138,5 @@ export type * from './flow/types';
 export type * from './types';
 
 export * from './tools/approval';
+
+export * from './mcp/approval';

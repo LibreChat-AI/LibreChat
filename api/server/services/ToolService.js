@@ -15,6 +15,8 @@ const {
   loadToolDefinitions,
   buildMCPToolApprovalBinding,
   attachMCPToolApprovalBindings,
+  buildMCPToolReviewAuthority,
+  createSafeUser,
   GenerationJobManager,
   isActionDomainAllowed,
   buildWebSearchContext,
@@ -1168,6 +1170,7 @@ async function loadToolDefinitionsWrapper({
    *  spellings itself (direct identity first, alias fallback), so this
    *  closure must look up EXACTLY the name it is given. */
   const approvalBindings = new Map();
+  const reviewAuthorities = new Map();
   const getOrFetchMCPServerTools = async (userId, serverName) => {
     const addPendingOAuthServer = async () => {
       const pendingOAuthStart = await getReplayablePendingMCPOAuthStart({
@@ -1207,6 +1210,16 @@ async function loadToolDefinitionsWrapper({
 
     approvalBindings.set(serverName, buildMCPToolApprovalBinding(serverName, serverConfig));
     const customUserVars = userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`];
+    reviewAuthorities.set(
+      serverName,
+      buildMCPToolReviewAuthority({
+        serverName,
+        config: serverConfig,
+        user: createSafeUser(req.user),
+        body: runtimeRequestBody,
+        customUserVars,
+      }),
+    );
     const missingUserVars = getMissingCustomUserVars(serverConfig, customUserVars);
     if (missingUserVars.length > 0) {
       logger.warn('[Tool Definitions] Skipping one MCP server with missing user configuration', {
@@ -1609,7 +1622,7 @@ async function loadToolDefinitionsWrapper({
     }
   }
 
-  attachMCPToolApprovalBindings(toolDefinitions, approvalBindings);
+  attachMCPToolApprovalBindings(toolDefinitions, approvalBindings, reviewAuthorities);
   return {
     toolRegistry,
     mcpAvailableTools,
