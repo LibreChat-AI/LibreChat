@@ -78,15 +78,21 @@ export function createRoleMethods(
 
     for (const roleName of [SystemRoles.ADMIN, SystemRoles.USER]) {
       // Strict mode hides off-schema SHARED_GLOBAL and won't $unset it on save; migrate it via the raw driver.
-      // eslint-disable-next-line no-restricted-syntax -- Role is a global (non-tenant) collection; raw read is required to see the off-schema field.
-      const legacyDoc = await Role.collection.findOne({ name: roleName });
-      if (legacyDoc?.permissions) {
+      // Role is tenant-scoped on {name, tenantId} and this runs as system, so a name filter alone
+      // matches an arbitrary tenant's document; migrate every one, keyed by _id.
+      // eslint-disable-next-line no-restricted-syntax -- raw read is required to see the off-schema field.
+      const legacyDocs = await Role.collection.find({ name: roleName }).toArray();
+      for (const legacyDoc of legacyDocs) {
+        if (!legacyDoc.permissions) {
+          continue;
+        }
         const set: Record<string, unknown> = {};
         const unset: Record<string, ''> = {};
         for (const permType of ['PROMPTS', 'AGENTS']) {
           const block = legacyDoc.permissions[permType];
           if (block && 'SHARED_GLOBAL' in block) {
-            if (!('SHARE' in block)) {
+            // Nullish, not `in`: the per-field merge below treats a stored null as missing.
+            if (block.SHARE == null) {
               set[`permissions.${permType}.SHARE`] = block.SHARED_GLOBAL;
             }
             unset[`permissions.${permType}.SHARED_GLOBAL`] = '';
@@ -97,8 +103,8 @@ export function createRoleMethods(
           if (Object.keys(set).length) {
             update.$set = set;
           }
-          // eslint-disable-next-line no-restricted-syntax -- Role is a global (non-tenant) collection; raw $unset is required to drop the off-schema field.
-          await Role.collection.updateOne({ name: roleName }, update);
+          // eslint-disable-next-line no-restricted-syntax -- raw $unset is required to drop the off-schema field.
+          await Role.collection.updateOne({ _id: legacyDoc._id }, update);
         }
       }
       let role = await Role.findOne({ name: roleName });

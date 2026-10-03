@@ -812,6 +812,49 @@ describe('initializeRoles - SHARE permission preservation', () => {
     expect(doc?.permissions.AGENTS.SHARE).toBe(true);
     expect(doc?.permissions.AGENTS.SHARED_GLOBAL).toBeUndefined();
   });
+
+  it('migrates every tenant document sharing a role name, not just one', async () => {
+    // Role is tenant-scoped; a name-only filter on the raw driver used to match an
+    // arbitrary tenant's document and leave every other tenant unmigrated.
+    await Role.collection.insertOne({
+      name: SystemRoles.USER,
+      tenantId: 'tenant-a',
+      permissions: { AGENTS: { SHARED_GLOBAL: true } },
+    });
+    await Role.collection.insertOne({
+      name: SystemRoles.USER,
+      tenantId: 'tenant-b',
+      permissions: { AGENTS: { SHARED_GLOBAL: false } },
+    });
+
+    await initializeRoles();
+
+    const docs = await Role.collection.find({ name: SystemRoles.USER }).toArray();
+    expect(docs).toHaveLength(2);
+    const byTenant = Object.fromEntries(docs.map((doc) => [doc.tenantId, doc]));
+    expect(byTenant['tenant-a'].permissions.AGENTS.SHARE).toBe(true);
+    expect(byTenant['tenant-a'].permissions.AGENTS.SHARED_GLOBAL).toBeUndefined();
+    expect(byTenant['tenant-b'].permissions.AGENTS.SHARE).toBe(false);
+    expect(byTenant['tenant-b'].permissions.AGENTS.SHARED_GLOBAL).toBeUndefined();
+  });
+
+  it('treats a stored SHARE:null as missing and inherits from SHARED_GLOBAL', async () => {
+    // `'SHARE' in block` is true for a stored null, so the migration used to skip the
+    // inherit step while still unsetting SHARED_GLOBAL — silently discarding the value.
+    await Role.collection.insertOne({
+      name: SystemRoles.USER,
+      permissions: { AGENTS: { SHARED_GLOBAL: true, SHARE: null } },
+    });
+
+    await initializeRoles();
+
+    const doc = await Role.collection.findOne({ name: SystemRoles.USER });
+    expect(doc?.permissions.AGENTS.SHARE).toBe(true);
+    expect(doc?.permissions.AGENTS.SHARED_GLOBAL).toBeUndefined();
+
+    const userRole = await getRoleByName(SystemRoles.USER);
+    expect(userRole.permissions[PermissionTypes.AGENTS]?.SHARE).toBe(true);
+  });
 });
 
 describe('createRoleByName', () => {
