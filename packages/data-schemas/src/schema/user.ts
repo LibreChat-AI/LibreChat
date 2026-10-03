@@ -1,5 +1,7 @@
 import { Schema } from 'mongoose';
 import { SystemRoles, STATEFUL_CODE_ENVIRONMENTS } from 'librechat-data-provider';
+import { applySearchTokens } from '~/models/plugins/searchTokens';
+import { USER_SEARCH_TOKEN_FIELDS } from '~/utils/search';
 import { IUser } from '~/types';
 
 // Session sub-schema
@@ -239,6 +241,7 @@ userSchema.index({ idOnTheSource: 1, openidIssuer: 1, tenantId: 1 });
    them. The rare cleanup that pulls a deleted agent from every user names the tenant too;
    the one that does not (`$in` over a batch of ids) is a maintenance write, not a page. */
 userSchema.index({ tenantId: 1, 'favorites.agentId': 1 });
+applySearchTokens(userSchema, USER_SEARCH_TOKEN_FIELDS);
 
 const oAuthIdFields = [
   'googleId',

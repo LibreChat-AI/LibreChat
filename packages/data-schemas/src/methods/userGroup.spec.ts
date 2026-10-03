@@ -117,16 +117,18 @@ describe('userGroup methods', () => {
       expect(results[0].name).toBe('Design');
     });
 
-    it('matches on description field', async () => {
+    it('does not match on the description field (search covers name and email)', async () => {
       const results = await methods.findGroupsByNamePattern('Eng team');
-      expect(results).toHaveLength(1);
-      expect(results[0].name).toBe('Engineering');
+      expect(results).toEqual([]);
     });
 
     it('treats regex metacharacters as literal text', async () => {
       const results = await methods.findGroupsByNamePattern('.*');
-      expect(results).toHaveLength(1);
-      expect(results[0].name).toBe('Literal .* Group');
+      expect(results).toEqual([]);
+
+      const literal = await methods.findGroupsByNamePattern('literal');
+      expect(literal).toHaveLength(1);
+      expect(literal[0].name).toBe('Literal .* Group');
     });
 
     it('filters by source when provided', async () => {
@@ -1412,6 +1414,14 @@ describe('userGroup methods', () => {
       expect(score).toBe(50);
     });
 
+    it('scores accent-folded matches like their plain spelling', () => {
+      const score = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'Zoë', source: 'local' },
+        'zoe',
+      );
+      expect(score).toBe(100);
+    });
+
     it('returns 10 (default) when no substring or exact match', () => {
       const score = methods.calculateRelevanceScore(
         { type: PrincipalType.USER, name: 'bob', source: 'local' },
@@ -1569,9 +1579,11 @@ describe('userGroup methods', () => {
       });
 
       const results = await methods.searchPrincipals('.*', 10, [PrincipalType.USER]);
+      expect(results).toEqual([]);
 
-      expect(results).toHaveLength(1);
-      expect(results[0].name).toBe('Literal .* User');
+      const literal = await methods.searchPrincipals('literal', 10, [PrincipalType.USER]);
+      expect(literal).toHaveLength(1);
+      expect(literal[0].name).toBe('Literal .* User');
     });
 
     it('handles invalid regex syntax as literal search text', async () => {

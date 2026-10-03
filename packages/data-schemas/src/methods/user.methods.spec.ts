@@ -1609,9 +1609,11 @@ describe('User Methods - Database Tests', () => {
       });
 
       const results = await methods.searchUsers({ searchPattern: '.*' });
+      expect(results).toEqual([]);
 
-      expect(results).toHaveLength(1);
-      expect((results[0] as unknown as t.IUser).name).toBe('Literal .* User');
+      const literal = await methods.searchUsers({ searchPattern: 'literal' });
+      expect(literal).toHaveLength(1);
+      expect((literal[0] as unknown as t.IUser).name).toBe('Literal .* User');
     });
 
     test('should handle invalid regex syntax as literal search text', async () => {

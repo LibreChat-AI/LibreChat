@@ -139,6 +139,8 @@
     "migrate:tenant-indexes": "node config/migrate-tenant-indexes.js",
     "migrate:tenant-indexes:dry-run": "node config/migrate-tenant-indexes.js --dry-run",
     "migrate:terms-timestamp": "node config/migrate-terms-timestamp.js",
+    "migrate:search-tokens": "node config/migrate-search-tokens.js",
+    "migrate:search-tokens:dry-run": "node config/migrate-search-tokens.js --dry-run",
     "flush-cache": "node config/flush-cache.js",
     "migrate:agent-permissions:dry-run": "node config/migrate-agent-permissions.js --dry-run",
     "migrate:agent-permissions": "node config/migrate-agent-permissions.js",

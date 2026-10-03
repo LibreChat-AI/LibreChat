@@ -115,4 +115,7 @@ export {
   migrateTenantIndexes,
   dropSupersededPromptGroupIndexes,
   backfillMCPServerNormalizedNames,
+  backfillSearchTokens,
+  warnOnMissingSearchTokens,
 } from './migrations';
+export type { SearchTokenBackfillResult } from './migrations';

@@ -16,7 +16,7 @@ function getRuntimeEnvPath(): string {
   );
 }
 
-function getMongoUri(): string {
+export function getMongoUri(): string {
   try {
     const env = JSON.parse(fs.readFileSync(getRuntimeEnvPath(), 'utf8')) as { MONGO_URI?: string };
     if (env.MONGO_URI) {
