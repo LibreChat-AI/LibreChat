@@ -24,7 +24,7 @@
     },
     "test:ci": {
       "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/config/jest*.{js,cjs}"],
+      "inputs": ["$TURBO_DEFAULT$", "test/.env.test", "$TURBO_ROOT$/config/jest*.{js,cjs}"],
       "outputs": ["coverage/**"],
       "env": [
         "CI",
