@@ -8,7 +8,20 @@ import { applyRequestHeaders } from './utils';
 export interface MCPToolReviewAuthorityInput {
   serverName: string;
   config: ParsedServerConfig | undefined;
-  user?: Partial<Pick<IUser, 'id' | 'tenantId' | 'username' | 'email' | 'name' | 'openidId'>>;
+  user?: Partial<
+    Pick<
+      IUser,
+      | 'id'
+      | 'tenantId'
+      | 'username'
+      | 'email'
+      | 'name'
+      | 'openidId'
+      | 'provider'
+      | 'openidTokens'
+      | 'federatedTokens'
+    >
+  >;
   body?: RequestBody;
   customUserVars?: Record<string, string>;
 }
@@ -23,25 +36,32 @@ export function buildMCPToolReviewAuthority({
 }: MCPToolReviewAuthorityInput): string | undefined {
   if (!config) return undefined;
   config = applyRequestHeaders(config);
-  const declaredHeaders = {
-    headers: 'headers' in config ? config.headers : undefined,
-    oauth_headers: 'oauth_headers' in config ? config.oauth_headers : undefined,
-  };
   const renewableMarker =
     /\{\{LIBRECHAT_(?:OPENID_(?:(?:ACCESS|ID)_)?TOKEN|GRAPH_ACCESS_TOKEN)\}\}/g;
-  const resolutionInput = { ...config } as ParsedServerConfig & {
-    headers?: Record<string, string>;
-    oauth_headers?: Record<string, string>;
-  };
-  for (const field of ['headers', 'oauth_headers'] as const) {
-    const headers = declaredHeaders[field];
-    if (headers)
-      resolutionInput[field] = Object.fromEntries(
-        Object.entries(headers).map(([name, value]) => [
-          name,
-          value.replace(renewableMarker, 'review-only-renewable-bearer'),
-        ]),
-      );
+  const mask = (value: string): string =>
+    value.replace(renewableMarker, 'review-only-renewable-bearer');
+  const maskFields = (fields: Record<string, string>): Record<string, string> =>
+    Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, mask(value)]));
+  const resolutionInput = structuredClone(config);
+  // Mask only renewable fragments; processMCPEnv still resolves routing and principal fields.
+  if ('env' in resolutionInput && resolutionInput.env)
+    resolutionInput.env = maskFields(resolutionInput.env);
+  if ('args' in resolutionInput && resolutionInput.args)
+    resolutionInput.args = resolutionInput.args.map(mask);
+  if ('headers' in resolutionInput && resolutionInput.headers)
+    resolutionInput.headers = maskFields(resolutionInput.headers);
+  if ('oauth_headers' in resolutionInput && resolutionInput.oauth_headers)
+    resolutionInput.oauth_headers = maskFields(resolutionInput.oauth_headers);
+  if ('url' in resolutionInput && resolutionInput.url)
+    resolutionInput.url = mask(resolutionInput.url);
+  if (resolutionInput.apiKey?.key) resolutionInput.apiKey.key = mask(resolutionInput.apiKey.key);
+  if (resolutionInput.oauth) {
+    resolutionInput.oauth = Object.fromEntries(
+      Object.entries(resolutionInput.oauth).map(([key, value]) => [
+        key,
+        typeof value === 'string' ? mask(value) : value,
+      ]),
+    );
   }
   const resolved = processMCPEnv({ options: resolutionInput, user, body, customUserVars });
   const projected = { ...resolved } as typeof resolved & {

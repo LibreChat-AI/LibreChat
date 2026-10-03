@@ -17,6 +17,36 @@ const grant: ToolApprovalGrantBinding = {
 };
 const storage = createToolApprovalGrantMethods(mongoose);
 
+/** Delay only the real grant update, after its authoritative read has completed. */
+function suspendGrantWrite() {
+  let resume!: () => void;
+  let reached!: () => void;
+  const suspended = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  const execute = mongoose.Query.prototype.exec;
+  let paused = false;
+  const execution = jest.spyOn(mongoose.Query.prototype, 'exec').mockImplementation(function (
+    this: mongoose.Query<unknown, unknown>,
+  ) {
+    if (
+      !paused &&
+      this.model.modelName === 'ToolApprovalGrant' &&
+      'op' in this &&
+      this.op === 'updateOne'
+    ) {
+      paused = true;
+      reached();
+      return suspended.then(() => execute.call(this));
+    }
+    return execute.call(this);
+  });
+  return { started, resume, restore: () => execution.mockRestore() };
+}
+
 beforeAll(async () => {
   mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
   await mongoose.connect(mongo.getUri());
@@ -236,25 +266,9 @@ for (const mode of ['chat', 'always'] as const) {
       async (firstGrant) => {
         const pending = { ...grant, scope: mode };
         if (!firstGrant) await storage.rememberToolApprovalGrants(scope, [pending]);
-        let resumeWrite!: () => void;
-        let readComplete!: () => void;
-        const suspended = new Promise<void>((resolve) => {
-          resumeWrite = resolve;
-        });
-        const read = new Promise<void>((resolve) => {
-          readComplete = resolve;
-        });
-        const realLookup = storage.getToolApprovalGrants;
-        const lookup = jest
-          .spyOn(storage, 'getToolApprovalGrants')
-          .mockImplementationOnce(async (...args) => {
-            const statuses = await realLookup(...args);
-            readComplete();
-            await suspended;
-            return statuses;
-          });
+        const pause = suspendGrantWrite();
         const staleWrite = storage.rememberToolApprovalGrants(scope, [pending]);
-        await read;
+        await pause.started;
         try {
           await storage.resetToolApprovalGrants(
             scope.userId,
@@ -264,13 +278,112 @@ for (const mode of ['chat', 'always'] as const) {
           const status = (await storage.getToolApprovalGrants(scope, [pending]))[0];
           const renewed = { ...pending, revocation: status.revocation };
           await storage.rememberToolApprovalGrants(scope, [renewed]);
-          resumeWrite();
+          pause.resume();
           await staleWrite;
           expect((await storage.getToolApprovalGrants(scope, [renewed]))[0].approved).toBe(true);
         } finally {
-          resumeWrite();
+          pause.resume();
           await staleWrite;
-          lookup.mockRestore();
+          pause.restore();
+        }
+      },
+    );
+  }
+}
+
+for (const mode of ['chat', 'always'] as const) {
+  test(`${mode} storage refuses an OAuth epoch already replaced before persistence`, async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const current = { ...scope, userId };
+    const old = { ...grant, scope: mode, serverName: 'db', oauthEpoch: 'account-a' };
+    const token = await mongoose.models.Token.create({
+      userId,
+      type: 'mcp_oauth',
+      identifier: 'mcp:db',
+      token: 'synthetic-a',
+      expiresAt: new Date(Date.now() + 60000),
+      metadata: { credential_set_id: 'account-a' },
+    });
+    try {
+      await storage.rememberToolApprovalGrants(current, [old]);
+      await mongoose.models.Token.updateOne(
+        { _id: token._id },
+        { $set: { 'metadata.credential_set_id': 'account-b' } },
+      );
+      const renewed = { ...old, oauthEpoch: 'account-b' };
+      await storage.rememberToolApprovalGrants(current, [renewed]);
+      await storage.rememberToolApprovalGrants(current, [old]);
+      expect((await storage.getToolApprovalGrants(current, [renewed]))[0].approved).toBe(true);
+    } finally {
+      await mongoose.models.Token.deleteOne({ _id: token._id });
+    }
+  });
+
+  test(`${mode} current OAuth consent can replace a changed tool binding`, async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const current = { ...scope, userId };
+    const original = { ...grant, scope: mode, serverName: 'db', oauthEpoch: 'account-a' };
+    const token = await mongoose.models.Token.create({
+      userId,
+      type: 'mcp_oauth',
+      identifier: 'mcp:db',
+      token: 'synthetic-a',
+      expiresAt: new Date(Date.now() + 60000),
+      metadata: { credential_set_id: 'account-a' },
+    });
+    try {
+      await storage.rememberToolApprovalGrants(current, [original]);
+      const changed = { ...original, binding: 'changed-tool-schema' };
+      await storage.rememberToolApprovalGrants(current, [changed]);
+      expect((await storage.getToolApprovalGrants(current, [changed]))[0].approved).toBe(true);
+      expect((await storage.getToolApprovalGrants(current, [original]))[0].approved).toBe(false);
+    } finally {
+      await mongoose.models.Token.deleteOne({ _id: token._id });
+    }
+  });
+
+  for (const initialEpoch of ['account-a', null]) {
+    test.each([false, true])(
+      `${mode} delayed OAuth write cannot clobber account B; initial=${initialEpoch}, first grant=%s`,
+      async (firstGrant) => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const current = { ...scope, userId };
+        const old = { ...grant, scope: mode, serverName: 'db', oauthEpoch: initialEpoch };
+        const tokenData = {
+          userId,
+          type: 'mcp_oauth',
+          identifier: 'mcp:db',
+          token: 'synthetic-token',
+          expiresAt: new Date(Date.now() + 60000),
+        };
+        if (initialEpoch)
+          await mongoose.models.Token.create({
+            ...tokenData,
+            metadata: { credential_set_id: initialEpoch },
+          });
+        if (!firstGrant) await storage.rememberToolApprovalGrants(current, [old]);
+        const pause = suspendGrantWrite();
+        const stale = storage.rememberToolApprovalGrants(current, [old]);
+        await pause.started;
+        try {
+          await mongoose.models.Token.deleteMany({ userId });
+          await mongoose.models.Token.create({
+            ...tokenData,
+            metadata: { credential_set_id: 'account-b' },
+          });
+          const renewed = { ...old, oauthEpoch: 'account-b' };
+          await storage.rememberToolApprovalGrants(current, [renewed]);
+          pause.resume();
+          await stale;
+          const status = (await storage.getToolApprovalGrants(current, [renewed]))[0];
+          expect(status.approved).toBe(true);
+          expect(status).not.toHaveProperty('previousOAuthEpoch');
+          expect(JSON.stringify(status)).not.toContain('synthetic-token');
+        } finally {
+          pause.resume();
+          await stale;
+          pause.restore();
+          await mongoose.models.Token.deleteMany({ userId });
         }
       },
     );
