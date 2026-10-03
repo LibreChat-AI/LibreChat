@@ -1,5 +1,6 @@
 import type { ClientLogsOptions } from './logs';
 import {
+  testExports,
   stopClientLogs,
   startClientLogs,
   CLIENT_LOG_LIMITS,
@@ -71,6 +72,7 @@ async function flushInterval() {
 
 beforeEach(() => {
   jest.useFakeTimers();
+  testExports.resetPageState();
   fetchMock.mockReset();
   fetchMock.mockImplementation(() => respond(200));
 });
@@ -287,6 +289,27 @@ describe('createClientLogExporter', () => {
     expect(dropped).toHaveBeenCalledTimes(1);
   });
 
+  it('drops silent auth responses without acknowledging delivery, but accepts collector 204s', async () => {
+    fetchMock.mockImplementationOnce(() => respond(204));
+    const exporter = createClientLogExporter(options());
+    const delivered = jest.fn();
+    const dropped = jest.fn();
+    exporter.event('stale-asset-recovery-start', {}, delivered, dropped);
+    await flushInterval();
+    expect(delivered).not.toHaveBeenCalled();
+    expect(dropped).toHaveBeenCalledTimes(1);
+    exporter.dispose();
+    const accepted = createClientLogExporter({
+      ...options(),
+      fetch: () => Promise.resolve({ status: 204, headers: { get: () => 'true' } }),
+    });
+    accepted.event('stale-asset-recovery-reload', {}, delivered, dropped);
+    await flushInterval();
+    expect(delivered).toHaveBeenCalledTimes(1);
+    expect(dropped).toHaveBeenCalledTimes(1);
+    accepted.dispose();
+  });
+
   it('attaches the active trace and span ids from the RUM SDK context', async () => {
     const spanKey = Symbol.for('OpenTelemetry Context Key SPAN');
     const apiKey = Symbol.for('opentelemetry.js.api.1');
@@ -442,6 +465,43 @@ describe('client log lifecycle', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[1][1].keepalive).toBe(true);
     visibility.mockRestore();
+  });
+
+  it('preserves the minute and page record budgets across exporter restarts', async () => {
+    for (let pageWindow = 0; pageWindow < 10; pageWindow += 1) {
+      if (pageWindow > 0) {
+        await jest.advanceTimersByTimeAsync(60_000);
+      }
+      startClientLogs(options());
+      for (let i = 0; i < 30; i += 1) {
+        logger.error(`Budget window ${pageWindow} record ${i}`);
+      }
+      await flushInterval();
+      await flushInterval();
+      stopClientLogs();
+      startClientLogs(options());
+      logger.error(`Restart bypass ${pageWindow}`);
+      await flushInterval();
+      stopClientLogs();
+    }
+    expect(allRecords()).toHaveLength(CLIENT_LOG_LIMITS.recordsPerPage);
+    await jest.advanceTimersByTimeAsync(60_000);
+    startClientLogs(options());
+    logger.error('Page budget must remain exhausted');
+    await flushInterval();
+    expect(allRecords()).toHaveLength(CLIENT_LOG_LIMITS.recordsPerPage);
+  });
+
+  it('does not resume after a fatal page shutdown when the exporter is restarted', async () => {
+    fetchMock.mockImplementation(() => respond(404));
+    startClientLogs(options());
+    logger.error('Proxy has been revoked');
+    await flushInterval();
+    stopClientLogs();
+    startClientLogs(options());
+    logger.error('Restart must not bypass revocation');
+    await flushInterval();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a cross-origin endpoint', async () => {

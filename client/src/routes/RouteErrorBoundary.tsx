@@ -1,9 +1,9 @@
 import { useEffect } from 'react';
 import { Button } from '@librechat/client';
 import { useRouteError } from 'react-router-dom';
+import { onClientLogsStarted, reportBoundaryError } from '~/lib/rum/logs';
 import useStaleAssetRecovery from '~/lib/assets/useRecovery';
 import { isChunkLoadError } from '~/lib/assets/recovery';
-import { reportBoundaryError } from '~/lib/rum/logs';
 import Updating from '~/components/System/Updating';
 import { useLocalize } from '~/hooks';
 import logger from '~/utils/logger';
@@ -88,7 +88,9 @@ export default function RouteErrorBoundary() {
   };
 
   useEffect(() => {
-    reportBoundaryError('route', routeError, isChunkLoadError(routeError));
+    const report = () => reportBoundaryError('route', routeError, isChunkLoadError(routeError));
+    report();
+    return onClientLogsStarted(report);
   }, [routeError]);
 
   const errorDetails = {

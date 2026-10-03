@@ -1,3 +1,4 @@
+import { RUM_COLLECTOR_ACK_HEADER } from 'librechat-data-provider';
 jest.mock('~/app/metrics', () => ({
   recordRumProxyRequest: jest.fn(),
 }));
@@ -462,6 +463,19 @@ describe('RUM proxy upstream HTTP contract', () => {
       expect(recordRumProxyRequest).toHaveBeenCalledWith(signal, 'success');
     },
   );
+
+  it('marks a successful collector 204 so clients can distinguish it from an auth drop', async () => {
+    collector.on('request', (_req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+    const app = express();
+    app.use(express.json());
+    app.post('/v1/logs', (req, res) => proxyRumRequest(req, res));
+    const response = await request(app).post('/v1/logs').send({ resourceLogs: [] });
+    expect(response.status).toBe(204);
+    expect(response.headers[RUM_COLLECTOR_ACK_HEADER]).toBe('true');
+  });
 
   it('forwards OTLP/JSON log records unchanged after the app JSON parser and never logs them', async () => {
     const records = {

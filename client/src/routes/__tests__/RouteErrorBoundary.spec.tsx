@@ -1,13 +1,39 @@
-import { render, screen, waitFor } from '@testing-library/react';
-import { createMemoryRouter, RouterProvider } from 'react-router-dom';
+import { useState } from 'react';
+import { createMemoryRouter, RouterProvider, Outlet } from 'react-router-dom';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { stopClientLogs, testExports as logTestExports } from '~/lib/rum/logs';
 import { ChunkLoadError } from '~/lib/assets/recovery';
 import RouteErrorBoundary from '../RouteErrorBoundary';
 import en from '~/locales/en/translation.json';
+import WithRum from '~/lib/rum/WithRum';
 
 jest.mock('~/hooks', () => {
   const translations: Record<string, string> = jest.requireActual('~/locales/en/translation.json');
   return { useLocalize: () => (key: string) => translations[key] ?? key };
 });
+
+jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: () => ({
+    isFetched: true,
+    data: {
+      rum: {
+        provider: 'hyperdx',
+        enabled: true,
+        authMode: 'proxy',
+        url: '/api/rum',
+        serviceName: 'test',
+        clientLogs: true,
+      },
+    },
+  }),
+}));
+jest.mock('~/hooks/AuthContext', () => ({
+  useAuthContext: () => ({ token: 'session-jwt', user: { id: 'user-1' } }),
+}));
+jest.mock('@hyperdx/browser', () => ({
+  __esModule: true,
+  default: { init: jest.fn(), addAction: jest.fn(), setGlobalAttributes: jest.fn() },
+}));
 
 type ErrorFactory = () => unknown;
 
@@ -92,4 +118,102 @@ describe('RouteErrorBoundary stale-asset recovery', () => {
     expect(await screen.findByRole('status')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
+});
+
+describe('authenticated route reporting lifetime', () => {
+  const failRouteText = 'Fail route';
+  const publicShareText = 'Public share';
+  let originalFetch: typeof window.fetch;
+  beforeEach(() => {
+    originalFetch = window.fetch;
+    jest.useFakeTimers();
+    logTestExports.resetPageState();
+  });
+  afterEach(() => {
+    stopClientLogs();
+    Object.defineProperty(window, 'fetch', {
+      configurable: true,
+      writable: true,
+      value: originalFetch,
+    });
+    jest.useRealTimers();
+    delete window.__lcRecoverStaleAssets;
+    delete window.__lcStaleAssetRecoveryPending;
+  });
+
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'reports a route failure (chunk=%s, initial=%s), then stops on a public route',
+    async (chunk, initial) => {
+      jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      window.__lcRecoverStaleAssets = jest.fn(() => false);
+      const transport = jest.fn<Promise<Response>, [RequestInfo | URL, RequestInit?]>(() =>
+        Promise.resolve({ status: 200 } as Response),
+      );
+      Object.defineProperty(window, 'fetch', {
+        configurable: true,
+        writable: true,
+        value: transport,
+      });
+      function Chat() {
+        const [failed, setFailed] = useState(initial);
+        if (failed) {
+          throw chunk ? new ChunkLoadError() : new Error('application failure');
+        }
+        return <button onClick={() => setFailed(true)}>{failRouteText}</button>;
+      }
+      const router = createMemoryRouter(
+        [
+          {
+            element: (
+              <WithRum>
+                <Outlet />
+              </WithRum>
+            ),
+            children: [
+              {
+                errorElement: <RouteErrorBoundary />,
+                children: [{ path: '/c/new', element: <Chat /> }],
+              },
+            ],
+          },
+          { path: '/share/example', element: <div>{publicShareText}</div> },
+        ],
+        { initialEntries: ['/c/new'] },
+      );
+      render(<RouterProvider router={router} />);
+      if (!initial) {
+        fireEvent.click(screen.getByRole('button', { name: 'Fail route' }));
+      }
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(5_000);
+      });
+      const records = transport.mock.calls.flatMap(
+        (call) => JSON.parse(String(call[1]?.body)).resourceLogs[0].scopeLogs[0].logRecords,
+      );
+      expect(records).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            attributes: expect.arrayContaining([
+              { key: 'error.boundary', value: { stringValue: 'route' } },
+            ]),
+          }),
+        ]),
+      );
+      await act(async () => {
+        await router.navigate('/share/example');
+      });
+      expect(screen.getByText('Public share')).toBeInTheDocument();
+      const count = transport.mock.calls.length;
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(10_000);
+      });
+      expect(transport).toHaveBeenCalledTimes(count);
+    },
+  );
 });

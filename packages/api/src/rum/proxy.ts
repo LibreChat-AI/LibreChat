@@ -1,5 +1,6 @@
 import { validateHeaderValue } from 'node:http';
 import { logger } from '@librechat/data-schemas';
+import { RUM_COLLECTOR_ACK_HEADER } from 'librechat-data-provider';
 import type { Request, Response, RequestHandler } from 'express';
 import type { RumProxyEndpoint, RumProxyResult } from '~/app/metrics';
 import { recordRumProxyRequest } from '~/app/metrics';
@@ -260,6 +261,9 @@ export async function proxyRumRequest(
 
     const responseBody = Buffer.from(await response.arrayBuffer());
     recordRumProxyRequest(endpoint, getRumCollectorResult(response.status));
+    if (response.status >= 200 && response.status < 300) {
+      res.set(RUM_COLLECTOR_ACK_HEADER, 'true');
+    }
     res.status(response.status).send(responseBody);
   } catch (error) {
     recordRumProxyRequest(

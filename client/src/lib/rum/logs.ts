@@ -1,3 +1,4 @@
+import { RUM_COLLECTOR_ACK_HEADER } from 'librechat-data-provider';
 import type { TraceContext } from './trace';
 import {
   truncate,
@@ -56,6 +57,24 @@ export const CLIENT_LOG_LIMITS = {
   maxConsecutiveFailures: 5,
 } as const;
 
+function createPageState() {
+  return {
+    windowStart: 0,
+    windowCount: 0,
+    pageCount: 0,
+    shutdown: false,
+    backoffUntil: 0,
+    consecutiveFailures: 0,
+  };
+}
+
+/** Document budgets and fatal shutdown outlive authenticated-layout mounts and exporters. */
+const pageState = createPageState();
+
+export const testExports = {
+  resetPageState: () => Object.assign(pageState, createPageState()),
+};
+
 const SEVERITY: Record<ClientLogLevel, { number: number; text: string }> = {
   info: { number: 9, text: 'INFO' },
   warn: { number: 13, text: 'WARN' },
@@ -106,7 +125,10 @@ type DedupeEntry = {
 
 type OtlpAnyValue = { stringValue: string } | { boolValue: boolean } | { intValue: string };
 type OtlpKeyValue = { key: string; value: OtlpAnyValue };
-type LogTransport = (url: string, init: RequestInit) => Promise<Pick<Response, 'status'>>;
+type LogTransport = (
+  url: string,
+  init: RequestInit,
+) => Promise<Pick<Response, 'status'> & { headers?: Pick<Headers, 'get'> }>;
 type OtlpLogRecord = {
   timeUnixNano: string;
   observedTimeUnixNano: string;
@@ -284,12 +306,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
   let activeBatch: LogEntry[] = [];
   let sendSeq = 0;
   let keepaliveBytes = 0;
-  let disabled = false;
-  let backoffUntil = 0;
-  let consecutiveFailures = 0;
-  let windowStart = 0;
-  let windowCount = 0;
-  let pageCount = 0;
+  let disabled = pageState.shutdown;
 
   const sessionId = (): string => {
     try {
@@ -300,18 +317,18 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
   };
 
   const consumeBudget = (now: number): boolean => {
-    if (pageCount >= limits.recordsPerPage) {
+    if (pageState.pageCount >= limits.recordsPerPage) {
       return false;
     }
-    if (now - windowStart >= 60_000) {
-      windowStart = now;
-      windowCount = 0;
+    if (now - pageState.windowStart >= 60_000) {
+      pageState.windowStart = now;
+      pageState.windowCount = 0;
     }
-    if (windowCount >= limits.recordsPerMinute) {
+    if (pageState.windowCount >= limits.recordsPerMinute) {
       return false;
     }
-    windowCount += 1;
-    pageCount += 1;
+    pageState.windowCount += 1;
+    pageState.pageCount += 1;
     return true;
   };
 
@@ -324,7 +341,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
   };
 
   const schedule = (at: number) => {
-    if (disabled || (timer !== undefined && timerAt <= at)) {
+    if (disabled || pageState.shutdown || (timer !== undefined && timerAt <= at)) {
       return;
     }
     clearTimer();
@@ -386,7 +403,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
   };
 
   const add = (entry: LogEntry): boolean => {
-    if (disabled) {
+    if (disabled || pageState.shutdown) {
       settle(entry, false);
       return false;
     }
@@ -458,7 +475,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     return { entries, body: `${envelopeHead}${records.join(',')}${envelopeTail}` };
   };
 
-  const disable = () => {
+  const discard = () => {
     disabled = true;
     pendingDeliveries.forEach((callback) => callback(false));
     activeBatch.forEach((entry) => settle(entry, false));
@@ -469,9 +486,10 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
   };
 
   const onFailure = (batch: LogEntry[], retryable: boolean) => {
-    consecutiveFailures += 1;
-    if (consecutiveFailures >= limits.maxConsecutiveFailures) {
-      disable();
+    pageState.consecutiveFailures += 1;
+    if (pageState.consecutiveFailures >= limits.maxConsecutiveFailures) {
+      pageState.shutdown = true;
+      discard();
       return;
     }
     const retry = batch.filter((entry) => {
@@ -486,20 +504,21 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     queue = [...retry, ...queue];
     queue.splice(limits.maxQueuedRecords).forEach((entry) => settle(entry, false));
     const delay = Math.min(
-      limits.baseBackoffMs * 2 ** (consecutiveFailures - 1),
+      limits.baseBackoffMs * 2 ** (pageState.consecutiveFailures - 1),
       limits.maxBackoffMs,
     );
-    backoffUntil = Date.now() + delay;
+    pageState.backoffUntil = Date.now() + delay;
   };
 
   const handleStatus = (batch: LogEntry[], status: number) => {
     if (status >= 200 && status < 300) {
-      consecutiveFailures = 0;
+      pageState.consecutiveFailures = 0;
       batch.forEach((entry) => settle(entry, true));
       return;
     }
     if (FATAL_STATUSES.has(status)) {
-      disable();
+      pageState.shutdown = true;
+      discard();
       return;
     }
     onFailure(batch, status === 408 || status === 429 || status >= 500);
@@ -519,7 +538,8 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       entry.sendId = sendId;
     });
     /** A record re-sent by a later request (the page-hide flush) belongs to that request. */
-    const owned = () => entries.filter((entry) => !disabled && entry.sendId === sendId);
+    const owned = () =>
+      entries.filter((entry) => !disabled && !pageState.shutdown && entry.sendId === sendId);
     const handleResponse = (status?: number) => {
       const batch = owned();
       if (batch.length === 0) {
@@ -541,19 +561,23 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
         keepalive,
         credentials: 'same-origin',
       });
-      handleResponse(response.status);
+      if (response.status === 204 && response.headers?.get(RUM_COLLECTOR_ACK_HEADER) !== 'true') {
+        owned().forEach((entry) => settle(entry, false));
+      } else {
+        handleResponse(response.status);
+      }
     } catch {
       handleResponse();
     } finally {
       keepaliveBytes -= requestBytes;
       if (keepalive && queue.length > 0) {
-        schedule(Math.max(Date.now() + limits.flushIntervalMs, backoffUntil));
+        schedule(Math.max(Date.now() + limits.flushIntervalMs, pageState.backoffUntil));
       }
     }
   };
 
   const flush = (keepalive: boolean) => {
-    if (disabled) {
+    if (disabled || pageState.shutdown) {
       return;
     }
     const now = Date.now();
@@ -576,8 +600,8 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     if (inFlight || queue.length === 0) {
       return;
     }
-    if (backoffUntil > now) {
-      schedule(backoffUntil);
+    if (pageState.backoffUntil > now) {
+      schedule(pageState.backoffUntil);
       return;
     }
     inFlight = true;
@@ -592,7 +616,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
         inFlight = false;
         activeBatch = [];
         if (queue.length > 0) {
-          schedule(Math.max(Date.now() + limits.flushIntervalMs, backoffUntil));
+          schedule(Math.max(Date.now() + limits.flushIntervalMs, pageState.backoffUntil));
         }
       });
   };
@@ -709,7 +733,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
   };
 
   const dispose = () => {
-    disable();
+    discard();
   };
 
   return { log, event, boundary, flush, dispose };
@@ -717,6 +741,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
 
 let exporter: ClientLogExporter | undefined;
 let exporterKey: string | undefined;
+const startedListeners = new Set<() => void>();
 const reportedErrors = new WeakSet<object>();
 
 function onVisibilityChange() {
@@ -758,6 +783,13 @@ export function startClientLogs(options: ClientLogsOptions): void {
   setRemoteLogSink(forwardLog);
   document.addEventListener('visibilitychange', onVisibilityChange);
   window.addEventListener('pagehide', onPageHide);
+  startedListeners.forEach((callback) => {
+    try {
+      callback();
+    } catch {
+      /* Reporting must never affect startup. */
+    }
+  });
 }
 
 /** Stops exporting and drops anything still queued (e.g. on sign-out or when RUM is disabled). */
@@ -771,6 +803,14 @@ export function stopClientLogs(): void {
   setRemoteLogSink(undefined);
   document.removeEventListener('visibilitychange', onVisibilityChange);
   window.removeEventListener('pagehide', onPageHide);
+}
+
+/** Mounted boundaries can report after startup config and authentication enable the sink. */
+export function onClientLogsStarted(callback: () => void): () => void {
+  startedListeners.add(callback);
+  return () => {
+    startedListeners.delete(callback);
+  };
 }
 
 export function isClientLogsActive(): boolean {

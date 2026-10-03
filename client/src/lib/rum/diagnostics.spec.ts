@@ -8,7 +8,12 @@ import {
   testExports,
   forwardQueuedAssetEvents,
 } from './diagnostics';
-import { startClientLogs, stopClientLogs, reportBoundaryError } from './logs';
+import {
+  startClientLogs,
+  stopClientLogs,
+  reportBoundaryError,
+  testExports as logTestExports,
+} from './logs';
 
 const mockOnFCP = jest.fn();
 
@@ -247,6 +252,7 @@ describe('forwardQueuedAssetEvents', () => {
 
   beforeEach(() => {
     jest.useFakeTimers();
+    logTestExports.resetPageState();
     testExports.resetDiagnosticsState();
     fetchMock.mockReset();
     fetchMock.mockImplementation(() => Promise.resolve({ status: 200 }));
@@ -423,6 +429,34 @@ describe('forwardQueuedAssetEvents', () => {
     forwardQueuedAssetEvents();
     await jest.advanceTimersByTimeAsync(5_000);
     expect(loggedEventNames()).toContain('stale_asset.recovery_start');
+    expect(sessionStorage.getItem('lc-rum-queue')).toBeNull();
+  });
+
+  it('keeps an auth-dropped asset event persisted and eligible after token renewal', async () => {
+    fetchMock.mockImplementationOnce(() => Promise.resolve({ status: 204 }));
+    startClientLogs({
+      endpoint: '/api/rum/v1/logs',
+      serviceName: 'librechat-web',
+      buildId: 'index-New2.js',
+      getToken: () => 'expired-jwt',
+      fetch: fetchMock,
+    });
+    forwardQueuedAssetEvents();
+    flushEarlyRumQueue({ addAction: jest.fn() });
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(window.__lcRumQueue?.[0]).not.toHaveProperty('logged');
+    expect(JSON.parse(sessionStorage.getItem('lc-rum-queue') ?? '[]')).toHaveLength(1);
+    stopClientLogs();
+    startClientLogs({
+      endpoint: '/api/rum/v1/logs',
+      serviceName: 'librechat-web',
+      buildId: 'index-New2.js',
+      getToken: () => 'renewed-jwt',
+      fetch: fetchMock,
+    });
+    forwardQueuedAssetEvents();
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(window.__lcRumQueue).toEqual([]);
     expect(sessionStorage.getItem('lc-rum-queue')).toBeNull();
   });
 
