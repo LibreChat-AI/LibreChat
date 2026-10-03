@@ -538,12 +538,14 @@ export const getConvoTitle = ({
   conversationId,
   titleSetByUser,
   titleRevision,
+  authoritative = false,
 }: {
   queryClient: ReturnType<typeof useQueryClient>;
   currentTitle?: string | null;
   conversationId?: string | null;
   titleSetByUser?: boolean;
   titleRevision?: number;
+  authoritative?: boolean;
 }): ConvoTitleState => {
   const incoming = { title: currentTitle ?? null, titleSetByUser, titleRevision };
   if (!conversationId) {
@@ -562,7 +564,9 @@ export const getConvoTitle = ({
   }
   let selected = owned;
   if (!selected) {
-    if (hasRealTitle(cached?.title)) {
+    if (authoritative && hasRealTitle(incoming.title)) {
+      selected = incoming;
+    } else if (hasRealTitle(cached?.title)) {
       selected = cached;
     } else if (hasRealTitle(listed?.title)) {
       selected = listed;
@@ -1279,6 +1283,7 @@ export default function useEventHandlers({
               conversationId: conversation.conversationId,
               titleSetByUser: conversation.titleSetByUser,
               titleRevision: conversation.titleRevision,
+              authoritative: true,
               currentTitle:
                 !conversation.titleSetByUser &&
                 !hasRealTitle(conversation.title) &&

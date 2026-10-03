@@ -58,11 +58,15 @@ export async function publishConversationTitle(
     }
     return saved;
   };
-  let saved = await commit();
-  let current = saved ?? (await getConvo(ctx.userId, conversationId));
   let publishedEarly = false;
-  if (saved == null && convoReady != null) {
-    if (current == null) {
+  if (convoReady != null) {
+    const initial = await getConvo(ctx.userId, conversationId);
+    if (
+      !discardSignal?.aborted &&
+      (initial == null ||
+        (!initial.titleSetByUser &&
+          (initial.title == null || initial.title === '' || initial.title === 'New Chat')))
+    ) {
       await titleCache.set(key, title, 120000);
       if (!signal?.aborted) {
         await onTitleGenerated?.({ conversationId, title });
@@ -70,12 +74,23 @@ export async function publishConversationTitle(
       publishedEarly = true;
     }
     await convoReady;
-    if (discardSignal?.aborted) {
-      if (publishedEarly && (await titleCache.get(key)) === title) {
-        await titleCache.delete(key);
-      }
-      return;
+  }
+  if (discardSignal?.aborted) {
+    if (publishedEarly && (await titleCache.get(key)) === title) {
+      await titleCache.delete(key);
     }
+    return;
+  }
+  let saved = await commit();
+  let current = saved ?? (await getConvo(ctx.userId, conversationId));
+  if (
+    saved == null &&
+    convoReady != null &&
+    current != null &&
+    !current.titleSetByUser &&
+    (current.title == null || current.title === '' || current.title === 'New Chat') &&
+    !discardSignal?.aborted
+  ) {
     saved = await commit();
     current = saved ?? (await getConvo(ctx.userId, conversationId));
   }

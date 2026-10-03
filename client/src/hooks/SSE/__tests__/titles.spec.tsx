@@ -308,6 +308,24 @@ describe('stream title reconciliation', () => {
     );
   });
 
+  it('accepts an authoritative legacy final title over an unowned stale cache', () => {
+    const { result, queryClient } = setup();
+    act(() =>
+      result.current.finalHandler(
+        {
+          conversation: { ...initialConversation, title: 'Legacy remote rename' },
+          requestMessage: submission.userMessage,
+          responseMessage: { ...submission.initialResponse, text: 'Finished reply' },
+        },
+        submission,
+      ),
+    );
+    expect(result.current.conversation?.title).toBe('Legacy remote rename');
+    expect(
+      queryClient.getQueryData<TConversation>([QueryKeys.conversation, 'saved-chat'])?.title,
+    ).toBe('Legacy remote rename');
+  });
+
   it('does not mistake a processed automatic title for a manual placeholder rename', () => {
     const { result, queryClient } = setup();
     markTitleGenerationProcessed('saved-chat');
