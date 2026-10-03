@@ -58,13 +58,15 @@ if (LDAP_EMAIL) {
 const rejectUnauthorized = isEnabled(LDAP_TLS_REJECT_UNAUTHORIZED);
 const startTLS = isEnabled(LDAP_STARTTLS);
 
+const escapeLdap = (val) =>
+  String(val).replace(/[\\*()\x00]/g, (c) => '\\' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+
 const ldapOptions = {
   server: {
     url: LDAP_URL,
     bindDN: LDAP_BIND_DN,
     bindCredentials: LDAP_BIND_CREDENTIALS,
     searchBase: LDAP_USER_SEARCH_BASE,
-    searchFilter: LDAP_SEARCH_FILTER || 'mail={{username}}',
     searchAttributes: [...new Set(searchAttributes)],
     ...(LDAP_CA_CERT_PATH && {
       tlsOptions: {
