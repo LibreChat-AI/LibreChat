@@ -142,6 +142,15 @@ projects:
 #         # `SKILL.md`. Use 2 for repos shaped like `skills/<category>/<skill>`.
 #         skillDiscoveryDepth: 2
 #         token: '${GITHUB_SKILLS_TOKEN}'
+#         # Default: true. Set false to manage sharing through skill ACLs.
+#         # Sync then leaves existing grants untouched and creates new/recovered
+#         # mirrors with ADMIN viewer access only, so admins can find and share
+#         # them through the Skills catalogue. Later syncs preserve these ACLs.
+#         # Existing PUBLIC grants are NOT removed: revoke them separately.
+#         # Deleting/reimporting a skill loses its old ACLs; share it again.
+#         # Deploy to all sync workers before revoking PUBLIC access. Older
+#         # workers, or reverting to true, will restore public access on sync.
+#         sharePublicly: false
 #         # Optional. Owns the mirrored skills under the given tenant so they are
 #         # created and shared within that tenant. Required for visibility when
 #         # tenant isolation is enabled. Omit for single-tenant deployments.

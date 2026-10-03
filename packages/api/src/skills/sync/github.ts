@@ -4,6 +4,7 @@ import { Types } from 'mongoose';
 import { logger, tenantStorage } from '@librechat/data-schemas';
 import {
   ResourceType,
+  SystemRoles,
   PrincipalType,
   AccessRoleIds,
   SKILL_SYNC_DEFAULT_DISCOVERY_DEPTH,
@@ -779,13 +780,21 @@ function makeStatusKey(sourceId: string, tenantId?: string): string {
   return `${tenantId ?? ''}:${sourceId}`;
 }
 
-async function ensurePublicViewer(
+async function ensureSourceSharing(
   deps: GitHubSkillSyncDeps,
   skillId: Types.ObjectId,
+  source: SkillSyncGitHubSourceConfig,
+  isNew = false,
 ): Promise<void> {
+  const publicSharing = source.sharePublicly !== false;
+  // Bootstrap administrator discovery only for new/recreated restricted mirrors.
+  // Existing ACLs belong to administrators, including removal of this grant.
+  if (!publicSharing && !isNew) {
+    return;
+  }
   await deps.grantPermission({
-    principalType: PrincipalType.PUBLIC,
-    principalId: null,
+    principalType: publicSharing ? PrincipalType.PUBLIC : PrincipalType.ROLE,
+    principalId: publicSharing ? null : SystemRoles.ADMIN,
     resourceType: ResourceType.SKILL,
     resourceId: skillId,
     accessRoleId: AccessRoleIds.SKILL_VIEWER,
@@ -1096,6 +1105,7 @@ async function deleteSyncedSkillForRestore(
 async function restoreDeletedSyncedSkill(
   deps: GitHubSkillSyncDeps,
   deleted: DeletedSyncedSkillJournal,
+  source: SkillSyncGitHubSourceConfig,
 ): Promise<void> {
   const restored = await deps.createSkill(toCreateSkillInput(deleted.skill));
   for (const file of deleted.files) {
@@ -1104,7 +1114,7 @@ async function restoreDeletedSyncedSkill(
       skillId: restored.skill._id,
     });
   }
-  await ensurePublicViewer(deps, restored.skill._id);
+  await ensureSourceSharing(deps, restored.skill._id, source, true);
 }
 
 async function cleanupDeletedSyncedSkillFiles(
@@ -1746,7 +1756,7 @@ async function syncSource(params: {
             `Skill "${effectivePrepared.existing.name}" was modified during sync`,
           );
         }
-        await ensurePublicViewer(deps, effectivePrepared.existing._id);
+        await ensureSourceSharing(deps, effectivePrepared.existing._id, source);
         const previousFiles = await deps.listSkillFiles(effectivePrepared.existing._id);
         const journal: SyncSkillFilesJournal = { staleFiles: [], savedFiles: [] };
         let fileCounts: SyncSkillFilesResult;
@@ -1803,7 +1813,7 @@ async function syncSource(params: {
             );
           });
           if (staleConflictCleanup?.deletedSkill) {
-            await restoreDeletedSyncedSkill(deps, staleConflictCleanup.deletedSkill).catch(
+            await restoreDeletedSyncedSkill(deps, staleConflictCleanup.deletedSkill, source).catch(
               (cleanupError) => {
                 logger.error(
                   '[GitHubSkillSync] Failed to recreate stale mirrored skill after sync failure:',
@@ -1846,7 +1856,7 @@ async function syncSource(params: {
           discovered,
           assertNotCancelled,
         });
-        await ensurePublicViewer(deps, skill._id);
+        await ensureSourceSharing(deps, skill._id, source, upserted.created);
         logSkillWarnings(skill.name, upserted.warnings);
         counts.syncedSkillCount++;
         counts.syncedFileCount += fileCounts.syncedFileCount;

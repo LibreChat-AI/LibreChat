@@ -1149,6 +1149,51 @@ describe('configSchema fileListLimit', () => {
 });
 
 describe('configSchema skillSync', () => {
+  it.each([undefined, true, false])('accepts source sharePublicly=%s', (sharePublicly) => {
+    const result = configSchema.safeParse({
+      version: '1.3.13',
+      skillSync: {
+        github: {
+          enabled: true,
+          sources: [
+            {
+              id: 'skills',
+              owner: 'example',
+              repo: 'skills',
+              paths: ['skills'],
+              credentialKey: 'github-skills',
+              sharePublicly,
+            },
+          ],
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.data?.skillSync?.github?.sources[0]?.sharePublicly).toBe(sharePublicly);
+  });
+
+  it.each(['false', 0, null])('rejects non-boolean source sharePublicly=%s', (sharePublicly) => {
+    const result = configSchema.safeParse({
+      version: '1.3.13',
+      skillSync: {
+        github: {
+          enabled: true,
+          sources: [
+            {
+              id: 'skills',
+              owner: 'example',
+              repo: 'skills',
+              paths: ['skills'],
+              credentialKey: 'github-skills',
+              sharePublicly,
+            },
+          ],
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('accepts a GitHub skill sync source with explicit paths and credential key', () => {
     const result = configSchema.safeParse({
       version: '1.3.11',
