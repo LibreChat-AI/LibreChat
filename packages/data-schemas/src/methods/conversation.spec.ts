@@ -1910,6 +1910,27 @@ describe('Conversation Operations', () => {
       expect(stored?.messages?.map(String)).toEqual([...seeded, appended].map(String));
     });
 
+    it('keeps response references when an explicit rename lands concurrently', async () => {
+      const userMessage = new mongoose.Types.ObjectId();
+      const responseMessage = new mongoose.Types.ObjectId();
+      await saveConvo(ctx, { conversationId }, { appendMessageIds: [userMessage] });
+      await Promise.all([
+        saveConvo(
+          ctx,
+          { conversationId, title: 'Renamed while running' },
+          {
+            titleSource: 'manual',
+            appendMessageIds: [],
+          },
+        ),
+        saveConvo(ctx, { conversationId }, { appendMessageIds: [responseMessage] }),
+      ]);
+      const stored = await getConvo(ctx.userId, conversationId);
+      expect(stored?.messages?.map(String)).toEqual([userMessage, responseMessage].map(String));
+      expect(stored?.title).toBe('Renamed while running');
+      expect(getMessages).not.toHaveBeenCalled();
+    });
+
     it('does not duplicate an id that is already recorded', async () => {
       const id = new mongoose.Types.ObjectId();
       await saveConvo(ctx, { conversationId }, { appendMessageIds: [id] });

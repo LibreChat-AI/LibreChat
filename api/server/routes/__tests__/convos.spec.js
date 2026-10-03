@@ -2057,6 +2057,24 @@ describe('Convos Routes', () => {
     });
   });
 
+  describe('POST /update running chat rename', () => {
+    it('writes only title metadata while message persistence is active', async () => {
+      const conversationId = 'running-rename';
+      saveConvo.mockResolvedValueOnce({ conversationId, title: 'Renamed', titleRevision: 1 });
+      const response = await request(app)
+        .post('/api/convos/update')
+        .send({
+          arg: { conversationId, title: 'Renamed' },
+        });
+      expect(response.status).toBe(201);
+      expect(saveConvo).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'test-user-123' }),
+        { conversationId, title: 'Renamed' },
+        expect.objectContaining({ titleSource: 'manual', appendMessageIds: [] }),
+      );
+    });
+  });
+
   describe('POST /archive', () => {
     it('should archive a conversation successfully', async () => {
       const mockConversationId = 'conv-123';

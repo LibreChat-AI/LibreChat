@@ -759,7 +759,11 @@ router.post('/update', validateConvoAccess, configMiddleware, async (req, res) =
         interfaceConfig: req?.config?.interfaceConfig,
       },
       { conversationId, title: sanitizedTitle },
-      { context: `POST /api/convos/update ${conversationId}`, titleSource: 'manual' },
+      {
+        context: `POST /api/convos/update ${conversationId}`,
+        titleSource: 'manual',
+        appendMessageIds: [],
+      },
     );
     res.status(201).json(dbResponse);
   } catch (error) {

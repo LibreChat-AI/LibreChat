@@ -148,4 +148,30 @@ describe('useUpdateConversationMutation', () => {
     );
     expect(activeQueryClient.getQueryData(key)).toEqual(current);
   });
+  it('accepts the first durable revision after a legacy rename response', async () => {
+    const { result } = renderHook(() => useUpdateConversationMutation('rolling-chat'), { wrapper });
+    const key = [QueryKeys.conversation, 'rolling-chat'];
+    const base = { conversationId: 'rolling-chat', title: 'Old' } as TConversation;
+    activeQueryClient.setQueryData(key, base);
+    updateConversation.mockResolvedValueOnce({ ...base, title: 'Legacy rename' });
+    await act(async () =>
+      result.current.mutateAsync({ conversationId: 'rolling-chat', title: 'Legacy rename' }),
+    );
+    expect(activeQueryClient.getQueryData<TConversation>(key)?.titleRevision).toBeUndefined();
+    updateConversation.mockResolvedValueOnce({
+      ...base,
+      title: 'Upgraded rename',
+      titleRevision: 1,
+    });
+    await act(async () =>
+      result.current.mutateAsync({ conversationId: 'rolling-chat', title: 'Upgraded rename' }),
+    );
+    expect(activeQueryClient.getQueryData(key)).toEqual(
+      expect.objectContaining({
+        title: 'Upgraded rename',
+        titleSetByUser: true,
+        titleRevision: 1,
+      }),
+    );
+  });
 });
