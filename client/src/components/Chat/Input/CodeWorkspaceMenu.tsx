@@ -742,7 +742,6 @@ export default function CodeWorkspaceMenu({
         <Ariakit.MenuProvider store={machineMenuStore}>
           <TooltipAnchor
             description={localize('com_ui_code_environment_choose_machine')}
-            disabled={machineMenuOpen}
             render={
               <Ariakit.MenuButton
                 data-testid="code-machine"
@@ -760,7 +759,13 @@ export default function CodeWorkspaceMenu({
             <span className="max-w-[12rem] min-w-0 truncate">{machineLabel}</span>
             <ChevronDown className="text-text-secondary size-3 shrink-0" aria-hidden="true" />
           </TooltipAnchor>
-          <Ariakit.Menu portal gutter={8} unmountOnHide className={menuClasses}>
+          <Ariakit.Menu
+            portal
+            gutter={8}
+            unmountOnHide
+            autoFocusOnHide={() => !menuStore.getState().open}
+            className={menuClasses}
+          >
             <Ariakit.MenuHeading render={<div />} className={headingClasses}>
               {localize('com_ui_code_machine')}
             </Ariakit.MenuHeading>
@@ -772,6 +777,7 @@ export default function CodeWorkspaceMenu({
                 className={menuItemClasses(environmentIds.has(candidate.id))}
                 onClick={() => {
                   setMachineId(candidate.id);
+                  menuStore.setAutoFocusOnShow(true);
                   menuStore.show();
                 }}
               >
@@ -796,7 +802,6 @@ export default function CodeWorkspaceMenu({
             description={
               transitionText?.info ?? (requirements.join(' ') || localize('com_ui_code_workspace'))
             }
-            disabled={isOpen}
             render={
               <Ariakit.MenuButton
                 disabled={buttonDisabled}

@@ -33,19 +33,12 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('@librechat/client', () => {
-  const { cloneElement } = jest.requireActual('react');
-  const { CheckboxGlyph } = jest.requireActual('@librechat/client');
+  const { CheckboxGlyph, TooltipAnchor } = jest.requireActual('@librechat/client');
   return {
     CheckboxGlyph,
     composerControlClasses: () => 'composer-control',
     useToastContext: () => ({ showToast: mockShowToast }),
-    TooltipAnchor: ({
-      render,
-      children,
-    }: {
-      render: React.ReactElement;
-      children: React.ReactNode;
-    }) => cloneElement(render, {}, children),
+    TooltipAnchor,
   };
 });
 
@@ -123,6 +116,49 @@ describe('CodeWorkspaceMenu', () => {
     await userEvent.click(screen.getByRole('menuitem', { name: 'Personal VM' }));
     expect(await screen.findByRole('menuitemradio', { name: /Project A/ })).toBeVisible();
     expect(setter).not.toHaveBeenCalled();
+  });
+
+  test('opens the workspace menu with keyboard focus and cancels without committing', async () => {
+    const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+    const read = jest.spyOn(dataService, 'getCodeEnvironmentStatus').mockResolvedValue({
+      environmentId: alternate.id,
+      status: 'ready',
+      operations: ['read_file'],
+      workspaces: [{ id: 'runtime', name: 'Runtime Project' }],
+    });
+    const setter = jest.fn();
+    renderMenu(
+      <CodeWorkspaceMenu
+        setConversation={setter}
+        workspace={workspace({ machineOptions: [environment, alternate] })}
+        disabled={false}
+      />,
+    );
+    const machineButton = screen.getByTestId('code-machine');
+    machineButton.focus();
+    await userEvent.keyboard('{ArrowDown}');
+    await waitFor(() =>
+      expect(screen.getByRole('menu')).toContainElement(document.activeElement as HTMLElement),
+    );
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    expect(machineButton).toBeEnabled();
+    machineButton.focus();
+    await userEvent.keyboard('{ArrowDown}');
+    const candidate = await screen.findByRole('menuitem', { name: alternate.name });
+    candidate.focus();
+    await userEvent.keyboard('{Enter}');
+    const folder = await screen.findByRole('menuitemradio', { name: /Runtime Project/ });
+    await waitFor(() =>
+      expect(folder.closest('[role="menu"]')).toContainElement(
+        document.activeElement as HTMLElement,
+      ),
+    );
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    expect(screen.getByTestId('code-workspace')).toBeEnabled();
+    expect(setter).not.toHaveBeenCalled();
+    read.mockRestore();
   });
 
   test.each(['source', 'isolated', undefined] as const)(
