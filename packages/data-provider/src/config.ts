@@ -1892,6 +1892,12 @@ export const endpointSchema = baseEndpointSchema.merge(
     models: z.object({
       default: z.array(modelItemSchema).min(1),
       fetch: z.boolean().optional(),
+      /**
+       * Serves `default ∩ fetched` instead of replacing `default` with the
+       * fetched list, so endpoints sharing one gateway can each present their
+       * own slice of its catalog. Requires `fetch`.
+       */
+      filter: z.boolean().optional(),
       userIdQuery: z.boolean().optional(),
     }),
     iconURL: z.string().optional(),
