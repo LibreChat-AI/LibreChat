@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { digestMCPAuthorityValue } from '@librechat/data-schemas';
+import type { SubagentExecutionContext } from '@librechat/agents';
 const bindingKey: unique symbol = Symbol.for('librechat.toolApprovalBinding');
 const nameKey: unique symbol = Symbol.for('librechat.toolApprovalName');
 const identityKey: unique symbol = Symbol.for('librechat.toolApprovalIdentity');
@@ -47,6 +48,14 @@ export function getToolApprovalIdentity(tool: object): string | undefined {
 export interface ToolApprovalInvocation {
   agentId?: string;
   toolCallId?: string;
+  executionScope?: string;
+}
+
+export function getToolApprovalExecutionScope(
+  context?: Pick<SubagentExecutionContext, 'ancestry'>,
+): string | undefined {
+  const ancestry = context?.ancestry;
+  return ancestry?.length ? ancestry[ancestry.length - 1].subagentRunId : undefined;
 }
 
 export interface ToolApprovalExecution {
@@ -64,7 +73,12 @@ export async function assertToolApprovalExecution(
   tool: { name: string },
   config?: {
     toolCall?: { id?: string };
-    metadata?: { executingAgentId?: string; activeAgentId?: string; agentId?: string };
+    metadata?: {
+      executingAgentId?: string;
+      activeAgentId?: string;
+      agentId?: string;
+      executionContext?: SubagentExecutionContext;
+    };
   },
 ): Promise<void> {
   const execution = executionContext.getStore();
@@ -75,5 +89,6 @@ export async function assertToolApprovalExecution(
       config?.metadata?.activeAgentId ??
       config?.metadata?.agentId,
     toolCallId: config?.toolCall?.id,
+    executionScope: getToolApprovalExecutionScope(config?.metadata?.executionContext),
   });
 }

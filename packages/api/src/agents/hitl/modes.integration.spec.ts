@@ -6,13 +6,14 @@ import { Run, Providers, FakeChatModel } from '@librechat/agents';
 import { HumanMessage } from '@librechat/agents/langchain/messages';
 import { createModels, createMethods } from '@librechat/data-schemas';
 import type { ToolApprovalGrantStorage, Agents } from 'librechat-data-provider';
-import type { AgentApprovalSource, ReviewedToolApprovals } from './modes';
+import type { AgentApprovalSource, ReviewedToolApprovals, AgentToolApprovalSession } from './modes';
 import {
   createAgentToolApprovalSession,
   bindRunToolApprovalSession,
   captureRunToolApprovalBindings,
   buildMCPToolApprovalBinding,
   describeRememberedToolApprovals,
+  resolveAgentToolGrantBinding,
 } from './modes';
 import { buildHITLRunWiring, buildToolApprovalExecutionConfig } from './runtime';
 import { bindToolApproval, bindToolApprovalIdentity } from '~/tools/approval';
@@ -84,6 +85,7 @@ async function build({
   eventDriven = false,
   executionTool = guarded,
   beforeLoad,
+  sharedSession,
 }: {
   source: AgentApprovalSource;
   chat: string;
@@ -93,13 +95,16 @@ async function build({
   eventDriven?: boolean;
   executionTool?: typeof guarded;
   beforeLoad?: () => void | Promise<void>;
+  sharedSession?: AgentToolApprovalSession;
 }) {
-  const session = createAgentToolApprovalSession({
-    agents: [source],
-    storage,
-    scope: { userId: 'sdk-user', conversationId: chat },
-    reviewed,
-  });
+  const session =
+    sharedSession ??
+    createAgentToolApprovalSession({
+      agents: [source],
+      storage,
+      scope: { userId: 'sdk-user', conversationId: chat },
+      reviewed,
+    });
   const wiring = buildHITLRunWiring(
     { enabled: true, mode: 'bypass' },
     {},
@@ -546,5 +551,43 @@ test.each([
     );
     expect(again.getInterrupt()?.payload.type).toBe('tool_approval');
     expect(executions).toBe(1);
+  },
+);
+
+test.each(['allow', 'chat', 'always'] as const)(
+  'concurrent SDK agents can reuse call_0 under %s mode',
+  async (mode) => {
+    const sources: AgentApprovalSource[] = ['agent-a', 'agent-b'].map((id) => ({
+      id,
+      tool_options: {
+        [name]: { approval_mode: mode, approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05' },
+      },
+      toolDefinitions: [definition()],
+    }));
+    const chat = 'parallel-chat';
+    const scope = { userId: 'sdk-user', conversationId: chat };
+    if (mode !== 'allow')
+      await storage.rememberToolApprovalGrants(
+        scope,
+        sources.map((source) => resolveAgentToolGrantBinding(source, name, scope)!),
+      );
+    const sharedSession = createAgentToolApprovalSession({ agents: sources, storage, scope });
+    const runs = await Promise.all(
+      sources.map((source) =>
+        build({
+          source,
+          chat,
+          saver: new MemorySaver(),
+          eventDriven: true,
+          callId: 'call_0',
+          sharedSession,
+        }),
+      ),
+    );
+    await Promise.all(
+      runs.map((run) => run.processStream({ messages: [new HumanMessage('run')] }, config(chat))),
+    );
+    expect(executions).toBe(2);
+    for (const run of runs) expect(run.getInterrupt()).toBeUndefined();
   },
 );

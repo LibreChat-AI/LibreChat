@@ -82,6 +82,8 @@ export type AgentToolApprovalMode = (typeof AGENT_TOOL_APPROVAL_MODES)[number];
 
 export interface ToolApprovalGrantBinding {
   instanceName: string;
+  /** SDK child execution identity; never part of remembered consent scope. */
+  executionScope?: string;
   agentId: string;
   toolName: string;
   binding: string;
