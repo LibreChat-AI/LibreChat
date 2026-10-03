@@ -4,6 +4,7 @@ const axios = require('axios');
 const {
   deleteRagFile,
   stripCacheBust,
+  writeFileAtomic,
   assertRemoteFileURL,
   getRemoteFileFetchMaxBytes,
   getRemoteFileFetchTimeoutMs,
@@ -87,7 +88,7 @@ async function saveLocalBuffer({ userId, buffer, fileName, basePath = 'images' }
     if (rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(`..${path.sep}`)) {
       throw new Error('Path traversal detected in filename');
     }
-    await fs.promises.writeFile(resolvedPath, buffer);
+    await writeFileAtomic(resolvedPath, buffer);
 
     const filePath = path.posix.join('/', basePath, userId, fileName);
 
@@ -150,7 +151,7 @@ async function saveFileFromURL({ userId, URL, fileName, basePath = 'images' }) {
 
     // Save the file to the output path
     const outputFilePath = path.join(outputPath, fileName);
-    await fs.promises.writeFile(outputFilePath, buffer);
+    await writeFileAtomic(outputFilePath, buffer);
 
     return {
       bytes,
