@@ -336,6 +336,17 @@ const ChatForm = memo(function ChatForm({
     draftId: answerMode.draftId,
   });
 
+  const {
+    isPreparing: isPreparingFromUrl,
+    settingsError: urlSettingsError,
+    clearSettingsError,
+  } = useQueryParams({
+    textAreaRef,
+    routePending,
+    onBeforePrompt: preserveText,
+    onPromptSettled: settleText,
+  });
+
   const pastedTextEdit = usePastedTextEdit({ index, files, setFiles, textAreaRef });
 
   /** Provenance, not the filename, decides which chips are pastes: a user can deliberately
@@ -408,6 +419,7 @@ const ChatForm = memo(function ChatForm({
     conversation,
     isSubmitting,
     answerModeActive: composerReserved,
+    composerDisabled: isPreparingFromUrl,
     files,
     setFiles,
     filesLoading,
@@ -445,17 +457,6 @@ const ChatForm = memo(function ChatForm({
     },
     [methods, steering],
   );
-
-  const {
-    isPreparing: isPreparingFromUrl,
-    settingsError: urlSettingsError,
-    clearSettingsError,
-  } = useQueryParams({
-    textAreaRef,
-    routePending,
-    onBeforePrompt: preserveText,
-    onPromptSettled: settleText,
-  });
 
   const handleKeyUp = useHandleKeyUp({
     index,
@@ -606,7 +607,7 @@ const ChatForm = memo(function ChatForm({
         stop={handleStopGenerating}
         setShowStopButton={setShowStopButton}
         canStop={canStop}
-        hidden={sendOwnsSlot}
+        hidden={sendOwnsSlot && !isPreparingFromUrl}
       />
     ) : null;
     if (sendOwnsSlot) {
@@ -618,7 +619,7 @@ const ChatForm = memo(function ChatForm({
               isNewConversation={isNewConversation}
               getText={() => methods.getValues('text')}
               onConsumed={consumeComposer}
-              disabled={filesLoading}
+              disabled={filesLoading || isPreparingFromUrl}
             />
           )}
           <DuringRunSendButton
@@ -628,7 +629,7 @@ const ChatForm = memo(function ChatForm({
             isNewConversation={isNewConversation}
             getText={() => methods.getValues('text')}
             onConsumed={consumeComposer}
-            disabled={filesLoading}
+            disabled={filesLoading || isPreparingFromUrl}
             enterToSend={enterToSend}
           />
           {stopButton}
@@ -639,6 +640,7 @@ const ChatForm = memo(function ChatForm({
   }, [
     consumeComposer,
     isNewConversation,
+    isPreparingFromUrl,
     steering,
     textValue,
     methods,

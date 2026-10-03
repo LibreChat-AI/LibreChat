@@ -8,6 +8,7 @@ import { act, render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useNavigate, useLocation } from 'react-router-dom';
 import type { TConversation } from 'librechat-data-provider';
+import type { Transport } from '~/hooks/Chat/contract';
 import type { ChatFormValues } from '~/common';
 import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
 import { getNewConversationDraftId, getDraft, setDraft } from '~/utils/drafts';
@@ -26,7 +27,17 @@ const initialConversation = {
 
 const ask = jest.fn();
 const newConversation = jest.fn();
-const transport = { ...defaultChatTransport, listQueued: async () => [] };
+const stopGeneration = jest.fn();
+const transport: Transport = {
+  ...defaultChatTransport,
+  listQueued: async () => [],
+  steer: jest.fn(async (params) => ({
+    status: 'queued' as const,
+    steerId: 'test-steer',
+    position: 0,
+    conversationId: params.conversationId,
+  })),
+};
 
 function Harness({
   conversation,
@@ -55,7 +66,7 @@ function Harness({
       filesLoading: false,
       setFilesLoading,
       newConversation,
-      handleStopGenerating: () => undefined,
+      handleStopGenerating: stopGeneration,
       stopGenerating: () => Promise.resolve(),
       getMessages: () => [],
       messagesKey: 'new',
@@ -105,6 +116,7 @@ function mountComposer(
     query = 'agent_id=agent_test&q=hi&submit=true',
     routePending = false,
     speechSettingsInitialized = false,
+    liveRun = false,
   } = {},
 ) {
   const queryClient = new QueryClient({
@@ -154,6 +166,15 @@ function mountComposer(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot
         initializeState={({ set }) => {
+          if (liveRun) {
+            set(store.isSubmittingFamily(0), true);
+            set(store.showStopButtonByIndex(0), true);
+            set(store.activeGenerationCreatedAtByConvoId(conversation.conversationId ?? ''), 1000);
+            set(
+              store.activeGenerationProtocolVersionByConvoId(conversation.conversationId ?? ''),
+              2,
+            );
+          }
           if (speechSettingsInitialized) {
             set(store.engineSTT, 'external');
             set(store.autoTranscribeAudio, false);
@@ -291,6 +312,39 @@ describe('ChatForm URL submission', () => {
       expect(ask).toHaveBeenCalledTimes(outcome === 'refusal' ? 1 : 0);
     },
   );
+
+  it('holds live-run composer actions during URL preparation while leaving Stop available', async () => {
+    mountComposer(
+      { ...initialConversation, conversationId: 'existing-live-chat' },
+      {
+        query: 'endpoint=openAI&model=unavailable-model&q=hi&submit=true',
+        liveRun: true,
+      },
+    );
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(screen.getByText('Sending...')).toBeInTheDocument();
+    expect(screen.getByTestId('text-input')).toHaveValue('hi');
+    expect(screen.getByTestId('during-run-send-button')).toBeDisabled();
+    expect(screen.getByTestId('interrupt-steer-button')).toBeDisabled();
+    const stop = screen.getByRole('button', { name: 'Stop generating' });
+    expect(stop).toBeEnabled();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('interrupt-steer-button'));
+      fireEvent.click(screen.getByTestId('during-run-send-button'));
+      fireEvent.submit(screen.getByTestId('text-input').closest('form') as HTMLFormElement);
+      fireEvent.keyDown(screen.getByTestId('text-input'), {
+        key: 'Enter',
+        ctrlKey: true,
+        shiftKey: true,
+      });
+    });
+    expect(transport.steer).not.toHaveBeenCalled();
+    expect(ask).not.toHaveBeenCalled();
+    expect(screen.getByTestId('text-input')).toHaveValue('hi');
+    await act(async () => fireEvent.click(stop));
+    expect(stopGeneration).toHaveBeenCalledTimes(1);
+    expect(transport.steer).not.toHaveBeenCalled();
+  });
 
   it('disables the microphone while URL settings are preparing and re-enables it on timeout', async () => {
     mountComposer(initialConversation, { speechSettingsInitialized: true });
