@@ -22,14 +22,54 @@
       ],
       "outputs": ["dist/**"]
     },
+    "test:ci": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "test/.env.test", "$TURBO_ROOT$/config/jest*.{js,cjs}"],
+      "outputs": ["coverage/**"],
+      "env": [
+        "CI",
+        "COVERAGE",
+        "RUN_*_LIVE_TESTS",
+        "LIBRECHAT_CODE_TEST_*",
+        "GRAPH_SUBAGENT_*",
+        "ANTHROPIC_USAGE_LIVE_MODEL",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY"
+      ],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
+    },
     "@librechat/data-schemas#build": {
-      "dependsOn": ["^build", "librechat-data-provider#build"]
+      "dependsOn": ["^build", "librechat-data-provider#build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/__tests__/**",
+        "!**/__mocks__/**",
+        "!**/*.test.*",
+        "!**/*.spec.*"
+      ],
+      "outputs": ["dist/**"]
     },
     "@librechat/api#build": {
-      "dependsOn": ["^build", "librechat-data-provider#build", "@librechat/data-schemas#build"]
+      "dependsOn": ["^build", "librechat-data-provider#build", "@librechat/data-schemas#build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/__tests__/**",
+        "!**/__mocks__/**",
+        "!**/*.test.*",
+        "!**/*.spec.*"
+      ],
+      "outputs": ["dist/**"]
     },
     "@librechat/client#build": {
-      "dependsOn": ["^build", "librechat-data-provider#build"]
+      "dependsOn": ["^build", "librechat-data-provider#build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/__tests__/**",
+        "!**/__mocks__/**",
+        "!**/*.test.*",
+        "!**/*.spec.*"
+      ],
+      "outputs": ["dist/**"]
     }
   }
 }
