@@ -380,10 +380,23 @@ function GitContext({
   );
 }
 
-function WorkspaceRequirements({ id, requirements }: { id: string; requirements: string[] }) {
+function WorkspaceRequirements({
+  id,
+  requirements,
+  visible = false,
+}: {
+  id: string;
+  requirements: string[];
+  visible?: boolean;
+}) {
   if (requirements.length === 0) return null;
   return (
-    <div id={id} role="status" aria-live="polite" className="text-text-secondary text-xs">
+    <div
+      id={id}
+      role={visible ? undefined : 'status'}
+      aria-live={visible ? undefined : 'polite'}
+      className={visible ? 'text-text-secondary px-2.5 pb-2 text-xs' : 'sr-only'}
+    >
       {requirements.map((requirement) => (
         <p key={requirement}>{requirement}</p>
       ))}
@@ -653,6 +666,8 @@ export default function CodeWorkspaceMenu({
   ) {
     requirements.unshift(localize('com_ui_code_workspace_graph_requirement'));
   }
+  const details = [...requirements, ...checkoutSummaries];
+  const description = details.join(' ');
 
   if (workspace.locked && transition == null) {
     /** A sealed decision with no transition on offer only reports where this chat runs: without a
@@ -675,9 +690,9 @@ export default function CodeWorkspaceMenu({
             </span>
           </span>
         )}
-        <div className="flex min-w-0 flex-col items-start gap-1">
+        <div className="flex min-w-0 items-center">
           <TooltipAnchor
-            description={requirements.join(' ') || recovery}
+            description={description || recovery}
             render={
               <button
                 type="button"
@@ -803,11 +818,9 @@ export default function CodeWorkspaceMenu({
         </Ariakit.MenuProvider>
       )}
       <Ariakit.MenuProvider store={menuStore}>
-        <div className="flex min-w-0 flex-col items-start gap-1">
+        <div className="flex min-w-0 items-center">
           <TooltipAnchor
-            description={
-              transitionText?.info ?? (requirements.join(' ') || localize('com_ui_code_workspace'))
-            }
+            description={transitionText?.info ?? (description || localize('com_ui_code_workspace'))}
             render={
               <Ariakit.MenuButton
                 disabled={buttonDisabled}
@@ -1013,6 +1026,7 @@ export default function CodeWorkspaceMenu({
                 ))}
             </>
           )}
+          <WorkspaceRequirements id={`${requirementsId}-details`} requirements={details} visible />
           <Ariakit.MenuSeparator className="border-border-light my-1 h-0 w-full border-t" />
           <Ariakit.MenuItem
             disabled={buttonDisabled || isRefreshing}
