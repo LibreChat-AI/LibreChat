@@ -6,12 +6,29 @@ const {
   extractToolArgumentContent,
 } = require('@librechat/api');
 const { callTool, verifyToolAuth, getToolCalls } = require('~/server/controllers/tools');
+const { ResourceType, PermissionBits } = require('librechat-data-provider');
+const { checkPermission } = require('~/server/services/PermissionService');
 const { getAvailableTools } = require('~/server/controllers/PluginController');
 const { toolCallLimiter } = require('~/server/middleware');
 
 const approvalStorage = require('~/models');
 const router = express.Router();
-router.post('/approvals/reset', createResetToolApprovalController(approvalStorage));
+router.post(
+  '/approvals/reset',
+  toolCallLimiter,
+  createResetToolApprovalController({
+    storage: approvalStorage,
+    getAgent: approvalStorage.getAgent,
+    canAccessAgent: (agent, user) =>
+      checkPermission({
+        userId: user.id,
+        role: user.role,
+        resourceType: ResourceType.AGENT,
+        resourceId: agent._id,
+        requiredPermission: PermissionBits.VIEW,
+      }),
+  }),
+);
 const filterToolArguments = createContentFilter({
   onTraversalFailure: reportLocatorTraversalFailure,
   getFilters: (req) => req.config?.filters,

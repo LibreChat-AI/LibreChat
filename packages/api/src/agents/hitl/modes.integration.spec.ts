@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import mongoose from 'mongoose';
 import { MemorySaver } from '@langchain/langgraph';
-import { tool } from '@librechat/agents/langchain/tools';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { Run, Providers, FakeChatModel } from '@librechat/agents';
 import { HumanMessage } from '@librechat/agents/langchain/messages';
@@ -14,18 +13,29 @@ import {
   captureRunToolApprovalBindings,
 } from './modes';
 import { buildHITLRunWiring, buildToolApprovalExecutionConfig } from './runtime';
+import { createMCPStructuredTool } from '~/mcp/tools';
+import { markMCPToolResultError } from '~/mcp/status';
 import { bindToolApproval } from '~/tools/approval';
+import { formatToolContent } from '~/mcp/parsers';
 
 let mongo: MongoMemoryServer;
 let storage: ToolApprovalGrantStorage;
 let executions = 0;
+let protocolError = false;
 const name = 'echo_mcp_fixture';
-const guarded = tool(
-  async ({ text }) => {
+const guarded = createMCPStructuredTool(
+  async (input) => {
+    const { text } = z.object({ text: z.string() }).parse(input);
     executions++;
-    return text;
+    const raw = { content: [{ type: 'text' as const, text }], isError: protocolError };
+    return markMCPToolResultError(formatToolContent(raw, 'openai'), raw.isError);
   },
-  { name, description: 'Scripted SDK integration tool', schema: z.object({ text: z.string() }) },
+  {
+    name,
+    description: 'Scripted SDK integration tool',
+    schema: z.object({ text: z.string() }),
+    responseFormat: 'content_and_artifact',
+  },
 );
 
 beforeAll(async () => {
@@ -41,6 +51,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   executions = 0;
+  protocolError = false;
   await mongoose.models.ToolApprovalGrant.deleteMany({});
 });
 
@@ -101,6 +112,7 @@ async function build({
     humanInTheLoop: wiring.humanInTheLoop,
     hooks: wiring.hooks,
   });
+  if (!run.Graph) throw new Error('The test run did not initialize its graph.');
   run.Graph.overrideModel = new FakeChatModel({
     responses: ['Done.'],
     ...(callId
@@ -172,3 +184,48 @@ test.each(['chat', 'always'] as const)(
   },
   30000,
 );
+
+test('a protocol-valid MCP error never teaches automatic approval', async () => {
+  protocolError = true;
+  const source: AgentApprovalSource = {
+    id: 'agent-a',
+    tool_options: {
+      [name]: {
+        approval_mode: 'always',
+        approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+      },
+    },
+    toolDefinitions: [
+      bindToolApproval(
+        { name, serverName: 'fixture', parameters: { type: 'object' } },
+        'source-one',
+      ),
+    ],
+  };
+  const saver = new MemorySaver();
+  const first = await build({ source, chat: 'error-chat', saver, callId: 'failed-call' });
+  await first.processStream({ messages: [new HumanMessage('run')] }, config('error-chat'));
+  const interrupt = first.getInterrupt()!;
+  const bindings = captureRunToolApprovalBindings(
+    first,
+    interrupt.payload as Agents.ToolApprovalInterruptPayload,
+  )!;
+  const resumed = await build({
+    source,
+    chat: 'error-chat',
+    saver,
+    reviewed: { bindings, decisions: [{ tool_call_id: 'failed-call', decision: 'approve' }] },
+  });
+  await resumed.resume({ 'failed-call': { type: 'approve' } }, config('error-chat'));
+  expect(executions).toBe(1);
+  expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+  const next = await build({
+    source,
+    chat: 'retry-chat',
+    saver: new MemorySaver(),
+    callId: 'retry-call',
+  });
+  await next.processStream({ messages: [new HumanMessage('retry')] }, config('retry-chat'));
+  expect(next.getInterrupt()?.payload.type).toBe('tool_approval');
+  expect(executions).toBe(1);
+}, 30000);

@@ -64,6 +64,7 @@ import { MCPConnectionFactory } from './MCPConnectionFactory';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
 import { OAuthLifecycleRelay } from './oauth/pending';
 import { isOwnedAbortError } from '~/utils/errors';
+import { markMCPToolResultError } from './status';
 import { withMCPRequestSignal } from './signal';
 import { MCPConnection } from './connection';
 import { mcpConfig } from './mcpConfig';
@@ -2057,20 +2058,23 @@ Please follow these instructions when using tools from the respective MCP server
           resolvedAppResource = undefined;
         }
 
-        return formatToolContent(
-          toolResult,
-          provider,
-          appCompatible
-            ? {
-                serverName,
-                toolName,
-                resourceUri: resourceMeta?.uri,
-                resolvedAppResource,
-                serverBinding,
-                toolArgs: toolArguments,
-                mcpApps: admittedMCPApps,
-              }
-            : { mcpApps: admittedMCPApps },
+        return markMCPToolResultError(
+          formatToolContent(
+            toolResult,
+            provider,
+            appCompatible
+              ? {
+                  serverName,
+                  toolName,
+                  resourceUri: resourceMeta?.uri,
+                  resolvedAppResource,
+                  serverBinding,
+                  toolArgs: toolArguments,
+                  mcpApps: admittedMCPApps,
+                }
+              : { mcpApps: admittedMCPApps },
+          ),
+          toolResult?.isError === true,
         );
       } catch (error) {
         if (error instanceof OAuthRecoveryTakeoverRequired) {

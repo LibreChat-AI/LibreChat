@@ -1475,7 +1475,13 @@ function createToolInstance({
   });
   toolInstance.mcp = true;
   toolInstance.mcpRawServerName = serverName;
-  bindToolApproval(toolInstance, buildMCPToolApprovalBinding(serverName, capturedServerConfig));
+  bindToolApproval(
+    toolInstance,
+    buildMCPToolApprovalBinding(serverName, capturedServerConfig),
+    currentToolName != null
+      ? `${currentToolName}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`
+      : normalizedToolKey,
+  );
   if (serverToolName !== toolName) {
     /** Upstream identity for stripped keys — lets the options aliasing in
      *  `buildToolClassification` heal legacy `tool_options` spellings. */

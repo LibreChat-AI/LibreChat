@@ -513,8 +513,8 @@ export function createUserMethods(
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
       }
-      await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
       await invalidateAuthUserDocCache(userId);
+      await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
       return { deletedCount: result.deletedCount, message: 'User was deleted successfully.' };
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';

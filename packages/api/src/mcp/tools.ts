@@ -1,4 +1,5 @@
 import { logger } from '@librechat/data-schemas';
+import { ToolMessage } from '@librechat/agents/langchain/messages';
 import { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import { patchConfig, pickRunnableConfigKeys } from '@langchain/core/runnables';
 import { AsyncLocalStorageProviderSingleton } from '@langchain/core/singletons';
@@ -16,6 +17,7 @@ import { canUseAppConnection, requiresEphemeralUserConnection } from './utils';
 import { normalizeJsonSchema, resolveJsonSchemaRefs } from './zod';
 import { STANDARD_MCP_CAPABILITY_PROFILE } from './capabilities';
 import { getMCPToolCatalogGeneration } from './toolsChanged';
+import { isMCPToolResultError } from './status';
 import { isToolHiddenFromModel } from './apps';
 
 type DynamicStructuredToolFields = ConstructorParameters<typeof DynamicStructuredTool>[0];
@@ -30,12 +32,26 @@ export function createMCPStructuredTool(
 ): DynamicStructuredTool<unknown> {
   return new DynamicStructuredTool({
     ...fields,
-    func: (input, runManager, config) => {
+    func: async (input, runManager, config) => {
       const childConfig = patchConfig(config, { callbacks: runManager?.getChild() });
-      return AsyncLocalStorageProviderSingleton.runWithConfig(
+      const result = await AsyncLocalStorageProviderSingleton.runWithConfig(
         pickRunnableConfigKeys(childConfig),
         () => func(input, childConfig),
       );
+      if (Array.isArray(result) && result.length === 2 && isMCPToolResultError(result)) {
+        const invocation = config as typeof config & { toolCall?: { id?: string } };
+        return [
+          new ToolMessage({
+            content: result[0],
+            artifact: result[1],
+            status: 'error',
+            tool_call_id: invocation?.toolCall?.id ?? '',
+            name: fields.name,
+          }),
+          result[1],
+        ];
+      }
+      return result;
     },
   });
 }

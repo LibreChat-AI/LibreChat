@@ -77,12 +77,6 @@ export function createToolApprovalGrantMethods(
       );
     },
     async resetToolApprovalGrants(userId, agentId, toolName) {
-      const existing = await mongoose.models.ToolApprovalGrant.exists({
-        user: userId,
-        agentId,
-        toolName,
-      });
-      if (!existing) return;
       const filter = { user: userId, agentId, toolName, conversationId: '' };
       await mongoose.models.ToolApprovalGrant.updateOne(
         filter,
