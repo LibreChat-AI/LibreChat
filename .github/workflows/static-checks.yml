@@ -111,6 +111,10 @@ jobs:
             runner:
               - 'scripts/static-checks.mts'
               - '.github/workflows/static-checks.yml'
+            import_tools:
+              - 'scripts/sort-imports.mts'
+              - 'scripts/imports/**'
+              - '.github/workflows/static-checks.yml'
             unused_packages:
               - 'api/**'
               - 'client/**'
@@ -147,6 +151,13 @@ jobs:
         if: always() && (steps.paths.outputs.eslint == 'true' || steps.paths.outputs.suppressions == 'true')
         continue-on-error: true
         run: npm run build:client-package
+
+      - name: Test and typecheck import cleanup tooling
+        if: always() && steps.paths.outputs.import_tools == 'true'
+        run: |
+          node --test scripts/imports/compact.test.mts
+          node_modules/.bin/tsc --noEmit --project scripts/imports/tsconfig.json
+          node_modules/.bin/prettier --check scripts/sort-imports.mts scripts/imports/*.mts scripts/imports/tsconfig.json
 
       # Run ESLint on changed files within the api/, client/, and packages/ directories.
       - name: Run ESLint on changed files
