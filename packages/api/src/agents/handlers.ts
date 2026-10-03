@@ -898,7 +898,7 @@ function getSafeToolError(
   const thrownMessage = feedback ?? getThrownValueMessage(error);
   /** File text an attached edit conflict quotes goes to the model only, never to the logs. */
   const rawMessage =
-    !feedback && error instanceof AttachedEditConflictError ? error.modelMessage : thrownMessage;
+    !feedback && error instanceof AttachedEditRejectionError ? error.modelMessage : thrownMessage;
   const logMessage = truncateMiddle(thrownMessage, MAX_TOOL_ERROR_MESSAGE_CHARS);
   const message = truncateMiddle(rawMessage, MAX_TOOL_ERROR_MESSAGE_CHARS);
   const stack = !feedback && error instanceof Error && error.stack ? error.stack : undefined;
@@ -3947,23 +3947,38 @@ function describeAttachedEdit(filePath: string, result: WorkspaceEditResult): st
   return `Updated workspace/${filePath} with ${count} replacement${count === 1 ? '' : 's'} (${notes.join('; ')}).`;
 }
 
-/** The only body a sanitized conflict carries, so logs never retain worker-supplied text. */
-const SANITIZED_EDIT_CONFLICT_BODY = JSON.stringify({ code: 'EDIT_CONFLICT' });
-
 /**
- * A worker conflict that keeps its status but none of its body. `message` is what logs keep;
- * `modelMessage` may add the current file text the worker quoted, which the model sees just as it
- * would see a read_file result, and which never reaches the logs.
+ * A rejected attached edit that keeps its status and code but none of its body, so logs never
+ * retain upstream text. `message` is what logs keep; `modelMessage` may add the current file text
+ * a worker quoted, which the model sees just as it would see a read_file result.
  */
-class AttachedEditConflictError extends WorkspaceToolHttpError {
+class AttachedEditRejectionError extends WorkspaceToolHttpError {
   constructor(
     reason: WorkspaceToolHttpError['reason'],
     message: string,
     public readonly modelMessage: string,
+    code = 'EDIT_CONFLICT',
   ) {
-    super(reason, 409, SANITIZED_EDIT_CONFLICT_BODY);
+    super(reason, 409, JSON.stringify({ code }));
     this.message = message;
   }
+}
+
+/**
+ * Any other 409, such as a quarantined workspace, is not a text mismatch the model can fix by
+ * re-reading. Only its validated code is kept, in host words.
+ */
+function attachedEditRejection(
+  filePath: string,
+  error: WorkspaceToolHttpError,
+  code: string,
+): AttachedEditRejectionError {
+  const guidance =
+    code === 'WORKSPACE_QUARANTINED'
+      ? ' The workspace is quarantined after an earlier operation did not finish; it must be reset on its machine before edits can apply, so retrying will not help.'
+      : '';
+  const message = `The edit to "workspace/${filePath}" was rejected by the code environment (${code}), so nothing was written.${guidance}`;
+  return new AttachedEditRejectionError(error.reason, message, message, code);
 }
 
 /**
@@ -3978,10 +3993,10 @@ function attachedEditConflict(
   req: ServerRequest | undefined,
   filePath: string,
   error: WorkspaceToolHttpError,
-): AttachedEditConflictError {
+): AttachedEditRejectionError {
   const conflict = error.editConflict;
   const settle = (message: string, modelMessage = message) =>
-    new AttachedEditConflictError(error.reason, message, modelMessage);
+    new AttachedEditRejectionError(error.reason, message, modelMessage);
   if (conflict?.startsWith('Workspace file changed')) {
     return settle(
       `"workspace/${filePath}" changed while this edit was being applied, so nothing was written. Re-read the file and retry.`,
@@ -4126,12 +4141,13 @@ async function handleAttachedWorkspaceEditFileCall({
     });
   } catch (error) {
     if (error instanceof WorkspaceToolHttpError) {
-      /** Other 409s (a quarantined workspace) are the Code API's own rejections, not edit misses. */
-      const isEditConflict = error.upstreamCode == null || error.upstreamCode === 'EDIT_CONFLICT';
-      if (error.upstreamStatus === 409 && isEditConflict) {
-        throw attachedEditConflict(tc, req, path.filePath, error);
+      if (error.upstreamStatus !== 409) {
+        throw error;
       }
-      throw error;
+      const code = error.upstreamCode;
+      throw code == null || code === 'EDIT_CONFLICT'
+        ? attachedEditConflict(tc, req, path.filePath, error)
+        : attachedEditRejection(path.filePath, error, code);
     }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn('[file_authoring] Attached workspace edit failed', getSafeErrorMetadata(error));
