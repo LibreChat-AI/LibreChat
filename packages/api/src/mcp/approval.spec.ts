@@ -191,3 +191,88 @@ test.each(renewableFields)('%s alias loading does not require renewable token by
     buildMCPToolReviewAuthority({ serverName: 'db', config: selected, user: principal }),
   ).toEqual(expect.any(String));
 });
+
+const tokenPrincipal = (token: string) => ({
+  id: 'user-a',
+  openidId: 'subject-a',
+  openidTokens: { access_token: token, expires_at: Math.floor(Date.now() / 1000) + 3600 },
+});
+
+for (const field of renewableFields) {
+  test(`${field} stdio env and arguments retain routing without renewable token bytes`, () => {
+    const selected = {
+      type: 'stdio' as const,
+      source: 'yaml' as const,
+      command: 'node',
+      args: ['server.js', `--credential={{${field}}}`, '--workspace={{WORKSPACE}}'],
+      env: {
+        UPSTREAM_ACCESS_TOKEN: `{{WORKSPACE}}:{{${field}}}`,
+        USER: '{{LIBRECHAT_USER_OPENIDID}}',
+      },
+    };
+    const authority = (token: string, workspace = 'a', subject = 'subject-a') =>
+      buildMCPToolReviewAuthority({
+        serverName: 'db',
+        config: selected,
+        user: { ...tokenPrincipal(token), openidId: subject },
+        customUserVars: { WORKSPACE: workspace },
+      });
+    const first = authority('synthetic-a');
+    expect(first).toEqual(expect.any(String));
+    expect(authority('synthetic-b')).toBe(first);
+    expect(authority('synthetic-b', 'b')).not.toBe(first);
+    expect(authority('synthetic-b', 'a', 'subject-b')).not.toBe(first);
+    expect(selected.env.UPSTREAM_ACCESS_TOKEN).toBe(`{{WORKSPACE}}:{{${field}}}`);
+  });
+}
+
+test('renewable OAuth and URL fragments retain surrounding destination authority', () => {
+  const selected = {
+    ...config,
+    url: 'https://{{WORKSPACE}}.example.test/mcp?token={{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
+    oauth: {
+      client_id: '{{WORKSPACE}}',
+      client_secret: '{{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
+      authorization_url: 'https://{{WORKSPACE}}.example.test/authorize',
+    },
+  };
+  const authority = (token: string, workspace = 'a') =>
+    buildMCPToolReviewAuthority({
+      serverName: 'db',
+      config: selected,
+      user: tokenPrincipal(token),
+      customUserVars: { WORKSPACE: workspace },
+    });
+  expect(authority('synthetic-b')).toBe(authority('synthetic-a'));
+  expect(authority('synthetic-b', 'b')).not.toBe(authority('synthetic-a'));
+});
+
+test('an injected renewable API key is masked without ignoring declared credential changes', () => {
+  const selected = {
+    ...config,
+    apiKey: {
+      source: 'admin' as const,
+      authorization_type: 'bearer' as const,
+      key: '{{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
+    },
+  };
+  const a = buildMCPToolReviewAuthority({
+    serverName: 'db',
+    config: selected,
+    user: tokenPrincipal('synthetic-a'),
+  });
+  expect(
+    buildMCPToolReviewAuthority({
+      serverName: 'db',
+      config: selected,
+      user: tokenPrincipal('synthetic-b'),
+    }),
+  ).toBe(a);
+  expect(
+    buildMCPToolReviewAuthority({
+      serverName: 'db',
+      config: { ...selected, apiKey: { ...selected.apiKey, key: 'static-admin-credential' } },
+      user: tokenPrincipal('synthetic-b'),
+    }),
+  ).not.toBe(a);
+});

@@ -1290,3 +1290,85 @@ test('unsaved verified alias reset revokes the canonical grant without resetting
   expect((await storage.getToolApprovalGrants(scope, [consent]))[0].approved).toBe(false);
   expect(Object.keys(agent.tool_options)).toEqual(['db_query_mcp_db']);
 });
+
+for (const eventDriven of [false, true]) {
+  test.each([false, true])(
+    `stdio renewable env rotation permits only the unchanged reviewed route; event-driven=${eventDriven}, route changed=%s`,
+    async (routeChanged) => {
+      const selected = {
+        type: 'stdio' as const,
+        source: 'yaml' as const,
+        command: 'node',
+        args: ['server.js'],
+        env: { UPSTREAM_ACCESS_TOKEN: '{{WORKSPACE}}:{{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+      };
+      const authority = (token: string, workspace: string) =>
+        buildMCPToolReviewAuthority({
+          serverName: 'fixture',
+          config: selected,
+          user: {
+            id: '652000000000000000000001',
+            openidId: 'subject-a',
+            openidTokens: { access_token: token, expires_at: Math.floor(Date.now() / 1000) + 3600 },
+          },
+          customUserVars: { WORKSPACE: workspace },
+        });
+      const a = authority('synthetic-a', 'workspace-a');
+      const b = authority('synthetic-b', routeChanged ? 'workspace-b' : 'workspace-a');
+      const targetDefinition = (value?: string) =>
+        bindToolApprovalIdentity(
+          bindToolReviewAuthority(
+            {
+              name,
+              serverName: 'fixture',
+              parameters: { type: 'object' },
+            },
+            value,
+          ),
+          'echo',
+          { type: 'object' },
+        );
+      const source: AgentApprovalSource = {
+        id: 'agent-a',
+        tool_options: {
+          [name]: {
+            approval_mode: 'chat',
+            approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+          },
+        },
+        toolDefinitions: [targetDefinition(a)],
+      };
+      const saver = new MemorySaver();
+      const first = await build({
+        source,
+        chat: 'env-renewal-chat',
+        saver,
+        eventDriven,
+        executionTool: createProbe(null, 'echo', a),
+        callId: 'env-renewal-call',
+      });
+      await first.processStream(
+        { messages: [new HumanMessage('run')] },
+        config('env-renewal-chat'),
+      );
+      const bindings = captureRunToolApprovalBindings(
+        first,
+        first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+      )!;
+      const resumed = await build({
+        source: { ...source, toolDefinitions: [targetDefinition(b)] },
+        chat: 'env-renewal-chat',
+        saver,
+        eventDriven,
+        executionTool: createProbe(null, 'echo', b),
+        reviewed: {
+          bindings,
+          decisions: [{ tool_call_id: 'env-renewal-call', decision: 'approve' }],
+        },
+      });
+      await resumed.resume({ 'env-renewal-call': { type: 'approve' } }, config('env-renewal-chat'));
+      expect(executions).toBe(routeChanged ? 0 : 1);
+      expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+    },
+  );
+}
