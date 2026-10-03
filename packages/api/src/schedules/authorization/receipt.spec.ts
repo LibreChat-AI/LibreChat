@@ -5,17 +5,22 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { AIMessage } from '@librechat/agents/langchain/messages';
 import { createModels, createMethods } from '@librechat/data-schemas';
 import { Constants, HookRegistry, ToolNode, executeHooks } from '@librechat/agents';
-import type { AppConfig } from '@librechat/data-schemas';
+import type { AppConfig, AgentGraphAccessContext } from '@librechat/data-schemas';
 import type { SchedulesServiceDeps } from '../service';
 import {
   createSchedulesService,
   createScheduledMCPPolicyRecorder,
   recordScheduledMCPToolAuthFailure,
 } from '../service';
+import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
+import { createScheduleMCPExecution, getScheduleMCPExecution } from './execution';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { createAgentTriggerExecutionHost } from '~/agents/triggers/host';
+import { createAgentTriggerEnvelope } from '~/agents/triggers/envelope';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { resolveScheduleMCPCompletion } from './continuation';
 import { createScheduleMCPConsentService } from './service';
-import { createScheduleMCPExecution } from './execution';
+import { createMCPRequestContext } from '~/mcp/request';
 import { executionFixture } from './execution.helper';
 import { createScheduledMCPRunPolicy } from './run';
 import { ScheduledMCPPolicyError } from './policy';
@@ -597,3 +602,243 @@ it.each(['root', 'child'])(
     });
   },
 );
+
+it('fences both newly prepared and already serialized legacy completion turns after enrollment', async () => {
+  const f = await setup(true);
+  const scope = {
+    ownerId: f.execution.identity.ownerId,
+    tenantId: 'tenant',
+    conversationId: 'stream',
+  };
+  const identity = await resolveScheduleMCPCompletion(
+    scope,
+    f.methods.getScheduleMCPCompletionState,
+  );
+  expect(identity).toEqual(f.execution.identity);
+  await f.enroll();
+  await expect(
+    resolveScheduleMCPCompletion(scope, f.methods.getScheduleMCPCompletionState),
+  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+  const host = createScheduleMCPRuntimeHost({
+    methods: f.methods,
+    getScheduleMCPCompletionState: f.methods.getScheduleMCPCompletionState,
+    findUser: async () => null,
+    getRoleByName: async () => null,
+    canViewAgent: async () => false,
+    enrollment: {
+      findUser: async () => null,
+      canUseRoot: async () => false,
+      getAppConfig: async () => undefined,
+      resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
+      getNodes: async () => [],
+      getModelsConfig: async () => ({}),
+      getServers: async () => ({}),
+    },
+  });
+  for (const sourceId of ['subagent-completion', 'background-tool-completion']) {
+    for (const marker of [
+      undefined,
+      { version: 1, sourceId },
+      { version: 1, sourceId, scheduleMCPIdentity: identity },
+    ]) {
+      const initialize = jest.fn(async () => 'mutation would execute');
+      const req = {
+        user: { id: f.execution.identity.ownerId, tenantId: 'tenant' },
+        _isAgentTrigger: true,
+        _isScheduledFire: false,
+        body: { conversationId: 'stream', agent_id: 'root', agentCompletion: marker },
+      };
+      await expect(
+        initializeWithScheduleMCPExecution(
+          { req, context: createMCPRequestContext() },
+          () => host,
+          initialize,
+        ),
+      ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+      expect(initialize).not.toHaveBeenCalled();
+    }
+  }
+});
+
+it('atomically keeps a permanent denial when an older delayed transient job write lands last', async () => {
+  const f = await setup();
+  const mongoWrite = jest
+    .spyOn(f.service.engineDeps.methods, 'recordMCPToolAuthFailure')
+    .mockRejectedValue(new Error('Receipt storage outage'));
+  const original = store.updateJob.bind(store);
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  jest.spyOn(store, 'updateJob').mockImplementation(async (id, patch, epoch) => {
+    if (patch.scheduleMCPFailure?.reason === 'dependency_unavailable') {
+      enter();
+      await gate;
+    }
+    await original(id, patch, epoch);
+  });
+  const earlier = f.record(new ScheduledMCPPolicyError('dependency_unavailable', '', 'root'));
+  await entered;
+  const permanent = new ScheduledMCPPolicyError('binding_mismatch', '', 'child');
+  expect(await f.record(permanent)).toBe(true);
+  release();
+  expect(await earlier).toBe(true);
+  expect((await store.getJob('stream'))?.scheduleMCPFailure).toEqual(permanent.outcomes[0]);
+  mongoWrite.mockRestore();
+  const rebuilt = createSchedulesService(f.deps);
+  await rebuilt.recordScheduleOutcome({
+    scheduleId: f.schedule.id,
+    scheduledFor: f.scheduledFor,
+    status: 'success',
+    conversationId: 'stream',
+    streamId: 'stream',
+    jobCreatedAt: f.job.createdAt,
+  });
+  expect(await f.methods.getScheduleById(f.schedule.id)).toMatchObject({
+    enabled: false,
+    disabledReason: 'mcp_reauth_required',
+    failureCount: 1,
+    lastRun: { status: 'error', mcp: permanent.outcomes },
+  });
+});
+
+it('projects the original schedule identity from the production host into a queued completion', async () => {
+  const f = await setup(true);
+  const identity = await resolveScheduleMCPCompletion(
+    { ownerId: f.execution.identity.ownerId, tenantId: 'tenant', conversationId: 'stream' },
+    f.methods.getScheduleMCPCompletionState,
+  );
+  let body: Record<string, unknown> | undefined;
+  const trigger = createAgentTriggerExecutionHost({
+    getBaseUrl: () => 'http://localhost:3080',
+    mintToken: async () => 'fixture-token',
+    prepareContinue: async () => ({
+      status: 'ready',
+      input: 'completed',
+      parentMessageId: 'response',
+      scheduleMCPIdentity: identity,
+    }),
+    fetch: async (_url, request) => {
+      body = JSON.parse(String(request?.body));
+      return new Response(
+        JSON.stringify({
+          status: 'started',
+          conversationId: 'stream',
+          streamId: 'stream',
+          generationCreatedAt: 1,
+        }),
+        { status: 200 },
+      );
+    },
+  });
+  await trigger.dispatch(
+    createAgentTriggerEnvelope({
+      mode: 'continue',
+      requestId: 'request',
+      deliveryId: 'task',
+      receivedAt: Date.now(),
+      principal: { id: f.execution.identity.ownerId, tenantId: 'tenant' },
+      event: {
+        id: 'task',
+        type: 'subagent.completion',
+        occurredAt: Date.now(),
+        source: { id: 'subagent-completion', type: 'internal' },
+      },
+      target: { agentId: 'root', conversationId: 'stream', parentMessageId: 'response' },
+      input: 'completed',
+    }),
+  );
+  expect(body).toMatchObject({
+    agentCompletion: { version: 1, sourceId: 'subagent-completion', scheduleMCPIdentity: identity },
+  });
+  expect(body).not.toHaveProperty('agentTrigger');
+});
+
+it('keeps a legacy continuation guarded if confirmation lands after request admission', async () => {
+  const f = await setup(true);
+  const context = createMCPRequestContext();
+  const host = createScheduleMCPRuntimeHost({
+    methods: f.methods,
+    getScheduleMCPCompletionState: f.methods.getScheduleMCPCompletionState,
+    findUser: async () => null,
+    getRoleByName: async () => null,
+    canViewAgent: async () => false,
+    enrollment: {
+      findUser: async () => null,
+      canUseRoot: async () => false,
+      getAppConfig: async () => undefined,
+      resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
+      getNodes: async () => [],
+      getModelsConfig: async () => ({}),
+      getServers: async () => ({}),
+    },
+  });
+  await host.prepare({
+    context,
+    req: {
+      user: { id: f.execution.identity.ownerId, tenantId: 'tenant' },
+      _isAgentTrigger: true,
+      body: { conversationId: 'stream', agent_id: 'child' },
+    },
+  });
+  const execution = getScheduleMCPExecution(context)!;
+  expect(execution.enrolled).toBe(false);
+  expect(execution.identity.agentId).toBe('root');
+  await f.enroll();
+  const policy = createScheduledMCPRunPolicy(execution, [{ id: 'child' }]);
+  const registry = new HookRegistry();
+  registry.register('PreToolUse', { hooks: [policy.hook] });
+  const mutate = jest.fn(async () => 'mutated');
+  const action = new DynamicStructuredTool({
+    name: 'mutation',
+    description: 'Write',
+    schema: z.object({}),
+    func: mutate,
+  });
+  const node = new ToolNode({ agentId: 'child', tools: [action], hookRegistry: registry });
+  expect(
+    JSON.stringify(
+      await node.invoke(
+        {
+          messages: [
+            new AIMessage({
+              content: '',
+              tool_calls: [{ id: 'write', name: action.name, args: {} }],
+            }),
+          ],
+        },
+        { configurable: { run_id: 'completion', thread_id: 'stream' } },
+      ),
+    ),
+  ).toContain('Blocked:');
+  expect(mutate).not.toHaveBeenCalled();
+});
+
+it('scopes completion lineage to its owner and tenant and rejects missing schedule authority', async () => {
+  const f = await setup(true);
+  const scope = {
+    ownerId: f.execution.identity.ownerId,
+    tenantId: 'tenant',
+    conversationId: 'stream',
+  };
+  expect(
+    await f.methods.getScheduleMCPCompletionState({
+      ...scope,
+      ownerId: new mongoose.Types.ObjectId().toString(),
+    }),
+  ).toBeNull();
+  expect(
+    await f.methods.getScheduleMCPCompletionState({ ...scope, tenantId: 'foreign' }),
+  ).toBeNull();
+  expect(
+    await f.methods.getScheduleMCPCompletionState({ ...scope, conversationId: 'ordinary' }),
+  ).toBeNull();
+  await mongoose.models.Schedule.deleteOne({ id: f.schedule.id });
+  await expect(
+    resolveScheduleMCPCompletion(scope, f.methods.getScheduleMCPCompletionState),
+  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+});

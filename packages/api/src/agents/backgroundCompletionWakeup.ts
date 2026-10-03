@@ -20,9 +20,11 @@ import type {
   AgentTriggerContinuePreparation,
   AgentTriggerExecutionHostDeps,
 } from './triggers/host';
+import type { ScheduleMCPCompletionLookup } from '~/schedules/authorization/continuation';
 import type { AgentContinueTriggerEnvelope } from './triggers/envelope';
 import type { AgentTriggerDispatchContext } from './triggers/dispatch';
 import type { AgentTriggerEnqueueOptions } from './triggers/delivery';
+import { resolveScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 import { WAITING_RETRY_CAP_MS, waitingRetryAfter } from './triggers/backoff';
 import { BACKGROUND_TOOL_PRODUCER_LEASE_MS } from './backgroundCompletion';
 import { SUBAGENT_COMPLETION_SOURCE } from './subagentCompletionWakeup';
@@ -95,6 +97,7 @@ interface GenerationState {
 }
 
 export interface BackgroundToolCompletionWakeupResolverDeps {
+  getScheduleMCPCompletionState?: ScheduleMCPCompletionLookup;
   methods: WakeupMethods;
   getGenerationJob: (conversationId: string) => Promise<GenerationState | null>;
   getResultBatchSize?: () => number | undefined;
@@ -265,6 +268,7 @@ export function createBackgroundToolCompletionWakeupResolver({
   getGenerationJob,
   getResultBatchSize,
   getWaitMaxIntervalMs,
+  getScheduleMCPCompletionState,
 }: BackgroundToolCompletionWakeupResolverDeps): NonNullable<
   AgentTriggerExecutionHostDeps['prepareContinue']
 > {
@@ -316,6 +320,16 @@ export function createBackgroundToolCompletionWakeupResolver({
         status: 404,
       });
     }
+    const scheduleMCPIdentity = getScheduleMCPCompletionState
+      ? await resolveScheduleMCPCompletion(
+          {
+            ownerId: userId,
+            tenantId: envelope.principal.tenantId ?? null,
+            conversationId: envelope.target.conversationId,
+          },
+          getScheduleMCPCompletionState,
+        )
+      : undefined;
     const parentMessages = await methods.getMessages(
       { user: userId, conversationId: envelope.target.conversationId },
       MESSAGE_SELECT,
@@ -401,6 +415,7 @@ export function createBackgroundToolCompletionWakeupResolver({
       return {
         status: 'ready',
         parentMessageId,
+        ...(scheduleMCPIdentity && { scheduleMCPIdentity }),
         ...(parent.codeApprovalMode != null && { codeApprovalMode: parent.codeApprovalMode }),
         input,
         releaseOnDefiniteFailure: async () => {
@@ -471,6 +486,7 @@ export function createBackgroundToolCompletionWakeupResolver({
       return {
         status: 'ready',
         parentMessageId,
+        ...(scheduleMCPIdentity && { scheduleMCPIdentity }),
         ...(parent.codeApprovalMode != null && { codeApprovalMode: parent.codeApprovalMode }),
         input: buildWakeupInput(receiptClaim.results),
         releaseOnDefiniteFailure: async () => {
@@ -507,6 +523,7 @@ export function createBackgroundToolCompletionWakeupResolver({
       return {
         status: 'ready',
         parentMessageId,
+        ...(scheduleMCPIdentity && { scheduleMCPIdentity }),
         ...(parent.codeApprovalMode != null && { codeApprovalMode: parent.codeApprovalMode }),
         input: buildWakeupInput([
           { ...registration, status: receipt.status, output: receipt.output },

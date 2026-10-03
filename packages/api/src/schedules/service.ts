@@ -3,7 +3,6 @@ import { getRefillEligibilityDate, Permissions, PermissionTypes } from 'librecha
 import {
   DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
   isScheduleMCPAuthorizationFailure,
-  getScheduleMCPDisabledReason,
 } from 'librechat-data-provider';
 import type { ScheduleMethods, AppConfig, IBalance, IChatProject } from '@librechat/data-schemas';
 import type { TCheckpointerConfig } from 'librechat-data-provider';
@@ -36,6 +35,7 @@ import {
   captureAgentCheckpointGeneration,
   checkpointStorageConfigs,
 } from '../agents/checkpointer';
+import { scheduleMCPFailurePriority } from '~/stream/scheduleFailure';
 import { fireSchedule, BALANCE_SKIP_DISABLE_THRESHOLD } from './fire';
 import { GenerationJobManager } from '../stream/GenerationJobManager';
 import { ScheduledMCPPolicyError } from './authorization/policy';
@@ -480,7 +480,9 @@ export function createSchedulesService(
   >();
   const failureKey = (streamId: string, epoch: number) => JSON.stringify([streamId, epoch]);
   const preferFailure = (previous: ScheduleMCPOutcome | undefined, next: ScheduleMCPOutcome) =>
-    !previous || getScheduleMCPDisabledReason([previous, next]) === next.status ? next : previous;
+    !previous || scheduleMCPFailurePriority(next) > scheduleMCPFailurePriority(previous)
+      ? next
+      : previous;
 
   const MANUAL_RUN_LEASE_MS = 5 * 60 * 1000;
   // Bounded wait for aborted scheduled runs to settle during account-deletion quiesce,
@@ -657,7 +659,7 @@ export function createSchedulesService(
         job.scheduleId === pending.identity.scheduleId &&
         job.userId === pending.identity.ownerId &&
         (job.tenantId ?? null) === pending.identity.tenantId
-          ? pending.outcome
+          ? preferFailure(job.scheduleMCPFailure, pending.outcome)
           : job.scheduleMCPFailure;
       return {
         status: job.status,
@@ -995,10 +997,13 @@ export function createSchedulesService(
         latest.scheduledFor === job.scheduledFor &&
         latest.userId === userId &&
         (latest.tenantId ?? null) === (job.tenantId ?? null) &&
-        latest.scheduleMCPFailure != null;
+        scheduleMCPFailurePriority(latest.scheduleMCPFailure) >=
+          scheduleMCPFailurePriority(outcome);
     }
     if (jobRetained || (writes[1].status === 'fulfilled' && writes[1].value)) {
-      pendingMCPFailures.delete(key);
+      const pending = pendingMCPFailures.get(key);
+      if (scheduleMCPFailurePriority(pending?.outcome) <= scheduleMCPFailurePriority(outcome))
+        pendingMCPFailures.delete(key);
       return true;
     }
     logger.warn('[schedules] MCP denial evidence awaiting durable recovery');
@@ -1085,7 +1090,9 @@ export function createSchedulesService(
               (job.tenantId ?? null) === pending.identity.tenantId &&
               (job.agent_id == null || job.agent_id === pending.identity.agentId)))
         )
-          retained = pending?.outcome ?? job.scheduleMCPFailure;
+          retained = pending
+            ? preferFailure(job.scheduleMCPFailure, pending.outcome)
+            : job.scheduleMCPFailure;
         else if (!retained && key) pendingMCPFailures.delete(key);
       } catch {
         // A known denial cannot be replaced by success while its evidence is undurable.

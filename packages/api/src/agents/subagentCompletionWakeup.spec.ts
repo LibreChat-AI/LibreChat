@@ -1564,3 +1564,31 @@ describe('createSubagentCompletionWakeupResolver', () => {
     });
   });
 });
+
+it('refuses a queued legacy scheduled wakeup after enrollment before claiming its result', async () => {
+  const { methods } = resolverMethods();
+  const lookup = jest.fn(async () => ({
+    identity: {
+      scheduleId: 'schedule',
+      ownerId: 'user-1',
+      tenantId: 'tenant-1',
+      agentId: 'agent_parent_1',
+      invocationMode: 'delegated' as const,
+    },
+    enrolled: true,
+  }));
+  const prepare = createSubagentCompletionWakeupResolver({
+    methods: methods as never,
+    getGenerationJob: async () => null,
+    getScheduleMCPCompletionState: lookup,
+  });
+  await expect(
+    prepare(wakeupEnvelope(), { idempotencyKey: 'wakeup', attempt: 1, maxAttempts: 3 }),
+  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+  expect(lookup).toHaveBeenCalledWith({
+    ownerId: 'user-1',
+    tenantId: 'tenant-1',
+    conversationId: 'conversation-1',
+  });
+  expect(methods.claimSubagentTaskResult).not.toHaveBeenCalled();
+});

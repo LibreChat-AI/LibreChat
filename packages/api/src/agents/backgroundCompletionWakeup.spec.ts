@@ -1034,3 +1034,31 @@ describe('pending background completions', () => {
     }
   });
 });
+
+it('fences an ordinary background wakeup queued before schedule enrollment', async () => {
+  const { methods } = resolverMethods();
+  const lookup = jest.fn(async () => ({
+    identity: {
+      scheduleId: 'schedule',
+      ownerId: 'user-1',
+      tenantId: 'tenant-1',
+      agentId: 'agent_parent_1',
+      invocationMode: 'delegated' as const,
+    },
+    enrolled: true,
+  }));
+  const prepare = createBackgroundToolCompletionWakeupResolver({
+    methods: methods as never,
+    getGenerationJob: async () => null,
+    getScheduleMCPCompletionState: lookup,
+  });
+  await expect(
+    prepare(await envelope(), { idempotencyKey: 'wakeup' } as never),
+  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+  expect(lookup).toHaveBeenCalledWith({
+    ownerId: 'user-1',
+    tenantId: 'tenant-1',
+    conversationId: 'conversation-1',
+  });
+  expect(methods.claimBackgroundToolResults).not.toHaveBeenCalled();
+});

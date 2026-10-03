@@ -19,3 +19,5 @@ export * from './authorization/enrollment';
 export * from './authorization/execution';
 export * from './authorization/runtime';
 export * from './authorization/policy';
+
+export * from './authorization/continuation';

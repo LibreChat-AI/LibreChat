@@ -7,6 +7,7 @@ const methods = require('~/models');
 
 module.exports = createScheduleMCPRuntimeHost({
   methods,
+  getScheduleMCPCompletionState: methods.getScheduleMCPCompletionState,
   findUser: (id) => methods.findUser({ _id: id }),
   getRoleByName: methods.getRoleByName,
   canViewAgent: async (agentId, user) => (await resolveAgentFireAccess(agentId, user)) === 'ok',

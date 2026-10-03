@@ -5,8 +5,8 @@ import {
   scheduledMCPFailureReasonSchema,
 } from 'librechat-data-provider';
 import type { ScheduleRunStatus, ScheduleDisabledReason } from 'librechat-data-provider';
+import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { Model, Types, AnyBulkWriteOperation } from 'mongoose';
-import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type {
   ISchedule,
   IScheduleDocument,
@@ -187,6 +187,12 @@ export type ResumedRunReservation =
   | { conflict: 'not-paused' | 'overlap' | 'slot-taken' };
 
 export type ScheduleMethods = {
+  /** Null only for a conversation that has never belonged to a retained schedule occurrence. */
+  getScheduleMCPCompletionState: (scope: {
+    ownerId: string;
+    tenantId: string | null;
+    conversationId: string;
+  }) => Promise<{ identity: ScheduledMCPIdentity; enrolled: boolean } | null>;
   ensureScheduleIndexes: () => Promise<void>;
   createSchedule: (data: Partial<ISchedule>) => Promise<ISchedule>;
   createScheduleWithSlot: (
@@ -1070,8 +1076,48 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     return (renewed.matchedCount ?? 0) > 0;
   }
 
-  /** The abort-coordination view of a run row, for the generation owner's settlement
-   *  barrier (see abortPersistedAt). */
+  /** Resolve retained occurrence lineage before admitting an automatic continuation. */
+  async function getScheduleMCPCompletionState(scope: {
+    ownerId: string;
+    tenantId: string | null;
+    conversationId: string;
+  }): Promise<{ identity: ScheduledMCPIdentity; enrolled: boolean } | null> {
+    const occurrence = await ScheduleRun()
+      .findOne({
+        user: scope.ownerId,
+        tenantId: scope.tenantId,
+        conversationId: scope.conversationId,
+      })
+      .select('scheduleId')
+      .read('primary')
+      .lean<Pick<IScheduleRun, 'scheduleId'>>();
+    if (!occurrence) return null;
+    const schedule = await Schedule()
+      .findOne({
+        id: occurrence.scheduleId,
+        user: scope.ownerId,
+        tenantId: scope.tenantId,
+      })
+      .select('agent_id mcpConsent deleting erased')
+      .read('primary')
+      .lean<ISchedule>();
+    return {
+      identity: {
+        scheduleId: occurrence.scheduleId,
+        ownerId: scope.ownerId,
+        tenantId: scope.tenantId,
+        agentId: schedule?.agent_id ?? '',
+        invocationMode: 'delegated',
+      },
+      enrolled:
+        !schedule ||
+        schedule.deleting === true ||
+        schedule.erased === true ||
+        schedule.mcpConsent !== undefined,
+    };
+  }
+
+  /** The generation owner's abort-coordination view (see abortPersistedAt). */
   async function getScheduleRunAbortState(
     scheduleId: string,
     scheduledFor: Date,
@@ -2268,6 +2314,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     persistResolvedProject,
     getScheduleRunProject,
     getScheduleRunAbortState,
+    getScheduleMCPCompletionState,
     recordMCPToolAuthFailure,
     markRunResumeClaimed,
     releaseRunResumeClaim,

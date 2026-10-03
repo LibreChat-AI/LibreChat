@@ -192,4 +192,7 @@ scheduleRunSchema.index({ status: 1, firedAt: 1 });
 // without this the round-robin rotation re-sorts the whole live set every tick.
 scheduleRunSchema.index({ status: 1, reconciledAt: 1, firedAt: 1 });
 
+// Owner-scoped automatic-completion admission, including settled occurrences.
+scheduleRunSchema.index({ user: 1, tenantId: 1, conversationId: 1 });
+
 export default scheduleRunSchema;
