@@ -13,6 +13,7 @@ import {
   captureRunToolApprovalBindings,
 } from './modes';
 import { buildHITLRunWiring, buildToolApprovalExecutionConfig } from './runtime';
+import { createToolExecuteHandler } from '../handlers';
 import { createMCPStructuredTool } from '~/mcp/tools';
 import { markMCPToolResultError } from '~/mcp/status';
 import { bindToolApproval } from '~/tools/approval';
@@ -23,19 +24,23 @@ let storage: ToolApprovalGrantStorage;
 let executions = 0;
 let protocolError = false;
 const name = 'echo_mcp_fixture';
-const guarded = createMCPStructuredTool(
-  async (input) => {
-    const { text } = z.object({ text: z.string() }).parse(input);
-    executions++;
-    const raw = { content: [{ type: 'text' as const, text }], isError: protocolError };
-    return markMCPToolResultError(formatToolContent(raw, 'openai'), raw.isError);
-  },
-  {
-    name,
-    description: 'Scripted SDK integration tool',
-    schema: z.object({ text: z.string() }),
-    responseFormat: 'content_and_artifact',
-  },
+const fixtureSchema = z.object({ text: z.string() });
+const guarded = Object.assign(
+  createMCPStructuredTool(
+    async (input) => {
+      const { text } = z.object({ text: z.string() }).parse(input);
+      executions++;
+      const raw = { content: [{ type: 'text' as const, text }], isError: protocolError };
+      return markMCPToolResultError(formatToolContent(raw, 'openai'), raw.isError);
+    },
+    {
+      name,
+      description: 'Scripted SDK integration tool',
+      schema: fixtureSchema,
+      responseFormat: 'content_and_artifact',
+    },
+  ),
+  { schema: fixtureSchema },
 );
 
 beforeAll(async () => {
@@ -61,12 +66,14 @@ async function build({
   saver,
   reviewed,
   callId,
+  eventDriven = false,
 }: {
   source: AgentApprovalSource;
   chat: string;
   saver: MemorySaver;
   reviewed?: ReviewedToolApprovals;
   callId?: string;
+  eventDriven?: boolean;
 }) {
   const session = createAgentToolApprovalSession({
     agents: [source],
@@ -100,13 +107,27 @@ async function build({
           endpoint: Providers.OPENAI,
           clientOptions: llmConfig,
           instructions: 'Use the scripted tool.',
-          tools: [guarded],
+          tools: eventDriven ? [] : [guarded],
+          toolDefinitions: eventDriven
+            ? source.toolDefinitions?.map((definition) => ({
+                name: definition.name,
+                description: definition.description,
+                parameters: {
+                  type: 'object' as const,
+                  properties: { text: { type: 'string' as const } },
+                },
+              }))
+            : undefined,
         },
       ],
       compileOptions: { checkpointer: saver },
     },
     returnContent: true,
-    customHandlers: {},
+    customHandlers: {
+      on_tool_execute: createToolExecuteHandler({
+        loadTools: async () => ({ loadedTools: [guarded] }),
+      }),
+    },
     tokenCounter: (text) => String(text ?? '').length,
     indexTokenCountMap: {},
     humanInTheLoop: wiring.humanInTheLoop,
@@ -128,9 +149,14 @@ const config = (chat: string) => ({
   version: 'v2' as const,
 });
 
-test.each(['chat', 'always'] as const)(
-  '%s mode learns only after a real reviewed execution and scopes a rebuilt chat',
-  async (mode) => {
+test.each([
+  ['chat', false],
+  ['always', false],
+  ['chat', true],
+  ['always', true],
+] as const)(
+  '%s mode learns only after a real reviewed execution (event-driven: %s)',
+  async (mode, eventDriven) => {
     const source: AgentApprovalSource = {
       id: 'agent-a',
       tool_options: {
@@ -144,7 +170,7 @@ test.each(['chat', 'always'] as const)(
       ],
     };
     const saver = new MemorySaver();
-    const first = await build({ source, chat: 'chat-a', saver, callId: 'first-call' });
+    const first = await build({ source, chat: 'chat-a', saver, eventDriven, callId: 'first-call' });
     await first.processStream({ messages: [new HumanMessage('run')] }, config('chat-a'));
     const interrupt = first.getInterrupt();
     expect(interrupt?.payload.type).toBe('tool_approval');
@@ -158,6 +184,7 @@ test.each(['chat', 'always'] as const)(
       source,
       chat: 'chat-a',
       saver,
+      eventDriven,
       reviewed: { bindings, decisions: [{ tool_call_id: 'first-call', decision: 'approve' }] },
     });
     await resumed.resume({ 'first-call': { type: 'approve' } }, config('chat-a'));
@@ -171,6 +198,7 @@ test.each(['chat', 'always'] as const)(
       source,
       chat: 'chat-b',
       saver: new MemorySaver(),
+      eventDriven,
       callId: 'next-call',
     });
     await next.processStream({ messages: [new HumanMessage('run')] }, config('chat-b'));
@@ -185,47 +213,63 @@ test.each(['chat', 'always'] as const)(
   30000,
 );
 
-test('a protocol-valid MCP error never teaches automatic approval', async () => {
-  protocolError = true;
-  const source: AgentApprovalSource = {
-    id: 'agent-a',
-    tool_options: {
-      [name]: {
-        approval_mode: 'always',
-        approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+test.each([false, true])(
+  'a protocol-valid MCP error never teaches approval (event-driven: %s)',
+  async (eventDriven) => {
+    protocolError = true;
+    const source: AgentApprovalSource = {
+      id: 'agent-a',
+      tool_options: {
+        [name]: {
+          approval_mode: 'always',
+          approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+        },
       },
-    },
-    toolDefinitions: [
-      bindToolApproval(
-        { name, serverName: 'fixture', parameters: { type: 'object' } },
-        'source-one',
-      ),
-    ],
-  };
-  const saver = new MemorySaver();
-  const first = await build({ source, chat: 'error-chat', saver, callId: 'failed-call' });
-  await first.processStream({ messages: [new HumanMessage('run')] }, config('error-chat'));
-  const interrupt = first.getInterrupt()!;
-  const bindings = captureRunToolApprovalBindings(
-    first,
-    interrupt.payload as Agents.ToolApprovalInterruptPayload,
-  )!;
-  const resumed = await build({
-    source,
-    chat: 'error-chat',
-    saver,
-    reviewed: { bindings, decisions: [{ tool_call_id: 'failed-call', decision: 'approve' }] },
-  });
-  await resumed.resume({ 'failed-call': { type: 'approve' } }, config('error-chat'));
-  expect(executions).toBe(1);
-  expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
-  const next = await build({
-    source,
-    chat: 'retry-chat',
-    saver: new MemorySaver(),
-    callId: 'retry-call',
-  });
-  await next.processStream({ messages: [new HumanMessage('retry')] }, config('retry-chat'));
-  expect(next.getInterrupt()?.payload.type).toBe('tool_approval');
-  expect(executions).toBe(1);
-}, 30000);
+      toolDefinitions: [
+        bindToolApproval(
+          { name, serverName: 'fixture', parameters: { type: 'object' } },
+          'source-one',
+        ),
+      ],
+    };
+    const saver = new MemorySaver();
+    const first = await build({
+      source,
+      chat: 'error-chat',
+      saver,
+      eventDriven,
+      callId: 'failed-call',
+    });
+    await first.processStream({ messages: [new HumanMessage('run')] }, config('error-chat'));
+    const interrupt = first.getInterrupt()!;
+    const bindings = captureRunToolApprovalBindings(
+      first,
+      interrupt.payload as Agents.ToolApprovalInterruptPayload,
+    )!;
+    const resumed = await build({
+      source,
+      chat: 'error-chat',
+      saver,
+      eventDriven,
+      reviewed: { bindings, decisions: [{ tool_call_id: 'failed-call', decision: 'approve' }] },
+    });
+    await resumed.resume({ 'failed-call': { type: 'approve' } }, config('error-chat'));
+    expect(executions).toBe(1);
+    const toolMessages = (resumed.getRunMessages() ?? []).filter(
+      (message) => message._getType() === 'tool',
+    );
+    expect(JSON.stringify(toolMessages.map((message) => message.content))).toContain('hello');
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+    const next = await build({
+      source,
+      chat: 'retry-chat',
+      saver: new MemorySaver(),
+      eventDriven,
+      callId: 'retry-call',
+    });
+    await next.processStream({ messages: [new HumanMessage('retry')] }, config('retry-chat'));
+    expect(next.getInterrupt()?.payload.type).toBe('tool_approval');
+    expect(executions).toBe(1);
+  },
+  30000,
+);

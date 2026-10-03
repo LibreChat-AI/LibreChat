@@ -141,7 +141,7 @@ export namespace Agents {
       /** Server-authored: an `approve` may carry `scope: 'session'` for this call. */
       allow_always?: boolean;
       remember_scope?: 'chat' | 'always';
-      remember_unavailable?: 'connection' | 'disabled' | 'storage';
+      remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
     };
   };
 
@@ -480,7 +480,7 @@ export namespace Agents {
    */
   export interface ToolReviewConfig {
     remember_scope?: 'chat' | 'always';
-    remember_unavailable?: 'connection' | 'disabled' | 'storage';
+    remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
     action_name: string;
     tool_call_id: string;
     allowed_decisions: ToolApprovalDecisionType[];

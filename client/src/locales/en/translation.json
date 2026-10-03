@@ -3357,5 +3357,6 @@
   "com_ui_tool_approval_admin_deny": "Administrator policy blocks this tool.",
   "com_ui_tool_approval_connection_unavailable": "Approval cannot be remembered for this connection. Each call requires review.",
   "com_ui_tool_approval_remember_disabled": "Remembered approvals are disabled. Each call requires review.",
-  "com_ui_tool_approval_storage_unavailable": "Remembered approval is unavailable. This approval will apply only to this call."
+  "com_ui_tool_approval_storage_unavailable": "Remembered approval is unavailable. This approval will apply only to this call.",
+  "com_ui_tool_approval_background_unavailable": "Background launches cannot teach approval. Approve a successful foreground call to remember this tool."
 }

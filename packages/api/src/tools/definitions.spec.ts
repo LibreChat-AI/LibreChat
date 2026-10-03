@@ -7,6 +7,7 @@ import type {
 import { toolkitExpansion, toolkitParent } from './toolkits/mapping';
 import { getToolDefinition } from './registry/definitions';
 import { loadToolDefinitions } from './definitions';
+import { getToolApprovalName } from './approval';
 
 const MAX_PROVIDER_TOOL_DESCRIPTION_LENGTH = 1024;
 
@@ -1225,4 +1226,54 @@ describe('definitions.ts', () => {
       });
     });
   });
+});
+
+test('definitions-only loading retains the verified reset key without collapsing a collision sibling', async () => {
+  const current = 'query_mcp_db';
+  const legacy = 'db_query_mcp_db';
+  const catalog = {
+    [current]: {
+      function: { name: current, parameters: { type: 'object' as const } },
+      serverToolName: 'db_query',
+    },
+  };
+  const options = {
+    [current]: {
+      approval_mode: 'chat' as const,
+      approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+    },
+  };
+  const result = await loadToolDefinitions(
+    {
+      userId: 'user-a',
+      agentId: 'agent-a',
+      tools: [legacy],
+      toolOptions: options,
+      mcpServerNames: ['db'],
+      rawServerNames: ['db'],
+    },
+    {
+      getOrFetchMCPServerTools: async () => catalog,
+      isBuiltInTool: () => false,
+    },
+  );
+  expect(result.toolDefinitions[0].name).toBe(legacy);
+  expect(getToolApprovalName(result.toolDefinitions[0])).toBe(current);
+  const collision = await loadToolDefinitions(
+    {
+      userId: 'user-a',
+      agentId: 'agent-a',
+      tools: [legacy],
+      mcpServerNames: ['db'],
+      rawServerNames: ['db'],
+    },
+    {
+      getOrFetchMCPServerTools: async () => ({
+        ...catalog,
+        [legacy]: { function: { name: legacy, parameters: { type: 'object' as const } } },
+      }),
+      isBuiltInTool: () => false,
+    },
+  );
+  expect(getToolApprovalName(collision.toolDefinitions[0])).toBeUndefined();
 });

@@ -5618,6 +5618,23 @@ function createSkillFilesHandoff(
   };
 }
 
+function getToolFailureFeedback(content: ToolExecuteResult['content']): string {
+  if (typeof content === 'string') return content;
+  const messages: string[] = [];
+  for (const part of content) {
+    if (
+      part != null &&
+      typeof part === 'object' &&
+      'type' in part &&
+      part.type === 'text' &&
+      'text' in part &&
+      typeof part.text === 'string'
+    )
+      messages.push(part.text);
+  }
+  return messages.join('\n') || 'Tool execution failed.';
+}
+
 export function createToolExecuteHandler(options: ToolExecuteOptions): EventHandler {
   const {
     scheduledMCPExecution,
@@ -7674,7 +7691,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                       toolCallId: tc.id,
                       content: cleanedContent,
                       artifact: result.artifact,
-                      status: 'success' as const,
+                      status: result.status === 'error' ? ('error' as const) : ('success' as const),
+                      ...(result.status === 'error' && {
+                        errorMessage: getToolFailureFeedback(cleanedContent),
+                      }),
                     };
                   } catch (toolError) {
                     if (toolError instanceof ContentFilterError) {

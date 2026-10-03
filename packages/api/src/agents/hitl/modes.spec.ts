@@ -287,3 +287,32 @@ test('only a verified catalog alias changes the remembered grant key', () => {
   );
   expect(resolveAgentToolGrantBinding(source, legacy, scope)?.toolName).toBe(name);
 });
+
+test('a reviewed background launch does not teach approval before its deferred result succeeds', async () => {
+  const source = agent('chat');
+  const scopeBinding = resolveAgentToolGrantBinding(source, name, scope)!;
+  const storage = store();
+  const session = createAgentToolApprovalSession({
+    agents: [source],
+    scope,
+    storage,
+    reviewed: {
+      bindings: { 'call-a': scopeBinding },
+      decisions: [{ tool_call_id: 'call-a', decision: 'approve' }],
+    },
+  });
+  await session.hook(
+    { ...input(), toolInput: { run_in_background: true } },
+    new AbortController().signal,
+  );
+  await session.rememberHook(
+    {
+      ...input(),
+      hook_event_name: 'PostToolUse',
+      toolOutput: 'Task launched',
+      toolInput: { run_in_background: true },
+    },
+    new AbortController().signal,
+  );
+  expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+});

@@ -496,7 +496,7 @@ export default function McpSection({ item }: Props) {
       </div>
 
       <div className="flex flex-col gap-2">
-        <div className="flex min-h-7 items-center justify-between">
+        <div className="flex min-h-7 flex-wrap items-center justify-between gap-x-2 gap-y-1">
           <span className="text-text-secondary text-[11px] font-medium tracking-wide uppercase">
             {localize('com_ui_tools_mcp_tools_section')}
           </span>

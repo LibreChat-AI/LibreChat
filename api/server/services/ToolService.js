@@ -1187,9 +1187,11 @@ async function loadToolDefinitionsWrapper({
 
     let serverConfig;
     try {
-      serverConfig =
-        configServers?.[serverName] ??
-        (await getMCPServersRegistry().getServerConfig(serverName, userId, configServers));
+      serverConfig = await getMCPServersRegistry().getServerConfig(
+        serverName,
+        userId,
+        configServers,
+      );
     } catch {
       logger.warn(
         '[Tool Definitions] MCP registry unavailable; skipping tool exposure for one server',
