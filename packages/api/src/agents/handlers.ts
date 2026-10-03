@@ -112,6 +112,12 @@ import {
   WORKSPACE_WRITE_MAX_BYTES,
 } from '~/code/workspace';
 import {
+  noteToolApprovalDispatch,
+  bindToolApprovalInvocation,
+  finishToolApprovalDispatch,
+  getToolApprovalExecutionScope,
+} from '~/tools/approval';
+import {
   BACKGROUND_TASK_ABORT_GRACE_MS,
   BACKGROUND_TASK_SHUTDOWN_MESSAGE,
   BACKGROUND_TOOL_PRODUCER_HEARTBEAT_MS,
@@ -134,11 +140,6 @@ import {
   contentFilterModelBoundBlockResponse,
   isContentFilterError,
 } from '~/middleware/contentFilter';
-import {
-  noteToolApprovalDispatch,
-  finishToolApprovalDispatch,
-  getToolApprovalExecutionScope,
-} from '~/tools/approval';
 import {
   hasIntentArg,
   stripIntentArg,
@@ -6527,7 +6528,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                             }
                           : {}),
                       },
-                      metadata: { ...metadata, executingAgentId: agentId },
+                      metadata: bindToolApprovalInvocation(
+                        { ...metadata, executingAgentId: agentId },
+                        approvalDispatch,
+                      ),
                     } as Record<string, unknown>),
                   ) as Promise<{ content?: unknown; artifact?: unknown }>;
                 } catch (error) {

@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { digestMCPAuthorityValue } from '@librechat/data-schemas';
 import type { SubagentExecutionContext } from '@librechat/agents';
+const invocationKey: unique symbol = Symbol('toolApprovalInvocation');
 const bindingKey: unique symbol = Symbol.for('librechat.toolApprovalBinding');
 const nameKey: unique symbol = Symbol.for('librechat.toolApprovalName');
 const identityKey: unique symbol = Symbol.for('librechat.toolApprovalIdentity');
@@ -70,6 +71,16 @@ export interface ToolApprovalInvocation {
   toolCallId?: string;
   executionScope?: string;
   background?: boolean;
+  /** Process-local ownership capability; never serialized. */
+  ownership?: symbol;
+}
+
+export function bindToolApprovalInvocation<T extends object>(
+  metadata: T,
+  invocation: ToolApprovalInvocation,
+): T {
+  Object.assign(metadata, { [invocationKey]: invocation });
+  return metadata;
 }
 
 export function getToolApprovalExecutionScope(
@@ -99,6 +110,9 @@ const transportContext = new AsyncLocalStorage<{
 
 type InvocationConfig = Parameters<typeof assertToolApprovalExecution>[1];
 function getInvocation(config: InvocationConfig): ToolApprovalInvocation {
+  const bound = (config?.metadata as { [invocationKey]?: ToolApprovalInvocation } | undefined)?.[
+    invocationKey
+  ];
   return {
     agentId:
       config?.metadata?.executingAgentId ??
@@ -107,14 +121,17 @@ function getInvocation(config: InvocationConfig): ToolApprovalInvocation {
     toolCallId: config?.toolCall?.id,
     executionScope: getToolApprovalExecutionScope(config?.metadata?.executionContext),
     background: config?.configurable?.__librechatBackgroundToolInvocation === true,
+    ...(bound?.ownership ? { ownership: bound.ownership } : {}),
   };
 }
 
-export function withToolApprovalTransport<T>(config: InvocationConfig, invoke: () => T): T {
+export function withToolApprovalTransport<T>(
+  config: InvocationConfig,
+  invoke: () => T,
+  invocation: ToolApprovalInvocation = getInvocation(config),
+): T {
   const execution = executionContext.getStore();
-  return execution
-    ? transportContext.run({ execution, invocation: getInvocation(config) }, invoke)
-    : invoke();
+  return execution ? transportContext.run({ execution, invocation }, invoke) : invoke();
 }
 
 /** Reconnect and SDK-internal retries cannot change the credential generation a call approved. */
@@ -149,10 +166,11 @@ export async function assertToolApprovalExecution(
       executionContext?: SubagentExecutionContext;
     };
   },
-): Promise<void> {
+): Promise<ToolApprovalInvocation> {
   const execution = executionContext.getStore();
-  if (!execution) return;
-  await execution.validateExecution(tool, getInvocation(config));
+  const invocation = getInvocation(config);
+  if (execution) await execution.validateExecution(tool, invocation);
+  return invocation;
 }
 
 export function noteToolApprovalDispatch(invocation: ToolApprovalInvocation): void {
