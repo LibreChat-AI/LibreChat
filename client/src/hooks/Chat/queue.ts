@@ -224,6 +224,79 @@ export const drainAfterAbortByIndex = atomFamily((_index: string | number) =>
   atom<DrainAfterAbort | false>(false),
 );
 
+/** A run whose stream this pane closed while it was still generating, because the user left its
+ *  chat. The server keeps going and deletes the job once it finishes, so the run's end is learned
+ *  from the persisted response when the user comes back instead of from the stream. */
+export type DetachedRun = {
+  /** The user message the run answers. */
+  userMessageId: string;
+  /** The response placeholder's id, when the submission carried one. */
+  responseMessageId?: string;
+  /** The run's generation epoch, when the start response installed one. The queue drain matches
+   *  server admission receipts against it. */
+  generationCreatedAt?: number;
+  /** A regeneration rewrites a response that already exists in history, so history cannot tell
+   *  whether the row it finds is the old reply or the new one. */
+  isRegenerate?: boolean;
+};
+
+export const detachedRunByConvoId = atomFamily((_conversationId: string) =>
+  atom<DetachedRun | null>(null),
+);
+
+/** The user pressed Stop on the conversation's current run. A stopped run's response persists
+ *  like a completed one, so a run stopped and then left before its abort event arrived must not
+ *  be resolved as detached and drain the queue. Reset when the next run starts. */
+export const stopRequestedByConvoId = atomFamily((_conversationId: string) => atom(false));
+
+/**
+ * The run end a detached run implies, read from the persisted response: `completed` lets the
+ * queue drain, while a stopped (`unfinished`) or failed response leaves the queue for a manual
+ * send, as it would had the stream been attached. Returns `null` while no response to the run is
+ * persisted, so nothing is drained on a guess.
+ */
+export function resolveDetachedRunEnd(
+  conversationId: string,
+  run: DetachedRun,
+  messages: TMessage[] | undefined,
+): RunEnd | null {
+  if (run.isRegenerate === true) {
+    return null;
+  }
+  const responses = (messages ?? []).filter(
+    (message) => message.isCreatedByUser === false && message.parentMessageId === run.userMessageId,
+  );
+  /** A fresh turn's placeholder is the user message id padded with `_`, which names no response;
+   *  a real id is matched exactly first, since persisted ids may themselves end in `_`. */
+  const exact = run.responseMessageId;
+  const unpadded = exact?.replace(/_+$/, '');
+  const namesResponse = exact != null && unpadded !== run.userMessageId;
+  let response: TMessage | undefined;
+  if (namesResponse) {
+    response =
+      responses.find((message) => message.messageId === exact) ??
+      responses.find((message) => message.messageId === unpadded);
+  } else if (responses.length === 1) {
+    response = responses[0];
+  }
+  if (response == null) {
+    return null;
+  }
+  let outcome: RunEnd['outcome'] = 'completed';
+  if (response.error === true) {
+    outcome = 'error';
+  } else if (response.unfinished === true) {
+    outcome = 'aborted';
+  }
+  return {
+    conversationId,
+    outcome,
+    endedAt: Date.now(),
+    ...(run.generationCreatedAt != null && { generationCreatedAt: run.generationCreatedAt }),
+    ...(outcome === 'completed' && { responseMessageId: response.messageId }),
+  };
+}
+
 const clearFamily = <Param>(family: {
   getParams(): Iterable<Param>;
   remove(param: Param): void;
@@ -244,4 +317,6 @@ export function resetQueueFamilies(): void {
   clearFamily(drainAfterAbortByIndex);
   clearFamily(runEndsByIndex);
   clearFamily(runEndByIndex);
+  clearFamily(detachedRunByConvoId);
+  clearFamily(stopRequestedByConvoId);
 }

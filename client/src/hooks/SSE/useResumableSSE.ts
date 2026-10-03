@@ -41,8 +41,8 @@ import type {
   TContextUsageEvent,
   ChatStreamConnection,
 } from 'librechat-data-provider';
+import type { QueuedMessageOrigin, DrainAfterAbort, RunEnd } from '~/hooks/Chat/queue';
 import type { ActiveJobsResponse, StreamStatusResponse } from '~/data-provider';
-import type { DrainAfterAbort, QueuedMessageOrigin } from '~/hooks/Chat/queue';
 import type { GenerationProtocolVersion } from '~/data-provider';
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData, TFinalResData } from '~/common';
@@ -87,6 +87,13 @@ import {
   GENERATION_PROTOCOL_VERSION,
 } from '~/data-provider';
 import {
+  stopRequestedByConvoId,
+  detachedRunByConvoId,
+  drainAfterAbortByIndex,
+  queuedMessagesByConvoId,
+  runEndByIndex,
+} from '~/hooks/Chat/queue';
+import {
   recoveryDispositionsFamily,
   canRestoreRecovery,
   blockRecovery,
@@ -95,7 +102,6 @@ import useEventHandlers, {
   buildCreatedInitialResponse,
   keepLocalCodeApprovalMode,
 } from './useEventHandlers';
-import { drainAfterAbortByIndex, queuedMessagesByConvoId, runEndByIndex } from '~/hooks/Chat/queue';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { withSubmittedCodeDecision } from '~/hooks/Agents/codeDecision';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
@@ -1333,6 +1339,8 @@ export default function useResumableSSE(
     [convertSteersToQueued],
   );
 
+  /** The epoch this pane last installed, kept so a run left mid-stream can carry it. */
+  const liveEpochRef = useRef<{ conversationId: string; createdAt: number } | null>(null);
   /** Conversation ids are reused by successive agent turns. Keep the exact
    * live epoch beside the UI controls, and only clear it if the terminal event
    * still belongs to the epoch that installed it. */
@@ -1349,6 +1357,7 @@ export default function useResumableSSE(
           return false;
         }
         set(state, next);
+        liveEpochRef.current = next == null ? null : { conversationId, createdAt: next };
         set(
           store.activeGenerationProtocolVersionByConvoId(conversationId),
           next == null ? 1 : generationProtocolVersion,
@@ -1358,7 +1367,17 @@ export default function useResumableSSE(
     [],
   );
 
-  const setRunEnd = useSetAtom(runEndByIndex(runIndex));
+  const publishRunEnd = useSetAtom(runEndByIndex(runIndex));
+  /** Whether the current submission's run end already reached the queue drain. A run that
+   *  ended attached must not also be resolved as detached when the user later leaves. */
+  const runEndPublishedRef = useRef(false);
+  const setRunEnd = useCallback(
+    (end: RunEnd) => {
+      runEndPublishedRef.current = true;
+      publishRunEnd(end);
+    },
+    [publishRunEnd],
+  );
   const setDrainAfterAbort = useSetAtom(drainAfterAbortByIndex(runIndex));
   const clearDrainAfterAbort = useCallback(
     (conversationId: string, generationCreatedAt?: number) => {
@@ -4289,6 +4308,13 @@ export default function useResumableSSE(
     });
 
     submissionRef.current = submission;
+    runEndPublishedRef.current = false;
+    if (submission.conversation?.conversationId != null) {
+      /** A run starting here owns the conversation's end from now on: an earlier run this pane
+       *  left is superseded, and a Stop belonged to that earlier run. */
+      jotaiStore.set(stopRequestedByConvoId(submission.conversation.conversationId), false);
+      jotaiStore.set(detachedRunByConvoId(submission.conversation.conversationId), null);
+    }
     const startController = new AbortController();
     const { signal } = startController;
     const isCurrentEffect = () => !signal.aborted && submissionRef.current === submission;
@@ -4814,6 +4840,35 @@ export default function useResumableSSE(
       stopForegroundReattachRef.current = null;
       // Reset reconnect counter before closing (so abort handler doesn't think we're reconnecting)
       reconnectAttemptRef.current = 0;
+      /** The pane is moving off a run that is still generating (another chat, a new chat, or
+       *  an unmount): the server keeps going with no subscriber and deletes the job when done,
+       *  so no terminal event will reach the queue drain. Remember the run; on return its end is
+       *  read from history. A run that already published its end, or that the user stopped, is
+       *  not remembered. */
+      const closing = submissionRef.current;
+      const closingConvoId = closing?.conversation?.conversationId;
+      const closingUserMessageId = closing?.userMessage?.messageId;
+      if (
+        streamRef.current != null &&
+        !runEndPublishedRef.current &&
+        closingConvoId != null &&
+        closingConvoId !== Constants.NEW_CONVO &&
+        closingUserMessageId != null &&
+        !jotaiStore.get(stopRequestedByConvoId(closingConvoId))
+      ) {
+        const liveEpoch = liveEpochRef.current;
+        const generationCreatedAt =
+          liveEpoch?.conversationId === closingConvoId
+            ? liveEpoch.createdAt
+            : (closing as TSubmission & { resumeGenerationCreatedAt?: number })
+                .resumeGenerationCreatedAt;
+        jotaiStore.set(detachedRunByConvoId(closingConvoId), {
+          userMessageId: closingUserMessageId,
+          responseMessageId: closing?.initialResponse?.messageId,
+          ...(generationCreatedAt != null && { generationCreatedAt }),
+          ...(closing?.isRegenerate === true && { isRegenerate: true }),
+        });
+      }
       streamRef.current?.abort();
       streamRef.current = null;
       // Clear handler maps to prevent memory leaks and stale state

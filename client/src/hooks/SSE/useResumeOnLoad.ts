@@ -35,6 +35,13 @@ import {
   ACTIVE_JOBS_SUCCESSOR_GRACE_MS,
 } from '~/data-provider';
 import {
+  settledQueuedTurnReceiptsByConvoId,
+  queuedMessagesByConvoId,
+  resolveDetachedRunEnd,
+  pendingRunEndByConvoId,
+  detachedRunByConvoId,
+} from '~/hooks/Chat/queue';
+import {
   getGenerationProtocolVersion,
   supportsGenerationProtocolV2,
 } from '~/data-provider/SSE/protocol';
@@ -1001,10 +1008,50 @@ export default function useResumeOnLoad(
       // `unrecoveredSteers` above — same empty-list reconcile as the resume path.
       settleAppliedSteerParts(conversationId, getMessages());
       restoreSteerChips(conversationId, undefined);
+      /** A run this pane stopped watching when the user left has ended on the server, which
+       *  deleted the job. Its persisted response tells how it ended; parking that end lets the
+       *  queue drain send a follow-up queued during the run, as an attached run would have.
+       *  The cached history still holds the optimistic response the pane left, which lacks the
+       *  persisted stop and error flags, so only a successful refetch of history may resolve it;
+       *  when that fails or predates the saved response, the next visit tries again. */
+      const detachedFamily = detachedRunByConvoId(conversationId);
+      const detachedRun = jotaiStore.get(detachedFamily);
+      const parkDetachedEnd = () => {
+        if (detachedRun == null || jotaiStore.get(detachedFamily) !== detachedRun) {
+          return;
+        }
+        /** Without the run's epoch the drain cannot match a server admission receipt, so a run
+         *  whose queue the server shares is left for a manual send rather than guessed at. */
+        const serverSharesQueue =
+          jotaiStore.get(settledQueuedTurnReceiptsByConvoId(conversationId)).length > 0 ||
+          jotaiStore
+            .get(queuedMessagesByConvoId(conversationId))
+            .some((item) => item.server != null);
+        if (detachedRun.generationCreatedAt == null && serverSharesQueue) {
+          jotaiStore.set(detachedFamily, null);
+          return;
+        }
+        const end = resolveDetachedRunEnd(conversationId, detachedRun, getMessages());
+        if (end == null) {
+          return;
+        }
+        jotaiStore.set(detachedFamily, null);
+        jotaiStore.set(pendingRunEndByConvoId(conversationId), end);
+      };
+      if (detachedRun != null) {
+        queryClient
+          .refetchQueries(
+            { queryKey: [QueryKeys.messages, conversationId], exact: true },
+            { throwOnError: true },
+          )
+          .then(parkDetachedEnd, () => undefined);
+      }
       processedConvoRef.current = conversationId;
       return;
     }
 
+    /** Still generating: the stream this resume attaches will deliver the run's own end. */
+    jotaiStore.set(detachedRunByConvoId(conversationId), null);
     processedConvoRef.current = conversationId;
     if (handoffGenerationKey != null) {
       consumedHandoffGenerationRef.current = handoffGenerationKey;
