@@ -11,6 +11,8 @@ import {
   createAgentToolApprovalSession,
   bindRunToolApprovalSession,
   captureRunToolApprovalBindings,
+  buildMCPToolApprovalBinding,
+  describeRememberedToolApprovals,
 } from './modes';
 import { buildHITLRunWiring, buildToolApprovalExecutionConfig } from './runtime';
 import { bindToolApproval, bindToolApprovalIdentity } from '~/tools/approval';
@@ -25,7 +27,7 @@ let executions = 0;
 let protocolError = false;
 const name = 'echo_mcp_fixture';
 const fixtureSchema = z.object({ text: z.string() });
-function createProbe(binding = 'source-one', upstreamName = 'echo') {
+function createProbe(binding: string | null = 'source-one', upstreamName = 'echo') {
   const probe = Object.assign(
     createMCPStructuredTool(
       async (input) => {
@@ -43,7 +45,7 @@ function createProbe(binding = 'source-one', upstreamName = 'echo') {
     ),
     { schema: fixtureSchema },
   );
-  return bindToolApprovalIdentity(bindToolApproval(probe, binding), upstreamName, {
+  return bindToolApprovalIdentity(bindToolApproval(probe, binding ?? undefined), upstreamName, {
     type: 'object',
   });
 }
@@ -452,5 +454,97 @@ test.each([false, true])(
     await resumed.resume({ 'ask-call': { type: 'approve' } }, config('ask-chat'));
     expect(executions).toBe(1);
     expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+  },
+);
+
+test.each([
+  ['chat', false, 'approve'],
+  ['chat', true, 'approve'],
+  ['always', false, 'approve'],
+  ['always', true, 'approve'],
+  ['chat', false, 'edit'],
+  ['chat', true, 'edit'],
+  ['always', false, 'edit'],
+  ['always', true, 'edit'],
+] as const)(
+  'templated %s connections permit one reviewed call (event-driven: %s, decision: %s)',
+  async (mode, eventDriven, decision) => {
+    const connection = {
+      type: 'streamable-http' as const,
+      source: 'yaml' as const,
+      url: 'https://mcp.example.test/mcp',
+      headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+    };
+    expect(buildMCPToolApprovalBinding('fixture', connection)).toBeUndefined();
+    const templatedDefinition = bindToolApprovalIdentity(
+      { name, serverName: 'fixture', parameters: { type: 'object' } },
+      'echo',
+      { type: 'object' },
+    );
+    const source: AgentApprovalSource = {
+      id: 'agent-a',
+      tool_options: {
+        [name]: { approval_mode: mode, approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05' },
+      },
+      toolDefinitions: [templatedDefinition],
+    };
+    const saver = new MemorySaver();
+    const executionTool = createProbe(null);
+    const first = await build({
+      source,
+      chat: 'template-chat',
+      saver,
+      eventDriven,
+      executionTool,
+      callId: 'template-call',
+    });
+    await first.processStream({ messages: [new HumanMessage('run')] }, config('template-chat'));
+    const payload = first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload;
+    const bindings = captureRunToolApprovalBindings(first, payload)!;
+    const described = describeRememberedToolApprovals(
+      payload,
+      bindings,
+      first,
+    ) as Agents.ToolApprovalInterruptPayload;
+    expect(described.review_configs[0].remember_scope).toBeUndefined();
+    expect(described.review_configs[0].remember_unavailable).toBe('connection');
+    const resumed = await build({
+      source,
+      chat: 'template-chat',
+      saver,
+      eventDriven,
+      executionTool,
+      reviewed: {
+        bindings,
+        decisions: [
+          {
+            tool_call_id: 'template-call',
+            decision,
+            ...(decision === 'edit' && { editedArguments: { text: 'edited-template' } }),
+          },
+        ],
+      },
+    });
+    const answer =
+      decision === 'edit'
+        ? { type: 'edit' as const, updatedInput: { text: 'edited-template' } }
+        : { type: 'approve' as const };
+    await resumed.resume({ 'template-call': answer }, config('template-chat'));
+    expect(executions).toBe(1);
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+    const again = await build({
+      source,
+      chat: 'template-chat',
+      saver: new MemorySaver(),
+      eventDriven,
+      executionTool,
+      callId: 'next-template-call',
+    });
+    await again.processStream(
+      { messages: [new HumanMessage('run again')] },
+      config('template-chat'),
+    );
+    expect(again.getInterrupt()?.payload.type).toBe('tool_approval');
+    expect(executions).toBe(1);
   },
 );

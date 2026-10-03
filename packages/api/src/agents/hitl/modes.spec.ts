@@ -446,3 +446,32 @@ test('an automatic mode cannot bypass a missing SDK policy evaluation', async ()
     }),
   ).resolves.toBeUndefined();
 });
+
+test('non-rememberable review is agent/tool bound and single-use', async () => {
+  const source = agent('chat');
+  const definition = bindToolApprovalIdentity(
+    { name, serverName: 'db', parameters: { type: 'object' } },
+    'query',
+    { type: 'object' },
+  );
+  source.toolDefinitions = [definition];
+  const storage = store();
+  const session = createAgentToolApprovalSession({
+    agents: [source],
+    scope,
+    storage,
+    reviewed: { bindings: {}, decisions: [{ tool_call_id: 'call-a', decision: 'approve' }] },
+  });
+  await session.hook(input(), new AbortController().signal);
+  await expect(
+    session.validateExecution(definition, { agentId: 'other-agent', toolCallId: 'call-a' }),
+  ).rejects.toThrow();
+  await expect(
+    session.validateExecution(definition, { agentId: source.id, toolCallId: 'call-a' }),
+  ).resolves.toBeUndefined();
+  await session.hook(input(), new AbortController().signal);
+  await expect(
+    session.validateExecution(definition, { agentId: source.id, toolCallId: 'call-a' }),
+  ).rejects.toThrow('foreground');
+  expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+});
