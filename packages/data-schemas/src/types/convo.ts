@@ -348,6 +348,6 @@ export interface IConversation extends Document {
   lastResponseIsManual?: boolean;
   /** True: manual reminder; false: real reply; absent: legacy/unknown intent. */
   isMarkedUnread?: boolean;
-  /** Set when the user has the newest message on screen; compared against `lastResponseAt`. */
+  /** Read acknowledgement; epoch is the explicit unseen-reply watermark. */
   lastSeenAt?: Date;
 }

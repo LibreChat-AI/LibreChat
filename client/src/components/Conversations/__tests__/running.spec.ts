@@ -1,3 +1,4 @@
+import { UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationGroupOptions } from '~/utils/convos';
 import {
@@ -208,6 +209,7 @@ describe('groupConversationsByStatus finished chats', () => {
       ...convo(conversationId, daysAgo),
       lastResponseAt: new Date(Date.now() - daysAgo * 86_400_000).toISOString(),
       isMarkedUnread: false,
+      lastSeenAt: UNSEEN_REPLY_WATERMARK,
       ...read,
     }) as TConversation;
 
@@ -274,6 +276,23 @@ describe('groupConversationsByStatus finished chats', () => {
       expect(partitionGroups(dated, new Set(), newestFirst)).toBe(dated);
     },
   );
+
+  it('keeps a reminder written by an older replica in its date group', () => {
+    const confirmed = replied('mixed-replica', 1);
+    expect(partitionGroups([['Today', [confirmed]]], new Set(), newestFirst)[0][0]).toBe(
+      FINISHED_CHATS_GROUP,
+    );
+    const seen = { ...confirmed, lastSeenAt: new Date().toISOString() };
+    const unread = { ...seen, lastSeenAt: undefined };
+    const restored = JSON.parse(JSON.stringify(unread)) as TConversation;
+    expect(restored.isMarkedUnread).toBe(false);
+    const dated = groupConversations([restored], newestFirst);
+    expect(partitionGroups(dated, new Set(), newestFirst)).toBe(dated);
+    const nextReply = { ...restored, lastSeenAt: UNSEEN_REPLY_WATERMARK };
+    expect(partitionGroups([['Today', [nextReply]]], new Set(), newestFirst)[0][0]).toBe(
+      FINISHED_CHATS_GROUP,
+    );
+  });
 
   it('shows a new confirmed reply after an unknown legacy reminder', () => {
     const legacy = replied('legacy', 1, { isMarkedUnread: undefined });

@@ -1257,7 +1257,7 @@ export const tConversationSchema = z.object({
   lastResponseIsManual: z.boolean().optional(),
   /** True: manual reminder; false: real reply; absent: legacy/unknown intent. */
   isMarkedUnread: z.boolean().optional(),
-  /** Set when the user has the newest message on screen; compared against `lastResponseAt`. */
+  /** Read acknowledgement; epoch is the explicit unseen-reply watermark. */
   lastSeenAt: z.string().optional(),
   /* Files */
   resendFiles: z.boolean().optional(),

@@ -1,3 +1,4 @@
+import { UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import type { TConversation, GroupedConversations } from 'librechat-data-provider';
 import type { ConversationGroupOptions } from '~/utils/convos';
 import { isTemporaryConversation } from '~/utils/conversation';
@@ -23,6 +24,7 @@ function showsStatusGroups(options: ConversationGroupOptions): boolean {
 function isFinishedUnseen(conversation: TConversation): boolean {
   return (
     conversation.isMarkedUnread === false &&
+    conversation.lastSeenAt === UNSEEN_REPLY_WATERMARK &&
     conversation.lastResponseIsManual !== true &&
     isConversationUnseen(conversation)
   );

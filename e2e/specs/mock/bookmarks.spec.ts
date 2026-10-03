@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import {
@@ -124,7 +125,7 @@ test.describe('bookmark counts', () => {
         {
           $set: {
             lastResponseAt: previous,
-            lastSeenAt: new Date(previous.getTime() - 1000),
+            lastSeenAt: new Date(UNSEEN_REPLY_WATERMARK),
             isMarkedUnread: false,
           },
         },

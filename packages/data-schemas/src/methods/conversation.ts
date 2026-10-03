@@ -1,5 +1,9 @@
 import { Buffer } from 'node:buffer';
-import { RetentionMode, isForcedTemporaryRetention } from 'librechat-data-provider';
+import {
+  RetentionMode,
+  isForcedTemporaryRetention,
+  UNSEEN_REPLY_WATERMARK,
+} from 'librechat-data-provider';
 import type {
   AnyBulkWriteOperation,
   DeleteResult,
@@ -657,8 +661,9 @@ export function createConversationMethods(
             lastResponseAt: stamp,
             lastResponseMessageId: responseMessageId,
             isMarkedUnread: false,
+            lastSeenAt: new Date(UNSEEN_REPLY_WATERMARK),
           },
-          $unset: { lastSeenAt: '', lastResponseIsManual: '' },
+          $unset: { lastResponseIsManual: '' },
           $max: { updatedAt: stamp },
         },
         { new: true, projection, timestamps: false },
@@ -2573,7 +2578,11 @@ export function createConversationMethods(
          * DocumentDB targets rule out. */
         if (setFields.lastResponseAt instanceof Date) {
           const { lastResponseAt, ...withoutReplyStamp } = setFields;
-          operation.$set = { ...withoutReplyStamp, isMarkedUnread: false };
+          operation.$set = {
+            ...withoutReplyStamp,
+            isMarkedUnread: false,
+            lastSeenAt: new Date(UNSEEN_REPLY_WATERMARK),
+          };
           operation.$max = { lastResponseAt };
           operation.$unset = { lastResponseIsManual: '' };
         }
@@ -2728,7 +2737,7 @@ export function createConversationMethods(
         }
       }
 
-      /* Advance the version and clear the previous catch-up atomically. The database CAS orders
+      /* Advance the version and reset catch-up atomically. The database CAS orders
        * concurrent replies even when their application hosts disagree about wall-clock time. */
       let replyStampApplied = false;
       if (metadata?.stampReply === true) {
@@ -2744,6 +2753,7 @@ export function createConversationMethods(
                 lastResponseMessageId: 1,
                 lastResponseIsManual: 1,
                 isMarkedUnread: 1,
+                lastSeenAt: 1,
                 updatedAt: 1,
               },
             );
@@ -2755,7 +2765,7 @@ export function createConversationMethods(
               conversation.lastResponseMessageId = stamped.conversation.lastResponseMessageId;
               conversation.lastResponseIsManual = stamped.conversation.lastResponseIsManual;
               conversation.isMarkedUnread = stamped.conversation.isMarkedUnread;
-              conversation.lastSeenAt = undefined;
+              conversation.lastSeenAt = stamped.conversation.lastSeenAt;
               if (stamped.conversation.updatedAt) {
                 conversation.updatedAt = stamped.conversation.updatedAt;
               }

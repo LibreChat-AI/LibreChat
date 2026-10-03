@@ -1,5 +1,5 @@
-import { EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, InfiniteData } from '@tanstack/react-query';
+import { EModelEndpoint, UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationCursorData } from './convos';
 import {
@@ -1236,6 +1236,7 @@ describe('Conversation Utilities', () => {
           lastResponseMessageId: 'new',
         });
         expect(findConvoInAllQueries(queryClient, 'a')?.isMarkedUnread).toBe(false);
+        expect(findConvoInAllQueries(queryClient, 'a')?.lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
       });
 
       it('updateConvoInAllQueries lets an explicit lastSeenAt win over the cached one', () => {
