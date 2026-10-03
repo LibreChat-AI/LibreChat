@@ -6,7 +6,9 @@ import type {
 } from './definitions';
 import { toolkitExpansion, toolkitParent } from './toolkits/mapping';
 import { getToolDefinition } from './registry/definitions';
+import { getToolApprovalIdentity } from './approval';
 import { loadToolDefinitions } from './definitions';
+import { formatMCPServerTools } from '~/mcp/tools';
 import { getToolApprovalName } from './approval';
 
 const MAX_PROVIDER_TOOL_DESCRIPTION_LENGTH = 1024;
@@ -1276,4 +1278,33 @@ test('definitions-only loading retains the verified reset key without collapsing
     },
   );
   expect(getToolApprovalName(collision.toolDefinitions[0])).toBeUndefined();
+});
+
+test('live catalog reassignment changes consent while retaining the same displayed key and schema', async () => {
+  const upstream = (name: string) => ({
+    name,
+    description: 'Same description',
+    inputSchema: { type: 'object' as const, properties: {} },
+  });
+  const before = formatMCPServerTools('db', [upstream('query'), upstream('db_query')]);
+  const after = formatMCPServerTools('db', [upstream('db_query')]);
+  const params = {
+    userId: 'user-a',
+    agentId: 'agent-a',
+    tools: ['query_mcp_db'],
+    mcpServerNames: ['db'],
+    rawServerNames: ['db'],
+  };
+  const first = await loadToolDefinitions(params, {
+    isBuiltInTool: () => false,
+    getOrFetchMCPServerTools: async () => before,
+  });
+  const second = await loadToolDefinitions(params, {
+    isBuiltInTool: () => false,
+    getOrFetchMCPServerTools: async () => after,
+  });
+  expect(second.toolDefinitions[0].name).toBe(first.toolDefinitions[0].name);
+  expect(getToolApprovalIdentity(second.toolDefinitions[0])).not.toBe(
+    getToolApprovalIdentity(first.toolDefinitions[0]),
+  );
 });

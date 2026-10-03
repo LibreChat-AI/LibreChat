@@ -7,18 +7,31 @@ import {
   buildMCPToolApprovalBinding,
   describeRememberedToolApprovals,
 } from './modes';
+import { bindToolApproval, bindToolApprovalIdentity } from '~/tools/approval';
 import { buildToolApprovalPayload, toClientPendingAction } from './policy';
-import { bindToolApproval } from '~/tools/approval';
 
 const scope = { userId: 'user-a', tenantId: 'tenant-a', conversationId: 'chat-a' };
 const name = 'query_mcp_db';
 const revision = 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05';
+function bindFixture<T extends { name: string; parameters?: object; description?: string }>(
+  tool: T,
+  binding: string,
+  canonicalName?: string,
+) {
+  const upstreamName = tool.name.slice(0, -'_mcp_db'.length);
+  return bindToolApprovalIdentity(
+    bindToolApproval(tool, binding, canonicalName),
+    upstreamName,
+    tool.parameters,
+    tool.description,
+  );
+}
 function agent(mode: 'ask' | 'allow' | 'chat' | 'always', id = 'agent-a'): AgentApprovalSource {
   return {
     id,
     tool_options: { [name]: { approval_mode: mode, approval_revision: revision } },
     toolDefinitions: [
-      bindToolApproval({ name, serverName: 'db', parameters: { type: 'object' } }, 'source-a'),
+      bindFixture({ name, serverName: 'db', parameters: { type: 'object' } }, 'source-a'),
     ],
   };
 }
@@ -121,7 +134,7 @@ test('changed agent, user, tenant, connection, schema and revision invalidate a 
     resolveAgentToolGrantBinding(
       {
         ...source,
-        toolDefinitions: [bindToolApproval({ ...source.toolDefinitions![0] }, 'other-source')],
+        toolDefinitions: [bindFixture({ ...source.toolDefinitions![0] }, 'other-source')],
       },
       name,
       scope,
@@ -129,7 +142,12 @@ test('changed agent, user, tenant, connection, schema and revision invalidate a 
     resolveAgentToolGrantBinding(
       {
         ...source,
-        toolDefinitions: [{ ...source.toolDefinitions![0], parameters: { type: 'string' } }],
+        toolDefinitions: [
+          bindFixture(
+            { ...source.toolDefinitions![0], parameters: { type: 'string' } },
+            'source-a',
+          ),
+        ],
       },
       name,
       scope,
@@ -167,6 +185,11 @@ test('only a verified, manually approved successful invocation creates a grant',
     session.addAgent(source);
     await session.hook(input(), new AbortController().signal);
     expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+    if (decision === 'approve')
+      await session.validateExecution(source.toolDefinitions![0], {
+        agentId: source.id,
+        toolCallId: 'call-a',
+      });
     await session.rememberHook(
       { ...input(), hook_event_name: 'PostToolUse', toolOutput: 'success' },
       new AbortController().signal,
@@ -195,7 +218,7 @@ test('a changed binding is denied before an approved call executes', async () =>
   const binding = resolveAgentToolGrantBinding(source, name, scope)!;
   const changed = {
     ...source,
-    toolDefinitions: [bindToolApproval({ ...source.toolDefinitions![0] }, 'rebound-server')],
+    toolDefinitions: [bindFixture({ ...source.toolDefinitions![0] }, 'rebound-server')],
   };
   const session = createAgentToolApprovalSession({
     agents: [changed],
@@ -266,7 +289,7 @@ test('collision-preserved tool keys remain distinct and resettable', () => {
   const source = agent('always');
   source.tool_options![other] = { approval_mode: 'always', approval_revision: revision };
   source.toolDefinitions!.push(
-    bindToolApproval({ name: other, serverName: 'db', parameters: { type: 'object' } }, 'source-a'),
+    bindFixture({ name: other, serverName: 'db', parameters: { type: 'object' } }, 'source-a'),
   );
   const first = resolveAgentToolGrantBinding(source, name, scope)!;
   const second = resolveAgentToolGrantBinding(source, other, scope)!;
@@ -279,7 +302,7 @@ test('only a verified catalog alias changes the remembered grant key', () => {
   const source = agent('always');
   source.tool_options![legacy] = { approval_mode: 'always', approval_revision: revision };
   source.toolDefinitions!.push(
-    bindToolApproval(
+    bindFixture(
       { name: legacy, serverName: 'db', parameters: { type: 'object' } },
       'source-a',
       name,
@@ -312,6 +335,59 @@ test('a reviewed background launch does not teach approval before its deferred r
       toolOutput: 'Task launched',
       toolInput: { run_in_background: true },
     },
+    new AbortController().signal,
+  );
+  expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+});
+
+test('raw upstream reassignment changes consent despite an identical catalog key and schema', () => {
+  const source = agent('always');
+  const original = resolveAgentToolGrantBinding(source, name, scope)!;
+  const reassigned = bindToolApprovalIdentity({ ...source.toolDefinitions![0] }, 'db_query', {
+    type: 'object',
+  });
+  source.toolDefinitions = [reassigned];
+  expect(resolveAgentToolGrantBinding(source, name, scope)?.binding).not.toBe(original.binding);
+});
+
+test('execution compares the loaded authority and rechecks revocation after pre-tool approval', async () => {
+  const source = agent('always');
+  const storage = store();
+  const expected = resolveAgentToolGrantBinding(source, name, scope)!;
+  await storage.rememberToolApprovalGrants(scope, [expected]);
+  const session = createAgentToolApprovalSession({ agents: [source], scope, storage });
+  expect(await session.hook(input(), new AbortController().signal)).toMatchObject({
+    decision: 'allow',
+  });
+  const targetB = bindToolApproval({ ...source.toolDefinitions![0] }, 'source-b');
+  await expect(
+    session.validateExecution(targetB, { agentId: source.id, toolCallId: 'call-a' }),
+  ).rejects.toThrow('changed');
+  await storage.resetToolApprovalGrants(scope.userId, source.id, name);
+  await expect(
+    session.validateExecution(source.toolDefinitions![0], {
+      agentId: source.id,
+      toolCallId: 'call-a',
+    }),
+  ).rejects.toThrow('revoked');
+});
+
+test('unverified success hooks cannot teach consent', async () => {
+  const source = agent('always');
+  const binding = resolveAgentToolGrantBinding(source, name, scope)!;
+  const storage = store();
+  const session = createAgentToolApprovalSession({
+    agents: [source],
+    scope,
+    storage,
+    reviewed: {
+      bindings: { 'call-a': binding },
+      decisions: [{ tool_call_id: 'call-a', decision: 'approve' }],
+    },
+  });
+  await session.hook(input(), new AbortController().signal);
+  await session.rememberHook(
+    { ...input(), hook_event_name: 'PostToolUse', toolOutput: 'success' },
     new AbortController().signal,
   );
   expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();

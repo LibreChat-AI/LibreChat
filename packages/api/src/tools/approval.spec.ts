@@ -1,4 +1,11 @@
-import { bindToolApproval, getToolApprovalBinding } from './approval';
+import {
+  bindToolApproval,
+  getToolApprovalBinding,
+  bindToolApprovalIdentity,
+  getToolApprovalIdentity,
+  assertToolApprovalExecution,
+  withToolApprovalExecution,
+} from './approval';
 
 test('connection-derived bindings survive local copies without reaching JSON or provider payloads', () => {
   const definition = bindToolApproval(
@@ -12,4 +19,45 @@ test('connection-derived bindings survive local copies without reaching JSON or 
     parameters: { type: 'object' },
   });
   expect(JSON.stringify(copied)).not.toContain('private-source-hash');
+});
+
+test('raw target fingerprints stay private when definitions are copied or serialized', () => {
+  const definition = bindToolApprovalIdentity(
+    { name: 'query_mcp_db', parameters: { type: 'object' } },
+    'db_query',
+    { type: 'object' },
+  );
+  expect(getToolApprovalIdentity({ ...definition })).toEqual(expect.any(String));
+  expect(getToolApprovalIdentity(JSON.parse(JSON.stringify(definition)))).toBeUndefined();
+});
+
+test('concurrent runs isolate the execution guard without a global run-id lookup', async () => {
+  const first = jest.fn(async () => {});
+  const second = jest.fn(async () => {});
+  await Promise.all([
+    withToolApprovalExecution({ validateExecution: first }, async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      await assertToolApprovalExecution(
+        { name: 'query_mcp_db' },
+        { toolCall: { id: 'first' }, metadata: { activeAgentId: 'agent-a' } },
+      );
+    }),
+    withToolApprovalExecution({ validateExecution: second }, async () => {
+      await assertToolApprovalExecution(
+        { name: 'query_mcp_db' },
+        { toolCall: { id: 'second' }, metadata: { activeAgentId: 'agent-b' } },
+      );
+    }),
+  ]);
+  expect(first).toHaveBeenCalledWith(
+    { name: 'query_mcp_db' },
+    { agentId: 'agent-a', toolCallId: 'first' },
+  );
+  expect(second).toHaveBeenCalledWith(
+    { name: 'query_mcp_db' },
+    { agentId: 'agent-b', toolCallId: 'second' },
+  );
+  await assertToolApprovalExecution({ name: 'query_mcp_db' });
+  expect(first).toHaveBeenCalledTimes(1);
+  expect(second).toHaveBeenCalledTimes(1);
 });

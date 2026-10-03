@@ -13,10 +13,10 @@ import {
   captureRunToolApprovalBindings,
 } from './modes';
 import { buildHITLRunWiring, buildToolApprovalExecutionConfig } from './runtime';
+import { bindToolApproval, bindToolApprovalIdentity } from '~/tools/approval';
 import { createToolExecuteHandler } from '../handlers';
 import { createMCPStructuredTool } from '~/mcp/tools';
 import { markMCPToolResultError } from '~/mcp/status';
-import { bindToolApproval } from '~/tools/approval';
 import { formatToolContent } from '~/mcp/parsers';
 
 let mongo: MongoMemoryServer;
@@ -25,23 +25,36 @@ let executions = 0;
 let protocolError = false;
 const name = 'echo_mcp_fixture';
 const fixtureSchema = z.object({ text: z.string() });
-const guarded = Object.assign(
-  createMCPStructuredTool(
-    async (input) => {
-      const { text } = z.object({ text: z.string() }).parse(input);
-      executions++;
-      const raw = { content: [{ type: 'text' as const, text }], isError: protocolError };
-      return markMCPToolResultError(formatToolContent(raw, 'openai'), raw.isError);
-    },
-    {
-      name,
-      description: 'Scripted SDK integration tool',
-      schema: fixtureSchema,
-      responseFormat: 'content_and_artifact',
-    },
-  ),
-  { schema: fixtureSchema },
-);
+function createProbe(binding = 'source-one', upstreamName = 'echo') {
+  const probe = Object.assign(
+    createMCPStructuredTool(
+      async (input) => {
+        const { text } = z.object({ text: z.string() }).parse(input);
+        executions++;
+        const raw = { content: [{ type: 'text' as const, text }], isError: protocolError };
+        return markMCPToolResultError(formatToolContent(raw, 'openai'), raw.isError);
+      },
+      {
+        name,
+        description: 'Scripted SDK integration tool',
+        schema: fixtureSchema,
+        responseFormat: 'content_and_artifact',
+      },
+    ),
+    { schema: fixtureSchema },
+  );
+  return bindToolApprovalIdentity(bindToolApproval(probe, binding), upstreamName, {
+    type: 'object',
+  });
+}
+const guarded = createProbe();
+function definition() {
+  return bindToolApprovalIdentity(
+    bindToolApproval({ name, serverName: 'fixture', parameters: { type: 'object' } }, 'source-one'),
+    'echo',
+    { type: 'object' },
+  );
+}
 
 beforeAll(async () => {
   mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
@@ -67,6 +80,8 @@ async function build({
   reviewed,
   callId,
   eventDriven = false,
+  executionTool = guarded,
+  beforeLoad,
 }: {
   source: AgentApprovalSource;
   chat: string;
@@ -74,6 +89,8 @@ async function build({
   reviewed?: ReviewedToolApprovals;
   callId?: string;
   eventDriven?: boolean;
+  executionTool?: typeof guarded;
+  beforeLoad?: () => void | Promise<void>;
 }) {
   const session = createAgentToolApprovalSession({
     agents: [source],
@@ -107,7 +124,7 @@ async function build({
           endpoint: Providers.OPENAI,
           clientOptions: llmConfig,
           instructions: 'Use the scripted tool.',
-          tools: eventDriven ? [] : [guarded],
+          tools: eventDriven ? [] : [executionTool],
           toolDefinitions: eventDriven
             ? source.toolDefinitions?.map((definition) => ({
                 name: definition.name,
@@ -125,7 +142,10 @@ async function build({
     returnContent: true,
     customHandlers: {
       on_tool_execute: createToolExecuteHandler({
-        loadTools: async () => ({ loadedTools: [guarded] }),
+        loadTools: async () => {
+          await beforeLoad?.();
+          return { loadedTools: [executionTool] };
+        },
       }),
     },
     tokenCounter: (text) => String(text ?? '').length,
@@ -162,12 +182,7 @@ test.each([
       tool_options: {
         [name]: { approval_mode: mode, approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05' },
       },
-      toolDefinitions: [
-        bindToolApproval(
-          { name, serverName: 'fixture', parameters: { type: 'object' } },
-          'source-one',
-        ),
-      ],
+      toolDefinitions: [definition()],
     };
     const saver = new MemorySaver();
     const first = await build({ source, chat: 'chat-a', saver, eventDriven, callId: 'first-call' });
@@ -225,12 +240,7 @@ test.each([false, true])(
           approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
         },
       },
-      toolDefinitions: [
-        bindToolApproval(
-          { name, serverName: 'fixture', parameters: { type: 'object' } },
-          'source-one',
-        ),
-      ],
+      toolDefinitions: [definition()],
     };
     const saver = new MemorySaver();
     const first = await build({
@@ -272,4 +282,97 @@ test.each([false, true])(
     expect(executions).toBe(1);
   },
   30000,
+);
+
+test.each([false, true])(
+  'a manually approved call cannot execute against a replaced target (event-driven: %s)',
+  async (eventDriven) => {
+    const source: AgentApprovalSource = {
+      id: 'agent-a',
+      tool_options: {
+        [name]: {
+          approval_mode: 'always',
+          approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+        },
+      },
+      toolDefinitions: [definition()],
+    };
+    const saver = new MemorySaver();
+    const first = await build({
+      source,
+      chat: 'rebind-chat',
+      saver,
+      eventDriven,
+      callId: 'first-call',
+    });
+    await first.processStream({ messages: [new HumanMessage('run')] }, config('rebind-chat'));
+    const bindings = captureRunToolApprovalBindings(
+      first,
+      first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+    )!;
+    const resumed = await build({
+      source,
+      chat: 'rebind-chat',
+      saver,
+      eventDriven,
+      executionTool: createProbe('source-two'),
+      reviewed: { bindings, decisions: [{ tool_call_id: 'first-call', decision: 'approve' }] },
+    });
+    await resumed.resume({ 'first-call': { type: 'approve' } }, config('rebind-chat'));
+    expect(executions).toBe(0);
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+  },
+);
+
+test.each(['authority', 'upstream', 'revocation'] as const)(
+  'automatic consent rejects a changed %s after initialization and before event dispatch',
+  async (change) => {
+    const source: AgentApprovalSource = {
+      id: 'agent-a',
+      tool_options: {
+        [name]: {
+          approval_mode: 'always',
+          approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+        },
+      },
+      toolDefinitions: [definition()],
+    };
+    const seed = await build({
+      source,
+      chat: 'seed-chat',
+      saver: new MemorySaver(),
+      eventDriven: true,
+      callId: 'seed-call',
+    });
+    await seed.processStream({ messages: [new HumanMessage('run')] }, config('seed-chat'));
+    const bindings = captureRunToolApprovalBindings(
+      seed,
+      seed.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+    )!;
+    await storage.rememberToolApprovalGrants({ userId: 'sdk-user', conversationId: 'seed-chat' }, [
+      bindings['seed-call'],
+    ]);
+    let reset: Promise<void> | undefined;
+    let target = guarded;
+    if (change === 'authority') target = createProbe('source-two');
+    if (change === 'upstream') target = createProbe('source-one', 'fixture_echo');
+    const run = await build({
+      source,
+      chat: 'auto-chat',
+      saver: new MemorySaver(),
+      eventDriven: true,
+      callId: 'auto-call',
+      executionTool: target,
+      beforeLoad:
+        change === 'revocation'
+          ? () => {
+              reset = storage.resetToolApprovalGrants('sdk-user', source.id, name);
+              return reset;
+            }
+          : undefined,
+    });
+    await run.processStream({ messages: [new HumanMessage('run')] }, config('auto-chat'));
+    await reset;
+    expect(executions).toBe(0);
+  },
 );

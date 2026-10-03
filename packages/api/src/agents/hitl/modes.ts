@@ -7,8 +7,11 @@ import type {
   Agents,
 } from 'librechat-data-provider';
 import type { HookCallback } from '@librechat/agents';
+import type { Run, IState } from '@librechat/agents';
+import type { ToolApprovalExecution } from '~/tools/approval';
 import type { ParsedServerConfig } from '~/mcp/types';
 import { bindToolApproval, getToolApprovalBinding, getToolApprovalName } from '~/tools/approval';
+import { withToolApprovalExecution, getToolApprovalIdentity } from '~/tools/approval';
 import { requiresEphemeralUserConnection } from '~/mcp/utils';
 
 export interface AgentApprovalDefinition {
@@ -51,6 +54,7 @@ export function resolveAgentToolGrantBinding(
   agent: AgentApprovalSource,
   toolName: string,
   scope: ToolApprovalGrantScope,
+  executingTool?: AgentApprovalDefinition,
 ): ToolApprovalGrantBinding | undefined {
   const options = agent.tool_options?.[toolName];
   if (
@@ -58,10 +62,11 @@ export function resolveAgentToolGrantBinding(
     options.approval_revision == null
   )
     return undefined;
-  const definition = agent.toolDefinitions?.find((tool) => tool.name === toolName);
+  const definition = executingTool ?? agent.toolDefinitions?.find((tool) => tool.name === toolName);
   if (!definition) return undefined;
   const sourceBinding = getToolApprovalBinding(definition);
-  if (!sourceBinding) return undefined;
+  const identity = getToolApprovalIdentity(definition);
+  if (!sourceBinding || !identity) return undefined;
   const canonicalName = getToolApprovalName(definition) ?? toolName;
   return {
     canRemember: true,
@@ -77,13 +82,12 @@ export function resolveAgentToolGrantBinding(
       revision: options.approval_revision,
       mode: options.approval_mode,
       source: sourceBinding,
-      parameters: definition.parameters,
-      description: definition.description,
+      identity,
     }),
   };
 }
 
-export interface AgentToolApprovalSession {
+export interface AgentToolApprovalSession extends ToolApprovalExecution {
   hook: HookCallback<'PreToolUse'>;
   rememberHook: HookCallback<'PostToolUse'>;
   addAgent: (agent: AgentApprovalSource) => void;
@@ -116,6 +120,7 @@ export function createAgentToolApprovalSession({
       .map((decision) => decision.tool_call_id),
   );
   const ready = new Map<string, ToolApprovalGrantBinding>();
+  const executed = new Set<string>();
   type GrantStatus = {
     binding: string;
     approved: boolean;
@@ -182,10 +187,42 @@ export function createAgentToolApprovalSession({
       }
       return result;
     },
+    async validateExecution(tool, invocation) {
+      const owner = invocation.agentId == null ? undefined : owners.get(invocation.agentId);
+      if (
+        !owner &&
+        Array.from(owners.values()).some((agent) =>
+          ['chat', 'always'].includes(agent.tool_options?.[tool.name]?.approval_mode ?? ''),
+        )
+      ) {
+        throw new Error('MCP approval requires the executing agent identity.');
+      }
+      const options = owner?.tool_options?.[tool.name];
+      if (options?.approval_mode !== 'chat' && options?.approval_mode !== 'always') return;
+      const expected = owner && scope && resolveAgentToolGrantBinding(owner, tool.name, scope);
+      if (!expected) return;
+      const actual = resolveAgentToolGrantBinding(owner!, tool.name, scope!, tool);
+      const callId = invocation.toolCallId;
+      if (actual?.binding !== expected.binding || !callId) {
+        if (callId) ready.delete(callId);
+        throw new Error('The approved MCP tool or connection changed. Request approval again.');
+      }
+      const manual = reviewed?.bindings?.[callId];
+      if (manual && approvedDecisions.has(callId) && manual.binding === actual.binding) {
+        if (manual.canRemember === true) executed.add(callId);
+        return;
+      }
+      const status = await approved(actual);
+      if (!status.approved) {
+        ready.delete(callId);
+        throw new Error('Tool approval is required or was revoked. Request approval again.');
+      }
+    },
     async rememberHook(input) {
       const grant = ready.get(input.toolUseId);
       if (
         !grant ||
+        !executed.has(input.toolUseId) ||
         grant.canRemember !== true ||
         grant.agentId !== input.executingAgentId ||
         grant.instanceName !== input.toolName ||
@@ -194,6 +231,7 @@ export function createAgentToolApprovalSession({
       )
         return {};
       ready.delete(input.toolUseId);
+      executed.delete(input.toolUseId);
       try {
         await storage.rememberToolApprovalGrants(scope, [grant]);
       } catch {
@@ -257,7 +295,19 @@ export function createAgentToolApprovalSession({
 }
 
 const sessions = new WeakMap<object, AgentToolApprovalSession>();
-export function bindRunToolApprovalSession(run: object, session: AgentToolApprovalSession): void {
+export function bindRunToolApprovalSession(
+  run: Pick<Run<IState>, 'processStream'>,
+  session: AgentToolApprovalSession,
+): void {
+  if (!sessions.has(run)) {
+    const processStream = run.processStream;
+    run.processStream = function (...args) {
+      const execution = sessions.get(this);
+      return execution
+        ? withToolApprovalExecution(execution, () => processStream.apply(this, args))
+        : processStream.apply(this, args);
+    };
+  }
   sessions.set(run, session);
 }
 

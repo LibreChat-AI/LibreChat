@@ -3096,7 +3096,7 @@ export async function createRun({
   };
   const run = await Run.create(runConfig);
   runMCPToolAliases.set(run, mcpToolAliases);
-  bindRunToolApprovalSession(run, agentApprovalSession);
+  if (approvalWiring != null) bindRunToolApprovalSession(run, agentApprovalSession);
 
   applyCustomHandoffPromptKeyCompatibility(run, runConfig.graphConfig);
   applyTestRunHook(run, {

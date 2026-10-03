@@ -1,4 +1,10 @@
-import { bindToolApproval, getToolApprovalBinding, getToolApprovalName } from './approval';
+import {
+  bindToolApproval,
+  getToolApprovalBinding,
+  getToolApprovalName,
+  getToolApprovalIdentity,
+  bindToolApprovalIdentity,
+} from './approval';
 /**
  * @fileoverview Utility functions for building tool registries from agent tool_options.
  * Tool classification (deferred_tools, allowed_callers) is configured via the agent UI.
@@ -159,7 +165,12 @@ export function buildToolRegistryFromAgentOptions(
       toolDef.serverName = tool.serverName;
     }
 
-    bindToolApproval(toolDef, getToolApprovalBinding(tool), getToolApprovalName(tool));
+    bindToolApproval(
+      toolDef,
+      getToolApprovalBinding(tool),
+      getToolApprovalName(tool),
+      getToolApprovalIdentity(tool),
+    );
     registry.set(name, toolDef);
   }
 
@@ -194,7 +205,12 @@ export function extractMCPToolDefinition(tool: MCPToolInstance): ToolDefinition 
     def.description = tool.description;
   }
 
-  bindToolApproval(def, getToolApprovalBinding(tool), getToolApprovalName(tool));
+  bindToolApproval(
+    def,
+    getToolApprovalBinding(tool),
+    getToolApprovalName(tool),
+    getToolApprovalIdentity(tool),
+  );
   if (tool.mcpJsonSchema) {
     def.parameters = tool.mcpJsonSchema;
   }
@@ -206,6 +222,15 @@ export function extractMCPToolDefinition(tool: MCPToolInstance): ToolDefinition 
 
   if (tool.mcpServerToolName) {
     def.serverToolName = tool.mcpServerToolName;
+  }
+
+  if (getToolApprovalIdentity(def) == null && serverName) {
+    const suffix = `${Constants.mcp_delimiter}${normalizeServerName(serverName)}`;
+    const upstreamName =
+      tool.mcpServerToolName ??
+      (tool.name.endsWith(suffix) ? tool.name.slice(0, -suffix.length) : undefined);
+    if (upstreamName != null)
+      bindToolApprovalIdentity(def, upstreamName, def.parameters, def.description);
   }
 
   if (tool.mcpCurrentToolName && serverName) {
@@ -255,13 +280,21 @@ function buildToolRegistry(
   /** No agent options - build basic definitions for event-driven mode */
   const registry: LCToolRegistry = new Map<string, LCTool>();
   for (const toolDef of mcpToolDefs) {
-    registry.set(toolDef.name, {
-      name: toolDef.name,
-      description: toolDef.description,
-      parameters: toolDef.parameters,
-      serverName: toolDef.serverName,
-      toolType: 'mcp',
-    });
+    registry.set(
+      toolDef.name,
+      bindToolApproval(
+        {
+          name: toolDef.name,
+          description: toolDef.description,
+          parameters: toolDef.parameters,
+          serverName: toolDef.serverName,
+          toolType: 'mcp',
+        },
+        getToolApprovalBinding(toolDef),
+        getToolApprovalName(toolDef),
+        getToolApprovalIdentity(toolDef),
+      ),
+    );
   }
   return registry;
 }
