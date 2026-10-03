@@ -249,8 +249,11 @@ describe('groupConversationsByStatus finished chats', () => {
     ]);
   });
 
-  it('leaves a chat marked unread by hand in its date group', () => {
-    const manual = replied('manual', 1, { lastResponseIsManual: true });
+  it.each([
+    { lastResponseIsManual: true },
+    { isMarkedUnread: true, lastResponseMessageId: 'real-reply' },
+  ])('leaves a chat marked unread by hand in its date group (%j)', (marker) => {
+    const manual = replied('manual', 1, marker);
     const dated = groupConversations([manual], newestFirst);
 
     expect(partitionGroups(dated, new Set(), newestFirst)).toBe(dated);

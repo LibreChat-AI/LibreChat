@@ -513,6 +513,7 @@ export type TMarkConversationUnreadResponse = {
   lastResponseMessageId?: string;
   /** True only when the settled stamp is the synthetic mark-unread marker. */
   lastResponseIsManual?: boolean;
+  isMarkedUnread?: boolean;
 };
 
 export type TSharedMessagesResponse = Omit<TSharedLink, 'messages'> & {

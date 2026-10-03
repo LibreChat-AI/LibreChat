@@ -444,6 +444,7 @@ describe('pinned list cache synchronization', () => {
       isShared: true,
       lastResponseAt: '2026-08-16T10:00:00.000Z',
       lastResponseIsManual: true,
+      isMarkedUnread: true,
       lastSeenAt: '2026-08-16T10:01:00.000Z',
     } as TConversation);
 
@@ -451,6 +452,7 @@ describe('pinned list cache synchronization', () => {
     expect('isShared' in stripped).toBe(false);
     expect('lastResponseAt' in stripped).toBe(false);
     expect('lastResponseIsManual' in stripped).toBe(false);
+    expect('isMarkedUnread' in stripped).toBe(false);
     expect('lastSeenAt' in stripped).toBe(false);
     expect(stripped.conversationId).toBe(pinnedConversationId);
     expect(stripped.title).toBe(pinnedConvo.title);

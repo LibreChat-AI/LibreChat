@@ -156,6 +156,7 @@ export const excludedKeys = new Set([
   'lastResponseAt',
   'lastResponseMessageId',
   'lastResponseIsManual',
+  'isMarkedUnread',
   'lastSeenAt',
 ]);
 

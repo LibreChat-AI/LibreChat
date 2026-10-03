@@ -3181,6 +3181,7 @@ describe('Conversation Operations', () => {
 
       const result = await markConvoUnread('user123', mockConversationData.conversationId);
       expect(result.modified).toBe(true);
+      expect(result.isMarkedUnread).toBe(true);
 
       const convo = await Conversation.findOne({
         conversationId: mockConversationData.conversationId,
@@ -3188,6 +3189,7 @@ describe('Conversation Operations', () => {
       expect(convo?.lastSeenAt).toBeUndefined();
       expect(convo?.lastResponseAt?.toISOString()).toBe('2026-08-16T10:00:00.000Z');
       expect(convo?.lastResponseIsManual).toBeUndefined();
+      expect(convo?.isMarkedUnread).toBe(true);
     });
 
     it('returns the stamp it settled on so the client never invents one', async () => {
@@ -3293,6 +3295,65 @@ describe('Conversation Operations', () => {
       expect(convo?.lastSeenAt).toBeInstanceOf(Date);
     });
   });
+
+  describe('manual unread reminders', () => {
+    it('survives reload and is cleared by a persisted real reply', async () => {
+      await Conversation.create({
+        conversationId: mockConversationData.conversationId,
+        user: 'user123',
+        endpoint: EModelEndpoint.openAI,
+        lastResponseAt: new Date('2026-08-16T10:00:00.000Z'),
+        lastResponseMessageId: 'original-reply',
+      });
+      await methods.markConvoUnread('user123', mockConversationData.conversationId);
+      const unread = await Conversation.findOne({
+        conversationId: mockConversationData.conversationId,
+      }).lean<IConversation>();
+      expect(unread?.isMarkedUnread).toBe(true);
+      expect(unread?.lastResponseMessageId).toBe('original-reply');
+      await methods.stampConvoLastResponse(
+        'user123',
+        mockConversationData.conversationId,
+        'new-reply',
+      );
+      const replied = await Conversation.findOne({
+        conversationId: mockConversationData.conversationId,
+      }).lean<IConversation>();
+      expect(replied?.isMarkedUnread).toBeUndefined();
+      expect(replied?.lastResponseMessageId).toBe('new-reply');
+    });
+
+    it('is cleared only by an acknowledgement of the current reply', async () => {
+      const responseAt = new Date('2026-08-16T10:00:00.000Z');
+      await Conversation.create({
+        conversationId: mockConversationData.conversationId,
+        user: 'user123',
+        endpoint: EModelEndpoint.openAI,
+        lastResponseAt: responseAt,
+        isMarkedUnread: true,
+      });
+      await methods.markConvoSeen(
+        'user123',
+        mockConversationData.conversationId,
+        new Date(responseAt.getTime() - 1),
+      );
+      expect(
+        (
+          await Conversation.findOne({
+            conversationId: mockConversationData.conversationId,
+          }).lean<IConversation>()
+        )?.isMarkedUnread,
+      ).toBe(true);
+      await methods.markConvoSeen('user123', mockConversationData.conversationId, responseAt);
+      expect(
+        (
+          await Conversation.findOne({
+            conversationId: mockConversationData.conversationId,
+          }).lean<IConversation>()
+        )?.isMarkedUnread,
+      ).toBeUndefined();
+    });
+  });
   describe('unseen-reply fields', () => {
     it('returns lastResponseAt, manual marker, and lastSeenAt from the cursor listing', async () => {
       const lastResponseAt = new Date('2026-08-16T10:00:00.000Z');
@@ -3304,6 +3365,7 @@ describe('Conversation Operations', () => {
         lastResponseAt,
         lastResponseMessageId: 'reply-listed',
         lastResponseIsManual: true,
+        isMarkedUnread: true,
         lastSeenAt,
       });
 
@@ -3312,6 +3374,7 @@ describe('Conversation Operations', () => {
       expect(conversations[0].lastResponseAt?.toISOString()).toBe(lastResponseAt.toISOString());
       expect(conversations[0].lastResponseMessageId).toBe('reply-listed');
       expect(conversations[0].lastResponseIsManual).toBe(true);
+      expect(conversations[0].isMarkedUnread).toBe(true);
       expect(conversations[0].lastSeenAt?.toISOString()).toBe(lastSeenAt.toISOString());
     });
 

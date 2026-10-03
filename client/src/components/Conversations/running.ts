@@ -22,7 +22,11 @@ function showsStatusGroups(options: ConversationGroupOptions): boolean {
 /** A reply that landed while the user was elsewhere. "Mark as unread" sets the same
  *  stamp as a reminder, not as a finished run, so that chat keeps its date. */
 function isFinishedUnseen(conversation: TConversation): boolean {
-  return conversation.lastResponseIsManual !== true && isConversationUnseen(conversation);
+  return (
+    conversation.isMarkedUnread !== true &&
+    conversation.lastResponseIsManual !== true &&
+    isConversationUnseen(conversation)
+  );
 }
 
 function newestFirst(a: TConversation, b: TConversation): number {

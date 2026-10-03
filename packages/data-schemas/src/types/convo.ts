@@ -346,6 +346,8 @@ export interface IConversation extends Document {
   lastResponseMessageId?: string;
   /** True only while `lastResponseAt` is the synthetic marker from "mark unread". */
   lastResponseIsManual?: boolean;
+  /** Manual reminder, cleared by reading or a new persisted reply. */
+  isMarkedUnread?: boolean;
   /** Set when the user has the newest message on screen; compared against `lastResponseAt`. */
   lastSeenAt?: Date;
 }

@@ -1255,6 +1255,8 @@ export const tConversationSchema = z.object({
   lastResponseMessageId: z.string().optional(),
   /** True only while `lastResponseAt` is the synthetic marker from "mark unread". */
   lastResponseIsManual: z.boolean().optional(),
+  /** Manual reminder, cleared by reading or a new persisted reply. */
+  isMarkedUnread: z.boolean().optional(),
   /** Set when the user has the newest message on screen; compared against `lastResponseAt`. */
   lastSeenAt: z.string().optional(),
   /* Files */
@@ -1326,6 +1328,7 @@ export const tPresetSchema = tConversationSchema
     lastResponseAt: true,
     lastResponseMessageId: true,
     lastResponseIsManual: true,
+    isMarkedUnread: true,
     lastSeenAt: true,
   })
   .merge(

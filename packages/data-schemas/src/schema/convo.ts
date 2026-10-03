@@ -400,6 +400,9 @@ const convoSchema: Schema<IConversation> = new Schema(
     lastResponseIsManual: {
       type: Boolean,
     },
+    isMarkedUnread: {
+      type: Boolean,
+    },
     lastSeenAt: {
       type: Date,
     },

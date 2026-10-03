@@ -258,6 +258,24 @@ test.describe('unseen replies', () => {
       /* At least one more, not exactly one: the other projects share this user
        * and seed unseen conversations of their own while this one runs. */
       await expect.poll(() => titleCount(page)).toBeGreaterThanOrEqual(baseline + 1);
+      await expect.poll(async () => (await readConversation(id))?.isMarkedUnread).toBe(true);
+      expect((await readConversation(id))?.lastResponseIsManual).not.toBe(true);
+      await page.reload();
+      await openSidebar(page);
+      await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toBeVisible();
+      await expect
+        .poll(async () =>
+          row.evaluate((node) => {
+            let previous = node.closest('[role="row"]')?.previousElementSibling;
+            while (previous) {
+              const heading = previous.querySelector('h2');
+              if (heading) return heading.textContent;
+              previous = previous.previousElementSibling;
+            }
+            return null;
+          }),
+        )
+        .toBe('Today');
 
       const token = await getAccessToken(page);
       const neverReplied = conversationId();

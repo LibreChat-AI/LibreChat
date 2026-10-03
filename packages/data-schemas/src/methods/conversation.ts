@@ -573,6 +573,7 @@ export interface ConversationMethods {
     lastResponseAt?: Date;
     lastResponseMessageId?: string;
     lastResponseIsManual?: boolean;
+    isMarkedUnread?: boolean;
   }>;
   stampConvoLastResponse(
     user: string,
@@ -653,7 +654,7 @@ export function createConversationMethods(
         casFilter,
         {
           $set: { lastResponseAt: stamp, lastResponseMessageId: responseMessageId },
-          $unset: { lastSeenAt: '', lastResponseIsManual: '' },
+          $unset: { lastSeenAt: '', lastResponseIsManual: '', isMarkedUnread: '' },
           $max: { updatedAt: stamp },
         },
         { new: true, projection, timestamps: false },
@@ -2413,6 +2414,7 @@ export function createConversationMethods(
       /* Read-state fields are server-owned. A stale marker must never be reintroduced by a
        * metadata save after a real reply cleared it. */
       delete update.lastResponseIsManual;
+      delete update.isMarkedUnread;
       delete update.lastResponseAt;
       delete update.lastResponseMessageId;
       delete update.initial_agent_id;
@@ -2436,6 +2438,7 @@ export function createConversationMethods(
       }
       const unsetFields: Record<string, number> = { ...(metadata?.unsetFields ?? {}) };
       delete unsetFields.lastResponseIsManual;
+      delete unsetFields.isMarkedUnread;
       delete unsetFields.lastResponseMessageId;
       delete unsetFields.lastResponseAt;
       delete unsetFields.initial_agent_id;
@@ -2568,7 +2571,7 @@ export function createConversationMethods(
           const { lastResponseAt, ...withoutReplyStamp } = setFields;
           operation.$set = withoutReplyStamp;
           operation.$max = { lastResponseAt };
-          operation.$unset = { lastResponseIsManual: '' };
+          operation.$unset = { lastResponseIsManual: '', isMarkedUnread: '' };
         }
         if (Object.keys(unsetFields).length > 0) {
           operation.$unset = {
@@ -2736,6 +2739,7 @@ export function createConversationMethods(
                 lastResponseAt: 1,
                 lastResponseMessageId: 1,
                 lastResponseIsManual: 1,
+                isMarkedUnread: 1,
                 updatedAt: 1,
               },
             );
@@ -2746,6 +2750,7 @@ export function createConversationMethods(
               conversation.lastResponseAt = stamped.stamp;
               conversation.lastResponseMessageId = stamped.conversation.lastResponseMessageId;
               conversation.lastResponseIsManual = stamped.conversation.lastResponseIsManual;
+              conversation.isMarkedUnread = stamped.conversation.isMarkedUnread;
               conversation.lastSeenAt = undefined;
               if (stamped.conversation.updatedAt) {
                 conversation.updatedAt = stamped.conversation.updatedAt;
@@ -3091,6 +3096,7 @@ export function createConversationMethods(
         delete sanitized.lastResponseAt;
         delete sanitized.lastResponseMessageId;
         delete sanitized.lastResponseIsManual;
+        delete sanitized.isMarkedUnread;
         delete sanitized.lastSeenAt;
         delete sanitized.codeApprovalMode;
         delete sanitized.initial_agent_id;
@@ -3512,7 +3518,7 @@ export function createConversationMethods(
            the sidebar lists archived and unarchived chats in the same session, and the
            active list also carries the unarchived pins beside them. */
         .select(
-          'conversationId endpoint title createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual lastSeenAt',
+          'conversationId endpoint title createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual isMarkedUnread lastSeenAt',
         )
         .sort(sortObj)
         .limit(pageSize + 1)
@@ -4003,7 +4009,7 @@ export function createConversationMethods(
       const lastSeenAt = observedResponseAt && observedResponseAt > now ? observedResponseAt : now;
       const result = await Conversation.updateOne(
         filter,
-        { $set: { lastSeenAt } },
+        { $set: { lastSeenAt }, $unset: { isMarkedUnread: '' } },
         { timestamps: false },
       );
       /* Matched, not modified: a retry of an acknowledgement that already landed writes the
@@ -4032,7 +4038,12 @@ export function createConversationMethods(
   async function markConvoUnread(user: string, conversationId: string) {
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
-      const projection = { lastResponseAt: 1, lastResponseMessageId: 1, lastResponseIsManual: 1 };
+      const projection = {
+        lastResponseAt: 1,
+        lastResponseMessageId: 1,
+        lastResponseIsManual: 1,
+        isMarkedUnread: 1,
+      };
       const stamped = await Conversation.findOneAndUpdate(
         {
           conversationId,
@@ -4040,12 +4051,15 @@ export function createConversationMethods(
           $or: [{ lastResponseAt: null }, { lastResponseAt: { $exists: false } }],
         },
         {
-          $set: { lastResponseAt: new Date(), lastResponseIsManual: true },
+          $set: { lastResponseAt: new Date(), lastResponseIsManual: true, isMarkedUnread: true },
           $unset: { lastSeenAt: '', lastResponseMessageId: '' },
         },
         { timestamps: false, new: true, projection },
       ).lean<
-        Pick<IConversation, 'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual'>
+        Pick<
+          IConversation,
+          'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual' | 'isMarkedUnread'
+        >
       >();
       if (stamped) {
         return {
@@ -4053,15 +4067,19 @@ export function createConversationMethods(
           lastResponseAt: stamped.lastResponseAt,
           lastResponseMessageId: stamped.lastResponseMessageId,
           lastResponseIsManual: stamped.lastResponseIsManual === true,
+          isMarkedUnread: stamped.isMarkedUnread,
         };
       }
 
       const cleared = await Conversation.findOneAndUpdate(
         { conversationId, user },
-        { $unset: { lastSeenAt: '' } },
+        { $set: { isMarkedUnread: true }, $unset: { lastSeenAt: '' } },
         { timestamps: false, new: true, projection },
       ).lean<
-        Pick<IConversation, 'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual'>
+        Pick<
+          IConversation,
+          'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual' | 'isMarkedUnread'
+        >
       >();
 
       return cleared
@@ -4070,6 +4088,7 @@ export function createConversationMethods(
             lastResponseAt: cleared.lastResponseAt,
             lastResponseMessageId: cleared.lastResponseMessageId,
             lastResponseIsManual: cleared.lastResponseIsManual === true,
+            isMarkedUnread: cleared.isMarkedUnread,
           }
         : { modified: false };
     } catch (error) {

@@ -569,7 +569,11 @@ export const useMarkConversationSeenMutation = (): UseMutationResult<
  */
 type UnreadWriteBaseline = Pick<
   t.TConversation,
-  'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual' | 'lastSeenAt'
+  | 'lastResponseAt'
+  | 'lastResponseMessageId'
+  | 'lastResponseIsManual'
+  | 'isMarkedUnread'
+  | 'lastSeenAt'
 >;
 
 const resolveReplyIdentity = (
@@ -671,6 +675,7 @@ const reassertAcceptedUnread = (
       serverResponseAt == null ? convo.lastResponseMessageId : resolveReplyIdentity(convo, data),
     lastResponseIsManual:
       serverResponseAt == null ? convo.lastResponseIsManual : data.lastResponseIsManual,
+    isMarkedUnread: data.isMarkedUnread ?? true,
     lastSeenAt: undefined,
   }));
 };
@@ -702,6 +707,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
           lastResponseAt: observed?.lastResponseAt,
           lastResponseMessageId: observed?.lastResponseMessageId,
           lastResponseIsManual: observed?.lastResponseIsManual,
+          isMarkedUnread: observed?.isMarkedUnread,
           lastSeenAt: observed?.lastSeenAt,
         });
         const interrupted = await cancelConvoReadFetches(queryClient, vars.conversationId);
@@ -710,6 +716,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
           lastResponseAt: owner.chain.baseline.lastResponseAt,
           lastResponseMessageId: owner.chain.baseline.lastResponseMessageId,
           lastResponseIsManual: owner.chain.baseline.lastResponseIsManual,
+          isMarkedUnread: owner.chain.baseline.isMarkedUnread,
           lastSeenAt: owner.chain.baseline.lastSeenAt,
           token: owner.token,
           interrupted,
@@ -734,6 +741,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
               : convo.lastResponseMessageId,
           lastResponseIsManual:
             convo.lastResponseAt == null || convo.lastResponseIsManual === true ? true : undefined,
+          isMarkedUnread: true,
           lastSeenAt: undefined,
         }));
         return context;
@@ -812,6 +820,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
         const lastResponseIsManual = keepsCached
           ? cached?.lastResponseIsManual
           : data.lastResponseIsManual;
+        const isMarkedUnread = keepsCached ? cached?.isMarkedUnread : (data.isMarkedUnread ?? true);
         const lastResponseMessageId =
           keepsCached || serverResponseAt == null
             ? cached?.lastResponseMessageId
@@ -820,6 +829,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
           cached?.lastSeenAt === undefined &&
           cachedResponseAt === lastResponseAt &&
           cached?.lastResponseIsManual === lastResponseIsManual &&
+          cached?.isMarkedUnread === isMarkedUnread &&
           cached?.lastResponseMessageId === lastResponseMessageId
         ) {
           return;
@@ -829,6 +839,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
           lastResponseAt,
           lastResponseMessageId,
           lastResponseIsManual,
+          isMarkedUnread,
           lastSeenAt: undefined,
         }));
       },
@@ -865,6 +876,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
           lastResponseAt: context?.lastResponseAt,
           lastResponseMessageId: resolveReplyIdentity(convo, context),
           lastResponseIsManual: context?.lastResponseIsManual,
+          isMarkedUnread: context?.isMarkedUnread,
           lastSeenAt: context?.lastSeenAt,
         }));
       },

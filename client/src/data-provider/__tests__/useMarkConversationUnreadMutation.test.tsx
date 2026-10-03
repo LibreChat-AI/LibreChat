@@ -4,8 +4,12 @@ import { EModelEndpoint, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { InfiniteData } from '@tanstack/react-query';
 import type { ConversationCursorData } from '~/utils/convos';
+import {
+  groupConversationsByStatus,
+  FINISHED_CHATS_GROUP,
+} from '~/components/Conversations/running';
 import { useMarkConversationSeenMutation, useMarkConversationUnreadMutation } from '../mutations';
-import { isConversationUnseen, updateConvoInAllQueries } from '~/utils';
+import { applyServerReplyStamp, isConversationUnseen, updateConvoInAllQueries } from '~/utils';
 
 const mockMarkUnread = jest.fn();
 const mockMarkSeen = jest.fn();
@@ -73,6 +77,43 @@ describe('useMarkConversationUnreadMutation', () => {
     mockMarkSeen.mockReset();
   });
 
+  it('keeps a manually unread real reply out of Finished, then lifts a newer reply', async () => {
+    mockMarkUnread.mockResolvedValue({
+      modified: true,
+      lastResponseAt: RESPONDED_AT,
+      isMarkedUnread: true,
+    });
+    const { result, cached, queryClient } = setup(RESPONDED_AT, SEEN_AT);
+    const options = { field: 'updatedAt', direction: 'desc' } as const;
+    await act(async () => {
+      await result.current.mutateAsync({ conversationId: CONVO_ID });
+    });
+    expect(cached()?.isMarkedUnread).toBe(true);
+    expect(cached()?.lastResponseMessageId).toBe('original-reply');
+    const dates = [['Today', [cached()!]]] as [string, NonNullable<ReturnType<typeof cached>>[]][];
+    expect(groupConversationsByStatus(dates, new Set(), options)).toBe(dates);
+    act(() => {
+      applyServerReplyStamp(queryClient, CONVO_ID, {
+        lastResponseAt: '2026-08-16T12:00:00.000Z',
+        lastResponseMessageId: 'new-reply',
+      });
+    });
+    expect(cached()?.isMarkedUnread).toBeUndefined();
+    expect(groupConversationsByStatus([['Today', [cached()!]]], new Set(), options)[0][0]).toBe(
+      FINISHED_CHATS_GROUP,
+    );
+  });
+
+  it('restores manual unread intent when the write fails', async () => {
+    mockMarkUnread.mockRejectedValue(new Error('Unavailable'));
+    const { result, cached } = setup(RESPONDED_AT, SEEN_AT);
+    await act(async () => {
+      await result.current.mutateAsync({ conversationId: CONVO_ID }).catch(() => undefined);
+    });
+    expect(cached()?.isMarkedUnread).toBeUndefined();
+    expect(cached()?.lastSeenAt).toBe(SEEN_AT);
+  });
+
   it('reasserts the unread state when a refetch lands on top of it', async () => {
     /* A list refetch already in flight can have read the old catch-up and commit after the
        optimistic clear, quietly taking the dot back off a conversation the server did flag. */
@@ -87,6 +128,7 @@ describe('useMarkConversationUnreadMutation', () => {
 
     await waitFor(() => expect(isConversationUnseen(cached())).toBe(true));
     expect(cached()?.lastSeenAt).toBeUndefined();
+    expect(cached()?.isMarkedUnread).toBe(true);
   });
 
   it('preserves a later seen operation even when its stamp equals the original catch-up', async () => {

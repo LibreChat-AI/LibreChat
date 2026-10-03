@@ -1240,6 +1240,7 @@ export function applyServerReplyStamp(
       lastResponseAt,
       lastResponseMessageId: lastResponseMessageId ?? convo.lastResponseMessageId,
       lastResponseIsManual: undefined,
+      isMarkedUnread: advances ? undefined : convo.isMarkedUnread,
       lastSeenAt: advances ? undefined : convo.lastSeenAt,
       updatedAt: updatedAt ?? convo.updatedAt,
     }),
@@ -1278,6 +1279,13 @@ const preserveReadState = (next: TConversation, found: TConversation): TConversa
   if (!('lastResponseIsManual' in next)) {
     merged.lastResponseIsManual = found.lastResponseIsManual;
   }
+  if (!('isMarkedUnread' in next)) {
+    merged.isMarkedUnread =
+      next.lastResponseAt != null &&
+      (found.lastResponseAt == null || next.lastResponseAt > found.lastResponseAt)
+        ? undefined
+        : found.isMarkedUnread;
+  }
   if (!('lastSeenAt' in next)) {
     merged.lastSeenAt = found.lastSeenAt;
   }
@@ -1296,6 +1304,7 @@ const chatOwnedStaleFields = [
   'lastResponseAt',
   'lastResponseMessageId',
   'lastResponseIsManual',
+  'isMarkedUnread',
   'lastSeenAt',
 ] as const;
 
