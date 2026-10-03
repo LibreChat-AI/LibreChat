@@ -1,3 +1,4 @@
+jest.mock('../ResetApprovals', () => () => null);
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import userEvent from '@testing-library/user-event';

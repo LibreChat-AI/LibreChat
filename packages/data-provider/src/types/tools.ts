@@ -113,7 +113,7 @@ export interface ToolApprovalGrantStorage {
     scope: ToolApprovalGrantScope,
     grants: readonly ToolApprovalGrantBinding[],
   ) => Promise<void>;
-  resetToolApprovalGrants: (userId: string, agentId: string, toolName: string) => Promise<void>;
+  resetToolApprovalGrants: (userId: string, agentId: string, toolName?: string) => Promise<void>;
 }
 
 /**

@@ -3352,6 +3352,7 @@
   "com_ui_tool_approval_remember_chat": "Approving remembers this tool for this agent in this chat, including calls with different arguments. Administrator rules still apply.",
   "com_ui_tool_approval_remember_always": "Approving remembers this tool for you and this agent across chats, including calls with different arguments. Administrator rules still apply.",
   "com_ui_tool_approval_reset": "Reset my remembered approvals",
+  "com_ui_tool_approval_reset_success": "Your remembered approvals were reset.",
   "com_ui_tool_approval_reset_error": "Could not reset remembered approvals. Please retry.",
   "com_ui_tool_approval_admin_ask": "Administrator policy requires approval.",
   "com_ui_tool_approval_admin_deny": "Administrator policy blocks this tool.",
