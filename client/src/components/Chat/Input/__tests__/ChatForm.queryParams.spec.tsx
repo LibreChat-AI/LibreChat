@@ -97,7 +97,6 @@ function Harness({
           index={0}
           routePending={routePending}
           isLandingPage
-          showComposerTips={false}
           enterToSend
           autoSendText={-1}
           speechSettingsInitialized={speechSettingsInitialized}
@@ -325,11 +324,10 @@ describe('ChatForm URL submission', () => {
     expect(screen.getByText('Sending...')).toBeInTheDocument();
     expect(screen.getByTestId('text-input')).toHaveValue('hi');
     expect(screen.getByTestId('during-run-send-button')).toBeDisabled();
-    expect(screen.getByTestId('interrupt-steer-button')).toBeDisabled();
+    expect(screen.queryByTestId('interrupt-steer-button')).not.toBeInTheDocument();
     const stop = screen.getByRole('button', { name: 'Stop generating' });
     expect(stop).toBeEnabled();
     await act(async () => {
-      fireEvent.click(screen.getByTestId('interrupt-steer-button'));
       fireEvent.click(screen.getByTestId('during-run-send-button'));
       fireEvent.submit(screen.getByTestId('text-input').closest('form') as HTMLFormElement);
       fireEvent.keyDown(screen.getByTestId('text-input'), {

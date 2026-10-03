@@ -147,6 +147,9 @@ endpoints:
     toolApproval:
       enabled: true
       mode: bypass
+      # The probe below is an `ask` rule and a hook match, so it is never offered
+      # "Always allow"; the remembered-approval scenarios assert exactly that.
+      allowAlways: true
       ask:
         - approval_probe_mcp_e2e-memory
       reason: E2E approval required before running {tool}.

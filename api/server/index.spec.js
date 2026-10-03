@@ -171,7 +171,9 @@ describe('Startup readiness wiring', () => {
   });
 
   it('configures subagent task routing before the server accepts requests', () => {
-    const routingIndex = source.indexOf('await configureSubagentTaskRouting();');
+    const routingIndex = source.indexOf(
+      'await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);',
+    );
     const listenIndex = source.indexOf('const server = app.listen');
 
     expect(routingIndex).toBeGreaterThan(-1);

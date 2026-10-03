@@ -56,6 +56,7 @@ const {
   resolveAttachedWorkspaceRequestTimeoutMs,
   createContextProgrammaticBashTool,
   resolveCodeExecutionContext,
+  resolveCodeExecutionWorkspaceSelections,
   resolveCodeExecutionWorkspaceContext,
   resolveRunFileCodeExecutionContext,
   resolveCallerCapabilityProjectionSnapshot,
@@ -885,6 +886,13 @@ async function loadToolDefinitionsWrapper({
         agent.stateful_code_sessions === true,
       environment: agent.stateful_code_environment,
       environmentId: agent.code_environment_id,
+      environmentIds: agent.code_environment_ids,
+      allowEnvironmentSelection:
+        req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+      workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+        conversation: req.resolvedConversation,
+        request: runtimeRequestBody,
+      }),
       environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
       userId: req.user.id,
       agentId: agent.id,
@@ -1800,6 +1808,13 @@ async function loadAgentTools({
       statefulSessions: statefulCodeSessions,
       environment: agent.stateful_code_environment,
       environmentId: agent.code_environment_id,
+      environmentIds: agent.code_environment_ids,
+      allowEnvironmentSelection:
+        req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+      workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+        conversation: req.resolvedConversation,
+        request: runtimeRequestBody,
+      }),
       environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
       userId: req.user.id,
       agentId: agent.id,
@@ -2232,6 +2247,13 @@ async function loadToolsForExecution({
     statefulSessions: statefulCodeSessions,
     environment: agent?.stateful_code_environment,
     environmentId: agent?.code_environment_id,
+    environmentIds: agent?.code_environment_ids,
+    allowEnvironmentSelection:
+      req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+    workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+      conversation: req.resolvedConversation,
+      request: runtimeRequestBody,
+    }),
     environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
     userId: req.user.id,
     agentId: agent?.id,
@@ -2345,6 +2367,7 @@ async function loadToolsForExecution({
               workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
               workspaceInstanceId: codeExecutionContext.codeWorkspace.workspaceInstanceId,
               linkedWorktrees: codeExecutionContext.codeWorkspace.linkedWorktrees,
+              nativeSandbox: codeExecutionContext.codeWorkspace.nativeSandbox,
               environment: codeExecutionContext.codeWorkspace.environment,
               gitIdentity: agent?.git_identity,
               maxTimeoutMs: resolveAttachedWorkspaceCommandTimeoutMax(

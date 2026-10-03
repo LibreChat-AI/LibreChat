@@ -166,6 +166,9 @@ export const themeAppearanceProperties: Readonly<
   menuRadius: '--theme-menu-radius',
   tooltipRadius: '--theme-tooltip-radius',
   tabRadius: '--theme-tab-radius',
+  tabMinWidth: '--theme-tab-min-width',
+  listMinWidth: '--theme-list-min-width',
+  listMaxHeight: '--theme-list-max-height',
   radiusSm: '--theme-radius-sm',
   radiusMd: '--theme-radius-md',
   radiusLg: '--theme-radius-lg',
@@ -175,10 +178,18 @@ export const themeAppearanceProperties: Readonly<
   controlHeight: '--theme-control-height',
   controlPaddingX: '--theme-control-padding-x',
   controlGap: '--theme-control-gap',
+  iconSize: '--theme-icon-size',
+  iconSizeMd: '--theme-icon-size-md',
+  iconSizeLg: '--theme-icon-size-lg',
   controlFontWeight: '--theme-control-font-weight',
   buttonHeight: '--theme-button-height',
   buttonHeightSm: '--theme-button-height-sm',
+  buttonHeightXs: '--theme-button-height-xs',
+  buttonHeightLg: '--theme-button-height-lg',
+  buttonHeightCompact: '--theme-button-height-compact',
+  iconButtonSizeSm: '--theme-icon-button-size-sm',
   fieldHeight: '--theme-field-height',
+  fieldHeightLg: '--theme-field-height-lg',
   fieldPaddingY: '--theme-field-padding-y',
   fieldFocusStyle: '--theme-field-focus-style',
   fieldFillStyle: '--theme-field-fill-style',
@@ -189,6 +200,7 @@ export const themeAppearanceProperties: Readonly<
   labelFontWeight: '--theme-label-font-weight',
   switchWidth: '--theme-switch-width',
   switchHeight: '--theme-switch-height',
+  checkboxSize: '--theme-checkbox-size',
   tableCellSpaceY: '--theme-table-cell-space-y',
   tableRowStroke: '--theme-table-row-stroke',
   spaceCompact: '--theme-space-compact',
@@ -242,6 +254,9 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   menuRadius: '0.7rem',
   tooltipRadius: '0.275rem',
   tabRadius: '0.185rem',
+  tabMinWidth: '100px',
+  listMinWidth: '8rem',
+  listMaxHeight: '24rem',
   radiusSm: 'calc(0.5rem - 4px)',
   radiusMd: 'calc(0.5rem - 2px)',
   radiusLg: '0.5rem',
@@ -251,10 +266,18 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   controlHeight: '2.25rem',
   controlPaddingX: '0.75rem',
   controlGap: '0.375rem',
+  iconSize: '1rem',
+  iconSizeMd: '1.25rem',
+  iconSizeLg: '1.5rem',
   controlFontWeight: '500',
   buttonHeight: '2.5rem',
   buttonHeightSm: '2.25rem',
+  buttonHeightXs: '1.75rem',
+  buttonHeightLg: '2.75rem',
+  buttonHeightCompact: '2rem',
+  iconButtonSizeSm: '2rem',
   fieldHeight: '2.5rem',
+  fieldHeightLg: '3rem',
   fieldPaddingY: '0.5rem',
   fieldFocusStyle: 'ring',
   fieldFillStyle: 'transparent',
@@ -264,6 +287,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   labelLeading: '1',
   labelFontWeight: 'inherit',
   ...defaultSwitchSize,
+  checkboxSize: '1rem',
   tableCellSpaceY: '1rem',
   tableRowStroke: '0px',
   spaceCompact: '0.375rem',
@@ -586,6 +610,18 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors?.['rgb-avatar-placeholder'] === undefined && avatarPlaceholderSource !== undefined
       ? { 'rgb-avatar-placeholder': avatarPlaceholderSource }
       : {};
+  /**
+   * The mobile drawer drew its edge only in dark, in `border-xheavy`; in light the drawer's own
+   * fill. A theme that repaints the role its mode used keeps that edge.
+   */
+  const drawerEdgeSource =
+    mode === 'dark'
+      ? customColors?.['rgb-border-xheavy']
+      : customColors?.['rgb-surface-primary-alt'];
+  const drawerEdgeFallback: Partial<IThemeRGB> =
+    customColors?.['rgb-drawer-edge'] === undefined && drawerEdgeSource !== undefined
+      ? { 'rgb-drawer-edge': drawerEdgeSource }
+      : {};
   const chartWidgetSurfaceFallback: IThemeRGB =
     customColors?.['rgb-chart-widget-surface'] === undefined &&
     customColors?.['rgb-surface-primary'] !== undefined
@@ -691,6 +727,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...textMutedFallback,
       ...proseLinkFallback,
       ...avatarPlaceholderFallback,
+      ...drawerEdgeFallback,
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
       ...switchThumbFallback,

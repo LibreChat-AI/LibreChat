@@ -104,7 +104,7 @@ describe('Dropdown compact recipe', () => {
 
     const trigger = screen.getByRole('combobox', { name: 'Sort 12-hour' });
     expect(trigger).toHaveClass(
-      'h-8',
+      'h-theme-button-compact',
       'px-2.5',
       'py-0',
       'text-xs',
@@ -135,5 +135,17 @@ describe('Dropdown ink', () => {
 
     expect(plain).toHaveClass('text-text-primary', 'hover:text-text-primary');
     expect(plain).not.toHaveClass('text-field-text');
+  });
+});
+
+describe('Dropdown icon-only trigger', () => {
+  it('holds the square to the target minimum, like the icon Button', () => {
+    render(<Dropdown value="24h" options={OPTIONS} ariaLabel="Clock" iconOnly />);
+
+    expect(screen.getByRole('combobox')).toHaveClass(
+      'size-theme-button',
+      'min-h-theme-target',
+      'min-w-theme-target',
+    );
   });
 });

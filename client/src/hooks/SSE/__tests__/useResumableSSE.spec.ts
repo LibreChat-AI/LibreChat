@@ -82,6 +82,9 @@ const mockFetchQuery = jest.fn();
 const mockInvalidateQueries = jest.fn();
 const mockRemoveQueries = jest.fn();
 const mockBackingQueryClient = new QueryClient();
+const mockCancelQueries = jest.fn(
+  mockBackingQueryClient.cancelQueries.bind(mockBackingQueryClient),
+);
 const mockQueryCache = mockBackingQueryClient.getQueryCache();
 const mockFindAll = jest.fn((_queryKey?: QueryKey): Query[] => []);
 const mockQueryClient = {
@@ -90,6 +93,8 @@ const mockQueryClient = {
   fetchQuery: mockFetchQuery,
   invalidateQueries: mockInvalidateQueries,
   removeQueries: mockRemoveQueries,
+  cancelQueries: mockCancelQueries,
+  getQueryState: mockBackingQueryClient.getQueryState.bind(mockBackingQueryClient),
   getQueryCache: () => ({
     findAll: mockFindAll,
     getAll: mockQueryCache.getAll.bind(mockQueryCache),
@@ -426,6 +431,7 @@ describe('useResumableSSE', () => {
     );
     mockInvalidateQueries.mockClear();
     mockRemoveQueries.mockClear();
+    mockCancelQueries.mockClear();
     mockFindAll.mockReset();
     mockFindAll.mockReturnValue([]);
     mockBackingQueryClient.clear();
@@ -780,6 +786,11 @@ describe('useResumableSSE', () => {
     });
     expect(mockRemoveQueries).toHaveBeenCalledWith({
       queryKey: ['streamStatus', 'stream-123'],
+    });
+
+    expect(mockCancelQueries).toHaveBeenCalledWith({
+      queryKey: [QueryKeys.runningConversation, 'stream-123'],
+      exact: true,
     });
 
     const allConversationWrites = mockSetQueryData.mock.calls.filter(
@@ -1150,6 +1161,36 @@ describe('useResumableSSE', () => {
     );
     expect(mockFindAll).toHaveBeenCalledWith([QueryKeys.allConversations], { exact: false });
 
+    unmount();
+  });
+
+  it.each([
+    {
+      codeEnvironmentMode: 'attached' as const,
+      codeWorkspaces: [{ environmentId: 'vm', workspaceId: 'project' }],
+    },
+    { codeWorkspaces: [{ environmentId: 'vm', workspaceId: 'project' }] },
+    { codeEnvironmentMode: 'without_attached' as const },
+  ])('caches the acknowledged code decision for navigation: %j', async (decision) => {
+    const submission = {
+      ...buildSubmission({ conversation: { conversationId: String(Constants.NEW_CONVO) } }),
+      ...decision,
+    };
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+    await flushMicrotasks();
+
+    const cacheWrite = mockSetQueryData.mock.calls.find(
+      ([key]) => key[0] === QueryKeys.conversation && key[1] === 'stream-123',
+    );
+    expect(cacheWrite).toBeDefined();
+    const cached = cacheWrite![1](undefined);
+    expect(cached).toMatchObject({
+      conversationId: 'stream-123',
+      codeEnvironmentMode: decision.codeEnvironmentMode ?? 'attached',
+    });
+    expect(cached.codeWorkspaces).toEqual(decision.codeWorkspaces);
+    const newer = { ...cached, codeEnvironmentMode: 'without_attached', codeWorkspaces: undefined };
+    expect(cacheWrite![1](newer)).toBe(newer);
     unmount();
   });
 

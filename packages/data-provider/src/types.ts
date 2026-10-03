@@ -513,6 +513,8 @@ export type TMarkConversationUnreadResponse = {
   lastResponseMessageId?: string;
   /** True only when the settled stamp is the synthetic mark-unread marker. */
   lastResponseIsManual?: boolean;
+  /** True: manual reminder; false: real reply; absent: legacy/unknown intent. */
+  isMarkedUnread?: boolean;
 };
 
 export type TSharedMessagesResponse = Omit<TSharedLink, 'messages'> & {
@@ -712,6 +714,9 @@ export type TConfig = {
     allowedEnvironments: StatefulCodeEnvironment[];
     environments?: TPublicCodeEnvironment[];
     approvalsEnabled?: boolean;
+    /** Allow new chats to choose among the agent's explicitly listed machines. */
+    allowEnvironmentSelection?: boolean;
+    maxEnvironmentChoices?: number;
     /** Approval modes the endpoint policy permits the client to offer. */
     approvalModes?: CodeApprovalMode[];
   };

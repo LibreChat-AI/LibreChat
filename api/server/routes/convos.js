@@ -661,6 +661,8 @@ router.post('/archive', validateConvoAccess, async (req, res) => {
         preserveUpdatedAt: true,
         /** Without timestamps, an upsert would insert a conversation that has none. */
         noUpsert: true,
+        /** Metadata-only: skip rebuilding `messages` so a concurrent append is not erased. */
+        appendMessageIds: [],
       },
     );
 
@@ -759,7 +761,7 @@ router.post('/update', validateConvoAccess, configMiddleware, async (req, res) =
         interfaceConfig: req?.config?.interfaceConfig,
       },
       { conversationId, title: sanitizedTitle },
-      { context: `POST /api/convos/update ${conversationId}` },
+      { context: `POST /api/convos/update ${conversationId}`, appendMessageIds: [] },
     );
     res.status(201).json(dbResponse);
   } catch (error) {

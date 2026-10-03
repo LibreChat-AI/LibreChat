@@ -170,7 +170,7 @@ describe('DeploymentTheme', () => {
         ...inlineTheme.modes,
         light: {
           ...inlineTheme.modes.light,
-          appearance: { controlRadius: '2px', futureSpacing: '3rem' },
+          appearance: { controlRadius: '2px', futureSpacing: '3.3125rem' },
         },
       },
     });
@@ -179,7 +179,7 @@ describe('DeploymentTheme', () => {
     await waitFor(() => expect(root().dataset.theme).toBe('acme'));
     expect(root().style.getPropertyValue('--surface-primary')).toBe('10 20 30');
     expect(root().style.getPropertyValue('--theme-control-radius')).toBe('2px');
-    expect(root().getAttribute('style')).not.toContain('3rem');
+    expect(root().getAttribute('style')).not.toContain('3.3125rem');
     expect(warn).toHaveBeenCalledWith(
       '[ThemeProvider] Unknown light appearance token ignored: futureSpacing',
     );

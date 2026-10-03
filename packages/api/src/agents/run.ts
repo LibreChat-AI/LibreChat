@@ -46,6 +46,7 @@ import type {
   AgentSubagentGraph,
   ReasoningResponseKey,
   SummarizationConfig,
+  TurnFileConsumers,
 } from 'librechat-data-provider';
 import type { AppConfig, IAgentFadingTier, IUser } from '@librechat/data-schemas';
 import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
@@ -61,6 +62,7 @@ import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { SubagentUsageEvent } from '~/agents/usage';
+import type { ProvisionState } from '~/agents/resources';
 import type { RunFileSession } from './files/session';
 import type { RunFadingTiers } from './fading';
 import type * as t from '~/types';
@@ -95,11 +97,6 @@ import {
   isSteerTerminalContinuationSupported,
 } from '~/agents/steering/runtime';
 import {
-  resolveToolApprovalPolicy,
-  healToolApprovalPolicy,
-  exemptAskUserQuestionFromApproval,
-} from '~/agents/hitl/policy';
-import {
   ASK_USER_QUESTION_TOOL_NAME,
   createAskUserQuestionTool,
 } from '~/agents/hitl/askUserQuestionTool';
@@ -108,6 +105,7 @@ import {
   eventOnlyRunFileTools,
   isRunFileSharingSupported,
 } from './files/runtime';
+import { resolveToolApprovalPolicy, exemptAskUserQuestionFromApproval } from '~/agents/hitl/policy';
 import { applyCustomHandoffPromptKeyCompatibility } from '~/agents/handoffPromptKeyCompatibility';
 import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/agents/intent';
 import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils/headers';
@@ -117,6 +115,8 @@ import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
+import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
+import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -217,6 +217,14 @@ export function extractDiscoveredToolsFromHistory(messages: BaseMessage[]): Set<
   }
 
   return discoveredTools;
+}
+
+/** MCP key-spelling aliases each run knows, including those its lazy subagents reported. */
+const runMCPToolAliases = new WeakMap<object, readonly MCPToolAlias[]>();
+
+/** The run's live alias list, so a pause can be judged against the aliases the run used. */
+export function getRunMCPToolAliases(run: object | null | undefined): readonly MCPToolAlias[] {
+  return run == null ? [] : (runMCPToolAliases.get(run) ?? []);
 }
 
 export interface RunDiscoverySnapshot {
@@ -419,6 +427,8 @@ export function shouldReplayReasoningContent(
 }
 
 type RunAgent = Omit<Agent, 'tools'> & {
+  provisionState?: ProvisionState;
+  fileConsumers?: TurnFileConsumers;
   azureOptions?: t.AzureOptions;
   tools?: GenericTool[];
   maxContextTokens?: number;
@@ -2119,6 +2129,7 @@ export async function createRun({
   eventActorCheckpointing = false,
   hitlCapable = false,
   resolvedToolApprovalHooks,
+  toolApprovalAllows,
   toolInputValidationErrors,
   sessionStartSource,
   streaming = true,
@@ -2141,6 +2152,12 @@ export async function createRun({
    * run. Tenant fanout can still export when tenant routing is available.
    */
   centralTraceExportEnabled?: boolean;
+  /**
+   * Exact tool names the owner approved for the rest of this conversation, read from the
+   * stored conversation (never from the request body). Honored only when
+   * `toolApproval.allowAlways` is on; admin `deny`/`ask` rules and hooks still win.
+   */
+  toolApprovalAllows?: readonly string[];
   /**
    * Request values the deployment may export as Langfuse trace metadata
    * (`langfuse.trace.conversationMetadataFields`). The conversation id,
@@ -2319,7 +2336,29 @@ export async function createRun({
   /** Admin kill switch for the ask tool — see {@link isAskUserQuestionAdminDisabled}. */
   const askToolAdminDisabled = isAskUserQuestionAdminDisabled(appConfig);
 
+  // Independently initialized agents must reserve the same live paths before advertising uploads.
+  const codeFileAgents = new Map<string, RunAgent>();
+  const visitedCodeFileAgents = new Set<string>();
+  const pendingCodeFileAgents: Array<RunAgent | null | undefined> = [...agents];
+  for (let index = 0; index < pendingCodeFileAgents.length; index++) {
+    const agent = pendingCodeFileAgents[index];
+    if (!agent?.id || codeFileAgents.has(agent.id)) continue;
+    codeFileAgents.set(agent.id, agent);
+    visitedCodeFileAgents.add(agent.id);
+    enqueueSubagentChildren(agent, pendingCodeFileAgents, visitedCodeFileAgents, false, false);
+  }
+  for (const agent of codeFileAgents.values()) {
+    prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id);
+  }
+
+  const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
   const buildAgentInput = (agent: RunAgent, opts: { isSubagent?: boolean } = {}): AgentInputs => {
+    if (!preparedCodeFileAgents.has(agent)) {
+      if (agent.provisionState) agent.provisionState.codeEnvDestinations = undefined;
+      codeFileAgents.set(agent.id, agent);
+      prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id, true);
+      preparedCodeFileAgents.add(agent);
+    }
     const isSubagent = opts.isSubagent === true;
     if (runFilesActive) {
       for (const { memberConfigs } of agent.subagentGraphConfigs ?? []) {
@@ -2710,7 +2749,7 @@ export async function createRun({
   );
   const effectiveToolApprovalPolicy = () =>
     exemptAskUserQuestionFromApproval(
-      healToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases),
+      buildEffectiveToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases, toolApprovalAllows),
       ASK_USER_QUESTION_TOOL_NAME,
     );
   const nativeEditFileAgentIds = collectNativeEditFileAgentIds(agents);
@@ -3008,6 +3047,7 @@ export async function createRun({
     ...(streamLimits && { streamLimits }),
   };
   const run = await Run.create(runConfig);
+  runMCPToolAliases.set(run, mcpToolAliases);
 
   applyCustomHandoffPromptKeyCompatibility(run, runConfig.graphConfig);
   applyTestRunHook(run, {

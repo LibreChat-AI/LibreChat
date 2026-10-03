@@ -162,7 +162,7 @@ const Reasoning = memo((props: ReasoningProps) => {
   const isExpanded = expansionOverride ?? defaultExpanded;
   const [isBarVisible, setIsBarVisible] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { ref: headerRef, inViewport: headerInViewport } = useInViewport();
+  const { ref: headerRef, inViewport: headerInViewport, recheck: recheckHeader } = useInViewport();
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(isExpanded);
   const { isSubmitting, isLatestMessage, nextType } = useMessage();
@@ -180,8 +180,9 @@ const Reasoning = memo((props: ReasoningProps) => {
   );
 
   const handleFocus = useCallback(() => {
+    recheckHeader();
     setIsBarVisible(true);
-  }, []);
+  }, [recheckHeader]);
 
   const handleBlur = useCallback((e: FocusEvent) => {
     if (!containerRef.current?.contains(e.relatedTarget as Node)) {
@@ -190,8 +191,9 @@ const Reasoning = memo((props: ReasoningProps) => {
   }, []);
 
   const handleMouseEnter = useCallback(() => {
+    recheckHeader();
     setIsBarVisible(true);
-  }, []);
+  }, [recheckHeader]);
 
   const handleMouseLeave = useCallback(() => {
     if (!containerRef.current?.contains(document.activeElement)) {
@@ -318,7 +320,11 @@ export const ReasoningCompact = memo(
     const [isBarVisible, setIsBarVisible] = useState(false);
     const [isCopied, setIsCopied] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
-    const { ref: headerRef, inViewport: headerInViewport } = useInViewport();
+    const {
+      ref: headerRef,
+      inViewport: headerInViewport,
+      recheck: recheckHeader,
+    } = useInViewport();
     const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
     /** Collapsed is the default whenever thoughts are hidden, and a streaming
      *  THINK part re-renders on every delta. Keeping the full text mounted
@@ -345,7 +351,10 @@ export const ReasoningCompact = memo(
       setTimeout(() => setIsCopied(false), 2000);
     }, [reasoningText]);
 
-    const revealBar = useCallback(() => setIsBarVisible(true), []);
+    const revealBar = useCallback(() => {
+      recheckHeader();
+      setIsBarVisible(true);
+    }, [recheckHeader]);
     const hideBar = useCallback(() => {
       if (!containerRef.current?.contains(document.activeElement)) {
         setIsBarVisible(false);
@@ -372,11 +381,11 @@ export const ReasoningCompact = memo(
       >
         <div ref={headerRef} className="relative flex h-5 shrink-0 items-center gap-1.5">
           <Button
-            variant="ghost"
+            variant="disclosure"
             onClick={handleToggle}
             aria-expanded={isExpanded}
             aria-controls={contentId}
-            className="group/disclosure text-text-secondary h-auto min-w-0 flex-1 justify-start gap-2 rounded-none p-0 font-normal hover:bg-transparent"
+            className="group/disclosure text-text-secondary min-w-0 flex-1 font-normal"
           >
             <span className={ROW_GLYPH_SLOT} aria-hidden="true">
               <Lightbulb className="text-text-secondary size-4 shrink-0" />
@@ -416,7 +425,7 @@ export const ReasoningCompact = memo(
         >
           <div className="overflow-hidden" ref={expandRef}>
             {shouldRenderBody && (
-              <div className="border-border-light bg-surface-secondary text-text-secondary relative my-2 rounded-2xl border p-4 pb-9">
+              <div className="border-border-light bg-surface-secondary text-text-secondary relative my-2 rounded-2xl border p-4">
                 <p className={cn('leading-[26px] whitespace-pre-wrap', fontSize)}>
                   {reasoningText}
                 </p>

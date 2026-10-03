@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query';
-import { LocalStorageKeys, QueryKeys } from 'librechat-data-provider';
+import { LocalStorageKeys, QueryKeys, UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import {
   format,
   isToday,
@@ -14,6 +14,7 @@ import type { TConversation, TMessage, GroupedConversations } from 'librechat-da
 import type { InvalidateQueryFilters } from '@tanstack/react-query';
 import type { InfiniteData, Query } from '@tanstack/react-query';
 import { isTemporaryConversation } from './conversation';
+import { getSessionPrincipal } from './session';
 
 /**
  * A conversation is unseen when a reply landed after the user last caught up with it.
@@ -313,7 +314,7 @@ export function invalidateConversationLists(
   filters?: Omit<InvalidateQueryFilters, 'queryKey'>,
 ): Promise<void> {
   return Promise.all(
-    CONVERSATION_LIST_KEYS.map((listKey) =>
+    [...CONVERSATION_LIST_KEYS, QueryKeys.runningConversation].map((listKey) =>
       queryClient.invalidateQueries({ queryKey: [listKey], ...filters }),
     ),
   ).then(() => undefined);
@@ -709,11 +710,15 @@ export function upsertConvoInAllQueries(
   queryClient: QueryClient,
   nextConvo: TConversation,
   moveToTop = true,
+  readState: 'partial' | 'snapshot' = 'partial',
 ) {
   if (!nextConvo.conversationId) {
     return;
   }
   const conversationId = nextConvo.conversationId;
+  if (readState === 'snapshot') {
+    nextConvo = mergeConvoSnapshot(nextConvo, findConvoInAllQueries(queryClient, conversationId));
+  }
 
   /* The history query excludes temporary conversations server-side, so seeding
      one into the list caches would surface it in the sidebar until the next
@@ -883,6 +888,7 @@ export const trackConvoQueryAuthority = (
     if (
       root !== QueryKeys.allConversations &&
       root !== QueryKeys.pinnedConversations &&
+      root !== QueryKeys.runningConversation &&
       root !== QueryKeys.conversation
     ) {
       return;
@@ -1211,7 +1217,7 @@ export function completeMessagesReplyFetch(
  * of the list while this one streamed, so the row is carried to its new position rather than
  * left at the date and place its run started with.
  *
- * A stamp that genuinely advances also clears the catch-up it outranks, mirroring the write the
+ * An advancing stamp resets catch-up to the unseen watermark, mirroring the write the
  * server made: a cached acknowledgement dated ahead of the new reply, which replica clock skew
  * can produce, would otherwise classify a reply nobody has read as seen, and the completion
  * watcher skips its own fetch precisely because this handler already moved the stamp.
@@ -1238,7 +1244,8 @@ export function applyServerReplyStamp(
       lastResponseAt,
       lastResponseMessageId: lastResponseMessageId ?? convo.lastResponseMessageId,
       lastResponseIsManual: undefined,
-      lastSeenAt: advances ? undefined : convo.lastSeenAt,
+      isMarkedUnread: advances ? false : convo.isMarkedUnread,
+      lastSeenAt: advances ? UNSEEN_REPLY_WATERMARK : convo.lastSeenAt,
       updatedAt: updatedAt ?? convo.updatedAt,
     }),
     updatedAt != null && updatedAt > (cached?.updatedAt ?? ''),
@@ -1265,6 +1272,123 @@ function preserveListFlags(next: TConversation, found: TConversation): TConversa
   return merged;
 }
 
+export type ConvoSnapshotFence = { superseded: boolean };
+
+type ConvoReadAuthority = {
+  readToken?: number;
+  snapshots: Set<ConvoSnapshotFence>;
+};
+
+const convoReadAuthorities = new WeakMap<QueryClient, Map<string, ConvoReadAuthority>>();
+
+function convoReadAuthority(queryClient: QueryClient, conversationId: string): ConvoReadAuthority {
+  let records = convoReadAuthorities.get(queryClient);
+  if (!records) {
+    records = new Map();
+    convoReadAuthorities.set(queryClient, records);
+  }
+  let authority = records.get(conversationId);
+  if (!authority) {
+    authority = { snapshots: new Set() };
+    records.set(conversationId, authority);
+  }
+  return authority;
+}
+
+function releaseConvoReadAuthority(queryClient: QueryClient, conversationId: string): void {
+  const records = convoReadAuthorities.get(queryClient);
+  const authority = records?.get(conversationId);
+  if (authority?.readToken == null && authority?.snapshots.size === 0) {
+    records?.delete(conversationId);
+  }
+}
+
+/** Authority records live only while a read write or server snapshot is pending. */
+export function beginConvoSnapshot(
+  queryClient: QueryClient,
+  conversationId: string,
+): ConvoSnapshotFence {
+  const authority = convoReadAuthority(queryClient, conversationId);
+  const fence = { superseded: authority.readToken != null };
+  authority.snapshots.add(fence);
+  return fence;
+}
+
+export function endConvoSnapshot(
+  queryClient: QueryClient,
+  conversationId: string,
+  fence: ConvoSnapshotFence | undefined,
+): void {
+  if (fence) convoReadAuthorities.get(queryClient)?.get(conversationId)?.snapshots.delete(fence);
+  releaseConvoReadAuthority(queryClient, conversationId);
+}
+
+export function supersedeConvoSnapshots(
+  queryClient: QueryClient,
+  conversationId: string,
+  readToken: number,
+): void {
+  const authority = convoReadAuthority(queryClient, conversationId);
+  authority.readToken = readToken;
+  for (const fence of authority.snapshots) fence.superseded = true;
+}
+
+export function endConvoReadIntent(
+  queryClient: QueryClient,
+  conversationId: string,
+  readToken: number | undefined,
+): void {
+  const authority = convoReadAuthorities.get(queryClient)?.get(conversationId);
+  if (authority && authority.readToken === readToken) delete authority.readToken;
+  releaseConvoReadAuthority(queryClient, conversationId);
+}
+
+export async function fetchConvoSnapshot(
+  queryClient: QueryClient,
+  conversationId: string,
+  fetch: () => Promise<TConversation>,
+): Promise<TConversation> {
+  const fence = beginConvoSnapshot(queryClient, conversationId);
+  try {
+    const record = await fetch();
+    return record == null
+      ? record
+      : mergeConvoSnapshot(
+          record,
+          findConvoInAllQueries(queryClient, conversationId),
+          fence.superseded,
+        );
+  } finally {
+    endConvoSnapshot(queryClient, conversationId, fence);
+  }
+}
+
+/** Full server snapshots clear omitted read fields; partial UI patches preserve them. */
+export function mergeConvoSnapshot(
+  snapshot: TConversation,
+  cached?: TConversation,
+  preferCachedReadState = false,
+): TConversation {
+  const state =
+    cached?.lastResponseAt != null &&
+    (snapshot.lastResponseAt == null ||
+      snapshot.lastResponseAt < cached.lastResponseAt ||
+      (snapshot.lastResponseAt === cached.lastResponseAt &&
+        (preferCachedReadState ||
+          (snapshot.lastSeenAt === UNSEEN_REPLY_WATERMARK &&
+            cached.lastSeenAt !== UNSEEN_REPLY_WATERMARK))))
+      ? cached
+      : snapshot;
+  return {
+    ...snapshot,
+    lastResponseAt: state.lastResponseAt,
+    lastResponseMessageId: state.lastResponseMessageId,
+    lastResponseIsManual: state.lastResponseIsManual,
+    isMarkedUnread: state.isMarkedUnread,
+    lastSeenAt: state.lastSeenAt,
+  };
+}
+
 const preserveReadState = (next: TConversation, found: TConversation): TConversation => {
   const merged = { ...next };
   if (!('lastResponseAt' in next)) {
@@ -1275,6 +1399,13 @@ const preserveReadState = (next: TConversation, found: TConversation): TConversa
   }
   if (!('lastResponseIsManual' in next)) {
     merged.lastResponseIsManual = found.lastResponseIsManual;
+  }
+  if (!('isMarkedUnread' in next)) {
+    merged.isMarkedUnread =
+      next.lastResponseAt != null &&
+      (found.lastResponseAt == null || next.lastResponseAt > found.lastResponseAt)
+        ? undefined
+        : found.isMarkedUnread;
   }
   if (!('lastSeenAt' in next)) {
     merged.lastSeenAt = found.lastSeenAt;
@@ -1294,6 +1425,7 @@ const chatOwnedStaleFields = [
   'lastResponseAt',
   'lastResponseMessageId',
   'lastResponseIsManual',
+  'isMarkedUnread',
   'lastSeenAt',
 ] as const;
 
@@ -1435,6 +1567,19 @@ export function findConvoInAllQueries(
   }
   freshest = freshestCandidate(freshest, findPinnedCandidate(queryClient, conversationId));
 
+  const runningKey = [QueryKeys.runningConversation, conversationId];
+  const runningQuery = queryClient.getQueryCache().find(runningKey);
+  if (runningQuery) {
+    freshest = freshestCandidate(
+      freshest,
+      candidateFrom(
+        queryClient,
+        runningQuery,
+        queryClient.getQueryData<TConversation | null>(runningKey) ?? undefined,
+      ),
+    );
+  }
+
   /* The conversation opened by URL is loaded into its own point query, and an old one need not
      appear in any loaded list page at all. Without this it would read as absent, absent reads
      as caught up, and the reply the user is looking at would never be acknowledged. */
@@ -1448,15 +1593,141 @@ export function findConvoInAllQueries(
   )?.convo;
 }
 
+type RunningRemovalState = {
+  owner?: string;
+  all: boolean;
+  removed: Set<string>;
+  visible: Set<string>;
+};
+
+const removedRunningQueries = new WeakMap<QueryClient, RunningRemovalState>();
+
+function runningRemovalState(queryClient: QueryClient): RunningRemovalState {
+  const owner = getSessionPrincipal();
+  const existing = removedRunningQueries.get(queryClient);
+  if (existing) {
+    if (existing.owner !== owner) {
+      existing.owner = owner;
+      existing.all = false;
+      existing.removed.clear();
+      existing.visible.clear();
+    }
+    return existing;
+  }
+  const state: RunningRemovalState = {
+    owner,
+    all: false,
+    removed: new Set(),
+    visible: new Set(),
+  };
+  removedRunningQueries.set(queryClient, state);
+  const cache = queryClient.getQueryCache();
+  cache.subscribe((event) => {
+    if (event.type === 'removed' && cache.getAll().length === 0) {
+      state.all = false;
+      state.removed.clear();
+      state.visible.clear();
+    }
+  });
+  return state;
+}
+
+function runningWasRemoved(queryClient: QueryClient, conversationId: string): boolean {
+  const existing = removedRunningQueries.get(queryClient);
+  if (
+    !existing ||
+    (!existing.removed.has(conversationId) &&
+      (!existing.all || existing.visible.has(conversationId)))
+  ) {
+    return false;
+  }
+  const state = runningRemovalState(queryClient);
+  return state.removed.has(conversationId) || (state.all && !state.visible.has(conversationId));
+}
+
+/** Records explicit removal independently of whether a Running query exists. */
+export function markRunningRemoval(queryClient: QueryClient, conversationId?: string): void {
+  const state = runningRemovalState(queryClient);
+  if (conversationId === undefined) {
+    state.all = true;
+    state.removed.clear();
+    state.visible.clear();
+    return;
+  }
+  if (state.all) {
+    state.visible.delete(conversationId);
+  } else {
+    state.removed.add(conversationId);
+  }
+}
+
+/** Accepts only the current server result; a visible result releases a removal fence. */
+export function acceptRunningConversation(
+  queryClient: QueryClient,
+  conversationId: string,
+  conversation: TConversation,
+): boolean {
+  const query = queryClient.getQueryCache().find([QueryKeys.runningConversation, conversationId]);
+  if (!query || query.state.data !== conversation) {
+    return false;
+  }
+  if (conversation.isArchived === true || isTemporaryConversation(conversation)) {
+    markRunningRemoval(queryClient, conversationId);
+    return false;
+  }
+  const existing = removedRunningQueries.get(queryClient);
+  if (existing) {
+    const state = runningRemovalState(queryClient);
+    state.removed.delete(conversationId);
+    if (state.all) {
+      state.visible.add(conversationId);
+    }
+  }
+  return true;
+}
+
 export function updateConvoInAllQueries(
   queryClient: QueryClient,
   conversationId: string,
   updater: (c: TConversation) => TConversation,
   moveToTop = false,
 ) {
+  const runningKey = [QueryKeys.runningConversation, conversationId];
+  const runningState = queryClient.getQueryState<TConversation | null>(runningKey);
+  const removed = runningState != null && runningWasRemoved(queryClient, conversationId);
+  const cached =
+    !removed && runningState && runningState.data == null
+      ? findConvoInAllQueries(queryClient, conversationId)
+      : undefined;
+  const cachedPin = cached && findPinnedConversation(queryClient, conversationId);
+  const initialRow =
+    cached && cachedPin
+      ? { ...cached, pinned: cachedPin.pinned, isShared: cachedPin.isShared ?? cached.isShared }
+      : cached;
+  const restartInitialFetch =
+    !removed &&
+    runningState?.fetchStatus === 'fetching' &&
+    runningState.data == null &&
+    !initialRow;
+
+  if (!removed) {
+    void queryClient.cancelQueries({ queryKey: runningKey, exact: true });
+  }
   queryClient.setQueryData<TConversation>([QueryKeys.conversation, conversationId], (current) =>
     current ? updater(current) : current,
   );
+  if (!removed) {
+    queryClient.setQueryData<TConversation | null>(runningKey, (current) => {
+      const previous = current ?? initialRow;
+      if (!previous) {
+        return current;
+      }
+      const next = preserveReadState(preserveListFlags(updater(previous), previous), previous);
+      return moveToTop && next.updatedAt === previous.updatedAt
+        ? { ...next, updatedAt: new Date().toISOString() }
+        : next;
+    });
+  }
   updatePinnedConvosQuery(queryClient, conversationId, updater, moveToTop);
 
   const queries = findConversationListQueries(queryClient);
@@ -1554,11 +1825,20 @@ export function updateConvoInAllQueries(
       queryClient.invalidateQueries({ queryKey: query.queryKey, refetchType: 'active' });
     }
   }
+  if (restartInitialFetch) {
+    void queryClient.invalidateQueries({ queryKey: runningKey, exact: true });
+  }
 }
 
 // Remove
 export function removeConvoFromAllQueries(queryClient: QueryClient, conversationId: string) {
+  const runningKey = [QueryKeys.runningConversation, conversationId];
+  markRunningRemoval(queryClient, conversationId);
+  void queryClient.cancelQueries({ queryKey: runningKey, exact: true });
   updatePinnedConvosQuery(queryClient, conversationId, () => null);
+  queryClient.setQueryData<TConversation | null>(runningKey, (current) =>
+    current === undefined ? current : null,
+  );
 
   const queries = findConversationListQueries(queryClient);
 

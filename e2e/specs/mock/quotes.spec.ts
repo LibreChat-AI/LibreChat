@@ -465,15 +465,18 @@ test.describe('quote references', () => {
     // A short viewport guarantees the reply overflows and can actually scroll.
     await page.setViewportSize({ width: 900, height: 500 });
     await seedParagraphReply(page);
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden();
+    await waitForReplyToSettle(page, CLOSING_PARAGRAPH);
 
+    let beforeY = 0;
     await expect(async () => {
       await scrollSelectionTo(page, OPENING_PARAGRAPH, 0.75);
       await selectMessageText(page, OPENING_PARAGRAPH);
       await expect(addToChat(page)).toBeVisible({ timeout: 3000 });
+      const before = await addToChat(page).boundingBox();
+      expect(before).not.toBeNull();
+      beforeY = before!.y;
     }).toPass({ timeout: 30000 });
-
-    const before = await addToChat(page).boundingBox();
-    expect(before).not.toBeNull();
 
     // Scrolling used to dismiss the popup on the first event, which the chat's
     // own auto-scroll fires constantly while streaming. It now follows instead.
@@ -484,7 +487,7 @@ test.describe('quote references', () => {
     await expect(async () => {
       const after = await addToChat(page).boundingBox();
       expect(after).not.toBeNull();
-      expect(Math.abs(after!.y - before!.y)).toBeGreaterThan(Math.abs(moved) / 2);
+      expect(Math.abs(after!.y - beforeY)).toBeGreaterThan(Math.abs(moved) / 2);
     }).toPass({ timeout: 5000 });
 
     // Still the right excerpt after travelling with the text.

@@ -384,6 +384,29 @@ describe('theme registry', () => {
     expect(resolveTheme(theme, 'dark').colors['rgb-avatar-placeholder']).toBe('30 31 32');
   });
 
+  it('keeps the drawer edge on the drawer fill in light and the heavy border in dark', () => {
+    const colors = { 'rgb-surface-primary-alt': '20 21 22', 'rgb-border-xheavy': '30 31 32' };
+    const theme = {
+      version: 1 as const,
+      name: 'legacy-drawer-edge',
+      modes: { light: { colors }, dark: { colors } },
+    };
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-drawer-edge',
+        modes: {
+          dark: { colors: { 'rgb-border-xheavy': '30 31 32', 'rgb-drawer-edge': '1 2 3' } },
+        },
+      },
+      'dark',
+    );
+
+    expect(resolveTheme(theme, 'light').colors['rgb-drawer-edge']).toBe('20 21 22');
+    expect(resolveTheme(theme, 'dark').colors['rgb-drawer-edge']).toBe('30 31 32');
+    expect(explicit.colors['rgb-drawer-edge']).toBe('1 2 3');
+  });
+
   it('inks the default avatar in the primary text a theme sets, unless it sets the role', () => {
     const inherited = resolveTheme(
       {
@@ -1107,6 +1130,76 @@ describe('theme registry', () => {
       'dark',
     );
     expect(appearance).toMatchObject({ focusRingWidth: '0.25rem', focusRingOffset: '-1px' });
+  });
+
+  it('keeps every control and icon size on the size it drew before it had a role', () => {
+    expect(defaultAppearance).toMatchObject({
+      iconSize: '1rem',
+      iconSizeLg: '1.5rem',
+      buttonHeightXs: '1.75rem',
+      buttonHeightLg: '2.75rem',
+      iconButtonSizeSm: '2rem',
+      fieldHeightLg: '3rem',
+      checkboxSize: '1rem',
+      listMinWidth: '8rem',
+      listMaxHeight: '24rem',
+    });
+  });
+
+  it("bounds a Select list's width and scroll height", () => {
+    const issues = (appearance: Record<string, string>) =>
+      validateThemeDefinition({
+        version: 1,
+        name: 'list-values',
+        modes: { light: { appearance } },
+      });
+
+    expect(issues({ listMinWidth: '0', listMaxHeight: '8rem' })).toEqual([]);
+    expect(issues({ listMinWidth: '12rem', listMaxHeight: '640px' })).toEqual([]);
+    [
+      { listMinWidth: 'auto' },
+      { listMinWidth: '-1rem' },
+      { listMaxHeight: '0' },
+      { listMaxHeight: '7rem' },
+      { listMaxHeight: '41rem' },
+      { listMaxHeight: '50vh' },
+    ].forEach((appearance) => expect(issues(appearance)).toHaveLength(1));
+  });
+
+  it('rejects a pointer target under 24px and a size that is not a positive length', () => {
+    const issues = (appearance: Record<string, string>) =>
+      validateThemeDefinition({
+        version: 1,
+        name: 'size-values',
+        modes: { light: { appearance } },
+      });
+
+    expect(
+      issues({
+        fieldHeightLg: '24px',
+        checkboxSize: '1.5rem',
+        iconSize: '20px',
+        iconSizeLg: '2rem',
+      }),
+    ).toEqual([]);
+    [
+      { fieldHeightLg: '20px' },
+      { fieldHeightLg: '1rem' },
+      { fieldHeightLg: '1.5em' },
+      { iconSize: '0' },
+      { iconSize: '1.5rem' },
+      { iconSize: '10px' },
+      { iconSizeLg: '0.75rem' },
+      { iconSizeLg: '40px' },
+      { checkboxSize: '8px' },
+      { checkboxSize: '2rem' },
+      { checkboxSize: 'auto' },
+      { buttonHeightLg: '-2rem' },
+      { buttonHeightXs: '1px' },
+      { iconSizeMd: '1rem' },
+      { iconButtonSizeSm: '20px' },
+      { iconButtonSizeSm: 'calc(2rem + 2px)' },
+    ].forEach((appearance) => expect(issues(appearance)).toHaveLength(1));
   });
 
   it('rejects a focus outline that would vanish or is not a fixed length', () => {

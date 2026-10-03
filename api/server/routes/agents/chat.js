@@ -2,6 +2,7 @@ const express = require('express');
 const { logger } = require('@librechat/data-schemas');
 const {
   createMessageFilterPii,
+  getPreinspectedPrivateText,
   reportLocatorTraversalFailure,
   generateCheckAccess,
   skipAgentCheck,
@@ -66,6 +67,7 @@ router.use(
     onTraversalFailure: reportLocatorTraversalFailure,
     getConfig: (req) => req.config?.messageFilter?.pii,
     getFilters: (req) => req.config?.filters,
+    getPreinspectedText: getPreinspectedPrivateText,
     getFiles,
   }),
 );

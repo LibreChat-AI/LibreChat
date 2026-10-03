@@ -1444,6 +1444,23 @@ export default function useSteering({
     [updateQueuedMessage],
   );
 
+  /** The user's own hold on a local row: out of the run-end drain until released.
+   *  A hold that came from a rejected steer is not the user's to release. */
+  const toggleQueuedHold = useCallback(
+    (id: string, held: boolean) =>
+      updateQueuedMessage(id, (item) => {
+        if (held) {
+          return { ...item, needsExplicitSend: true, heldByUser: true };
+        }
+        if (item.heldByUser !== true) {
+          return item;
+        }
+        const { needsExplicitSend: _held, heldByUser: _byUser, ...rest } = item;
+        return rest;
+      }),
+    [updateQueuedMessage],
+  );
+
   const downgradeServerQueuedTurn = useCallback(
     (id: string): boolean => {
       const queue = jotaiStore.get(queuedMessagesByConvoId(queueKey));
@@ -2631,6 +2648,7 @@ export default function useSteering({
       enqueue,
       removeQueued,
       holdQueued,
+      toggleQueuedHold,
       discardQueued,
       dismissRecovery,
       rewakeDrain,
@@ -2664,6 +2682,7 @@ export default function useSteering({
       enqueue,
       removeQueued,
       holdQueued,
+      toggleQueuedHold,
       discardQueued,
       dismissRecovery,
       rewakeDrain,

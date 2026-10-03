@@ -40,7 +40,7 @@ test.describe('composer redesign contracts', () => {
     await openComposer(page);
     await startRun(page, `interrupt-hint-${Date.now()}`);
     await messageInput(page).fill('interrupt hint');
-    await expect(page.getByTestId('composer-hints')).toContainText(/interrupt/i);
+    await expect(page.locator('#composer-hint-0')).toContainText(/interrupt/i);
   });
 
   test('Staged reasoning relabels steer as a new turn @scenario:staged-reasoning-relabels-steer-as-a-new-turn', async ({
@@ -246,7 +246,8 @@ test.describe('composer redesign contracts', () => {
     await expect(queuedRow).toBeVisible();
     /** Editing the queued row while that draft is still typed would merge the
      *  two the same way, so Edit refuses and says what to do instead. */
-    await queuedRow.getByRole('button', { name: 'Edit message' }).click();
+    await queuedRow.getByRole('button', { name: 'More options' }).click();
+    await page.getByRole('menuitem', { name: 'Edit message' }).click();
     await expect(
       page.getByLabel('Notifications (F8)').getByText(/Clear the message box in this chat/),
     ).toBeVisible();

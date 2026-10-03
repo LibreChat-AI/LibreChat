@@ -65,17 +65,30 @@ export function stampCommandExecutor(
   }
 }
 
-export const ATTACHED_WORKSPACE_BASH_DESCRIPTION = `Runs bash commands inside the selected attached environment and returns stdout/stderr. Its workspace may be an existing project, Git repository, or empty directory.
+const ATTACHED_WORKSPACE_BASH_INTRO = `Runs bash in the selected attached environment and returns stdout/stderr. The workspace may be a project, Git repo, or empty directory.
 
 Session behavior:
-- This starts a new command, not an existing background task. Inspect a background_task_id with check_background_task when available; never send it to bash_tool.
-- Only registered-workspace files persist between calls. Install project dependencies there.
-- Every call is a fresh process. Shell and exported variables, cwd, /tmp, $TMPDIR, and background processes do not survive.
-- $HOME, global/system packages, and machine services are operator-managed. Do not change or rely on them as session storage.
-- Network access follows the sandbox policy configured on the worker and may be unavailable. File access follows the same worker policy.
-- Input code is already displayed to the user; do not repeat it unless asked.
+- Never pass background_task_id here; inspect it with check_background_task.
+- Only registered-workspace files persist; install project dependencies there. $HOME, global/system packages, and services are operator-managed.
+- Each call is a fresh process; shell state, exports, cwd, temp files, and background processes are not durable.`;
+
+/** Native SRT workers make the host filesystem read-only outside the workspace and a private `$TMPDIR`. */
+const ATTACHED_WORKSPACE_NATIVE_SANDBOX_SCRATCH =
+  '- / and /tmp are read-only; write scratch files to $TMPDIR or the workspace. Programs that hardcode /tmp fail.';
+
+const ATTACHED_WORKSPACE_BASH_RULES = `- Results show the starting directory, not the final one; scripts are not rewritten.
+- Use cwd for directory-scoped commands; keep cd for shell state or root access.
+- Network and file access follow the sandbox policy; network may be unavailable.
+- Input code is already displayed; do not repeat unless asked.
 - Explicitly print every result the user should see.
-- Never use this tool to execute malicious commands.`;
+- Never execute malicious commands.`;
+
+export const ATTACHED_WORKSPACE_BASH_DESCRIPTION: string = `${ATTACHED_WORKSPACE_BASH_INTRO}
+${ATTACHED_WORKSPACE_BASH_RULES}`;
+
+export const ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION: string = `${ATTACHED_WORKSPACE_BASH_INTRO}
+${ATTACHED_WORKSPACE_NATIVE_SANDBOX_SCRATCH}
+${ATTACHED_WORKSPACE_BASH_RULES}`;
 
 const bashSchema = BashExecutionToolDefinition.schema as {
   properties?: NonNullable<LCTool['parameters']>['properties'];
@@ -84,7 +97,7 @@ const attachedCommandSchema: NonNullable<LCTool['parameters']> = {
   ...bashSchema.properties?.command,
   type: 'string',
   description:
-    'The bash command or script to execute from the attached workspace root. Only files written inside the workspace persist between calls. Each call starts a fresh process; $HOME, temporary files, shell state, global installs, and background processes are not durable.',
+    'The bash command or script to execute. It starts in cwd, or in the workspace root when cwd is omitted. Only files written inside the workspace persist between calls. Each call starts a fresh process; $HOME, temporary files, shell state, global installs, and background processes are not durable.',
 };
 
 /** `maxLength` is valid JSON Schema, but the SDK's schema type omits it. */
@@ -98,7 +111,7 @@ const attachedWorkingDirectorySchema: BoundedWorkingDirectorySchema = {
   type: 'string',
   maxLength: 4096,
   description:
-    'Optional working directory relative to the selected workspace root, such as "packages/api". Absolute paths and parent traversal are rejected.',
+    'Optional working directory relative to the selected workspace root, such as "packages/api". The command starts there; do not also cd into it. Absolute paths and parent traversal are rejected.',
 };
 
 /** Numeric bounds are valid JSON Schema, but the SDK's schema type omits them. */
@@ -233,9 +246,14 @@ export function resolveAttachedWorkspaceRequestTimeoutMs(
   return configured;
 }
 
+/**
+ * Code API schedules each `.worktrees/<name>` as its own lane beneath the
+ * checkout. Every request that is not routed into a lane is checkout-wide: it
+ * waits for the running lanes and, while queued, holds back newer ones.
+ */
 const linkedWorktreeWorkingDirectorySchema: BoundedWorkingDirectorySchema = {
   ...attachedWorkingDirectorySchema,
-  description: `${attachedWorkingDirectorySchema.description} To work in a linked worktree, pass its directory here (for example ".worktrees/fix-auth") instead of running cd inside the command: commands in different .worktrees/<name> directories then run in parallel, while a cd from the workspace root waits for all of them.`,
+  description: `${attachedWorkingDirectorySchema.description} Pass a linked worktree directory here (e.g. ".worktrees/fix-auth") rather than cd into it: different worktrees run in parallel. Any other call, with or without cwd, is checkout-wide: it waits for all running worktree calls and blocks new ones until it finishes, as do file tools on paths outside .worktrees/<name>. Reserve checkout-wide calls for creating, pruning or removing worktrees, batching any git fetch they need into the same call.`,
 };
 
 export function buildAttachedWorkspaceBashSchema(
@@ -282,10 +300,14 @@ export const ATTACHED_WORKSPACE_BASH_SCHEMA: NonNullable<LCTool['parameters']> =
 export function buildAttachedWorkspaceBashDescription(
   enableToolOutputReferences: boolean,
   environment?: CodeWorkspaceDescriptor['environment'],
+  nativeSandbox = false,
 ): string {
-  const description = enableToolOutputReferences
-    ? `${ATTACHED_WORKSPACE_BASH_DESCRIPTION}\n\n${BashToolOutputReferencesGuide}`
+  const base = nativeSandbox
+    ? ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION
     : ATTACHED_WORKSPACE_BASH_DESCRIPTION;
+  const description = enableToolOutputReferences
+    ? `${base}\n\n${BashToolOutputReferencesGuide}`
+    : base;
   return (
     description +
     (environment
@@ -400,6 +422,7 @@ function formatCommandResult(
   result: WorkspaceExecuteCommandResult,
   timeoutMs: number,
   maxTimeoutMs: number,
+  cwd?: string,
 ): string {
   let output = '';
   if (result.stdout.length > 0) output += `stdout:\n${result.stdout}\n`;
@@ -412,7 +435,7 @@ function formatCommandResult(
   if (result.timedOut) {
     output += `\nCommand reached timeoutMs: ${timeoutMs}. Before retrying, check for partial side effects. Set timeoutMs explicitly up to ${maxTimeoutMs} milliseconds, or use run_in_background: true if available. Background execution uses the same timeout ceiling.`;
   }
-  return output;
+  return `[starting directory: ${JSON.stringify(`workspace/${cwd ?? ''}`)}]\n${output}`;
 }
 
 export function createAttachedWorkspaceBashTool({
@@ -429,6 +452,7 @@ export function createAttachedWorkspaceBashTool({
   maxRequestTimeoutMs,
   minCommandAdmissionMs,
   linkedWorktrees = false,
+  nativeSandbox = false,
   fetchImpl,
 }: {
   baseUrl: string;
@@ -437,6 +461,8 @@ export function createAttachedWorkspaceBashTool({
   workspaceInstanceId?: string;
   /** The worker runs each `.worktrees/<name>` in its own lane; a matching `cwd` is routed there. */
   linkedWorktrees?: boolean;
+  /** The worker advertises its native SRT sandbox profile; describe its read-only filesystem. */
+  nativeSandbox?: boolean;
   environment?: CodeWorkspaceDescriptor['environment'];
   gitIdentity?: AgentGitIdentity | null;
   /** Effective admin/upstream ceiling already intersected with the protocol hard cap. */
@@ -549,7 +575,16 @@ export function createAttachedWorkspaceBashTool({
           throw new Error('Attached workspace returned an unexpected command result.');
         }
         logger.debug('[BYOMCommand] transport completed', trace);
-        return [formatCommandResult(result, timeoutMs, effectiveMaxTimeoutMs), {}];
+        let content = formatCommandResult(result, timeoutMs, effectiveMaxTimeoutMs, rawInput.cwd);
+        if (action === undefined && /^\s*cd(?:\s|$)/.test(rawInput.command!)) {
+          content +=
+            '\n[directory hint: For future commands scoped to a workspace subdirectory, pass cwd instead of a leading cd.' +
+            (linkedWorktrees
+              ? ' A cd inside the script does not select a linked-worktree lane, so this call ran checkout-wide.'
+              : '') +
+            ' Keep cd for scripts that depend on shell state or need root access. This command was not rewritten; do not rerun it just to change cwd.]';
+        }
+        return [content, {}];
       } finally {
         signal?.removeEventListener('abort', onAbort);
         logger.debug('[BYOMCommand] transport settled', {
@@ -560,7 +595,7 @@ export function createAttachedWorkspaceBashTool({
     },
     {
       name: BashExecutionToolDefinition.name,
-      description: buildAttachedWorkspaceBashDescription(false, environment),
+      description: buildAttachedWorkspaceBashDescription(false, environment, nativeSandbox),
       schema,
       responseFormat: 'content_and_artifact',
     },

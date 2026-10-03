@@ -34,6 +34,7 @@ jest.mock('@librechat/agents', () => ({
 
 import { Providers } from '@librechat/agents';
 import { createHash } from 'node:crypto';
+import { logger } from '@librechat/data-schemas';
 import { createRepositoryInstructionLoader } from '../../code/instructions';
 import {
   Tools,
@@ -3531,11 +3532,12 @@ describe('initializeAgent — execute_code capability expansion', () => {
     );
   });
 
-  it('keeps legacy opt-out classification until the deployment protocol is enabled', async () => {
+  it('keeps legacy opt-out classification when the deployment opts out of the protocol', async () => {
     const { agent, req, res, loadTools, db } = createMocks();
     agent.tools = [Tools.execute_code];
     agent.stateful_code_sessions = true;
     delete agent.code_environment_id;
+    process.env.CODE_ENVIRONMENT_DECISION_VERSION = '0';
     process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = 'https://stateful-code.example.com/v1/';
     req.config = {
       endpoints: {
@@ -3568,6 +3570,7 @@ describe('initializeAgent — execute_code capability expansion', () => {
       expect(result.codeEnvAvailable).toBe(false);
       expect(result.statefulCodeSessions).toBe(false);
     } finally {
+      delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
       delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
     }
   });
@@ -3613,6 +3616,77 @@ describe('initializeAgent — execute_code capability expansion', () => {
     } finally {
       delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
     }
+  });
+
+  it('routes a restored machine selection before file priming and tool discovery', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = ['execute_code'];
+    agent.stateful_code_sessions = true;
+    agent.code_environment_id = 'application-vm';
+    agent.code_environment_ids = ['runtime-vm'];
+    req.config = {
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            allowEnvironmentSelection: true,
+            environments: ['application-vm', 'runtime-vm'].map((id) => ({
+              id,
+              name: id,
+              type: 'attached',
+              owner: 'deployment',
+              baseURL: `https://${id}.example.com/v1`,
+              workerId: `worker-${id}`,
+            })),
+          },
+        },
+      },
+    } as NonNullable<typeof req.config>;
+    req.resolvedConversation = {
+      conversationId: 'chat-runtime',
+      codeWorkspaces: [
+        { environmentId: 'application-vm', workspaceId: 'primary' },
+        { environmentId: 'runtime-vm', workspaceId: 'primary', agentIds: [agent.id] },
+      ],
+    };
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        conversationId: 'chat-runtime',
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+        statefulSessionsAvailable: true,
+        requestBody: {
+          codeWorkspaces: [{ environmentId: 'application-vm', workspaceId: 'primary' }],
+        },
+      },
+      db,
+    );
+    expect(loadTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        codeExecutionContext: expect.objectContaining({
+          environmentId: 'runtime-vm',
+          baseUrl: 'https://runtime-vm.example.com/v1',
+          bridgeWorkerId: 'worker-runtime-vm',
+        }),
+      }),
+    );
+    expect(result.codeExecutionContext?.environmentId).toBe('runtime-vm');
+    expect(agent.code_environment_id).toBe('application-vm');
+    /* The liveness probe inside priming authenticates to this route the way its uploads
+     * do, which needs the request to mint from and the route's worker to bind to. */
+    expect(primeResources).toHaveBeenCalledWith(
+      expect.objectContaining({
+        req,
+        codeBaseUrl: 'https://runtime-vm.example.com/v1',
+        codeExecutionProfile: 'stateful',
+        codeBridgeWorkerId: 'worker-runtime-vm',
+      }),
+    );
   });
 
   it.each([false, true])(
@@ -4861,6 +4935,107 @@ describe('initializeAgent — authorized run file snapshots', () => {
     return result;
   }
 
+  it.each([undefined, 'Extracted document contents'])(
+    'advertises a queued file before tool execution with extracted text %p',
+    async (text) => {
+      const { agent, req, loadTools, db } = setup();
+      if (req.config == null) throw new Error('Missing test configuration');
+      req.config.fileConfig = {
+        endpoints: {
+          [EModelEndpoint.openAI]: {
+            defaultLLMDeliveryPath: { overrides: { 'application/pdf': 'text' } },
+          },
+        },
+      };
+      loadTools.mockResolvedValue({ toolDefinitions: [{ name: Tools.execute_code }] });
+      const file = inputFile({ filename: 'report.pdf', text });
+      const result = await initializeAgent(
+        {
+          req,
+          agent,
+          loadTools,
+          authorizedRunFiles: [file],
+          allowedProviders: new Set([Providers.OPENAI]),
+          codeEnvAvailable: true,
+        },
+        db,
+      );
+
+      expect(result.dynamicToolContextMap?.queued_code_files).toContain('/mnt/data/report.pdf');
+      expect(result.dynamicToolContextMap?.queued_code_files).toContain('read or edit');
+      expect(result.dynamicToolContextMap?.queued_code_files).not.toContain(file.filepath);
+      expect(result.provisionState?.codeEnvDestinations?.get(file.file_id)).toBe('report.pdf');
+      expect(result.provisionState?.codeEnvFiles).toHaveLength(1);
+      expect(result.requestAttachments[0].llmDeliveryPath).toBe('text');
+      expect(result.requestAttachments[0].text).toBe(text);
+      expect(db.getConvoFiles).not.toHaveBeenCalled();
+      expect(db.getToolFilesByIds).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not advertise code paths when code execution is disabled', async () => {
+    const { agent, req, loadTools, db } = setup();
+    const result = await initializeAgent(
+      {
+        req,
+        agent,
+        loadTools,
+        authorizedRunFiles: [inputFile()],
+        allowedProviders: new Set([Providers.OPENAI]),
+        codeEnvAvailable: false,
+      },
+      db,
+    );
+    expect(result.fileConsumers?.executeCode).toBe(false);
+    expect(result.dynamicToolContextMap?.queued_code_files).toBeUndefined();
+  });
+
+  it.each([undefined, 'Extracted document contents'])(
+    'advertises an earlier upload after code is toggled back on with extracted text %p',
+    async (text) => {
+      const { agent, req, loadTools, db } = setup();
+      agent.tools = [Tools.execute_code];
+      const params = {
+        req,
+        agent,
+        loadTools,
+        allowedProviders: new Set([Providers.OPENAI]),
+        codeEnvAvailable: true,
+      };
+      await initializeAgent({ ...params, authorizedRunFiles: [] }, db);
+
+      const file = inputFile({ filename: 'report.pdf', text });
+      agent.tools = [];
+      const disabled = await initializeAgent({ ...params, authorizedRunFiles: [file] }, db);
+      expect(disabled.fileConsumers?.executeCode).toBe(false);
+      expect(disabled.dynamicToolContextMap?.queued_code_files).toBeUndefined();
+      expect(disabled.provisionState?.codeEnvFiles ?? []).toEqual([]);
+
+      agent.tools = [Tools.execute_code];
+      (db.getConvoFiles as jest.Mock).mockResolvedValue([file.file_id]);
+      (db.getFiles as jest.Mock).mockResolvedValue([file]);
+      const getDeferredProvisionFiles = jest.fn().mockResolvedValue([file]);
+      const getMessages = jest.fn().mockResolvedValue([{ messageId: 'upload-turn' }]);
+      mockGetThreadData.mockReturnValueOnce({ fileIds: [file.file_id] });
+      const enabled = await initializeAgent(
+        { ...params, conversationId: 'conv-1', parentMessageId: 'upload-turn' },
+        { ...db, getMessages, getDeferredProvisionFiles },
+      );
+
+      expect(enabled.fileConsumers?.executeCode).toBe(true);
+      expect(enabled.requestAttachments).toEqual([]);
+      expect(enabled.dynamicToolContextMap?.queued_code_files).toContain('/mnt/data/report.pdf');
+      expect(enabled.provisionState?.codeEnvFiles.map((entry) => entry.file_id)).toEqual([
+        file.file_id,
+      ]);
+      expect(getDeferredProvisionFiles).toHaveBeenCalledWith(
+        [file.file_id],
+        expect.anything(),
+        expect.objectContaining({ code: true, hydrateProvisioned: true }),
+      );
+    },
+  );
+
   it('reuses current inputs without reading parent history or counting their usage again', async () => {
     const { agent, req, loadTools, db } = setup();
     const file = inputFile();
@@ -5073,6 +5248,10 @@ describe('initializeAgent — authorized run file snapshots', () => {
 describe('initializeAgent — provider-native web search role gate', () => {
   const OPENAI_SEARCH = { type: 'web_search' };
 
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   const roleWithWebSearch = (use: boolean) =>
     jest.fn().mockResolvedValue({
       name: 'USER',
@@ -5154,6 +5333,34 @@ describe('initializeAgent — provider-native web search role gate', () => {
     const result = await run({ getRoleByName: roleWithWebSearch(false) });
 
     expect(result.tools).not.toContainEqual(OPENAI_SEARCH);
+  });
+
+  it('keeps native search when the external pipeline capability is disabled', async () => {
+    const getRoleByName = roleWithWebSearch(true);
+    const result = await run({
+      getRoleByName,
+      params: {
+        req: {
+          ...roleGatedReq(),
+          config: { endpoints: { agents: { capabilities: [AgentCapabilities.file_search] } } },
+        } as ServerRequest,
+      },
+    });
+
+    expect(result.tools).toContainEqual(OPENAI_SEARCH);
+    expect(getRoleByName).toHaveBeenCalledTimes(1);
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('Restore the role grant'));
+  });
+
+  it('explains a blocked native request even when the caller supplies the denial', async () => {
+    const result = await run({
+      params: { resolveWebSearchGrant: jest.fn().mockResolvedValue(false) },
+    });
+
+    expect(result.tools).not.toContainEqual(OPENAI_SEARCH);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('removing interface.webSearch does not reset stored permissions'),
+    );
   });
 
   it('reads no role when the built config turns no native search on', async () => {

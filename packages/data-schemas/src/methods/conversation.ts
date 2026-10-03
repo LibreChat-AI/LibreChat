@@ -1,5 +1,9 @@
 import { Buffer } from 'node:buffer';
-import { RetentionMode, isForcedTemporaryRetention } from 'librechat-data-provider';
+import {
+  RetentionMode,
+  isForcedTemporaryRetention,
+  UNSEEN_REPLY_WATERMARK,
+} from 'librechat-data-provider';
 import type {
   AnyBulkWriteOperation,
   DeleteResult,
@@ -319,6 +323,12 @@ export interface ConversationMethods {
     IConversation,
     'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces' | 'codeEnvironmentRevision'
   > | null>;
+  addConvoToolApprovalAllows(input: {
+    user: string;
+    conversationId: string;
+    toolNames: string[];
+    max: number;
+  }): Promise<boolean>;
   readAdmittedConvoCodeEnvironmentDecision(
     user: string,
     conversationId: string,
@@ -567,6 +577,7 @@ export interface ConversationMethods {
     lastResponseAt?: Date;
     lastResponseMessageId?: string;
     lastResponseIsManual?: boolean;
+    isMarkedUnread?: boolean;
   }>;
   stampConvoLastResponse(
     user: string,
@@ -646,8 +657,13 @@ export function createConversationMethods(
       const stamped = await Conversation.findOneAndUpdate(
         casFilter,
         {
-          $set: { lastResponseAt: stamp, lastResponseMessageId: responseMessageId },
-          $unset: { lastSeenAt: '', lastResponseIsManual: '' },
+          $set: {
+            lastResponseAt: stamp,
+            lastResponseMessageId: responseMessageId,
+            isMarkedUnread: false,
+            lastSeenAt: new Date(UNSEEN_REPLY_WATERMARK),
+          },
+          $unset: { lastResponseIsManual: '' },
           $max: { updatedAt: stamp },
         },
         { new: true, projection, timestamps: false },
@@ -2407,9 +2423,12 @@ export function createConversationMethods(
       /* Read-state fields are server-owned. A stale marker must never be reintroduced by a
        * metadata save after a real reply cleared it. */
       delete update.lastResponseIsManual;
+      delete update.isMarkedUnread;
       delete update.lastResponseAt;
       delete update.lastResponseMessageId;
       delete update.initial_agent_id;
+      /* Remembered tool approvals are granted only by a validated resume. */
+      delete update.toolApprovalAllows;
       /** Ordinary saves may seed a decision, but only an explicit move may replace it. */
       const decisionOnInsert = {
         ...(convo.codeEnvironmentMode != null && {
@@ -2428,9 +2447,11 @@ export function createConversationMethods(
       }
       const unsetFields: Record<string, number> = { ...(metadata?.unsetFields ?? {}) };
       delete unsetFields.lastResponseIsManual;
+      delete unsetFields.isMarkedUnread;
       delete unsetFields.lastResponseMessageId;
       delete unsetFields.lastResponseAt;
       delete unsetFields.initial_agent_id;
+      delete unsetFields.toolApprovalAllows;
       delete unsetFields.codeEnvironmentRevision;
       delete unsetFields.codeEnvironmentMode;
       delete unsetFields.codeWorkspaces;
@@ -2557,7 +2578,11 @@ export function createConversationMethods(
          * DocumentDB targets rule out. */
         if (setFields.lastResponseAt instanceof Date) {
           const { lastResponseAt, ...withoutReplyStamp } = setFields;
-          operation.$set = withoutReplyStamp;
+          operation.$set = {
+            ...withoutReplyStamp,
+            isMarkedUnread: false,
+            lastSeenAt: new Date(UNSEEN_REPLY_WATERMARK),
+          };
           operation.$max = { lastResponseAt };
           operation.$unset = { lastResponseIsManual: '' };
         }
@@ -2712,7 +2737,7 @@ export function createConversationMethods(
         }
       }
 
-      /* Advance the version and clear the previous catch-up atomically. The database CAS orders
+      /* Advance the version and reset catch-up atomically. The database CAS orders
        * concurrent replies even when their application hosts disagree about wall-clock time. */
       let replyStampApplied = false;
       if (metadata?.stampReply === true) {
@@ -2727,6 +2752,8 @@ export function createConversationMethods(
                 lastResponseAt: 1,
                 lastResponseMessageId: 1,
                 lastResponseIsManual: 1,
+                isMarkedUnread: 1,
+                lastSeenAt: 1,
                 updatedAt: 1,
               },
             );
@@ -2737,7 +2764,8 @@ export function createConversationMethods(
               conversation.lastResponseAt = stamped.stamp;
               conversation.lastResponseMessageId = stamped.conversation.lastResponseMessageId;
               conversation.lastResponseIsManual = stamped.conversation.lastResponseIsManual;
-              conversation.lastSeenAt = undefined;
+              conversation.isMarkedUnread = stamped.conversation.isMarkedUnread;
+              conversation.lastSeenAt = stamped.conversation.lastSeenAt;
               if (stamped.conversation.updatedAt) {
                 conversation.updatedAt = stamped.conversation.updatedAt;
               }
@@ -2899,6 +2927,47 @@ export function createConversationMethods(
    * return the post-update decision in one round trip. A run that wins invalidates an in-flight
    * transition's revision; a transition that wins is observed by this read.
    */
+  /**
+   * Remember tools the owner approved for the rest of one conversation. Owner-scoped,
+   * idempotent (`$addToSet`), and bounded: the write matches only while the stored list
+   * plus the names it does not hold yet fits `max`, so concurrent resumes cannot grow it
+   * past the cap and a name already stored costs no room. Returns whether it applied.
+   */
+  async function addConvoToolApprovalAllows({
+    user,
+    conversationId,
+    toolNames,
+    max,
+  }: {
+    user: string;
+    conversationId: string;
+    toolNames: string[];
+    max: number;
+  }): Promise<boolean> {
+    const names = [...new Set(toolNames.filter((name) => typeof name === 'string' && name))];
+    if (names.length === 0 || names.length > max) {
+      return false;
+    }
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const result = await withoutMeiliIndexing(
+      Conversation.updateOne(
+        {
+          user,
+          conversationId,
+          $expr: {
+            $lte: [
+              { $size: { $setUnion: [{ $ifNull: ['$toolApprovalAllows', []] }, names] } },
+              max,
+            ],
+          },
+        },
+        { $addToSet: { toolApprovalAllows: { $each: names } } },
+        { timestamps: false },
+      ),
+    );
+    return result.matchedCount === 1;
+  }
+
   async function readAdmittedConvoCodeEnvironmentDecision(user: string, conversationId: string) {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     return withoutMeiliIndexing(
@@ -3041,9 +3110,11 @@ export function createConversationMethods(
         delete sanitized.lastResponseAt;
         delete sanitized.lastResponseMessageId;
         delete sanitized.lastResponseIsManual;
+        delete sanitized.isMarkedUnread;
         delete sanitized.lastSeenAt;
         delete sanitized.codeApprovalMode;
         delete sanitized.initial_agent_id;
+        delete sanitized.toolApprovalAllows;
         delete sanitized.codeEnvironmentRevision;
         stripActorCheckpointFields(sanitized);
         if (typeof sanitized.user === 'string' && typeof sanitized.chatProjectId === 'string') {
@@ -3461,7 +3532,7 @@ export function createConversationMethods(
            the sidebar lists archived and unarchived chats in the same session, and the
            active list also carries the unarchived pins beside them. */
         .select(
-          'conversationId endpoint title createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual lastSeenAt',
+          'conversationId endpoint title createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual isMarkedUnread lastSeenAt',
         )
         .sort(sortObj)
         .limit(pageSize + 1)
@@ -3952,7 +4023,7 @@ export function createConversationMethods(
       const lastSeenAt = observedResponseAt && observedResponseAt > now ? observedResponseAt : now;
       const result = await Conversation.updateOne(
         filter,
-        { $set: { lastSeenAt } },
+        { $set: { lastSeenAt }, $unset: { isMarkedUnread: '' } },
         { timestamps: false },
       );
       /* Matched, not modified: a retry of an acknowledgement that already landed writes the
@@ -3981,7 +4052,12 @@ export function createConversationMethods(
   async function markConvoUnread(user: string, conversationId: string) {
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
-      const projection = { lastResponseAt: 1, lastResponseMessageId: 1, lastResponseIsManual: 1 };
+      const projection = {
+        lastResponseAt: 1,
+        lastResponseMessageId: 1,
+        lastResponseIsManual: 1,
+        isMarkedUnread: 1,
+      };
       const stamped = await Conversation.findOneAndUpdate(
         {
           conversationId,
@@ -3989,12 +4065,15 @@ export function createConversationMethods(
           $or: [{ lastResponseAt: null }, { lastResponseAt: { $exists: false } }],
         },
         {
-          $set: { lastResponseAt: new Date(), lastResponseIsManual: true },
+          $set: { lastResponseAt: new Date(), lastResponseIsManual: true, isMarkedUnread: true },
           $unset: { lastSeenAt: '', lastResponseMessageId: '' },
         },
         { timestamps: false, new: true, projection },
       ).lean<
-        Pick<IConversation, 'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual'>
+        Pick<
+          IConversation,
+          'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual' | 'isMarkedUnread'
+        >
       >();
       if (stamped) {
         return {
@@ -4002,15 +4081,19 @@ export function createConversationMethods(
           lastResponseAt: stamped.lastResponseAt,
           lastResponseMessageId: stamped.lastResponseMessageId,
           lastResponseIsManual: stamped.lastResponseIsManual === true,
+          isMarkedUnread: stamped.isMarkedUnread,
         };
       }
 
       const cleared = await Conversation.findOneAndUpdate(
         { conversationId, user },
-        { $unset: { lastSeenAt: '' } },
+        { $set: { isMarkedUnread: true }, $unset: { lastSeenAt: '' } },
         { timestamps: false, new: true, projection },
       ).lean<
-        Pick<IConversation, 'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual'>
+        Pick<
+          IConversation,
+          'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual' | 'isMarkedUnread'
+        >
       >();
 
       return cleared
@@ -4019,6 +4102,7 @@ export function createConversationMethods(
             lastResponseAt: cleared.lastResponseAt,
             lastResponseMessageId: cleared.lastResponseMessageId,
             lastResponseIsManual: cleared.lastResponseIsManual === true,
+            isMarkedUnread: cleared.isMarkedUnread,
           }
         : { modified: false };
     } catch (error) {
@@ -4103,6 +4187,7 @@ export function createConversationMethods(
     setConvoPinned,
     appendConvoMessageReference,
     getConvoCodeEnvironmentDecision,
+    addConvoToolApprovalAllows,
     readAdmittedConvoCodeEnvironmentDecision,
     replaceConvoCodeEnvironmentDecision,
     bulkSaveConvos,

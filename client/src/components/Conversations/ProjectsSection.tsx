@@ -41,6 +41,7 @@ import {
 } from '~/data-provider';
 import ProjectCreateDialog from '~/components/Projects/ProjectCreateDialog';
 import ProjectDeleteDialog from '~/components/Projects/ProjectDeleteDialog';
+import ProjectEditDialog from '~/components/Projects/ProjectEditDialog';
 import { useLocalize, useLocalStorage, useNewConvo } from '~/hooks';
 import { clearMessagesCache, cn, rowActionClasses } from '~/utils';
 import { Collapse } from '~/components/ui';
@@ -187,7 +188,17 @@ const ProjectItem = memo(
     const menuId = useId();
     const [expanded, setExpanded] = useState(defaultExpanded);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
+    /** The dialog items keep the menu open so it does not steal focus from the
+     *  dialog mounting beside it; closing the dialog closes the menu too. */
+    const closeMenuWith = (setOpen: (open: boolean) => void, open: boolean) => {
+      setOpen(open);
+      if (!open) {
+        setIsMenuOpen(false);
+      }
+    };
     const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+    const [isEditOpen, setIsEditOpen] = useState(false);
+    const editMenuRef = useRef<HTMLButtonElement>(null);
     const deleteMenuRef = useRef<HTMLButtonElement>(null);
     const projectChatPath = `/c/${Constants.NEW_CONVO}?projectId=${encodeURIComponent(project._id)}`;
 
@@ -271,10 +282,10 @@ const ProjectItem = memo(
           id: `${menuId}-rename`,
           label: localize('com_ui_edit_project'),
           icon: <Pencil className="text-text-secondary size-4" aria-hidden="true" />,
-          onClick: () => {
-            navigate(`/projects/${encodeURIComponent(project._id)}?edit=1`);
-            toggleNav();
-          },
+          onClick: () => setIsEditOpen(true),
+          hideOnClick: false,
+          ref: editMenuRef,
+          render: (props) => <button {...props} />,
         },
         {
           id: `${menuId}-delete`,
@@ -286,7 +297,7 @@ const ProjectItem = memo(
           render: (props) => <button {...props} />,
         },
       ],
-      [localize, menuId, navigate, openProject, project._id, toggleNav],
+      [localize, menuId, openProject],
     );
 
     return (
@@ -365,9 +376,15 @@ const ProjectItem = memo(
             onShowAll={openProject}
           />
         </Collapse>
+        <ProjectEditDialog
+          open={isEditOpen}
+          onOpenChange={(open) => closeMenuWith(setIsEditOpen, open)}
+          project={project}
+          triggerRef={editMenuRef}
+        />
         <ProjectDeleteDialog
           open={isDeleteOpen}
-          onOpenChange={setIsDeleteOpen}
+          onOpenChange={(open) => closeMenuWith(setIsDeleteOpen, open)}
           project={project}
           triggerRef={deleteMenuRef}
         />

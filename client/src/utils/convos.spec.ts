@@ -1,9 +1,15 @@
-import { EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, InfiniteData } from '@tanstack/react-query';
+import { EModelEndpoint, UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationCursorData } from './convos';
 import {
   dateKeys,
+  mergeConvoSnapshot,
+  beginConvoSnapshot,
+  endConvoSnapshot,
+  endConvoReadIntent,
+  supersedeConvoSnapshots,
+  fetchConvoSnapshot,
   storeEndpointSettings,
   addConversationToInfinitePages,
   updateInfiniteConvoPage,
@@ -1201,6 +1207,101 @@ describe('Conversation Utilities', () => {
         expect(data!.pages[0].conversations[0].lastResponseMessageId).toBe('reply-a');
       });
 
+      it('snapshot merging distinguishes authoritative absence from partial UI updates', () => {
+        const cached = {
+          ...convoA,
+          lastResponseAt: '2026-08-16T10:00:00.000Z',
+          lastResponseMessageId: 'reply',
+          isMarkedUnread: false,
+          lastSeenAt: UNSEEN_REPLY_WATERMARK,
+        } as TConversation;
+        const server = JSON.parse(
+          JSON.stringify({ ...cached, lastSeenAt: undefined }),
+        ) as TConversation;
+        const merged = mergeConvoSnapshot(server, cached);
+        expect(merged.lastSeenAt).toBeUndefined();
+        expect('lastSeenAt' in merged).toBe(true);
+        expect(merged.lastResponseMessageId).toBe('reply');
+        const older = { ...server, lastResponseAt: '2026-08-16T09:00:00.000Z' };
+        expect(mergeConvoSnapshot(older, cached).lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
+        const read = { ...cached, lastSeenAt: cached.lastResponseAt };
+        expect(mergeConvoSnapshot(cached, read, true).lastSeenAt).toBe(read.lastSeenAt);
+        expect(mergeConvoSnapshot(cached, read).lastSeenAt).toBe(read.lastSeenAt);
+        const reminder = { ...cached, lastSeenAt: undefined, isMarkedUnread: true };
+        expect(mergeConvoSnapshot(cached, reminder).isMarkedUnread).toBe(true);
+        const later = { ...cached, lastResponseAt: '2026-08-16T11:00:00.000Z' };
+        expect(mergeConvoSnapshot(later, read, true).lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
+      });
+
+      it.each([true, false])(
+        'snapshot upserts clear an omitted watermark while partial updates preserve it (pinned: %s)',
+        (pinned) => {
+          updateConvoInAllQueries(queryClient, 'a', (c) => ({
+            ...c,
+            pinned,
+            lastResponseAt: '2026-08-16T10:00:00.000Z',
+            isMarkedUnread: false,
+            lastSeenAt: UNSEEN_REPLY_WATERMARK,
+          }));
+          upsertConvoInAllQueries(
+            queryClient,
+            { conversationId: 'a', title: 'Partial' } as TConversation,
+            false,
+          );
+          expect(findConvoInAllQueries(queryClient, 'a')?.lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
+          upsertConvoInAllQueries(
+            queryClient,
+            {
+              conversationId: 'a',
+              title: 'Snapshot',
+              lastResponseAt: '2026-08-16T10:00:00.000Z',
+              isMarkedUnread: false,
+            } as TConversation,
+            false,
+            'snapshot',
+          );
+          expect(findConvoInAllQueries(queryClient, 'a')?.lastSeenAt).toBeUndefined();
+        },
+      );
+
+      it('does not invent reply eligibility for an unclassified backend snapshot', () => {
+        updateConvoInAllQueries(queryClient, 'a', (c) => ({
+          ...c,
+          lastResponseAt: '2026-08-16T10:00:00.000Z',
+          isMarkedUnread: true,
+        }));
+        updateConvoInAllQueries(
+          queryClient,
+          'a',
+          () =>
+            ({
+              conversationId: 'a',
+              lastResponseAt: '2026-08-16T11:00:00.000Z',
+            }) as TConversation,
+        );
+        expect(findConvoInAllQueries(queryClient, 'a')?.isMarkedUnread).toBeUndefined();
+      });
+
+      it('marks only an advancing live reply as confirmed, preserving reminders on duplicate delivery', () => {
+        const original = '2026-08-16T10:00:00.000Z';
+        updateConvoInAllQueries(queryClient, 'a', (c) => ({
+          ...c,
+          lastResponseAt: original,
+          isMarkedUnread: true,
+        }));
+        applyServerReplyStamp(queryClient, 'a', {
+          lastResponseAt: original,
+          lastResponseMessageId: 'existing',
+        });
+        expect(findConvoInAllQueries(queryClient, 'a')?.isMarkedUnread).toBe(true);
+        applyServerReplyStamp(queryClient, 'a', {
+          lastResponseAt: '2026-08-16T11:00:00.000Z',
+          lastResponseMessageId: 'new',
+        });
+        expect(findConvoInAllQueries(queryClient, 'a')?.isMarkedUnread).toBe(false);
+        expect(findConvoInAllQueries(queryClient, 'a')?.lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
+      });
+
       it('updateConvoInAllQueries lets an explicit lastSeenAt win over the cached one', () => {
         updateConvoInAllQueries(queryClient, 'a', (c) => ({
           ...c,
@@ -1701,5 +1802,74 @@ describe('Conversation Utilities', () => {
         ).toHaveLength(0);
       });
     });
+  });
+});
+
+describe('conversation snapshot read authority', () => {
+  it('fences reads already pending at request start and drops settled records', () => {
+    const client = new QueryClient();
+    supersedeConvoSnapshots(client, 'convo', 1);
+    const fence = beginConvoSnapshot(client, 'convo');
+    expect(fence.superseded).toBe(true);
+    endConvoReadIntent(client, 'convo', 1);
+    endConvoSnapshot(client, 'convo', fence);
+    const fresh = beginConvoSnapshot(client, 'convo');
+    expect(fresh.superseded).toBe(false);
+    endConvoSnapshot(client, 'convo', fresh);
+    client.clear();
+  });
+
+  it('isolates concurrent snapshots by request, conversation and query client', () => {
+    const client = new QueryClient();
+    const other = new QueryClient();
+    const completed = beginConvoSnapshot(client, 'convo');
+    const pending = beginConvoSnapshot(client, 'convo');
+    endConvoSnapshot(client, 'convo', completed);
+    supersedeConvoSnapshots(other, 'convo', 1);
+    supersedeConvoSnapshots(client, 'another', 1);
+    expect(pending.superseded).toBe(false);
+    supersedeConvoSnapshots(client, 'convo', 2);
+    expect(completed.superseded).toBe(false);
+    expect(pending.superseded).toBe(true);
+    endConvoReadIntent(client, 'convo', 1);
+    const during = beginConvoSnapshot(client, 'convo');
+    expect(during.superseded).toBe(true);
+    endConvoReadIntent(client, 'convo', 2);
+    endConvoSnapshot(client, 'convo', pending);
+    endConvoSnapshot(client, 'convo', during);
+    endConvoReadIntent(client, 'another', 1);
+    endConvoReadIntent(other, 'convo', 1);
+    client.clear();
+    other.clear();
+  });
+
+  it('a snapshot fetch preserves same-reply read intent that settles during the request', async () => {
+    const client = new QueryClient();
+    const repliedAt = '2026-08-16T10:00:00.000Z';
+    const confirmed = {
+      conversationId: 'convo',
+      lastResponseAt: repliedAt,
+      lastSeenAt: UNSEEN_REPLY_WATERMARK,
+      isMarkedUnread: false,
+    } as TConversation;
+    client.setQueryData(['conversation', 'convo'], confirmed);
+    let complete!: (value: TConversation) => void;
+    const pending = fetchConvoSnapshot(
+      client,
+      'convo',
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    supersedeConvoSnapshots(client, 'convo', 1);
+    client.setQueryData(['conversation', 'convo'], { ...confirmed, lastSeenAt: repliedAt });
+    endConvoReadIntent(client, 'convo', 1);
+    complete(confirmed);
+    expect((await pending).lastSeenAt).toBe(repliedAt);
+    const fresh = beginConvoSnapshot(client, 'convo');
+    expect(fresh.superseded).toBe(false);
+    endConvoSnapshot(client, 'convo', fresh);
+    client.clear();
   });
 });

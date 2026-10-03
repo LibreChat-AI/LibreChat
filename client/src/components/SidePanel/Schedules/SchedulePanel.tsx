@@ -65,6 +65,7 @@ export default function SchedulePanel() {
           <div key={schedule.id} role="listitem">
             <ScheduleCard
               schedule={schedule}
+              consentEnabled={data?.limits.mcpConsent === true}
               // The raw id is a poor label but an honest one: it only shows for a
               // project outside the loaded pages, and beats claiming no scope.
               projectName={

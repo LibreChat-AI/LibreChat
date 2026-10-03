@@ -170,7 +170,6 @@ const SHUTDOWN_TEARDOWN_RESERVE_MS = 10_000;
 
 const startServer = async () => {
   await waitForKeyvRedisClient();
-  await configureSubagentTaskRouting();
   const { metricsMiddleware, metricsRouter } = createMetrics({
     collectAgentEventActorStorageMetrics: () =>
       runAsSystem(async () => {
@@ -231,6 +230,7 @@ const startServer = async () => {
     logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
   });
   const appConfig = await getAppConfig({ baseOnly: true });
+  await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
   registerBackgroundTaskShutdown({
     interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
   });
@@ -508,6 +508,8 @@ const startServer = async () => {
         address: server.address(),
         completionResultBatchSize:
           appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+        completionReceiptBatching:
+          appConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
         idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
       });
       const scheduleEngineArmed = (await initializeScheduleEngine()) != null;

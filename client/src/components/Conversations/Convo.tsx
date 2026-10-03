@@ -1,4 +1,4 @@
-import React, { memo, useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { memo, useId, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useDrag } from 'react-dnd';
 import { Link2 } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
@@ -19,6 +19,7 @@ import { focusableInRow, resolveRowBeside } from './focus';
 import { areConversationRenderPropsEqual } from './utils';
 import { NotificationSeverity } from '~/common';
 import { CONVERSATION_DRAG_TYPE } from './dnd';
+import ProjectBadge from './ProjectBadge';
 import ConvoActions from './ConvoActions';
 import UnpinButton from './UnpinButton';
 import RenameForm from './RenameForm';
@@ -39,6 +40,8 @@ interface ConversationProps {
   /** Shortcuts an owning list handles for this row, declared on its focusable
    *  element so they are announced rather than left to be discovered. */
   keyShortcuts?: string;
+  /** Names the chat's project on rows listed outside that project. */
+  showProjectBadge?: boolean;
 }
 
 function Conversation({
@@ -49,6 +52,7 @@ function Conversation({
   draggable = false,
   onRenamingChange,
   keyShortcuts,
+  showProjectBadge = false,
 }: ConversationProps) {
   const params = useParams();
   const localize = useLocalize();
@@ -57,13 +61,15 @@ function Conversation({
   const currentConvoId = useMemo(() => params.conversationId, [params.conversationId]);
   const updateConvoMutation = useUpdateConversationMutation(currentConvoId ?? '');
   const unpinMutation = usePinConversationMutation();
-  const activeConvos = useRecoilValue(store.allConversationsSelector);
+  const activeConversationId = useRecoilValue(store.conversationIdByIndex(0));
   const isSmallScreen = useMediaQuery('(max-width: 768px)');
   /* A deployment with shared links off leaves existing links in the database but stops
      serving them, so the row must not advertise one that no longer resolves. */
   const { data: startupConfig } = useGetStartupConfig();
   const sharedLinksEnabled = startupConfig?.sharedLinksEnabled === true;
   const isSharedBadgeVisible = conversation.isShared === true && sharedLinksEnabled;
+  const projectLabelId = useId();
+  const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
   const isUnseen = isConversationUnseen(conversation);
   const isShiftHeld = useShiftKey();
   const { conversationId, title = '' } = conversation;
@@ -128,10 +134,9 @@ function Conversation({
     if (currentConvoId !== Constants.NEW_CONVO) {
       return currentConvoId === conversationId;
     } else {
-      const latestConvo = activeConvos?.[0];
-      return latestConvo === conversationId;
+      return activeConversationId === conversationId;
     }
-  }, [currentConvoId, conversationId, activeConvos]);
+  }, [currentConvoId, conversationId, activeConversationId]);
 
   const handleRename = () => {
     setIsPopoverActive(false);
@@ -272,12 +277,6 @@ function Conversation({
     isShiftHeld: isActiveConvo ? isShiftHeld : false,
   };
 
-  const generatingSpinner = (
-    <span role="img" aria-label={localize('com_ui_generating')}>
-      <Spinner className="text-text-primary h-5 w-5 shrink-0" />
-    </span>
-  );
-
   /* The slot takes its width from the row's hover, not from its content. The
    * overflow menu mounts a tick after the pointer arrives (see `ConvoActions`),
    * and a content-sized slot grew at that moment, pulling the unpin badge a
@@ -289,10 +288,7 @@ function Conversation({
   let actionWidthClassName = isSmallScreen
     ? 'group-focus-within:w-9 group-hover:w-9'
     : 'group-focus-within:w-7 group-hover:w-7';
-  if (isGenerating) {
-    actionVisibilityClassName = 'pointer-events-none w-5 scale-x-100 opacity-100';
-    actionWidthClassName = '';
-  } else if (isPopoverActive || isActiveConvo || isSmallScreen) {
+  if (isPopoverActive || isActiveConvo || isSmallScreen) {
     /** Touch has no hover, so a reveal-on-hover menu is unreachable there. */
     actionVisibilityClassName = 'pointer-events-auto scale-x-100 opacity-100';
     /** Shift over the active row swaps the menu for archive and delete. */
@@ -303,16 +299,14 @@ function Conversation({
     }
   }
 
-  let actionContent: React.ReactNode = null;
-  if (isGenerating) {
-    actionContent = generatingSpinner;
-  } else if (!renaming) {
-    actionContent = <ConvoActions {...convoOptionsProps} hasInteracted={hasInteracted} />;
-  }
+  const actionContent = renaming ? null : (
+    <ConvoActions {...convoOptionsProps} hasInteracted={hasInteracted} />
+  );
 
   return (
     <div
       ref={containerRef}
+      data-conversation-id={conversationId}
       className={cn(
         'group focus-visible:ring-text-primary relative flex h-12 w-full items-center rounded-lg outline-hidden focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset md:h-9',
         isActiveConvo || isPopoverActive
@@ -354,22 +348,46 @@ function Conversation({
           isHovered={isHovered}
           isSharedBadgeVisible={isSharedBadgeVisible}
           isUnseen={isUnseen}
+          isGenerating={isGenerating}
           title={title}
           onRename={handleRename}
           isSmallScreen={isSmallScreen}
           localize={localize}
           keyShortcuts={keyShortcuts}
+          describedBy={projectBadgeProjectId ? projectLabelId : undefined}
         >
-          <ConversationEndpointIcon conversation={conversation} size={20} context="menu-item" />
+          {/* Status sits on the avatar so the row's trailing edge stays free for its badges
+              and menu. The ring is 34px around the 20px icon: offset by half the difference. */}
+          <span className="relative flex size-5 shrink-0 items-center justify-center">
+            <ConversationEndpointIcon conversation={conversation} size={20} context="menu-item" />
+            {isGenerating && (
+              <Spinner
+                size={34}
+                strokeWidth={1.9}
+                bgOpacity={0.14}
+                className="text-text-primary pointer-events-none absolute -top-[7px] -left-[7px]"
+              />
+            )}
+            {isUnseen && !isGenerating && (
+              /* `ConvoLink`'s aria-label carries the text equivalent of the ring and the dot. */
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'bg-status-info pointer-events-none absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2',
+                  isActiveConvo || isPopoverActive
+                    ? 'ring-surface-active-alt'
+                    : 'ring-surface-primary-alt group-hover:ring-surface-active-alt',
+                )}
+              />
+            )}
+          </span>
         </ConvoLink>
-      )}
-      {isUnseen && (
-        /* `ConvoLink`'s aria-label carries the text equivalent, so the dot itself stays
-           decorative rather than announcing a second time outside the row's button. */
-        <span className="bg-status-info mr-1 size-2 shrink-0 rounded-full" aria-hidden="true" />
       )}
       {isSharedBadgeVisible && (
         <Link2 className="icon-sm text-text-secondary mr-1 shrink-0" aria-hidden="true" />
+      )}
+      {projectBadgeProjectId && (
+        <ProjectBadge projectId={projectBadgeProjectId} labelId={projectLabelId} />
       )}
       {conversation.pinned === true && (
         <UnpinButton

@@ -19,6 +19,7 @@ import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source'
 import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
 import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
+import { PrivateText } from '~/components/Chat/Messages/PrivateText';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
@@ -226,26 +227,30 @@ const ContentRender = memo(function ContentRender({
     >
       <AuthorContext.Provider value={author}>
         <ErrorSourceProvider message={msg}>
-          <ContentParts
-            edit={edit}
-            isLast={isLast}
-            enterEdit={enterEdit}
-            siblingIdx={siblingIdx}
-            messageId={msg.messageId}
-            attachments={attachments}
-            searchResults={searchResults}
-            manualSkills={msg.manualSkills}
-            authorHeader={msg.isCreatedByUser === true ? undefined : RESUME_AUTHOR_HEADER}
-            setSiblingIdx={setSiblingIdx}
-            isLatestMessage={isLatestMessage}
-            isSubmitting={isSubmitting}
-            isCreatedByUser={msg.isCreatedByUser}
-            createdAt={msg.createdAt ?? msg.clientTimestamp}
-            foldLiveActivity={!autoExpandTools}
-            showThinking={showThinking}
-            conversationId={conversation?.conversationId}
-            content={msg.content as Array<TMessageContentParts | undefined>}
-          />
+          {!edit && msg.isCreatedByUser && msg.privacyRevision ? (
+            <PrivateText message={msg} />
+          ) : (
+            <ContentParts
+              edit={edit}
+              isLast={isLast}
+              enterEdit={enterEdit}
+              siblingIdx={siblingIdx}
+              messageId={msg.messageId}
+              attachments={attachments}
+              searchResults={searchResults}
+              manualSkills={msg.manualSkills}
+              authorHeader={msg.isCreatedByUser === true ? undefined : RESUME_AUTHOR_HEADER}
+              setSiblingIdx={setSiblingIdx}
+              isLatestMessage={isLatestMessage}
+              isSubmitting={isSubmitting}
+              isCreatedByUser={msg.isCreatedByUser}
+              createdAt={msg.createdAt ?? msg.clientTimestamp}
+              foldLiveActivity={!autoExpandTools}
+              showThinking={showThinking}
+              conversationId={conversation?.conversationId}
+              content={msg.content as Array<TMessageContentParts | undefined>}
+            />
+          )}
         </ErrorSourceProvider>
       </AuthorContext.Provider>
       {/** A turn that ran out of agent steps is incomplete, not broken. Rendered

@@ -1,13 +1,20 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { createBashProgrammaticToolCallingTool } from '@librechat/agents';
 import type { createBashProgrammaticToolCallingSchema } from '@librechat/agents';
 import type { AddressInfo } from 'node:net';
+import type { WorkspaceExecuteCommandRequest } from './workspace';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeBridgeFetch } from './bridge';
 import {
+  ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION,
   ATTACHED_WORKSPACE_BASH_DESCRIPTION,
   ATTACHED_WORKSPACE_BASH_SCHEMA,
+  buildAttachedWorkspaceBashDescription,
   buildAttachedWorkspaceBashSchema,
   createAttachedWorkspaceBashTool,
   createContextProgrammaticBashTool,
@@ -25,11 +32,67 @@ describe('attached workspace Bash contract', () => {
     expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain(
       'Only registered-workspace files persist',
     );
-    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('Install project dependencies there');
+    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('install project dependencies there');
     expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('$HOME');
-    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('/tmp, $TMPDIR');
+    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain(
+      'temp files, and background processes are not durable',
+    );
     expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('global/system packages');
-    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('background processes do not survive');
+    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('not the final one');
+    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('scripts are not rewritten');
+  });
+
+  test('describes the read-only native sandbox filesystem only when the worker advertises it', () => {
+    const scratch =
+      '/ and /tmp are read-only; write scratch files to $TMPDIR or the workspace. Programs that hardcode /tmp fail.';
+    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).not.toContain('read-only');
+    expect(ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION).toContain(scratch);
+    expect(ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION.replace(`- ${scratch}\n`, '')).toBe(
+      ATTACHED_WORKSPACE_BASH_DESCRIPTION,
+    );
+    expect(buildAttachedWorkspaceBashDescription(false)).toBe(ATTACHED_WORKSPACE_BASH_DESCRIPTION);
+    expect(
+      buildAttachedWorkspaceBashDescription(true, undefined, true).startsWith(
+        `${ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION}\n\n`,
+      ),
+    ).toBe(true);
+    const tool = (nativeSandbox?: boolean): string =>
+      createAttachedWorkspaceBashTool({
+        baseUrl: 'https://code.example.com/v1',
+        authHeaders: () => ({}),
+        workspaceId: 'project-a',
+        nativeSandbox,
+      }).description;
+    expect(tool(true)).toBe(ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION);
+    expect(tool(false)).toBe(ATTACHED_WORKSPACE_BASH_DESCRIPTION);
+    expect(tool()).toBe(ATTACHED_WORKSPACE_BASH_DESCRIPTION);
+  });
+
+  test('states that commands start in cwd so the model does not also cd into it', () => {
+    const { properties } = buildAttachedWorkspaceBashSchema();
+    expect(properties?.command?.description).toContain(
+      'It starts in cwd, or in the workspace root when cwd is omitted.',
+    );
+    expect(properties?.cwd?.description).toContain(
+      'The command starts there; do not also cd into it.',
+    );
+    expect(properties?.cwd?.description).not.toContain('checkout-wide');
+    expect(properties?.cwd?.description).not.toContain('.worktrees');
+  });
+
+  test('describes checkout-wide root calls only in linked-worktree lane mode', () => {
+    const laneCwd = buildAttachedWorkspaceBashSchema(undefined, undefined, true).properties?.cwd
+      ?.description;
+    expect(laneCwd).toContain('The command starts there; do not also cd into it.');
+    expect(laneCwd).toContain(
+      'Pass a linked worktree directory here (e.g. ".worktrees/fix-auth") rather than cd into it: different worktrees run in parallel.',
+    );
+    expect(laneCwd).toContain(
+      'Any other call, with or without cwd, is checkout-wide: it waits for all running worktree calls and blocks new ones until it finishes, as do file tools on paths outside .worktrees/<name>.',
+    );
+    expect(laneCwd).toContain(
+      'Reserve checkout-wide calls for creating, pruning or removing worktrees, batching any git fetch they need into the same call.',
+    );
   });
 
   test('keeps the command parameter persistence warning next to generated commands', () => {
@@ -537,7 +600,9 @@ describe('createAttachedWorkspaceBashTool', () => {
       },
       fetchImpl,
     });
-    await bashTool.invoke({ environmentAction: 'typecheck' });
+    const content = await bashTool.invoke({ environmentAction: 'typecheck' });
+    expect(content).toContain('[starting directory: "workspace/"]');
+    expect(content).not.toContain('directory hint');
     const [, options] = (fetchImpl as jest.Mock).mock.calls[0];
     expect(JSON.parse(options.body)).toMatchObject({
       workspaceId: 'project-a',
@@ -613,7 +678,10 @@ describe('createAttachedWorkspaceBashTool', () => {
 
     await expect(
       bashTool.func({ command: 'pwd', cwd: 'packages/api' }, undefined, {}),
-    ).resolves.toEqual(['stdout:\nready\n\n[exit code: 0]', {}]);
+    ).resolves.toEqual([
+      '[starting directory: "workspace/packages/api"]\nstdout:\nready\n\n[exit code: 0]',
+      {},
+    ]);
 
     expect(authHeaders).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -648,10 +716,150 @@ describe('createAttachedWorkspaceBashTool', () => {
     });
 
     expect(JSON.stringify(bashTool.schema)).toContain('.worktrees/<name>');
-    await bashTool.func({ command: 'npm test', cwd: '.worktrees/fix-a/api' }, undefined, {});
+    const [content] = await bashTool.func(
+      { command: 'npm test', cwd: '.worktrees/fix-a/api' },
+      undefined,
+      {},
+    );
+    expect(content).toContain('[starting directory: "workspace/.worktrees/fix-a/api"]');
 
     const request = JSON.parse(String((fetchImpl as jest.Mock).mock.calls[0][1]?.body));
     expect(request).toMatchObject({ command: 'npm test', cwd: 'api', worktree: 'fix-a' });
+  });
+
+  test('reports the workspace root even when a command produces no output', async () => {
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      fetchImpl: async () => commandResponse({ stdout: '' }),
+    });
+
+    await expect(bashTool.invoke({ command: 'true' })).resolves.toBe(
+      '[starting directory: "workspace/"]\nCommand completed with no output.\n[exit code: 0]',
+    );
+  });
+
+  test.each([
+    'cd packages/api && npm test',
+    '\n\tcd "packages/api" && printf "%s" "$OLDPWD"',
+    'cd missing && npm test || printf fallback',
+    'cd "$DIRECTORY" && npm test',
+    'cd .. && pwd',
+    'cd - && pwd',
+    'cd',
+  ])('preserves the script and root lane while suggesting cwd: %s', async (command) => {
+    const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      linkedWorktrees: true,
+      fetchImpl,
+    });
+
+    const content = await bashTool.invoke({ command });
+    expect(content).toContain('[starting directory: "workspace/"]');
+    expect(content).toContain('pass cwd instead of a leading cd');
+    expect(content).toContain(
+      'does not select a linked-worktree lane, so this call ran checkout-wide.',
+    );
+    expect(content).toContain('This command was not rewritten; do not rerun it');
+    const request = JSON.parse(String((fetchImpl as jest.Mock).mock.calls[0][1]?.body));
+    expect(request.command).toBe(command);
+    expect(request).not.toHaveProperty('cwd');
+    expect(request).not.toHaveProperty('worktree');
+  });
+
+  test('keeps cd worktree scripts root-scoped and directory feedback stateless', async () => {
+    const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      linkedWorktrees: true,
+      fetchImpl,
+    });
+    const command = 'cd .worktrees/fix-a && npm test';
+    await bashTool.invoke({ command });
+    const content = await bashTool.invoke({ command: 'pwd' });
+    expect(content).toContain('[starting directory: "workspace/"]');
+    expect(content).not.toContain('directory hint');
+    const requests = (fetchImpl as jest.Mock).mock.calls.map((call) =>
+      JSON.parse(String(call[1]?.body)),
+    );
+    expect(requests[0].command).toBe(command);
+    for (const request of requests) {
+      expect(request).not.toHaveProperty('cwd');
+      expect(request).not.toHaveProperty('worktree');
+    }
+  });
+
+  test('escapes directory labels and does not mistake command names for cd', async () => {
+    const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      fetchImpl,
+    });
+    const cwd = 'folder\t"name';
+    const content = await bashTool.invoke({ command: 'cdrom --help', cwd });
+    expect(content).toContain(`[starting directory: ${JSON.stringify(`workspace/${cwd}`)}]`);
+    expect(content).not.toContain('directory hint');
+    expect(JSON.parse(String((fetchImpl as jest.Mock).mock.calls[0][1]?.body)).cwd).toBe(cwd);
+  });
+
+  test('never suggests linked-worktree routing when it was not negotiated', async () => {
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      fetchImpl: async () => commandResponse(),
+    });
+    const content = await bashTool.invoke({ command: 'cd child && pwd', cwd: 'parent' });
+    expect(content).toContain('[starting directory: "workspace/parent"]');
+    expect(content).toContain('directory hint');
+    expect(content).not.toContain('linked-worktree lane');
+  });
+
+  test('reports the starting directory without changing real Bash state or fallback behavior', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'lc-command-directory-'));
+    const root = join(directory, 'project');
+    await mkdir(join(root, 'child'), { recursive: true });
+    const fetchImpl: CodeBridgeFetch = async (_url, init) => {
+      const request = JSON.parse(String(init?.body)) as WorkspaceExecuteCommandRequest;
+      const stdout = execFileSync('bash', ['-c', request.command], {
+        cwd: request.cwd ? join(root, request.cwd) : root,
+        encoding: 'utf8',
+      });
+      return commandResponse({ stdout });
+    };
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      fetchImpl,
+    });
+    try {
+      const content = await bashTool.invoke({
+        command: 'cd child && printf "%s/%s" "${OLDPWD##*/}" "${PWD##*/}"',
+      });
+      expect(content).toContain('[starting directory: "workspace/"]');
+      expect(content).toContain('stdout:\nproject/child');
+      expect(content).not.toContain(directory);
+      const fallback = await bashTool.invoke({
+        command: 'cd missing 2>/dev/null && printf unexpected || printf fallback',
+      });
+      expect(fallback).toContain('stdout:\nfallback');
+      const next = await bashTool.invoke({ command: 'printf "%s" "${PWD##*/}"' });
+      expect(next).toContain('stdout:\nproject');
+      const scoped = await bashTool.invoke({ command: 'printf "%s" "${PWD##*/}"', cwd: 'child' });
+      expect(scoped).toContain('[starting directory: "workspace/child"]');
+      expect(scoped).toContain('stdout:\nchild');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   test('forwards a bounded per-call execution timeout', async () => {
@@ -1011,7 +1219,7 @@ describe('createAttachedWorkspaceBashTool', () => {
 
     await expect(cancelled).rejects.toThrow('Aborted');
     await expect(bashTool.invoke({ command: 'pwd' })).resolves.toBe(
-      'stdout:\nreused\n\n[exit code: 0]',
+      '[starting directory: "workspace/"]\nstdout:\nreused\n\n[exit code: 0]',
     );
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
@@ -1069,6 +1277,7 @@ describe('createAttachedWorkspaceBashTool', () => {
       {},
     );
     expect(content).toContain('partial work');
+    expect(content).toContain('[starting directory: "workspace/"]');
     expect(content).toContain('timeoutMs: 10000');
     expect(content).toContain('up to 70000 milliseconds');
     expect(content).not.toContain('up to 80000');
@@ -1094,7 +1303,7 @@ describe('createAttachedWorkspaceBashTool', () => {
     });
 
     await expect(bashTool.func({ command: 'sleep 60' }, undefined, {})).resolves.toEqual([
-      'stderr:\ndeadline reached\n[terminated by SIGKILL][timed out][output truncated]\nCommand reached timeoutMs: 30000. Before retrying, check for partial side effects. Set timeoutMs explicitly up to 30000 milliseconds, or use run_in_background: true if available. Background execution uses the same timeout ceiling.',
+      '[starting directory: "workspace/"]\nstderr:\ndeadline reached\n[terminated by SIGKILL][timed out][output truncated]\nCommand reached timeoutMs: 30000. Before retrying, check for partial side effects. Set timeoutMs explicitly up to 30000 milliseconds, or use run_in_background: true if available. Background execution uses the same timeout ceiling.',
       {},
     ]);
   });

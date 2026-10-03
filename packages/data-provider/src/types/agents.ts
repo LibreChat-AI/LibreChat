@@ -133,6 +133,8 @@ export namespace Agents {
       actionId: string;
       allowed_decisions: ToolApprovalDecisionType[];
       description?: string;
+      /** Server-authored: an `approve` may carry `scope: 'session'` for this call. */
+      allow_always?: boolean;
     };
   };
 
@@ -298,6 +300,8 @@ export namespace Agents {
 
   /** User message metadata for rebuilding submission on reconnect */
   export interface UserMessageMeta {
+    /** Canonical, nonsecret revision used to verify owner-only private text. */
+    privacyRevision?: string;
     messageId: string;
     parentMessageId?: string;
     conversationId?: string;
@@ -471,6 +475,12 @@ export namespace Agents {
     action_name: string;
     tool_call_id: string;
     allowed_decisions: ToolApprovalDecisionType[];
+    /**
+     * Server-authored: the user may approve this call for the rest of the conversation
+     * (`scope: 'session'`). Absent when `toolApproval.allowAlways` is off or the tool is
+     * ineligible (admin `deny`/`ask` match, native code tool, wildcard name).
+     */
+    allow_always?: boolean;
   }
 
   /** Interrupt payload for a tool-approval pause. */
@@ -589,6 +599,12 @@ export namespace Agents {
      * tool execution so an approval cannot migrate to another VM or workspace.
      */
     codeExecutionBinding?: CodeExecutionApprovalBinding;
+    /**
+     * Server-only MCP key-spelling pairs the paused run knew for the tools it offered
+     * "Always allow", including pairs lazily resolved subagents reported. Resume rechecks
+     * eligibility against them before remembering a tool.
+     */
+    toolApprovalAliases?: Array<{ name: string; aliasName: string }>;
   }
 
   export interface CodeExecutionApprovalTargetBinding {
@@ -604,9 +620,10 @@ export namespace Agents {
   }
 
   /**
-   * Scope of a tool-approval decision — drives the "remember this" persistence
-   * envelope. Storage of session/always decisions is a Slice B+ concern; the
-   * field is on the wire today so route signatures don't break later.
+   * Scope of a tool-approval decision. `once` (the default) applies to this call only.
+   * `session` on an `approve` auto-approves the same tool for the rest of the
+   * conversation, and is accepted only when the call's review config sets
+   * `allow_always`. `always` is reserved and currently rejected.
    */
   export type DecisionScope = 'once' | 'session' | 'always';
 
@@ -1040,6 +1057,9 @@ export type Agent = {
   stateful_code_environment?: StatefulCodeEnvironment;
   /** Operator-configured managed or attached stateful execution environment. */
   code_environment_id?: string | null;
+  /** Additional attached machines new chats may choose; the saved ID remains the default.
+   * This allowlist never grants the user access to a machine. */
+  code_environment_ids?: string[];
   /** Default attached workspace for new chats; empty means no agent default. */
   code_workspace_id?: string;
   repositoryInstructions?: 'prefer' | 'defer' | 'off';
@@ -1106,6 +1126,7 @@ export type AgentCreateParams = {
   | 'stateful_code_sessions'
   | 'stateful_code_environment'
   | 'code_environment_id'
+  | 'code_environment_ids'
   | 'code_workspace_id'
   | 'repositoryInstructions'
   | 'artifacts'
@@ -1142,6 +1163,7 @@ export type AgentUpdateParams = {
   | 'stateful_code_sessions'
   | 'stateful_code_environment'
   | 'code_environment_id'
+  | 'code_environment_ids'
   | 'git_identity'
   | 'code_workspace_id'
   | 'repositoryInstructions'

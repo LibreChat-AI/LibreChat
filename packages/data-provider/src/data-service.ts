@@ -7,6 +7,7 @@ import type {
   TTraceRecordDetail,
 } from './types/traces';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
+import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/scheduleConsent';
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
@@ -205,8 +206,11 @@ export const listSharedLinks = async (
   return request.get(endpoints.getSharedLinks(pageSize, sortBy, sortDirection, search, cursor));
 };
 
-export function getSharedLink(conversationId: string): Promise<t.TSharedLinkGetResponse> {
-  return request.get(endpoints.getSharedLink(conversationId));
+export function getSharedLink(
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<t.TSharedLinkGetResponse> {
+  return request.get(endpoints.getSharedLink(conversationId), signal ? { signal } : undefined);
 }
 
 export function createSharedLink(
@@ -1001,8 +1005,8 @@ export function getConversations(cursor: string): Promise<t.TGetConversationsRes
   return request.get(endpoints.conversations({ cursor }));
 }
 
-export function getConversationById(id: string): Promise<s.TConversation> {
-  return request.get(endpoints.conversationById(id));
+export function getConversationById(id: string, signal?: AbortSignal): Promise<s.TConversation> {
+  return request.get(endpoints.conversationById(id), signal ? { signal } : undefined);
 }
 
 export function updateConversation(
@@ -1137,6 +1141,21 @@ export const branchMessage = async (
 ): Promise<m.TBranchMessageResponse> => {
   return request.post(endpoints.messagesBranch(), payload);
 };
+
+export interface OwnerMessageText {
+  canonicalText: string;
+  messageId: string;
+  revision: string;
+  text?: string;
+}
+
+/** Private display data; never merge into ordinary message/query-cache objects. */
+export function getOwnerMessageTexts(
+  conversationId: string,
+  messageIds: string[],
+): Promise<{ messages: OwnerMessageText[] }> {
+  return request.post(`${endpoints.messages({ conversationId })}/owner-text`, { messageIds });
+}
 
 export function getMessagesByConvoId(conversationId: string): Promise<s.TMessage[]> {
   if (
@@ -1804,3 +1823,18 @@ export interface ActiveJobsResponse {
 export const getActiveJobs = (): Promise<ActiveJobsResponse> => {
   return request.get(endpoints.activeJobs());
 };
+
+export function getScheduleMCPConsent(id: string): Promise<ScheduleMCPConsentView> {
+  return request.get(endpoints.scheduleMCPConsent(id));
+}
+export function confirmScheduleMCPConsent(
+  id: string,
+  payload: ConfirmScheduleMCPConsent,
+): Promise<ScheduleMCPConsentView> {
+  return request.post(endpoints.scheduleMCPConsent(id), payload);
+}
+export function revokeScheduleMCPConsent(id: string, expectedRevision: string): Promise<void> {
+  return request.deleteWithOptions(endpoints.scheduleMCPConsent(id), {
+    data: { expectedRevision },
+  });
+}

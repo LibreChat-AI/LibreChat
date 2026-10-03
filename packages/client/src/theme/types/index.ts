@@ -93,6 +93,11 @@ export interface IThemeRGB {
   'rgb-border-medium-alt'?: string;
   'rgb-border-heavy'?: string;
   'rgb-border-xheavy'?: string;
+  /** The mobile drawer's trailing edge. Its light default is the drawer's own fill, since the
+   *  scrim already separates it there; dark mode draws a visible edge because the scrim and the
+   *  drawer are both near-black. Follows `rgb-surface-primary-alt` (light) and
+   *  `rgb-border-xheavy` (dark) in a theme that does not set it. */
+  'rgb-drawer-edge'?: string;
   'rgb-border-destructive'?: string;
   /** The boundary of a form control (field, select trigger, OTP slot). Owes the
    *  3:1 non-text floor on every canvas, so it is kept apart from the separator
@@ -288,6 +293,7 @@ export interface IThemeVariables {
   '--border-heavy': string;
   '--border-heavy-alpha': string;
   '--border-xheavy': string;
+  '--drawer-edge': string;
   '--border-xheavy-alpha': string;
   '--border-destructive': string;
   '--border-control': string;
@@ -427,6 +433,7 @@ export interface IThemeColors {
   'border-medium-alt'?: string;
   'border-heavy'?: string;
   'border-xheavy'?: string;
+  'drawer-edge'?: string;
   'border-destructive'?: string;
   'border-control'?: string;
   'border-field-focus'?: string;
@@ -511,6 +518,12 @@ export interface IThemeAppearance {
   menuRadius: string;
   tooltipRadius: string;
   tabRadius: string;
+  /** The narrowest a tab trigger draws; `0` sizes it by its label. */
+  tabMinWidth: string;
+  /** The narrowest a Select's list draws; `0` sizes it by its trigger and options. */
+  listMinWidth: string;
+  /** The tallest a Select's list draws before it scrolls, 8 to 40rem. */
+  listMaxHeight: string;
   radiusSm: string;
   radiusMd: string;
   radiusLg: string;
@@ -522,16 +535,31 @@ export interface IThemeAppearance {
    *  `spaceCompact` when a theme names those and not these. */
   controlPaddingX: string;
   controlGap: string;
+  /** An icon beside a label or in a menu row (0.75 to 1.25rem), and the larger one a dialog's
+   *  close button draws (1 to 2rem). */
+  iconSize: string;
+  /** The medium icon (1.25 to 1.5rem), such as the exported Dialog's close glyph. */
+  iconSizeMd: string;
+  iconSizeLg: string;
   /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
   controlFontWeight: string;
   buttonHeight: string;
   buttonHeightSm: string;
+  /** The Button's `xs` and `lg` heights; `icon-xs` is as wide as `xs` is tall, `icon` as the
+   *  default, and `icon-sm` takes its own size. */
+  buttonHeightXs: string;
+  buttonHeightLg: string;
+  /** The compact toolbar step the Button and Dropdown `compact` recipes share. */
+  buttonHeightCompact: string;
+  iconButtonSizeSm: string;
   /**
    * A form field's height, and its focus treatment: `ring` draws the keyboard-only focus ring,
    * `border` swaps the field's edge to `border-field-focus` on any focus, and keyboard focus adds
    * a 1px ring in that color so the indicator keeps a 2px perimeter.
    */
   fieldHeight: string;
+  /** The height of the large `title` field. */
+  fieldHeightLg: string;
   /** The field's vertical padding, which has to leave its line room inside `fieldHeight`. */
   fieldPaddingY: string;
   fieldFocusStyle: 'ring' | 'border';
@@ -548,6 +576,8 @@ export interface IThemeAppearance {
   labelFontWeight: string;
   switchWidth: string;
   switchHeight: string;
+  /** A checkbox's box and the check inside it, 1 to 1.5rem. */
+  checkboxSize: string;
   tableCellSpaceY: string;
   tableRowStroke: string;
   spaceCompact: string;

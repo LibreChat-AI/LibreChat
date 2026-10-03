@@ -1,7 +1,7 @@
 import { memo, useId, useMemo, useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { Ellipsis, FolderInput, FolderX, Trash2 } from 'lucide-react';
-import { DropdownPopup, Spinner, useToastContext } from '@librechat/client';
+import { Spinner, DropdownPopup, buttonVariants, useToastContext } from '@librechat/client';
 import type { TConversation } from 'librechat-data-provider';
 import type { MenuItemProps } from '~/common';
 import ProjectButton from '~/components/Conversations/ConvoOptions/ProjectButton';
@@ -112,10 +112,9 @@ function ProjectChatOptions({ conversation, isMenuOpen, setIsMenuOpen }: Project
             ref={menuButtonRef}
             aria-label={localize('com_nav_convo_menu_options')}
             className={cn(
-              'text-text-secondary flex h-8 w-8 shrink-0 items-center justify-center rounded-full outline-hidden transition-colors',
-              'hover:bg-surface-hover hover:text-text-primary',
-              'focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:ring-inset',
-              isMenuOpen && 'bg-surface-hover text-text-primary',
+              buttonVariants({ variant: 'row-action', size: 'icon-sm' }),
+              'text-text-secondary rounded-lg',
+              isMenuOpen && 'bg-surface-hover-alt text-text-primary',
             )}
           >
             <Ellipsis className="h-4 w-4" aria-hidden="true" />

@@ -1,4 +1,4 @@
-import React, { useRef, useMemo, useState, useEffect } from 'react';
+import React, { useId, useRef, useMemo, useState, useEffect } from 'react';
 import {
   Input,
   Label,
@@ -141,6 +141,72 @@ function EntryGrid({
   );
 }
 
+interface CatalogContentProps {
+  title: string;
+  searchLabel: string;
+  search: string;
+  onSearchChange: (value: string) => void;
+  filterLabel: string;
+  viewOptions: Array<{ value: string; label: string }>;
+  view: string;
+  onViewChange: (value: string) => void;
+  children: React.ReactNode;
+}
+
+/** The catalog dialog's body: a title, then a search field and view filter
+ *  pinned above a scrolling grid. Shared by every "Show all" catalog and by
+ *  other pickers over the same cards, so they read as one dialog. */
+export function CatalogContent({
+  title,
+  searchLabel,
+  search,
+  onSearchChange,
+  filterLabel,
+  viewOptions,
+  view,
+  onViewChange,
+  children,
+}: CatalogContentProps) {
+  const viewLabelId = useId();
+  return (
+    <OGDialogContent className="flex h-[80vh] max-h-[720px] w-11/12 max-w-[960px] flex-col overflow-hidden">
+      <div className="flex h-full min-h-0 min-w-0 flex-col gap-3">
+        <OGDialogTitle>{title}</OGDialogTitle>
+        <OGDialogDescription className="sr-only">{searchLabel}</OGDialogDescription>
+        {/* Reaches into the dialog's right padding so the scrollbar sits at the
+            edge, and pads the content back so the cards keep their inset. The
+            controls ride inside it as a sticky header, so they share the cards'
+            exact width whether the scrollbar takes space or overlays; the small
+            left inset keeps the search field's focus ring from being clipped. */}
+        <div className="-mr-5 -ml-1 min-h-0 flex-1 overflow-y-auto pr-5 pl-1">
+          <div className="bg-surface-dialog sticky top-0 z-10 flex flex-wrap items-center gap-2 pt-1 pb-3">
+            <div className="min-w-0 flex-1">
+              <Input
+                type="search"
+                value={search}
+                onChange={(event) => onSearchChange(event.target.value)}
+                placeholder={searchLabel}
+                aria-label={searchLabel}
+              />
+            </div>
+            <Label id={viewLabelId} className="sr-only">
+              {filterLabel}
+            </Label>
+            <Radio
+              wrap
+              options={viewOptions}
+              value={view}
+              onChange={onViewChange}
+              aria-labelledby={viewLabelId}
+            />
+          </div>
+          {children}
+        </div>
+      </div>
+    </OGDialogContent>
+  );
+}
+
 interface CatalogProps {
   section: CatalogSection | null;
   onClose: () => void;
@@ -220,49 +286,24 @@ export default function Catalog({
       }}
     >
       {current != null && (
-        <OGDialogContent className="flex h-[80vh] max-h-[720px] w-11/12 max-w-[960px] flex-col overflow-hidden">
-          <div className="flex h-full min-h-0 min-w-0 flex-col gap-3">
-            <OGDialogTitle>{localize(TITLE[current])}</OGDialogTitle>
-            <OGDialogDescription className="sr-only">
-              {localize(SEARCH[current])}
-            </OGDialogDescription>
-            {/* Reaches into the dialog's right padding so the scrollbar sits at the
-                edge, and pads the content back so the cards keep their inset. The
-                controls ride inside it as a sticky header, so they share the cards'
-                exact width whether the scrollbar takes space or overlays; the small
-                left inset keeps the search field's focus ring from being clipped. */}
-            <div className="-mr-5 -ml-1 min-h-0 flex-1 overflow-y-auto pr-5 pl-1">
-              <div className="bg-surface-dialog sticky top-0 z-10 flex flex-wrap items-center gap-2 pt-1 pb-3">
-                <div className="min-w-0 flex-1">
-                  <Input
-                    type="search"
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder={localize(SEARCH[current])}
-                    aria-label={localize(SEARCH[current])}
-                  />
-                </div>
-                <Label id="composer-catalog-view-label" className="sr-only">
-                  {localize(FILTER[current])}
-                </Label>
-                <Radio
-                  wrap
-                  options={viewOptions}
-                  value={current === 'files' ? fileView : view}
-                  onChange={(value) =>
-                    current === 'files' ? setFileView(value as FileView) : setView(value as View)
-                  }
-                  aria-labelledby="composer-catalog-view-label"
-                />
-              </div>
-              {current === 'files' ? (
-                <FileGrid query={query} view={fileView} onAttach={onAttach} />
-              ) : (
-                <EntryGrid section={current} entries={entries} query={query} view={view} />
-              )}
-            </div>
-          </div>
-        </OGDialogContent>
+        <CatalogContent
+          title={localize(TITLE[current])}
+          searchLabel={localize(SEARCH[current])}
+          search={search}
+          onSearchChange={setSearch}
+          filterLabel={localize(FILTER[current])}
+          viewOptions={viewOptions}
+          view={current === 'files' ? fileView : view}
+          onViewChange={(value) =>
+            current === 'files' ? setFileView(value as FileView) : setView(value as View)
+          }
+        >
+          {current === 'files' ? (
+            <FileGrid query={query} view={fileView} onAttach={onAttach} />
+          ) : (
+            <EntryGrid section={current} entries={entries} query={query} view={view} />
+          )}
+        </CatalogContent>
       )}
     </OGDialog>
   );
