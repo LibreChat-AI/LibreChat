@@ -137,9 +137,9 @@ import {
   stripIntentLabelsFromToolDefinitions,
   INTENT_ARG,
 } from './intent';
+import { editConflictExcerptText, formatEditConflict, parseEditConflict } from '~/code/edits';
 import { buildSkillPrimeMessage, isSkillFilePath, SKILL_FILE_PREFIX } from './skills';
 import { resolveCallerCapabilityProjectionSnapshot } from './callerCapabilities';
-import { formatEditConflict, parseEditConflict } from '~/code/edits';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
 import { toolValidationFeedback } from './validationFeedback';
@@ -895,7 +895,11 @@ function getSafeToolError(
   message: string;
   logContext: Record<string, unknown>;
 } {
-  const rawMessage = feedback ?? getThrownValueMessage(error);
+  const thrownMessage = feedback ?? getThrownValueMessage(error);
+  /** File text an attached edit conflict quotes goes to the model only, never to the logs. */
+  const rawMessage =
+    !feedback && error instanceof AttachedEditConflictError ? error.modelMessage : thrownMessage;
+  const logMessage = truncateMiddle(thrownMessage, MAX_TOOL_ERROR_MESSAGE_CHARS);
   const message = truncateMiddle(rawMessage, MAX_TOOL_ERROR_MESSAGE_CHARS);
   const stack = !feedback && error instanceof Error && error.stack ? error.stack : undefined;
 
@@ -910,7 +914,7 @@ function getSafeToolError(
             upstreamBodyTruncated: error.upstreamBodyTruncated,
           }
         : {}),
-      errorMessage: message,
+      errorMessage: logMessage,
       messageLength: rawMessage.length,
       messageTruncated: message.length !== rawMessage.length,
       stack: stack ? truncateMiddle(stack, MAX_TOOL_ERROR_STACK_CHARS) : undefined,
@@ -3943,34 +3947,59 @@ function describeAttachedEdit(filePath: string, result: WorkspaceEditResult): st
   return `Updated workspace/${filePath} with ${count} replacement${count === 1 ? '' : 's'} (${notes.join('; ')}).`;
 }
 
-/**
- * A worker is outside LibreChat's trust boundary, so its conflict text is never forwarded: only the
- * facts a strict parse recovers from it (which edits failed, how, and on which lines) reach the
- * model, in LibreChat's own words. Anything else gets the generic retry guidance.
- */
-function describeAttachedEditConflict(filePath: string, error: WorkspaceToolHttpError): string {
-  const conflict = error.editConflict;
-  if (conflict?.startsWith('Workspace file changed')) {
-    return `"workspace/${filePath}" changed while this edit was being applied, so nothing was written. Re-read the file and retry.`;
-  }
-  const report = conflict == null ? undefined : parseEditConflict(conflict);
-  if (report) {
-    return formatEditConflict(`workspace/${filePath}`, report);
-  }
-  return `The edit to "workspace/${filePath}" did not apply, so nothing was written. The requested text did not match exactly once; re-read the file and retry.`;
-}
-
 /** The only body a sanitized conflict carries, so logs never retain worker-supplied text. */
 const SANITIZED_EDIT_CONFLICT_BODY = JSON.stringify({ code: 'EDIT_CONFLICT' });
 
-/** A copy of a worker conflict that keeps its status but none of its body or message. */
-function sanitizedEditConflict(
+/**
+ * A worker conflict that keeps its status but none of its body. `message` is what logs keep;
+ * `modelMessage` may add the current file text the worker quoted, which the model sees just as it
+ * would see a read_file result, and which never reaches the logs.
+ */
+class AttachedEditConflictError extends WorkspaceToolHttpError {
+  constructor(
+    reason: WorkspaceToolHttpError['reason'],
+    message: string,
+    public readonly modelMessage: string,
+  ) {
+    super(reason, 409, SANITIZED_EDIT_CONFLICT_BODY);
+    this.message = message;
+  }
+}
+
+/**
+ * A worker is outside LibreChat's trust boundary, so its conflict text is never forwarded: only the
+ * facts a strict parse recovers from it (which edits failed, how, and on which lines) reach the
+ * model, in LibreChat's own words. The one exception is a well-formed excerpt of the edited file's
+ * current text, which is file content like any read_file result and passes the same file-content
+ * policy first. Anything else gets the generic retry guidance.
+ */
+function attachedEditConflict(
+  tc: ToolCallRequest,
+  req: ServerRequest | undefined,
+  filePath: string,
   error: WorkspaceToolHttpError,
-  message: string,
-): WorkspaceToolHttpError {
-  const sanitized = new WorkspaceToolHttpError(error.reason, 409, SANITIZED_EDIT_CONFLICT_BODY);
-  sanitized.message = message;
-  return sanitized;
+): AttachedEditConflictError {
+  const conflict = error.editConflict;
+  const settle = (message: string, modelMessage = message) =>
+    new AttachedEditConflictError(error.reason, message, modelMessage);
+  if (conflict?.startsWith('Workspace file changed')) {
+    return settle(
+      `"workspace/${filePath}" changed while this edit was being applied, so nothing was written. Re-read the file and retry.`,
+    );
+  }
+  const report = conflict == null ? undefined : parseEditConflict(conflict);
+  if (!report) {
+    return settle(
+      `The edit to "workspace/${filePath}" did not apply, so nothing was written. The requested text did not match exactly once; re-read the file and retry.`,
+    );
+  }
+  const path = `workspace/${filePath}`;
+  const message = formatEditConflict(path, report);
+  const excerpts = editConflictExcerptText(report);
+  if (!excerpts || filteredFileResult(tc, req, filePath, excerpts) != null) {
+    return settle(message);
+  }
+  return settle(message, formatEditConflict(path, report, true));
 }
 
 async function handleAttachedWorkspaceEditFileCall({
@@ -4097,8 +4126,10 @@ async function handleAttachedWorkspaceEditFileCall({
     });
   } catch (error) {
     if (error instanceof WorkspaceToolHttpError) {
-      if (error.upstreamStatus === 409) {
-        throw sanitizedEditConflict(error, describeAttachedEditConflict(path.filePath, error));
+      /** Other 409s (a quarantined workspace) are the Code API's own rejections, not edit misses. */
+      const isEditConflict = error.upstreamCode == null || error.upstreamCode === 'EDIT_CONFLICT';
+      if (error.upstreamStatus === 409 && isEditConflict) {
+        throw attachedEditConflict(tc, req, path.filePath, error);
       }
       throw error;
     }

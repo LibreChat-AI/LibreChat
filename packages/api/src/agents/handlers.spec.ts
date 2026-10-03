@@ -6880,6 +6880,113 @@ describe('createToolExecuteHandler', () => {
       );
     });
 
+    const excerptDiagnostic =
+      'Workspace edit did not apply and nothing was written: old_text was not found; its first line appears at line 1, but the lines after it differ; the current text at lines 1-3 (~ whitespace differs, ! text differs) is "1| function load(user) {\\n2|!  return fetchUser(user.id);\\n3| }".';
+
+    const conflictingEditHandler = (body: string, req?: never) =>
+      makeSandboxAuthoringHandler(
+        {
+          editWorkspaceFile: jest.fn(async () => {
+            throw new WorkspaceToolHttpError('rejected', 409, body);
+          }),
+          previewWorkspaceEdit: jest.fn(async () => ({
+            protocolVersion: 1 as const,
+            operation: 'preview_edit' as const,
+            workspaceId: 'primary',
+            path: 'src/app.ts',
+            content: 'unchanged',
+            hasUtf8Bom: false,
+            baseSha256: 'a'.repeat(64),
+            replacements: 1,
+            bytesWritten: 9,
+          })),
+        },
+        {
+          ...(req ? { req } : {}),
+          ...negotiatedEditContext(['expected_base_sha256', 'tolerant_match', 'replace_all']),
+        },
+      );
+
+    const conflictCall = {
+      id: 'call_edit_excerpt',
+      name: 'edit_file',
+      args: { path: 'workspace/src/app.ts', old_text: 'a', new_text: 'b' },
+    };
+
+    it('shows the model the current text a worker quoted, but keeps it out of the logs', async () => {
+      const errorSpy = jest.spyOn(logger, 'error').mockReturnValue(logger);
+      const handler = conflictingEditHandler(
+        JSON.stringify({ error: excerptDiagnostic, code: 'EDIT_CONFLICT' }),
+      );
+
+      const [result] = await invokeHandler(handler, [conflictCall]);
+
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toBe(
+        [
+          'The edit to "workspace/src/app.ts" did not apply, so nothing was written: old_text was not found; its first line is at line 1, but the lines after it differ; the closest match is at lines 1-3, where line 2 differs; copy old_text from the current text below.',
+          'Current text (! text differs, ~ only whitespace differs):',
+          '  1 | function load(user) {',
+          '! 2 |   return fetchUser(user.id);',
+          '  3 | }',
+        ].join('\n'),
+      );
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[ON_TOOL_EXECUTE] Tool edit_file error',
+        expect.objectContaining({
+          upstreamBody: '{"code":"EDIT_CONFLICT"}',
+          errorMessage:
+            'The edit to "workspace/src/app.ts" did not apply, so nothing was written: old_text was not found; its first line is at line 1, but the lines after it differ.',
+        }),
+      );
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('fetchUser');
+      errorSpy.mockRestore();
+    });
+
+    it('drops a quoted excerpt that the file-content policy would block', async () => {
+      const filteredReq = {
+        user: { id: 'user-1' },
+        config: {
+          filters: {
+            files: {
+              pii: {
+                fields: ['content'],
+                starterPatterns: [],
+                customPatterns: [{ id: 'fetch', label: 'fetch call', regex: 'fetchUser' }],
+              },
+            },
+          },
+        },
+      } as never;
+      const handler = conflictingEditHandler(
+        JSON.stringify({ error: excerptDiagnostic, code: 'EDIT_CONFLICT' }),
+        filteredReq,
+      );
+
+      const [result] = await invokeHandler(handler, [conflictCall]);
+
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toBe(
+        'The edit to "workspace/src/app.ts" did not apply, so nothing was written: old_text was not found; its first line is at line 1, but the lines after it differ.',
+      );
+    });
+
+    it('passes other 409 rejections through instead of calling them a text mismatch', async () => {
+      const handler = conflictingEditHandler(
+        JSON.stringify({
+          error: 'Bridge workspace is quarantined after an incomplete result commit',
+          code: 'WORKSPACE_QUARANTINED',
+        }),
+      );
+
+      const [result] = await invokeHandler(handler, [conflictCall]);
+
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toContain('WORKSPACE_QUARANTINED');
+      expect(result.errorMessage).toContain('quarantined after an incomplete result commit');
+      expect(result.errorMessage).not.toContain('did not match exactly once');
+    });
+
     it('blocks protected attached edit content before worker dispatch', async () => {
       const previewWorkspaceEdit = jest.fn(async () => ({
         protocolVersion: 1 as const,
