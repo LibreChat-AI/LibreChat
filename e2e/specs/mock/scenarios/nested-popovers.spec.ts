@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { NEW_CHAT_PATH } from '../helpers';
 import { openSidebar } from './sidebar';
 
@@ -136,5 +137,33 @@ test.describe('popovers inside a modal dialog', () => {
     await useTheme(page, REFERENCE_ICON_THEME);
     await openWorkspaceSelect(page);
     await expectIndicator(page, '20px');
+  });
+});
+
+/** The open list's width floor and scroll cap, as the browser computed them. */
+async function listBounds(page: Page) {
+  return page.getByRole('listbox').evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { minWidth: style.minWidth, maxHeight: style.maxHeight };
+  });
+}
+
+test.describe('Select list size roles', () => {
+  test('the default theme keeps the list at 8rem wide and 24rem tall at most @scenario:select-list-size-default', async ({
+    page,
+  }) => {
+    await offerStatefulSessions(page);
+    await useTheme(page);
+    await openWorkspaceSelect(page);
+    expect(await listBounds(page)).toEqual({ minWidth: '128px', maxHeight: '384px' });
+  });
+
+  test('the ClickHouse theme sizes the list by its trigger @scenario:select-list-size-clickhouse', async ({
+    page,
+  }) => {
+    await offerStatefulSessions(page);
+    await useTheme(page, clickHouseTheme);
+    await openWorkspaceSelect(page);
+    expect(await listBounds(page)).toEqual({ minWidth: '0px', maxHeight: '384px' });
   });
 });

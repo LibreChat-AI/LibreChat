@@ -529,6 +529,18 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     status: 'match',
     reason: '0: Click UI sizes tab triggers by their label in tabs.space.x, with no minimum width',
   },
+  listMinWidth: {
+    value: '0',
+    status: 'match',
+    reason:
+      '0: Click UI draws its select list at var(--radix-popover-trigger-width) (select-popover-content), with no minimum of its own',
+  },
+  listMaxHeight: {
+    value: '24rem',
+    status: 'mismatch',
+    reason:
+      "24rem: Click UI caps its select list only at var(--radix-popover-content-available-height), which a length role cannot express, so the cap keeps LibreChat's",
+  },
   iconButtonSizeSm: {
     value: '1.5rem',
     status: 'match',
@@ -1859,6 +1871,7 @@ describe('ClickHouse primitive parity against Click UI components', () => {
 
     expect(moved).toEqual([]);
     expect(statuses.filter(([, status]) => status === 'mismatch').map(([key]) => key)).toEqual([
+      'listMaxHeight',
       'text2xl',
     ]);
     expect(statuses.filter(([, status]) => status === 'near').map(([key]) => key)).toEqual([]);

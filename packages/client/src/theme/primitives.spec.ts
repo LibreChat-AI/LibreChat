@@ -7,9 +7,8 @@ import { readFileSync } from 'fs';
  * raw palette utilities, hex/rgb/hsl literals, arbitrary corners and shadows, fixed size
  * utilities (`h-4`, `size-10`, `min-w-[8rem]`; a fraction such as `w-11/12`, a viewport unit or a
  * value read from the component library is relative, and a `0` is a reset, not a size), literal
- * corners and shadows in its stylesheet, and design-rule suppressions. Move a primitive into
- * `themeDriven` when a change clears it; the remaining values of the others are pinned so a new
- * literal fails by name.
+ * corners and shadows in its stylesheet, and design-rule suppressions. All ten are theme-driven,
+ * so a new literal in any of them fails by name.
  */
 
 const components = join(__dirname, '../components');
@@ -26,24 +25,6 @@ const primitives: Record<string, string[]> = {
   Checkbox: ['Checkbox.tsx'],
   Table: ['Table.tsx'],
   Tooltip: ['Tooltip.tsx', 'Tooltip.css'],
-};
-
-const themeDriven = [
-  'Button',
-  'Input',
-  'Dialog',
-  'Menu',
-  'Tabs',
-  'Switch',
-  'Checkbox',
-  'Table',
-  'Tooltip',
-];
-
-/** What the other still hard-codes, and why it stays. */
-const remaining: Record<string, string[]> = {
-  /** The list's scroll cap and its minimum width have no role. */
-  Select: ['Select.tsx: arbitrary size min-w-[8rem]', 'Select.tsx: fixed size h-96'],
 };
 
 const suppressions: Record<string, Record<string, { count: number }>> = JSON.parse(
@@ -158,11 +139,8 @@ const values = Object.fromEntries(
 );
 
 describe('the ten named primitives', () => {
-  it('draws at least eight of them from theme roles alone', () => {
-    const driven = Object.keys(primitives).filter((name) => values[name].length === 0);
-
-    expect(driven).toEqual(themeDriven);
-    expect(driven.length).toBeGreaterThanOrEqual(8);
+  it.each(Object.keys(primitives))('draws %s from theme roles alone', (name) => {
+    expect(values[name]).toEqual([]);
   });
 
   it('reads any raw palette hue under any color utility', () => {
@@ -183,9 +161,5 @@ describe('the ten named primitives', () => {
     expect(withoutVarFallbacks('.a { box-shadow: var(--local-shadow, 0 1px #000); }')).toBe(
       '.a { box-shadow: var(--local-shadow, 0 1px #000); }',
     );
-  });
-
-  it.each(Object.keys(remaining))('pins what %s still hard-codes', (name) => {
-    expect(values[name]).toEqual(remaining[name]);
   });
 });
