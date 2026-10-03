@@ -250,7 +250,10 @@ export function createAgentToolApprovalSession({
       const expected = owner && scope && resolveAgentToolGrantBinding(owner, tool.name, scope);
       if (!expected) {
         // Unresolvable connections cannot learn consent. Only a reviewed SDK call may execute.
-        if (callId && calls.has(callId) && permittedDecisions.has(callId)) return;
+        if (callId && calls.has(callId) && permittedDecisions.has(callId)) {
+          permittedDecisions.delete(callId);
+          return;
+        }
         throw new Error('Tool approval is required. Run this tool in the foreground for review.');
       }
       const actual = resolveAgentToolGrantBinding(owner!, tool.name, scope!, tool);
@@ -322,6 +325,7 @@ export function createAgentToolApprovalSession({
       }
       const binding = agent && scope && resolveAgentToolGrantBinding(agent, input.toolName, scope);
       if (!binding) {
+        calls.set(input.toolUseId, null);
         unavailable.set(input.toolUseId, 'connection');
         return { decision: 'ask' };
       }
