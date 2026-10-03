@@ -23,6 +23,7 @@ const {
   collectToolResourceFileIds,
   convertOcrToContextInPlace,
   normalizeToolResourceFiles,
+  resolveDuplicateToolResources,
   stripFileIdsFromToolResources,
   inspectContent,
   inspectContentWithTraversal,
@@ -59,7 +60,6 @@ const {
   ResourceType,
   AccessRoleIds,
   PrincipalType,
-  EToolResources,
   isActionTool,
   PermissionBits,
   actionDelimiter,
@@ -1392,21 +1392,7 @@ const duplicateAgentHandler = async (req, res) => {
       hour12: false,
     })})`;
 
-    if (_tool_resources?.[EToolResources.context]) {
-      cloneData.tool_resources = {
-        [EToolResources.context]: _tool_resources[EToolResources.context],
-      };
-    }
-
-    if (_tool_resources?.[EToolResources.ocr]) {
-      cloneData.tool_resources = {
-        /** Legacy conversion from `ocr` to `context` */
-        [EToolResources.context]: {
-          ...(_tool_resources[EToolResources.context] ?? {}),
-          ..._tool_resources[EToolResources.ocr],
-        },
-      };
-    }
+    cloneData.tool_resources = resolveDuplicateToolResources(_tool_resources);
 
     const newAgentId = `agent_${nanoid()}`;
     const newAgentData = Object.assign(cloneData, {
