@@ -6,9 +6,32 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
-import { build } from 'vite';
+import { build, loadConfigFromFile } from 'vite';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+
+test('vendor chunk names depend on packages rather than checkout paths', async () => {
+  const loaded = await loadConfigFromFile(
+    { command: 'build', mode: 'production' },
+    path.join(root, 'client/vite.config.ts'),
+  );
+  const chunkName = loaded.config.build.rolldownOptions.output.codeSplitting.groups[0].name;
+  for (const checkout of ['/app/LibreChat', '/home/ricky/git/LibreChat', '/work/mermaid/fetch']) {
+    for (const [module, expected] of [
+      ['react-dom/cjs/react-dom.production.min.js', 'vendor'],
+      ['heic-to/dist/heic-to.js', 'heic-converter'],
+      ['@radix-ui/react-dialog/dist/index.mjs', 'radix-ui'],
+      ['axios/index.js', 'http-client'],
+      ['ky/distribution/index.js', 'http-client'],
+      ['cross-fetch/dist/browser-ponyfill.js', 'http-client'],
+      ['sky-package/index.js', 'vendor'],
+    ]) {
+      const id = `${checkout}/node_modules/${module}`;
+      assert.equal(chunkName(id), expected, id);
+      assert.equal(chunkName(id.replaceAll('/', '\\')), expected, id);
+    }
+  }
+});
 
 // A small production-build fixture exercises the actual bootstrap and worker recovery code
 // without requiring a database or identity provider. It does not simulate an active model run.

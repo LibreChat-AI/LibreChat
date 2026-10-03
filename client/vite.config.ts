@@ -241,8 +241,11 @@ export default defineConfig(({ command }) => ({
             },
             {
               name(id: string) {
-                const normalizedId = id.replace(/\\/g, '/');
-                if (normalizedId.includes('node_modules')) {
+                let normalizedId = id.replace(/\\/g, '/');
+                const nodeModulesIndex = normalizedId.lastIndexOf('/node_modules/');
+                if (nodeModulesIndex !== -1) {
+                  // Checkout directory names must not participate in package matching.
+                  normalizedId = normalizedId.slice(nodeModulesIndex);
                   if (normalizedId.includes('/node_modules/regenerator-runtime/')) {
                     return 'polyfills';
                   }
@@ -347,9 +350,9 @@ export default defineConfig(({ command }) => ({
                     return 'validation';
                   }
                   if (
-                    normalizedId.includes('axios') ||
-                    normalizedId.includes('ky') ||
-                    normalizedId.includes('fetch')
+                    normalizedId.includes('/node_modules/axios/') ||
+                    normalizedId.includes('/node_modules/ky/') ||
+                    /\/node_modules\/[^/]*fetch[^/]*\//.test(normalizedId)
                   ) {
                     return 'http-client';
                   }
