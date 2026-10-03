@@ -30,6 +30,7 @@ import type {
 } from '@librechat/data-schemas';
 import type { BaseMessage, StoredMessage } from '@librechat/agents/langchain/messages';
 import type { TSubagentActivityConfig } from 'librechat-data-provider';
+import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type {
   SubagentActivityUpdateEvent,
   SubagentActivitySubscriber,
@@ -146,6 +147,7 @@ interface PreparedThread {
 }
 
 interface HostSubagentTaskStartRequest extends SubagentTaskStartRequest {
+  scheduleMCPIdentity?: ScheduledMCPIdentity | null;
   completionDelivery?: typeof SUBAGENT_COMPLETION_DELIVERY;
 }
 
@@ -281,6 +283,8 @@ export interface SubagentThreadTaskStoreOptions extends InMemorySubagentTaskStor
 }
 
 export interface SubagentTaskWakeupRegistration {
+  /** Host-captured generation origin, never inferred from conversation history. */
+  scheduleMCPIdentity?: ScheduledMCPIdentity | null;
   userId: string;
   parentConversationId: string;
   parentMessageId: string;
@@ -3335,6 +3339,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
       return;
     }
     const admitted = await this.onTaskPrepared({
+      scheduleMCPIdentity: (request as HostSubagentTaskStartRequest).scheduleMCPIdentity ?? null,
       userId: scope.userId,
       parentConversationId: scope.parentConversationId,
       parentMessageId: task.parentRunId,
@@ -3609,8 +3614,12 @@ type CompletionWakeupStore = SubagentTaskStore &
 
 const completionWakeupStores = new WeakMap<SubagentThreadTaskStore, CompletionWakeupStore>();
 
-function completionWakeupStore(store: SubagentThreadTaskStore): CompletionWakeupStore {
-  const existing = completionWakeupStores.get(store);
+function completionWakeupStore(
+  store: SubagentThreadTaskStore,
+  identity?: ScheduledMCPIdentity,
+): CompletionWakeupStore {
+  const captured = identity && Object.freeze(structuredClone(identity));
+  const existing = captured ? undefined : completionWakeupStores.get(store);
   if (existing != null) {
     return existing;
   }
@@ -3620,6 +3629,7 @@ function completionWakeupStore(store: SubagentThreadTaskStore): CompletionWakeup
       const hostRequest: HostSubagentTaskStartRequest = {
         ...request,
         completionDelivery: SUBAGENT_COMPLETION_DELIVERY,
+        scheduleMCPIdentity: captured ?? null,
       };
       return store.start(hostRequest);
     },
@@ -3633,16 +3643,19 @@ function completionWakeupStore(store: SubagentThreadTaskStore): CompletionWakeup
     hasTasks: (scopeId) => store.hasTasks(scopeId),
     listTasks: (scopeId) => store.listTasks(scopeId),
   };
-  completionWakeupStores.set(store, adapter);
+  if (!captured) completionWakeupStores.set(store, adapter);
   return adapter;
 }
 
 export function buildSubagentThreadTaskConfig(
   store: SubagentThreadTaskStore,
   scope: Omit<SubagentThreadScope, 'version'>,
-  options: { completionWakeups?: boolean } = {},
+  options: { completionWakeups?: boolean; scheduleMCPIdentity?: ScheduledMCPIdentity } = {},
 ): HostSubagentTaskConfig {
-  const taskStore = options.completionWakeups === true ? completionWakeupStore(store) : store;
+  const taskStore =
+    options.completionWakeups === true
+      ? completionWakeupStore(store, options.scheduleMCPIdentity)
+      : store;
   return {
     store: taskStore,
     scopeId: serializeScope(scope),

@@ -8,17 +8,21 @@ export type ScheduleMCPCompletionLookup = ScheduleMethods['getScheduleMCPComplet
 
 /** Completion turns cannot adopt consent granted after their parent task was admitted. */
 export async function resolveScheduleMCPCompletion(
-  scope: Parameters<ScheduleMCPCompletionLookup>[0],
-  lookup: ScheduleMCPCompletionLookup,
+  scope: { ownerId: string; tenantId: string | null; scheduleMCPIdentity?: unknown },
+  lookup?: ScheduleMCPCompletionLookup,
 ): Promise<ScheduledMCPIdentity | undefined> {
-  const state = await lookup(scope);
-  if (!state) return;
-  if (state.enrolled)
-    throw new ScheduledMCPPolicyError('binding_mismatch', '', state.identity.agentId);
-  return state.identity;
+  if (scope.scheduleMCPIdentity == null) return;
+  const identity = parseScheduleMCPCompletion(scope.scheduleMCPIdentity);
+  if (identity.ownerId !== scope.ownerId || identity.tenantId !== scope.tenantId)
+    throw new ScheduledMCPPolicyError('binding_mismatch', '', identity.agentId);
+  if (!lookup) throw new ScheduledMCPPolicyError('dependency_unavailable', '', identity.agentId);
+  const state = await lookup(identity);
+  if (!state || state.enrolled)
+    throw new ScheduledMCPPolicyError('binding_mismatch', '', identity.agentId);
+  return identity;
 }
 
-/** Include pre-upgrade unbound continuations whose host supplied no completion marker. */
+/** Only the signed host may project a task's captured origin into completion admission. */
 export function isScheduledMCPCompletionRequest(req: {
   _isAgentTrigger?: boolean;
   body?: Record<string, unknown>;

@@ -1648,7 +1648,10 @@ const initializeClientWithProvider = async ({
               ? { tenantId: req.user.tenantId }
               : {}),
           },
-          { completionWakeups: completionWakeupsEnabled },
+          {
+            completionWakeups: completionWakeupsEnabled,
+            scheduleMCPIdentity: getScheduleMCPExecution(getMCPRequestContext(req, res))?.identity,
+          },
         )
       : undefined;
   let hasExistingSubagentTask = false;

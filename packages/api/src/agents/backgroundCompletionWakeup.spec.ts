@@ -1089,13 +1089,11 @@ it('fences an ordinary background wakeup queued before schedule enrollment', asy
     getScheduleMCPCompletionState: lookup,
   });
   await expect(
-    prepare(await envelope(), { idempotencyKey: 'wakeup' } as never),
+    prepare(await envelope({ scheduleMCPIdentity: (await lookup()).identity }), {
+      idempotencyKey: 'wakeup',
+    } as never),
   ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
-  expect(lookup).toHaveBeenCalledWith({
-    ownerId: 'user-1',
-    tenantId: 'tenant-1',
-    conversationId: 'conversation-1',
-  });
+  expect(lookup).toHaveBeenCalledWith((await lookup()).identity);
   expect(methods.claimBackgroundToolResults).not.toHaveBeenCalled();
 });
 
@@ -1145,7 +1143,7 @@ describe('capability-gated receipt batch resolution', () => {
         getGenerationJob: async () => null,
         getScheduleMCPCompletionState: async () => ({ identity, enrolled }),
       });
-      const pending = prepare(await envelope(), {
+      const pending = prepare(await envelope({ scheduleMCPIdentity: identity }), {
         idempotencyKey: 'batch',
         requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
       });
@@ -1330,3 +1328,28 @@ describe('capability-gated receipt batch resolution', () => {
     });
   });
 });
+
+it.each([
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
+])(
+  'does not apply historical schedule authority to an ordinary background completion (%s)',
+  async (capability) => {
+    const { methods } = resolverMethods();
+    const lookup = jest.fn(async () => {
+      throw new Error('historical schedule must not be consulted');
+    });
+    const prepare = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => null,
+      getScheduleMCPCompletionState: lookup,
+    });
+    const prepared = await prepare(await envelope(), {
+      idempotencyKey: 'ordinary',
+      requiredWorkerCapability: capability,
+    });
+    expect(prepared).toMatchObject({ status: 'ready' });
+    expect(prepared).not.toHaveProperty('scheduleMCPIdentity');
+    expect(lookup).not.toHaveBeenCalled();
+  },
+);

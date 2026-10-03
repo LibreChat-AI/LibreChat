@@ -337,16 +337,18 @@ export function createBackgroundToolCompletionWakeupResolver({
         status: 404,
       });
     }
-    const scheduleMCPIdentity = getScheduleMCPCompletionState
-      ? await resolveScheduleMCPCompletion(
-          {
-            ownerId: userId,
-            tenantId: envelope.principal.tenantId ?? null,
-            conversationId: envelope.target.conversationId,
-          },
-          getScheduleMCPCompletionState,
-        )
-      : undefined;
+    const payload = envelope.event.payload;
+    const scheduleMCPIdentity = await resolveScheduleMCPCompletion(
+      {
+        ownerId: userId,
+        tenantId: envelope.principal.tenantId ?? null,
+        scheduleMCPIdentity:
+          payload && typeof payload === 'object' && 'scheduleMCPIdentity' in payload
+            ? payload.scheduleMCPIdentity
+            : undefined,
+      },
+      getScheduleMCPCompletionState,
+    );
     const parentMessages = await methods.getMessages(
       { user: userId, conversationId: envelope.target.conversationId },
       MESSAGE_SELECT,
@@ -1019,6 +1021,7 @@ export function createBackgroundToolCompletionWakeupHandler(
         occurredAt: registration.createdAt,
         source: { id: BACKGROUND_TOOL_COMPLETION_SOURCE, type: 'internal' },
         payload: {
+          scheduleMCPIdentity: registration.scheduleMCPIdentity ?? null,
           taskId: registration.taskId,
           toolCallId: registration.toolCallId,
           toolName: registration.toolName,

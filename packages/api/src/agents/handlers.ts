@@ -277,7 +277,7 @@ export function createOwnedToolEndHandler(
 
 export interface ToolExecuteOptions {
   /** Host-captured authority ceiling, never runnable/model metadata. */
-  scheduledMCPExecution?: Pick<ScheduleMCPExecution, 'enrolled'>;
+  scheduledMCPExecution?: Pick<ScheduleMCPExecution, 'enrolled' | 'identity'>;
   /**
    * Host-owned signal for the foreground run. This is authoritative across
    * graph reconstruction (including approval resume); the SDK event signal is
@@ -5982,6 +5982,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                 ) {
                   try {
                     const admission = await backgroundToolCompletion.preregister({
+                      scheduleMCPIdentity: scheduledMCPExecution?.identity ?? null,
                       taskId: task.id,
                       toolCallId: tc.id,
                       toolName: tc.name,

@@ -116,7 +116,16 @@ it('keeps enrolled MCP work foreground even when runnable metadata requests deta
   const name = 'query_mcp_warehouse';
   const tool = createMockTool(name, configs, { capturedArgs: args });
   const handler = createToolExecuteHandler({
-    scheduledMCPExecution: { enrolled: true },
+    scheduledMCPExecution: {
+      enrolled: true,
+      identity: {
+        scheduleId: 'schedule',
+        ownerId: 'scheduled-owner',
+        tenantId: null,
+        agentId: 'root',
+        invocationMode: 'delegated',
+      },
+    },
     loadTools: async () => ({ loadedTools: [tool] as never[] }),
   });
   const results = await invokeHandlerWithConfig(
@@ -136,6 +145,63 @@ it('keeps enrolled MCP work foreground even when runnable metadata requests deta
   expect(args).toEqual([{}]);
   expect(configs).toHaveLength(1);
 });
+
+it.each([true, false])(
+  'captures background completion origin only from its host execution (scheduled=%s)',
+  async (scheduled) => {
+    const identity = {
+      scheduleId: 'original-schedule',
+      ownerId: 'origin-owner',
+      tenantId: null,
+      agentId: 'original-root',
+      invocationMode: 'delegated' as const,
+    };
+    const preregister = jest.fn(async () => false as const);
+    const name = 'query_mcp_warehouse';
+    const handler = createToolExecuteHandler({
+      ...(scheduled && { scheduledMCPExecution: { enrolled: false, identity } }),
+      loadTools: async () => ({ loadedTools: [createMockTool(name, [])] as never[] }),
+      backgroundToolCompletion: {
+        preregister,
+        persist: async () => true,
+        claim: async () => {
+          throw new Error('Unused manual claim');
+        },
+      },
+    });
+    await new Promise<ToolExecuteResult[]>((resolve, reject) => {
+      void handler.handle('on_tool_execute', {
+        resolve,
+        reject,
+        agentId: 'child',
+        toolCalls: [
+          {
+            id: `origin-${scheduled}`,
+            stepId: 'origin-step',
+            name,
+            args: { run_in_background: true, scheduleId: 'forged' },
+          },
+        ],
+        configurable: {
+          user_id: identity.ownerId,
+          thread_id: 'origin-conversation',
+          backgroundToolNames: [name],
+          scheduledMCPExecution: { identity: { ...identity, scheduleId: 'forged' } },
+          req: { user: { id: identity.ownerId }, body: { conversationId: 'origin-conversation' } },
+        },
+        metadata: { run_id: `origin-response-${scheduled}`, thread_id: 'origin-conversation' },
+      });
+    });
+    expect(preregister).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentMessageId: `origin-response-${scheduled}`,
+        conversationId: 'origin-conversation',
+        scheduleMCPIdentity: scheduled ? identity : null,
+      }),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+  },
+);
 
 function skillsInScope(): unknown[] {
   const { Types } = jest.requireActual('mongoose') as typeof import('mongoose');

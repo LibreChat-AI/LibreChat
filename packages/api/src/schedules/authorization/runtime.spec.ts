@@ -515,7 +515,15 @@ it.each(['schedule', 'consent', 'completion'] as const)(
         ? {
             ...f.req,
             _isScheduledFire: false,
-            body: { conversationId: 'completion', agent_id: 'root' },
+            body: {
+              conversationId: 'completion',
+              agent_id: 'root',
+              agentCompletion: {
+                version: 1,
+                sourceId: 'subagent-completion',
+                scheduleMCPIdentity: f.identity,
+              },
+            },
           }
         : f.req;
     const initialize = jest.fn();
@@ -583,7 +591,15 @@ it('sanitizes host construction and lineage-retention failures without masking p
   const req = {
     ...f.req,
     _isScheduledFire: false,
-    body: { conversationId: 'completion', agent_id: 'child' },
+    body: {
+      conversationId: 'completion',
+      agent_id: 'child',
+      agentCompletion: {
+        version: 1,
+        sourceId: 'subagent-completion',
+        scheduleMCPIdentity: f.identity,
+      },
+    },
   };
   await expect(
     initializeWithScheduleMCPExecution(

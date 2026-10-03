@@ -187,12 +187,10 @@ export type ResumedRunReservation =
   | { conflict: 'not-paused' | 'overlap' | 'slot-taken' };
 
 export type ScheduleMethods = {
-  /** Null only for a conversation that has never belonged to a retained schedule occurrence. */
-  getScheduleMCPCompletionState: (scope: {
-    ownerId: string;
-    tenantId: string | null;
-    conversationId: string;
-  }) => Promise<{ identity: ScheduledMCPIdentity; enrolled: boolean } | null>;
+  /** Resolves live state only for a task's captured schedule identity. */
+  getScheduleMCPCompletionState: (
+    identity: ScheduledMCPIdentity,
+  ) => Promise<{ identity: ScheduledMCPIdentity; enrolled: boolean } | null>;
   ensureScheduleIndexes: () => Promise<void>;
   createSchedule: (data: Partial<ISchedule>) => Promise<ISchedule>;
   createScheduleWithSlot: (
@@ -1076,41 +1074,21 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     return (renewed.matchedCount ?? 0) > 0;
   }
 
-  /** Resolve retained occurrence lineage before admitting an automatic continuation. */
-  async function getScheduleMCPCompletionState(scope: {
-    ownerId: string;
-    tenantId: string | null;
-    conversationId: string;
-  }): Promise<{ identity: ScheduledMCPIdentity; enrolled: boolean } | null> {
-    const occurrence = await ScheduleRun()
-      .findOne({
-        user: scope.ownerId,
-        tenantId: scope.tenantId,
-        conversationId: scope.conversationId,
-      })
-      .select('scheduleId')
-      .read('primary')
-      .lean<Pick<IScheduleRun, 'scheduleId'>>();
-    if (!occurrence) return null;
+  /** Captured origin cannot adopt a later grant or a different schedule root. */
+  async function getScheduleMCPCompletionState(identity: ScheduledMCPIdentity): Promise<{
+    identity: ScheduledMCPIdentity;
+    enrolled: boolean;
+  } | null> {
     const schedule = await Schedule()
-      .findOne({
-        id: occurrence.scheduleId,
-        user: scope.ownerId,
-        tenantId: scope.tenantId,
-      })
+      .findOne({ id: identity.scheduleId, user: identity.ownerId, tenantId: identity.tenantId })
       .select('agent_id mcpConsent deleting erased')
       .read('primary')
       .lean<ISchedule>();
     return {
-      identity: {
-        scheduleId: occurrence.scheduleId,
-        ownerId: scope.ownerId,
-        tenantId: scope.tenantId,
-        agentId: schedule?.agent_id ?? '',
-        invocationMode: 'delegated',
-      },
+      identity,
       enrolled:
         !schedule ||
+        schedule.agent_id !== identity.agentId ||
         schedule.deleting === true ||
         schedule.erased === true ||
         schedule.mcpConsent !== undefined,

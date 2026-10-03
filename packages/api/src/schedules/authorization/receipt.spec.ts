@@ -624,7 +624,7 @@ it('fences both newly prepared and already serialized legacy completion turns af
   const scope = {
     ownerId: f.execution.identity.ownerId,
     tenantId: 'tenant',
-    conversationId: 'stream',
+    scheduleMCPIdentity: f.execution.identity,
   };
   const identity = await resolveScheduleMCPCompletion(
     scope,
@@ -652,11 +652,7 @@ it('fences both newly prepared and already serialized legacy completion turns af
     },
   });
   for (const sourceId of ['subagent-completion', 'background-tool-completion']) {
-    for (const marker of [
-      undefined,
-      { version: 1, sourceId },
-      { version: 1, sourceId, scheduleMCPIdentity: identity },
-    ]) {
+    for (const marker of [{ version: 1, sourceId, scheduleMCPIdentity: identity }]) {
       const initialize = jest.fn(async () => 'mutation would execute');
       const req = {
         user: { id: f.execution.identity.ownerId, tenantId: 'tenant' },
@@ -725,7 +721,11 @@ it('atomically keeps a permanent denial when an older delayed transient job writ
 it('projects the original schedule identity from the production host into a queued completion', async () => {
   const f = await setup(true);
   const identity = await resolveScheduleMCPCompletion(
-    { ownerId: f.execution.identity.ownerId, tenantId: 'tenant', conversationId: 'stream' },
+    {
+      ownerId: f.execution.identity.ownerId,
+      tenantId: 'tenant',
+      scheduleMCPIdentity: f.execution.identity,
+    },
     f.methods.getScheduleMCPCompletionState,
   );
   let body: Record<string, unknown> | undefined;
@@ -798,7 +798,15 @@ it('keeps a legacy continuation guarded if confirmation lands after request admi
     req: {
       user: { id: f.execution.identity.ownerId, tenantId: 'tenant' },
       _isAgentTrigger: true,
-      body: { conversationId: 'stream', agent_id: 'child' },
+      body: {
+        conversationId: 'stream',
+        agent_id: 'child',
+        agentCompletion: {
+          version: 1,
+          sourceId: 'subagent-completion',
+          scheduleMCPIdentity: f.execution.identity,
+        },
+      },
     },
   });
   const execution = getScheduleMCPExecution(context)!;
@@ -834,29 +842,38 @@ it('keeps a legacy continuation guarded if confirmation lands after request admi
   expect(mutate).not.toHaveBeenCalled();
 });
 
-it('scopes completion lineage to its owner and tenant and rejects missing schedule authority', async () => {
+it('scopes captured completion lineage to its owner, tenant and root, and rejects deleted authority', async () => {
   const f = await setup(true);
+  const lookup = jest.spyOn(f.methods, 'getScheduleMCPCompletionState');
   const scope = {
-    ownerId: f.execution.identity.ownerId,
+    ownerId: f.scope.userId,
     tenantId: 'tenant',
-    conversationId: 'stream',
+    scheduleMCPIdentity: f.execution.identity,
   };
   expect(
-    await f.methods.getScheduleMCPCompletionState({
-      ...scope,
-      ownerId: new mongoose.Types.ObjectId().toString(),
-    }),
-  ).toBeNull();
-  expect(
-    await f.methods.getScheduleMCPCompletionState({ ...scope, tenantId: 'foreign' }),
-  ).toBeNull();
-  expect(
-    await f.methods.getScheduleMCPCompletionState({ ...scope, conversationId: 'ordinary' }),
-  ).toBeNull();
+    await resolveScheduleMCPCompletion(
+      { ...scope, scheduleMCPIdentity: null },
+      f.methods.getScheduleMCPCompletionState,
+    ),
+  ).toBeUndefined();
+  expect(lookup).not.toHaveBeenCalled();
+  for (const identity of [
+    { ...f.execution.identity, tenantId: 'foreign' },
+    { ...f.execution.identity, ownerId: new mongoose.Types.ObjectId().toString() },
+    { ...f.execution.identity, agentId: 'replacement-root' },
+  ])
+    await expect(
+      resolveScheduleMCPCompletion(
+        { ...scope, scheduleMCPIdentity: identity },
+        f.methods.getScheduleMCPCompletionState,
+      ),
+    ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
   await mongoose.models.Schedule.deleteOne({ id: f.schedule.id });
   await expect(
     resolveScheduleMCPCompletion(scope, f.methods.getScheduleMCPCompletionState),
-  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+  ).rejects.toMatchObject({
+    failure: { reason: 'binding_mismatch' },
+  });
 });
 
 it('refuses an authenticated completion approval after its original schedule was enrolled and revoked', async () => {
@@ -886,7 +903,15 @@ it('refuses an authenticated completion approval after its original schedule was
     user: { id: identity.ownerId, tenantId: 'tenant' },
     _isAgentTrigger: false,
     _isScheduledFire: false,
-    body: { conversationId: 'stream', agent_id: 'child' },
+    body: {
+      conversationId: 'stream',
+      agent_id: 'child',
+      agentCompletion: {
+        version: 1,
+        sourceId: 'subagent-completion',
+        scheduleMCPIdentity: f.execution.identity,
+      },
+    },
   };
   await expect(
     initializeWithScheduleMCPExecution(
@@ -923,7 +948,15 @@ it('persists completion identity before tool construction and restores its monit
   const req = {
     user: { id: f.execution.identity.ownerId, tenantId: 'tenant' },
     _isAgentTrigger: true,
-    body: { conversationId: 'stream', agent_id: 'child' },
+    body: {
+      conversationId: 'stream',
+      agent_id: 'child',
+      agentCompletion: {
+        version: 1,
+        sourceId: 'subagent-completion',
+        scheduleMCPIdentity: f.execution.identity,
+      },
+    },
   };
   const provider = jest.fn(async () => {
     expect((await store.getJob('stream'))?.scheduleMCPCompletion).toEqual(f.execution.identity);
@@ -1147,3 +1180,63 @@ it('stores only a safe preparation outage when initial authorization fails after
   expect(JSON.stringify(saved)).not.toContain('PRIVATE');
   expect(provider).not.toHaveBeenCalled();
 });
+
+it.each(
+  ['subagent-completion', 'background-tool-completion'].flatMap((sourceId) =>
+    ['legacy', 'enrolled', 'deleted'].map((scheduleState) => ({ sourceId, scheduleState })),
+  ),
+)(
+  'does not apply historical schedule authority to an ordinary task: %s',
+  async ({ sourceId, scheduleState }) => {
+    const f = await setup(true);
+    await f.service.recordScheduleOutcome({
+      scheduleId: f.schedule.id,
+      scheduledFor: f.scheduledFor,
+      status: 'success',
+      conversationId: 'stream',
+      streamId: 'stream',
+      jobCreatedAt: f.job.createdAt,
+    });
+    if (scheduleState === 'enrolled') await f.enroll();
+    if (scheduleState === 'deleted')
+      await mongoose.models.Schedule.deleteOne({ id: f.schedule.id });
+    const host = createScheduleMCPRuntimeHost({
+      methods: f.methods,
+      getScheduleMCPCompletionState: f.methods.getScheduleMCPCompletionState,
+      findUser: async () => null,
+      getRoleByName: async () => null,
+      canViewAgent: async () => false,
+      enrollment: {
+        findUser: async () => null,
+        canUseRoot: async () => false,
+        getAppConfig: async () => undefined,
+        resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
+        getNodes: async () => [],
+        getModelsConfig: async () => ({}),
+        getServers: async () => ({}),
+      },
+    });
+    const context = createMCPRequestContext();
+    const initialize = jest.fn(async () => 'ordinary continuation');
+    await expect(
+      initializeWithScheduleMCPExecution(
+        {
+          context,
+          req: {
+            user: { id: f.scope.userId, tenantId: 'tenant' },
+            _isAgentTrigger: true,
+            body: {
+              conversationId: 'stream',
+              agent_id: 'root',
+              agentCompletion: { version: 1, sourceId, scheduleMCPIdentity: null },
+            },
+          },
+        },
+        () => host,
+        initialize,
+      ),
+    ).resolves.toBe('ordinary continuation');
+    expect(getScheduleMCPExecution(context)).toBeUndefined();
+    expect(initialize).toHaveBeenCalledTimes(1);
+  },
+);

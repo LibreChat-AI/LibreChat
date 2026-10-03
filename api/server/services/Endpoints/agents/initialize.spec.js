@@ -253,6 +253,17 @@ describe('initializeClient — processAgent ACL gate', () => {
     req._isAgentTrigger = true;
     req._resumableStreamId = 'completion-lineage';
     req.body.conversationId = 'completion-lineage';
+    req.body.agentCompletion = {
+      version: 1,
+      sourceId: 'subagent-completion',
+      scheduleMCPIdentity: {
+        scheduleId: 'completion-schedule',
+        ownerId: req.user.id,
+        tenantId: null,
+        agentId: PRIMARY_ID,
+        invocationMode: 'delegated',
+      },
+    };
     req.body.agent_id = PRIMARY_ID;
     const identity = {
       scheduleId: 'completion-schedule',

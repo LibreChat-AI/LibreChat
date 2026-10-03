@@ -752,16 +752,18 @@ export function createSubagentCompletionWakeupResolver({
       });
     }
 
-    const scheduleMCPIdentity = getScheduleMCPCompletionState
-      ? await resolveScheduleMCPCompletion(
-          {
-            ownerId: userId,
-            tenantId: tenantId ?? null,
-            conversationId: envelope.target.conversationId,
-          },
-          getScheduleMCPCompletionState,
-        )
-      : undefined;
+    const payload = envelope.event.payload;
+    const scheduleMCPIdentity = await resolveScheduleMCPCompletion(
+      {
+        ownerId: userId,
+        tenantId: envelope.principal.tenantId ?? null,
+        scheduleMCPIdentity:
+          payload && typeof payload === 'object' && 'scheduleMCPIdentity' in payload
+            ? payload.scheduleMCPIdentity
+            : undefined,
+      },
+      getScheduleMCPCompletionState,
+    );
     const claim = await methods.claimSubagentTaskResult({
       userId,
       conversationId: registration.threadId,
@@ -847,6 +849,7 @@ export function createSubagentCompletionWakeupHandler(
         occurredAt: registration.createdAt,
         source: { id: SUBAGENT_COMPLETION_SOURCE, type: 'internal' },
         payload: {
+          scheduleMCPIdentity: registration.scheduleMCPIdentity ?? null,
           taskId: registration.taskId,
           threadId: registration.threadId,
           subagentType: registration.subagentType,

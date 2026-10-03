@@ -1,4 +1,3 @@
-import { scheduledMCPIdentitySchema } from 'librechat-data-provider';
 import {
   normalizeServerName,
   stripServerNamePrefix,
@@ -132,8 +131,7 @@ export function createScheduleMCPRuntimeHost(
         const { req, context, restoredContext, restoredJob } = input;
         const completion = restoredJob?.scheduleMCPCompletion;
         if (completion !== undefined || isScheduledMCPCompletionRequest(req)) {
-          if (!context || !deps.getScheduleMCPCompletionState)
-            throw new ScheduledMCPPolicyError('binding_mismatch', '');
+          if (!context) throw new ScheduledMCPPolicyError('binding_mismatch', '');
           const marker = req.body?.agentCompletion;
           if (
             marker != null &&
@@ -146,23 +144,21 @@ export function createScheduleMCPRuntimeHost(
               ))
           )
             throw new ScheduledMCPPolicyError('binding_mismatch', '');
-          const captured =
+          const origin =
             marker && typeof marker === 'object' && 'scheduleMCPIdentity' in marker
-              ? scheduledMCPIdentitySchema.safeParse(marker.scheduleMCPIdentity)
+              ? marker.scheduleMCPIdentity
               : undefined;
-          if (captured && !captured.success)
-            throw new ScheduledMCPPolicyError('binding_mismatch', '');
-          let identity = captured?.success ? captured.data : undefined;
-          if (completion !== undefined) identity = parseScheduleMCPCompletion(completion);
-          else if (!identity)
-            identity = await resolveScheduleMCPCompletion(
-              {
-                ownerId: req.user.id,
-                tenantId: req.user.tenantId ?? null,
-                conversationId: String(req.body?.conversationId ?? ''),
-              },
-              deps.getScheduleMCPCompletionState,
-            );
+          const identity =
+            completion !== undefined
+              ? parseScheduleMCPCompletion(completion)
+              : await resolveScheduleMCPCompletion(
+                  {
+                    ownerId: req.user.id,
+                    tenantId: req.user.tenantId ?? null,
+                    scheduleMCPIdentity: origin,
+                  },
+                  deps.getScheduleMCPCompletionState,
+                );
           if (!identity) return;
           if (identity.ownerId !== req.user.id || identity.tenantId !== (req.user.tenantId ?? null))
             throw new ScheduledMCPPolicyError('binding_mismatch', '');
