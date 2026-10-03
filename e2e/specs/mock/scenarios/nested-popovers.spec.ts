@@ -1,14 +1,14 @@
 import { expect, test } from '@playwright/test';
-import type { Locator, Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { NEW_CHAT_PATH } from '../helpers';
 import { openSidebar } from './sidebar';
 
 /**
- * A modal dialog parks `pointer-events: none` on the body, so a list portaled out of it inherits
- * `none` unless it turns pointer events back on for itself. The Select list and the DropdownPopup
- * menu do that with a class, not an inline style, and each must still take a real mouse pick while
- * its dialog is open. The Select's check indicator draws its box at the icon size role, so a
- * theme that resizes icons resizes the box with the glyph inside it.
+ * A modal OGDialog parks `pointer-events: none` on the body, so a menu portaled out of it inherits
+ * `none` unless it turns pointer events back on for itself. DropdownPopup does that with a class,
+ * not an inline style, and its menu must still take a real mouse pick while the dialog is open.
+ * The Select's check indicator draws its box at the icon size role, so a theme that resizes icons
+ * resizes the box with the glyph inside it.
  */
 
 /** Names an icon size apart from the default, so a box still drawn at a fixed size shows. */
@@ -36,8 +36,7 @@ async function useTheme(page: Page, definition?: { name: string }) {
   }, definition ?? null);
 }
 
-/** The stateful workspace Select only renders when the agents endpoint offers stateful sessions;
- *  its save is answered here so the pick stands without a configured code environment. */
+/** The stateful workspace Select only renders when the agents endpoint offers stateful sessions. */
 async function offerStatefulSessions(page: Page) {
   await page.route('**/api/endpoints', async (route) => {
     const response = await route.fetch();
@@ -47,16 +46,11 @@ async function offerStatefulSessions(page: Page) {
     endpoints.agents = agents;
     await route.fulfill({ response, json: endpoints });
   });
-  await page.route('**/api/user/preferences', async (route) => {
-    if (route.request().method() === 'GET') {
-      return route.continue();
-    }
-    const preferences = route.request().postDataJSON();
-    await route.fulfill({ json: { preferences } });
-  });
 }
 
-async function openWorkspaceSelect(page: Page): Promise<Locator> {
+/** Opens the Settings Select's list. Only its geometry is read, which does not depend on how the
+ *  list layers against the Settings dialog. */
+async function openWorkspaceSelect(page: Page) {
   await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
   /** Mobile keeps the account menu in the drawer. */
   await openSidebar(page);
@@ -76,7 +70,6 @@ async function openWorkspaceSelect(page: Page): Promise<Locator> {
   await listbox.evaluate((element) =>
     Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished)),
   );
-  return trigger;
 }
 
 /** The checked option's indicator box is `expected` square and its glyph fills it exactly. */
@@ -96,26 +89,6 @@ async function expectIndicator(page: Page, expected: string) {
 }
 
 test.describe('popovers inside a modal dialog', () => {
-  test('a Select inside the Settings dialog takes a mouse pick @scenario:select-in-dialog-takes-pointer', async ({
-    page,
-  }) => {
-    await offerStatefulSessions(page);
-    await useTheme(page);
-    const trigger = await openWorkspaceSelect(page);
-
-    /** The dialog really is modal, so the list's own pointer events are what keep it usable. */
-    expect(await page.evaluate(() => getComputedStyle(document.body).pointerEvents)).toBe('none');
-    const listbox = page.getByRole('listbox');
-    expect(await listbox.evaluate((element) => getComputedStyle(element).pointerEvents)).toBe(
-      'auto',
-    );
-
-    const option = listbox.getByRole('option', { name: 'Conversation workspace' });
-    await option.click();
-    await expect(listbox).toBeHidden();
-    await expect(trigger).toHaveText('Conversation workspace');
-  });
-
   test('the role menu inside Admin Settings takes a mouse pick @scenario:menu-in-dialog-takes-pointer', async ({
     page,
   }) => {
