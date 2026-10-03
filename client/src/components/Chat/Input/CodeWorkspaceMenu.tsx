@@ -297,7 +297,9 @@ function GitContext({
   const supportsWorktree = descriptor.workspaceInstances?.includes('git_worktree') === true;
   const checkout = target.selected?.checkout;
   const checkoutEditable =
-    !locked && target.environment.configSchema?.workspaces?.allowCheckoutSelection === true;
+    !locked &&
+    supportsWorktree &&
+    target.environment.configSchema?.workspaces?.allowCheckoutSelection === true;
   const worktreeInfo =
     checkout == null
       ? localize('com_ui_code_checkout_automatic_info')
@@ -323,7 +325,7 @@ function GitContext({
           </span>
         </TooltipAnchor>
       )}
-      {supportsWorktree && (
+      {(supportsWorktree || checkout != null) && (
         <TooltipAnchor
           description={worktreeInfo}
           render={
@@ -739,7 +741,7 @@ export default function CodeWorkspaceMenu({
       {showMachinePicker && (
         <Ariakit.MenuProvider store={machineMenuStore}>
           <TooltipAnchor
-            description={localize('com_ui_code_machine')}
+            description={localize('com_ui_code_environment_choose_machine')}
             disabled={machineMenuOpen}
             render={
               <Ariakit.MenuButton

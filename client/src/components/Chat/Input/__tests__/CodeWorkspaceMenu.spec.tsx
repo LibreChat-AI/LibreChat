@@ -178,6 +178,68 @@ describe('CodeWorkspaceMenu', () => {
     expect(screen.getByRole('checkbox')).toBeDisabled();
   });
 
+  test.each(['source', 'isolated'] as const)(
+    'keeps recorded %s visible when worker isolation support disappears',
+    async (checkout) => {
+      const graph = workspace({ locked: true, transition: undefined });
+      graph.environments[0].environment = {
+        ...environment,
+        configSchema: { workspaces: { allowCheckoutSelection: true } },
+      };
+      graph.environments[0].workspaces[0].workspaceInstances = ['git_worktree'];
+      const selected = { environmentId: environment.id, workspaceId: 'project-a', checkout };
+      graph.environments[0].selected = selected;
+      const setter = jest.fn();
+      const { rerenderMenu } = renderMenu(
+        <CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />,
+      );
+      graph.environments[0].workspaces[0].workspaceInstances = undefined;
+      graph.environments[0].state = checkout === 'isolated' ? 'unsupported' : 'ready';
+      graph.state = graph.environments[0].state;
+      graph.canSubmit = checkout !== 'isolated';
+      rerenderMenu(
+        <CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />,
+      );
+      const control = screen.getByRole('checkbox', { name: 'com_ui_code_worktree' });
+      expect(control).toHaveAttribute('aria-checked', String(checkout === 'isolated'));
+      expect(control).toBeDisabled();
+      await userEvent.click(control);
+      expect(setter).not.toHaveBeenCalled();
+      expect(graph.rememberSelection).not.toHaveBeenCalled();
+      expect(graph.environments[0].selected).toEqual(selected);
+    },
+  );
+
+  test.each([
+    { enabled: false, capable: true },
+    { enabled: true, capable: false },
+  ])(
+    'reports an unsupported draft checkout without permitting an unavailable override: %j',
+    async ({ enabled, capable }) => {
+      const graph = workspace({ state: 'unsupported', canSubmit: false });
+      graph.environments[0].environment = {
+        ...environment,
+        configSchema: { workspaces: { allowCheckoutSelection: enabled } },
+      };
+      graph.environments[0].workspaces[0].workspaceInstances = capable
+        ? ['git_worktree']
+        : undefined;
+      graph.environments[0].selected = {
+        environmentId: environment.id,
+        workspaceId: 'project-a',
+        checkout: 'isolated',
+      };
+      const setter = jest.fn();
+      renderMenu(<CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />);
+      const control = screen.getByRole('checkbox', { name: 'com_ui_code_worktree' });
+      expect(control).toHaveAttribute('aria-checked', 'true');
+      expect(control).toBeDisabled();
+      await userEvent.click(control);
+      expect(setter).not.toHaveBeenCalled();
+      expect(graph.rememberSelection).not.toHaveBeenCalled();
+    },
+  );
+
   test('keeps automatic worktree policy visible but read-only when overrides are disabled', () => {
     const graph = workspace();
     graph.environments[0].workspaces[0].workspaceInstances = ['git_worktree'];
