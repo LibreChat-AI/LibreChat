@@ -9,6 +9,7 @@ import {
   shouldReplayReasoningContent,
   anyAgentReplaysReasoningContent,
   collectRunMCPToolAliases,
+  buildAdditionalInstructions,
 } from './run';
 
 describe('getRunDiscoveredTools', () => {
@@ -469,5 +470,30 @@ describe('collectRunMCPToolAliases', () => {
     };
 
     expect(collectRunMCPToolAliases([root] as never)).toEqual([graphAlias]);
+  });
+});
+
+describe('buildAdditionalInstructions', () => {
+  it('places dynamic tool context after static additional instructions', () => {
+    const result = buildAdditionalInstructions(
+      'Artifacts prompt',
+      'Conversation Date & Time: 2025-01-01T00:00:00.000Z',
+    );
+
+    expect(result).toBe('Artifacts prompt\nConversation Date & Time: 2025-01-01T00:00:00.000Z');
+  });
+
+  it('keeps the static prefix identical when only the dynamic context changes', () => {
+    const first = buildAdditionalInstructions('Artifacts prompt', 'Time: 1');
+    const second = buildAdditionalInstructions('Artifacts prompt', 'Time: 2');
+
+    expect(first.startsWith('Artifacts prompt\n')).toBe(true);
+    expect(second.startsWith('Artifacts prompt\n')).toBe(true);
+  });
+
+  it('handles missing additional instructions and empty dynamic context', () => {
+    expect(buildAdditionalInstructions(undefined, 'Time: 1')).toBe('Time: 1');
+    expect(buildAdditionalInstructions('Artifacts prompt', '')).toBe('Artifacts prompt');
+    expect(buildAdditionalInstructions(undefined, '')).toBe('');
   });
 });
