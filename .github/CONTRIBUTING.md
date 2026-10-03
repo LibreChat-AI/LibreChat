@@ -145,7 +145,7 @@ When submitting a pull request, please follow these guidelines:
 
 Ensure that your changes meet the following criteria:
 
-- All tests pass as highlighted [above](#1-development-notes).
+- All tests pass as highlighted [above](#2-development-notes).
 - The code is well-formatted and adheres to our coding standards.
 - The commit history is clean and easy to follow. You can use `git rebase` or `git merge --squash` to clean your commit history before submitting the pull request.
 - The pull request description clearly outlines the changes and the reasons behind them. Be sure to include the steps to test the pull request.
