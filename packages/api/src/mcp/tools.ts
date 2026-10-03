@@ -9,8 +9,8 @@ import {
   normalizeServerName,
   stripServerNamePrefixes,
 } from 'librechat-data-provider';
+import type { JsonSchemaType, SubagentExecutionContext } from '@librechat/agents';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { JsonSchemaType } from '@librechat/agents';
 import type { LCAvailableTools, LCFunctionTool, ParsedServerConfig } from './types';
 import type { MCPClientCapabilityProfile } from './capabilities';
 import { canUseAppConnection, requiresEphemeralUserConnection } from './utils';
@@ -36,7 +36,12 @@ export function createMCPStructuredTool(
     func: async (input, runManager, config) => {
       const invocation = config as typeof config & {
         toolCall?: { id?: string };
-        metadata?: { executingAgentId?: string; activeAgentId?: string; agentId?: string };
+        metadata?: {
+          executingAgentId?: string;
+          activeAgentId?: string;
+          agentId?: string;
+          executionContext?: SubagentExecutionContext;
+        };
       };
       await assertToolApprovalExecution(tool, invocation);
       const childConfig = patchConfig(config, { callbacks: runManager?.getChild() });

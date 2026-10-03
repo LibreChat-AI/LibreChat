@@ -475,3 +475,128 @@ test('non-rememberable review is agent/tool bound and single-use', async () => {
   ).rejects.toThrow('foreground');
   expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
 });
+
+test.each(['allow', 'chat', 'always'] as const)(
+  'parallel agents keep independent %s witnesses for the same provider call ID',
+  async (mode) => {
+    const sources = [agent(mode, 'agent-a'), agent(mode, 'agent-b')];
+    const storage = store();
+    if (mode !== 'allow') {
+      await storage.rememberToolApprovalGrants(
+        scope,
+        sources.map((source) => resolveAgentToolGrantBinding(source, name, scope)!),
+      );
+    }
+    const session = createAgentToolApprovalSession({ agents: sources, scope, storage });
+    const decisions = await Promise.all(
+      sources.map((source) =>
+        session.hook(input(source.id, 'call_0'), new AbortController().signal),
+      ),
+    );
+    expect(decisions).toEqual([{ decision: 'allow' }, { decision: 'allow' }]);
+    await expect(
+      Promise.all(
+        sources.map((source) =>
+          session.validateExecution(source.toolDefinitions![0], {
+            agentId: source.id,
+            toolCallId: 'call_0',
+          }),
+        ),
+      ),
+    ).resolves.toEqual([undefined, undefined]);
+  },
+);
+
+test('colliding paused call IDs cannot choose another agent’s approval binding', async () => {
+  const sources = [agent('chat', 'agent-a'), agent('chat', 'agent-b')];
+  const session = createAgentToolApprovalSession({ agents: sources, scope, storage: store() });
+  await Promise.all(
+    sources.map((source) => session.hook(input(source.id, 'call_0'), new AbortController().signal)),
+  );
+  const payload = buildToolApprovalPayload([{ name, tool_call_id: 'call_0', arguments: {} }]);
+  expect(session.bindingsFor(payload)).toEqual({});
+  const childPayload = { ...payload, subagent: { agent_id: 'agent-a' } };
+  expect(session.bindingsFor(childPayload)['call_0'].agentId).toBe('agent-a');
+});
+
+test('reviewed consent and success witnesses stay on the reviewed agent when call IDs collide', async () => {
+  const a = agent('chat', 'agent-a');
+  const b = agent('allow', 'agent-b');
+  const binding = resolveAgentToolGrantBinding(a, name, scope)!;
+  const storage = store();
+  const session = createAgentToolApprovalSession({
+    agents: [a, b],
+    scope,
+    storage,
+    reviewed: {
+      bindings: { call_0: binding },
+      decisions: [{ tool_call_id: 'call_0', decision: 'approve' }],
+    },
+  });
+  await Promise.all([
+    session.hook(input(a.id, 'call_0'), new AbortController().signal),
+    session.hook(input(b.id, 'call_0'), new AbortController().signal),
+  ]);
+  await Promise.all([
+    session.validateExecution(a.toolDefinitions![0], { agentId: a.id, toolCallId: 'call_0' }),
+    session.validateExecution(b.toolDefinitions![0], { agentId: b.id, toolCallId: 'call_0' }),
+  ]);
+  await Promise.all(
+    [a, b].map((source) =>
+      session.rememberHook(
+        { ...input(source.id, 'call_0'), hook_event_name: 'PostToolUse', toolOutput: 'success' },
+        new AbortController().signal,
+      ),
+    ),
+  );
+  expect(storage.rememberToolApprovalGrants).toHaveBeenCalledTimes(1);
+  expect(storage.rememberToolApprovalGrants).toHaveBeenCalledWith(scope, [binding]);
+});
+
+test('concurrent self-spawns retain separate witnesses and paused provenance', async () => {
+  const source = agent('allow');
+  const session = createAgentToolApprovalSession({ agents: [source], scope, storage: store() });
+  const childContext = (run: string) => ({
+    rootRunId: 'root',
+    hookSessionId: 'root',
+    depth: 1,
+    ancestry: [
+      {
+        subagentRunId: run,
+        subagentType: 'worker',
+        subagentKind: 'agent' as const,
+        subagentAgentId: source.id,
+        parentRunId: 'root',
+      },
+    ],
+  });
+  await Promise.all(
+    ['child-a', 'child-b'].map((run) =>
+      session.hook(
+        {
+          ...input(source.id, 'call_0'),
+          executionContext: childContext(run),
+        },
+        new AbortController().signal,
+      ),
+    ),
+  );
+  await expect(
+    Promise.all(
+      ['child-a', 'child-b'].map((executionScope) =>
+        session.validateExecution(source.toolDefinitions![0], {
+          agentId: source.id,
+          toolCallId: 'call_0',
+          executionScope,
+        }),
+      ),
+    ),
+  ).resolves.toEqual([undefined, undefined]);
+  const payload = {
+    ...buildToolApprovalPayload([{ name, tool_call_id: 'call_0', arguments: {} }]),
+    subagent: { agent_id: source.id, run_id: 'child-b' },
+  };
+  expect(session.bindingsFor(payload)['call_0'].executionScope).toBe('child-b');
+  const graphPayload = { ...payload, subagent: { agent_id: 'synthetic-team', run_id: 'child-b' } };
+  expect(session.bindingsFor(graphPayload)['call_0'].agentId).toBe(source.id);
+});
