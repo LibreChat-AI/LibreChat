@@ -42,6 +42,26 @@ export const isLocallyStoredSource = (source?: string): boolean => {
   ].includes(source as FileSources);
 };
 
+/**
+ * True when a `filePath` points at a code-interpreter output that has no
+ * persisted `TFile` record to fetch through the owner/share file-ACL path —
+ * only a session-scoped download URL (e.g.
+ * `/api/files/code/download/:session_id/:fileId`), as produced by the
+ * backend's download-fallback path (oversized output, or no storage
+ * strategy) which carries no `source`/`file_id`/`type`/`bytes` at all.
+ *
+ * Mirrors `useAttachmentLink`'s own download branch above: a real,
+ * locally-stored file (`file_id` + local/s3/etc. `source`) always prefers
+ * that path, and an absolute http(s) URL is left to the browser/anchor tag
+ * rather than fetched here (may be cross-origin, e.g. a presigned link).
+ */
+export const isCodeOutputAttachment = (
+  filePath?: string,
+  fileId?: string,
+  source?: string,
+): boolean =>
+  !!filePath && !isHttpDownloadTarget(filePath) && !(!!fileId && isLocallyStoredSource(source));
+
 export const useAttachmentLink = ({
   href,
   filename,

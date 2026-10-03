@@ -24,7 +24,11 @@ jest.mock('~/hooks', () => ({
 }));
 
 const mockHandleDownload = jest.fn();
+// Keep `isLocallyStoredSource`/`isCodeOutputAttachment` real (pure, hook-free
+// functions `FileAttachment` needs to decide whether a click can preview);
+// only the hook itself is replaced.
 jest.mock('../LogLink', () => ({
+  ...jest.requireActual('../LogLink'),
   useAttachmentLink: () => ({ handleDownload: mockHandleDownload }),
 }));
 
@@ -54,11 +58,22 @@ jest.mock('~/components/Chat/Input/Files/FilePreview', () => ({
   default: () => <div data-testid="file-preview" />,
 }));
 
+/* Some fixtures below use previewable filenames (e.g. `.json`) purely as a
+ * text-bearing stand-in unrelated to the preview dialog itself, so stub it
+ * out rather than pull in its real recoil/data-provider dependencies. */
+jest.mock('../../FilePreviewDialog', () => ({
+  __esModule: true,
+  default: () => null,
+}));
+
 jest.mock('~/utils', () => ({
   cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
   getFileType: () => ({ paths: [], color: '', title: 'Artifact' }),
   logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
   isArtifactRoute: () => false,
+  // `FileAttachment` calls the real `isCodeOutputAttachment` (via
+  // `jest.requireActual('../LogLink')` below), which needs this.
+  isHttpDownloadTarget: (target?: string | null) => /^https?:\/\//i.test(target ?? ''),
 }));
 
 const textAttachment = (overrides: Partial<TAttachment> = {}): TAttachment =>

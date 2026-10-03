@@ -3,6 +3,7 @@ import { Button } from '@librechat/client';
 import { Tools } from 'librechat-data-provider';
 import { Loader2, AlertCircle, Download, ChevronDown, Files as FilesIcon } from 'lucide-react';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
+import type { MouseEventHandler } from 'react';
 import type { ToolArtifactType } from '~/utils/artifacts';
 import {
   artifactTypeForAttachment,
@@ -14,14 +15,16 @@ import {
   isTextAttachment,
   renderAttachmentKey,
 } from './attachmentTypes';
+import { useAttachmentLink, isLocallyStoredSource, isCodeOutputAttachment } from './LogLink';
 import { useLocalize, useAttachmentPreviewSync, useExpandCollapse } from '~/hooks';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
 import { fileToArtifact, TOOL_ARTIFACT_TYPES } from '~/utils/artifacts';
 import Image from '~/components/Chat/Messages/Content/Image';
 import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
 import ToolMermaidArtifact from './ToolMermaidArtifact';
+import FilePreviewDialog from '../FilePreviewDialog';
 import ToolArtifactCard from './ToolArtifactCard';
-import { useAttachmentLink } from './LogLink';
+import { getPreviewKind } from '../preview';
 import { cn } from '~/utils';
 
 const COLLAPSED_MAX_HEIGHT = 320;
@@ -97,6 +100,7 @@ PreviewPlaceholderRow.displayName = 'PreviewPlaceholderRow';
 
 const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> }) => {
   const [isVisible, setIsVisible] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const file = attachment as TFile & TAttachmentMetadata;
   const { handleDownload } = useAttachmentLink({
     href: attachment.filepath ?? '',
@@ -106,6 +110,20 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
     source: file.source,
   });
   const extension = attachment.filename?.split('.').pop();
+  // A previewable file (PDF, text) opens the existing preview dialog instead
+  // of force-downloading — but only when the bytes are actually fetchable:
+  // either a persisted, ACL'd file (real `file_id` + local/s3/etc. `source`)
+  // or a code-interpreter download-fallback (session-scoped `filePath`, no
+  // `file_id`/`source`). Anything else (e.g. an external http(s) URL) keeps
+  // the original download click.
+  const previewKind = getPreviewKind(attachment.filename ?? '', file.type, file.source);
+  const canFetchPreview =
+    (!!file.file_id && isLocallyStoredSource(file.source)) ||
+    isCodeOutputAttachment(attachment.filepath, file.file_id, file.source);
+  const canPreview = Boolean(previewKind) && canFetchPreview;
+  const handleClick: MouseEventHandler<HTMLButtonElement> = canPreview
+    ? () => setPreviewOpen(true)
+    : handleDownload;
   /* Bridge the deferred-preview lifecycle: poll the backend for the
    * resolved record while the file is still pending. The hook is a
    * no-op for terminal states (legacy records, ready, failed
@@ -164,12 +182,25 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
     >
       <FileContainer
         file={attachment}
-        onClick={handleDownload}
+        onClick={handleClick}
         overrideType={extension}
         displayName={displayFilename(attachment.filename)}
         containerClassName="max-w-fit"
         buttonClassName="bg-surface-secondary hover:cursor-pointer hover:bg-surface-hover active:bg-surface-secondary focus:bg-surface-hover hover:border-border-heavy active:border-border-heavy"
       />
+      {canPreview && (
+        <FilePreviewDialog
+          open={previewOpen}
+          onOpenChange={setPreviewOpen}
+          fileName={attachment.filename ?? ''}
+          fileId={file.file_id}
+          filePath={attachment.filepath}
+          fileType={file.type}
+          fileSource={file.source}
+          fileSize={file.bytes}
+          deliveryPath={file.llmDeliveryPath}
+        />
+      )}
     </div>
   );
 });

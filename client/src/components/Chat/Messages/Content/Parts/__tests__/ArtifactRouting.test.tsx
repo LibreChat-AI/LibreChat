@@ -23,7 +23,11 @@ jest.mock('~/hooks', () => ({
   }),
 }));
 
+// Keep `isLocallyStoredSource`/`isCodeOutputAttachment` real (pure, hook-free
+// functions `FileAttachment` needs to decide whether a click can preview);
+// only the hook itself is replaced.
 jest.mock('../LogLink', () => ({
+  ...jest.requireActual('../LogLink'),
   useAttachmentLink: () => ({ handleDownload: jest.fn() }),
 }));
 
@@ -69,6 +73,9 @@ jest.mock('~/utils', () => ({
   getFileType: () => ({ paths: [], color: '', title: 'Artifact' }),
   logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
   isArtifactRoute: () => false,
+  // `FileAttachment` calls the real `isCodeOutputAttachment` (via
+  // `jest.requireActual('../LogLink')` below), which needs this.
+  isHttpDownloadTarget: (target?: string | null) => /^https?:\/\//i.test(target ?? ''),
 }));
 
 const baseAttachment = (overrides: Partial<TAttachment> = {}): TAttachment =>
