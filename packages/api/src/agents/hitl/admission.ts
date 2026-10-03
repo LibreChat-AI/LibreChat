@@ -5,8 +5,10 @@ import type { MCPToolAlias } from '~/tools/classification';
 import type { ResolvedToolApprovalHook } from './hooks';
 import { isHITLEnabled, isToolApprovalPauseCapable, isToolDeniedByApprovalPolicy } from './policy';
 import { ASK_USER_QUESTION_TOOL_NAME } from './askUserQuestionTool';
+import { aliasMCPToolOptions } from '~/tools/classification';
 import { resolvedToolApprovalHooksCanMatch } from './hooks';
 import { buildEffectiveToolApprovalPolicy } from './allow';
+import { isMCPAllPlaceholder } from '~/mcp/utils';
 
 interface ApprovalToolReference {
   readonly name?: string;
@@ -57,11 +59,13 @@ function agentHasTool(agent: ToolApprovalAdmissionAgent, toolName: string): bool
 function collectApprovalAgents(roots: readonly (ToolApprovalAdmissionAgent | null | undefined)[]): {
   agents: ToolApprovalAdmissionAgent[];
   lazyAgentIds: Set<string | undefined>;
+  lazyAgents: Set<ToolApprovalAdmissionAgent>;
 } {
   const agents: ToolApprovalAdmissionAgent[] = [];
   const visited = new Set<ToolApprovalAdmissionAgent>();
   const pending = [...roots];
   const lazyAgentIds = new Set<string | undefined>();
+  const lazyAgents = new Set<ToolApprovalAdmissionAgent>();
 
   for (let index = 0; index < pending.length; index++) {
     const agent = pending[index];
@@ -74,6 +78,7 @@ function collectApprovalAgents(roots: readonly (ToolApprovalAdmissionAgent | nul
     if ((agent.lazySubagentConfigs?.length ?? 0) > 0) {
       for (const lazyAgent of agent.lazySubagentConfigs ?? []) {
         lazyAgentIds.add(lazyAgent?.id);
+        if (lazyAgent) lazyAgents.add(lazyAgent);
       }
       pending.push(...(agent.lazySubagentConfigs ?? []));
     }
@@ -83,7 +88,7 @@ function collectApprovalAgents(roots: readonly (ToolApprovalAdmissionAgent | nul
     }
   }
 
-  return { agents, lazyAgentIds };
+  return { agents, lazyAgentIds, lazyAgents };
 }
 
 /**
@@ -110,18 +115,9 @@ export function canAgentGraphPause({
   }
 
   const approvalGraph = collectApprovalAgents(agents);
-  if (
-    approvalGraph.agents.some((agent) =>
-      Object.entries(agent.tool_options ?? {}).some(
-        ([name, options]) =>
-          options.approval_mode != null &&
-          options.approval_mode !== 'allow' &&
-          !isToolDeniedByApprovalPolicy(policy, name),
-      ),
-    )
-  )
-    return true;
   const toolOwners = new Map<string, Set<string | undefined>>();
+  const reviewGatedTools = new Set<string>();
+  let unresolvedModeCanAsk = false;
   const aliases: MCPToolAlias[] = [];
   const aliasesByToolName = new Map<string, string[]>();
   const addToolName = (name: unknown, agentId?: string) => {
@@ -137,16 +133,35 @@ export function canAgentGraphPause({
   }
 
   for (const agent of approvalGraph.agents) {
+    const reachable = new Set<string>();
     for (const tool of agent.tools ?? []) {
-      addToolName(typeof tool === 'string' ? tool : tool.name, agent.id);
+      const name = typeof tool === 'string' ? tool : tool.name;
+      if (name) reachable.add(name);
     }
-    if (agent.toolRegistry) {
-      for (const name of agent.toolRegistry.keys()) {
-        addToolName(name, agent.id);
-      }
-    }
+    for (const name of agent.toolRegistry?.keys() ?? []) reachable.add(name);
     for (const definition of agent.toolDefinitions ?? []) {
-      addToolName(definition.name, agent.id);
+      if (definition.name) reachable.add(definition.name);
+    }
+    const options = { ...agent.tool_options };
+    aliasMCPToolOptions(agent.mcpToolAliases ?? [], options);
+    for (const name of reachable) {
+      addToolName(name, agent.id);
+      const mode = options[name]?.approval_mode;
+      if (mode != null && mode !== 'allow') reviewGatedTools.add(name);
+    }
+    // A lazy descriptor without a concrete surface can still resolve review-gated tools.
+    if (
+      approvalGraph.lazyAgents.has(agent) &&
+      agent.toolRegistry == null &&
+      agent.toolDefinitions == null &&
+      (agent.tools == null || [...reachable].some(isMCPAllPlaceholder))
+    ) {
+      unresolvedModeCanAsk ||= Object.entries(options).some(
+        ([name, option]) =>
+          option.approval_mode != null &&
+          option.approval_mode !== 'allow' &&
+          !isToolDeniedByApprovalPolicy(policy, name),
+      );
     }
     for (const alias of agent.mcpToolAliases ?? []) {
       aliases.push(alias);
@@ -158,6 +173,8 @@ export function canAgentGraphPause({
 
   const effectivePolicy = buildEffectiveToolApprovalPolicy(policy, aliases, toolApprovalAllows);
   const knownToolCanPause = Array.from(toolOwners).some(([toolName, agentIds]) => {
+    if (reviewGatedTools.has(toolName) && !isToolDeniedByApprovalPolicy(effectivePolicy, toolName))
+      return true;
     const matcherNames = [toolName, ...(aliasesByToolName.get(toolName) ?? [])];
     const pluginHookCanAsk = pluginHookSource?.hasToolApprovalHooks?.([toolName]) === true;
     return Array.from(agentIds).some((agentId) => {
@@ -183,7 +200,7 @@ export function canAgentGraphPause({
         ) || pluginHookCanAsk,
     );
     const staticPolicyCanAsk = isToolApprovalPauseCapable(effectivePolicy);
-    if (staticPolicyCanAsk || unresolvedHookCanAsk) {
+    if (staticPolicyCanAsk || unresolvedHookCanAsk || unresolvedModeCanAsk) {
       return true;
     }
   }

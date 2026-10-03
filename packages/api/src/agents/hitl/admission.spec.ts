@@ -1,3 +1,4 @@
+import { Constants } from 'librechat-data-provider';
 import type { PluginHookSource } from '~/agents/hooks/source';
 import type { ToolApprovalAdmissionAgent } from './admission';
 import type { ToolApprovalHook } from './hooks';
@@ -160,4 +161,173 @@ describe('agentRunUsesCheckpointer', () => {
       }),
     ).toBe(false);
   });
+});
+
+for (const mode of ['ask', 'chat', 'always'] as const) {
+  test.each([
+    { tools: ['selected_mcp_db'] },
+    { tools: [{ name: 'selected_mcp_db' }] },
+    { toolDefinitions: [{ name: 'selected_mcp_db' }] },
+    { toolRegistry: new Map([['selected_mcp_db', {}]]) },
+  ])(`${mode} options only affect reachable initialized tools (%#)`, (surface) => {
+    const policy = { enabled: true, mode: 'bypass' as const };
+    const options = {
+      selected_mcp_db: { approval_mode: 'allow' as const },
+      deselected_mcp_db: { approval_mode: mode },
+    };
+    expect(canAgentGraphPause({ policy, agents: [{ ...surface, tool_options: options }] })).toBe(
+      false,
+    );
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [
+          {
+            ...surface,
+            tool_options: {
+              ...options,
+              selected_mcp_db: { approval_mode: mode },
+            },
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      canAgentGraphPause({
+        policy: { ...policy, deny: ['selected_mcp_db'] },
+        agents: [{ ...surface, tool_options: { selected_mcp_db: { approval_mode: mode } } }],
+      }),
+    ).toBe(false);
+  });
+
+  test(`${mode} inactive modes cannot borrow another agent's reachable tool`, () => {
+    expect(
+      canAgentGraphPause({
+        policy: { enabled: true, mode: 'bypass' },
+        agents: [
+          {
+            id: 'a',
+            tools: ['other_mcp_db'],
+            tool_options: { selected_mcp_db: { approval_mode: mode } },
+          },
+          {
+            id: 'b',
+            tools: ['selected_mcp_db'],
+            tool_options: { selected_mcp_db: { approval_mode: 'allow' } },
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  test(`${mode} follows verified aliases without changing saved options or overriding current entries`, () => {
+    const policy = { enabled: true, mode: 'bypass' as const };
+    const options = { db_query_mcp_db: { approval_mode: mode } };
+    const agent = {
+      tools: ['query_mcp_db'],
+      tool_options: options,
+      mcpToolAliases: [{ name: 'query_mcp_db', aliasName: 'db_query_mcp_db' }],
+    };
+    expect(canAgentGraphPause({ policy, agents: [agent] })).toBe(true);
+    expect(Object.keys(options)).toEqual(['db_query_mcp_db']);
+    expect(canAgentGraphPause({ policy, agents: [{ ...agent, mcpToolAliases: [] }] })).toBe(false);
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [
+          {
+            ...agent,
+            tool_options: {
+              ...options,
+              query_mcp_db: { approval_mode: 'allow' },
+            },
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      canAgentGraphPause({ policy: { ...policy, deny: ['db_query_mcp_db'] }, agents: [agent] }),
+    ).toBe(false);
+  });
+
+  test(`${mode} remains conservative for unresolved lazy tools but ignores known deselection`, () => {
+    const policy = { enabled: true, mode: 'bypass' as const };
+    const option = { query_mcp_db: { approval_mode: mode } };
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [{ lazySubagentConfigs: [{ id: 'lazy', tool_options: option }] }],
+      }),
+    ).toBe(true);
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [
+          {
+            lazySubagentConfigs: [
+              {
+                id: 'lazy',
+                tools: [`${Constants.mcp_all}${Constants.mcp_delimiter}db`],
+                tool_options: option,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [{ lazySubagentConfigs: [{ id: 'lazy', tools: [], tool_options: option }] }],
+      }),
+    ).toBe(false);
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [
+          { lazySubagentConfigs: [{ id: 'lazy', tools: ['other_mcp_db'], tool_options: option }] },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [
+          { lazySubagentConfigs: [{ id: 'lazy', toolDefinitions: [], tool_options: option }] },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      canAgentGraphPause({
+        policy: { ...policy, deny: ['query_mcp_db'] },
+        agents: [{ lazySubagentConfigs: [{ tool_options: option }] }],
+      }),
+    ).toBe(false);
+  });
+}
+
+test('disabled modes, inherited options, cycles and duplicate agent IDs preserve admission defaults', () => {
+  const child: ToolApprovalAdmissionAgent = {
+    id: 'same',
+    tools: ['selected_mcp_db'],
+    tool_options: { selected_mcp_db: { approval_mode: 'ask' } },
+  };
+  const parent: ToolApprovalAdmissionAgent = {
+    id: 'same',
+    tools: ['read_file'],
+    subagentAgentConfigs: [child],
+  };
+  Object.assign(child, { subagentAgentConfigs: [parent] });
+  expect(canAgentGraphPause({ policy: { enabled: true, mode: 'bypass' }, agents: [parent] })).toBe(
+    true,
+  );
+  expect(canAgentGraphPause({ policy: { enabled: false, mode: 'bypass' }, agents: [parent] })).toBe(
+    false,
+  );
+  expect(
+    canAgentGraphPause({
+      policy: { enabled: true, mode: 'bypass' },
+      agents: [{ tools: ['read_file'], tool_options: { read_file: { defer_loading: true } } }],
+    }),
+  ).toBe(false);
 });
