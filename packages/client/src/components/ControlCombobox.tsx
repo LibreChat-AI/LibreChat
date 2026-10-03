@@ -9,7 +9,7 @@ import useRemScale from '~/hooks/useRemScale';
 import { fieldControl } from './Field';
 import './AnimatePopover.css';
 import { JSX } from 'react/jsx-runtime';
-import { cn } from '~/utils';
+import { cn, pxToRem } from '~/utils';
 
 interface ControlComboboxProps {
   selectedValue: string;
@@ -254,7 +254,7 @@ function ControlCombobox({
           maxWidth: '90vw',
           maxHeight:
             popoverMaxHeight != null
-              ? `min(${popoverMaxHeight}px, var(--popover-available-height, ${popoverMaxHeight}px))`
+              ? `min(${pxToRem(popoverMaxHeight)}, var(--popover-available-height, ${pxToRem(popoverMaxHeight)}))`
               : undefined,
           width: matchTriggerWidth ? popoverWidth : undefined,
           minWidth: matchTriggerWidth ? undefined : 'min(16rem, 90vw)',

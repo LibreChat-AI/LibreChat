@@ -313,7 +313,7 @@ describe('ControlCombobox dropdown caps', () => {
     renderCapped();
     openPopover();
     const popover = document.querySelector('.animate-popover') as HTMLElement;
-    expect(popover.style.maxHeight).toBe('min(480px, var(--popover-available-height, 480px))');
+    expect(popover.style.maxHeight).toBe('min(30rem, var(--popover-available-height, 30rem))');
     expect(popover.className).toContain('flex-col');
     const scroller = popover.querySelector('div.overflow-auto');
     expect(scroller?.className).toContain('flex-1');
