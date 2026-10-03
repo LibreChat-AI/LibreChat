@@ -83,10 +83,18 @@ describe('LiaEngine', () => {
     const { engine } = setup();
     engine.reducedMotion = true;
     const random = seeded(3);
+    let chosen = 0;
     for (let i = 0; i < 300; i++) {
-      const def = ACTION_BY_ID.get(engine.chooseLife(60_000, random) ?? '');
-      expect(def?.moves ?? false).toBe(false);
+      const id = engine.chooseLife(60_000, random);
+      if (id == null) {
+        continue;
+      }
+      const def = ACTION_BY_ID.get(id);
+      expect(def).toBeDefined();
+      expect(def?.moves).toBe(false);
+      chosen += 1;
     }
+    expect(chosen).toBeGreaterThan(0);
   });
 
   it('escalates from petting to dizziness to a crash', () => {
