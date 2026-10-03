@@ -893,3 +893,73 @@ test('hook-rewritten background launch never teaches approval before the detache
     await new Promise((resolve) => setImmediate(resolve));
   }
 });
+
+test.each([false, true])(
+  'request-only header authority cannot change between review and resume (event-driven: %s)',
+  async (eventDriven) => {
+    const declared = {
+      type: 'streamable-http' as const,
+      source: 'yaml' as const,
+      url: 'https://mcp.example.test/mcp',
+      requestHeaders: { 'X-Workspace': '{{WORKSPACE}}' },
+    };
+    const authorityA = buildMCPToolReviewAuthority({
+      serverName: 'fixture',
+      config: declared,
+      customUserVars: { WORKSPACE: 'workspace-a' },
+    });
+    const authorityB = buildMCPToolReviewAuthority({
+      serverName: 'fixture',
+      config: declared,
+      customUserVars: { WORKSPACE: 'workspace-b' },
+    });
+    const targetDefinition = (authority?: string) =>
+      bindToolApprovalIdentity(
+        bindToolReviewAuthority(
+          { name, serverName: 'fixture', parameters: { type: 'object' } },
+          authority,
+        ),
+        'echo',
+        { type: 'object' },
+      );
+    const source: AgentApprovalSource = {
+      id: 'agent-a',
+      tool_options: {
+        [name]: {
+          approval_mode: 'chat',
+          approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+        },
+      },
+      toolDefinitions: [targetDefinition(authorityA)],
+    };
+    const saver = new MemorySaver();
+    const first = await build({
+      source,
+      chat: 'header-review-chat',
+      saver,
+      eventDriven,
+      executionTool: createProbe(null, 'echo', authorityA),
+      callId: 'header-call',
+    });
+    await first.processStream(
+      { messages: [new HumanMessage('run')] },
+      config('header-review-chat'),
+    );
+    const bindings = captureRunToolApprovalBindings(
+      first,
+      first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+    )!;
+    const changed = { ...source, toolDefinitions: [targetDefinition(authorityB)] };
+    const resumed = await build({
+      source: changed,
+      chat: 'header-review-chat',
+      saver,
+      eventDriven,
+      executionTool: createProbe(null, 'echo', authorityB),
+      reviewed: { bindings, decisions: [{ tool_call_id: 'header-call', decision: 'approve' }] },
+    });
+    await resumed.resume({ 'header-call': { type: 'approve' } }, config('header-review-chat'));
+    expect(executions).toBe(0);
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+  },
+);
