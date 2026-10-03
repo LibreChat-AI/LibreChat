@@ -1,4 +1,4 @@
-import { loadDefaultInterface } from '@librechat/data-schemas';
+import { logger, loadDefaultInterface } from '@librechat/data-schemas';
 import {
   SystemRoles,
   Permissions,
@@ -3060,5 +3060,71 @@ describe('updateInterfacePermissions - web search recovery', () => {
     expectPreserved();
     await sync(false);
     expect(grants()).toEqual([false, false]);
+  });
+});
+
+describe('updateInterfacePermissions - native web search warning', () => {
+  const nativeSpec = { name: 'gpt-native', label: 'GPT', preset: { web_search: true } };
+
+  const run = async (webSearch: boolean | undefined, list: unknown[] = [nativeSpec]) => {
+    const config = { interface: webSearch === undefined ? {} : { webSearch } };
+    const configDefaults = { interface: {} } as TConfigDefaults;
+    const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+    const appConfig = { config, interfaceConfig, modelSpecs: { list } } as unknown as AppConfig;
+    await updateInterfacePermissions({
+      appConfig,
+      getRoleByName: mockGetRoleByName,
+      updateAccessPermissions: mockUpdateAccessPermissions,
+    });
+  };
+
+  const nativeWarnings = () =>
+    warnSpy.mock.calls.filter(([message]) =>
+      String(message).includes('provider-native web search'),
+    );
+
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetRoleByName.mockResolvedValue(null);
+    warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('warns when interface.webSearch: false blocks model specs that request native search', async () => {
+    await run(false);
+    const warnings = nativeWarnings();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0][0]).toContain('`interface.webSearch: false` denies');
+    expect(warnings[0][0]).toContain('gpt-native');
+    expect(warnings[0][0]).toContain('endpoints.agents.capabilities');
+  });
+
+  it('warns when the key is unset but a stored role still denies WEB_SEARCH', async () => {
+    mockGetRoleByName.mockImplementation(async (roleName: string) => ({
+      name: roleName,
+      permissions: { [PermissionTypes.WEB_SEARCH]: { [Permissions.USE]: false } },
+    }));
+    await run(undefined);
+    const warnings = nativeWarnings();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0][0]).toContain('stored role permission keeps denying');
+    expect(warnings[0][0]).toContain(SystemRoles.USER);
+  });
+
+  it('does not warn when web search is allowed or no spec requests native search', async () => {
+    await run(true);
+    await run(undefined);
+    await run(false, [{ name: 'plain', label: 'Plain', preset: {} }]);
+    mockGetRoleByName.mockImplementation(async (roleName: string) => ({
+      name: roleName,
+      permissions: { [PermissionTypes.WEB_SEARCH]: { [Permissions.USE]: false } },
+    }));
+    await run(true);
+    expect(nativeWarnings()).toHaveLength(0);
   });
 });

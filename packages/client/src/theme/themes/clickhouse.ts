@@ -3,7 +3,7 @@ import type { IThemeAppearance, ThemeDefinition, IThemeRGB } from '../types';
 /**
  * ClickHouse reference theme, built from Click UI's design tokens
  * (github.com/ClickHouse/click-ui, `src/theme/tokens/variables.light.ts` and
- * `variables.dark.ts` at tag v0.12.0, e2b3d213798f4223122581a75ebc8dd91e47fd9f). The tokens it
+ * `variables.dark.ts` at tag v0.13.0, bb744e8255a3c97635d2fdc9a546c266b5b8a3e0). The tokens it
  * cites are pinned in `clickui.json`, and `clickui.spec.ts` fails on drift in either one.
  *
  * This is the deliberately different theme that proves the engine repaints the
@@ -386,6 +386,12 @@ const clickHouseShape = {
   tabRadius: '0.25rem', // tabs.radii.all
   /** Click UI sizes a tab trigger by its label, in `tabs.space.x` on each side. */
   tabMinWidth: '0',
+  /** Click UI's select list is as wide as its trigger (`select-popover-content` in
+   *  SelectComponents.module.css), which the list's viewport already enforces, so it takes no
+   *  floor of its own. Its height is capped only by the viewport's available height, which a
+   *  length role cannot express, so the cap keeps LibreChat's. */
+  listMinWidth: '0',
+  listMaxHeight: '24rem',
   radiusSm: '0.25rem', // border.radii.1
   radiusMd: '0.25rem', // border.radii.1
   radiusLg: '0.25rem', // border.radii.1

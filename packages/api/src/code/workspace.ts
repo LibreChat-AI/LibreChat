@@ -310,6 +310,8 @@ export class WorkspaceToolHttpError extends Error {
    * phrase for the model: which edits failed, why, and where. Absent for other failures.
    */
   public readonly editConflict?: string;
+  /** The `code` of a complete JSON error body, such as `EDIT_CONFLICT` or `WORKSPACE_QUARANTINED`. */
+  public readonly upstreamCode?: string;
 
   constructor(
     public readonly reason: 'rejected' | 'invalid' | 'timeout' | 'failed' | 'insufficient_time',
@@ -341,20 +343,29 @@ export class WorkspaceToolHttpError extends Error {
         (upstreamBodyTruncated ? ' [body truncated or incomplete]' : ''),
     );
     this.name = 'WorkspaceToolHttpError';
+    const parsed = upstreamBodyTruncated ? undefined : parseErrorBody(upstreamBody);
+    this.upstreamCode = parsed?.code;
     this.editConflict =
-      reason === 'rejected' ? getEditConflict(upstreamStatus, upstreamBody) : undefined;
+      reason === 'rejected' && upstreamStatus === 409 && parsed?.code === 'EDIT_CONFLICT'
+        ? parsed.error
+        : undefined;
   }
 }
 
-function getEditConflict(status?: number, body?: string): string | undefined {
-  if (status !== 409 || !body) {
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+function parseErrorBody(body?: string): { code?: string; error?: string } | undefined {
+  if (!body) {
     return undefined;
   }
   try {
     const parsed: { code?: unknown; error?: unknown } | null = JSON.parse(body);
-    return parsed?.code === 'EDIT_CONFLICT' && typeof parsed.error === 'string'
-      ? parsed.error
-      : undefined;
+    return {
+      ...(typeof parsed?.code === 'string' && ERROR_CODE.test(parsed.code)
+        ? { code: parsed.code }
+        : {}),
+      ...(typeof parsed?.error === 'string' ? { error: parsed.error } : {}),
+    };
   } catch {
     return undefined;
   }

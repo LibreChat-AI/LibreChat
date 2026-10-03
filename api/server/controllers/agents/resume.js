@@ -1557,6 +1557,8 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           providerExecutionId,
           providerDrained: true,
           ...(resolvedAskUserQuestion && { resolvedAskUserQuestions }),
+          ...(userSubmittedPaths.length > 0 && { userSubmittedPaths }),
+          ...(userSubmittedMessageFieldPaths.length > 0 && { userSubmittedMessageFieldPaths }),
         },
         job.createdAt,
       );
@@ -1931,18 +1933,6 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       }
       if (userSubmittedMessageFieldPaths.length > 0) {
         job.metadata.userSubmittedMessageFieldPaths = userSubmittedMessageFieldPaths;
-      }
-      if (userSubmittedPaths.length > 0 || userSubmittedMessageFieldPaths.length > 0) {
-        await GenerationJobManager.getJobStore().updateJob(
-          streamId,
-          {
-            ...(userSubmittedPaths.length > 0 && { userSubmittedPaths }),
-            ...(userSubmittedMessageFieldPaths.length > 0 && {
-              userSubmittedMessageFieldPaths,
-            }),
-          },
-          job.createdAt,
-        );
       }
 
       const mcpRequestBody =

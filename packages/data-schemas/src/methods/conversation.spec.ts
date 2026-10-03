@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import mongoose, { type FilterQuery } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { EModelEndpoint, RetentionMode } from 'librechat-data-provider';
+import { EModelEndpoint, RetentionMode, UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import type {
   Document,
   Filter,
@@ -387,7 +387,7 @@ describe('Conversation Operations', () => {
       });
       expect(convo?.lastResponseAt).toBeInstanceOf(Date);
       expect(convo?.lastResponseAt?.getTime()).toBeGreaterThanOrEqual(before.getTime());
-      expect(convo?.lastSeenAt == null).toBe(true);
+      expect(convo?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
     });
 
     it('returns the durable conversation when the optional reply stamp fails', async () => {
@@ -438,7 +438,7 @@ describe('Conversation Operations', () => {
         conversationId: mockConversationData.conversationId,
       });
       expect(convo?.lastResponseAt?.getTime()).toBeGreaterThan(newer.getTime());
-      expect(convo?.lastSeenAt).toBeUndefined();
+      expect(convo?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
     });
 
     it('leaves the reply stamp alone for a save that does not carry one', async () => {
@@ -3103,7 +3103,7 @@ describe('Conversation Operations', () => {
       }).lean<IConversation>();
       expect(convo?.lastResponseAt).toBeInstanceOf(Date);
       expect(convo?.lastResponseIsManual).toBeUndefined();
-      expect(convo?.lastSeenAt == null).toBe(true);
+      expect(convo?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
     });
     it('advances past a future reply stamp when this host clock is behind', async () => {
       const newer = new Date(Date.now() + 60_000);
@@ -3122,7 +3122,7 @@ describe('Conversation Operations', () => {
         conversationId: mockConversationData.conversationId,
       }).lean<IConversation>();
       expect(convo?.lastResponseAt?.getTime()).toBeGreaterThan(newer.getTime());
-      expect(convo?.lastSeenAt).toBeUndefined();
+      expect(convo?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
     });
 
     it('does not stamp another user’s conversation', async () => {
@@ -3181,6 +3181,7 @@ describe('Conversation Operations', () => {
 
       const result = await markConvoUnread('user123', mockConversationData.conversationId);
       expect(result.modified).toBe(true);
+      expect(result.isMarkedUnread).toBe(true);
 
       const convo = await Conversation.findOne({
         conversationId: mockConversationData.conversationId,
@@ -3188,6 +3189,7 @@ describe('Conversation Operations', () => {
       expect(convo?.lastSeenAt).toBeUndefined();
       expect(convo?.lastResponseAt?.toISOString()).toBe('2026-08-16T10:00:00.000Z');
       expect(convo?.lastResponseIsManual).toBeUndefined();
+      expect(convo?.isMarkedUnread).toBe(true);
     });
 
     it('returns the stamp it settled on so the client never invents one', async () => {
@@ -3293,6 +3295,129 @@ describe('Conversation Operations', () => {
       expect(convo?.lastSeenAt).toBeInstanceOf(Date);
     });
   });
+
+  describe('manual unread reminders', () => {
+    it('survives reload and is cleared by a persisted real reply', async () => {
+      await Conversation.create({
+        conversationId: mockConversationData.conversationId,
+        user: 'user123',
+        endpoint: EModelEndpoint.openAI,
+        lastResponseAt: new Date('2026-08-16T10:00:00.000Z'),
+        lastResponseMessageId: 'original-reply',
+      });
+      await methods.markConvoUnread('user123', mockConversationData.conversationId);
+      const unread = await Conversation.findOne({
+        conversationId: mockConversationData.conversationId,
+      }).lean<IConversation>();
+      expect(unread?.isMarkedUnread).toBe(true);
+      expect(unread?.lastResponseMessageId).toBe('original-reply');
+      await methods.stampConvoLastResponse(
+        'user123',
+        mockConversationData.conversationId,
+        'new-reply',
+      );
+      const replied = await Conversation.findOne({
+        conversationId: mockConversationData.conversationId,
+      }).lean<IConversation>();
+      expect(replied?.isMarkedUnread).toBe(false);
+      expect(replied?.lastResponseMessageId).toBe('new-reply');
+    });
+
+    it('leaves legacy intent unknown through listing and metadata saves, until a real reply', async () => {
+      await Conversation.create({
+        conversationId: mockConversationData.conversationId,
+        user: 'user123',
+        endpoint: EModelEndpoint.openAI,
+        lastResponseAt: new Date('2026-08-16T10:00:00.000Z'),
+        lastResponseMessageId: 'legacy-reply',
+      });
+      await saveConvo(mockCtx, {
+        conversationId: mockConversationData.conversationId,
+        title: 'Reminder',
+      });
+      const { conversations } = await getConvosByCursor('user123');
+      expect(conversations[0].isMarkedUnread).toBeUndefined();
+      expect(conversations[0].lastResponseMessageId).toBe('legacy-reply');
+      expect(conversations[0].lastSeenAt).toBeUndefined();
+      await methods.stampConvoLastResponse(
+        'user123',
+        mockConversationData.conversationId,
+        'confirmed-reply',
+      );
+      const reloaded = await getConvo('user123', mockConversationData.conversationId);
+      expect(reloaded?.isMarkedUnread).toBe(false);
+      expect(reloaded?.lastResponseMessageId).toBe('confirmed-reply');
+    });
+
+    it('keeps legacy replica seen/unread writes distinguishable after an upgraded reply', async () => {
+      await Conversation.create({
+        conversationId: mockConversationData.conversationId,
+        user: 'user123',
+        endpoint: EModelEndpoint.openAI,
+      });
+      await methods.stampConvoLastResponse(
+        'user123',
+        mockConversationData.conversationId,
+        'upgraded-reply',
+      );
+      let stored = await getConvo('user123', mockConversationData.conversationId);
+      expect(stored?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
+      expect(stored?.isMarkedUnread).toBe(false);
+      /* Exact operators used by the pre-upgrade backend. */
+      await Conversation.updateOne(
+        { conversationId: mockConversationData.conversationId, user: 'user123' },
+        { $set: { lastSeenAt: new Date() } },
+        { timestamps: false },
+      );
+      await Conversation.findOneAndUpdate(
+        { conversationId: mockConversationData.conversationId, user: 'user123' },
+        { $unset: { lastSeenAt: '' } },
+        { timestamps: false, new: true },
+      );
+      const { conversations } = await getConvosByCursor('user123');
+      expect(conversations[0].isMarkedUnread).toBe(false);
+      expect(conversations[0].lastSeenAt).toBeUndefined();
+      await methods.stampConvoLastResponse(
+        'user123',
+        mockConversationData.conversationId,
+        'next-upgraded-reply',
+      );
+      stored = await getConvo('user123', mockConversationData.conversationId);
+      expect(stored?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
+      expect(stored?.lastResponseMessageId).toBe('next-upgraded-reply');
+    });
+
+    it('is cleared only by an acknowledgement of the current reply', async () => {
+      const responseAt = new Date('2026-08-16T10:00:00.000Z');
+      await Conversation.create({
+        conversationId: mockConversationData.conversationId,
+        user: 'user123',
+        endpoint: EModelEndpoint.openAI,
+        lastResponseAt: responseAt,
+        isMarkedUnread: true,
+      });
+      await methods.markConvoSeen(
+        'user123',
+        mockConversationData.conversationId,
+        new Date(responseAt.getTime() - 1),
+      );
+      expect(
+        (
+          await Conversation.findOne({
+            conversationId: mockConversationData.conversationId,
+          }).lean<IConversation>()
+        )?.isMarkedUnread,
+      ).toBe(true);
+      await methods.markConvoSeen('user123', mockConversationData.conversationId, responseAt);
+      expect(
+        (
+          await Conversation.findOne({
+            conversationId: mockConversationData.conversationId,
+          }).lean<IConversation>()
+        )?.isMarkedUnread,
+      ).toBeUndefined();
+    });
+  });
   describe('unseen-reply fields', () => {
     it('returns lastResponseAt, manual marker, and lastSeenAt from the cursor listing', async () => {
       const lastResponseAt = new Date('2026-08-16T10:00:00.000Z');
@@ -3304,6 +3429,7 @@ describe('Conversation Operations', () => {
         lastResponseAt,
         lastResponseMessageId: 'reply-listed',
         lastResponseIsManual: true,
+        isMarkedUnread: true,
         lastSeenAt,
       });
 
@@ -3312,6 +3438,7 @@ describe('Conversation Operations', () => {
       expect(conversations[0].lastResponseAt?.toISOString()).toBe(lastResponseAt.toISOString());
       expect(conversations[0].lastResponseMessageId).toBe('reply-listed');
       expect(conversations[0].lastResponseIsManual).toBe(true);
+      expect(conversations[0].isMarkedUnread).toBe(true);
       expect(conversations[0].lastSeenAt?.toISOString()).toBe(lastSeenAt.toISOString());
     });
 

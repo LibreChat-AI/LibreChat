@@ -361,6 +361,10 @@ const appearanceValidators = {
   tooltipRadius: isLength,
   tabRadius: isLength,
   tabMinWidth: isTableLength,
+  /** A Select list's narrowest width (`0` to size it by its trigger), and the height it scrolls
+   *  past: never under 8rem, so a few options always show, nor over 40rem. */
+  listMinWidth: isTableLength,
+  listMaxHeight: lengthWithin(128, 640),
   radiusSm: isLength,
   radiusMd: isLength,
   radiusLg: isLength,

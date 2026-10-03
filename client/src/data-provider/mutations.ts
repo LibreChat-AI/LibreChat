@@ -13,6 +13,11 @@ import {
   /* Conversations */
   addConvoToAllQueries,
   markRunningRemoval,
+  mergeConvoSnapshot,
+  beginConvoSnapshot,
+  endConvoSnapshot,
+  endConvoReadIntent,
+  supersedeConvoSnapshots,
   findPinnedConversation,
   findConvoInAllQueries,
   findConversationInInfinite,
@@ -229,12 +234,22 @@ export const usePinConversationMutation = (
   options?: t.PinConversationOptions,
 ): UseMutationResult<t.TPinConversationResponse, unknown, t.TPinConversationRequest, unknown> => {
   const queryClient = useQueryClient();
-  const { onSuccess, onError, ..._options } = options || {};
+  const { onSuccess, onError, onMutate, onSettled } = options || {};
 
   return useMutation(
     [MutationKeys.convoPin],
     (payload: t.TPinConversationRequest) => dataService.pinConversation(payload),
     {
+      onMutate: async (vars) => {
+        const fence = beginConvoSnapshot(queryClient, vars.conversationId);
+        try {
+          await onMutate?.(vars);
+          return fence;
+        } catch (error) {
+          endConvoSnapshot(queryClient, vars.conversationId, fence);
+          throw error;
+        }
+      },
       onSuccess: async (data, vars, context) => {
         /** A project drop can start a list refresh before its following unpin.
          * Cancel that older snapshot before publishing the authoritative pin result. */
@@ -247,14 +262,16 @@ export const usePinConversationMutation = (
          * read it off the cached pin before the update drops that row: the reinsert
          * below has no existing chats row to carry the badge over from. */
         const cachedPin = findPinnedConversation(queryClient, vars.conversationId);
+        const snapshot = mergeConvoSnapshot(
+          data,
+          findConvoInAllQueries(queryClient, vars.conversationId),
+          context?.superseded === true,
+        );
         const next =
-          data.isShared === undefined && cachedPin?.isShared !== undefined
-            ? { ...data, isShared: cachedPin.isShared }
-            : data;
+          snapshot.isShared === undefined && cachedPin?.isShared !== undefined
+            ? { ...snapshot, isShared: cachedPin.isShared }
+            : snapshot;
         updateConvoInAllQueries(queryClient, vars.conversationId, () => next);
-        /* Pinned state is list-relevant in both active and archived views. The
-         * archived variants carry filter/sort parameters, so invalidate by prefix. */
-        queryClient.invalidateQueries({ queryKey: [QueryKeys.archivedConversations] });
         /** An older pin may exist only in the dedicated pinned cache. Unpinning
          * it has to put the returned row onto the chats list; later pages
          * cannot recover a conversation whose updatedAt just jumped ahead of
@@ -263,13 +280,20 @@ export const usePinConversationMutation = (
         if (next.pinned !== true) {
           addConvoToAllQueries(queryClient, next);
         }
-        /** The pinned section has its own fetch, so a new pin is only visible once
-         * that list is refetched; unpins are already dropped from its cache above. */
-        queryClient.invalidateQueries([QueryKeys.pinnedConversations]);
-        onSuccess?.(data, vars, context);
+        if (context?.superseded) {
+          refreshConvoReadCaches(queryClient, vars.conversationId);
+        } else {
+          /* Pinned state affects both views; invalidate archived variants by prefix. */
+          queryClient.invalidateQueries({ queryKey: [QueryKeys.archivedConversations] });
+          queryClient.invalidateQueries([QueryKeys.pinnedConversations]);
+        }
+        onSuccess?.(data, vars);
       },
-      onError,
-      ..._options,
+      onError: (error, vars) => onError?.(error, vars),
+      onSettled: (data, error, vars, context) => {
+        endConvoSnapshot(queryClient, vars.conversationId, context);
+        return onSettled?.(data, error, vars);
+      },
     },
   );
 };
@@ -387,6 +411,7 @@ const getReadWriteState = (queryClient: QueryClient): ReadWriteState => {
 const claimReadWrite = (queryClient: QueryClient, conversationId: string): number => {
   const state = getReadWriteState(queryClient);
   state.next += 1;
+  supersedeConvoSnapshots(queryClient, conversationId, state.next);
   state.latest.set(conversationId, state.next);
   return state.next;
 };
@@ -406,6 +431,7 @@ const releaseReadWrite = (
   if (isLatestReadWrite(queryClient, conversationId, token)) {
     getReadWriteState(queryClient).latest.delete(conversationId);
   }
+  endConvoReadIntent(queryClient, conversationId, token);
 };
 
 /**
@@ -448,7 +474,12 @@ const settleCatchUp = (
     return;
   }
   const cached = findConvoInAllQueries(queryClient, conversationId);
-  if (!cached || cached.lastSeenAt === settled) {
+  if (
+    !cached ||
+    cached.lastSeenAt === settled ||
+    (cached.lastResponseAt != null &&
+      (acknowledged == null || cached.lastResponseAt > acknowledged))
+  ) {
     return;
   }
   const current = cached.lastSeenAt;
@@ -504,10 +535,11 @@ export const useMarkConversationSeenMutation = (): UseMutationResult<
            reads as caught up. */
         const acknowledged: string | undefined =
           vars.lastResponseAt ?? cached?.lastResponseAt ?? new Date().toISOString();
-        updateConvoInAllQueries(queryClient, vars.conversationId, (convo) => ({
-          ...convo,
-          lastSeenAt: acknowledged,
-        }));
+        updateConvoInAllQueries(queryClient, vars.conversationId, (convo) =>
+          convo.lastResponseAt != null && convo.lastResponseAt > acknowledged
+            ? convo
+            : { ...convo, lastSeenAt: acknowledged },
+        );
         return {
           previous: cached?.lastSeenAt,
           acknowledged,
@@ -569,7 +601,11 @@ export const useMarkConversationSeenMutation = (): UseMutationResult<
  */
 type UnreadWriteBaseline = Pick<
   t.TConversation,
-  'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual' | 'lastSeenAt'
+  | 'lastResponseAt'
+  | 'lastResponseMessageId'
+  | 'lastResponseIsManual'
+  | 'isMarkedUnread'
+  | 'lastSeenAt'
 >;
 
 const resolveReplyIdentity = (
@@ -671,6 +707,7 @@ const reassertAcceptedUnread = (
       serverResponseAt == null ? convo.lastResponseMessageId : resolveReplyIdentity(convo, data),
     lastResponseIsManual:
       serverResponseAt == null ? convo.lastResponseIsManual : data.lastResponseIsManual,
+    isMarkedUnread: data.isMarkedUnread ?? true,
     lastSeenAt: undefined,
   }));
 };
@@ -702,6 +739,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
           lastResponseAt: observed?.lastResponseAt,
           lastResponseMessageId: observed?.lastResponseMessageId,
           lastResponseIsManual: observed?.lastResponseIsManual,
+          isMarkedUnread: observed?.isMarkedUnread,
           lastSeenAt: observed?.lastSeenAt,
         });
         const interrupted = await cancelConvoReadFetches(queryClient, vars.conversationId);
@@ -710,6 +748,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
           lastResponseAt: owner.chain.baseline.lastResponseAt,
           lastResponseMessageId: owner.chain.baseline.lastResponseMessageId,
           lastResponseIsManual: owner.chain.baseline.lastResponseIsManual,
+          isMarkedUnread: owner.chain.baseline.isMarkedUnread,
           lastSeenAt: owner.chain.baseline.lastSeenAt,
           token: owner.token,
           interrupted,
@@ -734,6 +773,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
               : convo.lastResponseMessageId,
           lastResponseIsManual:
             convo.lastResponseAt == null || convo.lastResponseIsManual === true ? true : undefined,
+          isMarkedUnread: true,
           lastSeenAt: undefined,
         }));
         return context;
@@ -812,6 +852,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
         const lastResponseIsManual = keepsCached
           ? cached?.lastResponseIsManual
           : data.lastResponseIsManual;
+        const isMarkedUnread = keepsCached ? cached?.isMarkedUnread : (data.isMarkedUnread ?? true);
         const lastResponseMessageId =
           keepsCached || serverResponseAt == null
             ? cached?.lastResponseMessageId
@@ -820,6 +861,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
           cached?.lastSeenAt === undefined &&
           cachedResponseAt === lastResponseAt &&
           cached?.lastResponseIsManual === lastResponseIsManual &&
+          cached?.isMarkedUnread === isMarkedUnread &&
           cached?.lastResponseMessageId === lastResponseMessageId
         ) {
           return;
@@ -829,6 +871,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
           lastResponseAt,
           lastResponseMessageId,
           lastResponseIsManual,
+          isMarkedUnread,
           lastSeenAt: undefined,
         }));
       },
@@ -865,6 +908,7 @@ export const useMarkConversationUnreadMutation = (): UseMutationResult<
           lastResponseAt: context?.lastResponseAt,
           lastResponseMessageId: resolveReplyIdentity(convo, context),
           lastResponseIsManual: context?.lastResponseIsManual,
+          isMarkedUnread: context?.isMarkedUnread,
           lastSeenAt: context?.lastSeenAt,
         }));
       },

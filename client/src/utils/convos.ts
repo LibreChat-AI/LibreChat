@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query';
-import { LocalStorageKeys, QueryKeys } from 'librechat-data-provider';
+import { LocalStorageKeys, QueryKeys, UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import {
   format,
   isToday,
@@ -710,11 +710,15 @@ export function upsertConvoInAllQueries(
   queryClient: QueryClient,
   nextConvo: TConversation,
   moveToTop = true,
+  readState: 'partial' | 'snapshot' = 'partial',
 ) {
   if (!nextConvo.conversationId) {
     return;
   }
   const conversationId = nextConvo.conversationId;
+  if (readState === 'snapshot') {
+    nextConvo = mergeConvoSnapshot(nextConvo, findConvoInAllQueries(queryClient, conversationId));
+  }
 
   /* The history query excludes temporary conversations server-side, so seeding
      one into the list caches would surface it in the sidebar until the next
@@ -1213,7 +1217,7 @@ export function completeMessagesReplyFetch(
  * of the list while this one streamed, so the row is carried to its new position rather than
  * left at the date and place its run started with.
  *
- * A stamp that genuinely advances also clears the catch-up it outranks, mirroring the write the
+ * An advancing stamp resets catch-up to the unseen watermark, mirroring the write the
  * server made: a cached acknowledgement dated ahead of the new reply, which replica clock skew
  * can produce, would otherwise classify a reply nobody has read as seen, and the completion
  * watcher skips its own fetch precisely because this handler already moved the stamp.
@@ -1240,7 +1244,8 @@ export function applyServerReplyStamp(
       lastResponseAt,
       lastResponseMessageId: lastResponseMessageId ?? convo.lastResponseMessageId,
       lastResponseIsManual: undefined,
-      lastSeenAt: advances ? undefined : convo.lastSeenAt,
+      isMarkedUnread: advances ? false : convo.isMarkedUnread,
+      lastSeenAt: advances ? UNSEEN_REPLY_WATERMARK : convo.lastSeenAt,
       updatedAt: updatedAt ?? convo.updatedAt,
     }),
     updatedAt != null && updatedAt > (cached?.updatedAt ?? ''),
@@ -1267,6 +1272,123 @@ function preserveListFlags(next: TConversation, found: TConversation): TConversa
   return merged;
 }
 
+export type ConvoSnapshotFence = { superseded: boolean };
+
+type ConvoReadAuthority = {
+  readToken?: number;
+  snapshots: Set<ConvoSnapshotFence>;
+};
+
+const convoReadAuthorities = new WeakMap<QueryClient, Map<string, ConvoReadAuthority>>();
+
+function convoReadAuthority(queryClient: QueryClient, conversationId: string): ConvoReadAuthority {
+  let records = convoReadAuthorities.get(queryClient);
+  if (!records) {
+    records = new Map();
+    convoReadAuthorities.set(queryClient, records);
+  }
+  let authority = records.get(conversationId);
+  if (!authority) {
+    authority = { snapshots: new Set() };
+    records.set(conversationId, authority);
+  }
+  return authority;
+}
+
+function releaseConvoReadAuthority(queryClient: QueryClient, conversationId: string): void {
+  const records = convoReadAuthorities.get(queryClient);
+  const authority = records?.get(conversationId);
+  if (authority?.readToken == null && authority?.snapshots.size === 0) {
+    records?.delete(conversationId);
+  }
+}
+
+/** Authority records live only while a read write or server snapshot is pending. */
+export function beginConvoSnapshot(
+  queryClient: QueryClient,
+  conversationId: string,
+): ConvoSnapshotFence {
+  const authority = convoReadAuthority(queryClient, conversationId);
+  const fence = { superseded: authority.readToken != null };
+  authority.snapshots.add(fence);
+  return fence;
+}
+
+export function endConvoSnapshot(
+  queryClient: QueryClient,
+  conversationId: string,
+  fence: ConvoSnapshotFence | undefined,
+): void {
+  if (fence) convoReadAuthorities.get(queryClient)?.get(conversationId)?.snapshots.delete(fence);
+  releaseConvoReadAuthority(queryClient, conversationId);
+}
+
+export function supersedeConvoSnapshots(
+  queryClient: QueryClient,
+  conversationId: string,
+  readToken: number,
+): void {
+  const authority = convoReadAuthority(queryClient, conversationId);
+  authority.readToken = readToken;
+  for (const fence of authority.snapshots) fence.superseded = true;
+}
+
+export function endConvoReadIntent(
+  queryClient: QueryClient,
+  conversationId: string,
+  readToken: number | undefined,
+): void {
+  const authority = convoReadAuthorities.get(queryClient)?.get(conversationId);
+  if (authority && authority.readToken === readToken) delete authority.readToken;
+  releaseConvoReadAuthority(queryClient, conversationId);
+}
+
+export async function fetchConvoSnapshot(
+  queryClient: QueryClient,
+  conversationId: string,
+  fetch: () => Promise<TConversation>,
+): Promise<TConversation> {
+  const fence = beginConvoSnapshot(queryClient, conversationId);
+  try {
+    const record = await fetch();
+    return record == null
+      ? record
+      : mergeConvoSnapshot(
+          record,
+          findConvoInAllQueries(queryClient, conversationId),
+          fence.superseded,
+        );
+  } finally {
+    endConvoSnapshot(queryClient, conversationId, fence);
+  }
+}
+
+/** Full server snapshots clear omitted read fields; partial UI patches preserve them. */
+export function mergeConvoSnapshot(
+  snapshot: TConversation,
+  cached?: TConversation,
+  preferCachedReadState = false,
+): TConversation {
+  const state =
+    cached?.lastResponseAt != null &&
+    (snapshot.lastResponseAt == null ||
+      snapshot.lastResponseAt < cached.lastResponseAt ||
+      (snapshot.lastResponseAt === cached.lastResponseAt &&
+        (preferCachedReadState ||
+          (snapshot.lastSeenAt === UNSEEN_REPLY_WATERMARK &&
+            cached.lastSeenAt !== UNSEEN_REPLY_WATERMARK))))
+      ? cached
+      : snapshot;
+  return {
+    ...snapshot,
+    lastResponseAt: state.lastResponseAt,
+    lastResponseMessageId: state.lastResponseMessageId,
+    lastResponseIsManual: state.lastResponseIsManual,
+    isMarkedUnread: state.isMarkedUnread,
+    lastSeenAt: state.lastSeenAt,
+  };
+}
+
 const preserveReadState = (next: TConversation, found: TConversation): TConversation => {
   const merged = { ...next };
   if (!('lastResponseAt' in next)) {
@@ -1277,6 +1399,13 @@ const preserveReadState = (next: TConversation, found: TConversation): TConversa
   }
   if (!('lastResponseIsManual' in next)) {
     merged.lastResponseIsManual = found.lastResponseIsManual;
+  }
+  if (!('isMarkedUnread' in next)) {
+    merged.isMarkedUnread =
+      next.lastResponseAt != null &&
+      (found.lastResponseAt == null || next.lastResponseAt > found.lastResponseAt)
+        ? undefined
+        : found.isMarkedUnread;
   }
   if (!('lastSeenAt' in next)) {
     merged.lastSeenAt = found.lastSeenAt;
@@ -1296,6 +1425,7 @@ const chatOwnedStaleFields = [
   'lastResponseAt',
   'lastResponseMessageId',
   'lastResponseIsManual',
+  'isMarkedUnread',
   'lastSeenAt',
 ] as const;
 
