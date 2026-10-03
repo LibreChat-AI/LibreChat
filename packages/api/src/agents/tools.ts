@@ -446,6 +446,8 @@ export interface RegisterCodeExecutionToolsParams {
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
   /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
   workspaceLinkedWorktrees?: boolean;
+  /** The worker advertises its native SRT sandbox; describe the read-only filesystem to the model. */
+  workspaceNativeSandbox?: boolean;
   /**
    * When `true`, the registered `bash_tool` description includes the
    * LLM-facing `{{tool<idx>turn<turn>}}` reference syntax guide so the
@@ -543,6 +545,10 @@ ${READ_FILE_RANGE_INSTRUCTIONS}`;
 
 const ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS = `For an attached environment, read registered files as "workspace/{relativePath}". Use a canonical relative path without empty, ".", or ".." segments; the worker's host path stays private. Only the registered workspace persists for attached commands. Project dependencies stored there persist, while $HOME and global/system packages are operator-managed. Use start_line and max_lines for bounded pagination.`;
 
+/** Skill files live in LibreChat storage; attached commands only see the registered workspace. */
+const ATTACHED_WORKSPACE_SKILL_FILE_INSTRUCTIONS =
+  'Skill files are not on the attached machine, so bash_tool cannot run them by path; to run a skill script there, read it and write it into the workspace first.';
+
 const CODE_READ_FILE_PARAMETERS: LCTool['parameters'] = Object.freeze({
   ...SKILL_READ_FILE_PARAMETERS,
   type: 'object',
@@ -587,17 +593,26 @@ const CODE_READ_FILE_DEF: LCTool = Object.freeze({
   responseFormat: ReadFileToolDefinition.responseFormat,
 }) as LCTool;
 
+/**
+ * `attachedCommands` is true only when the attached `bash_tool` is registered
+ * beside this definition: the skill-file warning names it.
+ */
 function createAttachedWorkspaceReadFileDef(
   includeSkillFileInstructions: boolean,
   defaultReadFileLines: number = CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+  attachedCommands = false,
 ): LCTool {
   const baseDescription = includeSkillFileInstructions
     ? SKILL_READ_FILE_DESCRIPTION
     : CODE_READ_FILE_DESCRIPTION;
+  const attachedInstructions =
+    includeSkillFileInstructions && attachedCommands
+      ? `${ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS} ${ATTACHED_WORKSPACE_SKILL_FILE_INSTRUCTIONS}`
+      : ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS;
   return Object.freeze({
     name: ReadFileToolDefinition.name,
     toolType: 'builtin',
-    description: `${baseDescription}\n\n${ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS}`,
+    description: `${baseDescription}\n\n${attachedInstructions}`,
     parameters:
       defaultReadFileLines === CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES
         ? ATTACHED_WORKSPACE_READ_FILE_PARAMETERS
@@ -617,6 +632,17 @@ function createAttachedWorkspaceReadFileDef(
 
 const ATTACHED_CODE_READ_FILE_DEF = createAttachedWorkspaceReadFileDef(false);
 const ATTACHED_SKILL_READ_FILE_DEF = createAttachedWorkspaceReadFileDef(true);
+const ATTACHED_SKILL_COMMAND_READ_FILE_DEF = createAttachedWorkspaceReadFileDef(
+  true,
+  CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+  true,
+);
+
+/** Skill-only `read_file` beside the attached `bash_tool` when the worker does not offer `read_file`. */
+const ATTACHED_SKILL_ONLY_READ_FILE_DEF: LCTool = Object.freeze({
+  ...READ_FILE_DEF,
+  description: `${SKILL_READ_FILE_DESCRIPTION}\n\n${ATTACHED_WORKSPACE_SKILL_FILE_INSTRUCTIONS}`,
+}) as LCTool;
 
 /**
  * The SDK constraint the authoring variant rewrites. Left alone it tells the
@@ -1020,14 +1046,20 @@ function buildReadFileDef(
   includeSkillFileInstructions: boolean,
   workspaceTools: boolean,
   defaultReadFileLines: number = CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+  attachedCommands = false,
 ): LCTool {
   if (workspaceTools) {
     if (defaultReadFileLines !== CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES) {
-      return createAttachedWorkspaceReadFileDef(includeSkillFileInstructions, defaultReadFileLines);
+      return createAttachedWorkspaceReadFileDef(
+        includeSkillFileInstructions,
+        defaultReadFileLines,
+        attachedCommands,
+      );
     }
-    return includeSkillFileInstructions
-      ? ATTACHED_SKILL_READ_FILE_DEF
-      : ATTACHED_CODE_READ_FILE_DEF;
+    if (!includeSkillFileInstructions) {
+      return ATTACHED_CODE_READ_FILE_DEF;
+    }
+    return attachedCommands ? ATTACHED_SKILL_COMMAND_READ_FILE_DEF : ATTACHED_SKILL_READ_FILE_DEF;
   }
   return includeSkillFileInstructions ? READ_FILE_DEF : CODE_READ_FILE_DEF;
 }
@@ -1109,6 +1141,7 @@ function createBashToolDef(
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'],
   workspaceLinkedWorktrees = false,
   workspaceCommandTimeoutDefaultMs?: number,
+  workspaceNativeSandbox = false,
 ): LCTool {
   /* Passed as a variable (not an inline literal) so the extra
    * `statefulSessions` key stays assignable against pinned SDK versions
@@ -1118,7 +1151,11 @@ function createBashToolDef(
     name: BashExecutionToolDefinition.name,
     toolType: 'builtin',
     description: workspaceTools
-      ? buildAttachedWorkspaceBashDescription(enableToolOutputReferences, workspaceEnvironment)
+      ? buildAttachedWorkspaceBashDescription(
+          enableToolOutputReferences,
+          workspaceEnvironment,
+          workspaceNativeSandbox,
+        )
       : buildBashExecutionToolDescription(descriptionOpts),
     parameters: (workspaceTools
       ? buildAttachedWorkspaceBashSchema(
@@ -1143,6 +1180,7 @@ function buildBashToolDef(opts: {
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
   /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
   workspaceLinkedWorktrees?: boolean;
+  workspaceNativeSandbox?: boolean;
 }): LCTool {
   /* Stateful defs are built on demand: the stateless pair covers the
    * default path, and per-run construction is negligible next to init. */
@@ -1155,6 +1193,7 @@ function buildBashToolDef(opts: {
       opts.workspaceEnvironment,
       opts.workspaceLinkedWorktrees === true,
       opts.workspaceCommandTimeoutDefaultMs,
+      opts.workspaceNativeSandbox === true,
     );
   }
   return opts.enableToolOutputReferences
@@ -1191,6 +1230,7 @@ export function registerCodeExecutionTools(
     workspaceReadFileDefaultLines,
     workspaceEnvironment,
     workspaceLinkedWorktrees,
+    workspaceNativeSandbox,
     enableToolOutputReferences = false,
     statefulSessions = false,
   } = params;
@@ -1198,14 +1238,21 @@ export function registerCodeExecutionTools(
   const supportsWorkspaceOperation = (operation: CodeWorkspaceOperation): boolean =>
     !workspaceTools || workspaceOperations?.has(operation) === true;
   const candidates: LCTool[] = [];
+  const bashAvailable = includeBash && supportsWorkspaceOperation('execute_command');
+  const attachedCommands = workspaceTools && bashAvailable;
   if (!workspaceTools || supportsWorkspaceOperation('read_file')) {
     candidates.push(
-      buildReadFileDef(includeSkillFileInstructions, workspaceTools, workspaceReadFileDefaultLines),
+      buildReadFileDef(
+        includeSkillFileInstructions,
+        workspaceTools,
+        workspaceReadFileDefaultLines,
+        attachedCommands,
+      ),
     );
   } else if (includeSkillFileInstructions) {
-    candidates.push(buildReadFileDef(true, false));
+    candidates.push(attachedCommands ? ATTACHED_SKILL_ONLY_READ_FILE_DEF : READ_FILE_DEF);
   }
-  if (includeBash && supportsWorkspaceOperation('execute_command')) {
+  if (bashAvailable) {
     candidates.push(
       buildBashToolDef({
         enableToolOutputReferences,
@@ -1215,6 +1262,7 @@ export function registerCodeExecutionTools(
         workspaceCommandTimeoutDefaultMs,
         workspaceEnvironment,
         workspaceLinkedWorktrees,
+        workspaceNativeSandbox,
       }),
     );
   }

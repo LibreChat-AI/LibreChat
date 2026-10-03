@@ -22,6 +22,20 @@ export type CodeCapabilityConfigLoader = ReturnType<typeof createAppConfigServic
 
 const pollWorkerStatus = createCodeBridgeStatusPoller();
 
+/** The worker's default label for native SRT workspace commands, optionally `:<command-policy-preset>`. */
+const NATIVE_SANDBOX_PROFILE = 'anthropic-srt';
+
+/**
+ * Whether the worker reports the native SRT command sandbox, whose filesystem is
+ * read-only outside the workspace and a private `$TMPDIR`. A custom operator
+ * label is not recognized, so its description omits the claim.
+ */
+export function isNativeSandboxProfile(profile: string | undefined): boolean {
+  return (
+    profile === NATIVE_SANDBOX_PROFILE || profile?.startsWith(`${NATIVE_SANDBOX_PROFILE}:`) === true
+  );
+}
+
 function canonicalWorkspaceSelections(
   selections: CodeWorkspaceSelection[],
 ): CodeWorkspaceSelection[] {
@@ -169,6 +183,7 @@ export async function resolveCodeExecutionWorkspaceContext({
       !usesIsolation
         ? { linkedWorktrees: true }
         : {}),
+      ...(isNativeSandboxProfile(status.sandboxProfile) ? { nativeSandbox: true } : {}),
       ...(status.maxCommandTimeoutMs == null
         ? {}
         : { maxCommandTimeoutMs: status.maxCommandTimeoutMs }),

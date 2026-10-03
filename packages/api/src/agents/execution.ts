@@ -62,6 +62,8 @@ export interface CodeExecutionContext {
     workspaceInstanceId?: string;
     /** The worker schedules each `.worktrees/<name>` of this root as its own lane. */
     linkedWorktrees?: boolean;
+    /** The worker advertises the native SRT sandbox: read-only filesystem outside the workspace and `$TMPDIR`. */
+    nativeSandbox?: boolean;
     /** Live Code API execution ceiling. Omitted by older deployments. */
     maxCommandTimeoutMs?: number;
     /** Edit features the worker negotiated with the Code API. Omitted by older workers. */

@@ -11,8 +11,10 @@ import type { WorkspaceExecuteCommandRequest } from './workspace';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeBridgeFetch } from './bridge';
 import {
+  ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION,
   ATTACHED_WORKSPACE_BASH_DESCRIPTION,
   ATTACHED_WORKSPACE_BASH_SCHEMA,
+  buildAttachedWorkspaceBashDescription,
   buildAttachedWorkspaceBashSchema,
   createAttachedWorkspaceBashTool,
   createContextProgrammaticBashTool,
@@ -30,14 +32,66 @@ describe('attached workspace Bash contract', () => {
     expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain(
       'Only registered-workspace files persist',
     );
-    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('Install project dependencies there');
+    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('install project dependencies there');
     expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('$HOME');
-    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('/tmp, $TMPDIR');
-    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('global/system packages');
-    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('background processes do not survive');
-    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('not the final directory');
     expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain(
-      'Scripts are not automatically rewritten',
+      'temp files, and background processes are not durable',
+    );
+    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('global/system packages');
+    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('not the final one');
+    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).toContain('scripts are not rewritten');
+  });
+
+  test('describes the read-only native sandbox filesystem only when the worker advertises it', () => {
+    const scratch =
+      '/ and /tmp are read-only; write scratch files to $TMPDIR or the workspace. Programs that hardcode /tmp fail.';
+    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).not.toContain('read-only');
+    expect(ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION).toContain(scratch);
+    expect(ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION.replace(`- ${scratch}\n`, '')).toBe(
+      ATTACHED_WORKSPACE_BASH_DESCRIPTION,
+    );
+    expect(buildAttachedWorkspaceBashDescription(false)).toBe(ATTACHED_WORKSPACE_BASH_DESCRIPTION);
+    expect(
+      buildAttachedWorkspaceBashDescription(true, undefined, true).startsWith(
+        `${ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION}\n\n`,
+      ),
+    ).toBe(true);
+    const tool = (nativeSandbox?: boolean): string =>
+      createAttachedWorkspaceBashTool({
+        baseUrl: 'https://code.example.com/v1',
+        authHeaders: () => ({}),
+        workspaceId: 'project-a',
+        nativeSandbox,
+      }).description;
+    expect(tool(true)).toBe(ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION);
+    expect(tool(false)).toBe(ATTACHED_WORKSPACE_BASH_DESCRIPTION);
+    expect(tool()).toBe(ATTACHED_WORKSPACE_BASH_DESCRIPTION);
+  });
+
+  test('states that commands start in cwd so the model does not also cd into it', () => {
+    const { properties } = buildAttachedWorkspaceBashSchema();
+    expect(properties?.command?.description).toContain(
+      'It starts in cwd, or in the workspace root when cwd is omitted.',
+    );
+    expect(properties?.cwd?.description).toContain(
+      'The command starts there; do not also cd into it.',
+    );
+    expect(properties?.cwd?.description).not.toContain('checkout-wide');
+    expect(properties?.cwd?.description).not.toContain('.worktrees');
+  });
+
+  test('describes checkout-wide root calls only in linked-worktree lane mode', () => {
+    const laneCwd = buildAttachedWorkspaceBashSchema(undefined, undefined, true).properties?.cwd
+      ?.description;
+    expect(laneCwd).toContain('The command starts there; do not also cd into it.');
+    expect(laneCwd).toContain(
+      'Pass a linked worktree directory here (e.g. ".worktrees/fix-auth") rather than cd into it: different worktrees run in parallel.',
+    );
+    expect(laneCwd).toContain(
+      'Any other call, with or without cwd, is checkout-wide: it waits for all running worktree calls and blocks new ones until it finishes, as do file tools on paths outside .worktrees/<name>.',
+    );
+    expect(laneCwd).toContain(
+      'Reserve checkout-wide calls for creating, pruning or removing worktrees, batching any git fetch they need into the same call.',
     );
   });
 
@@ -707,7 +761,9 @@ describe('createAttachedWorkspaceBashTool', () => {
     const content = await bashTool.invoke({ command });
     expect(content).toContain('[starting directory: "workspace/"]');
     expect(content).toContain('pass cwd instead of a leading cd');
-    expect(content).toContain('does not select a linked-worktree lane');
+    expect(content).toContain(
+      'does not select a linked-worktree lane, so this call ran checkout-wide.',
+    );
     expect(content).toContain('This command was not rewritten; do not rerun it');
     const request = JSON.parse(String((fetchImpl as jest.Mock).mock.calls[0][1]?.body));
     expect(request.command).toBe(command);
