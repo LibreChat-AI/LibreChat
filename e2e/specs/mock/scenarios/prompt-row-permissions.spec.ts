@@ -63,10 +63,16 @@ async function rowActions(page: Page, name: string): Promise<string[]> {
     .getByRole('button', { name: new RegExp(`^${name} prompt`) })
     .locator('..');
   await expect(row).toBeVisible({ timeout: 20000 });
-  await row.hover();
-  await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
   const menu = page.getByRole('menu');
-  await expect(menu).toBeVisible();
+  /** Preview is always offered, so it marks a menu whose items have rendered. A click
+   *  that lands while the previous row's menu is still closing opens nothing. */
+  await expect(async () => {
+    if (!(await menu.isVisible())) {
+      await row.hover();
+      await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
+    }
+    await expect(menu.getByRole('menuitem', { name: 'Preview' })).toBeVisible({ timeout: 2000 });
+  }).toPass({ timeout: 15000 });
   const items = await menu.getByRole('menuitem').allInnerTexts();
   await page.keyboard.press('Escape');
   await expect(menu).toBeHidden();
@@ -166,9 +172,9 @@ test.describe('prompt row permissions', () => {
       await page.goBack();
       await openPanel(page, 'prompts', 'Prompts');
       await filterPanel(page, name);
-      await expect
-        .poll(() => rowActions(page, name), { timeout: 20000 })
-        .toEqual(['Preview', 'Edit', 'Delete']);
+      await expect(async () => {
+        expect(await rowActions(page, name)).toEqual(['Preview', 'Edit', 'Delete']);
+      }).toPass({ timeout: 30000 });
     } finally {
       await deleteGroups(page, ids.filter(Boolean));
     }
