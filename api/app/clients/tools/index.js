@@ -5,6 +5,7 @@ const DALLE3 = require('./structured/DALLE3');
 const FluxAPI = require('./structured/FluxAPI');
 const OpenWeather = require('./structured/OpenWeather');
 const StructuredWolfram = require('./structured/Wolfram');
+const AzureSora = require('./structured/AzureSora');
 const StructuredACS = require('./structured/AzureAISearch');
 const StructuredSD = require('./structured/StableDiffusion');
 const GoogleSearchAPI = require('./structured/GoogleSearch');
@@ -18,6 +19,7 @@ module.exports = {
   // Structured Tools
   DALLE3,
   FluxAPI,
+  AzureSora,
   OpenWeather,
   StructuredSD,
   StructuredACS,

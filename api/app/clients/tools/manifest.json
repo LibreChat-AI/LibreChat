@@ -161,6 +161,24 @@
     ]
   },
   {
+    "name": "Azure Sora",
+    "pluginKey": "azure_sora",
+    "description": "Generate short videos from text descriptions with OpenAI's Sora models on Azure OpenAI.",
+    "icon": "assets/azure-ai-search.svg",
+    "authConfig": [
+      {
+        "authField": "AZURE_SORA_ENDPOINT",
+        "label": "Azure OpenAI Endpoint",
+        "description": "The endpoint of your Azure OpenAI resource, e.g. https://your-resource.openai.azure.com"
+      },
+      {
+        "authField": "AZURE_SORA_API_KEY",
+        "label": "Azure OpenAI API Key",
+        "description": "The API key of your Azure OpenAI resource with a Sora deployment."
+      }
+    ]
+  },
+  {
     "name": "Gemini Image Tools",
     "pluginKey": "gemini_image_gen",
     "description": "Generate high-quality images using Google's Gemini Image Models. Supports Gemini API or Vertex AI.",

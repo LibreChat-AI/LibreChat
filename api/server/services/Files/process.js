@@ -1632,6 +1632,59 @@ async function saveBase64Image(
 }
 
 /**
+ * Saves a base64-encoded video (data URI) through the configured file strategy.
+ * Unlike `saveBase64Image`, the bytes are stored as-is: video content cannot
+ * pass through the image resizing pipeline.
+ * @param {string} url - Data URI of the video, e.g. `data:video/mp4;base64,...`
+ * @param {Object} params
+ * @param {ServerRequest} params.req
+ * @param {string} [params.file_id]
+ * @param {string} params.filename
+ * @param {FileContext} params.context
+ * @returns {Promise<MongoFile>}
+ */
+async function saveBase64Video(url, { req, file_id: _file_id, filename: _filename, context }) {
+  const retentionExpiryPromise = getRetentionExpiry(req);
+  const appConfig = req.config;
+  const file_id = _file_id ?? v4();
+  let filename = `${file_id}-${_filename}`;
+  const { buffer, type } = base64ToBuffer(url);
+  if (!path.extname(_filename)) {
+    const extension = mime.getExtension(type);
+    if (extension) {
+      filename += `.${extension}`;
+    } else {
+      throw new Error(`Could not determine file extension from MIME type: ${type}`);
+    }
+  }
+  const source = getFileStrategy(appConfig);
+  const { saveBuffer } = getStrategyFunctions(source);
+  const filepath = await saveBuffer({
+    userId: req.user.id,
+    fileName: filename,
+    buffer,
+    tenantId: req.user.tenantId,
+  });
+  const storageMetadata = getStorageMetadata({ filepath, source });
+  return await db.createFile(
+    {
+      type,
+      source,
+      context,
+      file_id,
+      filepath,
+      ...storageMetadata,
+      filename,
+      user: req.user.id,
+      bytes: buffer.byteLength,
+      ...(await retentionExpiryPromise),
+      tenantId: req.user.tenantId,
+    },
+    true,
+  );
+}
+
+/**
  * Filters a file based on its size and the endpoint origin.
  *
  * @param {Object} params - The parameters for the function.
@@ -1737,6 +1790,7 @@ module.exports = {
   filterFile,
   processFileURL,
   saveBase64Image,
+  saveBase64Video,
   processImageFile,
   uploadImageBuffer,
   sweepExpiredFiles,

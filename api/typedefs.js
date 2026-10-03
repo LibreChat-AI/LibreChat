@@ -917,6 +917,12 @@
  */
 
 /**
+ * @exports saveBase64Video
+ * @typedef {import('~/server/services/Files/process').saveBase64Video} saveBase64Video
+ * @memberof typedefs
+ */
+
+/**
  *
  * @typedef {Object} ImageGenOptions
  * @property {ServerRequest} req - The request object.
@@ -924,6 +930,7 @@
  * @property {processFileURL} processFileURL - The function to process a file URL.
  * @property {boolean} returnMetadata - Whether to return metadata.
  * @property {uploadImageBuffer} uploadImageBuffer - The function to upload an image buffer.
+ * @property {saveBase64Video} [saveBase64Video] - The function to persist a generated video (video tools only).
  * @memberof typedefs
  */
 
