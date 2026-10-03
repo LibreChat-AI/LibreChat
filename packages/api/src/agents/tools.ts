@@ -446,6 +446,8 @@ export interface RegisterCodeExecutionToolsParams {
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
   /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
   workspaceLinkedWorktrees?: boolean;
+  /** The worker advertises its native SRT sandbox; describe the read-only filesystem to the model. */
+  workspaceNativeSandbox?: boolean;
   /**
    * When `true`, the registered `bash_tool` description includes the
    * LLM-facing `{{tool<idx>turn<turn>}}` reference syntax guide so the
@@ -543,6 +545,10 @@ ${READ_FILE_RANGE_INSTRUCTIONS}`;
 
 const ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS = `For an attached environment, read registered files as "workspace/{relativePath}". Use a canonical relative path without empty, ".", or ".." segments; the worker's host path stays private. Only the registered workspace persists for attached commands. Project dependencies stored there persist, while $HOME and global/system packages are operator-managed. Use start_line and max_lines for bounded pagination.`;
 
+/** Skill files live in LibreChat storage; attached commands only see the registered workspace. */
+const ATTACHED_WORKSPACE_SKILL_FILE_INSTRUCTIONS =
+  'Skill files are not on the attached machine, so bash_tool cannot run them by path; to run a skill script there, read it and write it into the workspace first.';
+
 const CODE_READ_FILE_PARAMETERS: LCTool['parameters'] = Object.freeze({
   ...SKILL_READ_FILE_PARAMETERS,
   type: 'object',
@@ -594,10 +600,13 @@ function createAttachedWorkspaceReadFileDef(
   const baseDescription = includeSkillFileInstructions
     ? SKILL_READ_FILE_DESCRIPTION
     : CODE_READ_FILE_DESCRIPTION;
+  const attachedInstructions = includeSkillFileInstructions
+    ? `${ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS} ${ATTACHED_WORKSPACE_SKILL_FILE_INSTRUCTIONS}`
+    : ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS;
   return Object.freeze({
     name: ReadFileToolDefinition.name,
     toolType: 'builtin',
-    description: `${baseDescription}\n\n${ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS}`,
+    description: `${baseDescription}\n\n${attachedInstructions}`,
     parameters:
       defaultReadFileLines === CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES
         ? ATTACHED_WORKSPACE_READ_FILE_PARAMETERS
@@ -1109,6 +1118,7 @@ function createBashToolDef(
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'],
   workspaceLinkedWorktrees = false,
   workspaceCommandTimeoutDefaultMs?: number,
+  workspaceNativeSandbox = false,
 ): LCTool {
   /* Passed as a variable (not an inline literal) so the extra
    * `statefulSessions` key stays assignable against pinned SDK versions
@@ -1118,7 +1128,11 @@ function createBashToolDef(
     name: BashExecutionToolDefinition.name,
     toolType: 'builtin',
     description: workspaceTools
-      ? buildAttachedWorkspaceBashDescription(enableToolOutputReferences, workspaceEnvironment)
+      ? buildAttachedWorkspaceBashDescription(
+          enableToolOutputReferences,
+          workspaceEnvironment,
+          workspaceNativeSandbox,
+        )
       : buildBashExecutionToolDescription(descriptionOpts),
     parameters: (workspaceTools
       ? buildAttachedWorkspaceBashSchema(
@@ -1143,6 +1157,7 @@ function buildBashToolDef(opts: {
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
   /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
   workspaceLinkedWorktrees?: boolean;
+  workspaceNativeSandbox?: boolean;
 }): LCTool {
   /* Stateful defs are built on demand: the stateless pair covers the
    * default path, and per-run construction is negligible next to init. */
@@ -1155,6 +1170,7 @@ function buildBashToolDef(opts: {
       opts.workspaceEnvironment,
       opts.workspaceLinkedWorktrees === true,
       opts.workspaceCommandTimeoutDefaultMs,
+      opts.workspaceNativeSandbox === true,
     );
   }
   return opts.enableToolOutputReferences
@@ -1191,6 +1207,7 @@ export function registerCodeExecutionTools(
     workspaceReadFileDefaultLines,
     workspaceEnvironment,
     workspaceLinkedWorktrees,
+    workspaceNativeSandbox,
     enableToolOutputReferences = false,
     statefulSessions = false,
   } = params;
@@ -1215,6 +1232,7 @@ export function registerCodeExecutionTools(
         workspaceCommandTimeoutDefaultMs,
         workspaceEnvironment,
         workspaceLinkedWorktrees,
+        workspaceNativeSandbox,
       }),
     );
   }

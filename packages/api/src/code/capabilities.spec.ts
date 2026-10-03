@@ -3,6 +3,7 @@ import type { AppConfig } from '@librechat/data-schemas';
 import type { CodeExecutionContext, CodeEnvironmentConfig } from '~/agents/execution';
 import {
   CodeWorkspaceSelectionError,
+  isNativeSandboxProfile,
   resolveCodeExecutionWorkspaceContext,
   supportsProgrammaticCodeExecution,
 } from './capabilities';
@@ -429,6 +430,32 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
       'tolerant_match',
     ]);
   });
+
+  it.each([
+    { sandboxProfile: 'anthropic-srt', nativeSandbox: true },
+    { sandboxProfile: 'anthropic-srt:trusted-vm', nativeSandbox: true },
+    { sandboxProfile: 'anthropic-srt-custom', nativeSandbox: undefined },
+    { sandboxProfile: 'native-srt', nativeSandbox: undefined },
+    { sandboxProfile: 'oci-docker', nativeSandbox: undefined },
+  ])(
+    'marks the native sandbox only for its advertised profile: $sandboxProfile',
+    async ({ sandboxProfile, nativeSandbox }) => {
+      const response = workspaceStatus([{ id: 'docs' }]);
+      const body = await response.json();
+      body.capabilities.sandboxProfile = sandboxProfile;
+      jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(body)));
+
+      const resolved = await resolveCodeExecutionWorkspaceContext({
+        context,
+        requestedSelections: [{ environmentId: 'personal', workspaceId: 'docs' }],
+        environments,
+        getAppConfig,
+      });
+
+      expect(resolved.codeWorkspace?.nativeSandbox).toBe(nativeSandbox);
+      expect(isNativeSandboxProfile(sandboxProfile)).toBe(nativeSandbox === true);
+    },
+  );
 
   it('carries validated project metadata from the selected workspace', async () => {
     const environment = {
