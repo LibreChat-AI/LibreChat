@@ -82,6 +82,12 @@ const CATEGORY_WEIGHT: Readonly<Partial<Record<Category, number>>> = {
   travel: 12,
 };
 const BIG: ReadonlySet<Category> = new Set(['life', 'dance', 'travel']);
+/** Actions that walk to the pointer; without a pointer they would address nobody. */
+const TO_POINTER: ReadonlySet<string> = new Set(
+  ACTIONS.filter((def) => def.steps.some(([, spec]) => spec.m?.to === 'pointer')).map(
+    (def) => def.id,
+  ),
+);
 /** A step that waits for a move gives up and snaps after this long, so a slow style never drags. */
 const MOVE_TIMEOUT_MS = 9000;
 const TYPING_QUIET_MS = 2500;
@@ -140,7 +146,8 @@ export class LiaEngine {
   private lastDraw = 0;
   private lastFrame = 0;
   private bubble: Bubble | null = null;
-  private typingUntil = 0;
+  /** Unset until the user first types, so a fresh engine is never busy. */
+  private typingUntil = -Infinity;
   private lastUser = 0;
   private clicks: number[] = [];
   private petIndex = 0;
@@ -323,6 +330,9 @@ export class LiaEngine {
     for (const def of ACTIONS) {
       const base = CATEGORY_WEIGHT[def.cat];
       if (base == null || def.noAuto || (this.reducedMotion && def.moves)) {
+        continue;
+      }
+      if (!this.pointer && TO_POINTER.has(def.id)) {
         continue;
       }
       let w = def.weight;

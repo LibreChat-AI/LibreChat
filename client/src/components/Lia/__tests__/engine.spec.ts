@@ -97,6 +97,25 @@ describe('LiaEngine', () => {
     expect(chosen).toBeGreaterThan(0);
   });
 
+  it('is not busy before the user has typed', () => {
+    const { engine } = setup();
+    expect(engine.attention(100)).not.toBe('busy');
+    expect(engine.chooseLife(100, seeded())).not.toBeNull();
+  });
+
+  it('only walks to the pointer once there is one', () => {
+    const { engine } = setup();
+    const toPointer = (id: string | null) =>
+      ACTION_BY_ID.get(id ?? '')?.steps.some(([, spec]) => spec.m?.to === 'pointer') ?? false;
+    const picks = (seed: number) => {
+      const random = seeded(seed);
+      return Array.from({ length: 2000 }, () => engine.chooseLife(60_000, random));
+    };
+    expect(picks(5).some(toPointer)).toBe(false);
+    engine.pointer = { x: 300, y: 380 };
+    expect(picks(5).some(toPointer)).toBe(true);
+  });
+
   it('escalates from petting to dizziness to a crash', () => {
     const { engine } = setup();
     engine.pet(0);
