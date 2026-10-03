@@ -701,6 +701,7 @@ router.post(
   configMiddleware,
   createRenameConversationHandler({
     saveConvo: db.saveConvo,
+    getConvo: db.getConvo,
     getActiveRunIds:
       GenerationJobManager.getCleanupBlockingJobIdsForConversations.bind(GenerationJobManager),
     logger,

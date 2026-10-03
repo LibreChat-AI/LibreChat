@@ -97,7 +97,12 @@ describe('useUpdateConversationMutation', () => {
           }),
       )
       .catch((error) => isCancelledError(error));
-    updateConversation.mockResolvedValueOnce({ ...old, title: 'Renamed' });
+    updateConversation.mockResolvedValueOnce({
+      ...old,
+      title: 'Renamed',
+      titleSetByUser: true,
+      titleRevision: 1,
+    });
     await act(async () =>
       result.current.mutateAsync({ conversationId: 'refreshing', title: 'Renamed' }),
     );
@@ -158,9 +163,11 @@ describe('useUpdateConversationMutation', () => {
       result.current.mutateAsync({ conversationId: 'rolling-chat', title: 'Legacy rename' }),
     );
     expect(activeQueryClient.getQueryData<TConversation>(key)?.titleRevision).toBeUndefined();
+    expect(activeQueryClient.getQueryData<TConversation>(key)?.titleSetByUser).toBeUndefined();
     updateConversation.mockResolvedValueOnce({
       ...base,
       title: 'Upgraded rename',
+      titleSetByUser: true,
       titleRevision: 1,
     });
     await act(async () =>
@@ -171,6 +178,32 @@ describe('useUpdateConversationMutation', () => {
         title: 'Upgraded rename',
         titleSetByUser: true,
         titleRevision: 1,
+      }),
+    );
+  });
+  it('does not invent ownership when a legacy replica omits its metadata', async () => {
+    const { result } = renderHook(() => useUpdateConversationMutation('legacy-rename'), {
+      wrapper,
+    });
+    const key = [QueryKeys.conversation, 'legacy-rename'];
+    activeQueryClient.setQueryData(key, {
+      conversationId: 'legacy-rename',
+      title: 'Before',
+      titleSetByUser: true,
+      titleRevision: 1,
+    });
+    updateConversation.mockResolvedValueOnce({
+      conversationId: 'legacy-rename',
+      title: 'Legacy saved',
+    } as TConversation);
+    await act(async () =>
+      result.current.mutateAsync({ conversationId: 'legacy-rename', title: 'Legacy saved' }),
+    );
+    expect(activeQueryClient.getQueryData(key)).toEqual(
+      expect.objectContaining({
+        title: 'Legacy saved',
+        titleSetByUser: undefined,
+        titleRevision: undefined,
       }),
     );
   });

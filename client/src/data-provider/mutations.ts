@@ -66,7 +66,7 @@ export const useUpdateConversationMutation = (
           return {
             ...(previous ?? updatedConvo),
             title: updatedConvo.title,
-            titleSetByUser: true,
+            titleSetByUser: updatedConvo.titleSetByUser,
             titleRevision: updatedConvo.titleRevision,
             updatedAt: updatedConvo.updatedAt,
           };

@@ -11,12 +11,14 @@ function setup(
     enabled?: boolean;
     current?: RenameRequest['resolvedConversation'];
     authenticated?: boolean;
+    accessCacheHit?: boolean;
   } = {},
 ) {
   const config: AppConfig = {
     interfaceConfig: { runningChatRename: options.enabled ?? true },
   } as AppConfig;
   const deps = {
+    getConvo: jest.fn().mockResolvedValue({ conversationId: 'chat', title: 'Established chat' }),
     saveConvo: jest
       .fn<
         ReturnType<ConversationMethods['saveConvo']>,
@@ -35,13 +37,18 @@ function setup(
   const app = express();
   app.use(express.json());
   app.post('/rename', async (req, res) => {
+    let current = options.current;
+    if (options.accessCacheHit) {
+      current = undefined;
+    } else if (current === undefined) {
+      current = { title: 'Established chat' };
+    }
     await handler(
       {
         body: req.body,
         user: options.authenticated === false ? undefined : { id: 'owner', tenantId: 'tenant' },
         config,
-        resolvedConversation:
-          options.current === undefined ? { title: 'Established chat' } : options.current,
+        resolvedConversation: current,
       },
       res,
     );
@@ -64,14 +71,50 @@ describe('rename conversation', () => {
     );
     expect(deps.getActiveRunIds).not.toHaveBeenCalled();
   });
-  it.each([undefined, null, { title: 'New Chat' }, { title: '' }])(
+  it.each([{ title: 'New Chat' }, { title: '' }])(
     'fences unowned pending-title records during rollout: %j',
     async (current) => {
-      const { app, deps } = setup({ enabled: false, current: current ?? null });
+      const { app, deps } = setup({ enabled: false, current });
       expect((await request(app).post('/rename').send({ arg })).status).toBe(409);
       expect(deps.saveConvo).not.toHaveBeenCalled();
     },
   );
+  it('loads the record on access-cache hits and retains default-off settled rename', async () => {
+    const expiredAt = new Date('2027-01-01');
+    const { app, deps } = setup({ enabled: false, accessCacheHit: true });
+    deps.getConvo.mockResolvedValue({ title: 'Established chat', isTemporary: true, expiredAt });
+    const response = await request(app).post('/rename').send({ arg });
+    expect(response.status).toBe(201);
+    expect(deps.getConvo).toHaveBeenCalledWith('owner', 'chat');
+    expect(deps.saveConvo).toHaveBeenCalledWith(
+      expect.objectContaining({ isTemporary: true, expiredAt }),
+      arg,
+      expect.anything(),
+    );
+  });
+  it('reuses middleware-loaded records without another database lookup', async () => {
+    const { app, deps } = setup({ enabled: false });
+    expect((await request(app).post('/rename').send({ arg })).status).toBe(201);
+    expect(deps.getConvo).not.toHaveBeenCalled();
+  });
+  it('still fences pending titles and active writers on access-cache hits', async () => {
+    const { app, deps } = setup({ enabled: false, accessCacheHit: true });
+    deps.getConvo.mockResolvedValueOnce({ title: 'New Chat' });
+    expect((await request(app).post('/rename').send({ arg })).status).toBe(409);
+    deps.getActiveRunIds.mockResolvedValueOnce(['old-run']);
+    expect((await request(app).post('/rename').send({ arg })).status).toBe(409);
+    expect(deps.saveConvo).not.toHaveBeenCalled();
+  });
+  it('distinguishes missing records from failed lookups on access-cache hits', async () => {
+    const { app, deps } = setup({ enabled: false, accessCacheHit: true });
+    deps.getConvo.mockResolvedValueOnce(null);
+    expect((await request(app).post('/rename').send({ arg })).status).toBe(404);
+    deps.getConvo.mockRejectedValueOnce(new Error('private-storage-content'));
+    const response = await request(app).post('/rename').send({ arg });
+    expect(response.status).toBe(500);
+    expect(response.text).toBe('Error updating conversation');
+    expect(deps.saveConvo).not.toHaveBeenCalled();
+  });
   it('fences an older active writer even if its row already has a real title', async () => {
     const { app, deps } = setup({ enabled: false });
     deps.getActiveRunIds.mockResolvedValue(['old-replica-run']);

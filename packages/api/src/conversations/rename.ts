@@ -27,7 +27,7 @@ type RenameRequest = {
   } | null;
 };
 
-type RenameDependencies = Pick<ConversationMethods, 'saveConvo'> & {
+type RenameDependencies = Pick<ConversationMethods, 'saveConvo' | 'getConvo'> & {
   getActiveRunIds: (
     user: string,
     conversations: readonly string[],
@@ -50,11 +50,14 @@ export function createRenameConversationHandler(
     if (!req.user?.id) return res.status(401).json({ error: 'unauthorized' });
 
     try {
+      const current =
+        req.resolvedConversation === undefined
+          ? await deps.getConvo(req.user.id, conversationId)
+          : req.resolvedConversation;
+      if (current == null) return res.status(404).json({ error: 'conversation_not_found' });
       if (req.config?.interfaceConfig?.runningChatRename !== true) {
-        const current = req.resolvedConversation;
         // A final-timing title can still be pending after the stream becomes terminal.
         if (
-          !current ||
           (!current.titleSetByUser &&
             (current.title == null || current.title === '' || current.title === 'New Chat')) ||
           (await deps.getActiveRunIds(req.user.id, [conversationId], req.user.tenantId)).length > 0
@@ -72,8 +75,8 @@ export function createRenameConversationHandler(
       const saved = await deps.saveConvo(
         {
           userId: req.user.id,
-          isTemporary: req.resolvedConversation?.isTemporary,
-          expiredAt: req.resolvedConversation?.expiredAt,
+          isTemporary: current.isTemporary,
+          expiredAt: current.expiredAt,
           interfaceConfig: req.config?.interfaceConfig,
         },
         { conversationId, title: sanitizedTitle },

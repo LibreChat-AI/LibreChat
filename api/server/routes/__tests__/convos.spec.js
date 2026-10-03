@@ -2073,6 +2073,7 @@ describe('Convos Routes', () => {
       expect(renameHandlerInputs.at(-1)).toEqual(
         expect.objectContaining({
           saveConvo,
+          getConvo,
           getActiveRunIds: expect.any(Function),
           logger: expect.anything(),
         }),
