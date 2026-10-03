@@ -213,12 +213,17 @@ describe('durable agent trigger service', () => {
     await service.stop();
   });
 
-  it('keeps receipt batching disabled until the deployment gate is explicitly enabled', async () => {
+  it('batches receipts by default and honors an explicit opt-out', async () => {
     const service = createAgentTriggerService({ mintToken: () => 'test' });
-    expect(service.getBackgroundCompletionReceiptBatching()).toBe(false);
-    await service.initialize({ address: '127.0.0.1', completionReceiptBatching: true });
+    expect(service.getBackgroundCompletionReceiptBatching()).toBe(true);
+    await service.initialize({ address: '127.0.0.1' });
     expect(service.getBackgroundCompletionReceiptBatching()).toBe(true);
     await service.stop();
+
+    const optedOut = createAgentTriggerService({ mintToken: () => 'test' });
+    await optedOut.initialize({ address: '127.0.0.1', completionReceiptBatching: false });
+    expect(optedOut.getBackgroundCompletionReceiptBatching()).toBe(false);
+    await optedOut.stop();
   });
 
   describe('waiting completion deliveries', () => {

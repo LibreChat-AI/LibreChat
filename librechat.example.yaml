@@ -893,6 +893,9 @@ endpoints:
   #   # Enabled by default; set false to keep background tools and subagents poll-only.
   #   backgroundTasks:
   #     completionWakeups: true
+  #     # Deliver a conversation's ready results together in one wake-up. On by default; set false
+  #     # during a rolling upgrade while replicas from releases without it still serve traffic.
+  #     completionReceiptBatching: true
   #     # Allow owners to cooperatively cancel ordinary background tools, including BYOM Bash.
   #     ordinaryToolCancellation: false
   #   # "run_in_background" makes Code Interpreter tools eligible by default and enables per-tool MCP opt-in.
