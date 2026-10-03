@@ -140,6 +140,16 @@ test.describe('popovers inside a modal dialog', () => {
   });
 });
 
+/** Sets both list roles apart from their defaults, so a list still drawing a fixed size shows. */
+const REFERENCE_LIST_THEME = {
+  version: 1,
+  name: 'e2e-list-reference',
+  modes: {
+    light: { appearance: { listMinWidth: '12rem', listMaxHeight: '20rem' } },
+    dark: { appearance: { listMinWidth: '12rem', listMaxHeight: '20rem' } },
+  },
+} as const;
+
 /** The open list's width floor and scroll cap, as the browser computed them. */
 async function listBounds(page: Page) {
   return page.getByRole('listbox').evaluate((element) => {
@@ -165,5 +175,14 @@ test.describe('Select list size roles', () => {
     await useTheme(page, clickHouseTheme);
     await openWorkspaceSelect(page);
     expect(await listBounds(page)).toEqual({ minWidth: '0px', maxHeight: '384px' });
+  });
+
+  test('a theme that sets both list roles resizes the list @scenario:select-list-size-reference', async ({
+    page,
+  }) => {
+    await offerStatefulSessions(page);
+    await useTheme(page, REFERENCE_LIST_THEME);
+    await openWorkspaceSelect(page);
+    expect(await listBounds(page)).toEqual({ minWidth: '192px', maxHeight: '320px' });
   });
 });
