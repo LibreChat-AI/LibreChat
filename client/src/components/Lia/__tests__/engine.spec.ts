@@ -158,6 +158,33 @@ describe('LiaEngine', () => {
     expect(engine.current?.id).toBe('feel-happy');
   });
 
+  it('walks an action the host starts when the previous one ends', () => {
+    let chained = false;
+    let clock = 0;
+    const engine: LiaEngine = new LiaEngine(
+      document.createElement('canvas'),
+      {
+        platform: () => PLATFORM,
+        onBubble: () => undefined,
+        onAction: (label) => {
+          if (label == null && !chained) {
+            chained = true;
+            engine.play('sit-edge', 2, clock);
+          }
+        },
+      },
+      0,
+    );
+    engine.life = false;
+    engine.play('feel-happy', 2, 0);
+    for (; clock <= 8000; clock += 16) {
+      engine.tick(clock);
+    }
+    expect(chained).toBe(true);
+    /* The walk reaches the edge well before the nine-second move timeout would snap it there. */
+    expect(engine.position.x).toBe(PLATFORM.x1);
+  });
+
   it('escalates from petting to dizziness to a crash', () => {
     const { engine } = setup();
     engine.pet(0);

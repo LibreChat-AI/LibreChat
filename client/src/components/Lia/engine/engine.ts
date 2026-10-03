@@ -381,11 +381,12 @@ export class LiaEngine {
   }
 
   private stopRun() {
+    /* Cleared first: the host may start a replacement, with its own move, from onAction(null). */
+    this.move = null;
     if (this.run) {
       this.run = null;
       this.host.onAction?.(null);
     }
-    this.move = null;
   }
 
   private nextStep(now: number) {
