@@ -692,12 +692,15 @@ export default function CodeWorkspaceMenu({
         )}
         <div className="flex min-w-0 items-center">
           <TooltipAnchor
-            description={description || recovery}
+            description={
+              requirements.length > 0 ? description : [recovery, ...checkoutSummaries].join(' ')
+            }
             render={
-              <button
+              <Ariakit.Button
                 type="button"
                 data-testid="code-workspace-locked-status"
                 disabled={disabled || isRefreshing}
+                accessibleWhenDisabled={true}
                 onClick={() => void refresh()}
                 aria-label={`${label}. ${recovery}. ${localize('com_ui_retry')}`}
                 aria-describedby={requirements.length > 0 ? requirementsId : undefined}
@@ -820,10 +823,14 @@ export default function CodeWorkspaceMenu({
       <Ariakit.MenuProvider store={menuStore}>
         <div className="flex min-w-0 items-center">
           <TooltipAnchor
-            description={transitionText?.info ?? (description || localize('com_ui_code_workspace'))}
+            description={
+              [transitionText?.info, description].filter(Boolean).join(' ') ||
+              localize('com_ui_code_workspace')
+            }
             render={
               <Ariakit.MenuButton
                 disabled={buttonDisabled}
+                accessibleWhenDisabled={true}
                 onClick={() => setMachineId(null)}
                 onKeyDown={(event) => {
                   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') setMachineId(null);
