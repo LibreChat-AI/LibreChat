@@ -6,6 +6,7 @@ const {
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
   hasPersistableAbortContent,
   announceStoppedReply,
+  resolveAbortedTurnPersistence,
   buildAbortedResponseMetadata,
   isPendingActionStale,
   toClientPendingAction,
@@ -56,6 +57,7 @@ const {
 } = require('~/server/controllers/agents/protocol');
 const {
   getFiles,
+  getMessages,
   saveMessage,
   saveConvo,
   getPersistedPrivateTextId,
@@ -789,15 +791,21 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
            * its parent and the preliminary-parent fence correctly rejects it. */
           const shouldPersistAbortedTurn =
             hasPersistableAbortContent(content) || jobData?.createdEventEmitted === true;
-          /** A compaction's `userMessage` is the already-persisted leaf
-           *  projected for identity only; upserting it would erase a user
-           *  leaf's text or turn an assistant leaf into an empty user row. */
-          const shouldPersistAnchor = jobData?.compact !== true;
+          /** The stopped turn's persistence plan (which rows to write, and
+           *  whether the normal FINAL must be withheld for a reconciliation
+           *  frame instead) comes from @librechat/api, decided from the
+           *  compaction anchor this route reads. */
+          const abortPersistencePlan = await resolveAbortedTurnPersistence(
+            jobData,
+            shouldPersistAbortedTurn,
+            { userId: req?.user?.id, getMessages },
+          );
+          persistenceErrors.push(...abortPersistencePlan.persistenceErrors);
 
           if (
             jobData?.userMessage?.messageId &&
             jobData?.responseMessageId &&
-            shouldPersistAbortedTurn
+            abortPersistencePlan.writeResponseRow
           ) {
             const messageContext = {
               userId: req?.user?.id,
@@ -827,7 +835,7 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
               endpoint: jobData.endpoint,
               iconURL: jobData.iconURL,
               model: jobData.model,
-              unfinished: true,
+              unfinished: abortPersistencePlan.responseUnfinished,
               error: false,
               isCreatedByUser: false,
               ...(Array.isArray(jobData.userSubmittedPaths) &&
@@ -859,7 +867,7 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
              * operation gets a chance to succeed. A compaction skips the
              * prerequisite: its anchor is the persisted leaf itself. */
             let persistedRequestId;
-            if (shouldPersistAnchor) {
+            if (abortPersistencePlan.writeUserRow) {
               try {
                 const persistedRequest = await saveAbortedUserMessage(
                   { saveMessage, getPersistedPrivateTextId, getPrivateMessageTexts },

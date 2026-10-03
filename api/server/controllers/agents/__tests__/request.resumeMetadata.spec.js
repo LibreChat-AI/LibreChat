@@ -269,6 +269,10 @@ jest.mock('@librechat/api', () => ({
   resolveResumableRetention: jest.requireActual('@librechat/api').resolveResumableRetention,
   markAbortedCompactionContent: (...args) =>
     jest.requireActual('@librechat/api').markAbortedCompactionContent(...args),
+  resolveDisconnectSnapshotMode: (...args) =>
+    jest.requireActual('@librechat/api').resolveDisconnectSnapshotMode(...args),
+  settleExistingRowsBeforeErrorTurn: (...args) =>
+    jest.requireActual('@librechat/api').settleExistingRowsBeforeErrorTurn(...args),
   sendEvent: jest.fn(),
   /** Real, because whether a skipped-persistence turn may raise an indicator is under test. */
   isAnnounceableReply: jest.requireActual('@librechat/api').isAnnounceableReply,

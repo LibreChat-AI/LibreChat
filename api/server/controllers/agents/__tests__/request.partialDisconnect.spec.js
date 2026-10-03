@@ -57,6 +57,10 @@ jest.mock('@librechat/api', () => ({
   resolveResumableRetention: jest.requireActual('@librechat/api').resolveResumableRetention,
   markAbortedCompactionContent: (...args) =>
     jest.requireActual('@librechat/api').markAbortedCompactionContent(...args),
+  resolveDisconnectSnapshotMode: (...args) =>
+    jest.requireActual('@librechat/api').resolveDisconnectSnapshotMode(...args),
+  settleExistingRowsBeforeErrorTurn: (...args) =>
+    jest.requireActual('@librechat/api').settleExistingRowsBeforeErrorTurn(...args),
   sendEvent: jest.fn(),
   persistedReasoningOverrideFields:
     jest.requireActual('@librechat/api').persistedReasoningOverrideFields,
@@ -341,5 +345,17 @@ describe('ResumableAgentController tenant context', () => {
       content: [{ type: 'think', think: 'Picking what to summarize' }],
     });
     expect(savedMessage.content).toHaveLength(1);
+  });
+  /** The settling path (completion, error, abort) owns the final row: a
+   *  disconnect snapshot landing after it would reopen the settled turn as
+   *  an unfinished response. */
+  it('skips the partial save when the job record has settled', async () => {
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      { createdAt: 1000, status: 'error' },
+      { aggregatedContent: [{ type: 'text', text: 'Partial response' }] },
+    );
+
+    expect(mockSaveMessage).not.toHaveBeenCalled();
   });
 });
