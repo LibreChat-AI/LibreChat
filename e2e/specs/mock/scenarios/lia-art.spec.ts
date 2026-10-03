@@ -1,43 +1,16 @@
-import fs from 'fs';
-import path from 'path';
-import ts from 'typescript';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import type * as Body from '../../../../client/src/components/Lia/engine/body';
 import type * as Face from '../../../../client/src/components/Lia/engine/face';
+import { openLiaEngine } from '../lia.helpers';
 
 /**
  * Lia's pixel art, drawn by a real browser canvas. Nothing mounts the renderer yet, so each
  * test serves the engine modules to a blank page and reads back the pixels they paint.
  */
-const ENGINE = path.resolve(__dirname, '../../../../client/src/components/Lia/engine');
-const ORIGIN = 'http://lia.test';
-
 type Lia = { face: typeof Face; body: typeof Body };
 
-async function openEngine(page: Page) {
-  await page.route(`${ORIGIN}/**`, (route) => {
-    const name = new URL(route.request().url()).pathname.slice(1);
-    if (!name) {
-      return route.fulfill({ contentType: 'text/html', body: '<!doctype html><body></body>' });
-    }
-    if (!/^[a-z]+$/.test(name)) {
-      return route.fulfill({ status: 404 });
-    }
-    const source = fs.readFileSync(path.join(ENGINE, `${name}.ts`), 'utf8');
-    const { outputText } = ts.transpileModule(source, {
-      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-    });
-    return route.fulfill({ contentType: 'text/javascript', body: outputText });
-  });
-  await page.goto(`${ORIGIN}/`);
-  await page.addScriptTag({
-    type: 'module',
-    content:
-      "import * as face from '/face'; import * as body from '/body'; window.lia = { face, body };",
-  });
-  await page.waitForFunction(() => 'lia' in window);
-}
+const openEngine = (page: Page) => openLiaEngine(page, ['face', 'body']);
 
 test.describe("Lia's pixel art", () => {
   test('every expression draws its own face @scenario:lia-art-distinct-faces', async ({ page }) => {
