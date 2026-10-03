@@ -1,7 +1,7 @@
 import { createContext, useEffect, useState, useSyncExternalStore } from 'react';
 import { CircleMinus } from 'lucide-react';
 import type { ReactNode, RefObject } from 'react';
-import { ROW_GLYPH_SLOT } from './rows';
+import { ROW_GLYPH_SLOT, FOLD_GLYPH_SELECTOR } from './rows';
 import { cn } from '~/utils';
 
 /**
@@ -103,10 +103,163 @@ export function FoldRail({
         onCollapse();
       }}
       data-testid="fold-rail"
+      data-fold-rail=""
     >
       <span className="bg-border-medium group-hover/rail:bg-text-secondary absolute top-0.5 bottom-1.5 left-[11px] w-px transition-colors duration-150 motion-reduce:transition-none" />
+      {/* The lit path (`useFoldPath`): from the header down to the hovered row, turning
+          into that row when it is this fold's own. */}
+      <span
+        className="border-text-secondary pointer-events-none absolute top-0.5 left-[11px] h-(--fold-lit) border-l opacity-0 transition-opacity duration-150 group-data-fold-lit/rail:opacity-100 group-data-[fold-lit=end]/rail:w-2 group-data-[fold-lit=end]/rail:rounded-bl-md group-data-[fold-lit=end]/rail:border-b motion-reduce:transition-none"
+        data-testid="fold-rail-path"
+      />
     </button>
   );
+}
+
+const FOLD_PANEL = '[data-fold-panel]';
+const FOLD_RAIL = '[data-fold-rail]';
+const FOLD_ROOT = '[data-fold-root]';
+/** A row's glyph is 20px tall inside a 32px line, so the pointer is on that row from
+ *  the margin above the glyph down to the next row's margin. */
+const ROW_REACH = 6;
+
+export type LitRail = { rail: HTMLElement; length: number; end: boolean };
+
+/** The glyph of the row at `y` among the rows this panel holds itself, or the nearest
+ *  one above it when the pointer is inside a row's open body. Rows are in document
+ *  order top to bottom, so a binary search reads a handful of rects. */
+function glyphAt(panel: Element, y: number): Element | null {
+  const glyphs: Element[] = [];
+  panel.querySelectorAll(FOLD_GLYPH_SELECTOR).forEach((glyph) => {
+    if (glyph.closest(FOLD_PANEL) === panel) {
+      glyphs.push(glyph);
+    }
+  });
+  let found: Element | null = null;
+  let low = 0;
+  let high = glyphs.length - 1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (glyphs[mid].getBoundingClientRect().top - ROW_REACH <= y) {
+      found = glyphs[mid];
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return found;
+}
+
+/**
+ * The rails to light for a pointer at `y` over `target`: one per fold that holds the
+ * row under it, innermost first, each `length` px from its top to that row's center.
+ * Empty over a rail itself, whose own hover shows what it collapses, and over any
+ * header that no fold of `root` holds.
+ */
+export function litFoldPath(root: Element, target: Element, y: number): LitRail[] {
+  if (target.closest(FOLD_RAIL) != null) {
+    return [];
+  }
+  const innermost = target.closest(FOLD_PANEL);
+  if (innermost == null || !root.contains(innermost)) {
+    return [];
+  }
+  const glyph = glyphAt(innermost, y);
+  if (glyph == null) {
+    return [];
+  }
+  const { top, height } = glyph.getBoundingClientRect();
+  const center = top + height / 2;
+  const path: LitRail[] = [];
+  let panel: Element | null = innermost;
+  while (panel != null && root.contains(panel)) {
+    const rail = panel.querySelector<HTMLElement>(`:scope > ${FOLD_RAIL}`);
+    if (rail != null) {
+      /** The path starts where the rail's own line does, 2px below the panel. */
+      const length = Math.round(center - rail.getBoundingClientRect().top) - 2;
+      path.push({ rail, length: Math.max(length, 0), end: path.length === 0 });
+    }
+    panel = panel.parentElement?.closest(FOLD_PANEL) ?? null;
+  }
+  return path;
+}
+
+function paintFoldPath(previous: LitRail[], next: LitRail[]) {
+  for (const { rail } of previous) {
+    if (!next.some((lit) => lit.rail === rail)) {
+      delete rail.dataset.foldLit;
+      rail.style.removeProperty('--fold-lit');
+    }
+  }
+  for (const { rail, length, end } of next) {
+    const kind = end ? 'end' : 'through';
+    if (rail.dataset.foldLit !== kind) {
+      rail.dataset.foldLit = kind;
+    }
+    const value = `${length}px`;
+    if (rail.style.getPropertyValue('--fold-lit') !== value) {
+      rail.style.setProperty('--fold-lit', value);
+    }
+  }
+}
+
+/**
+ * Lights the path from every fold that holds the hovered row down to that row, so its
+ * depth reads as the number of lit rails. One listener on the outermost fold, and the
+ * rails are written to directly: moving the pointer repaints rails, never rows. A fold
+ * nested in another leaves the work to that one. `hasBody` re-arms it once the fold's
+ * panel, and with it the root, has rendered.
+ */
+export function useFoldPath(rootRef: RefObject<HTMLElement>, hasBody: boolean) {
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!hasBody || root == null || root.parentElement?.closest(FOLD_ROOT) != null) {
+      return;
+    }
+    let lit: LitRail[] = [];
+    let frame = 0;
+    let pointer: { target: Element; y: number } | null = null;
+    const paint = () => {
+      frame = 0;
+      if (pointer == null) {
+        return;
+      }
+      const next = litFoldPath(root, pointer.target, pointer.y);
+      paintFoldPath(lit, next);
+      lit = next;
+    };
+    const clear = () => {
+      pointer = null;
+      cancelAnimationFrame(frame);
+      frame = 0;
+      paintFoldPath(lit, []);
+      lit = [];
+    };
+    const onMove = (event: PointerEvent) => {
+      /** A tap has no hover to follow, and would leave the path lit under the finger. */
+      if (event.pointerType === 'touch' || !(event.target instanceof Element)) {
+        return;
+      }
+      pointer = { target: event.target, y: event.clientY };
+      if (frame === 0) {
+        frame = requestAnimationFrame(paint);
+      }
+    };
+    /** A press usually opens or closes a fold, which moves every row under it. */
+    const onDown = () => {
+      paintFoldPath(lit, []);
+      lit = [];
+    };
+    root.addEventListener('pointermove', onMove);
+    root.addEventListener('pointerleave', clear);
+    root.addEventListener('pointerdown', onDown);
+    return () => {
+      root.removeEventListener('pointermove', onMove);
+      root.removeEventListener('pointerleave', clear);
+      root.removeEventListener('pointerdown', onDown);
+      clear();
+    };
+  }, [rootRef, hasBody]);
 }
 
 /**

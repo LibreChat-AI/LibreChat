@@ -15,9 +15,15 @@ export const TOOL_ROW_CLASSES = 'relative my-1.5 flex h-5 shrink-0 items-center 
  * starts where the header's name does. `min-w` rather than `w`, so a stacked
  * icon strip can run wider without overlapping its label; never taller than
  * `TOOL_ROW_CLASSES`, whose `ProgressText` content is absolutely positioned
- * and would carry a taller slot 2px below the row's center.
+ * and would carry a taller slot 2px below the row's center. `fold-glyph` is a
+ * hook, not a style: see `FOLD_GLYPH_SELECTOR`.
  */
-export const ROW_GLYPH_SLOT = 'flex h-5 min-w-6 shrink-0 items-center justify-center';
+export const ROW_GLYPH_SLOT = 'fold-glyph flex h-5 min-w-6 shrink-0 items-center justify-center';
+
+/** The behavior hook `ROW_GLYPH_SLOT` carries: every row line starts with that slot, so
+ *  the lit fold path (`useFoldPath`) finds the row a pointer is on by its glyph instead of
+ *  each row component marking itself. Not a style. */
+export const FOLD_GLYPH_SELECTOR = '.fold-glyph';
 
 /**
  * The panel under an open header: its rows step in by one glyph slot and a
