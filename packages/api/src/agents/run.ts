@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import { ensureHandler } from '@langchain/core/callbacks/manager';
-import { Run, Providers, Constants, HookRegistry } from '@librechat/agents';
+import { Run, Providers, Constants, HookRegistry, GraphEvents } from '@librechat/agents';
 import {
   KnownEndpoints,
   EModelEndpoint,
@@ -65,6 +65,7 @@ import type { SubagentUsageEvent } from '~/agents/usage';
 import type { ProvisionState } from '~/agents/resources';
 import type { RunFileSession } from './files/session';
 import type { RunFadingTiers } from './fading';
+import type { FetchFn } from './internalTools';
 import type * as t from '~/types';
 import {
   assertAttachedCodeEnvironmentApprovalSupported,
@@ -110,6 +111,7 @@ import { applyCustomHandoffPromptKeyCompatibility } from '~/agents/handoffPrompt
 import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/agents/intent';
 import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils/headers';
 import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
+import { InternalToolsStreamHandler, withInternalToolsFetch } from './internalTools';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
@@ -565,6 +567,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * Strips trailing `/` characters in a single linear pass. Deliberately avoids
+ * a regex like `/\/+$/` here: on untrusted, attacker-influenced input (an
+ * agent's configured `baseURL`) an unanchored trailing-quantifier pattern can
+ * be re-tried at every starting offset within a long run of slashes,
+ * producing quadratic (polynomial ReDoS) backtracking on pathological input.
+ */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47 /* '/' */) end--;
+  return value.slice(0, end);
+}
+
 const nullableAgentModelParameterKeys = [
   'temperature',
   'maxContextTokens',
@@ -665,6 +680,7 @@ interface SummarizationClientOverrides {
   apiKey?: string;
   streaming?: boolean;
   configuration?: t.OpenAIConfiguration;
+
   [key: string]: unknown;
 }
 
@@ -2333,6 +2349,14 @@ export async function createRun({
     }
   }
 
+  const internalType = process.env.INTERNAL_TOOL_TYPE?.trim();
+
+  const internalBaseURL = process.env.INTERNAL_BASE_URL?.trim()
+    ? stripTrailingSlashes(process.env.INTERNAL_BASE_URL.trim())
+    : undefined;
+
+  let internalToolsEnabled = false;
+
   /** Admin kill switch for the ask tool — see {@link isAskUserQuestionAdminDisabled}. */
   const askToolAdminDisabled = isAskUserQuestionAdminDisabled(appConfig);
 
@@ -2439,6 +2463,30 @@ export async function createRun({
       ) as t.RunLLMConfig,
       modelCallbacks,
     );
+
+    const openAIConfig = llmConfig as OpenAIClientOptions;
+
+    const configuredBaseURL = openAIConfig.configuration?.baseURL
+      ? stripTrailingSlashes(openAIConfig.configuration.baseURL)
+      : undefined;
+
+    if (
+      internalType &&
+      internalBaseURL &&
+      configuredBaseURL === internalBaseURL &&
+      openAIConfig.useResponsesApi === true
+    ) {
+      const configuration = openAIConfig.configuration ?? {};
+
+      const baseFetch = (configuration.fetch ?? globalThis.fetch) as FetchFn;
+
+      openAIConfig.configuration = {
+        ...configuration,
+        fetch: withInternalToolsFetch(baseFetch, internalType) as typeof configuration.fetch,
+      };
+
+      internalToolsEnabled = true;
+    }
 
     const joinInstructionMap = (map?: Record<string, unknown>) =>
       Object.values(map ?? {})
@@ -2947,7 +2995,12 @@ export async function createRun({
     runId: resolvedRunId,
     graphConfig,
     tokenCounter,
-    customHandlers,
+    customHandlers: internalToolsEnabled
+      ? {
+          ...customHandlers,
+          [GraphEvents.CHAT_MODEL_STREAM]: new InternalToolsStreamHandler(),
+        }
+      : customHandlers,
     initialSessions,
     calibrationRatio,
     fadingTier,
