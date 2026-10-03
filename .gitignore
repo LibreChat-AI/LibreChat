@@ -181,6 +181,8 @@ claude-flow.config.json
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal
+integration-gateway/node_modules/
+integration-gateway/data/
 claude-flow
 .playwright-mcp/*
 # Removed Windows wrapper files per user request
