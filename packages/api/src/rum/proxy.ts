@@ -1,6 +1,6 @@
 import { validateHeaderValue } from 'node:http';
 import { logger } from '@librechat/data-schemas';
-import type { Request, Response } from 'express';
+import type { Request, Response, RequestHandler } from 'express';
 import type { RumProxyEndpoint, RumProxyResult } from '~/app/metrics';
 import { recordRumProxyRequest } from '~/app/metrics';
 import { isEnabled } from '~/utils';
@@ -95,6 +95,35 @@ export function isRumLogsEndpointEnabled(): boolean {
     isEnabled(process.env.RUM_CONSOLE_CAPTURE) ||
     replayEnabled
   );
+}
+
+/** HTTP gates stay with the proxy policy rather than the CJS route wiring. */
+export const requireRumProxyEnabled: RequestHandler = (_req, res, next) => {
+  if (!isRumProxyEnabled()) {
+    res.status(404).json({ message: 'RUM proxy is not configured' });
+    return;
+  }
+  next();
+};
+
+export const requireRumLogsEnabled: RequestHandler = (_req, res, next) => {
+  if (!isRumLogsEndpointEnabled()) {
+    res.status(404).json({ message: 'RUM logs are not enabled' });
+    return;
+  }
+  next();
+};
+
+/** Defer RUM parsing until the authenticated route has applied its request budget. */
+export function excludeRumBodyParser(parser: RequestHandler): RequestHandler {
+  return (req, res, next) => {
+    const path = req.path.toLowerCase();
+    if (path === DEFAULT_PROXY_PATH || path.startsWith(`${DEFAULT_PROXY_PATH}/`)) {
+      next();
+      return;
+    }
+    parser(req, res, next);
+  };
 }
 
 export function resolveRumProxyTarget(path: string): string | undefined {

@@ -14,6 +14,7 @@ import { normalizeRumPath } from './routes';
 
 export type ClientLogLevel = 'info' | 'warn' | 'error';
 type AttributeValue = string | number | boolean;
+type DeliveryCallback = (delivered: boolean) => void;
 
 /** The only attribute keys a client log record may carry; anything else is dropped. */
 const ATTRIBUTE_KEYS = [
@@ -91,8 +92,7 @@ type LogEntry = {
   /** The request currently carrying this record; responses to older requests ignore it. */
   sendId: number;
   trace?: TraceContext;
-  /** Run once the collector accepted the record (2xx), never for a dropped record. */
-  onDelivered: Array<() => void>;
+  onSettled: DeliveryCallback[];
 };
 
 type Batch = { entries: LogEntry[]; body: string };
@@ -101,7 +101,7 @@ type DedupeEntry = {
   expiresAt: number;
   entry: LogEntry;
   suppressed: number;
-  suppressedCallbacks: Array<() => void>;
+  suppressedCallbacks: DeliveryCallback[];
 };
 
 type OtlpAnyValue = { stringValue: string } | { boolValue: boolean } | { intValue: string };
@@ -140,7 +140,12 @@ export type ClientLogsOptions = {
 
 export type ClientLogExporter = {
   log: (level: 'warn' | 'error', args: unknown[]) => void;
-  event: (type: string, attributes?: ClientEventAttributes, onDelivered?: () => void) => void;
+  event: (
+    type: string,
+    attributes?: ClientEventAttributes,
+    onDelivered?: () => void,
+    onDropped?: () => void,
+  ) => boolean;
   boundary: (boundary: string, error: unknown, chunkLoad: boolean) => void;
   flush: (keepalive: boolean) => void;
   dispose: () => void;
@@ -270,6 +275,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
   const envelopeBytes = byteLength(envelopeHead) + byteLength(envelopeTail);
 
   let queue: LogEntry[] = [];
+  const pendingDeliveries = new Set<DeliveryCallback>();
   const dedupe = new Map<string, DedupeEntry>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timerAt = Number.POSITIVE_INFINITY;
@@ -277,6 +283,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
   /** Records of the regular request in flight, re-sent by the page-hide flush if unanswered. */
   let activeBatch: LogEntry[] = [];
   let sendSeq = 0;
+  let keepaliveBytes = 0;
   let disabled = false;
   let backoffUntil = 0;
   let consecutiveFailures = 0;
@@ -325,10 +332,19 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     timer = setTimeout(tick, Math.max(0, at - Date.now()));
   };
 
+  const settle = (entry: LogEntry, delivered: boolean) => {
+    entry.state = 'done';
+    entry.sendId = 0;
+    entry.onSettled.splice(0).forEach((callback) => callback(delivered));
+  };
+
   const enqueue = (entry: LogEntry, now: number) => {
     queue.push(entry);
-    if (queue.length > limits.maxQueuedRecords) {
-      queue = queue.slice(queue.length - limits.maxQueuedRecords);
+    while (queue.length > limits.maxQueuedRecords) {
+      const dropped = queue.shift();
+      if (dropped) {
+        settle(dropped, false);
+      }
     }
     schedule(queue.length >= limits.maxBatchRecords ? now : now + limits.flushIntervalMs);
   };
@@ -349,10 +365,12 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
             attempts: 0,
             state: 'queued',
             sendId: 0,
-            onDelivered: item.suppressedCallbacks,
+            onSettled: item.suppressedCallbacks,
           },
           now,
         );
+      } else {
+        item.suppressedCallbacks.forEach((callback) => callback(false));
       }
     }
   };
@@ -367,9 +385,10 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     return next;
   };
 
-  const add = (entry: LogEntry) => {
+  const add = (entry: LogEntry): boolean => {
     if (disabled) {
-      return;
+      settle(entry, false);
+      return false;
     }
     const now = entry.timeMs;
     collectExpiredDuplicates(now);
@@ -377,20 +396,22 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     if (existing) {
       if (existing.entry.state === 'queued') {
         existing.entry.count += 1;
-        existing.entry.onDelivered.push(...entry.onDelivered);
+        existing.entry.onSettled.push(...entry.onSettled);
       } else {
         existing.suppressed += 1;
-        existing.suppressedCallbacks.push(...entry.onDelivered);
+        existing.suppressedCallbacks.push(...entry.onSettled);
         schedule(existing.expiresAt);
       }
-      return;
+      return true;
     }
     if (!consumeBudget(now)) {
-      return;
+      settle(entry, false);
+      return false;
     }
     if (dedupe.size >= limits.maxDedupeKeys) {
       const oldest = dedupe.keys().next().value;
       if (oldest !== undefined) {
+        dedupe.get(oldest)?.suppressedCallbacks.forEach((callback) => callback(false));
         dedupe.delete(oldest);
       }
     }
@@ -401,13 +422,14 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       suppressedCallbacks: [],
     });
     enqueue(entry, now);
+    return true;
   };
 
   /**
    * Takes the queued records that fit one request, measured in encoded UTF-8 bytes of the exact
    * body that will be sent, so a `keepalive` request never exceeds the browser's quota.
    */
-  const takeBatch = (maxRecords: number): Batch => {
+  const takeBatch = (maxRecords: number, maxBytes: number = limits.maxPayloadBytes): Batch => {
     const entries: LogEntry[] = [];
     const records: string[] = [];
     let bytes = envelopeBytes;
@@ -418,11 +440,11 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       }
       const record = JSON.stringify(toOtlpRecord(entry));
       const size = byteLength(record) + (records.length > 0 ? 1 : 0);
-      if (bytes + size > limits.maxPayloadBytes) {
-        if (entries.length > 0) {
+      if (bytes + size > maxBytes) {
+        if (entries.length > 0 || envelopeBytes + size <= limits.maxPayloadBytes) {
           break;
         }
-        entry.state = 'done';
+        settle(entry, false);
         taken += 1;
         continue;
       }
@@ -438,6 +460,9 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
 
   const disable = () => {
     disabled = true;
+    pendingDeliveries.forEach((callback) => callback(false));
+    activeBatch.forEach((entry) => settle(entry, false));
+    activeBatch = [];
     queue = [];
     dedupe.clear();
     clearTimer();
@@ -451,10 +476,15 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     }
     const retry = batch.filter((entry) => {
       entry.attempts += 1;
-      entry.state = retryable && entry.attempts < limits.maxAttempts ? 'queued' : 'done';
-      return entry.state === 'queued';
+      if (!retryable || entry.attempts >= limits.maxAttempts) {
+        settle(entry, false);
+        return false;
+      }
+      entry.state = 'queued';
+      return true;
     });
-    queue = [...retry, ...queue].slice(0, limits.maxQueuedRecords);
+    queue = [...retry, ...queue];
+    queue.splice(limits.maxQueuedRecords).forEach((entry) => settle(entry, false));
     const delay = Math.min(
       limits.baseBackoffMs * 2 ** (consecutiveFailures - 1),
       limits.maxBackoffMs,
@@ -465,16 +495,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
   const handleStatus = (batch: LogEntry[], status: number) => {
     if (status >= 200 && status < 300) {
       consecutiveFailures = 0;
-      batch.forEach((entry) => {
-        entry.state = 'done';
-        entry.onDelivered.splice(0).forEach((callback) => {
-          try {
-            callback();
-          } catch {
-            /* Telemetry must never affect the caller. */
-          }
-        });
-      });
+      batch.forEach((entry) => settle(entry, true));
       return;
     }
     if (FATAL_STATUSES.has(status)) {
@@ -484,11 +505,11 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     onFailure(batch, status === 408 || status === 429 || status >= 500);
   };
 
-  const transmit = ({ entries, body }: Batch, keepalive: boolean): Promise<void> => {
+  const transmit = async ({ entries, body }: Batch, keepalive: boolean): Promise<void> => {
     const token = options.getToken();
     if (!token || entries.length === 0) {
       entries.forEach((entry) => {
-        entry.state = 'done';
+        settle(entry, false);
       });
       return Promise.resolve();
     }
@@ -498,17 +519,37 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       entry.sendId = sendId;
     });
     /** A record re-sent by a later request (the page-hide flush) belongs to that request. */
-    const owned = () => entries.filter((entry) => entry.sendId === sendId);
-    return send(options.endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body,
-      keepalive,
-      credentials: 'same-origin',
-    }).then(
-      (response) => handleStatus(owned(), response.status),
-      () => onFailure(owned(), true),
-    );
+    const owned = () => entries.filter((entry) => !disabled && entry.sendId === sendId);
+    const handleResponse = (status?: number) => {
+      const batch = owned();
+      if (batch.length === 0) {
+        return;
+      }
+      if (status === undefined) {
+        onFailure(batch, true);
+      } else {
+        handleStatus(batch, status);
+      }
+    };
+    const requestBytes = keepalive ? byteLength(body) : 0;
+    keepaliveBytes += requestBytes;
+    try {
+      const response = await send(options.endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body,
+        keepalive,
+        credentials: 'same-origin',
+      });
+      handleResponse(response.status);
+    } catch {
+      handleResponse();
+    } finally {
+      keepaliveBytes -= requestBytes;
+      if (keepalive && queue.length > 0) {
+        schedule(Math.max(Date.now() + limits.flushIntervalMs, backoffUntil));
+      }
+    }
   };
 
   const flush = (keepalive: boolean) => {
@@ -519,12 +560,17 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     collectExpiredDuplicates(now);
     if (keepalive) {
       const unacknowledged = activeBatch.filter((entry) => entry.state === 'sending');
+      activeBatch = [];
+      inFlight = false;
       unacknowledged.forEach((entry) => {
         entry.state = 'queued';
         entry.sendId = 0;
       });
       queue = [...unacknowledged, ...queue];
-      void transmit(takeBatch(Number.POSITIVE_INFINITY), true).catch(() => undefined);
+      void transmit(
+        takeBatch(Number.POSITIVE_INFINITY, limits.maxPayloadBytes - keepaliveBytes),
+        true,
+      ).catch(() => undefined);
       return;
     }
     if (inFlight || queue.length === 0) {
@@ -540,6 +586,9 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     transmit(batch, false)
       .catch(() => undefined)
       .finally(() => {
+        if (activeBatch !== batch.entries) {
+          return;
+        }
         inFlight = false;
         activeBatch = [];
         if (queue.length > 0) {
@@ -591,7 +640,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       state: 'queued',
       sendId: 0,
       trace: getActiveTraceContext(),
-      onDelivered: [],
+      onSettled: [],
     };
   };
 
@@ -617,10 +666,11 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     type: string,
     attributes: ClientEventAttributes = {},
     onDelivered?: () => void,
-  ) => {
+    onDropped?: () => void,
+  ): boolean => {
     const definition = ASSET_EVENTS.get(type);
     if (!definition) {
-      return;
+      return false;
     }
     const entry = createEntry(definition.level, definition.name, {
       ...baseAttributes('asset'),
@@ -630,10 +680,21 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       'asset.optional': typeof attributes.optional === 'boolean' ? attributes.optional : undefined,
       'event.build_id': stringAttribute(attributes.clientBuildId, MAX_NAME_LENGTH),
     });
-    if (onDelivered) {
-      entry.onDelivered.push(onDelivered);
+    if (onDelivered || onDropped) {
+      const callback: DeliveryCallback = (delivered) => {
+        if (!pendingDeliveries.delete(callback)) {
+          return;
+        }
+        try {
+          (delivered ? onDelivered : onDropped)?.();
+        } catch {
+          /* Telemetry must never affect the caller. */
+        }
+      };
+      pendingDeliveries.add(callback);
+      entry.onSettled.push(callback);
     }
-    add(entry);
+    return add(entry);
   };
 
   const boundary = (name: string, error: unknown, chunkLoad: boolean) => {
@@ -712,6 +773,10 @@ export function stopClientLogs(): void {
   window.removeEventListener('pagehide', onPageHide);
 }
 
+export function isClientLogsActive(): boolean {
+  return exporter !== undefined;
+}
+
 export function isClientEventType(type: unknown): boolean {
   return typeof type === 'string' && ASSET_EVENTS.has(type);
 }
@@ -724,13 +789,13 @@ export function recordClientEvent(
   type: string,
   attributes?: ClientEventAttributes,
   onDelivered?: () => void,
+  onDropped?: () => void,
 ): boolean {
   if (!exporter || !isClientEventType(type)) {
     return false;
   }
   try {
-    exporter.event(type, attributes, onDelivered);
-    return true;
+    return exporter.event(type, attributes, onDelivered, onDropped);
   } catch {
     return false;
   }

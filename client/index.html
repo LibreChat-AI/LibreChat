@@ -272,7 +272,9 @@
                 assetUrl: el.src || el.href,
                 optional: isRumBootstrap,
               });
-              if (isRumBootstrap) {
+              /* Caught optional imports must not reload the app. Required lazy imports
+               * recover at their own boundary; preload links only report diagnostics. */
+              if (isRumBootstrap || failedPreload) {
                 return;
               }
               window.__lcRecoverStaleAssets();

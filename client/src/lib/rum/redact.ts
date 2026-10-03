@@ -11,7 +11,7 @@ const QUERY_PATTERN = /\?[\w.~%-]+=[^\s"'<>()]*/g;
 const JWT_PATTERN = /\beyJ[\w-]{4,}\.[\w-]{4,}\.[\w-]*/g;
 const AUTH_SCHEME_PATTERN = /\b(Bearer|Basic|Token)\s+[\w~+/.=-]{6,}/gi;
 const ASSIGNMENT_PATTERN =
-  /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|password|passwd|authorization|cookie|session[_-]?id|signature)\b(\s*[:=]\s*)((?:Bearer|Basic|Token)\s+[^\s,;&]+|"[^"]*"|'[^']*'|[^\s,;&]+)/gi;
+  /["']?\b(api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|password|passwd|authorization|cookie|session[_-]?id|signature)\b["']?(\s*[:=]\s*)((?:Bearer|Basic|Token)\s+[^\s,;&]+|"[^"]*"|'[^']*'|[^\s,;&]+)/gi;
 const EMAIL_PATTERN = /[\w.%+-]+@[\w-]+(?:\.[\w-]+)+/g;
 const PROVIDER_KEY_PATTERN = /\b(?:sk|pk|rk|xox[abprs]|gh[pousr]|glpat)[-_][\w-]{8,}/gi;
 const AWS_KEY_PATTERN = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g;
@@ -64,6 +64,32 @@ const SAFE_MESSAGE_PATTERNS: readonly RegExp[] = [
   /^Loading (?:CSS )?chunk [\w-]+ failed\.?(?: \(\S+\))?$/,
   /^Failed to load a code-split module$/,
 ];
+
+/** Error names are writable too; unknown names must not become a free-text channel. */
+const ERROR_TYPES = new Set([
+  'Error',
+  'TypeError',
+  'ReferenceError',
+  'RangeError',
+  'SyntaxError',
+  'EvalError',
+  'URIError',
+  'AggregateError',
+  'AxiosError',
+  'ChunkLoadError',
+  'DOMException',
+  'AbortError',
+  'NetworkError',
+  'NotAllowedError',
+  'NotFoundError',
+  'SecurityError',
+  'TimeoutError',
+  'DataError',
+  'InvalidStateError',
+  'QuotaExceededError',
+  'NotSupportedError',
+  'OperationError',
+]);
 
 type ErrorShape = {
   name?: unknown;
@@ -182,7 +208,7 @@ export function summarizeError(error: unknown): ErrorSummary | undefined {
       ? scrubField(error.message.trim(), MAX_MESSAGE_LENGTH)
       : undefined;
   return {
-    type: typeof error.name === 'string' ? scrubField(error.name, MAX_NAME_LENGTH) : undefined,
+    type: typeof error.name === 'string' && ERROR_TYPES.has(error.name) ? error.name : 'Error',
     message,
     stacktrace:
       typeof error.stack === 'string' ? reduceStack(error.stack, stackHeader(error)) : undefined,

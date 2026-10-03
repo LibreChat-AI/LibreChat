@@ -86,6 +86,20 @@ describe('importWithRecovery', () => {
     );
   });
 
+  it('recovers required imports without claiming unrelated optional preload failures', async () => {
+    const recover = jest.fn(() => true);
+    window.__lcRecoverStaleAssets = recover;
+    const optionalFailure = new Event('vite:preloadError', { cancelable: true });
+    window.dispatchEvent(optionalFailure);
+    expect(optionalFailure.defaultPrevented).toBe(false);
+    expect(recover).not.toHaveBeenCalled();
+    const requiredFailure = new TypeError('Importing a module script failed.');
+    await expect(importWithRecovery(() => Promise.reject(requiredFailure))).rejects.toBe(
+      requiredFailure,
+    );
+    expect(recover).toHaveBeenCalledTimes(1);
+  });
+
   it('passes loaded modules and original failures through', async () => {
     const module = { default: 'value' };
     await expect(importWithRecovery(() => Promise.resolve(module))).resolves.toBe(module);

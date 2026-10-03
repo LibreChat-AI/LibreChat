@@ -235,6 +235,58 @@ describe('createClientLogExporter', () => {
     exporter.dispose();
   });
 
+  it('reports admission failure when the budget is exhausted or export is disabled', async () => {
+    const exporter = createClientLogExporter(options());
+    for (let i = 0; i < CLIENT_LOG_LIMITS.recordsPerMinute; i += 1) {
+      exporter.log('error', [`Budget ${i}`]);
+    }
+    const dropped = jest.fn();
+    expect(exporter.event('stale-asset-recovery-start', {}, jest.fn(), dropped)).toBe(false);
+    expect(dropped).toHaveBeenCalledTimes(1);
+    exporter.dispose();
+    expect(exporter.event('stale-asset-recovery-reload')).toBe(false);
+  });
+
+  it.each(['queued', 'sending', 'suppressed'])(
+    'settles %s deliveries on dispose and ignores late responses',
+    async (state) => {
+      let answer: (value: { status: number }) => void = () => undefined;
+      fetchMock.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            answer = resolve;
+          }),
+      );
+      const exporter = createClientLogExporter(options());
+      const delivered = jest.fn();
+      const dropped = jest.fn();
+      exporter.event('stale-asset-recovery-start', {}, delivered, dropped);
+      if (state !== 'queued') {
+        await flushInterval();
+      }
+      if (state === 'suppressed') {
+        exporter.event('stale-asset-recovery-start', {}, delivered, dropped);
+      }
+      exporter.dispose();
+      expect(dropped).toHaveBeenCalledTimes(state === 'suppressed' ? 2 : 1);
+      answer({ status: 200 });
+      await flushInterval();
+      expect(delivered).not.toHaveBeenCalled();
+      expect(dropped).toHaveBeenCalledTimes(state === 'suppressed' ? 2 : 1);
+    },
+  );
+
+  it('settles dropped deliveries when retries are exhausted', async () => {
+    fetchMock.mockImplementation(() => respond(503));
+    const exporter = createClientLogExporter(options());
+    const dropped = jest.fn();
+    exporter.event('stale-asset-recovery-start', {}, jest.fn(), dropped);
+    await jest.advanceTimersByTimeAsync(CLIENT_LOG_LIMITS.maxBackoffMs * 4);
+    expect(dropped).toHaveBeenCalledTimes(1);
+    exporter.dispose();
+    expect(dropped).toHaveBeenCalledTimes(1);
+  });
+
   it('attaches the active trace and span ids from the RUM SDK context', async () => {
     const spanKey = Symbol.for('OpenTelemetry Context Key SPAN');
     const apiKey = Symbol.for('opentelemetry.js.api.1');
@@ -339,6 +391,7 @@ describe('client log lifecycle', () => {
       logger.error(`${'界'.repeat(60)}${i}`, `${i} ${'界'.repeat(500)}`, new Error('x'));
     }
     window.dispatchEvent(new Event('pagehide'));
+    await jest.advanceTimersByTimeAsync(0);
     window.dispatchEvent(new Event('pagehide'));
     await jest.advanceTimersByTimeAsync(0);
 
@@ -375,6 +428,20 @@ describe('client log lifecycle', () => {
     await flushInterval();
     await flushInterval();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('hands the active batch to keepalive only once across visibilitychange and pagehide', async () => {
+    fetchMock.mockImplementation(() => new Promise(() => undefined));
+    startClientLogs(options());
+    logger.error('In flight during both unload signals');
+    await flushInterval();
+    const visibility = jest.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('pagehide'));
+    await jest.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][1].keepalive).toBe(true);
+    visibility.mockRestore();
   });
 
   it('refuses a cross-origin endpoint', async () => {

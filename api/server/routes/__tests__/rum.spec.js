@@ -24,8 +24,16 @@ jest.mock('@librechat/api', () => ({
   getRumProxyBodyLimit: jest.fn(() => '3mb'),
   limiterCache: (...args) => mockLimiterCache(...args),
   createRumProxyLimiter: (...args) => mockCreateRumProxyLimiter(...args),
-  isRumProxyEnabled: (...args) => mockIsRumProxyEnabled(...args),
-  isRumLogsEndpointEnabled: (...args) => mockIsRumLogsEndpointEnabled(...args),
+  requireRumProxyEnabled: (_req, res, next) =>
+    mockIsRumProxyEnabled()
+      ? next()
+      : res.status(404).json({ message: 'RUM proxy is not configured' }),
+  requireRumLogsEnabled: (_req, res, next) =>
+    mockIsRumLogsEndpointEnabled()
+      ? next()
+      : res.status(404).json({ message: 'RUM logs are not enabled' }),
+  handleJsonParseError: (err, _req, res, next) =>
+    err.type === 'entity.parse.failed' ? res.status(400).end() : next(err),
   proxyRumRequest: (...args) => mockProxyRumRequest(...args),
 }));
 

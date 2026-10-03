@@ -18,6 +18,9 @@ import {
   resolveRumProxyTarget,
   isRumClientLogsEnabled,
   isRumLogsEndpointEnabled,
+  requireRumLogsEnabled,
+  requireRumProxyEnabled,
+  excludeRumBodyParser,
 } from './proxy';
 
 const PROTOBUF_HEADERS = { 'content-type': 'application/x-protobuf' };
@@ -258,6 +261,125 @@ describe('RUM proxy configuration', () => {
     expect(res.status).toHaveBeenCalledWith(503);
     expect(recordRumProxyRequest).toHaveBeenCalledWith('logs', 'collector_5xx');
     fetchMock.mockRestore();
+  });
+});
+
+describe('RUM HTTP boundary', () => {
+  const originalEnv = process.env;
+  beforeEach(() => {
+    process.env = {
+      ...originalEnv,
+      RUM_ENABLED: 'true',
+      RUM_AUTH_MODE: 'proxy',
+      RUM_PROXY_TARGET_URL: 'http://otel-collector:4318',
+    };
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('maps disabled proxy and log-source policy to 404 in typed middleware', async () => {
+    delete process.env.RUM_CLIENT_LOGS;
+    delete process.env.RUM_CONSOLE_CAPTURE;
+    delete process.env.RUM_DISABLE_REPLAY;
+    const app = express();
+    app.post('/traces', requireRumProxyEnabled, (_req, res) => {
+      res.status(202).end();
+    });
+    app.post('/logs', requireRumLogsEnabled, requireRumProxyEnabled, (_req, res) => {
+      res.status(202).end();
+    });
+    expect((await request(app).post('/traces')).status).toBe(202);
+    expect((await request(app).post('/logs')).status).toBe(404);
+    process.env.RUM_CLIENT_LOGS = 'true';
+    expect((await request(app).post('/logs')).status).toBe(202);
+    process.env.RUM_ENABLED = 'false';
+    expect((await request(app).post('/traces')).status).toBe(404);
+  });
+
+  it('defers JSON parsing to the authenticated, rate-limited RUM route without changing other routes', async () => {
+    const parser = jest.fn(express.json({ limit: '3mb' }));
+    const app = express();
+    app.use(excludeRumBodyParser(parser));
+    app.post(
+      '/api/rum/v1/logs',
+      (req, res, next) => {
+        expect(req.body).toBeUndefined();
+        if (!req.headers.authorization) {
+          res.status(204).end();
+          return;
+        }
+        if (req.headers['x-budget'] === 'exhausted') {
+          res.status(429).end();
+          return;
+        }
+        next();
+      },
+      express.json({ limit: '1kb' }),
+      (req, res) => {
+        res.json(req.body);
+      },
+    );
+    app.post('/api/rumor', (req, res) => {
+      res.json(req.body);
+    });
+    const body = 'not valid JSON';
+    expect(
+      (
+        await request(app)
+          .post('/api/rum/v1/logs')
+          .set('Content-Type', 'application/json')
+          .send(body)
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await request(app)
+          .post('/api/rum/v1/logs')
+          .set('authorization', 'Bearer test')
+          .set('x-budget', 'exhausted')
+          .set('Content-Type', 'application/json')
+          .send(body.repeat(1000))
+      ).status,
+    ).toBe(429);
+    expect(
+      (
+        await request(app)
+          .post('/API/RUM/v1/logs')
+          .set('Content-Type', 'application/json')
+          .send(body)
+      ).status,
+    ).toBe(204);
+    expect(parser).not.toHaveBeenCalled();
+    expect(
+      (
+        await request(app)
+          .post('/api/rum/v1/logs')
+          .set('authorization', 'Bearer test')
+          .set('Content-Type', 'application/json')
+          .send(body)
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await request(app)
+          .post('/api/rum/v1/logs')
+          .set('authorization', 'Bearer test')
+          .send({ records: [] })
+      ).body,
+    ).toEqual({ records: [] });
+    expect(
+      (
+        await request(app)
+          .post('/api/rum/v1/logs')
+          .set('authorization', 'Bearer test')
+          .send({ text: 'x'.repeat(2000) })
+      ).status,
+    ).toBe(413);
+    expect((await request(app).post('/api/rumor').send({ parsed: true })).body).toEqual({
+      parsed: true,
+    });
+    expect(parser).toHaveBeenCalledTimes(1);
   });
 });
 

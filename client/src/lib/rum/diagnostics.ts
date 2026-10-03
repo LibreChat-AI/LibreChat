@@ -1,5 +1,5 @@
 import type { FCPMetricWithAttribution } from 'web-vitals/attribution';
-import { isClientEventType, recordClientEvent } from './logs';
+import { isClientEventType, isClientLogsActive, recordClientEvent } from './logs';
 import { normalizeRumPath } from './routes';
 import { getClientBuildId } from './build';
 
@@ -179,7 +179,7 @@ export function flushEarlyRumQueue(HyperDX: HyperDXActionClient): void {
   queuedEvents.forEach((event) => {
     emitEarlyRumEvent(HyperDX, event);
   });
-  const awaitingDelivery = queuedEvents.filter((event) => forwardingEvents.has(event));
+  const awaitingDelivery = queuedEvents.filter(shouldRetainEvent);
   awaitingDelivery.forEach((event) => {
     event.actionSent = true;
   });
@@ -210,12 +210,24 @@ export function restoreRumEmitter(HyperDX: HyperDXActionClient): void {
 function installRumEmitter(HyperDX: HyperDXActionClient): void {
   const clientBuildId = getClientBuildId();
   window.__lcRumPush = (type, attributes) => {
-    emitEarlyRumEvent(HyperDX, {
+    const event: RumQueuedEvent = {
       type,
       at: performance.now(),
       visibilityState: document.visibilityState,
       attributes: { ...attributes, clientBuildId },
-    });
+    };
+    emitEarlyRumEvent(HyperDX, event);
+    if (shouldRetainEvent(event)) {
+      event.actionSent = true;
+      const queue = (window.__lcRumQueue ??= []);
+      queue.push(event);
+      queue.splice(0, Math.max(0, queue.length - 20));
+      try {
+        persistEarlyQueue();
+      } catch {
+        /* Diagnostics should never affect app behavior. */
+      }
+    }
   };
 }
 
@@ -275,6 +287,10 @@ function markEventLogged(event: RumQueuedEvent): void {
   }
 }
 
+function shouldRetainEvent(event: RumQueuedEvent): boolean {
+  return isClientLogsActive() && isClientEventType(event.type) && event.logged !== true;
+}
+
 /** Hands one queued asset event to the log exporter, tracking it until the collector acks it. */
 function forwardEvent(event: RumQueuedEvent): void {
   if (
@@ -285,11 +301,15 @@ function forwardEvent(event: RumQueuedEvent): void {
   ) {
     return;
   }
-  const accepted = recordClientEvent(event.type, sanitizeQueuedAttributes(event.attributes), () =>
-    markEventLogged(event),
+  forwardingEvents.add(event);
+  const accepted = recordClientEvent(
+    event.type,
+    sanitizeQueuedAttributes(event.attributes),
+    () => markEventLogged(event),
+    () => forwardingEvents.delete(event),
   );
-  if (accepted) {
-    forwardingEvents.add(event);
+  if (!accepted) {
+    forwardingEvents.delete(event);
   }
 }
 

@@ -13,6 +13,9 @@ describe('scrubText', () => {
     ['aws AKIAIOSFODNN7EXAMPLE', 'aws [key]'],
     ['api_key=supersecretvalue&next=1', 'api_key=[redacted]&next=1'],
     ['password: "hunter2 hunter2"', 'password: [redacted]'],
+    ['{"password":"hunter2"}', '{password:[redacted]}'],
+    ["{'token':'hunter2'}", '{token:[redacted]}'],
+    ['{"access_token": "secret value"}', '{access_token: [redacted]}'],
     ['convo 65f1c2a9b8e4d3f2a1b0c9d8 missing', 'convo [hex] missing'],
     ['file 123e4567-e89b-12d3-a456-426614174000 gone', 'file :id gone'],
     ['secret Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdo end', 'secret [redacted] end'],
@@ -109,6 +112,13 @@ describe('summarizeError', () => {
       statusCode: 503,
     });
     expect(JSON.stringify(summary)).not.toMatch(/secret prompt|abcdefghijklmnop/);
+  });
+
+  it('classifies arbitrary error names rather than exporting user-derived text', () => {
+    const error = new Error('Model rejected prompt');
+    error.name = 'my medical history';
+    expect(summarizeError(error)?.type).toBe('Error');
+    expect(JSON.stringify(summarizeError(error))).not.toContain('medical history');
   });
 
   it('drops application error messages, which can echo prompt or response content', () => {
