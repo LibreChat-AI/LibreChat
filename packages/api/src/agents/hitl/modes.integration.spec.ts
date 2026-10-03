@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import express from 'express';
+import request from 'supertest';
 import mongoose from 'mongoose';
 import { MemorySaver } from '@langchain/langgraph';
 import { MongoMemoryServer } from 'mongodb-memory-server';
@@ -18,11 +20,13 @@ import {
 import { buildHITLRunWiring, buildToolApprovalExecutionConfig } from './runtime';
 import { bindToolApproval, bindToolApprovalIdentity } from '~/tools/approval';
 import { assertToolApprovalTransportEpoch } from '~/tools/approval';
+import { createResetToolApprovalController } from './controller';
 import { buildMCPToolReviewAuthority } from '~/mcp/approval';
 import { bindToolReviewAuthority } from '~/tools/approval';
 import { createToolExecuteHandler } from '../handlers';
 import { createMCPStructuredTool } from '~/mcp/tools';
 import { markMCPToolResultError } from '~/mcp/status';
+import { formatMCPServerTools } from '~/mcp/tools';
 import { formatToolContent } from '~/mcp/parsers';
 
 let mongo: MongoMemoryServer;
@@ -1239,4 +1243,50 @@ test('an OAuth account replaced during transport recovery cannot dispatch the re
   expect(sideEffects).toBe(0);
   expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
   await mongoose.models.Token.deleteOne({ _id: token._id });
+});
+
+test('unsaved verified alias reset revokes the canonical grant without resetting other tools', async () => {
+  const storage = createMethods(mongoose);
+  const scope = { userId: '652000000000000000000001', conversationId: 'alias-reset-chat' };
+  const consent = {
+    agentId: 'alias-agent',
+    instanceName: 'db_query_mcp_db',
+    toolName: 'query_mcp_db',
+    binding: 'alias-query-binding',
+    scope: 'always' as const,
+  };
+  const other = {
+    ...consent,
+    instanceName: 'other_mcp_db',
+    toolName: 'other_mcp_db',
+    binding: 'other-binding',
+  };
+  await storage.rememberToolApprovalGrants(scope, [consent, other]);
+  const agent = {
+    id: consent.agentId,
+    tool_options: { db_query_mcp_db: { approval_mode: 'always' as const } },
+  };
+  const app = express();
+  app.use(express.json());
+  const controller = createResetToolApprovalController({
+    storage,
+    getAgent: async () => agent,
+    canAccessAgent: async () => true,
+    getMCPServerConfigs: async () => ({
+      db: { type: 'streamable-http', url: 'https://mcp.example.test/mcp' },
+    }),
+    getMCPServerTools: async () => formatMCPServerTools('db', [{ name: 'db_query' }]),
+  });
+  app.post('/reset', (req, res) =>
+    controller(Object.assign(req, { user: { id: scope.userId } }), res),
+  );
+  await request(app)
+    .post('/reset')
+    .send({ agentId: agent.id, toolName: 'query_mcp_db' })
+    .expect(200);
+  const statuses = await storage.getToolApprovalGrants(scope, [consent, other]);
+  expect(statuses.map((status) => status.approved)).toEqual([false, true]);
+  await storage.rememberToolApprovalGrants(scope, [consent]);
+  expect((await storage.getToolApprovalGrants(scope, [consent]))[0].approved).toBe(false);
+  expect(Object.keys(agent.tool_options)).toEqual(['db_query_mcp_db']);
 });

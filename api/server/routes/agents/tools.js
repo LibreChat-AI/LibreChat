@@ -9,6 +9,8 @@ const { callTool, verifyToolAuth, getToolCalls } = require('~/server/controllers
 const { ResourceType, PermissionBits } = require('librechat-data-provider');
 const { checkPermission } = require('~/server/services/PermissionService');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
+const { resolveAllMcpConfigs } = require('~/server/services/MCP');
+const { getMCPServerTools } = require('~/server/services/Config');
 const { getAvailableTools } = require('~/server/controllers/PluginController');
 const { toolCallLimiter } = require('~/server/middleware');
 
@@ -20,6 +22,8 @@ router.post(
   createResetToolApprovalController({
     storage: approvalStorage,
     hasCapability,
+    getMCPServerConfigs: resolveAllMcpConfigs,
+    getMCPServerTools,
     getAgent: approvalStorage.getAgent,
     canAccessAgent: (agent, user) =>
       checkPermission({
