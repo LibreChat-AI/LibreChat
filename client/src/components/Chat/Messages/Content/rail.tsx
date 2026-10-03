@@ -119,29 +119,32 @@ export function FoldRail({
 const FOLD_PANEL = '[data-fold-panel]';
 const FOLD_RAIL = '[data-fold-rail]';
 const FOLD_ROOT = '[data-fold-root]';
+const FOLD_COLUMN = '[data-fold-column]';
 /** A row's glyph is 20px tall inside a 32px line, so the pointer is on that row from
  *  the margin above the glyph down to the next row's margin. */
 const ROW_REACH = 6;
 
 export type LitRail = { rail: HTMLElement; length: number; end: boolean };
 
-/** The glyph of the row at `y` among the rows this panel holds itself, or the nearest
- *  one above it when the pointer is inside a row's open body. Rows are in document
- *  order top to bottom, so a binary search reads a handful of rects. */
+/** The glyph at `y` in one panel or column, or the nearest above an open body.
+ *  Within that scope, document order is vertical order. */
 function glyphAt(
   panel: Element,
+  scope: Element,
   y: number,
   glyphsByPanel: WeakMap<Element, Element[]>,
 ): Element | null {
-  let glyphs = glyphsByPanel.get(panel);
+  let glyphs = glyphsByPanel.get(scope);
   if (glyphs == null) {
     glyphs = [];
-    for (const glyph of panel.querySelectorAll(FOLD_GLYPH_SELECTOR)) {
-      if (glyph.closest(FOLD_PANEL) === panel) {
+    for (const glyph of scope.querySelectorAll(FOLD_GLYPH_SELECTOR)) {
+      const column = glyph.closest(FOLD_COLUMN);
+      const glyphScope = column != null && panel.contains(column) ? column : panel;
+      if (glyph.closest(FOLD_PANEL) === panel && glyphScope === scope) {
         glyphs.push(glyph);
       }
     }
-    glyphsByPanel.set(panel, glyphs);
+    glyphsByPanel.set(scope, glyphs);
   }
   let found: Element | null = null;
   let low = 0;
@@ -177,7 +180,9 @@ export function litFoldPath(
   if (innermost == null || !root.contains(innermost)) {
     return [];
   }
-  const glyph = glyphAt(innermost, y, glyphsByPanel);
+  const column = target.closest(FOLD_COLUMN);
+  const scope = column != null && innermost.contains(column) ? column : innermost;
+  const glyph = glyphAt(innermost, scope, y, glyphsByPanel);
   if (glyph == null) {
     return [];
   }
@@ -287,7 +292,7 @@ export function useFoldPath(rootRef: RefObject<HTMLElement>, hasBody: boolean) {
       childList: true,
       characterData: true,
       attributes: true,
-      attributeFilter: ['class', 'style', 'hidden', 'open', 'data-fold-panel'],
+      attributeFilter: ['class', 'style', 'hidden', 'open', 'data-fold-panel', 'data-fold-column'],
     });
     const resize = new ResizeObserver(clear);
     resize.observe(root);

@@ -7,6 +7,9 @@
  */
 export const TOOL_ROW_CLASSES = 'relative my-1.5 flex h-5 shrink-0 items-center gap-2.5';
 
+/** Behavior hook for header glyphs, independent of their layout. */
+export const FOLD_GLYPH_CLASS = 'fold-glyph';
+
 /**
  * The leading glyph slot of a row: 24px wide, the width of the message
  * header's avatar, and the row's own 20px tall. A 16px tool icon, the 14px
@@ -18,12 +21,10 @@ export const TOOL_ROW_CLASSES = 'relative my-1.5 flex h-5 shrink-0 items-center 
  * and would carry a taller slot 2px below the row's center. `fold-glyph` is a
  * hook, not a style: see `FOLD_GLYPH_SELECTOR`.
  */
-export const ROW_GLYPH_SLOT = 'fold-glyph flex h-5 min-w-6 shrink-0 items-center justify-center';
+export const ROW_GLYPH_SLOT = `${FOLD_GLYPH_CLASS} flex h-5 min-w-6 shrink-0 items-center justify-center`;
 
-/** The behavior hook `ROW_GLYPH_SLOT` carries: every row line starts with that slot, so
- *  the lit fold path (`useFoldPath`) finds the row a pointer is on by its glyph instead of
- *  each row component marking itself. Not a style. */
-export const FOLD_GLYPH_SELECTOR = '.fold-glyph';
+/** Shared by normal row slots and custom header glyphs. */
+export const FOLD_GLYPH_SELECTOR = `.${FOLD_GLYPH_CLASS}`;
 
 /**
  * The panel under an open header: its rows step in by one glyph slot and a

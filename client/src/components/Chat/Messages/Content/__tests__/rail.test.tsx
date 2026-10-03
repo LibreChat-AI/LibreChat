@@ -225,6 +225,43 @@ describe('litFoldPath', () => {
     });
   });
 
+  it('searches only the hovered column when document order is not vertical order', () => {
+    const { root, a, rows } = foldFixture();
+    const left = document.createElement('div');
+    const right = document.createElement('div');
+    left.setAttribute('data-fold-column', '');
+    right.setAttribute('data-fold-column', '');
+    left.append(rows.a1, rows.a2);
+    right.append(rows.header);
+    a.el.replaceChildren(a.rail, left, right);
+    const body = document.createElement('pre');
+    left.append(body);
+    const cache = new WeakMap<Element, Element[]>();
+    expect(litFoldPath(root, rows.a2, 225, cache)).toEqual([
+      { rail: a.rail, length: 188, end: true },
+    ]);
+    expect(litFoldPath(root, body, 260, cache)[0].length).toBe(188);
+    expect(litFoldPath(root, rows.header, 90, cache)[0].length).toBe(50);
+    expect(litFoldPath(root, a.el, 225, cache)).toEqual([]);
+  });
+
+  it('excludes nested columns but keeps a nested panel in its surrounding column', () => {
+    const { root, a, b, rows } = foldFixture();
+    const column = document.createElement('div');
+    const nested = document.createElement('div');
+    column.setAttribute('data-fold-column', '');
+    nested.setAttribute('data-fold-column', '');
+    nested.append(rows.b1);
+    column.append(rows.a1, rows.a2, nested, b.el);
+    a.el.replaceChildren(a.rail, column);
+    expect(litFoldPath(root, rows.a2, 225)[0].length).toBe(188);
+    expect(litFoldPath(root, rows.b1, 120)[0].length).toBe(82);
+    expect(litFoldPath(root, rows.b2, 150)).toEqual([
+      { rail: b.rail, length: 50, end: true },
+      { rail: a.rail, length: 114, end: false },
+    ]);
+  });
+
   it('leaves the rails and the outermost header alone', () => {
     const { root, b, outerHeader } = foldFixture();
     expect(litFoldPath(root, b.rail, 150)).toEqual([]);
