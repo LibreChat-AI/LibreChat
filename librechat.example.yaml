@@ -1103,6 +1103,22 @@ endpoints:
       # reasoningLabelMaxPerRun: 8
       modelDisplayLabel: 'Claude (Compatible)'
 
+    # FlexAI Example
+    - name: 'FlexAI'
+      apiKey: '${FLEXAI_API_KEY}'
+      baseURL: 'https://api.flex.ai/v1'
+      # Model ids are the bare names returned by `GET /v1/models`.
+      models:
+        default:
+          - 'DeepSeek-V4.1-Flash'
+          - 'GLM-5.2'
+          - 'Qwen3.8-27B'
+          - 'gpt-oss-120b'
+        fetch: true
+      titleConvo: true
+      titleModel: 'Qwen3-8B-FP8'
+      modelDisplayLabel: 'FlexAI'
+
     # Groq Example
     - name: 'groq'
       apiKey: '${GROQ_API_KEY}'

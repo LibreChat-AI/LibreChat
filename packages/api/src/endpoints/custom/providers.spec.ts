@@ -49,6 +49,16 @@ describe('resolveEndpointProviderId', () => {
     ).toBe(ProviderId.helicone);
   });
 
+  it('brands the FlexAI API host and a differently named FlexAI endpoint', () => {
+    expect(
+      resolveEndpointProviderId({
+        name: 'Open Weights',
+        baseURL: 'https://api.flex.ai/v1',
+      }),
+    ).toBe(ProviderId.flexai);
+    expect(resolveEndpointProviderId({ name: 'FlexAI' })).toBe(ProviderId.flexai);
+  });
+
   it('recognizes the supported Cohere API host', () => {
     expect(
       resolveEndpointProviderId({
