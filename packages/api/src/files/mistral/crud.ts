@@ -373,6 +373,23 @@ function getModelConfig(ocrConfig?: TCustomConfig['ocr']): string {
 }
 
 /**
+ * Gets the region configuration for Vertex AI
+ */
+function getRegionConfig(ocrConfig?: TCustomConfig['ocr']): string | undefined {
+  const regionConfig = ocrConfig?.region || '';
+
+  if (!regionConfig.trim()) {
+    return undefined;
+  }
+
+  if (envVarRegex.test(regionConfig)) {
+    return extractEnvVariable(regionConfig) || undefined;
+  }
+
+  return regionConfig.trim();
+}
+
+/**
  * Determines document type based on file
  */
 function getDocumentType(file: Express.Multer.File): 'image_url' | 'document_url' {
@@ -691,6 +708,7 @@ async function performGoogleVertexOCR({
   accessToken,
   projectId,
   model,
+  region,
   documentType = 'document_url',
   contentProtected = false,
 }: {
@@ -698,10 +716,12 @@ async function performGoogleVertexOCR({
   accessToken: string;
   projectId: string;
   model: string;
+  region?: string;
   documentType?: 'document_url' | 'image_url';
   contentProtected?: boolean;
 }): Promise<OCRResult> {
-  const location = process.env.GOOGLE_LOC || 'us-central1';
+  // Priority: function parameter > MISTRAL_VERTEX_REGION > GOOGLE_LOC > default
+  const location = region || process.env.MISTRAL_VERTEX_REGION || process.env.GOOGLE_LOC || 'us-central1';
   const modelId = model || 'mistral-ocr-2505';
 
   let baseURL: string;
@@ -787,6 +807,7 @@ export const uploadGoogleVertexMistralOCR = async (
   try {
     const { serviceAccount, accessToken } = await loadGoogleAuthConfig();
     const model = getModelConfig(context.req.config?.ocr);
+    const region = getRegionConfig(context.req.config?.ocr);
 
     const { content: buffer } = await readFileAsBuffer(context.file.path, {
       fileSize: context.file.size,
@@ -800,6 +821,7 @@ export const uploadGoogleVertexMistralOCR = async (
       accessToken,
       projectId: serviceAccount.project_id!,
       model,
+      region,
       documentType,
       contentProtected,
     });
