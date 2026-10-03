@@ -124,6 +124,26 @@ describe("Lia's pixel art", () => {
     expect(screens).not.toContain(face);
   });
 
+  it("keeps the glitch screen's shifted strips inside the screen", () => {
+    for (let t = 0; t < 7000; t += 70) {
+      const canvas = document.createElement('canvas');
+      const c = canvas.getContext('2d') as CanvasRenderingContext2D;
+      const copies: number[][] = [];
+      c.drawImage = ((...args: unknown[]) => {
+        if (args.length === 9) {
+          copies.push(args.slice(5) as number[]);
+        }
+      }) as CanvasRenderingContext2D['drawImage'];
+      drawScreen(c, 'glitch', t, 0.5, BASE);
+      for (const [x, y, w, h] of copies) {
+        expect(x).toBeGreaterThanOrEqual(0);
+        expect(y).toBeGreaterThanOrEqual(0);
+        expect(x + w).toBeLessThanOrEqual(SCREEN_W);
+        expect(y + h).toBeLessThanOrEqual(SCREEN_H);
+      }
+    }
+  });
+
   it('advances the progress screens as their step runs', () => {
     const draw = (name: string, p: number) =>
       paint((c) => drawScreen(c, name, p * 2000, p, BASE))
@@ -133,6 +153,11 @@ describe("Lia's pixel art", () => {
     const boot = [0.2, 0.35, 0.6, 1].map((p) => draw('boot', p));
     expect(new Set(boot).size).toBe(boot.length);
     expect(draw('boot', 1).endsWith(draw('face', 0))).toBe(true);
+  });
+
+  it('ends the hide pose where the hidden and emerge poses take over', () => {
+    expect(POSES.hide(1000, 1).oy).toBe(POSES.hidden(0, 0).oy);
+    expect(POSES.emerge(0, 0).oy).toBe(POSES.hidden(0, 0).oy);
   });
 
   it('describes every pose as a small offset', () => {

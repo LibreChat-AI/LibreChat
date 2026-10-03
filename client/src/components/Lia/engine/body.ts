@@ -262,7 +262,7 @@ export const POSES: Readonly<Record<string, PoseFn>> = {
     rot: Math.round(Math.sin(t / 120) * 2) * 3,
   }),
   tiptoe: () => ({ oy: -1 }),
-  hide: (_t, p) => ({ oy: Math.round(Math.min(1, p * 2) * 36) }),
+  hide: (_t, p) => ({ oy: Math.round(Math.min(1, p * 2) * 40) }),
   hidden: () => ({ oy: 40 }),
   emerge: (_t, p) => ({ oy: Math.round((1 - easeOut(p)) * 40) }),
   stomp: (t) => (toggle(t, 250) ? { oy: -2 } : {}),
@@ -371,7 +371,9 @@ const BUILTIN: Readonly<Record<string, (c: Ctx, t: number, p: number, fs: FaceSt
     for (let i = 0; i < 4; i++) {
       const y = Math.floor(hash(step * 7 + i) * 19);
       const dx = Math.floor(hash(step * 13 + i) * 7) - 3;
-      c.drawImage(c.canvas, SX, SY + y, SCREEN_W, 2, dx, y, SCREEN_W, 2);
+      /* Shorten the strip by its shift so it never spills onto the bezel. */
+      const w = SCREEN_W - Math.abs(dx);
+      c.drawImage(c.canvas, SX + Math.max(0, -dx), SY + y, w, 2, Math.max(0, dx), y, w, 2);
     }
     for (let i = 0; i < 12; i++) {
       rect(
