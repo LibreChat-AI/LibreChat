@@ -181,7 +181,7 @@ export function createAgentToolApprovalSession({
   const callOwners = new Map<string, Set<string>>();
   const proposals = new Map<
     string,
-    { agentId: string; toolName: string; argumentsHash: string; executionScope?: string }
+    { agentId: string; toolName: string; executionScope?: string }
   >();
   const callCandidates = (callId: string, toolName: string): string[] =>
     Array.from(callOwners.get(callId) ?? []).filter(
@@ -261,16 +261,14 @@ export function createAgentToolApprovalSession({
         ).subagent;
         const ownerHint =
           subagent?.agent_id && owners.has(subagent.agent_id) ? subagent.agent_id : undefined;
-        const argumentsHash = digestMCPAuthorityValue(request.arguments);
         const candidates = callCandidates(request.tool_call_id, request.name).filter((key) => {
           const proposal = proposals.get(key)!;
           return (
             (ownerHint == null || proposal.agentId === ownerHint) &&
-            (subagent?.run_id == null || proposal.executionScope === subagent.run_id) &&
-            proposal.argumentsHash === argumentsHash
+            (subagent?.run_id == null || proposal.executionScope === subagent.run_id)
           );
         });
-        // An ambiguous payload cannot remember consent for an arbitrary sibling.
+        // The SDK binds finalized arguments. Owner/lineage must still identify exactly one call.
         if (candidates.length !== 1) continue;
         const binding = calls.get(candidates[0]);
         if (binding?.instanceName === request.name) result[request.tool_call_id] = binding;
@@ -413,7 +411,6 @@ export function createAgentToolApprovalSession({
         proposals.set(key, {
           agentId: agent.id,
           toolName: input.toolName,
-          argumentsHash: digestMCPAuthorityValue(input.toolInput),
           executionScope,
         });
       }
