@@ -4,6 +4,7 @@ import type { GenericTool } from '@librechat/agents';
 import type { CodeEnvironmentConfig } from '~/agents/execution';
 import type { LCToolRegistry } from './classification';
 import {
+  extractMCPToolDefinition,
   buildToolRegistryFromAgentOptions,
   aliasMCPToolOptions,
   agentHasProgrammaticTools,
@@ -774,6 +775,147 @@ describe('classification.ts', () => {
       });
 
       expect(result.additionalTools.some((t) => t.name === 'tool_search')).toBe(true);
+    });
+  });
+
+  describe('server-level deferLoading', () => {
+    const TOOL_A = 'list_files_mcp_serverX';
+    const TOOL_B = 'read_file_mcp_serverY';
+
+    const createMCPTool = (name: string, serverDeferLoading?: boolean) =>
+      ({
+        name,
+        mcp: true,
+        mcpJsonSchema: { type: 'object', properties: {} },
+        ...(serverDeferLoading ? { mcpServerDeferLoading: true } : {}),
+      }) as unknown as GenericTool;
+
+    describe('extractMCPToolDefinition', () => {
+      it('case 9: carries the mcpServerDeferLoading stamp onto the definition', () => {
+        const def = extractMCPToolDefinition({ name: TOOL_A, mcpServerDeferLoading: true });
+        expect(def.serverDeferLoading).toBe(true);
+        expect(def.serverName).toBe('serverX');
+      });
+
+      it('case 9: omits serverDeferLoading when the tool is not stamped', () => {
+        const def = extractMCPToolDefinition({ name: TOOL_A });
+        expect(def.serverDeferLoading).toBeUndefined();
+      });
+    });
+
+    describe('buildToolRegistryFromAgentOptions (saved-agent path)', () => {
+      it('case 1: server default applies when there is no per-tool option', () => {
+        const tools = [{ name: TOOL_A, description: 'A', serverDeferLoading: true }];
+        const registry = buildToolRegistryFromAgentOptions(tools, {});
+
+        expect(registry.get(TOOL_A)?.defer_loading).toBe(true);
+        expect(agentHasDeferredTools(registry)).toBe(true);
+      });
+
+      it('case 3: explicit per-agent false overrides server true', () => {
+        const tools = [{ name: TOOL_A, serverDeferLoading: true }];
+        const agentToolOptions: AgentToolOptions = { [TOOL_A]: { defer_loading: false } };
+        const registry = buildToolRegistryFromAgentOptions(tools, agentToolOptions);
+
+        expect(registry.get(TOOL_A)?.defer_loading).toBe(false);
+      });
+
+      it('case 4: explicit per-agent true with no server default', () => {
+        const tools = [{ name: TOOL_A }];
+        const agentToolOptions: AgentToolOptions = { [TOOL_A]: { defer_loading: true } };
+        const registry = buildToolRegistryFromAgentOptions(tools, agentToolOptions);
+
+        expect(registry.get(TOOL_A)?.defer_loading).toBe(true);
+      });
+
+      it('case 5: no server default and no per-agent option resolves to false', () => {
+        const tools = [{ name: TOOL_A }];
+        const registry = buildToolRegistryFromAgentOptions(tools, {});
+
+        expect(registry.get(TOOL_A)?.defer_loading).toBe(false);
+      });
+
+      it('case 6: mixed servers - only the stamped tool defers', () => {
+        const tools = [{ name: TOOL_A, serverDeferLoading: true }, { name: TOOL_B }];
+        const registry = buildToolRegistryFromAgentOptions(tools, {});
+
+        expect(registry.get(TOOL_A)?.defer_loading).toBe(true);
+        expect(registry.get(TOOL_B)?.defer_loading).toBe(false);
+      });
+    });
+
+    describe('buildToolClassification (ephemeral / event-driven path)', () => {
+      it('case 2 (headline): server default defers via the fallback branch when agentToolOptions is undefined', async () => {
+        const loadedTools: GenericTool[] = [createMCPTool(TOOL_A, true)];
+
+        const result = await buildToolClassification({
+          loadedTools,
+          userId: 'user1',
+          agentId: 'agent1',
+          deferredToolsEnabled: true,
+        });
+
+        expect(result.toolRegistry?.get(TOOL_A)?.defer_loading).toBe(true);
+        expect(result.hasDeferredTools).toBe(true);
+      });
+
+      it('case 8: tool_search is injected when only a server default is present', async () => {
+        const loadedTools: GenericTool[] = [createMCPTool(TOOL_A, true)];
+
+        const result = await buildToolClassification({
+          loadedTools,
+          userId: 'user1',
+          agentId: 'agent1',
+          deferredToolsEnabled: true,
+        });
+
+        expect(result.additionalTools.some((t) => t.name === 'tool_search')).toBe(true);
+      });
+
+      it('case 6: mixed servers - only the stamped tool defers', async () => {
+        const loadedTools: GenericTool[] = [createMCPTool(TOOL_A, true), createMCPTool(TOOL_B)];
+
+        const result = await buildToolClassification({
+          loadedTools,
+          userId: 'user1',
+          agentId: 'agent1',
+          deferredToolsEnabled: true,
+        });
+
+        expect(result.toolRegistry?.get(TOOL_A)?.defer_loading).toBe(true);
+        expect(result.toolRegistry?.get(TOOL_B)?.defer_loading).toBe(false);
+      });
+
+      it('case 7: capability off clears the server-defaulted defer and skips tool_search', async () => {
+        const loadedTools: GenericTool[] = [createMCPTool(TOOL_A, true)];
+
+        const result = await buildToolClassification({
+          loadedTools,
+          userId: 'user1',
+          agentId: 'agent1',
+          deferredToolsEnabled: false,
+        });
+
+        expect(result.toolRegistry?.get(TOOL_A)?.defer_loading).toBe(false);
+        expect(result.hasDeferredTools).toBe(false);
+        expect(result.additionalTools.some((t) => t.name === 'tool_search')).toBe(false);
+      });
+
+      it('case 3: explicit per-agent false overrides the server default stamp', async () => {
+        const loadedTools: GenericTool[] = [createMCPTool(TOOL_A, true)];
+        const agentToolOptions: AgentToolOptions = { [TOOL_A]: { defer_loading: false } };
+
+        const result = await buildToolClassification({
+          loadedTools,
+          userId: 'user1',
+          agentId: 'agent1',
+          agentToolOptions,
+          deferredToolsEnabled: true,
+        });
+
+        expect(result.toolRegistry?.get(TOOL_A)?.defer_loading).toBe(false);
+        expect(result.hasDeferredTools).toBe(false);
+      });
     });
   });
 });

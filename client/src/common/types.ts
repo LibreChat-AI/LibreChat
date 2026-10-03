@@ -196,6 +196,8 @@ export interface MCPServerInfo {
   /** True when tools can only be discovered with live chat request fields. */
   requestScoped?: boolean;
   consumeOnly?: boolean;
+  /** Server-level default: when true, this server's tools defer by default */
+  deferLoading?: boolean;
   metadata: t.TPlugin;
 }
 
