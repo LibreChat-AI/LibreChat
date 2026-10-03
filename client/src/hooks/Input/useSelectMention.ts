@@ -17,6 +17,7 @@ import {
   getConvoSwitchLogic,
   logger,
 } from '~/utils';
+import { trackAction } from '~/lib/rum/actions';
 import { useDefaultConvo } from '~/hooks';
 import store from '~/store';
 
@@ -68,6 +69,7 @@ export default function useSelectMention({
       if (!newEndpoint) {
         return;
       }
+      trackAction('model.switch', { endpoint: newEndpoint, spec: spec.name, model: preset.model });
 
       const {
         template,
@@ -150,6 +152,13 @@ export default function useSelectMention({
       if (!newEndpoint) {
         return;
       }
+
+      trackAction(kwargs.agent_id ? 'agent.switch' : 'model.switch', {
+        endpoint: newEndpoint,
+        model: kwargs.model,
+        agentId: kwargs.agent_id,
+        assistantId: kwargs.assistant_id,
+      });
 
       const conversation = getConversation();
 

@@ -43,6 +43,12 @@ interface:
     use: false
   fileCitations: true
   feedback: true
+  # The model calls and tool spans behind each response, read from Langfuse and
+  # shown to the conversation's owner only. Inert until the stack points the app
+  # at Langfuse (observability_enabled and langfuse_domain in sandbox.tfvars).
+  traceViewer:
+    enabled: true
+    showInputOutput: false
 
 registration:
   socialLogins: ["openid"]

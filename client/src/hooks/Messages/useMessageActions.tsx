@@ -16,6 +16,7 @@ import type { TMessageProps } from '~/common';
 import { useCopyMessageToClipboard, hasCopyableText } from './useCopyToClipboard';
 import { useAssistantsMapContext, useAgentsMapContext } from '~/Providers';
 import { useAuthContext } from '~/hooks/AuthContext';
+import { trackAction } from '~/lib/rum/actions';
 import { useGetAddedConvo } from '~/hooks/Chat';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
@@ -158,6 +159,10 @@ export default function useMessageActions(props: TMessageActions) {
       const payload: TUpdateFeedbackRequest = {
         feedback: newFeedback ? toMinimalFeedback(newFeedback) : undefined,
       };
+      trackAction('message.feedback', {
+        conversationId: conversation?.conversationId,
+        rating: newFeedback?.rating ?? 'cleared',
+      });
 
       feedbackMutation.mutate(payload, {
         onSuccess: (data) => {
@@ -177,7 +182,7 @@ export default function useMessageActions(props: TMessageActions) {
         },
       });
     },
-    [feedbackMutation],
+    [feedbackMutation, conversation?.conversationId],
   );
 
   return {

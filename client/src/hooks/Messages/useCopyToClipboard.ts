@@ -12,6 +12,7 @@ import {
   INVALID_CITATION_REGEX,
 } from '~/utils/citations';
 import { markdownToHtml } from '~/utils/richtext';
+import { trackAction } from '~/lib/rum/actions';
 import store from '~/store';
 
 type Source = {
@@ -265,7 +266,18 @@ export function useCopyMessageToClipboard({
     variant,
   ]);
 
-  return useCopyToClipboard({ ...source, richText });
+  const copyToClipboard = useCopyToClipboard({ ...source, richText });
+
+  return useCallback(
+    (setIsCopied: React.Dispatch<React.SetStateAction<boolean>>): boolean => {
+      const copied = copyToClipboard(setIsCopied);
+      if (copied) {
+        trackAction('message.copy', { fromUser: isCreatedByUser === true });
+      }
+      return copied;
+    },
+    [copyToClipboard, isCreatedByUser],
+  );
 }
 
 /**

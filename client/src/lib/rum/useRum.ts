@@ -10,6 +10,7 @@ import {
 } from './diagnostics';
 import { useGetStartupConfig } from '~/data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
+import { setActionClient } from './actions';
 import { normalizeRumPath } from './routes';
 import { getClientBuildId } from './build';
 
@@ -222,6 +223,7 @@ export default function useRum(): void {
         });
 
         hyperDxRef.current = HyperDX;
+        setActionClient(HyperDX);
         initializedKeyRef.current = initKey;
         HyperDX.setGlobalAttributes(buildGlobalAttributes(user, config, routeRef.current));
         startRumDiagnostics(HyperDX, () => routeRef.current);

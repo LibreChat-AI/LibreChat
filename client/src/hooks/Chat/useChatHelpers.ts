@@ -14,6 +14,7 @@ import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/
 import useChatFunctions from '~/hooks/Chat/useChatFunctions';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { resolveAbortSteerTarget } from '~/utils';
+import { trackAction } from '~/lib/rum/actions';
 import useNewConvo from '~/hooks/useNewConvo';
 import { getMessageCacheIds } from './cache';
 import { useAbortCleanup } from './abort';
@@ -352,9 +353,10 @@ export default function useChatHelpers(index = 0, paramId?: string) {
   const handleStopGenerating = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
       e.preventDefault();
+      trackAction('message.stop', { conversationId, endpoint: endpointType ?? endpoint });
       stopGenerating();
     },
-    [stopGenerating],
+    [stopGenerating, conversationId, endpoint, endpointType],
   );
 
   const handleRegenerate = useCallback(

@@ -27,6 +27,7 @@ import type {
 } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type { TAskFunction, ExtendedFile } from '~/common';
+import type { UiAction } from '~/lib/rum/actions';
 import {
   logger,
   requestChatFocus,
@@ -48,6 +49,7 @@ import { revealedQueuedTurnFamily } from '~/store/steer';
 import store, { useGetEphemeralAgent } from '~/store';
 import { startupConfigKey } from '~/data-provider';
 import useUserKey from '~/hooks/Input/useUserKey';
+import { trackAction } from '~/lib/rum/actions';
 import { useAuthContext } from '~/hooks';
 
 /** A revalidating cache younger than this is locally authoritative (the run
@@ -59,6 +61,30 @@ const logChatRequest = (request: Record<string, unknown>) => {
   logger.log('=====================================\nAsk function called with:');
   logger.dir(request);
   logger.log('=====================================');
+};
+
+/** `isResubmit`: an edited user turn is replayed as a plain send under an explicit parent. */
+const getSubmitAction = ({
+  isContinued,
+  isRegenerate,
+  isEdited,
+  isResubmit,
+}: {
+  isContinued: boolean;
+  isRegenerate: boolean;
+  isEdited: boolean;
+  isResubmit: boolean;
+}): UiAction => {
+  if (isContinued) {
+    return 'message.continue';
+  }
+  if (isEdited) {
+    return 'message.edit';
+  }
+  if (isRegenerate) {
+    return 'message.regenerate';
+  }
+  return isResubmit ? 'message.edit' : 'message.send';
 };
 
 const getAppendParentMessageId = ({
@@ -335,6 +361,12 @@ export default function useChatFunctions({
       return false;
     }
 
+    const submitAction = getSubmitAction({
+      isContinued,
+      isRegenerate,
+      isEdited,
+      isResubmit: parentMessageId != null,
+    });
     const conversation = cloneDeep(immutableConversation);
     const latestCodeApprovalMode = getConversation()?.codeApprovalMode;
     const codeApprovalMode =
@@ -797,6 +829,14 @@ export default function useChatFunctions({
         ? current
         : withSubmittedCodeDecision(current, workspaceSubmission),
     );
+    if (!compact) {
+      trackAction(submitAction, {
+        conversationId,
+        endpoint,
+        model: conversation?.model,
+        agentId: conversation?.agent_id,
+      });
+    }
     setSubmissionStart(Date.now());
     setSubmission(submission);
     logger.dir('message_stream', submission, { depth: null });

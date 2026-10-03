@@ -273,6 +273,11 @@ interface:
   #   requestsPerMinute: 30
   #   # Budget for each request to Langfuse, in milliseconds (1000-300000).
   #   requestTimeoutMs: 10000
+  # Enabled for the local `observability` Compose profile. It stays inert until
+  # LANGFUSE_* is set in .env.
+  traceViewer:
+    enabled: true
+    showInputOutput: false
   # Tools pinned to the prompt bar by default for all users.
   # Only seeds the initial state — once a user pins/unpins a tool, their choice is kept.
   # Valid tool keys: artifacts, execute_code, web_search, file_search, skills.

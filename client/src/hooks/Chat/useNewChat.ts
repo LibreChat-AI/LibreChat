@@ -32,6 +32,7 @@ import {
   takeRetainedFileDeletions,
 } from '~/utils';
 import { useGetFiles, useDeleteFilesMutation } from '~/data-provider';
+import { trackAction } from '~/lib/rum/actions';
 import useNewConvo from '~/hooks/useNewConvo';
 import store from '~/store';
 
@@ -462,6 +463,7 @@ export default function useNewChat({
       ]),
     );
     removeTabAttachmentPresence(discardedFileIds, index);
+    trackAction('conversation.new');
     newConversation();
     onNewChat?.();
   }, [

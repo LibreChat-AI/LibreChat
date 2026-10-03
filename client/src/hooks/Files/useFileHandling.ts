@@ -40,6 +40,7 @@ import useLocalize, { TranslationKeys } from '~/hooks/useLocalize';
 import { useDelayedUploadToast } from './useDelayedUploadToast';
 import { useChatContext } from '~/Providers/ChatContext';
 import store, { ephemeralAgentByConvoId } from '~/store';
+import { trackAction } from '~/lib/rum/actions';
 import useClientResize from './useClientResize';
 import useUpdateFiles from './useUpdateFiles';
 
@@ -835,6 +836,9 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       const accepted = await processFiles(fileList, _toolResource, uploadLifecycle);
       if (!accepted && assignedFileId) {
         takeUploadRecovery(assignedFileId);
+      }
+      if (accepted) {
+        trackAction('file.upload', { count: fileList.length, toolResource: _toolResource });
       }
       return accepted;
     } catch (error) {

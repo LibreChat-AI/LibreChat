@@ -1,0 +1,25 @@
+<!--
+  HyperDX's ClickHouse account on the instance it shares with Langfuse.
+
+  Langfuse keeps prompts and responses in the `default` database, so HyperDX and
+  its collector connect as a user that can see only the `hyperdx` database. The
+  password comes from the container environment and is never written here.
+
+  Mounted into /etc/clickhouse-server/users.d/ by docker-compose.override.yml and
+  embedded into the ClickHouse task by infra/terraform/clickhouse.tf.
+-->
+<clickhouse>
+  <users>
+    <hyperdx>
+      <password from_env="HYPERDX_CLICKHOUSE_PASSWORD" />
+      <networks>
+        <ip>::/0</ip>
+      </networks>
+      <profile>default</profile>
+      <quota>default</quota>
+      <grants>
+        <query>GRANT ALL ON hyperdx.*</query>
+      </grants>
+    </hyperdx>
+  </users>
+</clickhouse>

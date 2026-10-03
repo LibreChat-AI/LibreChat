@@ -66,8 +66,8 @@ services:
       BEDROCK_AWS_DEFAULT_REGION: ${BEDROCK_AWS_DEFAULT_REGION}
       BEDROCK_AWS_PROFILE: ${BEDROCK_AWS_PROFILE}
       HOME: /home/node
-      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1},${no_proxy:-},meilisearch,chat-meilisearch,rag_api,vectordb,ministack,ollama,host.docker.internal
-      no_proxy: ${no_proxy:-localhost,127.0.0.1,::1},${NO_PROXY:-},meilisearch,chat-meilisearch,rag_api,vectordb,ministack,ollama,host.docker.internal
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1},${no_proxy:-},meilisearch,chat-meilisearch,rag_api,vectordb,ministack,ollama,langfuse-web,otel-collector,host.docker.internal
+      no_proxy: ${no_proxy:-localhost,127.0.0.1,::1},${NO_PROXY:-},meilisearch,chat-meilisearch,rag_api,vectordb,ministack,ollama,langfuse-web,otel-collector,host.docker.internal
     networks:
       - default
       - infra-network
@@ -140,6 +140,8 @@ services:
         until aws --endpoint-url "http://ministack:${MINISTACK_PORT}" s3api list-buckets >/dev/null 2>&1; do sleep 2; done
         aws --endpoint-url "http://ministack:${MINISTACK_PORT}" s3api head-bucket --bucket plastic-ai-files >/dev/null 2>&1 ||
           aws --endpoint-url "http://ministack:${MINISTACK_PORT}" s3api create-bucket --bucket plastic-ai-files
+        aws --endpoint-url "http://ministack:${MINISTACK_PORT}" s3api head-bucket --bucket plastic-ai-langfuse >/dev/null 2>&1 ||
+          aws --endpoint-url "http://ministack:${MINISTACK_PORT}" s3api create-bucket --bucket plastic-ai-langfuse
     environment:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
@@ -211,8 +213,203 @@ services:
       - mongodb-compat
       - legacy-mongodb
 
+  # ---------------------------------------------------------------------------
+  # Observability (profile `observability`): Langfuse for GenAI traces and
+  # HyperDX for browser activity, on one shared ClickHouse. The services mirror
+  # infra/terraform/{clickhouse,langfuse,hyperdx}.tf so the AWS wiring can be
+  # exercised locally. The api does not depend on them: exports fail open.
+  #
+  #   docker compose --profile observability up -d
+  #   Langfuse http://localhost:3100 (LANGFUSE_PORT)   HyperDX http://localhost:8080 (HYPERDX_PORT)
+  # ---------------------------------------------------------------------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      HYPERDX_CLICKHOUSE_PASSWORD: ${HYPERDX_CLICKHOUSE_PASSWORD}
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - type: bind
+        source: ./otel/clickhouse/hyperdx.xml
+        target: /etc/clickhouse-server/users.d/hyperdx.xml
+        read_only: true
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    profiles:
+      - observability
+    networks:
+      - infra-network
+
+  langfuse-postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD}
+      POSTGRES_DB: langfuse
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - langfuse-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    profiles:
+      - observability
+    networks:
+      - infra-network
+
+  langfuse-redis:
+    image: redis:7
+    # Langfuse queues must never be evicted.
+    command: ["--requirepass", "${LANGFUSE_REDIS_AUTH}", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_AUTH\" --no-auth-warning ping | grep PONG"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    environment:
+      REDIS_AUTH: ${LANGFUSE_REDIS_AUTH}
+    profiles:
+      - observability
+    networks:
+      - infra-network
+
+  langfuse-worker:
+    image: docker.langfuse.com/langfuse/langfuse-worker:4
+    environment: &langfuse-environment
+      NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3100}
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASSWORD}@langfuse-postgres:5432/langfuse
+      SALT: ${LANGFUSE_SALT}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY}
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ${LANGFUSE_REDIS_AUTH}
+      # Blob storage is the fork's S3 emulator; on AWS it is a real bucket.
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: plastic-ai-langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: ${AWS_REGION}
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://ministack:${MINISTACK_PORT}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: plastic-ai-langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: ${AWS_REGION}
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://ministack:${MINISTACK_PORT}
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+    depends_on: &langfuse-depends-on
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
+    profiles:
+      - observability
+    networks:
+      - infra-network
+
+  langfuse-web:
+    image: docker.langfuse.com/langfuse/langfuse:4
+    ports:
+      - "${LANGFUSE_PORT:-3100}:3000"
+    environment:
+      <<: *langfuse-environment
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET}
+      AUTH_DISABLE_SIGNUP: "true"
+      # Headless bootstrap: one organisation, one project, one admin, and the API
+      # key pair the app exports traces with (LANGFUSE_PUBLIC_KEY/SECRET_KEY).
+      LANGFUSE_INIT_ORG_ID: plastic-ai
+      LANGFUSE_INIT_ORG_NAME: plastic-ai
+      LANGFUSE_INIT_PROJECT_ID: plastic-ai
+      LANGFUSE_INIT_PROJECT_NAME: plastic-ai
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL}
+      LANGFUSE_INIT_USER_NAME: admin
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD}
+    depends_on: *langfuse-depends-on
+    profiles:
+      - observability
+    networks:
+      - infra-network
+
+  # HyperDX keeps accounts, dashboards and saved searches here; events go to ClickHouse.
+  hyperdx-mongo:
+    image: mongo:5.0.32-focal
+    volumes:
+      - hyperdx-mongo-data:/data/db
+    profiles:
+      - observability
+    networks:
+      - infra-network
+
+  hyperdx:
+    image: docker.hyperdx.io/hyperdx/hyperdx:2
+    ports:
+      - "${HYPERDX_PORT:-8080}:8080"
+    # DEFAULT_SOURCES: the tables HyperDX reads, shared with infra/terraform/hyperdx.tf.
+    env_file:
+      - ./otel/hyperdx/sources.env
+    environment:
+      FRONTEND_URL: http://localhost:${HYPERDX_PORT:-8080}
+      MONGO_URI: mongodb://hyperdx-mongo:27017/hyperdx
+      USAGE_STATS_ENABLED: "false"
+      # Applied when the first account registers; registration closes after it.
+      DEFAULT_CONNECTIONS: '[{"name":"ClickHouse","host":"http://clickhouse:8123","username":"hyperdx","password":"${HYPERDX_CLICKHOUSE_PASSWORD}"}]'
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      hyperdx-mongo:
+        condition: service_started
+    profiles:
+      - observability
+    networks:
+      - infra-network
+
+  # Receives the browser telemetry the api forwards from /api/rum. It runs
+  # standalone (no OpAMP), so the shared token is what guards its OTLP port.
+  otel-collector:
+    image: docker.clickhouse.com/clickhouse/clickstack-otel-collector:2
+    environment:
+      CLICKHOUSE_ENDPOINT: tcp://clickhouse:9000?dial_timeout=10s
+      CLICKHOUSE_USER: hyperdx
+      CLICKHOUSE_PASSWORD: ${HYPERDX_CLICKHOUSE_PASSWORD}
+      HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE: hyperdx
+      OTLP_AUTH_TOKEN: ${RUM_PROXY_AUTHORIZATION}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    profiles:
+      - observability
+    networks:
+      - infra-network
+
 networks:
   infra-network:
+
+volumes:
+  clickhouse-data:
+  langfuse-postgres-data:
+  hyperdx-mongo-data:
 
 # ---------------------------------------------------
 
