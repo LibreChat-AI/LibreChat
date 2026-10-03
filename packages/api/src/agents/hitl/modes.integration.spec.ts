@@ -86,6 +86,8 @@ async function build({
   executionTool = guarded,
   beforeLoad,
   sharedSession,
+  rewrite,
+  sessionAgents,
 }: {
   source: AgentApprovalSource;
   chat: string;
@@ -96,11 +98,13 @@ async function build({
   executionTool?: typeof guarded;
   beforeLoad?: () => void | Promise<void>;
   sharedSession?: AgentToolApprovalSession;
+  rewrite?: { text: string };
+  sessionAgents?: AgentApprovalSource[];
 }) {
   const session =
     sharedSession ??
     createAgentToolApprovalSession({
-      agents: [source],
+      agents: sessionAgents ?? [source],
       storage,
       scope: { userId: 'sdk-user', conversationId: chat },
       reviewed,
@@ -109,7 +113,7 @@ async function build({
     { enabled: true, mode: 'bypass' },
     {},
     [],
-    [{ hook: session.hook }],
+    [{ hook: session.hook }, ...(rewrite ? [{ hook: () => ({ updatedInput: rewrite }) }] : [])],
   )!;
   wiring.hooks.register('PostToolUse', { hooks: [session.rememberHook] });
   const llmConfig = {
@@ -589,5 +593,79 @@ test.each(['allow', 'chat', 'always'] as const)(
     );
     expect(executions).toBe(2);
     for (const run of runs) expect(run.getInterrupt()).toBeUndefined();
+  },
+);
+
+const rewriteCases = (['ask', 'chat', 'always'] as const).flatMap((mode) =>
+  [false, true].flatMap((eventDriven) =>
+    (['approve', 'edit'] as const).flatMap((decision) =>
+      [1, 2].map((ownerCount) => ({ mode, eventDriven, decision, ownerCount })),
+    ),
+  ),
+);
+
+test.each(rewriteCases)(
+  'hook-rewritten $mode/$decision calls retain review with $ownerCount owners (event-driven: $eventDriven)',
+  async ({ mode, eventDriven, decision, ownerCount }) => {
+    const source: AgentApprovalSource = {
+      id: 'agent-a',
+      tool_options: {
+        [name]: {
+          approval_mode: mode,
+          approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+        },
+      },
+      toolDefinitions: [definition()],
+    };
+    const sessionAgents = ownerCount === 2 ? [source, { ...source, id: 'agent-b' }] : [source];
+    const rewrite = { text: 'sanitized-by-hook' };
+    const saver = new MemorySaver();
+    const first = await build({
+      source,
+      chat: 'rewrite-chat',
+      saver,
+      eventDriven,
+      sessionAgents,
+      rewrite,
+      callId: 'rewrite-call',
+    });
+    await first.processStream({ messages: [new HumanMessage('run')] }, config('rewrite-chat'));
+    const payload = first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload;
+    expect(payload.action_requests[0].arguments).toEqual(rewrite);
+    const bindings = captureRunToolApprovalBindings(first, payload)!;
+    expect(bindings['rewrite-call']?.agentId).toBe(source.id);
+    const editedArguments = { text: 'edited-after-review' };
+    const resumed = await build({
+      source,
+      chat: 'rewrite-chat',
+      saver,
+      eventDriven,
+      sessionAgents,
+      rewrite,
+      reviewed: {
+        bindings,
+        decisions: [
+          {
+            tool_call_id: 'rewrite-call',
+            decision,
+            ...(decision === 'edit' && { editedArguments }),
+          },
+        ],
+      },
+    });
+    const answer =
+      decision === 'edit'
+        ? { type: 'edit' as const, updatedInput: editedArguments }
+        : { type: 'approve' as const };
+    await resumed.resume({ 'rewrite-call': answer }, config('rewrite-chat'));
+    expect(executions).toBe(1);
+    const output = JSON.stringify(
+      (resumed.getRunMessages() ?? [])
+        .filter((message) => message._getType() === 'tool')
+        .map((message) => message.content),
+    );
+    expect(output).toContain(decision === 'edit' ? editedArguments.text : rewrite.text);
+    const canLearn = decision === 'approve' && mode !== 'ask';
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(canLearn ? 1 : 0);
   },
 );

@@ -600,3 +600,22 @@ test('concurrent self-spawns retain separate witnesses and paused provenance', a
   const graphPayload = { ...payload, subagent: { agent_id: 'synthetic-team', run_id: 'child-b' } };
   expect(session.bindingsFor(graphPayload)['call_0'].agentId).toBe(source.id);
 });
+
+test('rewritten arguments never select a colliding sibling’s original proposal', async () => {
+  const sources = [agent('chat', 'agent-a'), agent('chat', 'agent-b')];
+  const session = createAgentToolApprovalSession({ agents: sources, scope, storage: store() });
+  await Promise.all(
+    sources.map((source) =>
+      session.hook(
+        { ...input(source.id, 'call_0'), toolInput: { text: source.id } },
+        new AbortController().signal,
+      ),
+    ),
+  );
+  const payload = buildToolApprovalPayload([
+    { name, tool_call_id: 'call_0', arguments: { text: 'agent-b' } },
+  ]);
+  expect(session.bindingsFor(payload)).toEqual({});
+  const attributed = { ...payload, subagent: { agent_id: 'agent-a' } };
+  expect(session.bindingsFor(attributed)['call_0']?.agentId).toBe('agent-a');
+});
