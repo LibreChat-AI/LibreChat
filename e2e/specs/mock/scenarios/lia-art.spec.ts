@@ -72,10 +72,8 @@ test.describe("Lia's pixel art", () => {
         }
       };
       for (const e of face.EXPRESSIONS) {
-        for (const [dx, dy] of [
-          [-1, -1],
-          [1, 1],
-        ]) {
+        /* Every direction Lia can look, including the diagonals. */
+        for (const [dx, dy] of [-1, 0, 1].flatMap((x) => [-1, 0, 1].map((y) => [x, y]))) {
           check(`face ${e.key}`, face.SCREEN_W, face.SCREEN_H, (c) =>
             face.drawFace(c, {
               face: e.key,

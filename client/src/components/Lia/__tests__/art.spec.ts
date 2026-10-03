@@ -53,6 +53,9 @@ const signature = (face: string, extra: Partial<FaceState> = {}) =>
     .map((r) => r.key)
     .join('|');
 
+/** Every direction Lia can look, including the diagonals. */
+const GAZES = [-1, 0, 1].flatMap((dx) => [-1, 0, 1].map((dy) => [dx, dy] as const));
+
 describe("Lia's pixel art", () => {
   it('gives every expression its own face', () => {
     const faces = EXPRESSIONS.map((e) => signature(e.key));
@@ -61,10 +64,7 @@ describe("Lia's pixel art", () => {
 
   it('keeps every face inside the screen, even when looking around', () => {
     for (const e of EXPRESSIONS) {
-      for (const [dx, dy] of [
-        [-1, -1],
-        [1, 1],
-      ]) {
+      for (const [dx, dy] of GAZES) {
         for (const r of paint((c) => drawFace(c, { ...BASE, face: e.key, dx, dy }))) {
           expect(r.x).toBeGreaterThanOrEqual(0);
           expect(r.y).toBeGreaterThanOrEqual(0);
