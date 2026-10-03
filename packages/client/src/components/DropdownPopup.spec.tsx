@@ -28,7 +28,7 @@ describe('DropdownPopup', () => {
 
     const menu = document.getElementById('portal-click-test-menu');
     expect(menu).not.toBeNull();
-    expect(menu?.style.pointerEvents).toBe('auto');
+    expect(menu).toHaveClass('pointer-events-auto');
 
     document.body.style.pointerEvents = '';
   });

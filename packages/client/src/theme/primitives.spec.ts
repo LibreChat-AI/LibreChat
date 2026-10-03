@@ -28,21 +28,22 @@ const primitives: Record<string, string[]> = {
   Tooltip: ['Tooltip.tsx', 'Tooltip.css'],
 };
 
-const themeDriven = ['Button', 'Input', 'Dialog', 'Tabs', 'Switch', 'Checkbox', 'Table', 'Tooltip'];
+const themeDriven = [
+  'Button',
+  'Input',
+  'Dialog',
+  'Menu',
+  'Tabs',
+  'Switch',
+  'Checkbox',
+  'Table',
+  'Tooltip',
+];
 
-/** What the two others still hard-code, and why it stays. */
+/** What the other still hard-codes, and why it stays. */
 const remaining: Record<string, string[]> = {
-  /** The content's nested-popover layering is a runtime style; the item indicator box, the list's
-   *  scroll cap and its minimum width have no role. */
-  Select: [
-    'Select.tsx: arbitrary size min-w-[8rem]',
-    'Select.tsx: fixed size h-3.5',
-    'Select.tsx: fixed size h-96',
-    'Select.tsx: fixed size w-3.5',
-    'Select.tsx: suppression shadcn/no-inline-styles',
-  ],
-  /** The menu's z-index comes from the popover stack at runtime. */
-  Menu: ['DropdownPopup.tsx: suppression shadcn/no-inline-styles'],
+  /** The list's scroll cap and its minimum width have no role. */
+  Select: ['Select.tsx: arbitrary size min-w-[8rem]', 'Select.tsx: fixed size h-96'],
 };
 
 const suppressions: Record<string, Record<string, { count: number }>> = JSON.parse(

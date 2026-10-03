@@ -58,7 +58,7 @@ describe('portaled popovers inside a dialog', () => {
 
     const listbox = screen.getByRole('listbox');
     expect(zIndexOf(listbox)).toBeGreaterThan(DIALOG_CONTENT_Z_INDEX);
-    expect(listbox.style.pointerEvents).toBe('auto');
+    expect(listbox).toHaveClass('pointer-events-auto');
   });
 
   it('opens a hover card above the dialog content it belongs to', () => {
@@ -95,6 +95,7 @@ describe('portaled popovers inside a dialog', () => {
     const card = screen.getByText('What stateful sessions do');
     expect(listbox.style.zIndex).toBe('');
     expect(listbox).toHaveClass('z-40');
+    expect(listbox).not.toHaveClass('pointer-events-auto');
     expect(card.style.zIndex).toBe('');
     expect(card).toHaveClass('z-50');
   });
