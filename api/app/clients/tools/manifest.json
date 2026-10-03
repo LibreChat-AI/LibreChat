@@ -58,6 +58,24 @@
     ]
   },
   {
+    "name": "Azure Sora",
+    "pluginKey": "video_gen_sora_azure",
+    "description": "Generate short videos from a text prompt using Azure OpenAI Sora.",
+    "icon": "assets/openai.svg",
+    "authConfig": [
+      {
+        "authField": "AZURE_SORA_API_KEY||AZURE_API_KEY",
+        "label": "Azure OpenAI API Key",
+        "description": "API key for the Azure OpenAI resource that hosts the Sora deployment."
+      },
+      {
+        "authField": "AZURE_SORA_ENDPOINT||AZURE_OPENAI_ENDPOINT",
+        "label": "Azure OpenAI Endpoint",
+        "description": "Resource endpoint, e.g. https://YOUR-RESOURCE.openai.azure.com"
+      }
+    ]
+  },
+  {
     "name": "DALL-E-3",
     "pluginKey": "dalle",
     "description": "[DALL-E-3] Create realistic images and art from a description in natural language",
