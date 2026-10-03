@@ -197,14 +197,26 @@ export default function useQueryParams({
   const conversationRef = useRef(conversation);
   conversationRef.current = conversation;
 
+  const urlAgentRef = useRef(urlAgent);
+  urlAgentRef.current = urlAgent;
+
   const areSettingsApplied = useCallback(() => {
     const convo = conversationRef.current;
     if (!validSettingsRef.current || !convo) {
       return false;
     }
 
-    for (const [key, value] of Object.entries(validSettingsRef.current)) {
+    const settings = validSettingsRef.current;
+    /** `endpoint` is derived from `agent_id` / `assistant_id` in `processValidSettings`;
+     *  skip the strict check to avoid false negatives when the conversation endpoint
+     *  is normalized differently than the URL-derived value. */
+    const hasDerivedEndpoint = Boolean(settings.agent_id) || Boolean(settings.assistant_id);
+
+    for (const [key, value] of Object.entries(settings)) {
       if (['presetOverride', 'iconURL', 'spec', 'modelLabel'].includes(key)) {
+        continue;
+      }
+      if (hasDerivedEndpoint && key === 'endpoint') {
         continue;
       }
 
@@ -318,6 +330,13 @@ export default function useQueryParams({
           // Set a timeout to handle the case where settings might never fully apply
           settingsTimeoutRef.current = setTimeout(() => {
             if (!submissionHandledRef.current && pendingSubmitRef.current) {
+              /** When `agent_id` is requested, defer instead of firing against an
+               *  unloaded agent; the `urlAgent`-keyed effect below will submit once
+               *  the agent query resolves. */
+              if (validSettingsRef.current?.agent_id && !urlAgentRef.current) {
+                logger.log('conversation', 'Agent not loaded before timeout, deferring submission');
+                return;
+              }
               logger.log(
                 'conversation',
                 'Settings application timeout, proceeding with submission',
@@ -383,6 +402,13 @@ export default function useQueryParams({
       return;
     }
 
+    /** When `agent_id` is present in the URL, wait for the agent query to resolve
+     *  before firing submission so the downstream `ask()` call binds against a
+     *  fully loaded agent. Re-runs when `urlAgent` transitions from null to loaded. */
+    if (validSettingsRef.current.agent_id && !urlAgent) {
+      return;
+    }
+
     if (areSettingsApplied()) {
       settingsAppliedRef.current = true;
 
@@ -396,7 +422,7 @@ export default function useQueryParams({
         processSubmission();
       }
     }
-  }, [conversation, processSubmission, areSettingsApplied]);
+  }, [conversation, urlAgent, processSubmission, areSettingsApplied]);
 
   const { isAuthenticated } = useAuthContext();
   const agentsMap = useAgentsMap({ isAuthenticated });

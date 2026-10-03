@@ -452,6 +452,100 @@ describe('useQueryParams', () => {
     expect(mockSubmitMessage).toHaveBeenCalled();
   });
 
+  it('should defer submission until the URL agent query resolves', () => {
+    const mockSetValue = jest.fn();
+    const mockHandleSubmit = jest.fn((callback) => () => callback({ text: 'test message' }));
+    const mockSubmitMessage = jest.fn();
+    const mockNewConversation = jest.fn();
+    const mockTextAreaRef = {
+      current: {
+        focus: jest.fn(),
+        setSelectionRange: jest.fn(),
+      } as unknown as HTMLTextAreaElement,
+    };
+
+    (useChatFormContext as jest.Mock).mockReturnValue({
+      setValue: mockSetValue,
+      getValues: jest.fn().mockReturnValue(''),
+      handleSubmit: mockHandleSubmit,
+    });
+
+    (useSubmitMessage as jest.Mock).mockReturnValue({
+      submitMessage: mockSubmitMessage,
+    });
+
+    const conversationWithAgent = { agent_id: 'agent_test_123', endpoint: 'agents' };
+    (useChatContext as jest.Mock).mockReturnValue({
+      conversation: conversationWithAgent,
+      newConversation: mockNewConversation,
+    });
+
+    (useQueryClient as jest.Mock).mockReturnValue({
+      getQueryData: jest.fn().mockImplementation((key) => {
+        const k = Array.isArray(key) ? key[0] : key;
+        if (k === 'startupConfig') {
+          return { modelSpecs: { list: [] } };
+        }
+        if (k === 'endpoints') {
+          return { agents: {} };
+        }
+        return null;
+      }),
+    });
+
+    const dataProvider = jest.requireMock('~/data-provider');
+    (dataProvider.useGetAgentByIdQuery as jest.Mock).mockReturnValue({
+      data: null,
+      isLoading: true,
+      error: null,
+    });
+
+    const dataProviderMock = jest.requireMock('librechat-data-provider');
+    dataProviderMock.tQueryParamsSchema = {
+      shape: {
+        agent_id: { parse: jest.fn((value) => value) },
+        endpoint: { parse: jest.fn((value) => value) },
+      },
+    };
+
+    setUrlParams({
+      q: 'hello world',
+      submit: 'true',
+      agent_id: 'agent_test_123',
+    });
+
+    const { rerender } = renderHook(() => useQueryParams({ textAreaRef: mockTextAreaRef }));
+
+    act(() => {
+      jest.advanceTimersByTime(100);
+    });
+
+    // Should not submit while the agent query is still loading.
+    expect(mockSubmitMessage).not.toHaveBeenCalled();
+
+    // Timeout fires with the agent still unresolved → must stay deferred.
+    act(() => {
+      jest.advanceTimersByTime(3000);
+    });
+    expect(mockSubmitMessage).not.toHaveBeenCalled();
+
+    // Agent resolves; the urlAgent-keyed effect should now fire the submission.
+    (dataProvider.useGetAgentByIdQuery as jest.Mock).mockReturnValue({
+      data: { id: 'agent_test_123', name: 'Test Agent' },
+      isLoading: false,
+      error: null,
+    });
+    rerender();
+
+    expect(mockSetValue).toHaveBeenCalledWith(
+      'text',
+      'hello world',
+      expect.objectContaining({ shouldValidate: true }),
+    );
+    expect(mockHandleSubmit).toHaveBeenCalled();
+    expect(mockSubmitMessage).toHaveBeenCalled();
+  });
+
   it('should mark as submitted when no submit parameter is present', () => {
     // Setup
     const mockSetValue = jest.fn();
