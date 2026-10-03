@@ -114,10 +114,8 @@ export async function executionFixture(
     expectedRevision: null,
     lifetimeHours: 1,
   });
-  const factory = createScheduleMCPExecution({
-    storage,
-    loadAuthorization: async () => ({ authority: service.authority, policy }),
-  });
+  const loadAuthorization = jest.fn(async () => ({ authority: service.authority, policy }));
+  const factory = createScheduleMCPExecution({ storage, loadAuthorization });
   const execution = (await factory.resolve(identity, stage))!;
   return {
     identity,
@@ -129,6 +127,7 @@ export async function executionFixture(
     service,
     execution,
     factory,
+    loadAuthorization,
     policy,
     revoke: () => service.revoke(identity, snapshot.enrollment!.revision),
     expire: () => {

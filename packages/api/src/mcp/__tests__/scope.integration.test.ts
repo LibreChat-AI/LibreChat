@@ -301,6 +301,61 @@ describe('request-scoped MCP lifecycle integration', () => {
     MCPConnection.clearCooldown('warehouse');
   });
 
+  it.each(['snapshot', 'consent'] as const)(
+    'never dispatches an enrolled operation when %s authorization storage fails',
+    async (phase) => {
+      const context = createContext();
+      const config: ParsedServerConfig = { type: 'streamable-http', url: server.url };
+      const connection = await manager.getConnection({
+        user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        requestScopedConnections: context,
+        flowManager,
+      });
+      const catalog = await connection.fetchToolsSnapshot();
+      const f = await executionFixture(
+        'resume',
+        catalog.tools.find(({ name }) => name === 'echo')!,
+        server.url,
+      );
+      const active = await manager.getConnection({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        requestScopedConnections: context,
+        flowManager,
+      });
+      const internal = new Error('PRIVATE principal/configuration/consent read');
+      if (phase === 'snapshot') f.loadAuthorization.mockRejectedValue(internal);
+      else jest.spyOn(f.service.authority, 'authorize').mockRejectedValue(internal);
+      const call = (agentId: string) =>
+        manager.callTool({
+          user: f.user,
+          serverName: 'warehouse',
+          serverConfig: config,
+          toolName: 'echo',
+          toolArguments: { value: 'read' },
+          provider: 'openai',
+          requestScopedConnections: context,
+          flowManager,
+          scheduledMCPInvocation: f.invocation(agentId),
+        });
+      try {
+        for (const agentId of ['root', 'child']) {
+          await expect(call(agentId)).rejects.toMatchObject({
+            failure: { reason: 'dependency_unavailable', automaticReplay: false },
+            outcomes: [{ server: 'warehouse', agentId, reason: 'dependency_unavailable' }],
+          });
+        }
+        expect(server.toolCallCount()).toBe(0);
+      } finally {
+        await Promise.all([connection.disconnect(), active.disconnect()]);
+        MCPConnection.clearCooldown('warehouse');
+      }
+    },
+  );
+
   it('dispatches a paused enrolled manual read without permitting an automatic call', async () => {
     const context = createContext();
     const config: ParsedServerConfig = { type: 'streamable-http', url: server.url };

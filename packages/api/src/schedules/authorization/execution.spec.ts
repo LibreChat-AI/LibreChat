@@ -5,6 +5,7 @@ import { executionFixture, readTool } from './execution.helper';
 import { bindScheduledMCPInvocation } from './execution';
 import { createMCPRequestContext } from '~/mcp/request';
 import { createScheduledMCPRunPolicy } from './run';
+import { ScheduledMCPPolicyError } from './policy';
 
 const catalog = (tools: Tool[] = [readTool]) => ({ tools, complete: true });
 
@@ -153,10 +154,12 @@ it('refuses a cross-tenant caller, unselected child, and changed transport bindi
     toolName: 'query',
     loadTools: async () => catalog(),
   };
+  const invocation = f.invocation();
   await expect(
-    f
-      .invocation()
-      .authorize({ ...input, user: Object.assign(structuredClone(f.user), { tenantId: 'other' }) }),
+    invocation.authorize({
+      ...input,
+      user: Object.assign(structuredClone(f.user), { tenantId: 'other' }),
+    }),
   ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
   await expect(f.invocation('stranger').authorize(input)).rejects.toMatchObject({
     failure: { reason: 'tool_policy_denied' },
@@ -302,4 +305,109 @@ it('refuses a consent deadline crossed while the final database admission is in 
   await expect(call).rejects.toMatchObject({
     failure: { reason: 'consent_expired', automaticReplay: false },
   });
+});
+
+it.each(['snapshot', 'consent', 'admission', 'catalog'] as const)(
+  'projects %s dependency failures into a safe denial for root and resumed child calls',
+  async (phase) => {
+    for (const stage of ['invoke', 'resume'] as const) {
+      const f = await executionFixture(stage);
+      const internal = new Error('PRIVATE authorization storage query with credentials');
+      if (phase === 'snapshot') f.loadAuthorization.mockRejectedValue(internal);
+      if (phase === 'consent')
+        jest.mocked(f.storage.readScheduleMCPConsent).mockRejectedValue(internal);
+      if (phase === 'admission')
+        jest.mocked(f.storage.admitScheduleMCPConsent).mockRejectedValue(internal);
+      const provider = jest.fn();
+      for (const agentId of ['root', 'child']) {
+        const call = async () => {
+          await f.invocation(agentId).authorize({
+            user: f.user,
+            serverName: 'warehouse',
+            serverConfig: f.config,
+            toolName: 'query',
+            loadTools: async () => {
+              if (phase === 'catalog') throw internal;
+              return catalog();
+            },
+          });
+          return provider();
+        };
+        let failure: unknown;
+        try {
+          await call();
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toBeInstanceOf(ScheduledMCPPolicyError);
+        expect(failure).toMatchObject({
+          failure: {
+            reason: 'dependency_unavailable',
+            recovery: 'retry_later',
+            automaticReplay: false,
+          },
+          outcomes: [{ server: 'warehouse', agentId, reason: 'dependency_unavailable' }],
+        });
+        expect(String(failure)).not.toContain('PRIVATE');
+        expect(failure).not.toHaveProperty('cause');
+      }
+      expect(provider).not.toHaveBeenCalled();
+    }
+  },
+);
+
+it.each(['snapshot', 'authorize'] as const)(
+  'preserves typed denials and owned cancellation from %s',
+  async (phase) => {
+    const f = await executionFixture();
+    const controller = new AbortController();
+    const typed = new ScheduledMCPPolicyError('rbac_denied', 'warehouse', 'child');
+    const authorize = jest.spyOn(f.service.authority, 'authorize');
+    const fail = (error: Error, cancel = false) => {
+      const reject = async () => {
+        if (cancel) controller.abort(error);
+        throw error;
+      };
+      if (phase === 'snapshot') f.loadAuthorization.mockImplementation(reject);
+      else authorize.mockImplementation(reject);
+    };
+    const invocation = f.invocation('child');
+    const call = () =>
+      invocation.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.config,
+        toolName: 'query',
+        loadTools: async () => catalog(),
+        signal: controller.signal,
+      });
+    fail(typed);
+    await expect(call()).rejects.toBe(typed);
+    const unowned = Object.assign(new Error('PRIVATE unrelated abort'), { name: 'AbortError' });
+    fail(unowned);
+    await expect(call()).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
+    const stop = new Error('Owner stopped');
+    fail(stop, true);
+    await expect(call()).rejects.toBe(stop);
+  },
+);
+
+it('does not hide a non-abort authorization failure when Stop races its rejection', async () => {
+  const f = await executionFixture();
+  const controller = new AbortController();
+  f.loadAuthorization.mockImplementation(async () => {
+    controller.abort(new Error('Stop'));
+    throw new Error('PRIVATE database failure');
+  });
+  const invocation = f.invocation();
+  await expect(
+    invocation.authorize({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: f.config,
+      toolName: 'query',
+      loadTools: async () => catalog(),
+      signal: controller.signal,
+    }),
+  ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
 });

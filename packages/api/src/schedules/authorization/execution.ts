@@ -10,6 +10,7 @@ import type { ScheduledTokenContext } from '../context';
 import { isScheduledMCPToolReadOnly, ScheduledMCPPolicyError } from './policy';
 import { getScheduledMCPConfigurationRevision } from './configuration';
 import { ScheduleMCPConsentError } from './service';
+import { isOwnedAbortError } from '~/utils/errors';
 import { waitUntilDeadline } from '~/mcp/utils';
 
 export interface ScheduledMCPInvocation {
@@ -177,35 +178,41 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
               selectionName !== stripServerNamePrefix(toolName, normalizeServerName(serverName))
             )
               deny('tool_policy_denied');
-            const [evaluation, catalog] = await Promise.all([
-              deps.loadAuthorization(capturedIdentity),
-              loadTools(),
-            ]);
-            signal?.throwIfAborted();
-            if (catalog.authenticationError != null) deny('credential_rejected');
-            const definitions = catalog.tools.filter((tool: Tool) => tool.name === toolName);
-            if (
-              !catalog.complete ||
-              definitions.length !== 1 ||
-              !isScheduledMCPToolReadOnly(definitions[0], evaluation.policy?.[serverName])
-            )
-              deny('tool_policy_denied');
-            const authorization = await evaluation.authority.authorize(
-              {
-                identity: capturedIdentity,
-                resource: resource!,
-                stage,
-                ...(manual && { manual: true }),
-                selection: { agentId: agentId!, tools: [selectionName] },
-              },
-              { signal },
-            );
-            if (authorization.state === 'denied') deny(authorization.failure.reason);
-            if (authorization.state === 'cancelled') {
+            try {
+              const [evaluation, catalog] = await Promise.all([
+                deps.loadAuthorization(capturedIdentity),
+                loadTools(),
+              ]);
               signal?.throwIfAborted();
+              if (catalog.authenticationError != null) deny('credential_rejected');
+              const definitions = catalog.tools.filter((tool: Tool) => tool.name === toolName);
+              if (
+                !catalog.complete ||
+                definitions.length !== 1 ||
+                !isScheduledMCPToolReadOnly(definitions[0], evaluation.policy?.[serverName])
+              )
+                deny('tool_policy_denied');
+              const authorization = await evaluation.authority.authorize(
+                {
+                  identity: capturedIdentity,
+                  resource: resource!,
+                  stage,
+                  ...(manual && { manual: true }),
+                  selection: { agentId: agentId!, tools: [selectionName] },
+                },
+                { signal },
+              );
+              if (authorization.state === 'denied') deny(authorization.failure.reason);
+              if (authorization.state === 'cancelled') {
+                signal?.throwIfAborted();
+                deny('dependency_unavailable');
+              }
+              signal?.throwIfAborted();
+            } catch (error) {
+              if (error instanceof ScheduledMCPPolicyError || isOwnedAbortError(error, signal))
+                throw error;
               deny('dependency_unavailable');
             }
-            signal?.throwIfAborted();
           },
         });
       },

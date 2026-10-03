@@ -18,11 +18,11 @@ import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createAgentTriggerExecutionHost } from '~/agents/triggers/host';
 import { createAgentTriggerEnvelope } from '~/agents/triggers/envelope';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { executionFixture, readTool } from './execution.helper';
 import { resolveScheduleMCPCompletion } from './continuation';
 import { retainScheduleMCPCompletion } from './continuation';
 import { createScheduleMCPConsentService } from './service';
 import { createMCPRequestContext } from '~/mcp/request';
-import { executionFixture } from './execution.helper';
 import { createScheduledMCPRunPolicy } from './run';
 import { ScheduledMCPPolicyError } from './policy';
 
@@ -88,10 +88,11 @@ async function setup(legacy = false) {
     });
   };
   if (!legacy) await enroll();
-  const factory = createScheduleMCPExecution({
-    storage: methods,
-    loadAuthorization: async () => ({ authority: consent.authority, policy: fixture.policy }),
-  });
+  const loadAuthorization = jest.fn(async () => ({
+    authority: consent.authority,
+    policy: fixture.policy,
+  }));
+  const factory = createScheduleMCPExecution({ storage: methods, loadAuthorization });
   const execution = (await factory.resolve(identity, 'invoke'))!;
   const scheduledFor = new Date('2026-10-02T12:00:00Z');
   await methods.insertScheduleRun({
@@ -140,7 +141,21 @@ async function setup(legacy = false) {
   const record = createScheduledMCPPolicyRecorder(execution, scope, (input) =>
     recordScheduledMCPToolAuthFailure(input, () => service.recordMCPToolAuthFailure),
   )!;
-  return { methods, execution, schedule, scheduledFor, job, scope, record, service, enroll, deps };
+  return {
+    methods,
+    execution,
+    schedule,
+    scheduledFor,
+    job,
+    scope,
+    record,
+    service,
+    enroll,
+    deps,
+    loadAuthorization,
+    consent,
+    fixture,
+  };
 }
 
 it.each(['root', 'child'])(
@@ -975,3 +990,86 @@ it('cannot launch a completion when its lineage cannot be durably retained', asy
     retainScheduleMCPCompletion({ ...f.execution.identity, tenantId: 'foreign' }, scope, store),
   ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
 });
+
+it.each(['snapshot', 'consent', 'admission', 'catalog'] as const)(
+  'retains a safe %s authorization failure when the model handles it as success',
+  async (phase) => {
+    const f = await setup();
+    const internal = new Error('PRIVATE authorization dependency details');
+    if (phase === 'snapshot') f.loadAuthorization.mockRejectedValue(internal);
+    if (phase === 'consent')
+      jest.spyOn(f.consent.authority, 'authorize').mockRejectedValue(internal);
+    if (phase === 'admission')
+      jest.spyOn(f.methods, 'admitScheduleMCPConsent').mockRejectedValue(internal);
+    const provider = jest.fn(async () => 'read executed');
+    const tool = new DynamicStructuredTool({
+      name: 'query_mcp_warehouse',
+      description: 'Read',
+      schema: z.object({}),
+      func: async () => {
+        try {
+          await f.execution.bind('child', 'query').authorize({
+            user: { id: f.scope.userId, tenantId: 'tenant' },
+            serverName: 'warehouse',
+            serverConfig: f.fixture.config,
+            toolName: 'query',
+            loadTools: async () => {
+              if (phase === 'catalog') throw internal;
+              return { tools: [readTool], complete: true };
+            },
+          });
+          return provider();
+        } catch (error) {
+          await recordScheduledMCPToolAuthFailure(
+            {
+              error,
+              identity: f.execution.identity,
+              streamId: 'stream',
+              jobCreatedAt: f.job.createdAt,
+              userId: f.scope.userId,
+              serverName: 'warehouse',
+            },
+            () => f.service.recordMCPToolAuthFailure,
+          );
+          throw error;
+        }
+      },
+    });
+    const result = await new ToolNode({ agentId: 'child', tools: [tool] }).invoke(
+      {
+        messages: [
+          new AIMessage({ content: '', tool_calls: [{ id: 'read', name: tool.name, args: {} }] }),
+        ],
+      },
+      { configurable: { run_id: 'scheduled', thread_id: 'stream' } },
+    );
+    expect(provider).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).toContain('dependency_unavailable');
+    expect(JSON.stringify(result)).not.toContain('PRIVATE');
+    expect((await store.getJob('stream'))?.scheduleMCPFailure).toMatchObject({
+      server: 'warehouse',
+      agentId: 'child',
+      reason: 'dependency_unavailable',
+    });
+    await f.service.recordScheduleOutcome({
+      scheduleId: f.schedule.id,
+      scheduledFor: f.scheduledFor,
+      status: 'success',
+      conversationId: 'stream',
+      streamId: 'stream',
+      jobCreatedAt: f.job.createdAt,
+    });
+    const saved = await f.methods.getScheduleById(f.schedule.id);
+    expect(saved).toMatchObject({
+      enabled: true,
+      failureCount: 1,
+      lastRun: {
+        status: 'error',
+        mcp: [
+          expect.objectContaining({ reason: 'dependency_unavailable', automaticReplay: false }),
+        ],
+      },
+    });
+    expect(JSON.stringify(saved)).not.toContain('PRIVATE');
+  },
+);
