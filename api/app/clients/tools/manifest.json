@@ -173,5 +173,28 @@
         "optional": true
       }
     ]
+  },
+  {
+    "name": "Azure OpenAI Sora",
+    "pluginKey": "azure-sora",
+    "description": "[Azure Sora] Generate realistic and imaginative video scenes from natural language descriptions using OpenAI Sora on Azure",
+    "icon": "assets/azure-sora.svg",
+    "authConfig": [
+      {
+        "authField": "AZURE_OPENAI_ENDPOINT||AZURE_SORA_ENDPOINT",
+        "label": "Azure OpenAI Endpoint",
+        "description": "Your Azure OpenAI service endpoint (e.g. https://your-resource.openai.azure.com)"
+      },
+      {
+        "authField": "AZURE_OPENAI_API_KEY||AZURE_SORA_API_KEY",
+        "label": "Azure OpenAI API Key",
+        "description": "Your Azure OpenAI API key"
+      },
+      {
+        "authField": "AZURE_OPENAI_SORA_DEPLOYMENT_NAME||AZURE_SORA_DEPLOYMENT",
+        "label": "Sora Deployment Name",
+        "description": "The deployment name for your Azure OpenAI Sora model (default: sora)"
+      }
+    ]
   }
 ]
