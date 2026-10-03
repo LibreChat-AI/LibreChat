@@ -18,9 +18,6 @@ for (const viewport of [
     test('keeps the textarea in place when uploading starts and finishes', async ({
       page,
     }, testInfo) => {
-      await page.addInitScript(() => {
-        localStorage.setItem('showComposerTips', 'false');
-      });
       await page.goto(NEW_CHAT_PATH);
       await selectMockEndpoint(page, MOCK_ENDPOINTS[1]);
       await sendMessageAndWaitForCompletion(page, 'E2E_REPLY:upload layout');

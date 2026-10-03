@@ -110,8 +110,6 @@ interface ChatFormProps {
   /** Owned by ChatView: which layout the composer sits in — the welcome screen
    *  floats or bottoms it out, a conversation ends the page with it. */
   isLandingPage: boolean;
-  /** Owned by the host: the persisted preference for showing keyboard hints. */
-  showComposerTips: boolean;
   /** Owned by the host: the persisted preference for whether Enter sends the
    *  message (vs. queues a newline). The composer only consumes it. */
   enterToSend: boolean;
@@ -163,7 +161,6 @@ const ChatForm = memo(function ChatForm({
   placeholder,
   project,
   isLandingPage,
-  showComposerTips,
   enterToSend,
   autoSendText,
   speechSettingsInitialized,
@@ -1016,7 +1013,6 @@ const ChatForm = memo(function ChatForm({
           <Hints
             index={index}
             enterToSend={enterToSend}
-            showTips={showComposerTips}
             hasText={(textValue?.trim() ?? '') !== ''}
             isSubmitting={isSubmitting}
             duringRunActive={steering.duringRunActive}
@@ -1047,7 +1043,6 @@ function ChatFormWrapper({
   placeholder,
   project,
   isLandingPage,
-  showComposerTips,
   /** Defaults to the atom's own default (`atomWithLocalStorage('enterToSend',
    *  true)`) so call sites that predate this prop, mainly tests, keep their
    *  prior behavior without passing it explicitly. */
@@ -1062,7 +1057,6 @@ function ChatFormWrapper({
   index?: number;
   placeholder?: string;
   project?: TChatProject;
-  showComposerTips: boolean;
   enterToSend?: boolean;
   autoSendText?: number;
   speechSettingsInitialized?: boolean;
@@ -1142,7 +1136,6 @@ function ChatFormWrapper({
   return (
     <ChatForm
       index={index}
-      showComposerTips={showComposerTips}
       enterToSend={enterToSend}
       autoSendText={autoSendText}
       speechSettingsInitialized={speechSettingsInitialized}
