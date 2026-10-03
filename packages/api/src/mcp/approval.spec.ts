@@ -117,3 +117,44 @@ test('effective admin credentials are not masked by a shadowed renewable header 
   });
   expect(second).not.toBe(first);
 });
+
+test('request-only workspace headers are resolved before authority fingerprinting', () => {
+  const selected = { ...config, requestHeaders: { 'X-Workspace': '{{WORKSPACE}}' } };
+  const first = buildMCPToolReviewAuthority({
+    serverName: 'db',
+    config: selected,
+    customUserVars: { WORKSPACE: 'workspace-a' },
+  });
+  const second = buildMCPToolReviewAuthority({
+    serverName: 'db',
+    config: selected,
+    customUserVars: { WORKSPACE: 'workspace-b' },
+  });
+  expect(second).not.toBe(first);
+});
+
+test('request-only renewable auth uses the same merge and principal handling as the transport', () => {
+  const selected = {
+    ...config,
+    headers: { 'X-Base': 'base' },
+    requestHeaders: {
+      Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
+      'X-Workspace': '{{WORKSPACE}}',
+    },
+  };
+  const first = buildMCPToolReviewAuthority({
+    serverName: 'db',
+    config: selected,
+    user: { id: 'user-a', openidId: 'subject-a' },
+    customUserVars: { WORKSPACE: 'workspace-a' },
+  });
+  expect(first).toEqual(expect.any(String));
+  expect(
+    buildMCPToolReviewAuthority({
+      serverName: 'db',
+      config: selected,
+      user: { id: 'user-a', openidId: 'subject-a' },
+      customUserVars: { WORKSPACE: 'workspace-b' },
+    }),
+  ).not.toBe(first);
+});

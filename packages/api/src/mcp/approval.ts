@@ -4,6 +4,7 @@ import type { ParsedServerConfig } from './types';
 import type { RequestBody } from '~/types';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
 import { getAdminApiKeyHeader } from './headers';
+import { applyRequestHeaders } from './utils';
 
 export interface MCPToolReviewAuthorityInput {
   serverName: string;
@@ -22,6 +23,7 @@ export function buildMCPToolReviewAuthority({
   customUserVars,
 }: MCPToolReviewAuthorityInput): string | undefined {
   if (!config) return undefined;
+  config = applyRequestHeaders(config);
   const declaredHeaders = {
     headers: 'headers' in config ? config.headers : undefined,
     oauth_headers: 'oauth_headers' in config ? config.oauth_headers : undefined,
