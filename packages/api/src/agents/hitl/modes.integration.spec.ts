@@ -2012,3 +2012,132 @@ for (const mode of ['chat', 'always'] as const) {
     );
   }
 }
+
+for (const mode of ['ask', 'chat', 'always'] as const) {
+  for (const eventDriven of [false, true]) {
+    test.each(['unchanged', 'resume', 'retry'] as const)(
+      `${mode} runtime-detected OAuth reviews remain account-bound; event-driven=${eventDriven}, change=%s`,
+      async (change) => {
+        const token = await oauthCredential('runtime-account-a');
+        const declared = {
+          type: 'streamable-http' as const,
+          source: 'yaml' as const,
+          url: 'https://mcp.example.test/users/{{LIBRECHAT_USER_ID}}/mcp',
+        };
+        const authKind = getMCPToolApprovalAuthKind(declared);
+        expect(authKind).toBeUndefined();
+        expect(buildMCPToolApprovalBinding('fixture', declared)).toBeUndefined();
+        const authority = buildMCPToolReviewAuthority({
+          serverName: 'fixture',
+          config: declared,
+          user: { id: '652000000000000000000001' },
+        });
+        const definition = bindToolApprovalIdentity(
+          bindToolApproval(
+            { name, serverName: 'fixture', parameters: { type: 'object' } },
+            undefined,
+            undefined,
+            undefined,
+            authority,
+            authKind,
+          ),
+          'echo',
+          { type: 'object' },
+        );
+        let attempts = 0;
+        const probe = bindToolApprovalIdentity(
+          bindToolApproval(
+            Object.assign(
+              createMCPStructuredTool(
+                async () => {
+                  attempts++;
+                  await assertToolApprovalTransportEpoch('fixture', 'runtime-account-a', true);
+                  if (change === 'retry') {
+                    await mongoose.models.Token.updateOne(
+                      { _id: token._id },
+                      { $set: { 'metadata.credential_set_id': 'runtime-account-b' } },
+                    );
+                    await assertToolApprovalTransportEpoch('fixture', 'runtime-account-b', true);
+                  }
+                  executions++;
+                  return formatToolContent(
+                    { content: [{ type: 'text', text: 'runtime OAuth completed' }] },
+                    'openai',
+                  );
+                },
+                {
+                  name,
+                  description: 'Runtime OAuth fixture',
+                  schema: fixtureSchema,
+                  responseFormat: 'content_and_artifact',
+                },
+              ),
+              { schema: fixtureSchema },
+            ),
+            undefined,
+            undefined,
+            undefined,
+            authority,
+            authKind,
+          ),
+          'echo',
+          { type: 'object' },
+        );
+        const source: AgentApprovalSource = {
+          id: 'agent-a',
+          tool_options: {
+            [name]: {
+              approval_mode: mode,
+              approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+            },
+          },
+          toolDefinitions: [definition],
+        };
+        const chat = `runtime-auth-${mode}-${eventDriven}-${change}`;
+        const saver = new MemorySaver();
+        try {
+          const first = await build({
+            source,
+            chat,
+            saver,
+            eventDriven,
+            executionTool: probe,
+            callId: 'runtime-call',
+          });
+          await first.processStream({ messages: [new HumanMessage('review')] }, config(chat));
+          const bindings = captureRunToolApprovalBindings(
+            first,
+            first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+          )!;
+          expect(bindings['runtime-call']).toMatchObject({
+            oauthEpoch: 'runtime-account-a',
+            canRemember: false,
+          });
+          expect(bindings['runtime-call'].authKind).toBeUndefined();
+          if (change === 'resume')
+            await mongoose.models.Token.updateOne(
+              { _id: token._id },
+              { $set: { 'metadata.credential_set_id': 'runtime-account-b' } },
+            );
+          const resumed = await build({
+            source,
+            chat,
+            saver,
+            eventDriven,
+            executionTool: probe,
+            reviewed: {
+              bindings,
+              decisions: [{ tool_call_id: 'runtime-call', decision: 'approve' }],
+            },
+          });
+          await resumed.resume({ 'runtime-call': { type: 'approve' } }, config(chat));
+          expect(attempts).toBe(change === 'resume' ? 0 : 1);
+          expect(executions).toBe(change === 'unchanged' ? 1 : 0);
+          expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+        } finally {
+          await mongoose.models.Token.deleteOne({ _id: token._id });
+        }
+      },
+    );
+  }
+}
