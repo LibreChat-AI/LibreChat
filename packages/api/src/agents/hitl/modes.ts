@@ -447,6 +447,39 @@ export function createAgentToolApprovalSession({
         throw new Error('Tool approval is required or was revoked. Request approval again.');
       }
     },
+    async validateTransport(serverName, oauthEpoch, invocation, checkStorage) {
+      const key = approvalCallKey(
+        invocation.agentId,
+        invocation.toolCallId ?? '',
+        invocation.executionScope,
+      );
+      const consent = calls.get(key);
+      if (!consent) return;
+      const owner = owners.get(consent.agentId);
+      // Always approve is an explicit local preference, unless an upstream rule required review.
+      if (
+        owner?.tool_options?.[consent.instanceName]?.approval_mode === 'allow' &&
+        !reviewedBindings.has(key)
+      )
+        return;
+      if (consent.serverName !== serverName || consent.oauthEpoch !== oauthEpoch) {
+        throw new Error(
+          'The approved MCP OAuth authorization changed before transport dispatch. Request approval again.',
+        );
+      }
+      if (checkStorage) {
+        const current = await approved(consent);
+        if (
+          current.available === false ||
+          current.oauthEpoch === undefined ||
+          current.oauthEpoch !== consent.oauthEpoch
+        ) {
+          throw new Error(
+            'The approved MCP OAuth authorization changed before transport retry. Request approval again.',
+          );
+        }
+      }
+    },
     async rememberHook(input) {
       const key = approvalCallKey(
         input.executingAgentId,

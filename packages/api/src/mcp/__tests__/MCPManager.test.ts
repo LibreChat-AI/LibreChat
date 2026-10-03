@@ -20,6 +20,7 @@ import {
 } from '~/mcp/capabilities';
 import { OboTokenResolutionError, detectOAuthRequirement, resolveOboToken } from '~/mcp/oauth';
 import { executionFixture, readTool } from '~/schedules/authorization/execution.helper';
+import { withToolApprovalExecution, withToolApprovalTransport } from '~/tools/approval';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '~/mcp/request';
 import { MCPServersInitializer } from '~/mcp/registry/MCPServersInitializer';
 import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
@@ -2114,6 +2115,44 @@ describe('MCPManager', () => {
         expect(request).toHaveBeenCalledTimes(enrolled ? 1 : 2);
         expect(authorize).toHaveBeenCalledTimes(enrolled ? 1 : 2);
         expect(connection.connect).toHaveBeenCalledTimes(enrolled ? 0 : 1);
+      },
+    );
+
+    it.each([false, true])(
+      'approval transport fencing handles account replacement=%s after a 401',
+      async (replaceAccount) => {
+        let epoch = 'account-a';
+        const request = jest
+          .fn()
+          .mockRejectedValueOnce(new Error('Non-200 status code (401)'))
+          .mockResolvedValueOnce(toolResult);
+        const connection = createConnection(request);
+        connection.getOAuthCredentialSetId = () => epoch;
+        attachOAuthHandler((active) => {
+          if (replaceAccount) epoch = 'account-b';
+          active.emit('oauthHandled');
+        });
+        const manager = await createManager(connection);
+        const guard = jest.fn(async (_serverName: string, currentEpoch: string | null) => {
+          if (currentEpoch !== 'account-a') throw new Error('Approved OAuth epoch changed');
+        });
+        const invoke = () =>
+          withToolApprovalExecution(
+            { validateExecution: async () => {}, validateTransport: guard },
+            () =>
+              withToolApprovalTransport(
+                { toolCall: { id: 'approved-call' }, metadata: { agentId: 'agent-a' } },
+                () => callTool(manager),
+              ),
+          );
+        if (replaceAccount) {
+          await expect(invoke()).rejects.toThrow('Approved OAuth epoch changed');
+          expect(request).toHaveBeenCalledTimes(1);
+        } else {
+          await expect(invoke()).resolves.toBeDefined();
+          expect(request).toHaveBeenCalledTimes(2);
+        }
+        expect(guard).toHaveBeenCalledTimes(2);
       },
     );
 

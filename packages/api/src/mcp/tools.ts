@@ -13,10 +13,10 @@ import type { JsonSchemaType, SubagentExecutionContext } from '@librechat/agents
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { LCAvailableTools, LCFunctionTool, ParsedServerConfig } from './types';
 import type { MCPClientCapabilityProfile } from './capabilities';
+import { assertToolApprovalExecution, withToolApprovalTransport } from '~/tools/approval';
 import { canUseAppConnection, requiresEphemeralUserConnection } from './utils';
 import { normalizeJsonSchema, resolveJsonSchemaRefs } from './zod';
 import { STANDARD_MCP_CAPABILITY_PROFILE } from './capabilities';
-import { assertToolApprovalExecution } from '~/tools/approval';
 import { getMCPToolCatalogGeneration } from './toolsChanged';
 import { isMCPToolResultError } from './status';
 import { isToolHiddenFromModel } from './apps';
@@ -48,7 +48,7 @@ export function createMCPStructuredTool(
       const childConfig = patchConfig(config, { callbacks: runManager?.getChild() });
       const result = await AsyncLocalStorageProviderSingleton.runWithConfig(
         pickRunnableConfigKeys(childConfig),
-        () => func(input, childConfig),
+        () => withToolApprovalTransport(invocation, () => func(input, childConfig)),
       );
       if (Array.isArray(result) && result.length === 2 && isMCPToolResultError(result)) {
         return [

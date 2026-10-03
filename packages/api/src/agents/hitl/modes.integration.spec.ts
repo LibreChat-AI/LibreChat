@@ -17,6 +17,7 @@ import {
 } from './modes';
 import { buildHITLRunWiring, buildToolApprovalExecutionConfig } from './runtime';
 import { bindToolApproval, bindToolApprovalIdentity } from '~/tools/approval';
+import { assertToolApprovalTransportEpoch } from '~/tools/approval';
 import { buildMCPToolReviewAuthority } from '~/mcp/approval';
 import { bindToolReviewAuthority } from '~/tools/approval';
 import { createToolExecuteHandler } from '../handlers';
@@ -1166,6 +1167,76 @@ test('OAuth replacement after pre-tool approval is refused before invocation', a
     config('oauth-dispatch-chat'),
   );
   expect(executions).toBe(0);
+  expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+  await mongoose.models.Token.deleteOne({ _id: token._id });
+});
+
+test('an OAuth account replaced during transport recovery cannot dispatch the retry', async () => {
+  const token = await oauthCredential('account-a');
+  let sideEffects = 0;
+  const retryProbe = Object.assign(
+    createMCPStructuredTool(
+      async () => {
+        await assertToolApprovalTransportEpoch('fixture', 'account-a', true);
+        // The first rejected tools/call had no side effect. Live OAuth recovery replaces its account.
+        await mongoose.models.Token.updateOne(
+          { _id: token._id },
+          { $set: { 'metadata.credential_set_id': 'account-b' } },
+        );
+        await assertToolApprovalTransportEpoch('fixture', 'account-b', true);
+        sideEffects++;
+        return formatToolContent(
+          { content: [{ type: 'text', text: 'unexpected retry' }] },
+          'openai',
+        );
+      },
+      {
+        name,
+        description: 'Retry probe',
+        schema: fixtureSchema,
+        responseFormat: 'content_and_artifact',
+      },
+    ),
+    { schema: fixtureSchema },
+  );
+  bindToolApprovalIdentity(bindToolApproval(retryProbe, 'source-one'), 'echo', { type: 'object' });
+  const source: AgentApprovalSource = {
+    id: 'agent-a',
+    tool_options: {
+      [name]: {
+        approval_mode: 'always',
+        approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+      },
+    },
+    toolDefinitions: [definition()],
+  };
+  const saver = new MemorySaver();
+  const first = await build({
+    source,
+    chat: 'retry-consent-chat',
+    saver,
+    eventDriven: true,
+    executionTool: retryProbe,
+    callId: 'retry-consent-call',
+  });
+  await first.processStream({ messages: [new HumanMessage('run')] }, config('retry-consent-chat'));
+  const bindings = captureRunToolApprovalBindings(
+    first,
+    first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+  )!;
+  const resumed = await build({
+    source,
+    chat: 'retry-consent-chat',
+    saver,
+    eventDriven: true,
+    executionTool: retryProbe,
+    reviewed: {
+      bindings,
+      decisions: [{ tool_call_id: 'retry-consent-call', decision: 'approve' }],
+    },
+  });
+  await resumed.resume({ 'retry-consent-call': { type: 'approve' } }, config('retry-consent-chat'));
+  expect(sideEffects).toBe(0);
   expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
   await mongoose.models.Token.deleteOne({ _id: token._id });
 });
