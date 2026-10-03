@@ -1,11 +1,13 @@
 import React from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { ContentTypes, ForkOptions } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { ContentTypes, EModelEndpoint, ForkOptions, QueryKeys } from 'librechat-data-provider';
 import type {
-  ParentSubagentSummary,
+  TMessage,
   SubagentThreadView,
   TMessageContentParts,
+  ParentSubagentSummary,
 } from 'librechat-data-provider';
 import type { ActiveSubagentPanel } from './state';
 import type { JotaiStore } from 'test/harness';
@@ -35,6 +37,9 @@ const mockRefreshParentChildren = jest.fn().mockResolvedValue(undefined);
 let mockEnterToSend = true;
 const mockClaimForeground = jest.fn();
 const mockHandOffComposerText = jest.fn();
+/** Real, per test: the panel reads the dispatching message from the parent
+ *  conversation's loaded thread, the cache main chat itself renders from. */
+let queryClient = new QueryClient();
 
 function Root({
   seed,
@@ -44,16 +49,18 @@ function Root({
   children: React.ReactNode;
 }) {
   return (
-    <ChatSurfaceHarness
-      seed={seed}
-      surface={testChatSurface({
-        enterToSend: mockEnterToSend,
-        claimForeground: mockClaimForeground,
-        handOffComposerText: mockHandOffComposerText,
-      })}
-    >
-      {children}
-    </ChatSurfaceHarness>
+    <QueryClientProvider client={queryClient}>
+      <ChatSurfaceHarness
+        seed={seed}
+        surface={testChatSurface({
+          enterToSend: mockEnterToSend,
+          claimForeground: mockClaimForeground,
+          handOffComposerText: mockHandOffComposerText,
+        })}
+      >
+        {children}
+      </ChatSurfaceHarness>
+    </QueryClientProvider>
   );
 }
 
@@ -119,6 +126,18 @@ jest.mock('~/Providers', () => ({
     'agent-1': { id: 'agent-1', name: 'Analyst One', avatar: { filepath: '/analyst.png' } },
     'agent-2': { id: 'agent-2', name: 'Analyst Two' },
   }),
+}));
+
+/** Main chat's author glyph, reduced to the face it draws: the agent's avatar
+ *  when it has one. */
+jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
+  __esModule: true,
+  default: ({ agent }: { agent?: { avatar?: { filepath?: string } } }) =>
+    agent?.avatar?.filepath != null ? (
+      <img src={agent.avatar.filepath} alt="" data-testid="author-face" />
+    ) : (
+      <span data-testid="author-face" />
+    ),
 }));
 
 jest.mock('./ParentSubagentsProvider', () => ({
@@ -196,10 +215,14 @@ jest.mock('./SubagentConversation', () => ({
   __esModule: true,
   default: ({
     turns,
+    author,
+    parentAuthor,
     stateByTask,
     detailStateByTask,
     onLoadTurnDetails,
   }: {
+    author: { name: string };
+    parentAuthor: { name: string };
     turns: Array<{
       taskId: string;
       trigger: { summary: string };
@@ -212,6 +235,8 @@ jest.mock('./SubagentConversation', () => ({
     <div
       data-testid="subagent-conversation"
       data-state={turns[0] == null ? undefined : stateByTask?.get(turns[0].taskId)}
+      data-author={author.name}
+      data-parent-author={parentAuthor.name}
     >
       {turns.map((turn) => (
         <div key={turn.taskId} data-testid="conversation-turn">
@@ -450,6 +475,7 @@ const completedView: SubagentThreadView = {
 
 describe('SubagentThreadPanel', () => {
   beforeEach(() => {
+    queryClient = new QueryClient();
     window.sessionStorage.clear();
     mockIsMobile = false;
     mockCoarsePointer = false;
@@ -482,18 +508,38 @@ describe('SubagentThreadPanel', () => {
         subagentType,
         subagentIdentity: { subagentKind: 'agent' as const, subagentAgentId: subagentType },
       };
-      render(
+      /** The dispatching agent, as main chat holds it: a self-spawn is that
+       *  agent working on its own behalf, so it takes the parent's name. */
+      queryClient.setQueryData<TMessage[]>(
+        [QueryKeys.messages, 'parent-conversation'],
+        [
+          {
+            messageId: 'parent-message',
+            parentMessageId: null,
+            conversationId: 'parent-conversation',
+            isCreatedByUser: false,
+            endpoint: EModelEndpoint.agents,
+            model: 'agent-2',
+            sender: 'Analyst Two',
+            text: '',
+          } as unknown as TMessage,
+        ],
+      );
+      const { container } = render(
         <Root>
           <SubagentThreadPanel selection={foregroundSelection} />
         </Root>,
       );
-      const title =
-        subagentType === 'self'
-          ? 'com_ui_subagent_dialog_title_self'
-          : `com_ui_subagent_dialog_title: ${subagentType === 'agent-1' ? 'Analyst One' : subagentType}`;
-      expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
+      const titles: Record<string, string> = {
+        'agent-1': 'Analyst One',
+        'missing-agent': 'com_ui_subagent_actor',
+        self: 'Analyst Two',
+      };
+      expect(screen.getByRole('heading', { name: titles[subagentType] })).toBeInTheDocument();
+      /** Never the id: an unresolvable agent is named generically. */
+      expect(screen.queryByText(/missing-agent/)).not.toBeInTheDocument();
       if (subagentType === 'agent-1') {
-        expect(screen.getByAltText('Analyst One avatar')).toHaveAttribute('src', '/analyst.png');
+        expect(container.querySelector('header img[src="/analyst.png"]')).toBeInTheDocument();
       }
     },
   );
@@ -514,10 +560,9 @@ describe('SubagentThreadPanel', () => {
           />
         </Root>,
       );
-      expect(
-        screen.getByRole('heading', { name: 'com_ui_subagent_dialog_title: agent-1' }),
-      ).toBeInTheDocument();
-      expect(screen.queryByAltText('Analyst One avatar')).not.toBeInTheDocument();
+      /** A non-agent type is a readable name of its own, not an agent to look up. */
+      expect(screen.getByRole('heading', { name: 'agent-1' })).toBeInTheDocument();
+      expect(document.querySelector('img[src="/analyst.png"]')).toBeNull();
     },
   );
 
@@ -632,13 +677,33 @@ describe('SubagentThreadPanel', () => {
       isReadinessPending: false,
     });
 
+    queryClient.setQueryData<TMessage[]>(
+      [QueryKeys.messages, 'parent-conversation'],
+      [
+        {
+          messageId: 'parent-message',
+          parentMessageId: null,
+          conversationId: 'parent-conversation',
+          isCreatedByUser: false,
+          endpoint: EModelEndpoint.agents,
+          model: 'agent-2',
+          sender: 'Analyst Two',
+          text: '',
+        } as unknown as TMessage,
+      ],
+    );
     render(
       <Root>
         <SubagentThreadPanel selection={selection} />
       </Root>,
     );
 
-    expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
+    /** One name for the child everywhere it appears, and the dispatching agent
+     *  as the author of every briefing — never an id or a role. */
+    const conversation = screen.getByTestId('subagent-conversation');
+    expect(conversation).toHaveAttribute('data-author', 'Analyst One');
+    expect(conversation).toHaveAttribute('data-parent-author', 'Analyst Two');
+    expect(screen.getByRole('heading', { name: 'Analyst One' })).toBeInTheDocument();
     expect(screen.getAllByTestId('conversation-turn')).toHaveLength(2);
     expect(screen.getByText(/Initial request/)).toBeInTheDocument();
     expect(screen.getByText(/Follow-up request/)).toBeInTheDocument();
@@ -694,6 +759,8 @@ describe('SubagentThreadPanel', () => {
     );
 
     const composer = screen.getByLabelText('com_ui_message_input');
+    /** Addressed by name, as main chat's composer addresses its agent. */
+    expect(composer).toHaveAttribute('placeholder', 'com_endpoint_message_new: Analyst One');
     fireEvent.change(composer, { target: { value: 'Check the primary source.' } });
     fireEvent.keyDown(composer, { key: 'Enter' });
     expect(mockControlMutate).not.toHaveBeenCalled();

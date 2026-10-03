@@ -1,7 +1,7 @@
 import React from 'react';
 import { ContentTypes } from 'librechat-data-provider';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { TMessageContentParts } from 'librechat-data-provider';
+import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import SubagentCall from '~/components/Chat/Messages/Content/Parts/SubagentCall';
 import SharedSubagentActivityDialog from './SharedSubagentActivityDialog';
 import { MessageContext } from '~/Providers/MessageContext';
@@ -17,8 +17,7 @@ jest.mock('~/data-provider', () => ({
 jest.mock('~/hooks', () => ({
   useLocalize:
     () =>
-    (key: string, values?: Record<number, string>): string => {
-      if (key === 'com_ui_subagent_dialog_title') return `Agent ${values?.[0] ?? ''}`;
+    (key: string): string => {
       if (key === 'com_ui_subagent_complete') return 'Ran agent';
       if (key === 'com_ui_subagent_activity') return 'Agent activity';
       return key;
@@ -27,6 +26,10 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/Providers', () => ({ useAgentsMapContext: () => ({}) }));
 jest.mock('~/components/Share/MessageIcon', () => ({ __esModule: true, default: () => null }));
+jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
+  __esModule: true,
+  default: () => <span data-testid="author-face" />,
+}));
 jest.mock('~/hooks/MCP', () => ({ useMCPServerNames: () => [] }));
 
 jest.mock('./SubagentActivity', () => ({
@@ -52,7 +55,11 @@ jest.mock('./SubagentConversation', () => ({
   __esModule: true,
   default: ({
     turns,
+    author,
+    parentAuthor,
   }: {
+    author: { name: string };
+    parentAuthor: { name: string };
     turns: Array<{
       taskId: string;
       trigger: { summary: string };
@@ -63,7 +70,12 @@ jest.mock('./SubagentConversation', () => ({
     return (
       <MessageSurfaceContext.Consumer>
         {(surface: string) => (
-          <div data-testid="subagent-conversation" data-message-surface={surface}>
+          <div
+            data-testid="subagent-conversation"
+            data-message-surface={surface}
+            data-author={author.name}
+            data-parent-author={parentAuthor.name}
+          >
             {turns.map((turn) => (
               <div key={turn.taskId}>
                 {turn.trigger.summary}
@@ -93,6 +105,20 @@ const detachedOutput = JSON.stringify({
     'Started subagent "researcher" background task. Poll the host background-task tool with background_task_id "task-1".',
 });
 
+/** The shared thread as ShareView holds it: the agent that dispatched the child. */
+const sharedMessages = [
+  {
+    messageId: 'shared-parent',
+    parentMessageId: null,
+    conversationId: 'shared-conversation',
+    isCreatedByUser: false,
+    endpoint: 'agents',
+    model: 'agent_parent',
+    sender: 'Lia',
+    text: '',
+  } as unknown as TMessage,
+];
+
 function renderSharedCall(input: {
   output?: string;
   persistedContent?: TMessageContentParts[];
@@ -119,7 +145,7 @@ function renderSharedCall(input: {
             output={input.output}
             persistedContent={input.persistedContent}
           />
-          <SharedSubagentActivityDialog shareId="share-1" />
+          <SharedSubagentActivityDialog shareId="share-1" messages={sharedMessages} />
         </MessageContext.Provider>
       </ShareContext.Provider>
     </ChatSurfaceHarness>,
@@ -144,6 +170,17 @@ describe('SharedSubagentActivityDialog', () => {
       'bg-surface-dialog',
     );
     expect(screen.getByText('Shared review complete.')).toBeInTheDocument();
+    /** Named as main chat names them: the child by its readable type, the
+     *  briefing by the shared agent that sent it. */
+    expect(screen.getByRole('heading', { name: 'researcher' })).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-author',
+      'researcher',
+    );
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'Lia',
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(trigger).toHaveFocus());
   });
