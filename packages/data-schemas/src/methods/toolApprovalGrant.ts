@@ -69,7 +69,11 @@ export function createToolApprovalGrantMethods(
       )
       .lean<StoredGrant[]>();
     const servers = [
-      ...new Set(bindings.flatMap((binding) => (binding.serverName ? [binding.serverName] : []))),
+      ...new Set(
+        bindings.flatMap((binding) =>
+          binding.serverName && binding.authKind !== 'other' ? [binding.serverName] : [],
+        ),
+      ),
     ];
     const identities = servers.flatMap((server) => [
       { server, type: 'mcp_oauth', identifier: `mcp:${server}` },
@@ -147,7 +151,8 @@ export function createToolApprovalGrantMethods(
               toolRevocation?.generation ?? 0,
             ]);
       const record = granted.get(grant.binding);
-      const oauthEpoch = grant.serverName ? epochs.get(grant.serverName) : null;
+      const oauthEpoch =
+        grant.serverName && grant.authKind !== 'other' ? epochs.get(grant.serverName) : null;
       const previous = stored.get(
         recordKey(
           grant.agentId,

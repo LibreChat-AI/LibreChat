@@ -80,11 +80,15 @@ export type AllowedCaller = 'direct' | 'code_execution';
 export const AGENT_TOOL_APPROVAL_MODES = ['ask', 'allow', 'chat', 'always'] as const;
 export type AgentToolApprovalMode = (typeof AGENT_TOOL_APPROVAL_MODES)[number];
 
+export type ToolApprovalAuthKind = 'oauth' | 'other';
+
 export interface ToolApprovalGrantBinding {
   instanceName: string;
   /** SDK child execution identity; never part of remembered consent scope. */
   executionScope?: string;
   serverName?: string;
+  /** Effective MCP authentication path; server-owned. Unset retains legacy OAuth checks. */
+  authKind?: ToolApprovalAuthKind;
   /** Server-only OAuth authorization generation, not renewable token bytes. */
   oauthEpoch?: string | null;
   agentId: string;

@@ -23,6 +23,7 @@ import { bindToolApproval, bindToolApprovalIdentity } from '~/tools/approval';
 import { assertToolApprovalTransportEpoch } from '~/tools/approval';
 import { createResetToolApprovalController } from './controller';
 import { buildMCPToolReviewAuthority } from '~/mcp/approval';
+import { getMCPToolApprovalAuthKind } from '~/mcp/approval';
 import { bindToolReviewAuthority } from '~/tools/approval';
 import { createToolExecuteHandler } from '../handlers';
 import { createMCPStructuredTool } from '~/mcp/tools';
@@ -1821,6 +1822,191 @@ for (const mode of ['chat', 'always'] as const) {
         } finally {
           release();
           await oldCompletion;
+        }
+      },
+    );
+  }
+}
+
+for (const mode of ['chat', 'always'] as const) {
+  for (const eventDriven of [false, true]) {
+    test.each([false, true])(
+      `${mode} OAuth-to-API-key consent ignores retained credentials; event-driven=${eventDriven}, templated=%s`,
+      async (templated) => {
+        const token = await oauthCredential('retained-account-a');
+        const connection = {
+          type: 'streamable-http' as const,
+          source: 'yaml' as const,
+          url: 'https://mcp.example.test/mcp',
+          requiresOAuth: false,
+          oauth: { client_id: 'retained-client' },
+          apiKey: {
+            source: 'admin' as const,
+            authorization_type: 'bearer' as const,
+            key: 'synthetic-current-key',
+          },
+          ...(templated
+            ? {
+                headers: { 'X-Workspace': '{{WORKSPACE}}' },
+                customUserVars: { WORKSPACE: { title: 'Workspace', description: 'Workspace' } },
+              }
+            : {}),
+        };
+        const kind = getMCPToolApprovalAuthKind(connection)!;
+        expect(kind).toBe('other');
+        const binding = buildMCPToolApprovalBinding('fixture', connection);
+        const authority = buildMCPToolReviewAuthority({
+          serverName: 'fixture',
+          config: connection,
+          user: { id: '652000000000000000000001' },
+          customUserVars: { WORKSPACE: 'workspace-a' },
+        });
+        const def = bindToolApprovalIdentity(
+          bindToolApproval(
+            { name, serverName: 'fixture', parameters: { type: 'object' } },
+            binding,
+            undefined,
+            undefined,
+            authority,
+            kind,
+          ),
+          'echo',
+          { type: 'object' },
+        );
+        const probe = bindToolApprovalIdentity(
+          bindToolApproval(
+            Object.assign(
+              createMCPStructuredTool(
+                async () => {
+                  await assertToolApprovalTransportEpoch('fixture', null, true);
+                  executions++;
+                  return formatToolContent(
+                    { content: [{ type: 'text', text: 'current API-key target' }] },
+                    'openai',
+                  );
+                },
+                {
+                  name,
+                  description: 'Current API-key target',
+                  schema: fixtureSchema,
+                  responseFormat: 'content_and_artifact',
+                },
+              ),
+              { schema: fixtureSchema },
+            ),
+            binding,
+            undefined,
+            undefined,
+            authority,
+            kind,
+          ),
+          'echo',
+          { type: 'object' },
+        );
+        const source: AgentApprovalSource = {
+          id: 'agent-a',
+          tool_options: {
+            [name]: {
+              approval_mode: mode,
+              approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+            },
+          },
+          toolDefinitions: [def],
+        };
+        const chat = `auth-kind-${mode}-${eventDriven}-${templated}`;
+        const saver = new MemorySaver();
+        try {
+          const first = await build({
+            source,
+            chat,
+            saver,
+            eventDriven,
+            executionTool: probe,
+            callId: 'api-key-call',
+          });
+          await first.processStream(
+            { messages: [new HumanMessage('review current target')] },
+            config(chat),
+          );
+          const payload = first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload;
+          const bindings = captureRunToolApprovalBindings(first, payload)!;
+          expect(bindings['api-key-call']).toMatchObject({ authKind: 'other', oauthEpoch: null });
+          const resumed = await build({
+            source,
+            chat,
+            saver,
+            eventDriven,
+            executionTool: probe,
+            reviewed: {
+              bindings,
+              decisions: [{ tool_call_id: 'api-key-call', decision: 'approve' }],
+            },
+          });
+          await resumed.resume({ 'api-key-call': { type: 'approve' } }, config(chat));
+          expect(executions).toBe(1);
+          await mongoose.models.Token.updateOne(
+            { _id: token._id },
+            { $set: { 'metadata.credential_set_id': 'retained-account-b' } },
+          );
+          const again = await build({
+            source,
+            chat,
+            saver: new MemorySaver(),
+            eventDriven,
+            executionTool: probe,
+            callId: 'api-key-next',
+          });
+          await again.processStream(
+            { messages: [new HumanMessage('use current key again')] },
+            config(chat),
+          );
+          if (templated) {
+            expect(again.getInterrupt()?.payload.type).toBe('tool_approval');
+            expect(executions).toBe(1);
+          } else {
+            expect(again.getInterrupt()).toBeUndefined();
+            expect(executions).toBe(2);
+          }
+          const oauthDefinition = bindToolApprovalIdentity(
+            bindToolApproval(
+              { name, serverName: 'fixture', parameters: { type: 'object' } },
+              'renewed-oauth-authority',
+              undefined,
+              undefined,
+              undefined,
+              'oauth',
+            ),
+            'echo',
+            { type: 'object' },
+          );
+          const switched = await build({
+            source: { ...source, toolDefinitions: [oauthDefinition] },
+            chat,
+            saver: new MemorySaver(),
+            eventDriven,
+            executionTool: bindToolApproval(
+              createProbe('renewed-oauth-authority'),
+              'renewed-oauth-authority',
+              undefined,
+              undefined,
+              undefined,
+              'oauth',
+            ),
+            callId: 'oauth-again',
+          });
+          await switched.processStream(
+            { messages: [new HumanMessage('use OAuth again')] },
+            config(chat),
+          );
+          expect(switched.getInterrupt()?.payload.type).toBe('tool_approval');
+          expect(
+            captureRunToolApprovalBindings(
+              switched,
+              switched.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+            )!['oauth-again'],
+          ).toMatchObject({ authKind: 'oauth', oauthEpoch: 'retained-account-b' });
+        } finally {
+          await mongoose.models.Token.deleteOne({ _id: token._id });
         }
       },
     );

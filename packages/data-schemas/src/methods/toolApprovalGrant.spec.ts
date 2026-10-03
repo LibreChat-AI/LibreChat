@@ -461,3 +461,80 @@ for (const mode of ['chat', 'always'] as const) {
     expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(1);
   });
 }
+
+test('non-OAuth authority ignores retained OAuth epochs without querying token records', async () => {
+  const userId = new mongoose.Types.ObjectId().toString();
+  const current = { userId, conversationId: 'api-key-chat' };
+  const token = await mongoose.models.Token.create({
+    userId,
+    type: 'mcp_oauth',
+    identifier: 'mcp:db',
+    token: 'synthetic-retained-token',
+    expiresAt: new Date(Date.now() + 60000),
+    metadata: { credential_set_id: 'old-oauth-account' },
+  });
+  const apiKey = {
+    ...grant,
+    serverName: 'db',
+    authKind: 'other' as const,
+    oauthEpoch: null,
+    binding: 'current-api-key-authority',
+  };
+  const find = jest.spyOn(mongoose.models.Token, 'find');
+  try {
+    await storage.rememberToolApprovalGrants(current, [apiKey]);
+    const status = (await storage.getToolApprovalGrants(current, [apiKey]))[0];
+    expect(status.oauthEpoch).toBeNull();
+    expect(status.approved).toBe(true);
+    expect(find).not.toHaveBeenCalled();
+  } finally {
+    find.mockRestore();
+    await mongoose.models.Token.deleteOne({ _id: token._id });
+  }
+});
+
+test('batched OAuth and API-key tools on the same server resolve distinct effective epochs', async () => {
+  const userId = new mongoose.Types.ObjectId().toString();
+  const current = { ...scope, userId };
+  const token = await mongoose.models.Token.create({
+    userId,
+    type: 'mcp_oauth',
+    identifier: 'mcp:db',
+    token: 'synthetic-token',
+    expiresAt: new Date(Date.now() + 60000),
+    metadata: { credential_set_id: 'account-a' },
+  });
+  const oauth = { ...grant, serverName: 'db', authKind: 'oauth' as const, oauthEpoch: 'account-a' };
+  const apiKey = {
+    ...grant,
+    serverName: 'db',
+    authKind: 'other' as const,
+    oauthEpoch: null,
+    toolName: 'key_mcp_db',
+    instanceName: 'key_mcp_db',
+    binding: 'key-authority',
+  };
+  try {
+    await storage.rememberToolApprovalGrants(current, [oauth, apiKey]);
+    expect(
+      (await storage.getToolApprovalGrants(current, [oauth, apiKey])).map((status) => [
+        status.oauthEpoch,
+        status.approved,
+      ]),
+    ).toEqual([
+      ['account-a', true],
+      [null, true],
+    ]);
+    await mongoose.models.Token.updateOne(
+      { _id: token._id },
+      { $set: { 'metadata.credential_set_id': 'account-b' } },
+    );
+    expect(
+      (await storage.getToolApprovalGrants(current, [oauth, apiKey])).map(
+        (status) => status.approved,
+      ),
+    ).toEqual([false, true]);
+  } finally {
+    await mongoose.models.Token.deleteOne({ _id: token._id });
+  }
+});

@@ -7,6 +7,7 @@ import type {
   ToolApprovalGrantBinding,
   Agents,
 } from 'librechat-data-provider';
+import type { ToolApprovalAuthKind } from 'librechat-data-provider';
 import type { TToolApprovalPolicy } from 'librechat-data-provider';
 import type { HookCallback } from '@librechat/agents';
 import type { Run, IState } from '@librechat/agents';
@@ -18,6 +19,7 @@ import { bindToolReviewAuthority, getToolReviewAuthority } from '~/tools/approva
 import { getToolApprovalExecutionScope } from '~/tools/approval';
 import { requiresEphemeralUserConnection } from '~/mcp/utils';
 import { projectMCPApprovalAuthority } from '~/mcp/approval';
+import { getToolApprovalAuthKind } from '~/tools/approval';
 import { mapToolApprovalPolicy } from './policy';
 
 export interface AgentApprovalDefinition {
@@ -52,10 +54,18 @@ export function attachMCPToolApprovalBindings(
   definitions: AgentApprovalDefinition[],
   bindings: ReadonlyMap<string, string | undefined>,
   reviewAuthorities?: ReadonlyMap<string, string | undefined>,
+  authKinds?: ReadonlyMap<string, ToolApprovalAuthKind | undefined>,
 ): void {
   for (const definition of definitions) {
     if (!definition.serverName) continue;
-    bindToolApproval(definition, bindings.get(definition.serverName));
+    bindToolApproval(
+      definition,
+      bindings.get(definition.serverName),
+      undefined,
+      undefined,
+      undefined,
+      authKinds?.get(definition.serverName),
+    );
     bindToolReviewAuthority(definition, reviewAuthorities?.get(definition.serverName));
   }
 }
@@ -83,6 +93,7 @@ export function resolveAgentToolGrantBinding(
     canRemember: options.approval_mode === 'chat' || options.approval_mode === 'always',
     instanceName: toolName,
     serverName: definition.serverName,
+    authKind: getToolApprovalAuthKind(definition),
     oauthEpoch: null,
     agentId: agent.id,
     toolName: canonicalName,
@@ -98,6 +109,7 @@ export function resolveAgentToolGrantBinding(
       revision: options.approval_revision,
       mode: options.approval_mode,
       source: sourceBinding,
+      authKind: getToolApprovalAuthKind(definition),
       identity,
     }),
   };
@@ -124,6 +136,7 @@ function resolveToolReviewBinding(
   return {
     instanceName: toolName,
     serverName: definition.serverName,
+    authKind: getToolApprovalAuthKind(definition),
     oauthEpoch: null,
     agentId: agent.id,
     toolName: getToolApprovalName(definition) ?? toolName,
@@ -136,6 +149,7 @@ function resolveToolReviewBinding(
       toolName,
       identity: getToolApprovalIdentity(definition),
       authority: getToolReviewAuthority(definition),
+      authKind: getToolApprovalAuthKind(definition),
       mode: agent.tool_options?.[toolName]?.approval_mode,
       revision: agent.tool_options?.[toolName]?.approval_revision,
     }),
@@ -412,6 +426,8 @@ export function createAgentToolApprovalSession({
       const expectedAuthority = initialized && getToolReviewAuthority(initialized);
       if (
         (expectedIdentity != null && actualIdentity !== expectedIdentity) ||
+        (initialized != null &&
+          getToolApprovalAuthKind(tool) !== getToolApprovalAuthKind(initialized)) ||
         (expectedSource != null && getToolApprovalBinding(tool) !== expectedSource) ||
         (expectedAuthority != null && getToolReviewAuthority(tool) !== expectedAuthority)
       ) {

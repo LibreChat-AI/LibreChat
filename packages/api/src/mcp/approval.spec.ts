@@ -1,6 +1,7 @@
 import { ServerConfigsCacheInMemory } from './registry/cache/ServerConfigsCacheInMemory';
 import { buildMCPToolApprovalBinding } from '~/agents/hitl/modes';
 import { buildMCPToolReviewAuthority } from './approval';
+import { getMCPToolApprovalAuthKind } from './approval';
 import { processMCPEnv } from '~/utils/env';
 
 const config = {
@@ -363,4 +364,41 @@ test('renewable placeholders introduced by operator substitution are masked afte
     });
   expect(authority('synthetic-b', 'a')).toBe(authority('synthetic-a', 'a'));
   expect(authority('synthetic-b', 'b')).not.toBe(authority('synthetic-a', 'a'));
+});
+
+test('approval authentication kind follows effective factory auth, not retained OAuth config', () => {
+  const base = {
+    type: 'streamable-http' as const,
+    source: 'yaml' as const,
+    url: 'https://mcp.example.test',
+  };
+  expect(getMCPToolApprovalAuthKind({ ...base, requiresOAuth: true })).toBe('oauth');
+  expect(getMCPToolApprovalAuthKind({ ...base, oauth: { client_id: 'client' } })).toBe('oauth');
+  expect(
+    getMCPToolApprovalAuthKind({
+      ...base,
+      requiresOAuth: false,
+      oauth: { client_id: 'retained' },
+      apiKey: { source: 'admin', authorization_type: 'bearer', key: 'synthetic-key' },
+    }),
+  ).toBe('other');
+  expect(getMCPToolApprovalAuthKind(base)).toBe('other');
+  expect(getMCPToolApprovalAuthKind(undefined)).toBeUndefined();
+  expect(getMCPToolApprovalAuthKind({ ...base, obo: { scopes: 'api://resource/.default' } })).toBe(
+    'other',
+  );
+  expect(
+    getMCPToolApprovalAuthKind({
+      ...base,
+      headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+    }),
+  ).toBe('other');
+  expect(
+    getMCPToolApprovalAuthKind({
+      ...base,
+      headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+      requestHeaders: { Authorization: 'Bearer static-user-key' },
+      requiresOAuth: true,
+    }),
+  ).toBe('oauth');
 });
