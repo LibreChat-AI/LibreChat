@@ -17,7 +17,7 @@ const { getBufferMetadata } = require('~/server/utils');
 
 /**
  * Deletes a file from Firebase Storage.
- * @param {string} directory - The directory name
+ * @param {string} basePath - The base directory path
  * @param {string} fileName - The name of the file to delete.
  * @returns {Promise<void>} A promise that resolves when the file is deleted.
  */

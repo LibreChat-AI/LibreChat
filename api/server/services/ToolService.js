@@ -338,10 +338,10 @@ async function resolveAgentCapabilities(req, appConfig, agentId) {
 }
 
 /**
- * Processes the required actions by calling the appropriate tools and returning the outputs.
+ * Builds the tool output for a vision required action.
  * @param {OpenAIClient} client - OpenAI or StreamRunManager Client.
- * @param {RequiredAction} requiredActions - The current required action.
- * @returns {Promise<ToolOutput>} The outputs of the tools.
+ * @param {RequiredAction} currentAction - The current required action.
+ * @returns {Promise<ToolOutput>} The output of the vision action.
  */
 const processVisionRequest = async (client, currentAction) => {
   if (!client.visionPromise) {
