@@ -965,6 +965,33 @@ describe('useMCPSelect', () => {
       });
     });
 
+    it("keeps a saved agent's switchable server, even though the menu hides it", async () => {
+      const { Wrapper } = createWrapper();
+
+      const TestComponent = () => {
+        const mcpHook = useMCPSelect({
+          ownsChatSelection: true,
+          servers: createMCPServers(['visible']),
+          allServers: createMCPServers(['visible', 'agent-server', 'stale-hidden']),
+          agentServers: ['agent-server'],
+        });
+        const setEphemeralAgent = useSetRecoilState(ephemeralAgentByConvoId(Constants.NEW_CONVO));
+        const ephemeralAgent = useRecoilValue(ephemeralAgentByConvoId(Constants.NEW_CONVO));
+        return { mcpHook, ephemeralAgent, setEphemeralAgent };
+      };
+
+      const { result } = renderHook(() => TestComponent(), { wrapper: Wrapper });
+
+      act(() => {
+        result.current.setEphemeralAgent({ mcp: ['visible', 'agent-server', 'stale-hidden'] });
+      });
+
+      await waitFor(() => {
+        expect(result.current.ephemeralAgent?.mcp).toEqual(['visible', 'agent-server']);
+        expect(result.current.mcpHook.mcpValues).toEqual(['visible', 'agent-server']);
+      });
+    });
+
     it("lets a catalog-only instance leave the picker instance's selection alone", async () => {
       mockStartupConfig = {
         modelSpecs: { list: [{ name: 'pins-hidden', mcpServers: ['spec-server'] }] },

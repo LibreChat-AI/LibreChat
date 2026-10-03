@@ -1,6 +1,7 @@
 import { AgentCapabilities } from 'librechat-data-provider';
 import type { BuildCatalogInputs } from '../catalog';
 import { makePlugin, makeSkill, makeAction } from 'test/itemFactories';
+import { deriveSelectedItems } from '../selectors';
 import { buildCatalog } from '../catalog';
 
 const emptyInputs: BuildCatalogInputs = {
@@ -47,19 +48,34 @@ describe('buildCatalog', () => {
     expect(buildCatalog({ ...emptyInputs, showMemory: true }).find(memoryId)).toBeDefined();
   });
 
-  test('flags web_search userProvidedAuth from the webSearchUserProvided input', () => {
-    const findWebSearch = (inputs: BuildCatalogInputs) =>
-      buildCatalog(inputs).find(
-        (i) => i.kind === 'builtin' && i.id === AgentCapabilities.web_search,
-      );
-    const base = {
-      ...emptyInputs,
-      agentsConfig: { capabilities: [AgentCapabilities.web_search] },
+  test('offers no web search item, and so no switch setting, when capabilities or the role block it', () => {
+    const form = {
+      execute_code: false,
+      web_search: true,
+      file_search: false,
+      memory: false,
+      artifacts: undefined,
+      tools: [],
+      skills: [],
+      context_files: [],
+      knowledge_files: [],
+      code_files: [],
     };
-    const userProvided = findWebSearch({ ...base, webSearchUserProvided: true });
-    const systemDefined = findWebSearch({ ...base, webSearchUserProvided: false });
-    expect(userProvided?.kind === 'builtin' && userProvided.userProvidedAuth).toBe(true);
-    expect(systemDefined?.kind === 'builtin' && systemDefined.userProvidedAuth).toBe(false);
+    const webSearchEnabled = { capabilities: [AgentCapabilities.web_search] };
+    const selectedIds = (inputs: BuildCatalogInputs) =>
+      deriveSelectedItems(form, buildCatalog(inputs), []).map((item) => item.id);
+
+    expect(selectedIds(emptyInputs)).toEqual([]);
+    expect(
+      selectedIds({
+        ...emptyInputs,
+        agentsConfig: webSearchEnabled,
+        permissions: { ...emptyInputs.permissions, webSearch: false },
+      }),
+    ).toEqual([]);
+    expect(selectedIds({ ...emptyInputs, agentsConfig: webSearchEnabled })).toEqual([
+      AgentCapabilities.web_search,
+    ]);
   });
 
   test('surfaces ask_user_question as a BUILTIN (not a plugin) when the server lists it', () => {

@@ -56,12 +56,6 @@ export interface BuildCatalogInputs {
    * `agentsConfig.capabilities` here.
    */
   showMemory?: boolean;
-  /**
-   * Whether `web_search` uses USER_PROVIDED auth (a user-managed key). Drives the
-   * cog-vs-info affordance on the web_search card/row: configurable only when a
-   * user key exists; SYSTEM_DEFINED deployments have nothing to configure.
-   */
-  webSearchUserProvided?: boolean;
 }
 
 interface BuiltinDef {
@@ -137,8 +131,6 @@ export function buildCatalog(inputs: BuildCatalogInputs): AgentItem[] {
       name: def.nameKey,
       description: def.descriptionKey,
       status: inputs.builtinAuthMap?.get(def.id) === true ? 'needs_setup' : undefined,
-      userProvidedAuth:
-        def.id === AgentCapabilities.web_search ? inputs.webSearchUserProvided === true : undefined,
     });
   }
 

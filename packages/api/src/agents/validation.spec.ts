@@ -473,3 +473,24 @@ describe('validateAgentModel', () => {
     expect(logViolation).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('tool_options user_toggle', () => {
+  const base = { provider: 'openAI', model: 'gpt-4o-mini', tools: ['web_search'] };
+
+  it.each(['on', 'off'])('keeps %s on create and update', (user_toggle) => {
+    const tool_options = { web_search: { user_toggle } };
+    expect(agentCreateSchema.parse({ ...base, tool_options }).tool_options).toEqual(tool_options);
+    expect(agentUpdateSchema.parse({ tool_options }).tool_options).toEqual(tool_options);
+  });
+
+  it('rejects any other value', () => {
+    const tool_options = { web_search: { user_toggle: 'auto' } };
+    expect(agentCreateSchema.safeParse({ ...base, tool_options }).success).toBe(false);
+    expect(agentUpdateSchema.safeParse({ tool_options }).success).toBe(false);
+  });
+
+  it('treats a missing toggle as locked', () => {
+    const parsed = agentCreateSchema.parse({ ...base, tool_options: { web_search: {} } });
+    expect(parsed.tool_options?.web_search.user_toggle).toBeUndefined();
+  });
+});

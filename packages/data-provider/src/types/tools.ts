@@ -77,6 +77,9 @@ export interface FileSearchResource {
  */
 export type AllowedCaller = 'direct' | 'code_execution';
 
+/** Switchable by the chat user; the value is the state a new chat starts in. */
+export type UserToolToggle = 'on' | 'off';
+
 /**
  * Per-tool configuration options stored at the agent level.
  * Keyed by tool_id (e.g., "search_mcp_github").
@@ -109,6 +112,8 @@ export type ToolOptions = {
    * @default false
    */
   describe_intent?: boolean;
+  /** Chat-user switch for this tool on a saved agent. Absent = locked. */
+  user_toggle?: UserToolToggle;
 };
 
 /**

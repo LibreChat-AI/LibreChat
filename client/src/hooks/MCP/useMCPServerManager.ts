@@ -80,12 +80,15 @@ export function useMCPServerManager({
   conversationId,
   storageContextKey,
   specName,
+  agentServers,
   ownsChatSelection = false,
   observeToolAuthorization = false,
 }: {
   conversationId?: string | null;
   storageContextKey?: string;
   specName?: string | null;
+  /** The saved agent's switchable servers, kept selected even when the menu hides them. */
+  agentServers?: string[];
   /**
    * Opt in to managing the chat MCP selection. Most callers mount this hook for
    * the catalog, the server actions, or the status icons and never read the
@@ -165,6 +168,7 @@ export function useMCPServerManager({
     servers: selectableServers,
     allServers: availableMCPServers,
     specName,
+    agentServers,
     ownsChatSelection,
   });
   const mcpValuesRef = useRef(mcpValues);

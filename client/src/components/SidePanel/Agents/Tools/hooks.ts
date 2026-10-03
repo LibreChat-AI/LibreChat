@@ -50,21 +50,6 @@ export function useBuiltinAuthMap(): Map<string, boolean> {
 }
 
 /**
- * Whether `web_search` uses USER_PROVIDED auth (a user-managed key). When false
- * the deployment uses SYSTEM_DEFINED keys, so there is nothing for the user to
- * configure. Shares the `useBuiltinAuthMap` React Query key, so it adds no
- * request. Threaded into `buildCatalog` so the card/row affordance is decided
- * synchronously (cog vs info) without a per-row hook.
- */
-export function useWebSearchUserProvided(): boolean {
-  const { data } = useVerifyAgentToolAuth({ toolId: Tools.web_search }, { retry: 1 });
-  return useMemo(
-    () => data?.authTypes?.some(([, authType]) => authType === AuthType.USER_PROVIDED) ?? false,
-    [data],
-  );
-}
-
-/**
  * Resolves whether the Memory capability should be offered in the builder.
  * Mirrors the legacy `AgentConfig` gate: the admin must enable the `memory`
  * capability, the user must hold the memory permission, and the user must not
@@ -176,7 +161,6 @@ export function useAgentItems({
     permission: Permissions.USE,
   });
   const showMemory = useShowMemory();
-  const webSearchUserProvided = useWebSearchUserProvided();
   const builtinAuthMap = useBuiltinAuthMap();
 
   const toolsField = useWatch({ control, name: 'tools' });
@@ -211,7 +195,6 @@ export function useAgentItems({
           fileSearch: hasFileSearchAccess,
         },
         showMemory,
-        webSearchUserProvided,
         builtinAuthMap,
       }),
     [
@@ -226,7 +209,6 @@ export function useAgentItems({
       hasFileSearchAccess,
       skillsPermission,
       showMemory,
-      webSearchUserProvided,
       builtinAuthMap,
     ],
   );

@@ -2271,6 +2271,13 @@
                 },
                 "describe_intent": {
                   "type": "boolean"
+                },
+                "user_toggle": {
+                  "type": "string",
+                  "enum": [
+                    "on",
+                    "off"
+                  ]
                 }
               }
             }
@@ -2718,6 +2725,13 @@
                 },
                 "describe_intent": {
                   "type": "boolean"
+                },
+                "user_toggle": {
+                  "type": "string",
+                  "enum": [
+                    "on",
+                    "off"
+                  ]
                 }
               }
             }
@@ -3189,6 +3203,13 @@
                 },
                 "describe_intent": {
                   "type": "boolean"
+                },
+                "user_toggle": {
+                  "type": "string",
+                  "enum": [
+                    "on",
+                    "off"
+                  ]
                 }
               }
             }

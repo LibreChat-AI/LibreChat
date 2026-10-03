@@ -43,12 +43,6 @@ interface ItemBase {
 export interface BuiltinItem extends ItemBase {
   kind: 'builtin';
   id: BuiltinId;
-  /**
-   * True when `web_search` auth is USER_PROVIDED (a user-managed key exists to
-   * configure). Undefined/false means SYSTEM_DEFINED — nothing to configure, so
-   * the card/row shows an info icon instead of a settings cog.
-   */
-  userProvidedAuth?: boolean;
 }
 
 export interface ToolItem extends ItemBase {

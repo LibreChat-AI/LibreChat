@@ -6,6 +6,7 @@ import {
   AgentCapabilities,
   Constants,
   splitMCPToolKey,
+  mcpServerToggleKey,
   normalizeServerName,
   buildServerNameAliases,
   stripServerNamePrefix,
@@ -28,6 +29,7 @@ import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import McpOAuthDialog from '~/components/MCP/McpOAuthDialog';
 import { useAgentPanelContext } from '~/Providers';
 import { getIconForItem } from '../../items/icons';
+import UserToggleSelect from '../UserToggleSelect';
 import OptionToggle from '../../../OptionToggle';
 import MCPToolItem from '../../../MCPToolItem';
 import { Collapse } from '~/components/ui';
@@ -619,6 +621,11 @@ export default function McpSection({ item }: Props) {
           </Collapse>
         </div>
       </div>
+
+      <UserToggleSelect
+        toolOptionKey={mcpServerToggleKey(serverName)}
+        labelId={`${normalizeServerName(serverName)}-user-toggle-label`}
+      />
 
       {configDialogProps && <MCPConfigDialog {...configDialogProps} />}
       <McpOAuthDialog

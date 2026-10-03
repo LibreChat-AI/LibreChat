@@ -119,6 +119,7 @@ jest.mock('../../../MCPToolItem', () => ({
   ),
 }));
 
+jest.mock('../UserToggleSelect', () => ({ __esModule: true, default: () => null }));
 jest.mock('~/components/MCP/MCPConfigDialog', () => ({
   __esModule: true,
   default: () => null,
