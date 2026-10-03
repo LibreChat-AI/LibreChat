@@ -16,16 +16,13 @@ const connect = require('./connect');
   console.purple('-----------------------------');
 
   const users = await User.find({});
-  const balances = await Balance.find({ user: { $in: users.map((user) => user._id) } }).sort({
-    _id: 1,
-  });
-  const balanceByUser = new Map();
-  for (const balance of balances) {
-    const key = String(balance.user);
-    if (!balanceByUser.has(key)) {
-      balanceByUser.set(key, balance);
-    }
-  }
+  /** Earliest balance per user, matching the previous per-user `findOne().sort({ _id: 1 })` */
+  const balances = await Balance.aggregate([
+    { $match: { user: { $in: users.map((user) => user._id) } } },
+    { $sort: { _id: 1 } },
+    { $group: { _id: '$user', tokenCredits: { $first: '$tokenCredits' } } },
+  ]);
+  const balanceByUser = new Map(balances.map((balance) => [String(balance._id), balance]));
   for (const user of users) {
     const balance = balanceByUser.get(String(user._id)) ?? null;
     if (balance !== null) {
