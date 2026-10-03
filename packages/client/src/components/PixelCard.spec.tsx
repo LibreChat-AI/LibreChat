@@ -57,7 +57,7 @@ describe('PixelCard palette', () => {
       .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
       .mockReturnValue({ width: 200, height: 200 } as DOMRect);
     let sample = 0;
-    jest.spyOn(Math, 'random').mockImplementation(() => ((sample++ % 3) + 0.5) / 3);
+    jest.spyOn(Math, 'random').mockImplementation(() => ((sample++ % 7) + 0.5) / 7);
     render(<PixelCard progress={1} />);
 
     await waitFor(() =>
