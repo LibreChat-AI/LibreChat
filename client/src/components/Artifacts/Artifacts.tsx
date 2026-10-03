@@ -448,7 +448,7 @@ export default function Artifacts() {
         {isMobile && (
           <div
             className={cn(
-              'fixed inset-0 z-[99] bg-black will-change-[opacity,backdrop-filter] motion-reduce:transition-none',
+              'bg-surface-overlay fixed inset-0 z-[99] will-change-[opacity,backdrop-filter] motion-reduce:transition-none',
               isVisible && !isClosing
                 ? 'transition-all duration-300'
                 : 'pointer-events-none opacity-0 backdrop-blur-none transition-opacity duration-150',
@@ -663,7 +663,7 @@ export default function Artifacts() {
 
             <div
               className={cn(
-                'absolute inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-xs transition-opacity duration-300 ease-in-out',
+                'bg-surface-media-overlay/70 absolute inset-0 z-[60] flex items-center justify-center backdrop-blur-xs transition-opacity duration-300 ease-in-out',
                 isRefreshing ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0',
               )}
               aria-hidden={!isRefreshing}
