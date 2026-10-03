@@ -1,8 +1,8 @@
 import { createElement } from 'react';
 import { getDefaultStore } from 'jotai';
-import { dataService, QueryKeys } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { dataService, QueryKeys, UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import type {
   ConversationListResponse,
   TConversationTag,
@@ -268,6 +268,41 @@ describe('pinned list cache synchronization', () => {
 
     expect(readPinnedCache(queryClient)?.conversations).toEqual([]);
   });
+
+  it.each([true, false])(
+    'accepts an authoritative unread clear while unpinning (listed: %s)',
+    async (listed) => {
+      const queryClient = createQueryClient();
+      const confirmed = {
+        ...pinnedConvo,
+        lastResponseAt: '2026-08-16T10:00:00.000Z',
+        lastResponseMessageId: 'reply',
+        isMarkedUnread: false,
+        lastSeenAt: UNSEEN_REPLY_WATERMARK,
+      } as TConversation;
+      queryClient.setQueryData([QueryKeys.pinnedConversations], listResponse([confirmed]));
+      queryClient.setQueryData([QueryKeys.allConversations], {
+        pages: [listResponse(listed ? [confirmed] : [])],
+        pageParams: [null],
+      });
+      const server = JSON.parse(
+        JSON.stringify({ ...confirmed, lastSeenAt: undefined }),
+      ) as TConversation;
+      pinConversation.mockResolvedValue({ ...server, pinned: false } as TConversation);
+      const { result } = renderHook(() => usePinConversationMutation(), {
+        wrapper: createWrapper(queryClient),
+      });
+      await act(async () => {
+        await result.current.mutateAsync({ conversationId: pinnedConversationId, pinned: false });
+      });
+      const chats = queryClient.getQueryData<{ pages: ConversationListResponse[] }>([
+        QueryKeys.allConversations,
+      ]);
+      expect(chats?.pages[0].conversations[0].lastSeenAt).toBeUndefined();
+      expect(chats?.pages[0].conversations[0].isMarkedUnread).toBe(false);
+      expect(readPinnedCache(queryClient)?.conversations).toEqual([]);
+    },
+  );
 
   it('keeps a renamed pin in the section with its new title', () => {
     const queryClient = createQueryClient();

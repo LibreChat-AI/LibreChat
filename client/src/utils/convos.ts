@@ -710,11 +710,15 @@ export function upsertConvoInAllQueries(
   queryClient: QueryClient,
   nextConvo: TConversation,
   moveToTop = true,
+  readState: 'partial' | 'snapshot' = 'partial',
 ) {
   if (!nextConvo.conversationId) {
     return;
   }
   const conversationId = nextConvo.conversationId;
+  if (readState === 'snapshot') {
+    nextConvo = mergeConvoSnapshot(nextConvo, findConvoInAllQueries(queryClient, conversationId));
+  }
 
   /* The history query excludes temporary conversations server-side, so seeding
      one into the list caches would surface it in the sidebar until the next
@@ -1266,6 +1270,26 @@ function preserveListFlags(next: TConversation, found: TConversation): TConversa
     merged[flag] = found[flag];
   }
   return merged;
+}
+
+/** Full server snapshots clear omitted read fields; partial UI patches preserve them. */
+export function mergeConvoSnapshot(
+  snapshot: TConversation,
+  cached?: TConversation,
+): TConversation {
+  const state =
+    cached?.lastResponseAt != null &&
+    (snapshot.lastResponseAt == null || snapshot.lastResponseAt < cached.lastResponseAt)
+      ? cached
+      : snapshot;
+  return {
+    ...snapshot,
+    lastResponseAt: state.lastResponseAt,
+    lastResponseMessageId: state.lastResponseMessageId,
+    lastResponseIsManual: state.lastResponseIsManual,
+    isMarkedUnread: state.isMarkedUnread,
+    lastSeenAt: state.lastSeenAt,
+  };
 }
 
 const preserveReadState = (next: TConversation, found: TConversation): TConversation => {

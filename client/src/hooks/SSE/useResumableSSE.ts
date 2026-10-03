@@ -3406,7 +3406,7 @@ export default function useResumableSSE(
               if (!isCurrentSubscription()) return;
               if (persisted?.conversationId === recoveryConvoId) {
                 queryClient.setQueryData([QueryKeys.conversation, recoveryConvoId], persisted);
-                upsertConvoInAllQueries(queryClient, persisted);
+                upsertConvoInAllQueries(queryClient, persisted, true, 'snapshot');
                 if (!isAddedRequest) {
                   setConversation?.((current) => {
                     if (
@@ -4656,7 +4656,7 @@ export default function useResumableSSE(
                 [QueryKeys.conversation, settledConversationId],
                 conversationRecord,
               );
-              upsertConvoInAllQueries(queryClient, conversationRecord);
+              upsertConvoInAllQueries(queryClient, conversationRecord, true, 'snapshot');
               setConversation?.((current) =>
                 keepLocalCodeApprovalMode(settledCopy, current, localConversationId),
               );

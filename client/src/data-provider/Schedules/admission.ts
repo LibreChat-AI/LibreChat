@@ -138,7 +138,7 @@ async function admit(queryClient: QueryClient, conversationId: string): Promise<
       [QueryKeys.conversation, conversationId],
       (current) => current ?? conversation,
     );
-    upsertConvoInAllQueries(queryClient, conversation);
+    upsertConvoInAllQueries(queryClient, conversation, true, 'snapshot');
     /** The same bookkeeping the foreground path does when a chat lands in a
      *  project: the project's count and recent-activity ordering live on the
      *  project rows, which the conversation caches above do not touch. */

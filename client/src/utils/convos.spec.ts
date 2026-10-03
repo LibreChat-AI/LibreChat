@@ -4,6 +4,7 @@ import type { TConversation } from 'librechat-data-provider';
 import type { ConversationCursorData } from './convos';
 import {
   dateKeys,
+  mergeConvoSnapshot,
   storeEndpointSettings,
   addConversationToInfinitePages,
   updateInfiniteConvoPage,
@@ -1200,6 +1201,56 @@ describe('Conversation Utilities', () => {
            reads as "visible", which can acknowledge a reply on a hidden sibling branch. */
         expect(data!.pages[0].conversations[0].lastResponseMessageId).toBe('reply-a');
       });
+
+      it('snapshot merging distinguishes authoritative absence from partial UI updates', () => {
+        const cached = {
+          ...convoA,
+          lastResponseAt: '2026-08-16T10:00:00.000Z',
+          lastResponseMessageId: 'reply',
+          isMarkedUnread: false,
+          lastSeenAt: UNSEEN_REPLY_WATERMARK,
+        } as TConversation;
+        const server = JSON.parse(
+          JSON.stringify({ ...cached, lastSeenAt: undefined }),
+        ) as TConversation;
+        const merged = mergeConvoSnapshot(server, cached);
+        expect(merged.lastSeenAt).toBeUndefined();
+        expect('lastSeenAt' in merged).toBe(true);
+        expect(merged.lastResponseMessageId).toBe('reply');
+        const older = { ...server, lastResponseAt: '2026-08-16T09:00:00.000Z' };
+        expect(mergeConvoSnapshot(older, cached).lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
+      });
+
+      it.each([true, false])(
+        'snapshot upserts clear an omitted watermark while partial updates preserve it (pinned: %s)',
+        (pinned) => {
+          updateConvoInAllQueries(queryClient, 'a', (c) => ({
+            ...c,
+            pinned,
+            lastResponseAt: '2026-08-16T10:00:00.000Z',
+            isMarkedUnread: false,
+            lastSeenAt: UNSEEN_REPLY_WATERMARK,
+          }));
+          upsertConvoInAllQueries(
+            queryClient,
+            { conversationId: 'a', title: 'Partial' } as TConversation,
+            false,
+          );
+          expect(findConvoInAllQueries(queryClient, 'a')?.lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
+          upsertConvoInAllQueries(
+            queryClient,
+            {
+              conversationId: 'a',
+              title: 'Snapshot',
+              lastResponseAt: '2026-08-16T10:00:00.000Z',
+              isMarkedUnread: false,
+            } as TConversation,
+            false,
+            'snapshot',
+          );
+          expect(findConvoInAllQueries(queryClient, 'a')?.lastSeenAt).toBeUndefined();
+        },
+      );
 
       it('does not invent reply eligibility for an unclassified backend snapshot', () => {
         updateConvoInAllQueries(queryClient, 'a', (c) => ({

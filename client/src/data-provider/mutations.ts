@@ -13,6 +13,7 @@ import {
   /* Conversations */
   addConvoToAllQueries,
   markRunningRemoval,
+  mergeConvoSnapshot,
   findPinnedConversation,
   findConvoInAllQueries,
   findConversationInInfinite,
@@ -247,10 +248,14 @@ export const usePinConversationMutation = (
          * read it off the cached pin before the update drops that row: the reinsert
          * below has no existing chats row to carry the badge over from. */
         const cachedPin = findPinnedConversation(queryClient, vars.conversationId);
+        const snapshot = mergeConvoSnapshot(
+          data,
+          findConvoInAllQueries(queryClient, vars.conversationId),
+        );
         const next =
-          data.isShared === undefined && cachedPin?.isShared !== undefined
-            ? { ...data, isShared: cachedPin.isShared }
-            : data;
+          snapshot.isShared === undefined && cachedPin?.isShared !== undefined
+            ? { ...snapshot, isShared: cachedPin.isShared }
+            : snapshot;
         updateConvoInAllQueries(queryClient, vars.conversationId, () => next);
         /* Pinned state is list-relevant in both active and archived views. The
          * archived variants carry filter/sort parameters, so invalidate by prefix. */
@@ -448,7 +453,12 @@ const settleCatchUp = (
     return;
   }
   const cached = findConvoInAllQueries(queryClient, conversationId);
-  if (!cached || cached.lastSeenAt === settled) {
+  if (
+    !cached ||
+    cached.lastSeenAt === settled ||
+    (cached.lastResponseAt != null &&
+      (acknowledged == null || cached.lastResponseAt > acknowledged))
+  ) {
     return;
   }
   const current = cached.lastSeenAt;
@@ -504,10 +514,11 @@ export const useMarkConversationSeenMutation = (): UseMutationResult<
            reads as caught up. */
         const acknowledged: string | undefined =
           vars.lastResponseAt ?? cached?.lastResponseAt ?? new Date().toISOString();
-        updateConvoInAllQueries(queryClient, vars.conversationId, (convo) => ({
-          ...convo,
-          lastSeenAt: acknowledged,
-        }));
+        updateConvoInAllQueries(queryClient, vars.conversationId, (convo) =>
+          convo.lastResponseAt != null && convo.lastResponseAt > acknowledged
+            ? convo
+            : { ...convo, lastSeenAt: acknowledged },
+        );
         return {
           previous: cached?.lastSeenAt,
           acknowledged,
