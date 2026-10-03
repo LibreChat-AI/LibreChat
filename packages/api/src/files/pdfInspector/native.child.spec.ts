@@ -30,7 +30,7 @@ describe('pdfInspector child isolation', () => {
     const child = new TestChild();
     child.send.mockImplementationOnce((_message, callback) => {
       callback?.(null);
-      queueMicrotask(() => child.emit('exit', null, 'SIGABRT'));
+      queueMicrotask(() => child.emit('close', null, 'SIGABRT'));
       return true;
     });
     mockSpawn.mockReturnValue(child);

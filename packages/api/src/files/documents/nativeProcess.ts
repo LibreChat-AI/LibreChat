@@ -397,7 +397,8 @@ export function runNativeParserChild<T>({
       );
     });
     child.on('error', (error: Error) => finish(error));
-    child.on('exit', (code: number | null, signal: NodeJS.Signals | null) =>
+    /** `exit` can fire before the child's last IPC message is read; `close` waits for the channel. */
+    child.on('close', (code: number | null, signal: NodeJS.Signals | null) =>
       finish(
         new Error(
           signal
