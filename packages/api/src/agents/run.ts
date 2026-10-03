@@ -2823,9 +2823,10 @@ export async function createRun({
     ],
     nativeEditFileAgentIds,
   );
-  if (toolApprovalPolicy?.agentModes === true) {
-    approvalWiring?.hooks.register('PostToolUse', { hooks: [agentApprovalSession.rememberHook] });
-  }
+  approvalWiring?.hooks.register('PostToolUse', { hooks: [agentApprovalSession.rememberHook] });
+  approvalWiring?.hooks.register('PostToolBatch', {
+    hooks: [agentApprovalSession.settleBatchHook],
+  });
   const hitl = hitlCapable ? approvalWiring : undefined;
   const scheduledPolicy = scheduledMCPExecution
     ? createScheduledMCPRunPolicy(

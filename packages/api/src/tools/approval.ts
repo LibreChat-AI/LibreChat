@@ -4,7 +4,13 @@ import type { SubagentExecutionContext } from '@librechat/agents';
 const bindingKey: unique symbol = Symbol.for('librechat.toolApprovalBinding');
 const nameKey: unique symbol = Symbol.for('librechat.toolApprovalName');
 const identityKey: unique symbol = Symbol.for('librechat.toolApprovalIdentity');
-type BoundTool = { [bindingKey]?: string; [nameKey]?: string; [identityKey]?: string };
+const reviewAuthorityKey: unique symbol = Symbol.for('librechat.toolReviewAuthority');
+type BoundTool = {
+  [bindingKey]?: string;
+  [nameKey]?: string;
+  [identityKey]?: string;
+  [reviewAuthorityKey]?: string;
+};
 
 /** Object spreads retain the binding; JSON/provider payloads cannot expose it. */
 export function bindToolApproval<T extends object>(
@@ -12,10 +18,12 @@ export function bindToolApproval<T extends object>(
   binding: string | undefined,
   name?: string,
   identity?: string,
+  reviewAuthority?: string,
 ): T {
   if (binding != null) (tool as BoundTool)[bindingKey] = binding;
   if (name != null) (tool as BoundTool)[nameKey] = name;
   if (identity != null) (tool as BoundTool)[identityKey] = identity;
+  if (reviewAuthority != null) (tool as BoundTool)[reviewAuthorityKey] = reviewAuthority;
   return tool;
 }
 
@@ -45,10 +53,23 @@ export function getToolApprovalIdentity(tool: object): string | undefined {
   return (tool as BoundTool)[identityKey];
 }
 
+export function bindToolReviewAuthority<T extends object>(
+  tool: T,
+  authority: string | undefined,
+): T {
+  if (authority != null) (tool as BoundTool)[reviewAuthorityKey] = authority;
+  return tool;
+}
+
+export function getToolReviewAuthority(tool: object): string | undefined {
+  return (tool as BoundTool)[reviewAuthorityKey] ?? getToolApprovalBinding(tool);
+}
+
 export interface ToolApprovalInvocation {
   agentId?: string;
   toolCallId?: string;
   executionScope?: string;
+  background?: boolean;
 }
 
 export function getToolApprovalExecutionScope(
@@ -60,6 +81,8 @@ export function getToolApprovalExecutionScope(
 
 export interface ToolApprovalExecution {
   validateExecution: (tool: { name: string }, invocation: ToolApprovalInvocation) => Promise<void>;
+  noteDispatch?: (invocation: ToolApprovalInvocation) => void;
+  finishDispatch?: (invocation: ToolApprovalInvocation) => void;
 }
 
 const executionContext = new AsyncLocalStorage<ToolApprovalExecution>();
@@ -73,6 +96,7 @@ export async function assertToolApprovalExecution(
   tool: { name: string },
   config?: {
     toolCall?: { id?: string };
+    configurable?: { __librechatBackgroundToolInvocation?: boolean };
     metadata?: {
       executingAgentId?: string;
       activeAgentId?: string;
@@ -90,5 +114,14 @@ export async function assertToolApprovalExecution(
       config?.metadata?.agentId,
     toolCallId: config?.toolCall?.id,
     executionScope: getToolApprovalExecutionScope(config?.metadata?.executionContext),
+    background: config?.configurable?.__librechatBackgroundToolInvocation === true,
   });
+}
+
+export function noteToolApprovalDispatch(invocation: ToolApprovalInvocation): void {
+  executionContext.getStore()?.noteDispatch?.(invocation);
+}
+
+export function finishToolApprovalDispatch(invocation: ToolApprovalInvocation): void {
+  executionContext.getStore()?.finishDispatch?.(invocation);
 }

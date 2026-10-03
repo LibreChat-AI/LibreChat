@@ -17,6 +17,8 @@ import {
 } from './modes';
 import { buildHITLRunWiring, buildToolApprovalExecutionConfig } from './runtime';
 import { bindToolApproval, bindToolApprovalIdentity } from '~/tools/approval';
+import { buildMCPToolReviewAuthority } from '~/mcp/approval';
+import { bindToolReviewAuthority } from '~/tools/approval';
 import { createToolExecuteHandler } from '../handlers';
 import { createMCPStructuredTool } from '~/mcp/tools';
 import { markMCPToolResultError } from '~/mcp/status';
@@ -28,7 +30,11 @@ let executions = 0;
 let protocolError = false;
 const name = 'echo_mcp_fixture';
 const fixtureSchema = z.object({ text: z.string() });
-function createProbe(binding: string | null = 'source-one', upstreamName = 'echo') {
+function createProbe(
+  binding: string | null = 'source-one',
+  upstreamName = 'echo',
+  reviewAuthority?: string,
+) {
   const probe = Object.assign(
     createMCPStructuredTool(
       async (input) => {
@@ -46,9 +52,13 @@ function createProbe(binding: string | null = 'source-one', upstreamName = 'echo
     ),
     { schema: fixtureSchema },
   );
-  return bindToolApprovalIdentity(bindToolApproval(probe, binding ?? undefined), upstreamName, {
-    type: 'object',
-  });
+  return bindToolApprovalIdentity(
+    bindToolReviewAuthority(bindToolApproval(probe, binding ?? undefined), reviewAuthority),
+    upstreamName,
+    {
+      type: 'object',
+    },
+  );
 }
 const guarded = createProbe();
 function definition() {
@@ -88,6 +98,7 @@ async function build({
   sharedSession,
   rewrite,
   sessionAgents,
+  background = false,
 }: {
   source: AgentApprovalSource;
   chat: string;
@@ -100,6 +111,7 @@ async function build({
   sharedSession?: AgentToolApprovalSession;
   rewrite?: { text: string };
   sessionAgents?: AgentApprovalSource[];
+  background?: boolean;
 }) {
   const session =
     sharedSession ??
@@ -116,6 +128,7 @@ async function build({
     [{ hook: session.hook }, ...(rewrite ? [{ hook: () => ({ updatedInput: rewrite }) }] : [])],
   )!;
   wiring.hooks.register('PostToolUse', { hooks: [session.rememberHook] });
+  wiring.hooks.register('PostToolBatch', { hooks: [session.settleBatchHook] });
   const llmConfig = {
     provider: Providers.OPENAI,
     model: 'gpt-4o-mini',
@@ -155,7 +168,12 @@ async function build({
       on_tool_execute: createToolExecuteHandler({
         loadTools: async () => {
           await beforeLoad?.();
-          return { loadedTools: [executionTool] };
+          return {
+            loadedTools: [executionTool],
+            ...(background && {
+              configurable: { backgroundToolNames: [name] },
+            }),
+          };
         },
       }),
     },
@@ -175,7 +193,11 @@ async function build({
   return run;
 }
 const config = (chat: string) => ({
-  configurable: { thread_id: chat, ...buildToolApprovalExecutionConfig(`response-${chat}`, 1) },
+  configurable: {
+    thread_id: chat,
+    user_id: 'sdk-user',
+    ...buildToolApprovalExecutionConfig(`response-${chat}`, 1),
+  },
   streamMode: 'values' as const,
   version: 'v2' as const,
 });
@@ -485,8 +507,12 @@ test.each([
       headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
     };
     expect(buildMCPToolApprovalBinding('fixture', connection)).toBeUndefined();
+    const authority = buildMCPToolReviewAuthority({ serverName: 'fixture', config: connection });
     const templatedDefinition = bindToolApprovalIdentity(
-      { name, serverName: 'fixture', parameters: { type: 'object' } },
+      bindToolReviewAuthority(
+        { name, serverName: 'fixture', parameters: { type: 'object' } },
+        authority,
+      ),
       'echo',
       { type: 'object' },
     );
@@ -498,7 +524,7 @@ test.each([
       toolDefinitions: [templatedDefinition],
     };
     const saver = new MemorySaver();
-    const executionTool = createProbe(null);
+    const executionTool = createProbe(null, 'echo', authority);
     const first = await build({
       source,
       chat: 'template-chat',
@@ -669,3 +695,201 @@ test.each(rewriteCases)(
     expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(canLearn ? 1 : 0);
   },
 );
+
+test.each([false, true])(
+  'templated review refuses a changed declared endpoint before resume (event-driven: %s)',
+  async (eventDriven) => {
+    const configA = {
+      type: 'streamable-http' as const,
+      source: 'yaml' as const,
+      url: 'https://a.example.test/mcp',
+      headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+    };
+    const configB = { ...configA, url: 'https://b.example.test/mcp' };
+    const authorityA = buildMCPToolReviewAuthority({ serverName: 'fixture', config: configA });
+    const authorityB = buildMCPToolReviewAuthority({ serverName: 'fixture', config: configB });
+    const targetDefinition = (authority?: string) =>
+      bindToolApprovalIdentity(
+        bindToolReviewAuthority(
+          { name, serverName: 'fixture', parameters: { type: 'object' } },
+          authority,
+        ),
+        'echo',
+        { type: 'object' },
+      );
+    const source: AgentApprovalSource = {
+      id: 'agent-a',
+      tool_options: {
+        [name]: {
+          approval_mode: 'chat',
+          approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+        },
+      },
+      toolDefinitions: [targetDefinition(authorityA)],
+    };
+    const saver = new MemorySaver();
+    const first = await build({
+      source,
+      chat: 'authority-chat',
+      saver,
+      eventDriven,
+      executionTool: createProbe(null, 'echo', authorityA),
+      callId: 'authority-call',
+    });
+    await first.processStream({ messages: [new HumanMessage('run')] }, config('authority-chat'));
+    const bindings = captureRunToolApprovalBindings(
+      first,
+      first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+    )!;
+    const changed = { ...source, toolDefinitions: [targetDefinition(authorityB)] };
+    const resumed = await build({
+      source: changed,
+      chat: 'authority-chat',
+      saver,
+      eventDriven,
+      executionTool: createProbe(null, 'echo', authorityB),
+      reviewed: { bindings, decisions: [{ tool_call_id: 'authority-call', decision: 'approve' }] },
+    });
+    await resumed.resume({ 'authority-call': { type: 'approve' } }, config('authority-chat'));
+    expect(executions).toBe(0);
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+  },
+);
+
+test.each(['ask', 'chat', 'always'] as const)(
+  'completed agents do not shadow later %s reviews with reused call IDs',
+  async (mode) => {
+    const sources: AgentApprovalSource[] = [
+      {
+        id: 'agent-a',
+        tool_options: { [name]: { approval_mode: 'allow' } },
+        toolDefinitions: [definition()],
+      },
+      {
+        id: 'agent-b',
+        tool_options: {
+          [name]: {
+            approval_mode: mode,
+            approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+          },
+        },
+        toolDefinitions: [definition()],
+      },
+    ];
+    const chat = 'serial-owner-chat';
+    const sharedSession = createAgentToolApprovalSession({
+      agents: sources,
+      storage,
+      scope: { userId: 'sdk-user', conversationId: chat },
+    });
+    const a = await build({
+      source: sources[0],
+      chat,
+      saver: new MemorySaver(),
+      eventDriven: true,
+      sharedSession,
+      callId: 'call_0',
+    });
+    await a.processStream({ messages: [new HumanMessage('run A')] }, config(chat));
+    expect(executions).toBe(1);
+    const saver = new MemorySaver();
+    const b = await build({
+      source: sources[1],
+      chat,
+      saver,
+      eventDriven: true,
+      sharedSession,
+      callId: 'call_0',
+    });
+    await b.processStream({ messages: [new HumanMessage('run B')] }, config(chat));
+    const bindings = captureRunToolApprovalBindings(
+      b,
+      b.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+    )!;
+    expect(bindings.call_0?.agentId).toBe('agent-b');
+    const resumed = await build({
+      source: sources[1],
+      chat,
+      saver,
+      eventDriven: true,
+      sessionAgents: sources,
+      reviewed: { bindings, decisions: [{ tool_call_id: 'call_0', decision: 'approve' }] },
+    });
+    await resumed.resume({ call_0: { type: 'approve' } }, config(chat));
+    expect(executions).toBe(2);
+  },
+);
+
+test('hook-rewritten background launch never teaches approval before the detached failure', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const delayed = Object.assign(
+    createMCPStructuredTool(
+      async () => {
+        executions++;
+        await gate;
+        throw new Error('Scripted detached failure');
+      },
+      {
+        name,
+        description: 'Detached fixture',
+        schema: fixtureSchema,
+        responseFormat: 'content_and_artifact',
+      },
+    ),
+    { schema: fixtureSchema },
+  );
+  bindToolApprovalIdentity(bindToolApproval(delayed, 'source-one'), 'echo', { type: 'object' });
+  const source: AgentApprovalSource = {
+    id: 'agent-a',
+    tool_options: {
+      [name]: {
+        approval_mode: 'always',
+        approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+      },
+    },
+    toolDefinitions: [definition()],
+  };
+  const chat = 'background-chat';
+  const saver = new MemorySaver();
+  const rewrite = { text: 'background', run_in_background: true };
+  try {
+    const first = await build({
+      source,
+      chat,
+      saver,
+      eventDriven: true,
+      background: true,
+      rewrite,
+      executionTool: delayed,
+      callId: 'background-call',
+    });
+    await first.processStream({ messages: [new HumanMessage('run')] }, config(chat));
+    const payload = first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload;
+    expect(payload.action_requests[0].arguments).toMatchObject({ run_in_background: true });
+    const bindings = captureRunToolApprovalBindings(first, payload)!;
+    expect(bindings['background-call'].canRemember).toBe(false);
+    const resumed = await build({
+      source,
+      chat,
+      saver,
+      eventDriven: true,
+      background: true,
+      rewrite,
+      executionTool: delayed,
+      reviewed: { bindings, decisions: [{ tool_call_id: 'background-call', decision: 'approve' }] },
+    });
+    await resumed.resume({ 'background-call': { type: 'approve' } }, config(chat));
+    expect(executions).toBe(1);
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+  } finally {
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+});

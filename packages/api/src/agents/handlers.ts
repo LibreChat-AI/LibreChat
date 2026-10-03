@@ -135,6 +135,11 @@ import {
   isContentFilterError,
 } from '~/middleware/contentFilter';
 import {
+  noteToolApprovalDispatch,
+  finishToolApprovalDispatch,
+  getToolApprovalExecutionScope,
+} from '~/tools/approval';
+import {
   hasIntentArg,
   stripIntentArg,
   stripIntentLabelsFromToolDefinitions,
@@ -6493,6 +6498,13 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     );
                   }
                 };
+                const approvalDispatch = {
+                  agentId,
+                  toolCallId: tc.id,
+                  executionScope: getToolApprovalExecutionScope(executionContext),
+                  background: true,
+                };
+                noteToolApprovalDispatch(approvalDispatch);
                 let invokePromise: Promise<{ content?: unknown; artifact?: unknown }>;
                 try {
                   invokePromise = Promise.resolve(
@@ -6524,6 +6536,9 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                    * through the same terminal-evidence path as an async one. */
                   invokePromise = Promise.reject(error);
                 }
+                invokePromise = invokePromise.finally(() =>
+                  finishToolApprovalDispatch(approvalDispatch),
+                );
                 const persistDetachedTerminal = async (
                   input:
                     | { status: 'succeeded'; result: unknown }

@@ -6,6 +6,9 @@ const {
   buildMCPToolApprovalBinding,
   bindToolApproval,
   bindToolApprovalIdentity,
+  bindToolReviewAuthority,
+  buildMCPToolReviewAuthority,
+  createSafeUser,
   PENDING_STALE_MS,
   MCPOAuthHandler,
   MCPTokenStorage,
@@ -1241,6 +1244,7 @@ async function createMCPTool({
     currentToolName: matchedToolKey === strippedToolKey ? strippedToolName : undefined,
     serverName,
     serverConfig,
+    customUserVars: userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`],
     toolDefinition: toolEntry['function'],
     upstreamTokenProvider,
     upstreamTokenProviderResolver,
@@ -1264,6 +1268,7 @@ function createToolInstance({
   currentToolName,
   serverName,
   serverConfig: capturedServerConfig,
+  customUserVars: capturedCustomUserVars,
   toolDefinition,
   provider: capturedProvider,
   upstreamTokenProvider: capturedUpstreamTokenProvider = null,
@@ -1492,6 +1497,16 @@ function createToolInstance({
     currentToolName != null
       ? `${currentToolName}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`
       : normalizedToolKey,
+  );
+  bindToolReviewAuthority(
+    toolInstance,
+    buildMCPToolReviewAuthority({
+      serverName,
+      config: capturedServerConfig,
+      user: createSafeUser(capturedUser),
+      body: capturedRequestBody,
+      customUserVars: capturedCustomUserVars,
+    }),
   );
   bindToolApprovalIdentity(
     toolInstance,
