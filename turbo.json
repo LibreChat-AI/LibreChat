@@ -22,6 +22,24 @@
       ],
       "outputs": ["dist/**"]
     },
+    "test:ci": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "src/**",
+        "server/**",
+        "test/**",
+        "jest.config.*",
+        "jest.setup.*",
+        "jest.globalSetup.*",
+        "babel.config.*",
+        "tsconfig.json",
+        "package.json",
+        "$TURBO_ROOT$/config/jest*.{js,cjs}"
+      ],
+      "outputs": ["coverage/**"],
+      "env": ["CI", "COVERAGE"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
+    },
     "@librechat/data-schemas#build": {
       "dependsOn": ["^build", "librechat-data-provider#build"],
       "inputs": [
