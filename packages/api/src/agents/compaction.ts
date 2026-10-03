@@ -213,7 +213,9 @@ export function resolveFailedTurnContent(
  * text goes, leaving the typed failure as the row's outcome. A non-terminal
  * snapshot (`synthesizeFailure: false`, the disconnect save the run may still
  * complete and overwrite) marks what is there and rewrites nothing else.
- * Content from a turn that was not a compaction is returned unchanged.
+ * Content from a turn that was not a compaction is returned unchanged, and
+ * the parts are never edited in place: the aggregated parts belong to the
+ * still-live run on the disconnect path, so every stamped part is a copy.
  */
 export function markAbortedCompactionContent(
   contentParts: TMessageContentParts[],
@@ -223,54 +225,56 @@ export function markAbortedCompactionContent(
   if (!isCompaction) {
     return contentParts;
   }
+  const marked: TMessageContentParts[] = [];
   let hasOutcome = false;
   let removedUnfinishedRound = false;
-  for (let index = contentParts.length - 1; index >= 0; index -= 1) {
-    const part = contentParts[index];
+  for (const part of contentParts) {
     if (part == null) {
+      marked.push(part);
       continue;
     }
     if (part.type === ContentTypes.ERROR) {
-      part.initiatedBy = 'user';
+      marked.push({ ...part, initiatedBy: 'user' as const });
       hasOutcome = true;
+      removedUnfinishedRound = false;
       continue;
     }
     if (part.type !== ContentTypes.SUMMARY) {
+      marked.push(part);
       continue;
     }
     /** The usability predicate's false side narrows the part's type away, so
      *  the reference is taken before it runs. */
     const summary = part;
     if (isUsableSummaryPart(part)) {
-      summary.initiatedBy = 'user';
+      marked.push({ ...summary, initiatedBy: 'user' as const });
       hasOutcome = true;
+      removedUnfinishedRound = false;
       continue;
     }
     if (!synthesizeFailure) {
-      summary.initiatedBy = 'user';
+      marked.push({ ...summary, initiatedBy: 'user' as const });
       continue;
     }
     if (isSummaryPartWithText(summary)) {
-      summary.initiatedBy = 'user';
-      summary.failed = true;
+      marked.push({ ...summary, initiatedBy: 'user' as const, failed: true });
       hasOutcome = true;
+      removedUnfinishedRound = false;
       continue;
     }
-    contentParts.splice(index, 1);
-    /** Walking backwards, an outcome already seen belongs to a later round:
-     *  this placeholder is an earlier round the later one superseded. */
-    if (!hasOutcome) {
-      removedUnfinishedRound = true;
-    }
+    /** A later outcome supersedes this placeholder's round; the flag is
+     *  cleared whenever an outcome follows, so only a round opened after the
+     *  latest outcome synthesizes the failure. */
+    removedUnfinishedRound = true;
   }
   /** An earlier round's checkpoint is not this round's outcome: a round the
    *  run opened but never finished still records the typed failure beside it,
    *  or the stopped turn reads as the successful compaction the checkpoint
    *  describes. */
   if ((!hasOutcome || removedUnfinishedRound) && synthesizeFailure) {
-    contentParts.push(...compactionFailureContent());
+    marked.push(...compactionFailureContent());
   }
-  return contentParts;
+  return marked;
 }
 
 /** Whether a job record has reached a status whose path owns the turn's final
@@ -278,10 +282,23 @@ export function markAbortedCompactionContent(
  *  written over it, or the settled row reopens as an unfinished response.
  *  Only a same-epoch record is trusted. */
 export function isSettledJobRecord(
-  jobRecord: { createdAt?: number; status?: string } | null | undefined,
+  jobRecord:
+    | {
+        createdAt?: number;
+        status?: string;
+        terminalPersistencePending?: boolean;
+      }
+    | null
+    | undefined,
   jobCreatedAt?: number,
 ): boolean {
   if (jobRecord == null || (jobCreatedAt != null && jobRecord.createdAt !== jobCreatedAt)) {
+    return false;
+  }
+  if (jobRecord.terminalPersistencePending === true) {
+    /** The terminal claim precedes its row write: the status alone does not
+     *  prove the row is durable, and the snapshot is still the fallback if
+     *  that write fails. */
     return false;
   }
   return (
@@ -301,14 +318,20 @@ export type DisconnectSnapshotMode =
 
 /**
  * How the last-subscriber disconnect may persist this turn's snapshot, read
- * from the same-epoch job record the caller already loaded. The guard reads
- * the record the settling path writes, so the remaining window is that
- * path's own commit span.
+ * from the same-epoch job record the caller already loaded. A compaction
+ * whose settling path owns the final row withholds the snapshot; the guard
+ * reads the record that path writes, so the remaining window is the path's
+ * own commit span. Ordinary turns keep writing their fallback row, settled
+ * or not.
  */
 export function resolveDisconnectSnapshotMode(
+  isCompaction: boolean,
   jobRecord: { createdAt?: number; status?: string } | null | undefined,
   jobCreatedAt?: number,
 ): DisconnectSnapshotMode {
+  if (!isCompaction) {
+    return 'live';
+  }
   return isSettledJobRecord(jobRecord, jobCreatedAt) ? 'skip' : 'live';
 }
 
@@ -449,17 +472,26 @@ export type ReadableMessageRow = {
   unfinished?: boolean;
 };
 
+/** How a failed generation's fresh error row proceeds after its existing rows
+ * are settled. */
+export type ErrorTurnSettlement =
+  /** An existing row covers the turn; the caller skips the error row. */
+  | { covered: true }
+  /** The error row is written, under the live response id when the
+   * anchor-shaped collision makes the error id unusable for it. */
+  | { covered: false; errorRowMessageId?: string };
+
 /**
  * Settles the rows a failed generation already persisted before its error row
- * is written, through the caller's injected reads and write. Returns whether
- * an existing row covers the turn, in which case the caller skips the fresh
- * error row entirely.
+ * is written, through the caller's injected reads and write.
  *
  * The error id can normalize back to the compaction anchor itself when the
  * anchor ends in `_`: a match there never receives the error row, and the
- * failed run settles its own distinct live response row instead. Ordinary
- * turns keep their existing behavior: a found partial row is preserved as it
- * stands and blocks the error row.
+ * failed run settles its own distinct live response row instead. When no live
+ * row exists either, the error row is still written, redirected to the live
+ * response id so it can never overwrite the anchor. Ordinary turns keep their
+ * existing behavior: a found partial row is preserved as it stands and blocks
+ * the error row.
  */
 export async function settleExistingRowsBeforeErrorTurn(
   requestBody: { compact?: boolean } | null | undefined,
@@ -485,7 +517,7 @@ export async function settleExistingRowsBeforeErrorTurn(
      *  path does, so other devices learn the persisted turn ended. */
     announceSettledTurn?: (messageId: string) => Promise<unknown>;
   },
-): Promise<boolean> {
+): Promise<ErrorTurnSettlement> {
   const isCompaction = requestBody?.compact === true;
   const settleLiveRow = async (): Promise<boolean> => {
     if (liveResponseMessageId == null || liveResponseMessageId === errorMessageId) {
@@ -515,12 +547,22 @@ export async function settleExistingRowsBeforeErrorTurn(
     '_id',
   );
   if (existing.length > 0) {
-    if (isCompaction) {
-      await settleLiveRow();
+    if (!isCompaction) {
+      return { covered: true };
     }
-    return true;
+    if (await settleLiveRow()) {
+      return { covered: true };
+    }
+    /** The match is the anchor itself: the error row goes to the failed
+     *  run's own response id when one exists, and is withheld entirely when
+     *  none does (a failure before the id was allocated), because writing it
+     *  under the error id would overwrite the anchor. */
+    if (liveResponseMessageId != null && liveResponseMessageId !== errorMessageId) {
+      return { covered: false, errorRowMessageId: liveResponseMessageId };
+    }
+    return { covered: true };
   }
-  return settleLiveRow();
+  return { covered: await settleLiveRow() };
 }
 
 /**
@@ -567,12 +609,11 @@ export async function persistFinalizedCompactionTurn(
 /** What a failed compaction does with its already-persisted partial row. */
 export type FinalizedCompactionTurn =
   /** Not the failed run's row, or one holding nothing but a completed
-   *  checkpoint worth keeping exactly as it stands. */
+   *  checkpoint on a row that was already settled. */
   | { write: false }
-  /** The parts already carry the failure (an error part, a failed summary);
-   *  only the snapshot's live-run flags remain to settle. */
-  | { write: true; content?: undefined }
-  /** The parts need the terminal marking applied. */
+  /** The terminal marking is applied to the parts (a legacy or snapshot row
+   *  may carry failure parts that never got the identity marker) and the row
+   *  settles with the terminal envelope. */
   | { write: true; content: TMessageContentParts[] };
 
 /**
@@ -580,11 +621,13 @@ export type FinalizedCompactionTurn =
  * fires, so when the run then fails that snapshot is the row that stays: a
  * partial summary is marked failed beside its text, a snapshot with no
  * summary or error part gets the typed failure, and a snapshot whose parts
- * already carry the failure still settles its live-run flags. A completed
- * checkpoint is preserved as content, but a snapshot still flagged
- * `unfinished` settles its envelope even then, or the restored conversation
- * keeps treating the terminal job as live; a row that was already settled is
- * left alone. Rows of turns that were not compactions are never written.
+ * already carry the failure has the terminal marking reapplied (idempotent
+ * for marked parts, stamping legacy parts that predate the marker) beside
+ * its settled envelope. A completed checkpoint is preserved as content, but a
+ * snapshot still flagged `unfinished` settles its envelope even then, or the
+ * restored conversation keeps treating the terminal job as live; a row that
+ * was already settled is left alone. Rows of turns that were not compactions
+ * are never written.
  */
 export function resolveFinalizedCompactionTurn(
   partialRow: { content?: unknown; unfinished?: boolean } | null | undefined,
@@ -615,14 +658,13 @@ export function resolveFinalizedCompactionTurn(
       sawFailure = true;
     }
   }
-  if (unfinishedSummary) {
+  if (unfinishedSummary || sawFailure) {
     return { write: true, content: markAbortedCompactionContent(content, true) };
   }
-  if (sawFailure) {
-    return { write: true };
-  }
   if (sawCheckpoint) {
-    return partialRow?.unfinished === true ? { write: true } : { write: false };
+    return partialRow?.unfinished === true
+      ? { write: true, content: markAbortedCompactionContent(content, true) }
+      : { write: false };
   }
   return { write: true, content: markAbortedCompactionContent(content, true) };
 }
