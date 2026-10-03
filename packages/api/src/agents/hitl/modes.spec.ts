@@ -747,3 +747,55 @@ test('a successful reviewed call cannot learn consent after its reset epoch chan
   );
   expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
 });
+
+for (const mode of ['ask', 'chat', 'always'] as const) {
+  test.each(['approve', 'edit'] as const)(
+    `${mode} non-rememberable %s cannot authorize detached execution`,
+    async (decision) => {
+      const source = agent(mode);
+      const definition = bindToolApprovalIdentity(
+        bindToolReviewAuthority(
+          {
+            name,
+            serverName: 'db',
+            parameters: { type: 'object' },
+          },
+          'review-only-target',
+        ),
+        'query',
+        { type: 'object' },
+      );
+      source.toolDefinitions = [definition];
+      const storage = store();
+      const first = createAgentToolApprovalSession({ agents: [source], scope, storage });
+      await first.hook(input(), new AbortController().signal);
+      const bindings = first.bindingsFor(
+        buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+      );
+      const session = createAgentToolApprovalSession({
+        agents: [source],
+        scope,
+        storage,
+        reviewed: { bindings, decisions: [{ tool_call_id: 'call-a', decision }] },
+      });
+      await session.hook(input(), new AbortController().signal);
+      await expect(
+        session.validateExecution(definition, {
+          agentId: source.id,
+          toolCallId: 'call-a',
+          background: true,
+        }),
+      ).rejects.toThrow('foreground review');
+      // The refused background attempt did not consume the one foreground permission.
+      await session.hook(input(), new AbortController().signal);
+      await expect(
+        session.validateExecution(definition, { agentId: source.id, toolCallId: 'call-a' }),
+      ).resolves.toBeUndefined();
+      await session.rememberHook(
+        { ...input(), hook_event_name: 'PostToolUse', toolOutput: 'success' },
+        new AbortController().signal,
+      );
+      expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+    },
+  );
+}

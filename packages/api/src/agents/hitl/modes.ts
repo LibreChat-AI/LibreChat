@@ -415,6 +415,11 @@ export function createAgentToolApprovalSession({
       }
       const expected = owner && scope && resolveAgentToolGrantBinding(owner, tool.name, scope);
       if (!expected) {
+        if (invocation.background === true) {
+          throw new Error(
+            'This MCP connection requires foreground review. Run the tool without background execution.',
+          );
+        }
         // Unresolvable connections cannot learn consent. Only a reviewed SDK call may execute.
         const reviewTarget = owner && scope && resolveToolReviewBinding(owner, tool.name, scope);
         if (callId && reviewTarget && calls.has(key) && permittedDecisions.has(key)) {
