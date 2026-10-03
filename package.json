@@ -31,7 +31,6 @@
     "rebase:deployed": "node config/deployed-update.js --rebase",
     "start:deployed": "docker compose -f ./deploy-compose.yml up -d || docker-compose -f ./deploy-compose.yml up -d",
     "stop:deployed": "docker compose -f ./deploy-compose.yml down || docker-compose -f ./deploy-compose.yml down",
-    "upgrade": "node config/upgrade.js",
     "create-user": "node config/create-user.js",
     "invite-user": "node config/invite-user.js",
     "list-users": "node config/list-users.js",
