@@ -86,7 +86,7 @@ for (const [theme, width] of [
       });
       await page.keyboard.press('Escape');
       await expect(menu).toHaveCount(0);
-      await page.keyboard.press('Escape');
+      await dialog.getByRole('button', { name: 'Close', exact: true }).click();
       await expect(dialog).not.toBeVisible();
       await openAgentBuilder(page, { navigate: false });
       const [saved] = await Promise.all([
