@@ -185,6 +185,14 @@ describe('LiaEngine', () => {
     expect(engine.position.x).toBe(PLATFORM.x1);
   });
 
+  it('wakes from a nap the host played at a high priority', () => {
+    const { engine } = setup();
+    engine.life = false;
+    engine.play('nap', 4, 0);
+    engine.noteTyping(100);
+    expect(engine.current?.id).toBe('r-wake');
+  });
+
   it('escalates from petting to dizziness to a crash', () => {
     const { engine } = setup();
     engine.pet(0);

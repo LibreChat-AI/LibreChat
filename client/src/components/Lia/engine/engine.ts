@@ -231,7 +231,8 @@ export class LiaEngine {
   noteActivity(deliberate = false, now = performance.now()) {
     this.lastUser = now;
     if (deliberate && this.run?.def.id === 'nap') {
-      this.play('r-wake', 3, now);
+      /* A nap the host played above reaction priority still wakes. */
+      this.play('r-wake', Math.max(3, this.run.prio), now);
     }
   }
 
