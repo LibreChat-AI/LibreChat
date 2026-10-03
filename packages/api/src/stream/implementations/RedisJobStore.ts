@@ -2,6 +2,8 @@ import { logger } from '@librechat/data-schemas';
 import { createContentAggregator } from '@librechat/agents';
 import {
   ContentTypes,
+  scheduleMCPOutcomeSchema,
+  isScheduleMCPAuthorizationFailure,
   StepEvents,
   getRunStepDurationMs,
   getRunStepCloseMetadata,
@@ -51,8 +53,10 @@ import {
   MAX_COALESCED_EVENTS,
   resolveCoalesceWindowMs,
 } from '~/stream/internal/coalescing';
+import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { RecoveredSteerPayloadMismatchError } from '~/stream/SteerRecovery';
+import { SCHEDULE_MCP_FAILURE_PATCH_LUA } from '../scheduleFailure';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { createToolTimingTracker } from '~/agents/toolTiming';
 import { evalScript } from '~/cache/redisScript';
@@ -184,6 +188,7 @@ const JOB_CAS_LUA =
   'for i = 1, hdelCount do redis.call("HDEL", KEYS[1], ARGV[idx]) idx = idx + 1 end ' +
   'local hset = {} ' +
   'for i = idx, #ARGV do hset[#hset + 1] = ARGV[i] end ' +
+  SCHEDULE_MCP_FAILURE_PATCH_LUA +
   'if #hset > 0 then redis.call("HSET", KEYS[1], unpack(hset)) end ' +
   'if terminal then redis.call("HSET", KEYS[1], "steersClosed", "1") end ' +
   // A same-status pause-barrier release does not carry pendingAction again.
@@ -614,6 +619,7 @@ const JOB_UPDATE_LUA =
   'if ARGV[1] ~= "" and redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
   'local hset = {} ' +
   'for i = 6, #ARGV do hset[#hset + 1] = ARGV[i] end ' +
+  SCHEDULE_MCP_FAILURE_PATCH_LUA +
   'if #hset > 0 then redis.call("HSET", KEYS[1], unpack(hset)) end ' +
   'if ARGV[2] == "1" then ' +
   'local completedTtl = tonumber(ARGV[3]) ' +
@@ -5400,6 +5406,10 @@ export class RedisJobStore implements IJobStoreV2 {
         ? JSON.parse(data.agentEventSuspension)
         : undefined,
       agentEventLegacyTurnToken: data.agentEventLegacyTurnToken || undefined,
+      scheduleMCPCompletion:
+        data.scheduleMCPCompletion === undefined
+          ? undefined
+          : parseScheduleMCPCompletion(data.scheduleMCPCompletion, true),
       scheduleId: data.scheduleId || undefined,
       scheduledFor: data.scheduledFor || undefined,
       scheduleConfigRevision: data.scheduleConfigRevision
@@ -5414,6 +5424,17 @@ export class RedisJobStore implements IJobStoreV2 {
           ? data.scheduleOutcome
           : undefined,
       scheduleOutcomeError: data.scheduleOutcomeError || undefined,
+      scheduleMCPFailure: (() => {
+        if (!data.scheduleMCPFailure) return;
+        try {
+          const parsed = scheduleMCPOutcomeSchema.safeParse(JSON.parse(data.scheduleMCPFailure));
+          return parsed.success && isScheduleMCPAuthorizationFailure(parsed.data)
+            ? parsed.data
+            : undefined;
+        } catch {
+          return;
+        }
+      })(),
       preserveForScheduleReconcile:
         data.preserveForScheduleReconcile != null
           ? data.preserveForScheduleReconcile === '1'

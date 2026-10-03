@@ -1,6 +1,7 @@
 import { logger, tenantStorage } from '@librechat/data-schemas';
 import { Constants, EModelEndpoint } from 'librechat-data-provider';
 import type { CodeApprovalMode, TFile, TReasoningOverride } from 'librechat-data-provider';
+import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type {
   AgentContinueTriggerEnvelope,
   AgentFireTriggerEnvelope,
@@ -50,6 +51,7 @@ export interface AgentContinuationAdmissionSource {
 export type AgentTriggerContinuePreparation =
   | {
       status: 'ready';
+      scheduleMCPIdentity?: ScheduledMCPIdentity;
       input: string;
       parentMessageId: string;
       expectedPredecessorCreatedAt?: number;
@@ -715,6 +717,19 @@ async function startRun(
                   expectedAction: envelope.expectedAction,
                 }),
                 ...(detachedCompletion == null ? {} : { internalCompletion: detachedCompletion }),
+              },
+            }),
+          ...(envelope.mode === 'continue' &&
+            envelope.event.source.type === 'internal' &&
+            ['subagent-completion', 'background-tool-completion'].includes(
+              envelope.event.source.id,
+            ) && {
+              agentCompletion: {
+                version: 1,
+                sourceId: envelope.event.source.id,
+                ...(readyPreparation?.scheduleMCPIdentity && {
+                  scheduleMCPIdentity: readyPreparation.scheduleMCPIdentity,
+                }),
               },
             }),
           ...(envelope.mode === 'fire' && {

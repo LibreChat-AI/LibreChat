@@ -25,11 +25,13 @@ const getGenerationAdmissionEvidence = (userId, clientRequestId, streamId, conve
 const subagentCompletionAdapter = createSubagentCompletionWakeupResolver({
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
+  getScheduleMCPCompletionState: methods.getScheduleMCPCompletionState,
   getWaitMaxIntervalMs: () => service.getCompletionWaitMaxIntervalMs(),
 });
 const backgroundToolCompletionAdapter = createBackgroundToolCompletionWakeupResolver({
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
+  getScheduleMCPCompletionState: methods.getScheduleMCPCompletionState,
   getResultBatchSize: () => service.getBackgroundCompletionResultBatchSize(),
   getGenerationAdmissionEvidence,
   recoverDeadClaim: createBackgroundToolDeadClaimRecovery(

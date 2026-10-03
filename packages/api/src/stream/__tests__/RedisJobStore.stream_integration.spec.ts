@@ -93,6 +93,71 @@ describe('RedisJobStore Integration Tests', () => {
     process.env = originalEnv;
   });
 
+  test.each(['update', 'transition'] as const)(
+    'retains the strongest scheduled denial atomically through %s',
+    async (writer) => {
+      expect(ioredisClient).not.toBeNull();
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const { ScheduledMCPPolicyError } = await import('../../schedules/authorization/policy');
+      const first = new RedisJobStore(ioredisClient!);
+      const second = new RedisJobStore(ioredisClient!);
+      const id = 'schedule-denial';
+      const job = await first.createJob(id, 'owner', id, 'tenant');
+      const lineage = {
+        scheduleId: 'original-schedule',
+        ownerId: 'owner',
+        tenantId: 'tenant',
+        agentId: 'original-root',
+        invocationMode: 'delegated' as const,
+      };
+      await first.updateJob(id, { scheduleMCPCompletion: lineage }, job.createdAt);
+      expect((await second.getJob(id))?.scheduleMCPCompletion).toEqual(lineage);
+
+      const transient = new ScheduledMCPPolicyError('dependency_unavailable', 'warehouse', 'root')
+        .outcomes[0];
+      const permanent = new ScheduledMCPPolicyError('binding_mismatch', 'warehouse', 'child')
+        .outcomes[0];
+      const patch = (scheduleMCPFailure: typeof permanent) => ({
+        scheduleMCPFailure,
+        preserveForScheduleReconcile: true,
+        scheduleOutcome: 'error' as const,
+        scheduleOutcomeError: `${scheduleMCPFailure.status}: ${JSON.stringify([scheduleMCPFailure])}`,
+      });
+      try {
+        await first.updateJob(id, patch(permanent), job.createdAt);
+        if (writer === 'update') await second.updateJob(id, patch(transient), job.createdAt);
+        else
+          expect(
+            await second.transitionStatus(id, {
+              from: 'running',
+              to: 'complete',
+              expectCreatedAt: job.createdAt,
+              patch: patch(transient),
+            }),
+          ).toBe(true);
+        expect(await first.getJob(id)).toMatchObject({
+          scheduleMCPFailure: permanent,
+          scheduleOutcome: 'error',
+          scheduleOutcomeError: patch(permanent).scheduleOutcomeError,
+        });
+        await second.updateJob(
+          id,
+          patch(new ScheduledMCPPolicyError('tool_policy_denied', 'warehouse').outcomes[0]),
+          job.createdAt - 1,
+        );
+        expect((await first.getJob(id))?.scheduleMCPFailure).toEqual(permanent);
+        expect((await first.getJob(id))?.scheduleMCPCompletion).toEqual(lineage);
+        await ioredisClient!.hset(`stream:{${id}}:job`, 'scheduleMCPCompletion', '{invalid');
+        await expect(second.getJob(id)).rejects.toMatchObject({
+          failure: { reason: 'binding_mismatch' },
+        });
+      } finally {
+        await first.destroy();
+        await second.destroy();
+      }
+    },
+  );
+
   test.each([false, true])(
     'owner cleanup recovers legacy terminal membership once (detached=%s)',
     async (detached) => {

@@ -52,6 +52,7 @@ import type {
   BackgroundToolWakeupRegistration,
   PendingBackgroundCompletionControls,
 } from './backgroundCompletion';
+import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
 import type { ArtifactDeliveryFailure } from '~/files/code';
 import type { BackgroundToolResultState } from './harvest';
@@ -276,6 +277,8 @@ export function createOwnedToolEndHandler(
 }
 
 export interface ToolExecuteOptions {
+  /** Host-captured authority ceiling, never runnable/model metadata. */
+  scheduledMCPExecution?: Pick<ScheduleMCPExecution, 'enrolled' | 'identity'>;
   /**
    * Host-owned signal for the foreground run. This is authoritative across
    * graph reconstruction (including approval resume); the SDK event signal is
@@ -5548,6 +5551,7 @@ function createSkillFilesHandoff(
 
 export function createToolExecuteHandler(options: ToolExecuteOptions): EventHandler {
   const {
+    scheduledMCPExecution,
     runSignal: hostRunSignal,
     foregroundRunId,
     loadTools,
@@ -5993,6 +5997,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                 ) {
                   try {
                     const admission = await backgroundToolCompletion.preregister({
+                      scheduleMCPIdentity: scheduledMCPExecution?.identity ?? null,
                       taskId: task.id,
                       toolCallId: tc.id,
                       toolName: tc.name,
@@ -7103,6 +7108,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                 }
 
                 if (
+                  scheduledMCPExecution?.enrolled !== true &&
                   backgroundToolSet.has(tc.name) &&
                   isBackgroundRequested(tc.args) &&
                   !toolRequiresEphemeralConnection(toolMap.get(tc.name)) &&

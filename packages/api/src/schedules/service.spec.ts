@@ -2,11 +2,12 @@ import { logger } from '@librechat/data-schemas';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { SchedulesServiceDeps } from './service';
 import { createSchedulesService, recordScheduledMCPToolAuthFailure } from './service';
+import { ScheduledMCPPolicyError } from './authorization/policy';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { isShutdownInProgress } from '../app/shutdown';
 
 /** Swappable per test: null keeps the no-job-store harness the drain tests rely on. */
-let mockJobStore: { getJob: jest.Mock; deleteJob?: jest.Mock } | null = null;
+let mockJobStore: { getJob: jest.Mock; deleteJob?: jest.Mock; updateJob?: jest.Mock } | null = null;
 
 jest.mock('../agents/checkpointer', () => ({
   checkpointStorageConfigs: jest.fn(async (_user, _tenant, cfg) => [cfg]),
@@ -748,6 +749,7 @@ describe('scheduled OBO tool failure settlement', () => {
     methods.eraseScheduleIfDrained = jest.fn(async () => false);
     methods.getScheduleRunAbortState = jest.fn(async () => ({ status: 'started', mcp: [failure] }));
     const store = {
+      updateJob: jest.fn(async () => undefined),
       getJob: jest.fn(async () => ({
         createdAt: 42,
         scheduleId: 's1',
@@ -807,6 +809,68 @@ describe('scheduled OBO tool failure settlement', () => {
         persistenceError,
       );
       warn.mockRestore();
+    },
+  );
+
+  it('records the public-safe policy denial for the exact scheduled generation', async () => {
+    const { service, methods } = setup();
+    const error = new ScheduledMCPPolicyError('tool_policy_denied', 'Graph', 'child');
+    const input = { error, streamId: 'c1', jobCreatedAt: 42, userId: 'owner', serverName: 'Graph' };
+    await expect(
+      recordScheduledMCPToolAuthFailure(input, () => service.recordMCPToolAuthFailure),
+    ).resolves.toBe(true);
+    expect(methods.recordMCPToolAuthFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: {
+          server: 'Graph',
+          agentId: 'child',
+          status: 'mcp_permission_denied',
+          reason: 'tool_policy_denied',
+          recovery: 'configure',
+          automaticReplay: false,
+        },
+      }),
+    );
+    await expect(service.recordMCPToolAuthFailure({ ...input, jobCreatedAt: 43 })).resolves.toBe(
+      false,
+    );
+  });
+
+  it.each(['consent_revoked', 'tool_policy_denied', 'credential_rejected'] as const)(
+    'settles a handled %s tool denial as an error with the durable diagnosis',
+    async (reason) => {
+      const { service, methods } = setup();
+      const error = new ScheduledMCPPolicyError(reason, 'Graph', 'child');
+      const input = {
+        error,
+        streamId: 'c1',
+        jobCreatedAt: 42,
+        userId: 'owner',
+        serverName: 'Graph',
+      };
+      await expect(
+        recordScheduledMCPToolAuthFailure(input, () => service.recordMCPToolAuthFailure),
+      ).resolves.toBe(true);
+      methods.getScheduleRunAbortState.mockResolvedValue({
+        status: 'started',
+        mcp: error.outcomes,
+      });
+      await expect(
+        service.recordScheduleOutcome({
+          scheduleId: 's1',
+          scheduledFor: occurrence,
+          status: 'success',
+          conversationId: 'c1',
+          streamId: 'c1',
+          jobCreatedAt: 42,
+        }),
+      ).resolves.toBe(true);
+      expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error', mcp: error.outcomes }),
+      );
+      expect(
+        jest.requireMock('../stream/GenerationJobManager').GenerationJobManager.updateMetadata,
+      ).toHaveBeenCalledWith('c1', expect.objectContaining({ scheduleOutcome: 'error' }), 42);
     },
   );
 

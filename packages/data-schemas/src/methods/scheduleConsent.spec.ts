@@ -77,6 +77,89 @@ beforeEach(async () => {
   });
 });
 
+it('admits a disabled row only for activation, with the same live consent fence', async () => {
+  await confirm();
+  await mongoose.models.Schedule.updateOne(
+    { id: identity.scheduleId },
+    { $set: { enabled: false } },
+  );
+  const input = {
+    identity,
+    revision: 'grant-1',
+    consentId: 'consent-1',
+    expectedConfigRevision: 0,
+  };
+  expect(await storage.admitScheduleMCPConsent(input)).toBe(false);
+  expect(await storage.admitScheduleMCPConsent({ ...input, requireEnabled: false })).toBe(true);
+  await storage.revokeScheduleMCPConsent(identity, 'grant-1');
+  expect(await storage.admitScheduleMCPConsent({ ...input, requireEnabled: false })).toBe(false);
+});
+
+it('carries consent through activation atomically without extending its absolute expiry', async () => {
+  await confirm();
+  const before = await storage.readScheduleMCPConsent(identity);
+  const methods = createScheduleMethods(mongoose);
+  const updated = await methods.updateScheduleById(
+    identity.scheduleId,
+    owner,
+    { enabled: false },
+    undefined,
+    {
+      expectedConfigRevision: 0,
+      preserveMCPConsentRevision: 'grant-1',
+    },
+  );
+  expect(updated?.mcpConsent?.scheduleRevision).toBe(1);
+  const after = await storage.readScheduleMCPConsent(identity);
+  expect(after?.enrollment?.consents).toEqual(before?.enrollment?.consents);
+  expect(after?.configRevision).toBe(1);
+  expect(after?.enabled).toBe(false);
+  expect(
+    await storage.admitScheduleMCPConsent({
+      identity,
+      revision: 'grant-1',
+      consentId: 'consent-1',
+      expectedConfigRevision: 1,
+      requireEnabled: false,
+    }),
+  ).toBe(true);
+});
+
+it('does not revive stale enrollment through a later enabled-state edit', async () => {
+  await confirm();
+  const methods = createScheduleMethods(mongoose);
+  await methods.updateScheduleById(identity.scheduleId, owner, { prompt: 'Changed' }, undefined, {
+    expectedConfigRevision: 0,
+  });
+  expect(
+    await methods.updateScheduleById(identity.scheduleId, owner, { enabled: true }, undefined, {
+      expectedConfigRevision: 1,
+      preserveMCPConsentRevision: 'grant-1',
+    }),
+  ).toBeNull();
+});
+
+it('never overwrites revocation racing an activation edit or carries consent across prompt edits', async () => {
+  await confirm();
+  await storage.revokeScheduleMCPConsent(identity, 'grant-1');
+  const methods = createScheduleMethods(mongoose);
+  expect(
+    await methods.updateScheduleById(identity.scheduleId, owner, { enabled: false }, undefined, {
+      expectedConfigRevision: 0,
+      preserveMCPConsentRevision: 'grant-1',
+    }),
+  ).toBeNull();
+  await expect(
+    methods.updateScheduleById(identity.scheduleId, owner, { prompt: 'Write now' }, undefined, {
+      expectedConfigRevision: 0,
+      preserveMCPConsentRevision: 'grant-1',
+    }),
+  ).rejects.toThrow('Consent continuity is limited to activation state');
+  expect(
+    (await storage.readScheduleMCPConsent(identity))?.enrollment?.consents[0].revokedAtMs,
+  ).not.toBeNull();
+});
+
 const confirm = (expectedRevision: string | null = null, grant = enrollment()) =>
   storage.confirmScheduleMCPConsent({
     identity,

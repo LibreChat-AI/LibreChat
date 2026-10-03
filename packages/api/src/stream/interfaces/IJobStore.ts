@@ -8,6 +8,7 @@ import type {
   TPendingSteer,
   UserSubmittedMessageFieldPath,
 } from 'librechat-data-provider';
+import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { RunStep, StandardGraph } from '@librechat/agents';
 import type { AgentEventDetachedTerminalEvidence } from '~/agents/triggers/types';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
@@ -257,9 +258,13 @@ export interface SerializableJobData {
   scheduledFor?: string;
   scheduleConfigRevision?: number;
   scheduleManual?: boolean;
+  /** Original schedule root for a legacy completion, never occurrence bookkeeping. */
+  scheduleMCPCompletion?: ScheduledMCPIdentity;
   /** Terminal outcome evidence retained when the schedule row could not be updated. */
   scheduleOutcome?: 'success' | 'error' | 'interrupted' | 'skipped_balance';
   scheduleOutcomeError?: string;
+  /** Safe invocation denial retained until schedule settlement, never tool arguments. */
+  scheduleMCPFailure?: ScheduleMCPOutcome;
   preserveForScheduleReconcile?: boolean;
   /**
    * A terminal transition (currently approval expiry) still owes a durable host
@@ -475,8 +480,10 @@ export type JobMetadataPatch = Partial<
     | 'scheduledFor'
     | 'scheduleConfigRevision'
     | 'scheduleManual'
+    | 'scheduleMCPCompletion'
     | 'scheduleOutcome'
     | 'scheduleOutcomeError'
+    | 'scheduleMCPFailure'
     | 'preserveForScheduleReconcile'
     | 'promptTokens'
     | 'discoveredTools'

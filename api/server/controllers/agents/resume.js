@@ -1957,6 +1957,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
         });
       const result = await initializeClient({
         scheduledTokenContext: restoreScheduledTokenContext(req, job.metadata),
+        scheduleJobIdentity: job.metadata,
         req,
         res,
         endpointOption: req.body.endpointOption,
