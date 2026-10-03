@@ -14,6 +14,7 @@ import {
   isPreviewOnlyArtifact,
   isSvgArtifactType,
   languageForFilename,
+  toolArtifactKey,
   TOOL_ARTIFACT_TYPES,
 } from '../artifacts';
 
@@ -651,6 +652,35 @@ describe('languageForFilename', () => {
     expect(languageForFilename('noext', 'application/octet-stream')).toBe('');
     expect(languageForFilename('noext', undefined)).toBe('');
     expect(languageForFilename('noext')).toBe('');
+  });
+});
+
+describe('toolArtifactKey', () => {
+  it('prefers file_id over filepath and filename', () => {
+    expect(
+      toolArtifactKey({
+        file_id: 'fid-1',
+        filepath: '/uploads/session-a/index.html',
+        filename: 'index.html',
+      }),
+    ).toBe('tool-artifact-fid-1');
+  });
+
+  it('falls back to filepath before filename when file_id is missing', () => {
+    /* Id-less attachments are download fallbacks with a unique per-session
+     * filepath; keying by filename would merge genuinely different files
+     * that happen to share a display name. */
+    expect(
+      toolArtifactKey({ filepath: '/uploads/session-a/index.html', filename: 'index.html' }),
+    ).toBe('tool-artifact-/uploads/session-a/index.html');
+  });
+
+  it('falls back to filename when neither file_id nor filepath is present', () => {
+    expect(toolArtifactKey({ filename: 'index.html' })).toBe('tool-artifact-index.html');
+  });
+
+  it("falls back to 'unknown' when nothing identifies the file", () => {
+    expect(toolArtifactKey({})).toBe('tool-artifact-unknown');
   });
 });
 

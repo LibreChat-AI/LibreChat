@@ -1124,6 +1124,12 @@ function buildPptxCdnDocument(base64: string, slideListFallbackBody: string): st
 <style>
 :root { color-scheme: light dark; --bg: #ffffff; --fg: #1f2937; --muted: #6b7280; }
 @media (prefers-color-scheme: dark) { :root { --bg: #1a1a2e; --fg: #e5e7eb; --muted: #9ca3af; } }
+/* Reserves the vertical scrollbar's width up front so its appearance
+ * never changes the document's content width. Without this, a deck
+ * whose height sits within a few px of the iframe height flips the
+ * scrollbar on and off every refit as the resulting width change
+ * alternately fits and overflows the content. */
+html { scrollbar-gutter: stable; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
 #lc-render { padding: 16px; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 16px; }
 /* Each rendered slide is wrapped post-hoc by the bootstrap script in
@@ -1147,6 +1153,21 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); fon
   top: 0;
   left: 0;
   transform-origin: top left;
+}
+/* Slide blocks now stack inside the library's own wrapper box instead of
+ * as direct children of #lc-render, so #lc-render's flex gap no longer
+ * separates them — restore the 16px rhythm here instead. */
+.lc-slide-wrap + .lc-slide-wrap {
+  margin-top: 16px;
+}
+/* pptx-preview's own init() sets a fixed inline width (and an opaque
+ * background) on the wrapper box it creates around the slides.
+ * Override so it hugs the stacked .lc-slide-wrap blocks' actual width
+ * instead of clipping them, and drops its own background so it
+ * doesn't paint a second boxed panel behind the per-slide cards. */
+.pptx-preview-wrapper {
+  width: auto !important;
+  background: transparent !important;
 }
 #lc-fallback { padding: 16px; font-size: 14px; line-height: 1.5; color: var(--fg); }
 #lc-fallback-notice { font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin: 0 0 16px; }
@@ -1244,7 +1265,12 @@ ${PPTX_SLIDE_LIST_CSS}
      * doesnt see the unscaled 960px-wide flash. We reveal once
      * wrap+scale has settled. */
     container.style.visibility = 'hidden';
-    var previewer = pptxPreview.init(container, { width: SLIDE_W, height: SLIDE_H });
+    /* No height option: passing one bounds the librarys own render
+     * box to that pixel height, which nests a scrollable region inside
+     * the panel instead of letting the panel itself scroll to the last
+     * slide. Width alone is enough — wrapSlides() below fits each
+     * slide to the panel on its own. */
+    var previewer = pptxPreview.init(container, { width: SLIDE_W });
 
     function availableWidth() {
       /* clientWidth includes the 16px padding on each side via
@@ -1279,12 +1305,17 @@ ${PPTX_SLIDE_LIST_CSS}
      * move slides out from under the librarys references and break
      * its internal state. */
     function wrapSlides() {
-      var children = Array.prototype.slice.call(container.children);
-      for (var i = 0; i < children.length; i++) {
-        var slide = children[i];
-        if (!slide.classList || slide.classList.contains('lc-slide-wrap') || slide.classList.contains('lc-pptx-loading')) {
-          continue;
-        }
+      /* pptx-preview nests every rendered slide inside its own
+       * .pptx-preview-wrapper box rather than appending them directly
+       * to the render container — walking the containers immediate
+       * children only ever finds that one box, wrapping the whole deck
+       * as a single unit instead of one block per slide. Querying the
+       * slides directly finds each one wherever the library nested it,
+       * and each wrap is inserted next to its own slide via
+       * slide.parentNode. */
+      var slides = Array.prototype.slice.call(container.querySelectorAll('.pptx-preview-slide-wrapper'));
+      for (var i = 0; i < slides.length; i++) {
+        var slide = slides[i];
         /* Cache the slides actual rendered size BEFORE applying any
          * transform — measurements after a CSS scale no longer reflect
          * native pixels and would feed back into wrong sizing on
@@ -1300,10 +1331,26 @@ ${PPTX_SLIDE_LIST_CSS}
         wrap.className = 'lc-slide-wrap';
         wrap.style.width = (nativeW * scale) + 'px';
         wrap.style.height = (nativeH * scale) + 'px';
+        /* pptx-preview sets an inline auto-centering margin on every
+         * slide. That inline rule beats our stylesheet, so above 960px
+         * content width the auto margins push the slide right before the
+         * scale is applied, shifting it out of this block and clipping
+         * it against the wraps overflow. Clear it so the slide pins to
+         * the blocks own left edge. */
+        slide.style.margin = '0';
         slide.style.transformOrigin = 'top left';
         slide.style.transform = 'scale(' + scale + ')';
-        container.insertBefore(wrap, slide);
+        slide.parentNode.insertBefore(wrap, slide);
         wrap.appendChild(slide);
+      }
+      /* The CSS rule above already wins in a real browser (a plain inline
+       * style loses to a stylesheet !important), but clear it here too so
+       * the librarys own box never keeps a fixed pixel width wider than
+       * the stacked slide blocks it now contains. */
+      var libraryBoxes = container.querySelectorAll('.pptx-preview-wrapper');
+      for (var j = 0; j < libraryBoxes.length; j++) {
+        libraryBoxes[j].style.width = 'auto';
+        libraryBoxes[j].style.background = 'transparent';
       }
     }
 
@@ -1342,6 +1389,11 @@ ${PPTX_SLIDE_LIST_CSS}
     }
 
     function finalize() {
+      /* previewer.preview() and the safety-net timer both call this; the
+       * timer already guards on settled before calling it, but the
+       * promise path does not, so guard here once for both callers
+       * instead of at each call site. */
+      if (settled) { return; }
       wrapSlides();
       if (!hasRenderedContent()) {
         showFallback('renderer-empty-slide-list');

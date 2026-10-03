@@ -618,6 +618,52 @@ describe('Office HTML producers', () => {
          * on resize never measures an already-transformed box. */
         expect(html).toContain('lcNativeW');
       });
+
+      test('initializes pptx-preview with only a width so it never boxes the deck into a fixed-height viewport', async () => {
+        /* Passing `height` bounded the librarys own render box, which
+         * produced a nested scroll region for multi-slide decks instead
+         * of letting the panel itself scroll to the last slide. Width
+         * alone is enough — the wrap+scale step above fits each slide
+         * to the panel. */
+        const pptx = await buildPptx([{ title: 'A' }]);
+        const html = await _internal.pptxToHtmlViaCdn(
+          pptx,
+          '<ol class="lc-pptx-list"><li>fb</li></ol>',
+        );
+        expect(html).toContain('pptxPreview.init(container, { width: SLIDE_W })');
+        expect(html).not.toContain('height: SLIDE_H');
+      });
+
+      test('wraps each rendered slide directly instead of the containers immediate children', async () => {
+        /* pptx-preview nests every `.pptx-preview-slide-wrapper` inside
+         * one library-owned `.pptx-preview-wrapper` box, so
+         * `container.children` only ever finds that single box —
+         * wrapping it as one unit jammed every slide into one shared
+         * block. Querying `.pptx-preview-slide-wrapper` directly finds
+         * each slide wherever the library actually nested it, and each
+         * wrap is inserted next to its own slide via `slide.parentNode`
+         * rather than `container`. */
+        const pptx = await buildPptx([{ title: 'A' }, { title: 'B' }]);
+        const html = await _internal.pptxToHtmlViaCdn(
+          pptx,
+          '<ol class="lc-pptx-list"><li>fb</li></ol>',
+        );
+        expect(html).toContain("container.querySelectorAll('.pptx-preview-slide-wrapper')");
+        expect(html).not.toContain('container.children');
+        expect(html).toContain('slide.parentNode.insertBefore(wrap, slide)');
+      });
+
+      test('overrides the librarys own wrapper box to hug the stacked slides width with a transparent background', async () => {
+        const pptx = await buildPptx([{ title: 'A' }]);
+        const html = await _internal.pptxToHtmlViaCdn(
+          pptx,
+          '<ol class="lc-pptx-list"><li>fb</li></ol>',
+        );
+        expect(html).toMatch(/\.pptx-preview-wrapper\s*\{[^}]*width:\s*auto\s*!important/);
+        expect(html).toMatch(
+          /\.pptx-preview-wrapper\s*\{[^}]*background:\s*transparent\s*!important/,
+        );
+      });
     });
 
     describe('OFFICE_PREVIEW_DISABLE_CDN escape hatch', () => {
