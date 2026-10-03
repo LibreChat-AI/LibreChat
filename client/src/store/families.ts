@@ -150,17 +150,6 @@ const allConversationsSelector = selector({
   },
 });
 
-const latestConversationIdSelector = selector<string | undefined>({
-  key: 'latestConversationIdSelector',
-  get: ({ get }) => {
-    const [firstKey] = get(conversationKeysAtom);
-    if (firstKey == null) {
-      return undefined;
-    }
-    return get(conversationByIndex(firstKey))?.conversationId ?? undefined;
-  },
-});
-
 const conversationIdByIndex = selectorFamily<string | null, string | number>({
   key: 'conversationIdByIndex',
   get:
@@ -542,7 +531,6 @@ export default {
   showPopoverFamily,
   anySubmittingSelector,
   allConversationsSelector,
-  latestConversationIdSelector,
   conversationIdByIndex,
   conversationEndpointByIndex,
   effectiveEndpointByIndex,
