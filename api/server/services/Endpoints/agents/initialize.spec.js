@@ -314,6 +314,24 @@ describe('initializeClient — processAgent ACL gate', () => {
     }
   });
 
+  it('preserves the owning cancellation before scheduled preparation begins', async () => {
+    const req = makeReq();
+    req._isScheduledFire = true;
+    const controller = new AbortController();
+    const stop = new Error('Owner stopped');
+    controller.abort(stop);
+    mockInitializeAgent.mockClear();
+    await expect(
+      initializeClient({
+        req,
+        res: {},
+        endpointOption: makeEndpointOption(),
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(stop);
+    expect(mockInitializeAgent).not.toHaveBeenCalled();
+  });
+
   it('keeps interactive agent initialization independent of the host resolver', async () => {
     const resolveUpstreamTokenProvider = jest.fn();
     const hostInitializeClient = createInitializeClient({ resolveUpstreamTokenProvider });

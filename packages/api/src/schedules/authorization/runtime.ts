@@ -24,6 +24,7 @@ import { createScheduleMCPEnrollmentResolver } from './enrollment';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { createScheduleLimitsResolver } from '../service';
 import { createScheduleMCPConsentHost } from './host';
+import { isOwnedAbortError } from '~/utils/errors';
 import { ScheduledMCPPolicyError } from './policy';
 
 type RuntimeRequest = Parameters<typeof readScheduleFireContext>[0] & {
@@ -43,6 +44,7 @@ export function createScheduleMCPRuntimeHost(
   execution: ReturnType<typeof createScheduleMCPExecution>;
   prepare: (input: {
     req: RuntimeRequest;
+    signal?: AbortSignal;
     context?: RequestScopedMCPConnectionStore;
     restoredContext?: ScheduledTokenContext;
     restoredJob?: {
@@ -125,88 +127,91 @@ export function createScheduleMCPRuntimeHost(
   return {
     consent,
     execution,
-    async prepare({ req, context, restoredContext, restoredJob }) {
-      const completion = restoredJob?.scheduleMCPCompletion;
-      if (completion !== undefined || isScheduledMCPCompletionRequest(req)) {
-        if (!context || !deps.getScheduleMCPCompletionState)
+    prepare: (input) =>
+      prepareSafely(async () => {
+        const { req, context, restoredContext, restoredJob } = input;
+        const completion = restoredJob?.scheduleMCPCompletion;
+        if (completion !== undefined || isScheduledMCPCompletionRequest(req)) {
+          if (!context || !deps.getScheduleMCPCompletionState)
+            throw new ScheduledMCPPolicyError('binding_mismatch', '');
+          const marker = req.body?.agentCompletion;
+          if (
+            marker != null &&
+            (typeof marker !== 'object' ||
+              !('version' in marker) ||
+              marker.version !== 1 ||
+              !('sourceId' in marker) ||
+              !['subagent-completion', 'background-tool-completion'].includes(
+                String(marker.sourceId),
+              ))
+          )
+            throw new ScheduledMCPPolicyError('binding_mismatch', '');
+          const captured =
+            marker && typeof marker === 'object' && 'scheduleMCPIdentity' in marker
+              ? scheduledMCPIdentitySchema.safeParse(marker.scheduleMCPIdentity)
+              : undefined;
+          if (captured && !captured.success)
+            throw new ScheduledMCPPolicyError('binding_mismatch', '');
+          let identity = captured?.success ? captured.data : undefined;
+          if (completion !== undefined) identity = parseScheduleMCPCompletion(completion);
+          else if (!identity)
+            identity = await resolveScheduleMCPCompletion(
+              {
+                ownerId: req.user.id,
+                tenantId: req.user.tenantId ?? null,
+                conversationId: String(req.body?.conversationId ?? ''),
+              },
+              deps.getScheduleMCPCompletionState,
+            );
+          if (!identity) return;
+          if (identity.ownerId !== req.user.id || identity.tenantId !== (req.user.tenantId ?? null))
+            throw new ScheduledMCPPolicyError('binding_mismatch', '');
+          await execution.attach(
+            context,
+            identity,
+            completion !== undefined ? 'resume' : 'invoke',
+            false,
+            { legacy: true },
+          );
+          if (!getScheduleMCPExecution(context))
+            throw new ScheduledMCPPolicyError('binding_mismatch', '');
+          return;
+        }
+        if (!isScheduleFireRequest(req)) return;
+        const fire = readScheduleFireContext(req);
+        const scheduleId =
+          restoredContext?.scheduleId ?? fire?.scheduleId ?? restoredJob?.scheduleId;
+        if (!scheduleId || !context) throw new ScheduledMCPPolicyError('binding_mismatch', '');
+        const row = await deps.methods.getScheduleById(scheduleId, req.user.id);
+        if (!row || (row.tenantId ?? null) !== (req.user.tenantId ?? null))
           throw new ScheduledMCPPolicyError('binding_mismatch', '');
-        const marker = req.body?.agentCompletion;
+        const enrolled = row.mcpConsent !== undefined;
+        const rootId =
+          restoredContext?.agentId ??
+          (fire ? req.body?.agent_id : undefined) ??
+          (!enrolled ? row.agent_id : undefined);
+        if (typeof rootId !== 'string' || rootId !== row.agent_id)
+          throw new ScheduledMCPPolicyError('binding_mismatch', '');
+        const identity = scheduledMCPIdentity({
+          scheduleId,
+          ownerId: req.user.id,
+          tenantId: req.user.tenantId,
+          agentId: rootId,
+          invocationMode: 'delegated',
+        });
         if (
-          marker != null &&
-          (typeof marker !== 'object' ||
-            !('version' in marker) ||
-            marker.version !== 1 ||
-            !('sourceId' in marker) ||
-            !['subagent-completion', 'background-tool-completion'].includes(
-              String(marker.sourceId),
-            ))
+          restoredContext &&
+          (restoredContext.ownerId !== req.user.id ||
+            (restoredContext.tenantId ?? null) !== (req.user.tenantId ?? null))
         )
           throw new ScheduledMCPPolicyError('binding_mismatch', '');
-        const captured =
-          marker && typeof marker === 'object' && 'scheduleMCPIdentity' in marker
-            ? scheduledMCPIdentitySchema.safeParse(marker.scheduleMCPIdentity)
-            : undefined;
-        if (captured && !captured.success)
-          throw new ScheduledMCPPolicyError('binding_mismatch', '');
-        let identity = captured?.success ? captured.data : undefined;
-        if (completion !== undefined) identity = parseScheduleMCPCompletion(completion);
-        else if (!identity)
-          identity = await resolveScheduleMCPCompletion(
-            {
-              ownerId: req.user.id,
-              tenantId: req.user.tenantId ?? null,
-              conversationId: String(req.body?.conversationId ?? ''),
-            },
-            deps.getScheduleMCPCompletionState,
-          );
-        if (!identity) return;
-        if (identity.ownerId !== req.user.id || identity.tenantId !== (req.user.tenantId ?? null))
-          throw new ScheduledMCPPolicyError('binding_mismatch', '');
-        await execution.attach(
-          context,
-          identity,
-          completion !== undefined ? 'resume' : 'invoke',
-          false,
-          { legacy: true },
-        );
-        if (!getScheduleMCPExecution(context))
-          throw new ScheduledMCPPolicyError('binding_mismatch', '');
-        return;
-      }
-      if (!isScheduleFireRequest(req)) return;
-      const fire = readScheduleFireContext(req);
-      const scheduleId = restoredContext?.scheduleId ?? fire?.scheduleId ?? restoredJob?.scheduleId;
-      if (!scheduleId || !context) throw new ScheduledMCPPolicyError('binding_mismatch', '');
-      const row = await deps.methods.getScheduleById(scheduleId, req.user.id);
-      if (!row || (row.tenantId ?? null) !== (req.user.tenantId ?? null))
-        throw new ScheduledMCPPolicyError('binding_mismatch', '');
-      const enrolled = row.mcpConsent !== undefined;
-      const rootId =
-        restoredContext?.agentId ??
-        (fire ? req.body?.agent_id : undefined) ??
-        (!enrolled ? row.agent_id : undefined);
-      if (typeof rootId !== 'string' || rootId !== row.agent_id)
-        throw new ScheduledMCPPolicyError('binding_mismatch', '');
-      const identity = scheduledMCPIdentity({
-        scheduleId,
-        ownerId: req.user.id,
-        tenantId: req.user.tenantId,
-        agentId: rootId,
-        invocationMode: 'delegated',
-      });
-      if (
-        restoredContext &&
-        (restoredContext.ownerId !== req.user.id ||
-          (restoredContext.tenantId ?? null) !== (req.user.tenantId ?? null))
-      )
-        throw new ScheduledMCPPolicyError('binding_mismatch', '');
-      await execution.attach(context, identity, restoredContext ? 'resume' : 'invoke', enrolled, {
-        legacy: !enrolled,
-        manual: restoredContext
-          ? restoredJob?.scheduleId === scheduleId && restoredJob.scheduleManual === true
-          : fire?.manual === true,
-      });
-    },
+        await execution.attach(context, identity, restoredContext ? 'resume' : 'invoke', enrolled, {
+          legacy: !enrolled,
+          manual: restoredContext
+            ? restoredJob?.scheduleId === scheduleId && restoredJob.scheduleManual === true
+            : fire?.manual === true,
+        });
+      }, input.signal),
   };
 }
 
@@ -221,7 +226,7 @@ export async function prepareScheduleMCPExecution(
     !isScheduledMCPCompletionRequest(input.req)
   )
     return;
-  await getHost().prepare(input);
+  await prepareSafely(() => getHost().prepare(input), input.signal);
 }
 
 /** Ordinary startup keeps its original synchronous admission of independent reads. */
@@ -237,16 +242,26 @@ export function initializeWithScheduleMCPExecution<T>(
     !isScheduledMCPCompletionRequest(input.req)
   )
     return initialize();
-  return getHost()
-    .prepare(input)
-    .then(async () => {
-      const execution = getScheduleMCPExecution(input.context);
-      if (
-        isScheduledMCPCompletionRequest(input.req) &&
-        execution &&
-        input.restoredJob?.scheduleMCPCompletion === undefined
-      )
-        await retainCompletion?.(execution.identity);
-      return initialize();
-    });
+  return prepareSafely(async () => {
+    await getHost().prepare(input);
+    const execution = getScheduleMCPExecution(input.context);
+    if (
+      isScheduledMCPCompletionRequest(input.req) &&
+      execution &&
+      input.restoredJob?.scheduleMCPCompletion === undefined
+    )
+      await retainCompletion?.(execution.identity);
+  }, input.signal).then(initialize);
+}
+
+/** Only authorization preparation is projected; provider failures remain caller-owned. */
+async function prepareSafely(operation: () => Promise<void>, signal?: AbortSignal): Promise<void> {
+  try {
+    signal?.throwIfAborted();
+    await operation();
+    signal?.throwIfAborted();
+  } catch (error) {
+    if (error instanceof ScheduledMCPPolicyError || isOwnedAbortError(error, signal)) throw error;
+    throw new ScheduledMCPPolicyError('dependency_unavailable', '');
+  }
 }

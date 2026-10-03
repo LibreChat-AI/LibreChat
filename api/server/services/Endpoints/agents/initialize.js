@@ -1931,6 +1931,7 @@ function createInitializeClient(dependencies = {}) {
     return initializeWithScheduleMCPExecution(
       {
         req: params.req,
+        signal: params.signal,
         context: require('~/server/services/MCPRequestContext').getMCPRequestContext(
           params.req,
           params.res,

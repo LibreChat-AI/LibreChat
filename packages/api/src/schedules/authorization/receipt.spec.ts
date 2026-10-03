@@ -1073,3 +1073,77 @@ it.each(['snapshot', 'consent', 'admission', 'catalog'] as const)(
     expect(JSON.stringify(saved)).not.toContain('PRIVATE');
   },
 );
+
+it('stores only a safe preparation outage when initial authorization fails after readiness', async () => {
+  const f = await setup();
+  const host = createScheduleMCPRuntimeHost({
+    methods: {
+      ...f.methods,
+      getScheduleById: async () => {
+        throw new Error('PRIVATE database query');
+      },
+    },
+    getScheduleMCPCompletionState: f.methods.getScheduleMCPCompletionState,
+    findUser: async () => null,
+    getRoleByName: async () => null,
+    canViewAgent: async () => false,
+    enrollment: {
+      findUser: async () => null,
+      canUseRoot: async () => false,
+      getAppConfig: async () => undefined,
+      resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
+      getNodes: async () => [],
+      getModelsConfig: async () => ({}),
+      getServers: async () => ({}),
+    },
+  });
+  const provider = jest.fn();
+  let failure: unknown;
+  try {
+    await initializeWithScheduleMCPExecution(
+      {
+        req: {
+          user: { id: f.scope.userId, tenantId: 'tenant' },
+          _isScheduledFire: true,
+          _isAgentTrigger: true,
+          body: {
+            agent_id: 'root',
+            agentTrigger: {
+              version: 1,
+              event: {
+                type: 'schedule.occurrence',
+                occurredAt: 0,
+                source: { id: f.schedule.id, type: 'schedule' },
+              },
+            },
+          },
+        },
+        context: createMCPRequestContext(),
+      },
+      () => host,
+      provider,
+    );
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(ScheduledMCPPolicyError);
+  if (!(failure instanceof ScheduledMCPPolicyError)) throw new Error('Expected safe denial');
+  await f.service.recordScheduleOutcome({
+    scheduleId: f.schedule.id,
+    scheduledFor: f.scheduledFor,
+    status: 'error',
+    error: failure.message,
+    conversationId: 'stream',
+    streamId: 'stream',
+    jobCreatedAt: f.job.createdAt,
+  });
+  const saved = await f.methods.getScheduleById(f.schedule.id);
+  expect(saved).toMatchObject({
+    enabled: true,
+    failureCount: 1,
+    lastRun: { status: 'error', error: failure.message },
+  });
+  expect(saved?.lastRun?.error).toContain('dependency_unavailable');
+  expect(JSON.stringify(saved)).not.toContain('PRIVATE');
+  expect(provider).not.toHaveBeenCalled();
+});

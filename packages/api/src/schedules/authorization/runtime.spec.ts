@@ -1,10 +1,15 @@
 import { Permissions, PermissionTypes, AgentCapabilities } from 'librechat-data-provider';
 import type { AppConfig, IRole, ISchedule, AgentGraphAccessContext } from '@librechat/data-schemas';
-import { createScheduleMCPRuntimeHost, prepareScheduleMCPExecution } from './runtime';
+import {
+  createScheduleMCPRuntimeHost,
+  prepareScheduleMCPExecution,
+  initializeWithScheduleMCPExecution,
+} from './runtime';
 import { bindScheduledMCPInvocation, getScheduleMCPExecution } from './execution';
 import { executionFixture, readTool } from './execution.helper';
 import { createMCPRequestContext } from '~/mcp/request';
 import { createScheduleMCPPreflight } from '../mcp';
+import { ScheduledMCPPolicyError } from './policy';
 
 async function setup() {
   const fixture = await executionFixture();
@@ -72,8 +77,14 @@ async function setup() {
   const getModelsConfig = jest.fn(async () => ({ test: ['test'] }));
   const getServers = jest.fn(async () => ({ warehouse: fixture.config }));
   const resolveGraphAccess = jest.fn(async () => ({}) as AgentGraphAccessContext);
+  const getScheduleById = jest.fn(async () => row);
+  const getScheduleMCPCompletionState = jest.fn(async () => ({
+    identity: fixture.identity,
+    enrolled: false,
+  }));
   const host = createScheduleMCPRuntimeHost({
-    methods: { ...fixture.storage, getScheduleById: jest.fn(async () => row) },
+    getScheduleMCPCompletionState,
+    methods: { ...fixture.storage, getScheduleById },
     findUser,
     getRoleByName,
     canViewAgent: async () => true,
@@ -142,6 +153,8 @@ async function setup() {
     getRoleByName,
     findUser,
     getAppConfig,
+    getScheduleById,
+    getScheduleMCPCompletionState,
     setCandidates: (names: string[]) => {
       candidates = names;
     },
@@ -486,4 +499,144 @@ it('attaches a legacy monitor without minting a grant and fences its next tool a
     lifetimeHours: 1,
   });
   await expect(call()).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+});
+
+it.each(['schedule', 'consent', 'completion'] as const)(
+  'sanitizes %s preparation failures before tool initialization',
+  async (phase) => {
+    const f = await setup();
+    const privateError = new Error('PRIVATE database authorization query');
+    if (phase === 'schedule') f.getScheduleById.mockRejectedValue(privateError);
+    if (phase === 'consent')
+      jest.mocked(f.storage.readScheduleMCPConsent).mockRejectedValue(privateError);
+    if (phase === 'completion') f.getScheduleMCPCompletionState.mockRejectedValue(privateError);
+    const req =
+      phase === 'completion'
+        ? {
+            ...f.req,
+            _isScheduledFire: false,
+            body: { conversationId: 'completion', agent_id: 'root' },
+          }
+        : f.req;
+    const initialize = jest.fn();
+    for (const call of [
+      () => f.host.prepare({ req, context: f.context }),
+      () =>
+        initializeWithScheduleMCPExecution({ req, context: f.context }, () => f.host, initialize),
+    ]) {
+      let failure: unknown;
+      try {
+        await call();
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(ScheduledMCPPolicyError);
+      expect(failure).toMatchObject({
+        failure: {
+          reason: 'dependency_unavailable',
+          recovery: 'retry_later',
+          automaticReplay: false,
+        },
+      });
+      expect(String(failure)).not.toContain('PRIVATE');
+      expect(failure).not.toHaveProperty('cause');
+    }
+    expect(initialize).not.toHaveBeenCalled();
+  },
+);
+
+it('sanitizes consent attachment failures on authenticated completion approval resumes', async () => {
+  const f = await setup();
+  jest
+    .mocked(f.storage.readScheduleMCPConsent)
+    .mockRejectedValue(new Error('PRIVATE consent query'));
+  const initialize = jest.fn();
+  await expect(
+    initializeWithScheduleMCPExecution(
+      {
+        req: { ...f.req, _isAgentTrigger: false, _isScheduledFire: false },
+        context: f.context,
+        restoredJob: { scheduleMCPCompletion: f.identity },
+      },
+      () => f.host,
+      initialize,
+    ),
+  ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
+  expect(initialize).not.toHaveBeenCalled();
+});
+
+it('sanitizes host construction and lineage-retention failures without masking provider initialization', async () => {
+  const f = await setup();
+  const privateError = new Error('PRIVATE dependency details');
+  const initialize = jest.fn();
+  const getHost = () => {
+    throw privateError;
+  };
+  await expect(
+    prepareScheduleMCPExecution({ req: f.req, context: f.context }, getHost),
+  ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
+  await expect(
+    initializeWithScheduleMCPExecution({ req: f.req, context: f.context }, getHost, initialize),
+  ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
+  f.snapshot.enrollment = null;
+  f.row.mcpConsent = undefined;
+  const req = {
+    ...f.req,
+    _isScheduledFire: false,
+    body: { conversationId: 'completion', agent_id: 'child' },
+  };
+  await expect(
+    initializeWithScheduleMCPExecution(
+      { req, context: f.context },
+      () => f.host,
+      initialize,
+      async () => {
+        throw privateError;
+      },
+    ),
+  ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
+  expect(initialize).not.toHaveBeenCalled();
+  await expect(
+    initializeWithScheduleMCPExecution(
+      { req, context: f.context },
+      () => f.host,
+      async () => {
+        throw privateError;
+      },
+      async () => {},
+    ),
+  ).rejects.toBe(privateError);
+});
+
+it('preserves typed denials and owned cancellation at the preparation boundary', async () => {
+  const f = await setup();
+  const controller = new AbortController();
+  const typed = new ScheduledMCPPolicyError('rbac_denied', 'warehouse', 'root');
+  f.getScheduleById.mockRejectedValue(typed);
+  await expect(f.host.prepare({ req: f.req, context: f.context })).rejects.toBe(typed);
+  const stop = new Error('Owner stopped');
+  f.getScheduleById.mockImplementation(async () => {
+    controller.abort(stop);
+    throw stop;
+  });
+  await expect(
+    initializeWithScheduleMCPExecution(
+      { req: f.req, context: f.context, signal: controller.signal },
+      () => f.host,
+      jest.fn(),
+    ),
+  ).rejects.toBe(stop);
+  const other = new Error('PRIVATE non-abort');
+  const otherController = new AbortController();
+  f.getScheduleById.mockImplementation(async () => {
+    otherController.abort(stop);
+    throw other;
+  });
+  await expect(
+    initializeWithScheduleMCPExecution(
+      { req: f.req, context: f.context, signal: otherController.signal },
+      () => f.host,
+      jest.fn(),
+    ),
+  ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
 });
