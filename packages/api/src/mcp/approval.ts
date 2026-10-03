@@ -3,7 +3,6 @@ import type { IUser } from '@librechat/data-schemas';
 import type { ParsedServerConfig } from './types';
 import type { RequestBody } from '~/types';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
-import { getAdminApiKeyHeader } from './headers';
 import { applyRequestHeaders } from './utils';
 
 export interface MCPToolReviewAuthorityInput {
@@ -29,7 +28,7 @@ export function buildMCPToolReviewAuthority({
     oauth_headers: 'oauth_headers' in config ? config.oauth_headers : undefined,
   };
   const renewableMarker =
-    /\{\{LIBRECHAT_(?:OPENID|GRAPH)_(?:ACCESS|ID)_TOKEN\}\}|\$\{LIBRECHAT_(?:OPENID|GRAPH)_(?:ACCESS|ID)_TOKEN\}/g;
+    /\{\{LIBRECHAT_(?:OPENID_(?:(?:ACCESS|ID)_)?TOKEN|GRAPH_ACCESS_TOKEN)\}\}/g;
   const resolutionInput = { ...config } as ParsedServerConfig & {
     headers?: Record<string, string>;
     oauth_headers?: Record<string, string>;
@@ -49,20 +48,6 @@ export function buildMCPToolReviewAuthority({
     headers?: Record<string, string>;
     oauth_headers?: Record<string, string>;
   };
-  const injectedAuth = getAdminApiKeyHeader(config.apiKey);
-  for (const field of ['headers', 'oauth_headers'] as const) {
-    const declared = declaredHeaders[field];
-    const values = projected[field];
-    if (!declared || !values) continue;
-    for (const [name, value] of Object.entries(declared)) {
-      if (
-        /LIBRECHAT_(?:OPENID|GRAPH)_(?:ACCESS|ID)_TOKEN/.test(value) &&
-        values[name]?.includes('review-only-renewable-bearer') &&
-        !(field === 'headers' && injectedAuth?.name.toLowerCase() === name.toLowerCase())
-      )
-        values[name] = value;
-    }
-  }
   const target = {
     url: 'url' in projected ? projected.url : undefined,
     command: 'command' in projected ? projected.command : undefined,
