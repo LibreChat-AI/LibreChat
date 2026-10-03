@@ -36,8 +36,15 @@ async function useTheme(page: Page, definition?: { name: string }) {
   }, definition ?? null);
 }
 
-/** The stateful workspace Select only renders when the agents endpoint offers stateful sessions. */
+/** The stateful workspace Select only renders when the agents endpoint offers stateful sessions;
+ *  a pick's save is answered here so it stands without a configured code environment. */
 async function offerStatefulSessions(page: Page) {
+  await page.route('**/api/user/preferences', async (route) => {
+    if (route.request().method() === 'GET') {
+      return route.continue();
+    }
+    await route.fulfill({ json: { preferences: route.request().postDataJSON() } });
+  });
   await page.route('**/api/endpoints', async (route) => {
     const response = await route.fetch();
     const endpoints = await response.json();
@@ -48,8 +55,7 @@ async function offerStatefulSessions(page: Page) {
   });
 }
 
-/** Opens the Settings Select's list. Only its geometry is read, which does not depend on how the
- *  list layers against the Settings dialog. */
+/** Opens the stateful workspace Select's list in the Settings dialog. */
 async function openWorkspaceSelect(page: Page) {
   await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
   /** Mobile keeps the account menu in the drawer. */
@@ -136,5 +142,42 @@ test.describe('popovers inside a modal dialog', () => {
     await useTheme(page, REFERENCE_ICON_THEME);
     await openWorkspaceSelect(page);
     await expectIndicator(page, '20px');
+  });
+
+  /** The Settings dialog is a Headless UI panel, not an OGDialog; before it declared a dialog
+   *  level its Select lists painted behind it (berry-13/LibreChat#249). Hit testing alone cannot
+   *  show that: the open list sets `pointer-events: none` on the body, so the panel is skipped and
+   *  a click falls through to a list nobody can see. The probe turns pointer events back on
+   *  everywhere so `elementFromPoint` reports what is painted on top. */
+  test('a Select in the Settings dialog opens on top of it and takes a pick @scenario:settings-select-opens-on-top', async ({
+    page,
+  }) => {
+    await offerStatefulSessions(page);
+    await useTheme(page);
+    await openWorkspaceSelect(page);
+
+    const option = page.getByRole('option', { name: 'Conversation workspace' });
+    const box = await option.boundingBox();
+    expect(box).not.toBeNull();
+    const x = (box?.x ?? 0) + (box?.width ?? 0) / 2;
+    const y = (box?.y ?? 0) + (box?.height ?? 0) / 2;
+    const painted = await page.evaluate(
+      ([px, py]) => {
+        const probe = document.createElement('style');
+        probe.textContent = '* { pointer-events: auto !important; }';
+        document.head.append(probe);
+        const top = document.elementFromPoint(px, py);
+        probe.remove();
+        return top?.closest('[role="listbox"]') != null;
+      },
+      [x, y],
+    );
+    expect(painted).toBe(true);
+
+    await page.mouse.click(x, y);
+    await expect(page.getByRole('listbox')).toBeHidden();
+    await expect(page.getByTestId('default-stateful-workspace')).toHaveText(
+      'Conversation workspace',
+    );
   });
 });
