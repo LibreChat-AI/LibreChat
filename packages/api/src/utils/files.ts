@@ -1,7 +1,7 @@
 import path from 'path';
 import crypto from 'node:crypto';
 import { createReadStream } from 'fs';
-import { rename, unlink, readFile, writeFile, stat } from 'fs/promises';
+import { readFile, stat } from 'fs/promises';
 import { UnsupportedProviderAudioError } from '~/files/upload/errors';
 
 const USER_FACING_UPLOAD_ERRORS = [
@@ -542,19 +542,4 @@ export async function readJsonFile<T = unknown>(
 ): Promise<T> {
   const { content } = await readFileAsString(filePath, { ...options, encoding: 'utf8' });
   return JSON.parse(content);
-}
-
-/**
- * Writes through a sibling temp file and a rename, so concurrent writers to one path each
- * land whole (last rename wins) instead of interleaving bytes in a shared truncated file.
- */
-export async function writeFileAtomic(filePath: string, data: Buffer | string): Promise<void> {
-  const tempPath = `${filePath}.${crypto.randomUUID()}.tmp`;
-  try {
-    await writeFile(tempPath, data);
-    await rename(tempPath, filePath);
-  } catch (error) {
-    await unlink(tempPath).catch(() => undefined);
-    throw error;
-  }
 }
