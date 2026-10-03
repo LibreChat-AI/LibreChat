@@ -24,6 +24,7 @@ const {
   createAskUserQuestionTool,
   ASK_USER_QUESTION_TOOL_NAME,
   resolveWebSearchSSRFAgents,
+  resolveAzureSoraCredentials,
   buildWebSearchDynamicContext,
   codeExecutionAuthHeaders,
   getCodeFileLocation,
@@ -56,6 +57,7 @@ const {
   StructuredWolfram,
   TavilySearchResults,
   createGeminiImageTool,
+  createAzureSoraTools,
   createOpenAIImageTools,
 } = require('../');
 const {
@@ -123,6 +125,22 @@ const validateTools = async (user, tools = []) => {
 
     for (const tool of availableToolsToValidate) {
       if (!tool.authConfig || tool.authConfig.length === 0) {
+        continue;
+      }
+
+      if (tool.pluginKey === 'video_gen_sora_azure') {
+        const authFields = tool.authConfig.map((auth) => auth.authField);
+        const userAuthValues = await loadAuthValues({
+          userId: user,
+          authFields,
+          throwError: false,
+          source: 'user',
+        });
+        const credentials = resolveAzureSoraCredentials(userAuthValues, process.env);
+        if (credentials.apiKey && credentials.endpoint) {
+          return;
+        }
+        validToolsSet.delete(tool.pluginKey);
         continue;
       }
 
@@ -266,6 +284,23 @@ const loadTools = async ({
         imageFiles,
         userId: user,
         fileStrategy,
+      });
+    },
+    video_gen_sora_azure: async (_toolContextMap, _dynamicToolContextMap) => {
+      const authFields = getAuthFields('video_gen_sora_azure');
+      const userAuthValues = await loadAuthValues({
+        userId: user,
+        authFields,
+        throwError: false,
+        source: 'user',
+      });
+      return createAzureSoraTools({
+        userAuthValues,
+        isAgent: !!agent,
+        req: options.req,
+        userId: user,
+        fileStrategy,
+        uploadImageBuffer: options.uploadImageBuffer,
       });
     },
   };

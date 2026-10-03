@@ -173,5 +173,23 @@
         "optional": true
       }
     ]
+  },
+  {
+    "name": "Azure OpenAI Sora Video Generation",
+    "pluginKey": "video_gen_sora_azure",
+    "description": "Generates short videos from text prompts using Azure OpenAI Sora. Configure AZURE_SORA_API_KEY and AZURE_SORA_ENDPOINT (or the general Azure OpenAI variables).",
+    "icon": "assets/video_gen_sora_azure.svg",
+    "authConfig": [
+      {
+        "authField": "AZURE_SORA_API_KEY",
+        "label": "Azure Sora API Key",
+        "description": "Your Azure OpenAI API key with access to the Sora video generation deployment"
+      },
+      {
+        "authField": "AZURE_SORA_ENDPOINT",
+        "label": "Azure Sora Endpoint URL",
+        "description": "Your Azure OpenAI resource endpoint (e.g. https://your-resource.openai.azure.com)"
+      }
+    ]
   }
 ]

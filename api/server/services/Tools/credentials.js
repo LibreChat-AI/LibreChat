@@ -9,6 +9,7 @@ const { getUserPluginAuthValue } = require('~/server/services/PluginService');
  * @param {Set<string>} [params.optional]
  * @param {boolean} [params.throwError]
  * @param {boolean} [params.failOnOptionalError]
+ * @param {'any'|'user'} [params.source]
  * @returns
  */
 const loadAuthValues = async ({
@@ -17,6 +18,7 @@ const loadAuthValues = async ({
   optional,
   throwError = true,
   failOnOptionalError = false,
+  source = 'any',
 }) => {
   let authValues = {};
 
@@ -28,7 +30,12 @@ const loadAuthValues = async ({
   const findAuthValue = async (fields) => {
     for (const field of fields) {
       const envValue = process.env[field];
-      if (envValue && envValue.trim() !== '' && envValue !== AuthType.USER_PROVIDED) {
+      if (
+        source === 'any' &&
+        envValue &&
+        envValue.trim() !== '' &&
+        envValue !== AuthType.USER_PROVIDED
+      ) {
         return { authField: field, authValue: envValue };
       }
       let value;
