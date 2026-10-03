@@ -963,3 +963,76 @@ test.each([false, true])(
     expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
   },
 );
+
+test.each([false, true])(
+  'mixed routing/token header changes cannot reuse paused consent (event-driven: %s)',
+  async (eventDriven) => {
+    const selected = {
+      type: 'streamable-http' as const,
+      source: 'yaml' as const,
+      url: 'https://mcp.example.test/mcp',
+      headers: { 'X-Workspace': '{{WORKSPACE}}:{{LIBRECHAT_OPENID_TOKEN}}' },
+    };
+    const authorityA = buildMCPToolReviewAuthority({
+      serverName: 'fixture',
+      config: selected,
+      user: { id: 'sdk-user', openidId: 'subject-a' },
+      customUserVars: { WORKSPACE: 'workspace-a' },
+    });
+    const authorityB = buildMCPToolReviewAuthority({
+      serverName: 'fixture',
+      config: selected,
+      user: { id: 'sdk-user', openidId: 'subject-a' },
+      customUserVars: { WORKSPACE: 'workspace-b' },
+    });
+    const targetDefinition = (authority?: string) =>
+      bindToolApprovalIdentity(
+        bindToolReviewAuthority(
+          { name, serverName: 'fixture', parameters: { type: 'object' } },
+          authority,
+        ),
+        'echo',
+        { type: 'object' },
+      );
+    const source: AgentApprovalSource = {
+      id: 'agent-a',
+      tool_options: {
+        [name]: {
+          approval_mode: 'chat',
+          approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+        },
+      },
+      toolDefinitions: [targetDefinition(authorityA)],
+    };
+    const saver = new MemorySaver();
+    const first = await build({
+      source,
+      chat: 'mixed-header-chat',
+      saver,
+      eventDriven,
+      executionTool: createProbe(null, 'echo', authorityA),
+      callId: 'mixed-header-call',
+    });
+    await first.processStream({ messages: [new HumanMessage('run')] }, config('mixed-header-chat'));
+    const bindings = captureRunToolApprovalBindings(
+      first,
+      first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+    )!;
+    expect(bindings['mixed-header-call']).toBeDefined();
+    const changed = { ...source, toolDefinitions: [targetDefinition(authorityB)] };
+    const resumed = await build({
+      source: changed,
+      chat: 'mixed-header-chat',
+      saver,
+      eventDriven,
+      executionTool: createProbe(null, 'echo', authorityB),
+      reviewed: {
+        bindings,
+        decisions: [{ tool_call_id: 'mixed-header-call', decision: 'approve' }],
+      },
+    });
+    await resumed.resume({ 'mixed-header-call': { type: 'approve' } }, config('mixed-header-chat'));
+    expect(executions).toBe(0);
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+  },
+);

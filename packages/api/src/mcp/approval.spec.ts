@@ -158,3 +158,36 @@ test('request-only renewable auth uses the same merge and principal handling as 
     }),
   ).not.toBe(first);
 });
+
+const renewableFields = [
+  'LIBRECHAT_OPENID_TOKEN',
+  'LIBRECHAT_OPENID_ACCESS_TOKEN',
+  'LIBRECHAT_OPENID_ID_TOKEN',
+  'LIBRECHAT_GRAPH_ACCESS_TOKEN',
+] as const;
+
+test.each(renewableFields)('mixed %s headers retain resolved workspace authority', (field) => {
+  const placeholder = `{{${field}}}`;
+  const selected = { ...config, headers: { 'X-Workspace': `{{WORKSPACE}}:${placeholder}` } };
+  const input = {
+    serverName: 'db',
+    config: selected,
+    user: { id: 'user-a', openidId: 'subject-a' },
+  };
+  const a = buildMCPToolReviewAuthority({ ...input, customUserVars: { WORKSPACE: 'workspace-a' } });
+  const b = buildMCPToolReviewAuthority({ ...input, customUserVars: { WORKSPACE: 'workspace-b' } });
+  expect(a).toEqual(expect.any(String));
+  expect(b).not.toBe(a);
+  expect(selected.headers['X-Workspace']).toBe(`{{WORKSPACE}}:${placeholder}`);
+});
+
+test.each(renewableFields)('%s alias loading does not require renewable token bytes', (field) => {
+  const selected = { ...config, headers: { Authorization: `Bearer {{${field}}}` } };
+  const principal = { id: 'user-a', openidId: 'subject-a' };
+  expect(() =>
+    buildMCPToolReviewAuthority({ serverName: 'db', config: selected, user: principal }),
+  ).not.toThrow();
+  expect(
+    buildMCPToolReviewAuthority({ serverName: 'db', config: selected, user: principal }),
+  ).toEqual(expect.any(String));
+});
