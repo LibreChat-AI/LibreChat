@@ -98,10 +98,23 @@ describe('useMarkConversationUnreadMutation', () => {
         lastResponseMessageId: 'new-reply',
       });
     });
-    expect(cached()?.isMarkedUnread).toBeUndefined();
+    expect(cached()?.isMarkedUnread).toBe(false);
     expect(groupConversationsByStatus([['Today', [cached()!]]], new Set(), options)[0][0]).toBe(
       FINISHED_CHATS_GROUP,
     );
+  });
+
+  it("keeps an older backend's successful unread response in the date group", async () => {
+    mockMarkUnread.mockResolvedValue({ modified: true, lastResponseAt: RESPONDED_AT });
+    const { result, cached } = setup(RESPONDED_AT, SEEN_AT);
+    await act(async () => {
+      await result.current.mutateAsync({ conversationId: CONVO_ID });
+    });
+    expect(cached()?.isMarkedUnread).toBe(true);
+    const dates = [['Today', [cached()!]]] as [string, NonNullable<ReturnType<typeof cached>>[]][];
+    expect(
+      groupConversationsByStatus(dates, new Set(), { field: 'updatedAt', direction: 'desc' }),
+    ).toBe(dates);
   });
 
   it('restores manual unread intent when the write fails', async () => {

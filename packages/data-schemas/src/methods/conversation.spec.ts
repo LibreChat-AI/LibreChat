@@ -3319,8 +3319,34 @@ describe('Conversation Operations', () => {
       const replied = await Conversation.findOne({
         conversationId: mockConversationData.conversationId,
       }).lean<IConversation>();
-      expect(replied?.isMarkedUnread).toBeUndefined();
+      expect(replied?.isMarkedUnread).toBe(false);
       expect(replied?.lastResponseMessageId).toBe('new-reply');
+    });
+
+    it('leaves legacy intent unknown through listing and metadata saves, until a real reply', async () => {
+      await Conversation.create({
+        conversationId: mockConversationData.conversationId,
+        user: 'user123',
+        endpoint: EModelEndpoint.openAI,
+        lastResponseAt: new Date('2026-08-16T10:00:00.000Z'),
+        lastResponseMessageId: 'legacy-reply',
+      });
+      await saveConvo(mockCtx, {
+        conversationId: mockConversationData.conversationId,
+        title: 'Reminder',
+      });
+      const { conversations } = await getConvosByCursor('user123');
+      expect(conversations[0].isMarkedUnread).toBeUndefined();
+      expect(conversations[0].lastResponseMessageId).toBe('legacy-reply');
+      expect(conversations[0].lastSeenAt).toBeUndefined();
+      await methods.stampConvoLastResponse(
+        'user123',
+        mockConversationData.conversationId,
+        'confirmed-reply',
+      );
+      const reloaded = await getConvo('user123', mockConversationData.conversationId);
+      expect(reloaded?.isMarkedUnread).toBe(false);
+      expect(reloaded?.lastResponseMessageId).toBe('confirmed-reply');
     });
 
     it('is cleared only by an acknowledgement of the current reply', async () => {

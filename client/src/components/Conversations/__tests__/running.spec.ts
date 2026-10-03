@@ -207,6 +207,7 @@ describe('groupConversationsByStatus finished chats', () => {
     ({
       ...convo(conversationId, daysAgo),
       lastResponseAt: new Date(Date.now() - daysAgo * 86_400_000).toISOString(),
+      isMarkedUnread: false,
       ...read,
     }) as TConversation;
 
@@ -257,6 +258,30 @@ describe('groupConversationsByStatus finished chats', () => {
     const dated = groupConversations([manual], newestFirst);
 
     expect(partitionGroups(dated, new Set(), newestFirst)).toBe(dated);
+  });
+
+  it.each([undefined, false])(
+    'keeps unknown legacy intent in date groups (synthetic flag: %s)',
+    (synthetic) => {
+      const legacy = replied('legacy', 1, {
+        isMarkedUnread: undefined,
+        lastResponseIsManual: synthetic,
+        lastResponseMessageId: 'existing-reply',
+        lastSeenAt: undefined,
+      });
+      const restored = JSON.parse(JSON.stringify(legacy)) as TConversation;
+      const dated = groupConversations([restored], newestFirst);
+      expect(partitionGroups(dated, new Set(), newestFirst)).toBe(dated);
+    },
+  );
+
+  it('shows a new confirmed reply after an unknown legacy reminder', () => {
+    const legacy = replied('legacy', 1, { isMarkedUnread: undefined });
+    const confirmed = replied('confirmed', 0);
+    const dated = groupConversations([confirmed, legacy], newestFirst);
+    const groups = partitionGroups(dated, new Set(), newestFirst);
+    expect(groups[0]).toEqual([FINISHED_CHATS_GROUP, [confirmed]]);
+    expect(groups.slice(1)).toEqual(groupConversations([legacy], newestFirst));
   });
 
   it.each([

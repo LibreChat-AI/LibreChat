@@ -653,8 +653,12 @@ export function createConversationMethods(
       const stamped = await Conversation.findOneAndUpdate(
         casFilter,
         {
-          $set: { lastResponseAt: stamp, lastResponseMessageId: responseMessageId },
-          $unset: { lastSeenAt: '', lastResponseIsManual: '', isMarkedUnread: '' },
+          $set: {
+            lastResponseAt: stamp,
+            lastResponseMessageId: responseMessageId,
+            isMarkedUnread: false,
+          },
+          $unset: { lastSeenAt: '', lastResponseIsManual: '' },
           $max: { updatedAt: stamp },
         },
         { new: true, projection, timestamps: false },
@@ -2569,9 +2573,9 @@ export function createConversationMethods(
          * DocumentDB targets rule out. */
         if (setFields.lastResponseAt instanceof Date) {
           const { lastResponseAt, ...withoutReplyStamp } = setFields;
-          operation.$set = withoutReplyStamp;
+          operation.$set = { ...withoutReplyStamp, isMarkedUnread: false };
           operation.$max = { lastResponseAt };
-          operation.$unset = { lastResponseIsManual: '', isMarkedUnread: '' };
+          operation.$unset = { lastResponseIsManual: '' };
         }
         if (Object.keys(unsetFields).length > 0) {
           operation.$unset = {

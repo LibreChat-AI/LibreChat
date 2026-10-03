@@ -1201,6 +1201,43 @@ describe('Conversation Utilities', () => {
         expect(data!.pages[0].conversations[0].lastResponseMessageId).toBe('reply-a');
       });
 
+      it('does not invent reply eligibility for an unclassified backend snapshot', () => {
+        updateConvoInAllQueries(queryClient, 'a', (c) => ({
+          ...c,
+          lastResponseAt: '2026-08-16T10:00:00.000Z',
+          isMarkedUnread: true,
+        }));
+        updateConvoInAllQueries(
+          queryClient,
+          'a',
+          () =>
+            ({
+              conversationId: 'a',
+              lastResponseAt: '2026-08-16T11:00:00.000Z',
+            }) as TConversation,
+        );
+        expect(findConvoInAllQueries(queryClient, 'a')?.isMarkedUnread).toBeUndefined();
+      });
+
+      it('marks only an advancing live reply as confirmed, preserving reminders on duplicate delivery', () => {
+        const original = '2026-08-16T10:00:00.000Z';
+        updateConvoInAllQueries(queryClient, 'a', (c) => ({
+          ...c,
+          lastResponseAt: original,
+          isMarkedUnread: true,
+        }));
+        applyServerReplyStamp(queryClient, 'a', {
+          lastResponseAt: original,
+          lastResponseMessageId: 'existing',
+        });
+        expect(findConvoInAllQueries(queryClient, 'a')?.isMarkedUnread).toBe(true);
+        applyServerReplyStamp(queryClient, 'a', {
+          lastResponseAt: '2026-08-16T11:00:00.000Z',
+          lastResponseMessageId: 'new',
+        });
+        expect(findConvoInAllQueries(queryClient, 'a')?.isMarkedUnread).toBe(false);
+      });
+
       it('updateConvoInAllQueries lets an explicit lastSeenAt win over the cached one', () => {
         updateConvoInAllQueries(queryClient, 'a', (c) => ({
           ...c,

@@ -122,7 +122,11 @@ test.describe('bookmark counts', () => {
       await db.collection('conversations').updateOne(
         { conversationId: unreadId },
         {
-          $set: { lastResponseAt: previous, lastSeenAt: new Date(previous.getTime() - 1000) },
+          $set: {
+            lastResponseAt: previous,
+            lastSeenAt: new Date(previous.getTime() - 1000),
+            isMarkedUnread: false,
+          },
         },
       );
     });

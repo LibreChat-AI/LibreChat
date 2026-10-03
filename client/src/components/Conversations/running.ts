@@ -19,11 +19,10 @@ function showsStatusGroups(options: ConversationGroupOptions): boolean {
   return !options.includePinned && options.field === 'updatedAt' && options.direction === 'desc';
 }
 
-/** A reply that landed while the user was elsewhere. "Mark as unread" sets the same
- *  stamp as a reminder, not as a finished run, so that chat keeps its date. */
+/** Missing intent is legacy/unknown, not evidence of a newly finished reply. */
 function isFinishedUnseen(conversation: TConversation): boolean {
   return (
-    conversation.isMarkedUnread !== true &&
+    conversation.isMarkedUnread === false &&
     conversation.lastResponseIsManual !== true &&
     isConversationUnseen(conversation)
   );

@@ -1240,7 +1240,7 @@ export function applyServerReplyStamp(
       lastResponseAt,
       lastResponseMessageId: lastResponseMessageId ?? convo.lastResponseMessageId,
       lastResponseIsManual: undefined,
-      isMarkedUnread: advances ? undefined : convo.isMarkedUnread,
+      isMarkedUnread: advances ? false : convo.isMarkedUnread,
       lastSeenAt: advances ? undefined : convo.lastSeenAt,
       updatedAt: updatedAt ?? convo.updatedAt,
     }),
