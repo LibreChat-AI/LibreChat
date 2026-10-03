@@ -1,4 +1,5 @@
 export * from './policy';
+export * from './allow';
 export * from './admission';
 export * from './runtime';
 export * from './resume';

@@ -99,11 +99,6 @@ import {
   isSteerTerminalContinuationSupported,
 } from '~/agents/steering/runtime';
 import {
-  resolveToolApprovalPolicy,
-  healToolApprovalPolicy,
-  exemptAskUserQuestionFromApproval,
-} from '~/agents/hitl/policy';
-import {
   ASK_USER_QUESTION_TOOL_NAME,
   createAskUserQuestionTool,
 } from '~/agents/hitl/askUserQuestionTool';
@@ -112,6 +107,7 @@ import {
   eventOnlyRunFileTools,
   isRunFileSharingSupported,
 } from './files/runtime';
+import { resolveToolApprovalPolicy, exemptAskUserQuestionFromApproval } from '~/agents/hitl/policy';
 import { applyCustomHandoffPromptKeyCompatibility } from '~/agents/handoffPromptKeyCompatibility';
 import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/agents/intent';
 import { createAgentToolApprovalSession, bindRunToolApprovalSession } from './hitl/modes';
@@ -122,6 +118,7 @@ import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
+import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
@@ -223,6 +220,14 @@ export function extractDiscoveredToolsFromHistory(messages: BaseMessage[]): Set<
   }
 
   return discoveredTools;
+}
+
+/** MCP key-spelling aliases each run knows, including those its lazy subagents reported. */
+const runMCPToolAliases = new WeakMap<object, readonly MCPToolAlias[]>();
+
+/** The run's live alias list, so a pause can be judged against the aliases the run used. */
+export function getRunMCPToolAliases(run: object | null | undefined): readonly MCPToolAlias[] {
+  return run == null ? [] : (runMCPToolAliases.get(run) ?? []);
 }
 
 export interface RunDiscoverySnapshot {
@@ -2129,6 +2134,7 @@ export async function createRun({
   resolvedToolApprovalHooks,
   toolApprovalStorage,
   reviewedToolApprovals,
+  toolApprovalAllows,
   toolInputValidationErrors,
   sessionStartSource,
   streaming = true,
@@ -2151,6 +2157,12 @@ export async function createRun({
    * run. Tenant fanout can still export when tenant routing is available.
    */
   centralTraceExportEnabled?: boolean;
+  /**
+   * Exact tool names the owner approved for the rest of this conversation, read from the
+   * stored conversation (never from the request body). Honored only when
+   * `toolApproval.allowAlways` is on; admin `deny`/`ask` rules and hooks still win.
+   */
+  toolApprovalAllows?: readonly string[];
   /**
    * Request values the deployment may export as Langfuse trace metadata
    * (`langfuse.trace.conversationMetadataFields`). The conversation id,
@@ -2744,7 +2756,7 @@ export async function createRun({
   );
   const effectiveToolApprovalPolicy = () =>
     exemptAskUserQuestionFromApproval(
-      healToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases),
+      buildEffectiveToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases, toolApprovalAllows),
       ASK_USER_QUESTION_TOOL_NAME,
     );
   const nativeEditFileAgentIds = collectNativeEditFileAgentIds(agents);
@@ -3064,6 +3076,7 @@ export async function createRun({
   };
   const run = await Run.create(runConfig);
   if (approvalWiring != null) bindRunToolApprovalSession(run, agentApprovalSession);
+  runMCPToolAliases.set(run, mcpToolAliases);
 
   applyCustomHandoffPromptKeyCompatibility(run, runConfig.graphConfig);
   applyTestRunHook(run, {

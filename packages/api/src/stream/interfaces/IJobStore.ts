@@ -177,6 +177,13 @@ export interface SerializableJobData {
   userSubmittedPaths?: string[];
   /** Exact request-only message fields embedded at caller-authored paths. */
   userSubmittedMessageFieldPaths?: UserSubmittedMessageFieldPath[];
+  /** Provenance that the latest approval claim replaced. Until that resume's provider
+   * segment starts, its decision is not in the job's content, so an abort publishes
+   * these paths instead of the claimed ones. */
+  preResumeProvenance?: Pick<
+    SerializableJobData,
+    'userSubmittedPaths' | 'userSubmittedMessageFieldPaths'
+  >;
 
   /**
    * Whether this run has activity labels enabled (per-endpoint

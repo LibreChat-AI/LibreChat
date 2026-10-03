@@ -9,7 +9,9 @@ import {
 } from './modes';
 import { bindToolApproval, bindToolApprovalIdentity } from '~/tools/approval';
 import { buildToolApprovalPayload, toClientPendingAction } from './policy';
+import { buildEffectiveToolApprovalPolicy } from './allow';
 import { bindToolReviewAuthority } from '~/tools/approval';
+import { buildHITLRunWiring } from './runtime';
 
 const scope = { userId: 'user-a', tenantId: 'tenant-a', conversationId: 'chat-a' };
 const name = 'query_mcp_db';
@@ -681,3 +683,36 @@ test('synthetic responses retire call candidates at the settled batch boundary',
       .call_0?.agentId,
   ).toBe(b.id);
 });
+
+test.each(['ask', 'allow', 'chat', 'always'] as const)(
+  'dev conversation allows preserve the executing agent’s %s mode',
+  async (mode) => {
+    const source = agent(mode);
+    const storage = store();
+    const policy = buildEffectiveToolApprovalPolicy(
+      { enabled: true, mode: 'default', allowAlways: true },
+      [],
+      [name],
+    );
+    const session = createAgentToolApprovalSession({
+      agents: [source],
+      scope,
+      storage,
+      policy: () => policy,
+    });
+    const wiring = buildHITLRunWiring(policy, {}, [], [{ hook: session.hook }])!;
+    const before = await executeHooks({ registry: wiring.hooks, input: input(), matchQuery: name });
+    expect(before.decision).toBe(mode === 'allow' ? 'allow' : 'ask');
+    if (mode === 'chat' || mode === 'always') {
+      await storage.rememberToolApprovalGrants(scope, [
+        resolveAgentToolGrantBinding(source, name, scope)!,
+      ]);
+      const after = await executeHooks({
+        registry: wiring.hooks,
+        input: input('agent-a', 'next-call'),
+        matchQuery: name,
+      });
+      expect(after.decision).toBe('allow');
+    }
+  },
+);

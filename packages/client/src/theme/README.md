@@ -367,7 +367,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   `size-theme-icon-lg` (`iconSize`, `iconSizeLg`) the icons in menus and selects and
   the dialog's close icon, `h-theme-field-lg` (`fieldHeightLg`) the large `title`
   input, and `h-theme-target` the switch's hit area, and `min-w-theme-tab` (`tabMinWidth`, `0` to size a tab by its label) the tab
-  trigger. Every default is the size the primitive drew before. The icon and checkbox roles
+  trigger. `min-w-theme-list` and `max-h-theme-list` (`listMinWidth`, `0` to size the list by
+  its trigger, and `listMaxHeight`, 8 to 40rem) bound the Select's list. Every default is the size the primitive drew before. The icon and checkbox roles
   are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeMd` (the
   exported Dialog's close glyph) 1.25 to 1.5rem, `iconSizeLg` 1 to 2rem, `checkboxSize` 1 to
   1.5rem. The target floor (`h-theme-target`, `min-h-theme-target`, `min-w-theme-target`) is

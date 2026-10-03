@@ -286,6 +286,8 @@ export interface IConversation extends Document {
   codeEnvironmentRevision?: number;
   codeEnvironmentMode?: CodeEnvironmentMode;
   codeWorkspaces?: CodeWorkspaceSelection[];
+  /** Exact tool names auto-approved for this conversation; server-written only. */
+  toolApprovalAllows?: string[];
   /** Immutable primary persisted-agent attribution for Insights. */
   initial_agent_id?: string | null;
   subagentThread?: TSubagentThreadLineage;
