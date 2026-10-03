@@ -157,6 +157,47 @@ describe('LiaEngine', () => {
     expect(frames).toHaveLength(1);
   });
 
+  it('keeps one animation loop when a host callback restarts the engine mid-frame', () => {
+    const frames: FrameRequestCallback[] = [];
+    jest.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      frames.push(cb);
+      return frames.length;
+    });
+    jest.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
+    let restart = true;
+    const engine: LiaEngine = new LiaEngine(
+      document.createElement('canvas'),
+      {
+        platform: () => PLATFORM,
+        onBubble: () => undefined,
+        onFrame: () => {
+          if (restart) {
+            restart = false;
+            engine.stop();
+            engine.start();
+          }
+        },
+      },
+      0,
+    );
+    engine.start();
+    frames[0](16);
+    /* The first frame scheduled only the restarted loop, not a second copy of its own. */
+    expect(frames).toHaveLength(2);
+    frames[1](32);
+    expect(frames).toHaveLength(3);
+  });
+
+  it('does the first move of a reduced-motion action where it snapped, before any frame', () => {
+    const { engine } = setup();
+    engine.life = false;
+    engine.reducedMotion = true;
+    engine.play('sit-edge', 2, 0);
+    expect(engine.position.x).toBe(PLATFORM.x1);
+    run(engine, 0, 100);
+    expect(engine.position.x).toBe(PLATFORM.x1);
+  });
+
   it('finishes a walk at once when reduced motion turns on', () => {
     const { engine } = setup();
     engine.life = false;

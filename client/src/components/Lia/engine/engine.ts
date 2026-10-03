@@ -145,6 +145,8 @@ export class LiaEngine {
   private clicks: number[] = [];
   private petIndex = 0;
   private frameId = 0;
+  /** The running animation loop; a frame from an older loop never schedules another. */
+  private loop: object | null = null;
   private readonly ctx: CanvasRenderingContext2D | null;
 
   constructor(
@@ -160,13 +162,15 @@ export class LiaEngine {
   }
 
   start() {
-    if (this.frameId) {
+    if (this.loop) {
       return;
     }
+    const token = {};
+    this.loop = token;
     const loop = (now: number) => {
       this.tick(now);
-      /* A host callback may have stopped the engine during this frame. */
-      if (this.frameId) {
+      /* A host callback may have stopped, or stopped and restarted, the engine this frame. */
+      if (this.loop === token) {
         this.frameId = requestAnimationFrame(loop);
       }
     };
@@ -176,6 +180,7 @@ export class LiaEngine {
   stop() {
     cancelAnimationFrame(this.frameId);
     this.frameId = 0;
+    this.loop = null;
   }
 
   get reducedMotion() {
@@ -297,10 +302,7 @@ export class LiaEngine {
     if (!platform) {
       return;
     }
-    if (!this.placed) {
-      this.gx = platform.x0 + (platform.x1 - platform.x0) * 0.75;
-      this.placed = true;
-    }
+    this.place(platform);
     this.updateRun(now);
     this.updateLife(dt, now);
     this.updateMotion(dt, now, platform);
@@ -397,6 +399,14 @@ export class LiaEngine {
     }
   }
 
+  /** Puts Lia on her first platform; a move resolved before her first frame starts from here. */
+  private place(platform: Platform) {
+    if (!this.placed) {
+      this.gx = platform.x0 + (platform.x1 - platform.x0) * 0.75;
+      this.placed = true;
+    }
+  }
+
   private startMove(m: NonNullable<StepSpec['m']>, run: Run, now: number) {
     const platform = this.host.platform();
     if (!platform) {
@@ -404,6 +414,7 @@ export class LiaEngine {
       return;
     }
     run.pending = null;
+    this.place(platform);
     const tx = clamp(this.resolveTarget(m.to, platform), platform.x0, platform.x1);
     const style = m.style ?? 'walk';
     if (this.reducedMotion || style === 'teleport') {
