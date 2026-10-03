@@ -630,6 +630,34 @@ describe('normalizeUsageUnits', () => {
 });
 
 describe('formatCost', () => {
+  /**
+   * `formatCost` calls `Intl.NumberFormat(undefined, …)`, which resolves to the
+   * runtime's default locale. The exact-string assertions below (e.g. `$0.00`)
+   * only hold under an en-US default; on a CI runner or developer machine with a
+   * non-en default locale they format differently (e.g. `US$ 0,00` under pt-BR)
+   * and the suite fails for environmental reasons unrelated to the code. Pin the
+   * `undefined`-locale path to en-US for the duration of this block so the test
+   * is deterministic everywhere. Explicit locales are still honored.
+   */
+  const RealNumberFormat = Intl.NumberFormat;
+
+  beforeAll(() => {
+    const Pinned = function (
+      this: unknown,
+      locales?: Intl.LocalesArgument,
+      options?: Intl.NumberFormatOptions,
+    ) {
+      return new RealNumberFormat(locales ?? 'en-US', options);
+    } as unknown as typeof Intl.NumberFormat;
+    Pinned.prototype = RealNumberFormat.prototype;
+    Pinned.supportedLocalesOf = RealNumberFormat.supportedLocalesOf;
+    Intl.NumberFormat = Pinned;
+  });
+
+  afterAll(() => {
+    Intl.NumberFormat = RealNumberFormat;
+  });
+
   it('formats across magnitude bands (USD default, unchanged)', () => {
     expect(formatCost(0)).toBe('$0.00');
     expect(formatCost(0.004)).toBe('<$0.01');
