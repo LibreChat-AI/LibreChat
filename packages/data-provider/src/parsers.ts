@@ -446,6 +446,27 @@ function applyTimezone(value: dayjs.Dayjs, timezone?: string): dayjs.Dayjs {
   }
 }
 
+/**
+ * Fields on the user object that may be expanded via
+ * `{{LIBRECHAT_USER_<FIELD>}}` placeholders inside a prompt template
+ * (e.g. modelSpecs `promptPrefix`, agent instructions, prompts).
+ *
+ * The set is intentionally limited to non-sensitive identity fields and
+ * mirrors the allowlist used by MCP/header placeholder resolution in
+ * `@librechat/api`. Placeholders for fields that are missing on the user
+ * object are left intact (matching the existing `{{current_user}}` contract).
+ */
+export const librechatUserFields = [
+  'id',
+  'name',
+  'username',
+  'email',
+  'provider',
+  'role',
+] as const;
+
+export type LibreChatUserField = (typeof librechatUserFields)[number];
+
 export function replaceSpecialVars({
   text,
   user,
@@ -476,6 +497,20 @@ export function replaceSpecialVars({
 
   if (user && user.name) {
     result = result.replace(/{{\s*current_user\s*}}/gi, user.name);
+  }
+
+  if (user) {
+    for (const field of librechatUserFields) {
+      const fieldValue = (user as Record<string, unknown>)[field];
+      if (fieldValue == null || fieldValue === '') {
+        continue;
+      }
+      const pattern = new RegExp(
+        `{{\\s*LIBRECHAT_USER_${field.toUpperCase()}\\s*}}`,
+        'gi',
+      );
+      result = result.replace(pattern, String(fieldValue));
+    }
   }
 
   return result;

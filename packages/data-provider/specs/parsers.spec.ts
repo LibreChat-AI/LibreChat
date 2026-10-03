@@ -169,6 +169,88 @@ describe('replaceSpecialVars', () => {
     expect(result).toContain('2024-04-29T16:34:56.000Z'); // iso_datetime
     expect(result).toContain('Test User'); // current_user
   });
+
+  describe('LIBRECHAT_USER_* placeholders', () => {
+    const fullUser = {
+      id: 'user-abc-123',
+      name: 'Test User',
+      username: 'tuser',
+      email: 'tuser@example.com',
+      role: 'USER',
+      provider: 'ldap',
+    } as TUser;
+
+    test('expands LIBRECHAT_USER_USERNAME and LIBRECHAT_USER_ID', () => {
+      const result = replaceSpecialVars({
+        text: 'USERNAME={{LIBRECHAT_USER_USERNAME}} USER_ID={{LIBRECHAT_USER_ID}}',
+        user: fullUser,
+      });
+      expect(result).toBe('USERNAME=tuser USER_ID=user-abc-123');
+    });
+
+    test('alongside {{current_date}} (modelSpecs.promptPrefix scenario from #12686)', () => {
+      const result = replaceSpecialVars({
+        text: [
+          'DATE={{current_date}}',
+          'USERNAME={{LIBRECHAT_USER_USERNAME}}',
+          'USER_ID={{LIBRECHAT_USER_ID}}',
+        ].join('\n'),
+        user: fullUser,
+      });
+      expect(result).toBe(
+        ['DATE=2024-04-29 (Monday)', 'USERNAME=tuser', 'USER_ID=user-abc-123'].join('\n'),
+      );
+    });
+
+    test('expands email, role, provider, and name fields', () => {
+      const result = replaceSpecialVars({
+        text:
+          'email={{LIBRECHAT_USER_EMAIL}} role={{LIBRECHAT_USER_ROLE}} ' +
+          'provider={{LIBRECHAT_USER_PROVIDER}} name={{LIBRECHAT_USER_NAME}}',
+        user: fullUser,
+      });
+      expect(result).toBe(
+        'email=tuser@example.com role=USER provider=ldap name=Test User',
+      );
+    });
+
+    test('is case-insensitive and tolerates surrounding whitespace', () => {
+      const result = replaceSpecialVars({
+        text: '{{ librechat_user_username }} / {{LIBRECHAT_USER_username}}',
+        user: fullUser,
+      });
+      expect(result).toBe('tuser / tuser');
+    });
+
+    test('leaves placeholder intact when the user field is missing', () => {
+      const partialUser = { id: 'u1', name: 'Only Name' } as TUser;
+      const result = replaceSpecialVars({
+        text: 'u={{LIBRECHAT_USER_USERNAME}} id={{LIBRECHAT_USER_ID}}',
+        user: partialUser,
+      });
+      expect(result).toBe('u={{LIBRECHAT_USER_USERNAME}} id=u1');
+    });
+
+    test('leaves placeholders intact when no user is supplied', () => {
+      const result = replaceSpecialVars({
+        text: '{{LIBRECHAT_USER_USERNAME}} {{LIBRECHAT_USER_ID}}',
+      });
+      expect(result).toBe('{{LIBRECHAT_USER_USERNAME}} {{LIBRECHAT_USER_ID}}');
+    });
+
+    test('does not expand fields outside the allowlist', () => {
+      const userWithExtras = {
+        id: 'u1',
+        name: 'N',
+        avatar: 'https://example.com/a.png',
+      } as TUser;
+      const result = replaceSpecialVars({
+        text: '{{LIBRECHAT_USER_AVATAR}} {{LIBRECHAT_USER_PASSWORD}}',
+        user: userWithExtras,
+      });
+      expect(result).toBe('{{LIBRECHAT_USER_AVATAR}} {{LIBRECHAT_USER_PASSWORD}}');
+    });
+  });
 });
 
 describe('parseCompactConvo', () => {
