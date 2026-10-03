@@ -20,20 +20,11 @@ const baseState: ComposerHintState = {
   idleActions: { prompts: true, mentions: true, attach: true },
 };
 
-/** What `useShortcutDisplay('stopGenerating')` resolves to by default on a Mac. */
-const STOP = '⌘ ⇧ X';
-
-const hint = (
-  overrides: Partial<ComposerHintState>,
-  isMac = true,
-  stop = STOP,
-  altEnterInterrupt = true,
-) =>
-  composeHint({ ...baseState, ...overrides }, localize, isMac, stop, undefined, altEnterInterrupt)
-    .text;
+const hint = (overrides: Partial<ComposerHintState>, isMac = true, altEnterInterrupt = true) =>
+  composeHint({ ...baseState, ...overrides }, localize, isMac, undefined, altEnterInterrupt).text;
 
 const kindOf = (overrides: Partial<ComposerHintState>) =>
-  composeHint({ ...baseState, ...overrides }, localize, true, STOP).kind;
+  composeHint({ ...baseState, ...overrides }, localize, true).kind;
 
 describe('composeHint', () => {
   it('shows discovery affordances on an untouched composer', () => {
@@ -58,23 +49,11 @@ describe('composeHint', () => {
     expect(hint({ hasText: true })).toBe('com_ui_composer_hint_typing');
   });
 
-  /* The line used to read "Esc to stop", which no handler anywhere implements:
-     stopping is bound to the `stopGenerating` shortcut, and the user can rebind
-     it. Naming a key the composer does not answer to is worse than naming none. */
-  it('names the live stop binding while generating with an empty composer', () => {
-    expect(hint({ isSubmitting: true })).toBe('⌘ ⇧ X com_ui_composer_hint_stop');
-    expect(hint({ isSubmitting: true }, false, 'Ctrl+Shift+X')).toBe(
-      'Ctrl+Shift+X com_ui_composer_hint_stop',
-    );
-  });
-
-  it('names no stop key until the stop control can act', () => {
-    expect(hint({ isSubmitting: true, canStop: false })).toBe('com_ui_composer_hint_running');
-    expect(hint({ isSubmitting: true, canStop: true })).toBe('⌘ ⇧ X com_ui_composer_hint_stop');
-  });
-
-  it('names no key at all once the binding is cleared', () => {
-    expect(hint({ isSubmitting: true }, true, '')).toBe('com_ui_composer_hint_running');
+  /* The stop button sits beside the composer, so a plain running reply names
+     no key; the copy is ambient, shown only to users who keep tips on. */
+  it('names no stop key while generating with an empty composer', () => {
+    expect(hint({ isSubmitting: true })).toBe('com_ui_composer_hint_running');
+    expect(kindOf({ isSubmitting: true })).toBe('tip');
   });
 
   describe('during a run with text', () => {
@@ -105,9 +84,9 @@ describe('composeHint', () => {
       expect(hint(state, false)).toContain('Alt+⏎');
     });
 
-    it('falls back to stop when the modifiers have no text to act on', () => {
+    it('falls back to the running copy when the modifiers have no text to act on', () => {
       expect(hint({ duringRunActive: true, hasText: false, isSubmitting: true })).toBe(
-        '⌘ ⇧ X com_ui_composer_hint_stop',
+        'com_ui_composer_hint_running',
       );
     });
 
@@ -150,7 +129,7 @@ describe('composeHint', () => {
          or disabled shortcuts each make the chord do something else; the hint
          follows the same verdict the during-run button reads. */
       it('omits the interrupt chord when the resolver no longer returns it', () => {
-        const result = hint({ ...preEpoch, canControlGeneration: true }, true, STOP, false);
+        const result = hint({ ...preEpoch, canControlGeneration: true }, true, false);
         expect(result).not.toContain('com_ui_composer_hint_interrupt');
         expect(result).not.toContain('⌥⏎');
         expect(result).toContain('com_ui_composer_hint_send_now');
@@ -172,7 +151,6 @@ describe('composeHint', () => {
         { ...baseState, hasText: true, enterToSend: false },
         localize,
         true,
-        STOP,
         { customized: true, display: '' },
       ).text;
       expect(result).toBe('⏎ com_ui_composer_hint_newline');
@@ -199,7 +177,6 @@ describe('composeHint', () => {
     });
 
     it('marks anything happening right now as state, which always shows', () => {
-      expect(kindOf({ isSubmitting: true })).toBe('state');
       expect(kindOf({ uploadingCount: 1 })).toBe('state');
       expect(kindOf({ answerModeActive: true })).toBe('state');
       expect(kindOf({ duringRunActive: true, hasText: true })).toBe('state');

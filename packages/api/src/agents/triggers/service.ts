@@ -1,5 +1,6 @@
 import {
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
@@ -50,6 +51,7 @@ const DEFAULT_PURGE_RECOVERY_LIMIT = 25;
 
 export interface AgentTriggerServiceOptions {
   completionResultBatchSize?: number;
+  completionReceiptBatching?: boolean;
   address?: BoundAddress | string | null;
   idlePolling?: {
     queuedTurnMaxIntervalMs?: number;
@@ -230,6 +232,7 @@ export interface AgentTriggerService {
     input: Parameters<AgentTriggerDeliveryMethods['getAgentBackgroundToolResultClaim']>[0],
   ) => ReturnType<AgentTriggerDeliveryMethods['getAgentBackgroundToolResultClaim']>;
   getBackgroundCompletionResultBatchSize: () => number;
+  getBackgroundCompletionReceiptBatching: () => boolean;
   /** Longest a waiting completion delivery re-checks readiness. */
   getCompletionWaitMaxIntervalMs: () => number;
   /** Best effort: moves waiting completion deliveries forward after what they wait on changed. */
@@ -271,6 +274,7 @@ function createDeliveryStore(
         ...input,
         workerCapabilities: [
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+          AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
@@ -352,6 +356,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
   }
   let boundOrigin: string | undefined;
   let backgroundCompletionResultBatchSize = 8;
+  let backgroundCompletionReceiptBatching = false;
   let completionWaitMaxIntervalMs = WAITING_RETRY_CAP_MS;
   let deliveryEngine: AgentTriggerDeliveryEngine | undefined;
   let initializePromise: Promise<void> | undefined;
@@ -410,7 +415,13 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
 
   const dispatchForActivePrincipal = async (
     envelope: unknown,
-    options?: { signal?: AbortSignal; attempt?: number; maxAttempts?: number },
+    options?: {
+      signal?: AbortSignal;
+      attempt?: number;
+      maxAttempts?: number;
+      deliveryClaimToken?: string;
+      requiredWorkerCapability?: string;
+    },
   ): Promise<AgentTriggerExecutionResult> => {
     const parsed = parseAgentTriggerEnvelope(envelope);
     await requireActivePrincipal(parsed.principal.userId);
@@ -619,6 +630,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
   return {
     initialize: (options = {}) => {
       backgroundCompletionResultBatchSize = options.completionResultBatchSize ?? 8;
+      backgroundCompletionReceiptBatching = options.completionReceiptBatching === true;
       completionWaitMaxIntervalMs =
         options.idlePolling?.completionWaitMaxIntervalMs ?? WAITING_RETRY_CAP_MS;
       boundOrigin = selfOriginFromAddress(options.address) ?? boundOrigin;
@@ -809,6 +821,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         return getClaim == null ? null : getClaim(input);
       }),
     getBackgroundCompletionResultBatchSize: () => backgroundCompletionResultBatchSize,
+    getBackgroundCompletionReceiptBatching: () => backgroundCompletionReceiptBatching,
     getCompletionWaitMaxIntervalMs: () => completionWaitMaxIntervalMs,
     expediteCompletionWakeups: (input) => expediteCompletions(input),
     releaseBackgroundToolResultClaims: (input) =>

@@ -47,6 +47,10 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  savePrivateTextMessage: (save, _req, ...args) => save(...args),
+  savePrivateTextErrorTurn: (...args) =>
+    jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
+  stampPreliminaryPrivateTextMessage: (_req, message) => message,
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   applyForcedTemporaryRequest: jest.fn(),
@@ -78,7 +82,7 @@ jest.mock('@librechat/api', () => ({
   resolvePersistableCodeEnvironmentDecision: (...args) =>
     jest.requireActual('@librechat/api').resolvePersistableCodeEnvironmentDecision(...args),
   getSafeErrorMetadata: jest.requireActual('@librechat/api').getSafeErrorMetadata,
-  getSafeErrorText: jest.requireActual('@librechat/api').getSafeErrorText,
+  logGenerationStartFailure: jest.requireActual('@librechat/api').logGenerationStartFailure,
   startAgentProjectContextResolution:
     jest.requireActual('@librechat/api').startAgentProjectContextResolution,
   assertChatProjectInstructions: jest.requireActual('@librechat/api').assertChatProjectInstructions,

@@ -152,6 +152,20 @@ describe('resolveCodeExecutionContext', () => {
       );
     });
 
+    it('routes to the chosen machine when the deployment leaves the flag unset', () => {
+      const { allowEnvironmentSelection: _unset, ...unset } = params;
+      expect(resolveCodeExecutionContext(unset).environmentId).toBe('runtime-vm');
+    });
+
+    it('retains fixed routing when the deployment turns the decision protocol off', () => {
+      process.env.CODE_ENVIRONMENT_DECISION_VERSION = '0';
+      try {
+        expect(resolveCodeExecutionContext(params).environmentId).toBe('application-vm');
+      } finally {
+        delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+      }
+    });
+
     it.each(['allowEnvironmentSelection', 'environmentIds'] as const)(
       'retains fixed routing when %s is disabled',
       (gate) => {
@@ -770,6 +784,17 @@ describe('stateful code approval target binding', () => {
       { environmentId: 'environment-a', workspaceId: 'project-a', agentIds: ['agent-a'] },
     ]);
   });
+
+  it.each(['source', 'isolated'] as const)(
+    'retains the %s checkout when stripping live capabilities',
+    (checkout) => {
+      const selected = context();
+      selected.codeWorkspace!.checkout = checkout;
+      expect(getCodeWorkspaceSelections([selected])).toEqual([
+        { environmentId: 'environment-a', workspaceId: 'project-a', checkout },
+      ]);
+    },
+  );
 });
 
 describe('codeExecutionAuthHeaders', () => {

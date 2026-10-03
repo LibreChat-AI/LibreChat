@@ -29,6 +29,7 @@ import type {
 } from './subagentTaskRouting';
 import type { SubagentTaskWakeupRegistration } from './subagentThreads';
 import type { IEventTransport } from '~/stream/interfaces/IJobStore';
+import type { SubagentActivityEnvelope } from './subagentActivity';
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
 import {
   buildSubagentThreadTaskConfig,
@@ -39,6 +40,7 @@ import { controlFingerprint, SubagentTaskOwnerUnavailableError } from './subagen
 import { SUBAGENT_COMPLETION_DELIVERY } from './subagentDelivery';
 import { createSubagentAttemptKey } from './subagentThreadIds';
 import { SubagentActivityStream } from './subagentActivity';
+import { InMemoryEventTransport } from '~/stream';
 import { createSubagentUsageSink } from './usage';
 
 let mongod: MongoMemoryServer;
@@ -215,8 +217,9 @@ async function waitForSettled(
 async function waitUntil(
   condition: () => boolean | Promise<boolean>,
   description: string,
+  timeoutMs = 4_000,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 400; attempt += 1) {
+  for (let attempt = 0; attempt < Math.ceil(timeoutMs / 10); attempt += 1) {
     if (await condition()) {
       return;
     }
@@ -303,6 +306,97 @@ describe('SubagentThreadTaskStore', () => {
     expect(automaticStore.controlTask).toEqual(expect.any(Function));
     await expect(automaticStore.hasTasks(automatic.scopeId)).resolves.toBe(false);
     await expect(automaticStore.listTasks(automatic.scopeId)).resolves.toEqual([]);
+  });
+
+  it('scopes the plain agent-name lookup to the execution tenant', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const id = 'tenant-name-agent';
+    await tenantStorage.run({ tenantId: 'name-tenant-a', userId }, async () => {
+      await methods.createAgent({
+        id,
+        name: 'Scoped Reviewer',
+        author: userId,
+        provider: 'openAI',
+        model: 'test-model',
+      });
+      expect(await methods.getAgentName(id, 'name-tenant-a')).toBe('Scoped Reviewer');
+      expect(await methods.getAgentName(id, 'name-tenant-b')).toBeUndefined();
+      expect(await methods.getAgentName(id)).toBeUndefined();
+    });
+  });
+
+  it('keeps child execution independent of display-name lookup failure', async () => {
+    const userId = 'name-fallback-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    jest
+      .spyOn(methods, 'getAgentName')
+      .mockRejectedValueOnce(new Error('display-name lookup unavailable'));
+    const store = new SubagentThreadTaskStore(methods);
+    const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+    const started = store.start(taskRequest(config.scopeId));
+    await waitForSettled(store, config.scopeId, started);
+    expect(store.get(config.scopeId, requireAccepted(started).task.taskId)?.status).toBe(
+      'completed',
+    );
+    expect((await methods.getConvo(userId, requireThreadId(started)))?.title).toBe(
+      'researcher-agent',
+    );
+    store.destroyActivityStream();
+  });
+
+  it('resolves legacy null-tenant names without crossing tenant boundaries', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    await methods.createAgent({
+      id: 'null-tenant-agent',
+      name: 'Legacy Reviewer',
+      author: userId,
+      provider: 'openAI',
+      model: 'test-model',
+    });
+    await mongoose.connection
+      .collection('agents')
+      .updateOne({ id: 'null-tenant-agent' }, { $set: { tenantId: null } });
+    expect(await methods.getAgentName('null-tenant-agent')).toBe('Legacy Reviewer');
+    expect(await methods.getAgentName('null-tenant-agent', 'other-tenant')).toBeUndefined();
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const store = new SubagentThreadTaskStore(methods);
+    const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+    const started = store.start(taskRequest(config.scopeId, { subagentType: 'null-tenant-agent' }));
+    await waitForSettled(store, config.scopeId, started);
+    expect((await methods.getConvo(userId, requireThreadId(started)))?.title).toBe(
+      'Legacy Reviewer',
+    );
+    store.destroyActivityStream();
+  });
+
+  it('persists the child agent name and falls back to its id', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    await methods.createAgent({
+      id: 'researcher-agent',
+      name: 'PR Reviewer',
+      author: userId,
+      provider: 'openAI',
+      model: 'test-model',
+    });
+    const store = new SubagentThreadTaskStore(methods);
+    const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+    const named = store.start(taskRequest(config.scopeId));
+    await waitForSettled(store, config.scopeId, named);
+    expect((await methods.getConvo(userId, requireThreadId(named)))?.title).toBe('PR Reviewer');
+    const unnamed = store.start(
+      taskRequest(config.scopeId, {
+        subagentType: 'missing-agent',
+        idempotencyKey: randomUUID(),
+        parentToolCallId: 'second-call',
+      }),
+    );
+    await waitForSettled(store, config.scopeId, unnamed);
+    expect((await methods.getConvo(userId, requireThreadId(unnamed)))?.title).toBe('missing-agent');
+    store.destroyActivityStream();
   });
 
   it('maps one logical SDK thread to a durable, view-only LibreChat conversation', async () => {
@@ -563,6 +657,7 @@ describe('SubagentThreadTaskStore', () => {
 
     await expect(terminal).resolves.toBe('completed');
     expect(events).toEqual([
+      { event: 'subagent_activity_replay', data: [] },
       {
         event: 'on_subagent_update',
         data: expect.objectContaining({
@@ -648,6 +743,153 @@ describe('SubagentThreadTaskStore', () => {
     expect(publicationOrder).toEqual(['first', 'second', 'done']);
   });
 
+  it('retries a transient publication and shows overflow counts without blocking persistence', async () => {
+    const userId = 'activity-recovery-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const store = new SubagentThreadTaskStore(methods, {
+      activity: {
+        publicationTimeoutMs: 200,
+        retryAttempts: 3,
+        retryBaseDelayMs: 10,
+        recoveryDelayMs: 100,
+      },
+    });
+    const stream = new SubagentActivityStream(new InMemoryEventTransport());
+    store.configureActivityStream(stream);
+    const originalPublish = stream.publish.bind(stream);
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const publish = jest
+      .spyOn(stream, 'publish')
+      .mockRejectedValueOnce(new Error('transient Redis failure'));
+    publish.mockImplementationOnce(async (...args) => {
+      await blocked;
+      return originalPublish(...args);
+    });
+    const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+    const defaultRun = taskRequest(config.scopeId).run;
+    const run = async (...args: Parameters<typeof defaultRun>) => {
+      for (let i = 0; i < 120; i++)
+        args[0].reportProgress({
+          runId: 'parent',
+          parentRunId: 'parent',
+          subagentRunId: 'child',
+          subagentType: 'researcher-agent',
+          subagentKind: 'agent',
+          subagentAgentId: 'agent-1',
+          depth: 1,
+          ancestry: [],
+          phase: 'message_delta',
+          data: { delta: { content: [{ type: 'text', text: `${i},` }] } },
+          timestamp: '2026-09-29T00:00:00.000Z',
+        });
+      return defaultRun(...args);
+    };
+    const started = store.start(taskRequest(config.scopeId, { run }));
+    const events: SubagentActivityEnvelope[] = [];
+    const onDone = jest.fn();
+    const subscription = store.subscribeActivity(
+      requireThreadId(started),
+      requireAccepted(started).task.taskId,
+      {
+        onEvent: (event) => {
+          if (event.event === 'on_subagent_update') events.push(event);
+        },
+        onDone,
+      },
+    );
+    await subscription.ready;
+    await waitForSettled(store, config.scopeId, started);
+    await waitUntil(() => publish.mock.calls.length === 2, 'retry after transient failure');
+    release();
+    await waitUntil(() => onDone.mock.calls.length === 1, 'recovered activity terminal');
+    expect(events[0].data.activitySequence).toBe(0);
+    expect(events[events.length - 1].data.activitySequence).toBe(119);
+    expect(events.reduce((count, event) => count + (event.droppedCount ?? 0), 0)).toBe(19);
+    expect(events).toHaveLength(102);
+    const durable = await methods.getMessages({
+      user: userId,
+      conversationId: requireThreadId(started),
+      messageId: `${requireAccepted(started).task.taskId}:assistant`,
+    });
+    expect(durable).toHaveLength(1);
+    subscription.unsubscribe();
+    store.destroyActivityStream();
+  });
+
+  it.each([true, false])(
+    'drains activity admitted during worker release before DONE (hold run: %s)',
+    async (holdRun) => {
+      const userId = `activity-handoff-${holdRun}`;
+      const parentConversationId = randomUUID();
+      await saveParent(userId, parentConversationId);
+      const store = new SubagentThreadTaskStore(methods);
+      const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+      const defaultRun = taskRequest(config.scopeId).run;
+      let activityRuntime!: SubagentTaskRuntime;
+      let release!: () => void;
+      const finish = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const progress: SubagentUpdateEvent = {
+        runId: 'parent',
+        parentRunId: 'parent',
+        subagentRunId: 'child',
+        subagentType: 'researcher-agent',
+        subagentKind: 'agent',
+        subagentAgentId: 'agent-1',
+        depth: 1,
+        ancestry: [],
+        phase: 'message_delta',
+        data: { delta: { content: [{ type: 'text', text: 'first' }] } },
+        timestamp: '2026-09-29T00:00:00.000Z',
+      };
+      const drainStore = store as object as { drainActivity: (typeof store)['drainActivity'] };
+      const originalDrain = drainStore.drainActivity.bind(store);
+      jest.spyOn(drainStore, 'drainActivity').mockImplementationOnce(async (...args) => {
+        await originalDrain(...args);
+        activityRuntime.reportProgress({
+          ...progress,
+          data: { delta: { content: [{ type: 'text', text: 'last' }] } },
+        });
+      });
+      const run = async (...args: Parameters<typeof defaultRun>) => {
+        activityRuntime = args[0];
+        activityRuntime.reportProgress(progress);
+        if (holdRun) await finish;
+        return defaultRun(...args);
+      };
+      const started = store.start(taskRequest(config.scopeId, { run }));
+      const received: Array<number | 'done'> = [];
+      const subscription = store.subscribeActivity(
+        requireThreadId(started),
+        requireAccepted(started).task.taskId,
+        {
+          onEvent: (envelope) => {
+            const events =
+              envelope.event === 'subagent_activity_replay' ? envelope.data : [envelope];
+            for (const event of events)
+              if (event.data.activitySequence != null) received.push(event.data.activitySequence);
+          },
+          onDone: () => {
+            received.push('done');
+          },
+        },
+      );
+      await subscription.ready;
+      await waitUntil(() => received.includes(1), 'activity admitted at the idle handoff');
+      release();
+      await waitUntil(() => received.includes('done'), 'terminal after all admitted activity');
+      expect(received).toEqual([0, 1, 'done']);
+      await waitForSettled(store, config.scopeId, started);
+      subscription.unsubscribe();
+      store.destroyActivityStream();
+    },
+  );
+
   it('keeps activity delivery observational when its transport is unavailable', async () => {
     const userId = 'activity-stream-failure-user';
     const parentConversationId = randomUUID();
@@ -709,7 +951,10 @@ describe('SubagentThreadTaskStore', () => {
     expect(store.get(config.scopeId, requireAccepted(started).task.taskId)?.status).toBe(
       'completed',
     );
-    expect(emitChunk).toHaveBeenCalledTimes(1);
+    await waitUntil(
+      () => emitChunk.mock.calls.length === 6,
+      'bounded activity and gap-marker retries',
+    );
   });
 
   it('bounds stalled activity and still attempts terminal delivery', async () => {
@@ -774,8 +1019,8 @@ describe('SubagentThreadTaskStore', () => {
     expect(store.get(config.scopeId, requireAccepted(started).task.taskId)?.status).toBe(
       'completed',
     );
-    await waitUntil(() => emitDone.mock.calls.length === 1, 'terminal activity delivery');
-    expect(emitChunk).toHaveBeenCalledTimes(1);
+    await waitUntil(() => emitDone.mock.calls.length === 1, 'terminal activity delivery', 10_000);
+    expect(emitChunk).toHaveBeenCalledTimes(6);
   });
 
   it('fails before provider work and keeps the durable failure collectable when registration fails', async () => {

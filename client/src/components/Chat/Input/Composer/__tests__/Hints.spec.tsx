@@ -12,10 +12,6 @@ jest.mock('~/hooks/Input/useComposerBindings', () => ({
   }),
 }));
 
-jest.mock('~/hooks/useKeyboardShortcuts', () => ({
-  useShortcutDisplay: () => 'Ctrl+Shift+X',
-}));
-
 const baseState: ComposerHintState = {
   hasText: true,
   isSubmitting: false,

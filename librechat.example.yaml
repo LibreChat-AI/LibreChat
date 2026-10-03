@@ -698,6 +698,13 @@ endpoints:
   #   maxRecursionLimit: 100
   #   # (optional) Abort a run once a single streamed tool call's arguments exceed this many bytes.
   #   # Guards against runaway malformed tool-call generation. Defaults to 65536 (64 KiB); 0 disables.
+  #   # Host-side skill/sandbox edits, not attached-worker edits. Over-budget calls write nothing.
+  #   hostFileEdits:
+  #     maxEdits: 100
+  #     maxWorkBytes: 67108864  # cumulative matching/reconstruction bytes
+  #     maxOccurrences: 100000 # cumulative occurrences across every edit/pass
+  #     timeoutMs: 2000       # terminate an overlong worker job
+  #     maxConcurrent: 2      # per API process; no waiting queue
   #   maxToolCallArgBytes: 65536
   #   # (optional) Abort a run once a single model generation emits more than this many stream events.
   #   # Defense in depth against looping provider streams. Disabled by default.
@@ -751,6 +758,15 @@ endpoints:
   #   # (optional) Shared files during an active agent run. Each delegating agent must
   #   # also opt in with subagents.shareFiles. Inputs are read-only; outputs stay
   #   # private until explicitly published. Published files remain downloadable.
+  #   # Live child activity, independent of the completed transcript.
+  #   subagentActivity:
+  #     replayTtlMs: 300000 # Increase for long silent tool calls.
+  #     publicationTimeoutMs: 1000
+  #     retryAttempts: 3
+  #     retryBaseDelayMs: 100
+  #     recoveryDelayMs: 1000
+  #     memoryMaxStreams: 1000 # Non-Redis replay cache.
+  #     memoryMaxBytes: 16777216
   #   fileSharing:
   #     enabled: false
   #     allowSiblingSharing: false # permit explicitly named sibling/descendant recipients
@@ -766,6 +782,8 @@ endpoints:
   #   skills:
   #     maxCatalogSkills: 20
   #   # (optional) Agent Capabilities available to all users. Omit the ones you wish to exclude. Defaults to list below.
+  #   # web_search controls only LibreChat's external pipeline, not provider-native search.
+  #   # Both require WEB_SEARCH.USE, seeded by interface.webSearch. See UPGRADING.md.
   #   capabilities: ["deferred_tools", "execute_code", "file_search", "web_search", "artifacts", "subagents", "actions", "context", "skills", "memory", "ask_user_question", "tools", "chain", "ocr"]
   #   # The following capabilities are opt-in and must be added explicitly:
   #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents"
@@ -773,9 +791,9 @@ endpoints:
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
   #     # Let new chats choose an attached machine from their agent's explicit machine allowlist.
-  #     # Keep false until ALL API replicas support this field, then refresh clients.
-  #     # Omitted/false preserves agents' fixed machine bindings.
-  #     allowEnvironmentSelection: false
+  #     # On by default; only agents with a saved allowlist are affected. Set false to keep
+  #     # every agent on its fixed machine (for example while older API replicas still run).
+  #     allowEnvironmentSelection: true
   #     # Maximum additional machines per agent; default 32, supported ceiling 128.
   #     maxEnvironmentChoices: 32
   #     # Keep move-only behavior unless attach/detach is explicitly enabled.
@@ -1531,8 +1549,12 @@ endpoints:
 #   messages:
 #     unattributedAssistantContent: model_output # `model_output` (default) or `inspect`
 #     pii:
-#       action: audit # `block` (default), `audit`, or `redact` (reserved for transformation-aware ingress; current routes still block)
-#       # `redact` requires the later encrypted owner-view and canonical-message integration.
+#       action: audit # `block` (default), `audit`, or opt-in `redact`
+#       # `redact` transforms fresh, text-only interactive Agent chat submissions with a clientRequestId.
+#       # Edits, resumes, files, quotes, other endpoints, and other fields still use blocking checks.
+#       # Requires a valid CREDS_KEY. Preserve that key for owner-original recovery; changing it
+#       # makes existing originals unavailable. Text remains canonical/filtered in ordinary exports.
+#       # Originals are an encrypted, unindexed sidecar field, deleted/expired with the message.
 #       # maxCharacters: 65536 # bounded total inspected text per transformation session
 #       # maxMatches: 256 # bounded matches per transformation session
 #       # Custom patterns may set category: email, phone, name, credential, or custom.

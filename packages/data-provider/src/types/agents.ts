@@ -298,6 +298,8 @@ export namespace Agents {
 
   /** User message metadata for rebuilding submission on reconnect */
   export interface UserMessageMeta {
+    /** Canonical, nonsecret revision used to verify owner-only private text. */
+    privacyRevision?: string;
     messageId: string;
     parentMessageId?: string;
     conversationId?: string;

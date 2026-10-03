@@ -7,7 +7,7 @@ import {
   PermissionTypes,
 } from 'librechat-data-provider';
 import type { TConfigDefaults, TCustomConfig } from 'librechat-data-provider';
-import type { AppConfig } from '@librechat/data-schemas';
+import type { AppConfig, IRole } from '@librechat/data-schemas';
 import { updateInterfacePermissions } from './permissions';
 
 const mockUpdateAccessPermissions = jest.fn();
@@ -3003,5 +3003,62 @@ describe('updateInterfacePermissions - permissions', () => {
     for (const call of mockUpdateAccessPermissions.mock.calls) {
       expect(call[1][PermissionTypes.SCHEDULES]).toBeUndefined();
     }
+  });
+});
+
+describe('updateInterfacePermissions - web search recovery', () => {
+  it('preserves a stored denial on omission and restores it only with an explicit grant', async () => {
+    const roles = new Map(
+      [SystemRoles.USER, SystemRoles.ADMIN].map((name) => [
+        name,
+        { name, permissions: { [PermissionTypes.WEB_SEARCH]: { [Permissions.USE]: true } } },
+      ]),
+    );
+    const getRoleByName = jest.fn(async (name: string) => roles.get(name as SystemRoles) as IRole);
+    const updateAccessPermissions = jest.fn<
+      ReturnType<Parameters<typeof updateInterfacePermissions>[0]['updateAccessPermissions']>,
+      Parameters<Parameters<typeof updateInterfacePermissions>[0]['updateAccessPermissions']>
+    >(async (name, updates) => {
+      const role = roles.get(name as SystemRoles);
+      const grant = updates[PermissionTypes.WEB_SEARCH]?.[Permissions.USE];
+      if (role && grant !== undefined) {
+        role.permissions[PermissionTypes.WEB_SEARCH][Permissions.USE] = grant;
+      }
+    });
+    const sync = async (webSearch?: boolean) => {
+      updateAccessPermissions.mockClear();
+      const config = { interface: webSearch === undefined ? {} : { webSearch } };
+      const interfaceConfig = await loadDefaultInterface({
+        config,
+        configDefaults: { interface: {} } as TConfigDefaults,
+      });
+      await updateInterfacePermissions({
+        appConfig: { config, interfaceConfig } as unknown as AppConfig,
+        getRoleByName,
+        updateAccessPermissions,
+      });
+    };
+    const grants = () =>
+      [...roles.values()].map(
+        (role) => role.permissions[PermissionTypes.WEB_SEARCH][Permissions.USE],
+      );
+    const expectPreserved = () => {
+      for (const [, updates] of updateAccessPermissions.mock.calls) {
+        expect(updates).not.toHaveProperty(PermissionTypes.WEB_SEARCH);
+      }
+    };
+
+    await sync(false);
+    expect(grants()).toEqual([false, false]);
+    await sync();
+    expect(grants()).toEqual([false, false]);
+    expectPreserved();
+    await sync(true);
+    expect(grants()).toEqual([true, true]);
+    await sync();
+    expect(grants()).toEqual([true, true]);
+    expectPreserved();
+    await sync(false);
+    expect(grants()).toEqual([false, false]);
   });
 });

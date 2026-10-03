@@ -7,6 +7,7 @@ import type { TFile } from './types/files';
 import {
   CODE_ENVIRONMENT_MODES,
   CODE_WORKSPACE_ID_PATTERN,
+  CODE_WORKSPACE_CHECKOUT_MODES,
   MAX_AGENT_CODE_ENVIRONMENT_CHOICES,
 } from './code/workspace';
 import { userSubmittedMessageFieldPathSchema } from './filters';
@@ -944,6 +945,8 @@ export const tMessageSchema = z.object({
   /** @deprecated */
   generation: z.string().nullable().optional(),
   isCreatedByUser: z.boolean(),
+  /** Opaque revision of the separately authorized owner display. */
+  privacyRevision: z.string().optional(),
   /** True when the complete stored row came from outside the model. */
   isUserSubmitted: z.boolean().optional(),
   /** JSON pointers to caller-authored fields in an otherwise mixed model response. */
@@ -1200,6 +1203,7 @@ export const tConversationSchema = z.object({
         .object({
           environmentId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
           workspaceId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
+          checkout: z.enum(CODE_WORKSPACE_CHECKOUT_MODES).optional(),
           agentIds: z
             .array(z.string().regex(CODE_WORKSPACE_ID_PATTERN))
             .min(1)

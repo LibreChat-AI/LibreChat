@@ -269,3 +269,75 @@ event whose individual timing or acknowledgment is actionable. `fire`, `steer`, 
 `continue` deliveries reject the option instead of silently weakening their semantics. Deliveries
 with `expectedAction` also reject coalescing because one generation cannot prove several distinct
 action fences.
+
+## Background receipt batches
+
+Ordinary background tool and code completions use `background_tool_completion_batch_v3`.
+Older workers cannot claim these rows; v2 receipts retain task-local delivery. Subagent
+completions do not join receipt batches. The existing `completionResultBatchSize` bounds
+selection, with no collection window. Scope is owner, tenant, conversation, launching
+parent message, and target agent. Results launched on different parent messages remain
+separate even when their branches later converge.
+
+The root persists candidate keys before per-result claims, then freezes only successful
+claims in `backgroundToolResultBatch.members`. Retries use that same list. Each member's
+message projection is reconciled before dispatch. A first definite rejection releases the unadmitted plan. Once a handoff may have been
+admitted, later transport failures retain frozen ownership and the same idempotency key. Admission proof is stored before followers settle, and copied to each
+receipt so root retention cannot strand a follower.
+
+Followers defer without consuming attempts. A dead or retired root is recovered through
+the generation-admission fence before claims are released. Losing collectors release
+claims they cannot dispatch. Concurrent roots can still split the ready set; batching is
+opportunistic, not one-turn-per-conversation election.
+
+`triggerDelivery.spec.ts` includes a real-Mongo collecting barrier, crash/lost-reply
+injection, rolling-upgrade isolation, and an 8-conversation × 4-result storage stress
+harness. Its latency measures receipt admission, not model turns or deployment latency.
+
+Receipt batching defaults off. Deploy compatible receipt and manual-poll consumers on
+**every replica**, then enable:
+
+```yaml
+endpoints:
+  agents:
+    backgroundTasks:
+      completionReceiptBatching: true
+```
+
+Older manual-poll workers cannot read v3 ownership. Queue capability fencing alone does
+not protect that path. Disabling batching stops new v3 production, not existing
+ownership. Do not downgrade poll consumers while v3 receipts remain, including delivered
+receipts. A successor lease resumes interrupted cleanup before dispatch.
+
+Every plan, receipt claim, and message claim carries a physical batch identity. Cleanup
+matches that identity; its final plan deletion also matches a release identity and the
+queue lease. A durable dispatch counter prevents a definite retry failure from releasing
+an earlier ambiguous handoff. Native recovery fences distinguish unadmitted tombstones
+from actual generation admission. Proven admissions settle followers, never re-present
+results.
+
+Retired owners do not expire while a batch still needs claim release or per-receipt
+admission proof. Cleanup restores the ordinary retention deadline only after every
+member is safe without the owner. Retirement also closes publication and dispatch.
+
+A failed receipt write is repaired from its durable terminal message projection.
+Manual polling marks receipt reconciliation before automatic delivery can settle that
+handoff; speculative manual ownership only defers the automatic delivery.
+
+Manual confirmation resolves a lost reply by reading the exact committed claim.
+Failed confirmation rolls back only unreconciled ownership. If rollback is unavailable,
+automatic delivery invokes manual-generation recovery after that owner is no longer active.
+Its release CAS excludes committed manual handoffs, including confirmation after a stale
+snapshot. Explicit manual recovery keeps its existing generation-fenced contract.
+
+Manual reconciliation survives registry restoration and final response persistence.
+Collecting plans acquire the root before siblings, so empty retirement can clear an
+unowned plan without orphaning claims. Native `started` recovery fences confirm admission
+even when a custom store cannot read historical claims after job cleanup.
+
+Exact durable replays read the current claim without rewriting its handoff proof.
+Applied followers finish interrupted owner proof copying before they settle, including
+retired roots removed from the delivery queue.
+
+Manual polls carry the observed physical batch ID through recovery. A released owner’s
+late projection is cleared by that exact ID; successor epochs and manual claims remain owned.

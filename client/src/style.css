@@ -2523,9 +2523,19 @@ html[data-input-modality='keyboard']
 /* ask_user_question popover <-> chat-card morph (view transition) */
 ::view-transition-group(ask-question),
 ::view-transition-old(ask-question),
-::view-transition-new(ask-question) {
+::view-transition-new(ask-question),
+::view-transition-group(ask-question-chevron),
+::view-transition-old(ask-question-chevron),
+::view-transition-new(ask-question-chevron) {
   animation-duration: 280ms;
   animation-timing-function: cubic-bezier(0.32, 0.72, 0.22, 1);
+}
+
+/* The move control's chevron is its own group, so the morph also turns it
+   (down in the composer, up in the chat): the group interpolates the icon's
+   rotate-180. Above its card, below the composer like the card itself. */
+::view-transition-group(ask-question-chevron) {
+  z-index: 1;
 }
 
 /* The composer keeps its own snapshot group stacked above the morphing

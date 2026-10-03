@@ -1,5 +1,6 @@
 import {
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
@@ -185,6 +186,7 @@ describe('durable agent trigger service', () => {
       expect.objectContaining({
         workerCapabilities: [
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+          AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
@@ -208,6 +210,14 @@ describe('durable agent trigger service', () => {
       replayed: false,
       availableAt: START,
     });
+    await service.stop();
+  });
+
+  it('keeps receipt batching disabled until the deployment gate is explicitly enabled', async () => {
+    const service = createAgentTriggerService({ mintToken: () => 'test' });
+    expect(service.getBackgroundCompletionReceiptBatching()).toBe(false);
+    await service.initialize({ address: '127.0.0.1', completionReceiptBatching: true });
+    expect(service.getBackgroundCompletionReceiptBatching()).toBe(true);
     await service.stop();
   });
 
@@ -407,6 +417,7 @@ describe('durable agent trigger service', () => {
       expect.objectContaining({
         workerCapabilities: [
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+          AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,

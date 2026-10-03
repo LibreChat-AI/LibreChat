@@ -16,6 +16,10 @@ const {
   attachAskUserQuestionAnswers,
   attachAskUserQuestionArgs,
   createMessageFilterPii,
+  createPrivateTextIngress,
+  isPrivateTextChatSubmission,
+  isPreDenialTextSubmission,
+  saveAbortedUserMessage,
   isAgentTriggerRequest,
   exemptAgentTriggerFromIpLimiter,
   captureScheduleFireContext,
@@ -50,7 +54,13 @@ const {
   getServerGenerationProtocol,
   negotiateExistingGenerationProtocol,
 } = require('~/server/controllers/agents/protocol');
-const { getFiles, saveConvo, saveMessage } = require('~/models');
+const {
+  getFiles,
+  saveMessage,
+  saveConvo,
+  getPersistedPrivateTextId,
+  getPrivateMessageTexts,
+} = require('~/models');
 const {
   recordScheduleOutcome,
   beginScheduledStop,
@@ -147,6 +157,19 @@ router.use((req, _res, next) => {
   captureScheduleFireContext(req);
   next();
 });
+// Denials may persist submitted text on chat control routes too. Load policy before
+// any such denial; transformation remains limited to fresh interactive turns.
+const privateTextIngress = createPrivateTextIngress({
+  getFilters: (req) => req.config?.filters,
+  getLegacyPii: (req) => req.config?.messageFilter?.pii,
+  getKey: () => process.env.CREDS_KEY ?? '',
+});
+const chatConfigMiddleware = unless((req) => req.config != null, configMiddleware);
+router.use(
+  '/chat',
+  unless((req) => !isPreDenialTextSubmission(req), configMiddleware),
+  unless((req) => !isPrivateTextChatSubmission(req), privateTextIngress),
+);
 router.use(checkBan);
 router.use(uaParser);
 
@@ -569,7 +592,7 @@ router.get('/chat/status/:conversationId', async (req, res) => {
  * @access Private
  * @description Mounted before chatRouter to bypass buildEndpointOption middleware
  */
-router.post('/chat/abort', configMiddleware, async (req, res, next) => {
+router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
   logger.debug(`[AgentStream] ========== ABORT ENDPOINT HIT ==========`);
   logger.debug(`[AgentStream] Method: ${req.method}, Path: ${req.path}`);
 
@@ -832,9 +855,14 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
              * operation gets a chance to succeed. */
             let persistedRequestId;
             try {
-              const persistedRequest = await saveMessage(messageContext, requestMessage, {
-                context: 'api/server/routes/agents/index.js - abort user prerequisite',
-              });
+              const persistedRequest = await saveAbortedUserMessage(
+                { saveMessage, getPersistedPrivateTextId, getPrivateMessageTexts },
+                messageContext,
+                requestMessage,
+                { context: 'api/server/routes/agents/index.js - abort user prerequisite' },
+                req.user?.tenantId,
+                pendingAbortResult.finalEvent,
+              );
               if (!persistedRequest) {
                 throw new Error('Abort user prerequisite was not persisted');
               }
@@ -1079,7 +1107,7 @@ if (isEnabled(LIMIT_MESSAGE_USER)) {
 }
 router.post(
   '/chat/steer',
-  configMiddleware,
+  chatConfigMiddleware,
   ...steerLimiters,
   createMessageFilterPii({
     onTraversalFailure: reportLocatorTraversalFailure,
@@ -1100,7 +1128,7 @@ router.post(
  */
 router.post(
   '/chat/steer/deliver',
-  configMiddleware,
+  chatConfigMiddleware,
   ...steerLimiters,
   createMessageFilterPii({
     onTraversalFailure: reportLocatorTraversalFailure,
@@ -1120,7 +1148,7 @@ router.post(
  */
 router.post(
   '/chat/steer/cancel',
-  configMiddleware,
+  chatConfigMiddleware,
   ...steerLimiters,
   SteerController.SteerCancelController,
 );
@@ -1133,14 +1161,14 @@ router.post(
  */
 router.post(
   '/chat/steer/arm',
-  configMiddleware,
+  chatConfigMiddleware,
   ...steerLimiters,
   SteerController.SteerArmController,
 );
 
 router.post(
   '/chat/queued-turns',
-  configMiddleware,
+  chatConfigMiddleware,
   ...steerLimiters,
   createMessageFilterPii({
     onTraversalFailure: reportLocatorTraversalFailure,
@@ -1153,7 +1181,7 @@ router.post(
 );
 router.post(
   '/chat/queued-turns/v2',
-  configMiddleware,
+  chatConfigMiddleware,
   ...steerLimiters,
   createMessageFilterPii({
     onTraversalFailure: reportLocatorTraversalFailure,
@@ -1166,10 +1194,10 @@ router.post(
 );
 /** Synchronizing durable queue state is read-only and polled while work is
  * pending. It must not consume the model-submission admission budget. */
-router.get('/chat/queued-turns', configMiddleware, AgentQueuedTurnListController);
+router.get('/chat/queued-turns', chatConfigMiddleware, AgentQueuedTurnListController);
 router.delete(
   '/chat/queued-turns/:queuedTurnId',
-  configMiddleware,
+  chatConfigMiddleware,
   ...steerLimiters,
   AgentQueuedTurnCancelController,
 );
@@ -1179,7 +1207,7 @@ router.use('/', v1);
 const chatRouter = express.Router();
 const useMessageIpLimiter = isEnabled(LIMIT_MESSAGE_IP);
 const useMessageUserLimiter = isEnabled(LIMIT_MESSAGE_USER);
-chatRouter.use(configMiddleware);
+chatRouter.use(chatConfigMiddleware);
 if (useMessageIpLimiter || useMessageUserLimiter) {
   chatRouter.use(
     unless(

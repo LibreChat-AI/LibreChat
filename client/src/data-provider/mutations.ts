@@ -12,6 +12,7 @@ import {
   logger,
   /* Conversations */
   addConvoToAllQueries,
+  markRunningRemoval,
   findPinnedConversation,
   findConvoInAllQueries,
   findConversationInInfinite,
@@ -182,6 +183,10 @@ export const useArchiveAllConversationsMutation = (
   const { onSuccess, onError, ..._options } = options || {};
 
   const reconcileCaches = () => {
+    markRunningRemoval(queryClient);
+    void queryClient.cancelQueries([QueryKeys.runningConversation]);
+    queryClient.setQueriesData<t.TConversation | null>([QueryKeys.runningConversation], null);
+    queryClient.invalidateQueries([QueryKeys.runningConversation]);
     /* Archiving everything leaves no cached list trustworthy, but only the mounted ones are
        worth the round trips: the rest are dropped, so a remembered sort or bookmark variant
        cannot render chats that are all archived now and refetches from scratch when mounted. */
@@ -295,6 +300,7 @@ const cancelConvoReadFetches = async (
   const roots = [
     ...CONVERSATION_LIST_KEYS.map((listKey) => [listKey]),
     [QueryKeys.pinnedConversations],
+    [QueryKeys.runningConversation, conversationId],
   ];
   const cache = queryClient.getQueryCache();
   /* Recorded before the cancellation, because a cancelled fetch was carrying rows this
@@ -346,6 +352,7 @@ const refreshConvoReadCaches = (queryClient: QueryClient, conversationId: string
     queryClient.invalidateQueries([listKey]);
   }
   queryClient.invalidateQueries([QueryKeys.pinnedConversations]);
+  queryClient.invalidateQueries([QueryKeys.runningConversation, conversationId]);
   const pointKey = [QueryKeys.conversation, conversationId];
   if (queryClient.getQueryData(pointKey) !== undefined) {
     queryClient.invalidateQueries(pointKey);

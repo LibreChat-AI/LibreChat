@@ -824,7 +824,9 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     }
     return { ...merged, controls: [...(merged.controls ?? []), transientControl] };
   }, [liveActivity, progress, selection.durable, taskView, transientControl]);
-  const panelTitle = selection.event == null ? activity.title : selectedEventActorName;
+  const panelAgent = threadView?.agentId == null ? undefined : agentsMap?.[threadView.agentId];
+  const panelTitle =
+    selection.event == null ? panelAgent?.name || activity.title : selectedEventActorName;
   const actorOptions = useMemo<OptionWithIcon[]>(() => {
     if (selection.event == null) return [];
     return (
@@ -1128,7 +1130,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         key: 'steer',
         label: localize('com_ui_steer'),
         kbd: steerKbd,
-        icon: <Zap className="h-4 w-4 text-status-warning" aria-hidden="true" />,
+        icon: <Zap className="text-status-warning h-4 w-4" aria-hidden="true" />,
         disabled: blocked,
         onClick: () => submitControl('steer'),
       },
@@ -1136,7 +1138,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         key: 'queue',
         label: localize('com_ui_queue'),
         kbd: modEnter === 'other' ? modSymbol : undefined,
-        icon: <Clock className="h-4 w-4 text-status-info" aria-hidden="true" />,
+        icon: <Clock className="text-status-info h-4 w-4" aria-hidden="true" />,
         disabled: blocked,
         onClick: () => submitControl('queue'),
       },
@@ -1144,7 +1146,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         key: 'interrupt',
         label: localize('com_ui_subagent_interrupt'),
         kbd: altEnter === 'interrupt' ? altSymbol : undefined,
-        icon: <OctagonPause className="h-4 w-4 text-status-error" aria-hidden="true" />,
+        icon: <OctagonPause className="text-status-error h-4 w-4" aria-hidden="true" />,
         disabled: blocked,
         onClick: () => submitControl('interrupt'),
       },
@@ -1273,7 +1275,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   let timelinePrefix: ReactNode = null;
   if (hasEarlierRetainedTasks) {
     timelinePrefix = (
-      <div className="flex justify-center border-b border-border-light px-4 py-2">
+      <div className="border-border-light flex justify-center border-b px-4 py-2">
         <Button type="button" variant="ghost" size="sm" onClick={loadEarlierEventTasks}>
           {localize('com_ui_load_more')}
         </Button>
@@ -1284,7 +1286,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       <div
         role="status"
         aria-label={localize('com_ui_subagent_thread_history_truncated')}
-        className="flex h-7 items-center justify-center border-b border-border-light text-text-tertiary"
+        className="border-border-light text-text-tertiary flex h-7 items-center justify-center border-b"
       >
         <span aria-hidden>•••</span>
       </div>
@@ -1295,21 +1297,33 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     [conversationTurns, panelState, taskId],
   );
 
+  const droppedNotice =
+    (progress?.droppedCount ?? 0) > 0 ? (
+      <div role="status" className="text-text-secondary px-4 py-2 text-sm">
+        {localize(
+          progress!.droppedCount === 1
+            ? 'com_ui_subagent_activity_dropped_one'
+            : 'com_ui_subagent_activity_dropped',
+          { count: progress!.droppedCount! },
+        )}
+      </div>
+    ) : null;
   let activityPanel: ReactNode;
   if (hasConversationProjection) {
     activityPanel = (
       <SubagentActivityScrollSurface padded={false} headerInset>
+        {droppedNotice}
         {showUnavailableHistoryBoundary && (
           <div
             role="status"
             aria-label={localize('com_ui_subagent_thread_history_truncated')}
-            className="flex h-7 items-center justify-center border-b border-border-light text-text-tertiary"
+            className="border-border-light text-text-tertiary flex h-7 items-center justify-center border-b"
           >
             <span aria-hidden>•••</span>
           </div>
         )}
         {effectiveHistoryCursor != null && historyState !== 'error' && (
-          <div className="flex justify-center border-b border-border-light px-4 py-2">
+          <div className="border-border-light flex justify-center border-b px-4 py-2">
             <Button
               type="button"
               variant="ghost"
@@ -1324,7 +1338,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
           </div>
         )}
         {historyState === 'error' && (
-          <div className="flex justify-center border-b border-border-light px-4 py-2">
+          <div className="border-border-light flex justify-center border-b px-4 py-2">
             <Button
               type="button"
               variant="ghost"
@@ -1357,6 +1371,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   ) {
     activityPanel = (
       <SubagentActivityScrollSurface padded={false} headerInset>
+        {droppedNotice}
         <div data-subagent-thread-timeline>
           {timelinePrefix}
           {visibleEventTasks.map(renderEventTask)}
@@ -1372,6 +1387,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         state={panelState}
         showPrompt={false}
         headerInset
+        notice={droppedNotice}
         onCancelControl={
           controlAvailable && !controlPending
             ? (controlId) => submitControl('cancel_message', controlId)
@@ -1388,13 +1404,13 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       aria-modal={isMobile || undefined}
       aria-label={localize('com_ui_subagent_thread_panel')}
       onKeyDown={handlePanelKeyDown}
-      className="relative flex h-full w-full flex-col overflow-hidden bg-surface-primary-alt text-text-primary"
+      className="bg-surface-primary-alt text-text-primary relative flex h-full w-full flex-col overflow-hidden"
     >
       {/* The main chat header's own shape: a 52px bar that floats over the
           thread and fades into it, so the conversation scrolls under it and
           more of it is on screen. Gradient stops track THIS surface rather
           than the chat's, since the panel sits on its own background. */}
-      <header className="absolute top-0 z-10 flex h-[52px] w-full items-center gap-2 bg-gradient-to-b from-surface-primary-alt via-surface-primary-alt/70 to-transparent p-2 font-semibold text-text-primary">
+      <header className="from-surface-primary-alt via-surface-primary-alt/70 text-text-primary absolute top-0 z-10 flex h-[52px] w-full items-center gap-2 bg-gradient-to-b to-transparent p-2 font-semibold">
         {actorOptions.length > 1 ? (
           /* The agent builder's picker, so switching actors here reads as the
              same control as every other agent selection in the app — avatar,
@@ -1427,7 +1443,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
               portal={false}
               onOpenChange={setActorPickerOpen}
               containerClassName="min-w-0 flex-1 px-0"
-              className="h-9 w-full border-transparent bg-transparent font-semibold hover:bg-surface-hover"
+              className="hover:bg-surface-hover h-9 w-full border-transparent bg-transparent font-semibold"
               showCarat
             />
           </div>
@@ -1526,7 +1542,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
                           aria-label={action.label}
                           disabled={action.disabled}
                           onClick={action.onClick}
-                          className="size-9 rounded-full text-text-secondary hover:text-text-primary"
+                          className="text-text-secondary hover:text-text-primary size-9 rounded-full"
                         >
                           {action.icon}
                         </Button>

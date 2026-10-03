@@ -384,6 +384,29 @@ describe('theme registry', () => {
     expect(resolveTheme(theme, 'dark').colors['rgb-avatar-placeholder']).toBe('30 31 32');
   });
 
+  it('keeps the drawer edge on the drawer fill in light and the heavy border in dark', () => {
+    const colors = { 'rgb-surface-primary-alt': '20 21 22', 'rgb-border-xheavy': '30 31 32' };
+    const theme = {
+      version: 1 as const,
+      name: 'legacy-drawer-edge',
+      modes: { light: { colors }, dark: { colors } },
+    };
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-drawer-edge',
+        modes: {
+          dark: { colors: { 'rgb-border-xheavy': '30 31 32', 'rgb-drawer-edge': '1 2 3' } },
+        },
+      },
+      'dark',
+    );
+
+    expect(resolveTheme(theme, 'light').colors['rgb-drawer-edge']).toBe('20 21 22');
+    expect(resolveTheme(theme, 'dark').colors['rgb-drawer-edge']).toBe('30 31 32');
+    expect(explicit.colors['rgb-drawer-edge']).toBe('1 2 3');
+  });
+
   it('inks the default avatar in the primary text a theme sets, unless it sets the role', () => {
     const inherited = resolveTheme(
       {

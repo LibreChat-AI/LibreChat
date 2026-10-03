@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import type { Request, Response, NextFunction } from 'express';
+import { getOAuthCallbackUrl } from './url';
 import { isEnabled } from '~/utils/common';
 
 export const OAUTH_CSRF_COOKIE = 'oauth_csrf';
@@ -134,6 +135,19 @@ export function generateOAuthCsrfToken(flowId: string, secret?: string): string 
   return crypto.createHmac('sha256', key).update(flowId).digest('hex').slice(0, 32);
 }
 
+/** Cookie paths must match the public callback URL, not a proxy-stripped request path. */
+function getOAuthCookiePath(cookiePath: string): string {
+  const domainServer = process.env.DOMAIN_SERVER;
+  if (!domainServer) {
+    return cookiePath;
+  }
+  try {
+    return new URL(getOAuthCallbackUrl(domainServer, cookiePath)).pathname;
+  } catch {
+    return cookiePath;
+  }
+}
+
 /** Sets a SameSite=Lax CSRF cookie bound to a specific OAuth flow */
 export function setOAuthCsrfCookie(res: Response, flowId: string, cookiePath: string): void {
   res.cookie(OAUTH_CSRF_COOKIE, generateOAuthCsrfToken(flowId), {
@@ -141,7 +155,7 @@ export function setOAuthCsrfCookie(res: Response, flowId: string, cookiePath: st
     secure: shouldUseSecureCookie(),
     sameSite: 'lax',
     maxAge: OAUTH_CSRF_MAX_AGE,
-    path: cookiePath,
+    path: getOAuthCookiePath(cookiePath),
   });
 }
 
@@ -156,7 +170,7 @@ export function validateOAuthCsrf(
   cookiePath: string,
 ): boolean {
   const cookie = (req.cookies as Record<string, string> | undefined)?.[OAUTH_CSRF_COOKIE];
-  res.clearCookie(OAUTH_CSRF_COOKIE, { path: cookiePath });
+  res.clearCookie(OAUTH_CSRF_COOKIE, { path: getOAuthCookiePath(cookiePath) });
   if (typeof cookie !== 'string' || !cookie) {
     return false;
   }
@@ -191,7 +205,7 @@ export function setOAuthSessionCookie(res: Response, userId: string): void {
     secure: shouldUseSecureCookie(),
     sameSite: 'lax',
     maxAge: OAUTH_SESSION_MAX_AGE,
-    path: OAUTH_SESSION_COOKIE_PATH,
+    path: getOAuthCookiePath(OAUTH_SESSION_COOKIE_PATH),
   });
 }
 
