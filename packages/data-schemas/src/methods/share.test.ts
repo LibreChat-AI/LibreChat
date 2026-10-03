@@ -3720,6 +3720,46 @@ describe('Share Methods', () => {
       expect(saved?.snapshotVersion).toBeUndefined();
     });
 
+    test('keeps a legacy replica republish that writes back the snapshot the viewer read', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      await seedConversation(userId, conversationId);
+      const docId = await createFile(userId);
+      const message = await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: 'legacy file',
+        isCreatedByUser: true,
+        files: [{ file_id: docId, filename: 'report.pdf', type: 'application/pdf' }],
+      });
+      const shareId = `share_${nanoid()}`;
+      await SharedLink.create({
+        shareId,
+        conversationId,
+        user: userId,
+        messages: [message._id],
+        fileSnapshots: [],
+      });
+      const read = await SharedLink.findOne({ shareId }).lean();
+
+      /* Same array as the viewer read, but a new publication: `updatedAt` moves. */
+      await shareMethods.getSharedMessages(shareId, undefined, {
+        preflight: async () => {
+          await SharedLink.updateOne(
+            { shareId },
+            { $set: { fileSnapshots: [], updatedAt: new Date(Date.now() + 1000) } },
+            { timestamps: false },
+          );
+        },
+      });
+
+      const saved = await SharedLink.findOne({ shareId }).lean();
+      expect(saved?.fileSnapshots).toEqual([]);
+      expect(saved?.snapshotVersion).toBeUndefined();
+      expect(saved?.updatedAt?.getTime()).not.toBe(read?.updatedAt?.getTime());
+    });
+
     test('does not enrich an existing snapshot after its file revision changes', async () => {
       const userId = new mongoose.Types.ObjectId().toString();
       const conversationId = `conv_${nanoid()}`;
