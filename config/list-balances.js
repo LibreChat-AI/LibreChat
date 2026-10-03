@@ -15,9 +15,19 @@ const connect = require('./connect');
   console.purple('Show the balance of all users');
   console.purple('-----------------------------');
 
-  let users = await User.find({});
+  const users = await User.find({});
+  const balances = await Balance.find({ user: { $in: users.map((user) => user._id) } }).sort({
+    _id: 1,
+  });
+  const balanceByUser = new Map();
+  for (const balance of balances) {
+    const key = String(balance.user);
+    if (!balanceByUser.has(key)) {
+      balanceByUser.set(key, balance);
+    }
+  }
   for (const user of users) {
-    let balance = await Balance.findOne({ user: user._id }).sort({ _id: 1 });
+    const balance = balanceByUser.get(String(user._id)) ?? null;
     if (balance !== null) {
       console.green(`User ${user.name} (${user.email}) has a balance of ${balance.tokenCredits}`);
     } else {

@@ -2090,6 +2090,7 @@ describe('Convos Routes', () => {
           context: `POST /api/convos/archive ${mockConversationId}`,
           preserveUpdatedAt: true,
           noUpsert: true,
+          appendMessageIds: [],
         },
       );
     });
@@ -2123,6 +2124,7 @@ describe('Convos Routes', () => {
           context: `POST /api/convos/archive ${mockConversationId}`,
           preserveUpdatedAt: true,
           noUpsert: true,
+          appendMessageIds: [],
         },
       );
     });
