@@ -1,7 +1,7 @@
 import os from 'os';
 import path from 'path';
 import { promises as fs } from 'fs';
-import { moveLocalFile, saveLocalBuffer, writeFileAtomic } from '../local';
+import { moveLocalFile, writeLocalFile, saveLocalBuffer, writeFileAtomic } from '../local';
 
 describe('local storage writes', () => {
   let dir: string;
@@ -85,6 +85,20 @@ describe('local storage writes', () => {
     const written = await fs.readFile(path.join(out, 'image.png'));
     expect(written.equals(largeData) || written.equals(smallData)).toBe(true);
     expect(await fs.readdir(out)).toEqual(['image.png']);
+  });
+
+  it('rejects a traversing name in the write and move helpers', async () => {
+    const source = path.join(dir, 'upload.tmp');
+    await fs.writeFile(source, 'content');
+    const target = path.join(dir, 'target');
+
+    await expect(writeLocalFile(target, '../escaped', 'x')).rejects.toThrow(
+      'Path traversal detected in filename',
+    );
+    await expect(moveLocalFile(source, target, '../escaped')).rejects.toThrow(
+      'Path traversal detected in filename',
+    );
+    expect(await fs.readdir(dir)).toEqual(['upload.tmp']);
   });
 
   it('moves a temp upload into a new directory', async () => {

@@ -29,16 +29,27 @@ export async function writeFileAtomic(filePath: string, data: Buffer | string): 
   await replaceAtomically(filePath, (tempPath) => writeFile(tempPath, data));
 }
 
+/** Resolves `fileName` inside `directory`, rejecting a name that would escape it. */
+function resolveContained(directory: string, fileName: string): string {
+  const resolvedDir = path.resolve(directory);
+  const resolvedPath = path.resolve(resolvedDir, fileName);
+  const rel = path.relative(resolvedDir, resolvedPath);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(`..${path.sep}`)) {
+    throw new Error('Path traversal detected in filename');
+  }
+  return resolvedPath;
+}
+
 /** Creates `directory` if needed and writes `data` to `fileName` inside it atomically. */
 export async function writeLocalFile(
   directory: string,
   fileName: string,
   data: Buffer | string,
 ): Promise<string> {
+  const filePath = resolveContained(directory, fileName);
   await mkdir(directory, { recursive: true });
-  const filePath = path.join(directory, fileName);
   await writeFileAtomic(filePath, data);
-  return filePath;
+  return path.join(directory, fileName);
 }
 
 /** Moves a temp upload into `directory` as `fileName`, creating the directory if needed. */
@@ -47,11 +58,11 @@ export async function moveLocalFile(
   directory: string,
   fileName: string,
 ): Promise<string> {
+  const filePath = resolveContained(directory, fileName);
   await mkdir(directory, { recursive: true });
-  const filePath = path.join(directory, fileName);
   await replaceAtomically(filePath, (tempPath) => copyFile(sourcePath, tempPath));
   await unlink(sourcePath);
-  return filePath;
+  return path.join(directory, fileName);
 }
 
 /**
@@ -70,20 +81,12 @@ export async function saveLocalBuffer({
   userId: string;
   buffer: Buffer;
   fileName: string;
-  basePath?: string;
+  basePath?: 'images' | 'uploads';
 }): Promise<string> {
   const directory =
     basePath === 'images'
       ? path.join(paths.publicPath, basePath, userId)
       : path.join(paths.uploads, userId);
-
-  const resolvedDir = path.resolve(directory);
-  const resolvedPath = path.resolve(resolvedDir, fileName);
-  const rel = path.relative(resolvedDir, resolvedPath);
-  if (rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(`..${path.sep}`)) {
-    throw new Error('Path traversal detected in filename');
-  }
-
-  await writeLocalFile(resolvedDir, rel, buffer);
+  await writeLocalFile(directory, fileName, buffer);
   return path.posix.join('/', basePath, userId, fileName);
 }
