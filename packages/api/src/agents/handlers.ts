@@ -6441,7 +6441,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                             }
                           : {}),
                       },
-                      metadata,
+                      metadata: { ...metadata, executingAgentId: agentId },
                     } as Record<string, unknown>),
                   ) as Promise<{ content?: unknown; artifact?: unknown }>;
                 } catch (error) {
@@ -7521,7 +7521,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     const result = await tool.invoke(normalizedArgs, {
                       toolCall: toolCallConfig,
                       configurable: mergedConfigurable,
-                      metadata,
+                      metadata: { ...metadata, executingAgentId: agentId },
                       /** The run's cancellation signal. Without it a foreground
                        *  tool call keeps running after Stop: an MCP call never
                        *  sends `notifications/cancelled`, and every other

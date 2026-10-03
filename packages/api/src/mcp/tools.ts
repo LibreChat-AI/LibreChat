@@ -16,6 +16,7 @@ import type { MCPClientCapabilityProfile } from './capabilities';
 import { canUseAppConnection, requiresEphemeralUserConnection } from './utils';
 import { normalizeJsonSchema, resolveJsonSchemaRefs } from './zod';
 import { STANDARD_MCP_CAPABILITY_PROFILE } from './capabilities';
+import { assertToolApprovalExecution } from '~/tools/approval';
 import { getMCPToolCatalogGeneration } from './toolsChanged';
 import { isMCPToolResultError } from './status';
 import { isToolHiddenFromModel } from './apps';
@@ -30,16 +31,20 @@ export function createMCPStructuredTool(
   ) => ReturnType<DynamicStructuredToolFunction>,
   fields: Omit<DynamicStructuredToolFields, 'func'>,
 ): DynamicStructuredTool<unknown> {
-  return new DynamicStructuredTool({
+  const tool = new DynamicStructuredTool({
     ...fields,
     func: async (input, runManager, config) => {
+      const invocation = config as typeof config & {
+        toolCall?: { id?: string };
+        metadata?: { executingAgentId?: string; activeAgentId?: string; agentId?: string };
+      };
+      await assertToolApprovalExecution(tool, invocation);
       const childConfig = patchConfig(config, { callbacks: runManager?.getChild() });
       const result = await AsyncLocalStorageProviderSingleton.runWithConfig(
         pickRunnableConfigKeys(childConfig),
         () => func(input, childConfig),
       );
       if (Array.isArray(result) && result.length === 2 && isMCPToolResultError(result)) {
-        const invocation = config as typeof config & { toolCall?: { id?: string } };
         return [
           new ToolMessage({
             content: result[0],
@@ -54,6 +59,7 @@ export function createMCPStructuredTool(
       return result;
     },
   });
+  return tool;
 }
 
 /** `_meta` carries the MCP Apps `ui.visibility` used to hide app-only tools from the model. */

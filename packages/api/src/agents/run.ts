@@ -3061,7 +3061,7 @@ export async function createRun({
     ...(streamLimits && { streamLimits }),
   };
   const run = await Run.create(runConfig);
-  bindRunToolApprovalSession(run, agentApprovalSession);
+  if (approvalWiring != null) bindRunToolApprovalSession(run, agentApprovalSession);
 
   applyCustomHandoffPromptKeyCompatibility(run, runConfig.graphConfig);
   applyTestRunHook(run, {

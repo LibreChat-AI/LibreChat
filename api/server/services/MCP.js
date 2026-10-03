@@ -5,6 +5,7 @@ const {
   sendEvent,
   buildMCPToolApprovalBinding,
   bindToolApproval,
+  bindToolApprovalIdentity,
   PENDING_STALE_MS,
   MCPOAuthHandler,
   MCPTokenStorage,
@@ -1481,6 +1482,12 @@ function createToolInstance({
     currentToolName != null
       ? `${currentToolName}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`
       : normalizedToolKey,
+  );
+  bindToolApprovalIdentity(
+    toolInstance,
+    serverToolName,
+    normalizeJsonSchema(resolveJsonSchemaRefs(parameters ?? { type: 'object', properties: {} })),
+    description || undefined,
   );
   if (serverToolName !== toolName) {
     /** Upstream identity for stripped keys — lets the options aliasing in

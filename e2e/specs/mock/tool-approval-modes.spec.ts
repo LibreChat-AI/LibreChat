@@ -1,6 +1,14 @@
 import { expect, test } from '@playwright/test';
 import { cleanupAgent, openAgentBuilder, uniqueAgentName } from './agents.helpers';
-import { getAccessToken, requestJson, MOCK_ENDPOINTS, NEW_CHAT_PATH } from './helpers';
+import {
+  getAccessToken,
+  requestJson,
+  fetchJson,
+  sendMessage,
+  messagesView,
+  MOCK_ENDPOINTS,
+  NEW_CHAT_PATH,
+} from './helpers';
 
 for (const [theme, width] of [
   ['light', 1280],
@@ -114,3 +122,74 @@ for (const [theme, width] of [
     }
   });
 }
+
+test('a real MCP batch learns approval only after review, then reuses it in the chat', async ({
+  page,
+}) => {
+  test.setTimeout(60000);
+  await page.goto(NEW_CHAT_PATH);
+  const token = await getAccessToken(page);
+  const name = uniqueAgentName('Learned approval');
+  const toolName = 'remember_fact_mcp_e2e-memory';
+  const agent = await requestJson<{ id: string }>(page, {
+    path: '/api/agents',
+    method: 'POST',
+    token,
+    body: {
+      name,
+      provider: MOCK_ENDPOINTS[0].label,
+      model: MOCK_ENDPOINTS[0].model,
+      tools: ['sys__server__sys_mcp_e2e-memory', toolName],
+      tool_options: {
+        [toolName]: {
+          approval_mode: 'chat',
+          approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+        },
+      },
+    },
+  });
+  try {
+    const form = await openAgentBuilder(page);
+    await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
+    await page.getByRole('option', { name }).click();
+    await form.getByRole('button', { name: 'Select Agent' }).click();
+    const first = `first-${Date.now()}`;
+    expect((await sendMessage(page, `E2E_ACTIVITY_REPLY:${first}`)).ok()).toBe(true);
+    const panel = page.locator('#pending-tool-approval-panel');
+    await expect(panel).toBeVisible();
+    await expect(panel.getByText(/Approving remembers this tool/).first()).toBeVisible();
+    for (const approve of await panel.getByRole('button', { name: 'Approve', exact: true }).all())
+      await approve.click();
+    await panel.getByRole('button', { name: 'Continue', exact: true }).click();
+    const conversationId = new URL(page.url()).pathname.split('/').pop()!;
+    await expect
+      .poll(
+        async () =>
+          JSON.stringify(
+            await fetchJson<Array<{ content?: object[] }>>(
+              page,
+              `/api/messages/${conversationId}`,
+              token,
+            ),
+          ),
+        { timeout: 20000 },
+      )
+      .toContain(`E2E MCP memory noted: activity alpha ${first}`);
+    await expect(
+      messagesView(page).getByText('E2E mock reply: pong', { exact: true }),
+    ).toBeVisible();
+    await expect(panel).toHaveCount(0);
+    const second = `second-${Date.now()}`;
+    expect((await sendMessage(page, `E2E_ACTIVITY_REPLY:${second}`)).ok()).toBe(true);
+    await expect(
+      messagesView(page).getByText(`E2E activity reply done ${second}`, { exact: true }),
+    ).toBeVisible({ timeout: 20000 });
+    await expect(panel).toHaveCount(0);
+    const completed = await fetchJson<
+      Array<{ content?: Array<{ tool_call?: { output?: string } }> }>
+    >(page, `/api/messages/${conversationId}`, token);
+    expect(JSON.stringify(completed)).toContain(`E2E MCP memory noted: activity alpha ${second}`);
+  } finally {
+    await cleanupAgent(page, agent.id);
+  }
+});
