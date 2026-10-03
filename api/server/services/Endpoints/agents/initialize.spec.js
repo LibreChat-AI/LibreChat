@@ -235,6 +235,64 @@ describe('initializeClient — processAgent ACL gate', () => {
     });
   });
 
+  it.each([false, true])(
+    'binds the resource bearer host to the trusted root, restored=%s',
+    async (restored) => {
+      const { getMCPRequestContext, bindScheduledMCPBearerInvocation } = require('@librechat/api');
+      const resolve = jest.fn(async (input) => input.config);
+      const bind = jest.fn((identity) => ({ identity, resolve, reject: jest.fn() }));
+      const host = createInitializeClient({ scheduledBearerHost: { bind } });
+      const req = makeReq();
+      req._isScheduledFire = true;
+      req._isAgentTrigger = !restored;
+      req.body.agent_id = PRIMARY_ID;
+      req.body.agentTrigger = {
+        version: 1,
+        event: {
+          type: 'schedule.occurrence',
+          occurredAt: 0,
+          source: { type: 'schedule', id: 'sched-bearer' },
+        },
+      };
+      mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
+      await host({
+        req,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+        scheduledTokenContext: restored
+          ? {
+              scheduleId: 'sched-bearer',
+              ownerId: req.user.id,
+              agentId: PRIMARY_ID,
+              invocationMode: 'delegated',
+            }
+          : undefined,
+      });
+      expect(bind).toHaveBeenCalledWith(
+        {
+          scheduleId: 'sched-bearer',
+          ownerId: req.user.id,
+          tenantId: null,
+          agentId: PRIMARY_ID,
+          invocationMode: 'delegated',
+        },
+        restored ? 'resume' : 'invoke',
+        expect.any(AbortSignal),
+      );
+      const invocation = bindScheduledMCPBearerInvocation(
+        getMCPRequestContext(req),
+        'child',
+        'read',
+      );
+      const config = { type: 'streamable-http', url: 'https://resource.test/mcp' };
+      await invocation.resolve({ user: req.user, serverName: 'Files', config });
+      expect(resolve).toHaveBeenCalledWith(
+        expect.objectContaining({ selection: { agentId: 'child', tools: ['read'] }, config }),
+      );
+    },
+  );
+
   it('keeps interactive agent initialization independent of the host resolver', async () => {
     const resolveUpstreamTokenProvider = jest.fn();
     const hostInitializeClient = createInitializeClient({ resolveUpstreamTokenProvider });
@@ -1870,6 +1928,7 @@ describe('initializeClient — subagent loading', () => {
   );
 
   it('omits a descriptor when its metadata lookup fails without aborting the primary run', async () => {
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     const primaryConfig = makePrimaryConfig({
       subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
     });

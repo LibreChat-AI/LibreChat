@@ -181,6 +181,8 @@ export interface ScheduleFileRef {
 }
 
 export interface ScheduleEngineDeps {
+  /** Retried even when Mongo has no active/unbookkept run left to enumerate. */
+  reconcileRetainedJobs?: () => Promise<void>;
   preflightMCP: ScheduleMCPPreflight;
   methods: ScheduleMethods;
   /** Resolves interface.schedules limits, per-principal when a user is given. */
@@ -280,12 +282,16 @@ export interface ScheduleEngineDeps {
 
 /** The immutable scheduled identity of a generation job, for reconcile/abort fencing. */
 export interface JobIdentity {
+  createdAt?: number;
   scheduleId: string;
   scheduledFor: string | Date;
 }
 
 /** Job-store state plus the job's scheduled identity (absent on a replacement turn). */
 export interface JobState {
+  providerDrained?: boolean;
+  terminalPersistencePending?: boolean;
+  terminalHostActionPending?: boolean;
   status: string;
   checkpointNamespace?: string;
   createdAt?: number;

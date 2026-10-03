@@ -16,3 +16,5 @@ export * from './authorization/handlers';
 export type * from './authorization/contract';
 
 export * from './authorization/enrollment';
+
+export * from './bearer';

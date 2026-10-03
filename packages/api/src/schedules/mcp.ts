@@ -27,6 +27,7 @@ import type { CheckAccessParams } from '../middleware/access';
 import type { MCPToolsSnapshot } from '../mcp/connection';
 import type { GetAppConfigOptions } from '../app/service';
 import type { ScheduledTokenContext } from './context';
+import type { ScheduledMCPBearerHost } from './bearer';
 import type { ScheduleMCPPreflight } from './types';
 import {
   MCPAuthenticationRejectedError,
@@ -41,6 +42,7 @@ import {
 } from '../mcp/utils';
 import { MCPConfigInitializationCanceledError } from '../mcp/registry/MCPServersRegistry';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '../mcp/request';
+import { attachScheduledMCPBearer, ScheduledMCPBearerError } from './bearer';
 import { isScheduleFireRequest, readScheduleFireContext } from './trigger';
 import { resolveScheduledMCPRequirements } from './requirements';
 import { getAppConfigOptionsFromUser } from '../app/service';
@@ -160,6 +162,7 @@ export function getScheduleMCPFailureCode(
 }
 
 interface ScheduleMCPDeps {
+  scheduledBearerHost?: ScheduledMCPBearerHost;
   resolveAgentGraphAccess: (access: {
     userId: string;
     role?: string | null;
@@ -380,6 +383,20 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
           requestProbeLimit(() =>
             sharedProbeLimit(async (): Promise<ScheduleMCPOutcome[]> => {
               const context = createMCPRequestContext();
+              if (options.scheduleId)
+                attachScheduledMCPBearer(
+                  context,
+                  {
+                    scheduleId: options.scheduleId,
+                    ownerId: principal.id,
+                    tenantId: user.tenantId ?? null,
+                    agentId,
+                    invocationMode: 'delegated',
+                  },
+                  deps.scheduledBearerHost,
+                  'invoke',
+                  options.signal,
+                );
               try {
                 throwIfAborted();
                 const serverConfig = servers[server];
@@ -445,6 +462,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                     missingOwners.size > 0 ? missingOwners : undefined,
                   );
                 } catch (error) {
+                  if (error instanceof ScheduledMCPBearerError) return error.outcomes;
                   if (
                     error instanceof OboTokenResolutionError &&
                     error.reason === 'missing_upstream_provider'

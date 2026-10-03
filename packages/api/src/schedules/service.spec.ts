@@ -3,6 +3,7 @@ import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { SchedulesServiceDeps } from './service';
 import { createSchedulesService, recordScheduledMCPToolAuthFailure } from './service';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
+import { ScheduledMCPBearerError } from '../mcp/errors';
 import { isShutdownInProgress } from '../app/shutdown';
 
 /** Swappable per test: null keeps the no-job-store harness the drain tests rely on. */
@@ -748,6 +749,7 @@ describe('scheduled OBO tool failure settlement', () => {
     methods.eraseScheduleIfDrained = jest.fn(async () => false);
     methods.getScheduleRunAbortState = jest.fn(async () => ({ status: 'started', mcp: [failure] }));
     const store = {
+      durableScheduleReceipts: false,
       getJob: jest.fn(async () => ({
         createdAt: 42,
         scheduleId: 's1',
@@ -761,6 +763,167 @@ describe('scheduled OBO tool failure settlement', () => {
     mockJobStore = store;
     return { service, methods, store };
   }
+
+  it.each(['Mongo receipt', 'job evidence', 'neither'] as const)(
+    'retains a verified bearer denial using %s and prevents success settlement',
+    async (storageMode) => {
+      const { service, methods, store } = setup();
+      store.durableScheduleReceipts = storageMode === 'job evidence';
+      const job: {
+        createdAt: number;
+        scheduleId: string;
+        scheduledFor: string;
+        conversationId: string;
+        userId: string;
+        tenantId: string;
+        status: string;
+        agent_id: string;
+        scheduleOutcomeError?: string;
+        preserveForScheduleReconcile?: boolean;
+      } = {
+        createdAt: 42,
+        scheduleId: 's1',
+        scheduledFor: occurrence,
+        conversationId: 'c1',
+        userId: 'owner',
+        tenantId: 'tenant-1',
+        status: 'running',
+        agent_id: 'root',
+      };
+      store.getJob.mockImplementation(async () => job);
+      methods.getScheduleRunAbortState.mockResolvedValue({ status: 'started', mcp: [] });
+      const error = new ScheduledMCPBearerError('consent_revoked', 'Files', 'child');
+      methods.recordMCPToolAuthFailure.mockImplementation(async () => {
+        if (storageMode === 'job evidence' || storageMode === 'neither')
+          throw new Error('receipt store unavailable');
+        methods.getScheduleRunAbortState.mockResolvedValue({
+          status: 'started',
+          mcp: error.outcomes,
+        });
+        return true;
+      });
+      const manager = jest.requireMock('../stream/GenerationJobManager').GenerationJobManager;
+      const originalUpdate = manager.updateMetadata;
+      const update = jest.fn(async (_stream, changes) => {
+        if (storageMode === 'Mongo receipt' || storageMode === 'neither')
+          throw new Error('job store unavailable');
+        Object.assign(job, changes);
+      });
+      manager.updateMetadata = update;
+      const input = {
+        error,
+        streamId: 'c1',
+        jobCreatedAt: 42,
+        userId: 'owner',
+        serverName: 'Files',
+        identity: {
+          scheduleId: 's1',
+          ownerId: 'owner',
+          tenantId: 'tenant-1',
+          agentId: 'root',
+          invocationMode: 'delegated' as const,
+        },
+      };
+      await expect(service.recordMCPToolAuthFailure(input)).resolves.toBe(
+        storageMode !== 'neither',
+      );
+      // Restore metadata writes so terminal retry can retain Mongo-only evidence.
+      if (storageMode === 'Mongo receipt')
+        update.mockImplementation(async (_stream, changes) => {
+          Object.assign(job, changes);
+        });
+      const settled = await service.recordScheduleOutcome({
+        scheduleId: 's1',
+        scheduledFor: occurrence,
+        streamId: 'c1',
+        jobCreatedAt: 42,
+        status: 'success',
+      });
+      expect(settled).toBe(storageMode !== 'neither');
+      if (storageMode === 'neither') expect(methods.recordRunOutcome).not.toHaveBeenCalled();
+      else
+        expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+          expect.objectContaining({
+            status: 'error',
+            mcp: expect.arrayContaining([
+              expect.objectContaining({
+                server: 'Files',
+                reason: 'consent_revoked',
+                recovery: 'authorize',
+                agentId: 'child',
+              }),
+            ]),
+          }),
+        );
+      manager.updateMetadata = originalUpdate;
+    },
+  );
+
+  it('refuses a bearer failure receipt for a replaced epoch, owner, tenant or enrolled root', async () => {
+    const { service, methods, store } = setup();
+    store.getJob.mockImplementation(async () => ({
+      createdAt: 42,
+      scheduleId: 's1',
+      scheduledFor: occurrence,
+      conversationId: 'c1',
+      userId: 'owner',
+      tenantId: 'tenant-1',
+      status: 'running',
+      agent_id: 'root',
+    }));
+    const source = {
+      error: new ScheduledMCPBearerError('tool_policy_denied', 'Files'),
+      streamId: 'c1',
+      jobCreatedAt: 42,
+      userId: 'owner',
+      serverName: 'Files',
+      identity: {
+        scheduleId: 's1',
+        ownerId: 'owner',
+        tenantId: 'tenant-1',
+        agentId: 'root',
+        invocationMode: 'delegated' as const,
+      },
+    };
+    for (const input of [
+      { ...source, jobCreatedAt: 43 },
+      { ...source, userId: 'other' },
+      { ...source, identity: { ...source.identity, tenantId: 'other' } },
+      { ...source, identity: { ...source.identity, agentId: 'child' } },
+    ])
+      await expect(service.recordMCPToolAuthFailure(input)).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+    expect(methods.recordMCPToolAuthFailure).not.toHaveBeenCalled();
+  });
+
+  it('does not return a model-visible bearer error while durable writes are unavailable', async () => {
+    const input = {
+      error: new ScheduledMCPBearerError('consent_revoked', 'Files'),
+      streamId: 'c1',
+      jobCreatedAt: 42,
+      userId: 'owner',
+      serverName: 'Files',
+      identity: {
+        scheduleId: 's1',
+        ownerId: 'owner',
+        tenantId: 'tenant-1',
+        agentId: 'root',
+        invocationMode: 'delegated' as const,
+      },
+    };
+    let durable = false;
+    let returned = false;
+    const persist = jest.fn(async () => durable);
+    const pending = recordScheduledMCPToolAuthFailure(input, () => persist).then(() => {
+      returned = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(returned).toBe(false);
+    durable = true;
+    await pending;
+    expect(returned).toBe(true);
+  });
 
   it('does not initialize the schedule service for unrelated MCP errors', async () => {
     const getRecorder = jest.fn();
@@ -854,7 +1017,8 @@ describe('scheduled OBO tool failure settlement', () => {
       scheduledFor: occurrence,
       status: 'requires_action',
     });
-    expect(methods.getScheduleRunAbortState).not.toHaveBeenCalled();
+    expect(methods.getScheduleRunAbortState).toHaveBeenCalledTimes(1);
+    expect(methods.recordRunOutcome).not.toHaveBeenCalled();
     await expect(
       service.recordScheduleOutcome({
         scheduleId: 's1',
@@ -1046,16 +1210,26 @@ describe('interactive Stop persistence barrier', () => {
 
   it('does not gate a pause (requires_action) on the Stop barrier', async () => {
     const { service, methods } = outcomeService();
-    methods.getScheduleRunAbortState = jest.fn(async () => null);
+    methods.getScheduleRunAbortState = jest.fn(async () => ({
+      status: 'started',
+      abortSource: 'stop',
+      abortRequestedAt: new Date(),
+      mcp: [],
+    }));
 
-    await service.recordScheduleOutcome({
-      scheduleId: 's1',
-      scheduledFor: '2026-01-01T00:00:00.000Z',
-      status: 'requires_action',
-    });
+    await expect(
+      service.recordScheduleOutcome({
+        scheduleId: 's1',
+        scheduledFor: '2026-01-01T00:00:00.000Z',
+        status: 'requires_action',
+      }),
+    ).resolves.toBe(true);
 
-    // A pause is not a settlement, so the barrier is never consulted.
-    expect(methods.getScheduleRunAbortState).not.toHaveBeenCalled();
+    // Receipt discovery does not poll a fresh Stop for an ordinary pause.
+    expect(methods.getScheduleRunAbortState).toHaveBeenCalledTimes(1);
+    expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'requires_action' }),
+    );
   });
 });
 

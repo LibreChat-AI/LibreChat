@@ -12,6 +12,7 @@ import type {
   UpstreamTokenProviderResolver,
 } from '~/mcp/oauth/obo';
 import type { MCPAppOperationContext, MCPAppValidationContext } from './apps';
+import type { ScheduledMCPBearerInvocation } from '~/schedules/bearer';
 import type { MCPClientCapabilityProfile } from './capabilities';
 import type { AuthIdentityContext } from '~/utils/identity';
 import type { GraphTokenResolver } from '~/utils/graph';
@@ -39,6 +40,12 @@ import {
   resolveMCPClientCapabilityProfile,
   STANDARD_MCP_CAPABILITY_PROFILE,
 } from './capabilities';
+import {
+  resolveScheduledMCPBearerConfig,
+  isScheduledMCPBearer,
+  rejectScheduledMCPBearer,
+  ScheduledMCPBearerError,
+} from '~/schedules/bearer';
 import {
   projectMCPAppRuntimeTarget,
   type MCPAppBindingCodec,
@@ -1404,6 +1411,7 @@ Please follow these instructions when using tools from the respective MCP server
    */
   async callTool({
     user,
+    scheduledBearerInvocation,
     serverName,
     serverConfig: providedConfig,
     toolName,
@@ -1427,6 +1435,7 @@ Please follow these instructions when using tools from the respective MCP server
     onOAuthCredentialsChanging,
     mcpApps,
   }: {
+    scheduledBearerInvocation?: ScheduledMCPBearerInvocation;
     user?: IUser;
     serverName: string;
     /** Pre-resolved config from tool creation context — avoids readThrough TTL and cross-tenant issues */
@@ -1452,6 +1461,7 @@ Please follow these instructions when using tools from the respective MCP server
     onOAuthCredentialsChanging?: t.UserConnectionContext['onOAuthCredentialsChanging'];
     mcpApps?: TMCPAppsPolicy;
   }): Promise<t.FormattedToolResponse> {
+    if (scheduledBearerInvocation) requestScopedConnections = scheduledBearerInvocation.context;
     const userId = user?.id;
     const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
     const logPrefix = userId ? `[MCP][User: ${userId}][${serverName}]` : `[MCP][${serverName}]`;
@@ -1594,8 +1604,18 @@ Please follow these instructions when using tools from the respective MCP server
                 scopes: process.env.GRAPH_API_SCOPES,
               });
         const directBearerRecovery = usesDirectOpenIDBearerRecovery(rawConfig);
+        const scheduledConfig = await resolveScheduledMCPBearerConfig({
+          user,
+          serverName,
+          config: declaredConfig,
+          context: requestScopedConnections,
+          signal: options?.signal,
+        });
         const bearerConfig = await resolveDirectOpenIDBearerConfig({
-          config: graphProcessedConfig,
+          config:
+            scheduledConfig === declaredConfig
+              ? graphProcessedConfig
+              : applyRequestHeaders(scheduledConfig),
           upstreamTokenProvider,
           resolvedConfig: directBearerRecoveryState.resolvedConfig,
           signal: options?.signal,
@@ -1777,6 +1797,12 @@ Please follow these instructions when using tools from the respective MCP server
           if (directBearerRecoveryState.attempted) {
             throw new MCPAuthenticationRejectedError(serverName, false, connectionCheckError);
           }
+          if (isScheduledMCPBearer(requestScopedConnections))
+            throw new ScheduledMCPBearerError(
+              'credential_rejected',
+              serverName,
+              scheduledBearerInvocation?.agentId,
+            );
           directBearerRecoveryState.attempted = true;
           const recovery = this.recoverDirectOpenIDBearerConnection({
             connection,
@@ -1846,8 +1872,27 @@ Please follow these instructions when using tools from the respective MCP server
           }
         }
 
-        const requestTool = () =>
-          withMCPRequestSignal(options?.signal, (signal) =>
+        const requestTool = async () => {
+          if (isScheduledMCPBearer(requestScopedConnections) && directBearerRecovery) {
+            if (!scheduledBearerInvocation)
+              throw new ScheduledMCPBearerError('tool_policy_denied', serverName);
+            const current = await scheduledBearerInvocation.resolve({
+              user,
+              serverName,
+              config: declaredConfig,
+              signal: options?.signal,
+            });
+            const bearerHeader = Object.entries(
+              'headers' in current ? (current.headers ?? {}) : {},
+            ).find(([name]) => name.toLowerCase() === 'authorization');
+            if (!bearerHeader) throw new ScheduledMCPBearerError('binding_mismatch', serverName);
+            connection!.setRequestHeaders({
+              ...resolvedHeaders,
+              [bearerHeader[0]]: bearerHeader[1],
+            });
+          }
+          options?.signal?.throwIfAborted();
+          return withMCPRequestSignal(options?.signal, (signal) =>
             connection!.client.request(
               {
                 method: 'tools/call',
@@ -1865,6 +1910,7 @@ Please follow these instructions when using tools from the respective MCP server
               },
             ),
           );
+        };
 
         // Deliberately use `request`: the typed wrapper also enforces the tool's output schema and
         // rejects task-required tools, which would turn a server response into a host-side failure.
@@ -1873,6 +1919,17 @@ Please follow these instructions when using tools from the respective MCP server
         try {
           result = await requestTool();
         } catch (error) {
+          if (isScheduledMCPBearer(requestScopedConnections) && directBearerRecovery) {
+            if (isMCPTransportAuthenticationError(error)) {
+              rejectScheduledMCPBearer(requestScopedConnections, serverName);
+              throw new ScheduledMCPBearerError(
+                'credential_rejected',
+                serverName,
+                scheduledBearerInvocation?.agentId,
+              );
+            }
+            throw error;
+          }
           if (directBearerRecovery && user && isMCPTransportAuthenticationError(error)) {
             if (directBearerRecoveryState.attempted) {
               throw new MCPAuthenticationRejectedError(serverName, false, error);

@@ -23,6 +23,24 @@ const safeUrl = z
     }
   });
 
+export const scheduledMCPFailureReasonSchema = z.enum([
+  'consent_missing',
+  'consent_expired',
+  'consent_revoked',
+  'binding_mismatch',
+  'rbac_denied',
+  'tool_policy_denied',
+  'approval_required',
+  'credential_missing',
+  'credential_rejected',
+  'resource_permission_denied',
+  'provider_missing',
+  'resource_unverified',
+  'unsupported_mode',
+  'dependency_unavailable',
+]);
+export type ScheduledMCPFailureReason = z.infer<typeof scheduledMCPFailureReasonSchema>;
+
 export const scheduledMCPIdentitySchema = z
   .object({
     scheduleId: identifier,

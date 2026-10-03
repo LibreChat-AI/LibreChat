@@ -134,7 +134,7 @@ describe('RedisJobStore', () => {
       'redis.call("SET", KEYS[8], currentCreatedAt, "EX", ttl + generationEpochGraceTtl)',
     );
     expect(script.indexOf('local ownerUserId')).toBeLessThan(
-      script.indexOf('redis.call("EXPIRE", KEYS[1], ttl)'),
+      script.indexOf('expireScheduleJob(KEYS[1], ttl)'),
     );
     expect(script).toContain('if currentTtl > ttl then ttl = currentTtl');
     expect([
@@ -1204,9 +1204,7 @@ describe('RedisJobStore', () => {
     await store.clearTerminalHostAction('stream-host-action-clear', 100);
 
     expect(evalClear).toHaveBeenCalledWith(
-      expect.stringContaining(
-        'if tonumber(ARGV[2]) > 0 then redis.call("EXPIRE", KEYS[1], ARGV[2]) else redis.call("DEL", KEYS[1]) end',
-      ),
+      expect.stringContaining('expireScheduleJob(KEYS[1], tonumber(ARGV[2]))'),
       3,
       'stream:{stream-host-action-clear}:job',
       'stream:{stream-host-action-clear}:chunks',

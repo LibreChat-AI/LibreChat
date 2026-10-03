@@ -1,3 +1,5 @@
+import type { ScheduledMCPFailure } from '~/schedules/authorization/contract';
+import { failureFixtures } from '~/schedules/authorization/failures';
 /**
  * MCP-specific error classes
  */
@@ -13,6 +15,7 @@ import { isOwnedAbortError } from '~/utils/errors';
 export function isMCPInitializationError(error: unknown, signal?: AbortSignal): boolean {
   return (
     isOwnedAbortError(error, signal) ||
+    error instanceof ScheduledMCPBearerError ||
     error instanceof MCPAuthenticationRejectedError ||
     error instanceof MCPAuthenticationRefreshError ||
     error instanceof OboTokenResolutionError ||
@@ -474,4 +477,26 @@ export function getMCPErrorResponse(error: unknown): MCPErrorResponse | null {
   }
 
   return null;
+}
+
+export class ScheduledMCPBearerError extends Error {
+  readonly failure: ScheduledMCPFailure;
+  readonly outcomes: Array<
+    ScheduledMCPFailure & { server: string; detail: 'unattended_auth_required'; agentId?: string }
+  >;
+
+  readonly code: ScheduledMCPFailure['status'];
+  readonly retryable: boolean;
+
+  constructor(reason: ScheduledMCPFailure['reason'], server: string, agentId?: string) {
+    const failure = failureFixtures[reason];
+    super('Scheduled MCP resource credential unavailable.');
+    this.name = 'ScheduledMCPBearerError';
+    this.failure = failure;
+    this.outcomes = [
+      { server, ...failure, detail: 'unattended_auth_required', ...(agentId && { agentId }) },
+    ];
+    this.code = failure.status;
+    this.retryable = failure.status === 'mcp_unavailable';
+  }
 }

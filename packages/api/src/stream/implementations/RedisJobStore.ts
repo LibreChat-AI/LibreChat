@@ -51,6 +51,10 @@ import {
   MAX_COALESCED_EVENTS,
   resolveCoalesceWindowMs,
 } from '~/stream/internal/coalescing';
+import {
+  SCHEDULE_MCP_RECEIPT_LUA,
+  SCHEDULE_RETENTION_LUA,
+} from '~/stream/internal/scheduleReceipts';
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { RecoveredSteerPayloadMismatchError } from '~/stream/SteerRecovery';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
@@ -134,6 +138,7 @@ function assertCreateIdempotencyArguments(
  *   ]
  */
 const JOB_CAS_LUA =
+  SCHEDULE_MCP_RECEIPT_LUA +
   'if redis.call("HGET", KEYS[1], "status") ~= ARGV[1] then return 0 end ' +
   'if ARGV[2] ~= "" and redis.call("HGET", KEYS[1], "pendingActionId") ~= ARGV[2] then return 0 end ' +
   'if ARGV[3] ~= "" and redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[3] then return 0 end ' +
@@ -179,11 +184,14 @@ const JOB_CAS_LUA =
   'or (item.createdAt and (type(item.createdAt) ~= "number" or item.createdAt < 0)) ' +
   'or (item.recoveringCreatedAt and (type(item.recoveringCreatedAt) ~= "number" or item.recoveringCreatedAt < 0)) then return 0 end ' +
   'validatedPrior[#validatedPrior + 1] = item end end end ' +
-  'local hdelCount = tonumber(ARGV[13]) ' +
+  'local currentReceipt = redis.call("HGET", KEYS[1], "scheduleOutcomeError") ' +
+  'local clearReceipt = false local hdelCount = tonumber(ARGV[13]) ' +
+  'for i = 14, 13 + hdelCount do if ARGV[i] == "scheduleOutcome" or ARGV[i] == "scheduleOutcomeError" then clearReceipt = true end end ' +
   'local idx = 14 ' +
   'for i = 1, hdelCount do redis.call("HDEL", KEYS[1], ARGV[idx]) idx = idx + 1 end ' +
   'local hset = {} ' +
   'for i = idx, #ARGV do hset[#hset + 1] = ARGV[i] end ' +
+  'hset = retainScheduleReceipt(hset, currentReceipt, clearReceipt) ' +
   'if #hset > 0 then redis.call("HSET", KEYS[1], unpack(hset)) end ' +
   'if terminal then redis.call("HSET", KEYS[1], "steersClosed", "1") end ' +
   // A same-status pause-barrier release does not carry pendingAction again.
@@ -192,7 +200,7 @@ const JOB_CAS_LUA =
   'if not terminal and redis.call("HGET", KEYS[1], "status") == "requires_action" then ' +
   'local currentTtl = redis.call("TTL", KEYS[1]) ' +
   'if currentTtl > ttl then ttl = currentTtl end end ' +
-  'redis.call("EXPIRE", KEYS[1], ttl) ' +
+  'expireScheduleJob(KEYS[1], ttl) ' +
   'local effectiveReceiptTtl = receiptTtl ' +
   'if not terminal and ttl > effectiveReceiptTtl then effectiveReceiptTtl = ttl end ' +
   'if terminal and parkedTtl > effectiveReceiptTtl then effectiveReceiptTtl = parkedTtl end ' +
@@ -405,7 +413,7 @@ const JOB_CREATE_LUA =
   'if retainedEpoch and (not previousCreatedAt or retainedEpoch > previousCreatedAt) then ' +
   'previousCreatedAt = retainedEpoch observedCreatedAt = retainedEpochRaw ' +
   'observedStatus = nil observedConversationId = nil observedActive = false end ' +
-  'if observedActive and (replacedTerminalHostActionPending == "1" or replacedDetachedTerminalHostActionPending == "1") then ' +
+  'if redis.call("HGET", KEYS[1], "preserveForScheduleReconcile") == "1" or (observedActive and (replacedTerminalHostActionPending == "1" or replacedDetachedTerminalHostActionPending == "1")) then ' +
   'return { previousUserId or "", previousTenantId or "", "0", "predecessor_mismatch", ' +
   'observedCreatedAt, observedStatus or "", observedConversationId or "", "1", "1" } end ' +
   'if ARGV[13] == "1" and observedActive then ' +
@@ -610,20 +618,26 @@ const JOB_CREATE_LUA =
  *   ]
  */
 const JOB_UPDATE_LUA =
+  SCHEDULE_MCP_RECEIPT_LUA +
   'if redis.call("EXISTS", KEYS[1]) == 0 then return 0 end ' +
   'if ARGV[1] ~= "" and redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
-  'local hset = {} ' +
+  'local hset = {} local releaseRetention = false ' +
   'for i = 6, #ARGV do hset[#hset + 1] = ARGV[i] end ' +
+  'for i = 6, #ARGV, 2 do if ARGV[i] == "preserveForScheduleReconcile" and ARGV[i+1] == "0" then releaseRetention = true end end ' +
+  'hset = retainScheduleReceipt(hset, redis.call("HGET", KEYS[1], "scheduleOutcomeError"), false) ' +
   'if #hset > 0 then redis.call("HSET", KEYS[1], unpack(hset)) end ' +
   'if ARGV[2] == "1" then ' +
   'local completedTtl = tonumber(ARGV[3]) ' +
   'local chunksTtl = tonumber(ARGV[4]) ' +
   'local runStepsTtl = tonumber(ARGV[5]) ' +
-  'redis.call("EXPIRE", KEYS[1], completedTtl) ' +
+  'expireScheduleJob(KEYS[1], completedTtl) ' +
   'redis.call("DEL", KEYS[4]) ' +
   'if chunksTtl == 0 then redis.call("DEL", KEYS[2]) else redis.call("EXPIRE", KEYS[2], chunksTtl) end ' +
   'if runStepsTtl == 0 then redis.call("DEL", KEYS[3]) else redis.call("EXPIRE", KEYS[3], runStepsTtl) end ' +
   'end ' +
+  'if ARGV[2] ~= "1" then local terminal = redis.call("HGET", KEYS[1], "status") ' +
+  'if redis.call("HGET", KEYS[1], "preserveForScheduleReconcile") == "1" then redis.call("PERSIST", KEYS[1]) ' +
+  'elseif releaseRetention and (terminal == "complete" or terminal == "error" or terminal == "aborted") then expireScheduleJob(KEYS[1], tonumber(ARGV[3])) end end ' +
   'return 1';
 
 /** Owner membership must outlive every paused job and must never shorten a peer's TTL. */
@@ -689,7 +703,7 @@ const PROVIDER_DRAIN_LUA =
  * the deadline cannot be extended by retry enumeration. */
 const RECOVER_TERMINAL_PROVIDER_DRAIN_LUA =
   'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
-  'if redis.call("HGET", KEYS[1], "terminalHostActionPending") ~= "1" and redis.call("HGET", KEYS[1], "detachedAgentEventTerminalHostActionPending") ~= "1" then return 0 end ' +
+  'if redis.call("HGET", KEYS[1], "terminalHostActionPending") ~= "1" and redis.call("HGET", KEYS[1], "detachedAgentEventTerminalHostActionPending") ~= "1" and redis.call("HGET", KEYS[1], "preserveForScheduleReconcile") ~= "1" then return 0 end ' +
   'if redis.call("HGET", KEYS[1], "providerDrained") ~= "0" then return 0 end ' +
   'local completedAt = tonumber(redis.call("HGET", KEYS[1], "completedAt") or "") ' +
   'if not completedAt or completedAt > tonumber(ARGV[2]) then return 0 end ' +
@@ -804,7 +818,10 @@ const STALE_JOB_DELETE_LUA =
   'for i = 8, 9 do local ttl = redis.call("TTL", KEYS[i]) ' +
   'if ttl >= 0 and ttl < tonumber(ARGV[4]) then redis.call("EXPIRE", KEYS[i], ARGV[4]) end end ' +
   'redis.call("SET", KEYS[7], ARGV[1], "EX", tonumber(ARGV[5])) ' +
-  'redis.call("DEL", KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5]) ' +
+  'if redis.call("HGET", KEYS[1], "preserveForScheduleReconcile") == "1" then ' +
+  'redis.call("HSET", KEYS[1], "status", "error", "completedAt", ARGV[2], "error", "Scheduled generation owner became unavailable", "steersClosed", "1") ' +
+  'redis.call("PERSIST", KEYS[1]) redis.call("DEL", KEYS[4], KEYS[5]) ' +
+  'else redis.call("DEL", KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5]) end ' +
   'return 1';
 
 /**
@@ -840,6 +857,7 @@ const STALE_JOB_DELETE_LUA =
  *          parkedSteersTtl, generationEpochGraceTtl]
  */
 const CHUNK_APPEND_LUA =
+  SCHEDULE_RETENTION_LUA +
   'local currentCreatedAt = redis.call("HGET", KEYS[2], "createdAt") ' +
   'if not currentCreatedAt then return 0 end ' +
   'if ARGV[3] ~= "" and currentCreatedAt ~= ARGV[3] then return 0 end ' +
@@ -879,7 +897,7 @@ const CHUNK_APPEND_LUA =
   'local run = tonumber(ARGV[2]) ' +
   'local target = run ' +
   'local jobTtl = redis.call("TTL", KEYS[2]) ' +
-  'if jobTtl < target then redis.call("EXPIRE", KEYS[2], target) ' +
+  'if jobTtl < target then expireScheduleJob(KEYS[2], target) ' +
   'elseif jobTtl > target then target = jobTtl end ' +
   'local recoveryTarget = target ' +
   'if redis.call("HGET", KEYS[2], "recoveredSteerId") then ' +
@@ -922,6 +940,7 @@ const CHUNK_APPEND_LUA =
  *          generationEpochGraceTtl, eventJson...]
  */
 const CHUNK_APPEND_BATCH_LUA =
+  SCHEDULE_RETENTION_LUA +
   'local currentCreatedAt = redis.call("HGET", KEYS[2], "createdAt") ' +
   'if not currentCreatedAt then return 0 end ' +
   'if ARGV[2] ~= "" and currentCreatedAt ~= ARGV[2] then return 0 end ' +
@@ -932,7 +951,7 @@ const CHUNK_APPEND_BATCH_LUA =
   'local run = tonumber(ARGV[1]) ' +
   'local target = run ' +
   'local jobTtl = redis.call("TTL", KEYS[2]) ' +
-  'if jobTtl < target then redis.call("EXPIRE", KEYS[2], target) ' +
+  'if jobTtl < target then expireScheduleJob(KEYS[2], target) ' +
   'elseif jobTtl > target then target = jobTtl end ' +
   'local recoveryTarget = target ' +
   'if redis.call("HGET", KEYS[2], "recoveredSteerId") then ' +
@@ -1705,6 +1724,8 @@ const KEYS = {
   /** Terminal jobs that still owe a durable host lifecycle hook (global set). Retains
    *  the aborted approval-expiry job for cross-replica / post-restart hook retry. */
   terminalHostActionJobs: 'stream:terminal_host_action',
+  /** Versioned, epoch-bound schedule settlement/release retry hints. */
+  scheduleReconcileJobs: 'stream:schedule_reconcile:v1',
   /** Versioned recovery lane for detached Event Actor completion generations.
    * Pre-detached replicas only scan `terminalHostActionJobs`, so they cannot
    * claim a generation whose host hook requires both invocation identities. */
@@ -1842,6 +1863,7 @@ interface PendingChunkAppendBatch {
 }
 
 export class RedisJobStore implements IJobStoreV2 {
+  readonly durableScheduleReceipts = true;
   readonly detachedAgentEventActionStoreMode = 'distributed' as const;
 
   private redis: Redis | Cluster;
@@ -1879,6 +1901,8 @@ export class RedisJobStore implements IJobStoreV2 {
 
   /** Cleanup interval in ms (1 minute) */
   private cleanupIntervalMs = 60000;
+  private scheduleReconcileCursor = '0';
+  private scheduleReconcileMembers: string[] = [];
 
   constructor(redis: Redis | Cluster, options?: RedisJobStoreOptions) {
     this.redis = instrumentIORedisClient(redis, RedisUseCases.GENERATION_STREAM);
@@ -2318,6 +2342,8 @@ export class RedisJobStore implements IJobStoreV2 {
     expectedCreatedAt?: number,
   ): Promise<void> {
     const key = KEYS.job(streamId);
+    if (updates.preserveForScheduleReconcile === true)
+      await this.retainScheduleReconcile(streamId, expectedCreatedAt);
     const requestedTerminal =
       updates.status != null && ['complete', 'error', 'aborted'].includes(updates.status);
     if (requestedTerminal) {
@@ -2861,6 +2887,8 @@ export class RedisJobStore implements IJobStoreV2 {
     returnDrainedSteers: boolean,
   ): Promise<true | SteerQueueItem[] | null> {
     const { from, to, patch, clear, expectActionId, expectCreatedAt, notAfterMs } = args;
+    if (patch?.preserveForScheduleReconcile === true)
+      await this.retainScheduleReconcile(streamId, expectCreatedAt);
     const key = KEYS.job(streamId);
     const terminal = this.statusSetKey(to) === null;
     const terminalJob = terminal ? await this.getJob(streamId) : null;
@@ -3170,7 +3198,6 @@ export class RedisJobStore implements IJobStoreV2 {
     }
 
     const currentJob = await this.reconcileJobMembership(streamId, {
-      initialJob: null,
       previousJob: observedJob,
     });
     this.clearLocalStateUnlessActive(streamId, currentJob, observedJob.createdAt);
@@ -3207,6 +3234,62 @@ export class RedisJobStore implements IJobStoreV2 {
     return jobs.filter(
       (job): job is SerializableJobData => job != null && job.status === 'requires_action',
     );
+  }
+
+  private async retainScheduleReconcile(streamId: string, createdAt?: number): Promise<void> {
+    const epoch = createdAt ?? (await this.getJob(streamId))?.createdAt;
+    if (epoch != null)
+      await this.redis.sadd(KEYS.scheduleReconcileJobs, terminalHostActionMember(streamId, epoch));
+  }
+
+  async getScheduleReconcileJobs(limit: number): Promise<SerializableJobData[]> {
+    if (this.scheduleReconcileMembers.length === 0) {
+      const [cursor, members] = await this.redis.sscan(
+        KEYS.scheduleReconcileJobs,
+        this.scheduleReconcileCursor,
+        'COUNT',
+        limit,
+      );
+      this.scheduleReconcileCursor = cursor;
+      this.scheduleReconcileMembers = members;
+    }
+    const members = this.scheduleReconcileMembers.splice(0, limit);
+    const cutoff = Date.now() - PROVIDER_DRAIN_TIMEOUT_MS;
+    const held = await Promise.all(
+      members.map(async (member) => {
+        const { streamId, createdAt } = parseTerminalHostActionMember(member);
+        let job = await this.getJob(streamId);
+        if (!job || job.createdAt !== createdAt) {
+          await this.redis.srem(KEYS.scheduleReconcileJobs, member);
+          return null;
+        }
+        // Keep pre-armed same-epoch hints: a writer can still be committing its marker.
+        if (job.preserveForScheduleReconcile !== true) return null;
+        if (job.status === 'running') {
+          if (await this.deleteStaleRunningJob(streamId, job, Date.now()))
+            job = await this.getJob(streamId);
+        }
+        if (
+          job &&
+          job.status !== 'running' &&
+          job.status !== 'requires_action' &&
+          job.providerDrained === false &&
+          job.completedAt != null &&
+          job.completedAt <= cutoff
+        ) {
+          await this.redis.eval(
+            RECOVER_TERMINAL_PROVIDER_DRAIN_LUA,
+            1,
+            KEYS.job(streamId),
+            String(job.createdAt),
+            String(cutoff),
+          );
+          job = await this.getJob(streamId);
+        }
+        return job;
+      }),
+    );
+    return held.filter((job): job is SerializableJobData => job != null);
   }
 
   async getTerminalHostActionJobs(): Promise<SerializableJobData[]> {
@@ -3339,11 +3422,21 @@ export class RedisJobStore implements IJobStoreV2 {
     const held = [...heldByGeneration.values()];
     if (held.length > 0 && this.ttl.requiresAction > 0) {
       await Promise.all(
-        held.flatMap((job) =>
-          [KEYS.job(job.streamId), KEYS.chunks(job.streamId), KEYS.runSteps(job.streamId)].map(
-            (key) => this.redis.expire(key, this.ttl.requiresAction).catch(() => undefined),
+        held.flatMap((job) => [
+          this.redis
+            .eval(
+              SCHEDULE_RETENTION_LUA +
+                'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end expireScheduleJob(KEYS[1], tonumber(ARGV[2])) return 1',
+              1,
+              KEYS.job(job.streamId),
+              String(job.createdAt),
+              String(this.ttl.requiresAction),
+            )
+            .catch(() => undefined),
+          ...[KEYS.chunks(job.streamId), KEYS.runSteps(job.streamId)].map((key) =>
+            this.redis.expire(key, this.ttl.requiresAction).catch(() => undefined),
           ),
-        ),
+        ]),
       );
     }
     return [...readyByGeneration.values()];
@@ -3356,12 +3449,13 @@ export class RedisJobStore implements IJobStoreV2 {
     // and configured evidence-TTL reset happen atomically. The global retry
     // member includes this generation, so removing it cannot affect a successor.
     const cleared = (await this.redis.eval(
-      'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
+      SCHEDULE_RETENTION_LUA +
+        'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
         'local detachedStatus = redis.call("HGET", KEYS[1], "detachedAgentEventTerminalStatus") ' +
         'if detachedStatus then redis.call("HSET", KEYS[1], "status", detachedStatus) end ' +
         'redis.call("HDEL", KEYS[1], "terminalHostActionPending", "detachedAgentEventTerminalHostActionPending", "detachedAgentEventTerminalStatus") ' +
         'if detachedStatus then redis.call("HDEL", KEYS[1], "lastActiveAt") end ' +
-        'if tonumber(ARGV[2]) > 0 then redis.call("EXPIRE", KEYS[1], ARGV[2]) else redis.call("DEL", KEYS[1]) end ' +
+        'expireScheduleJob(KEYS[1], tonumber(ARGV[2])) ' +
         'if tonumber(ARGV[3]) > 0 then redis.call("EXPIRE", KEYS[2], ARGV[3]) else redis.call("DEL", KEYS[2]) end ' +
         'if tonumber(ARGV[4]) > 0 then redis.call("EXPIRE", KEYS[3], ARGV[4]) else redis.call("DEL", KEYS[3]) end ' +
         'return 1',

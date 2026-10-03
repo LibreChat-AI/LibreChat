@@ -49,6 +49,11 @@ import {
   isMCPTransportAuthenticationError,
   MCPAuthenticationRejectedError,
 } from './errors';
+import {
+  resolveScheduledMCPBearerConfig,
+  isScheduledMCPBearer,
+  ScheduledMCPBearerError,
+} from '~/schedules/bearer';
 import { PENDING_STALE_MS, FlowStateNotFoundError, normalizeExpiresAt } from '~/flow/manager';
 import { createLazyOboUpstreamTokenProvider, awaitOboOperation } from '~/mcp/oauth/obo';
 import { preProcessGraphTokens } from '~/utils/graph';
@@ -197,6 +202,8 @@ export class MCPConnectionFactory {
       if (directBearerRecoveryState.attempted) {
         throw new MCPAuthenticationRejectedError(basic.serverName, false, error);
       }
+      if (isScheduledMCPBearer(oauth?.requestScopedConnections))
+        throw new ScheduledMCPBearerError('credential_rejected', basic.serverName);
       directBearerRecoveryState.attempted = true;
       const refreshedConfig = await resolveDirectOpenIDBearerConfig({
         config: directBearerSourceConfig,
@@ -274,6 +281,8 @@ export class MCPConnectionFactory {
     if (initial.connection) {
       await initial.connection.dispose().catch(() => undefined);
     }
+    if (isScheduledMCPBearer(options?.requestScopedConnections))
+      throw new ScheduledMCPBearerError('credential_rejected', basic.serverName);
     if (this.isRequestCancelled(options)) {
       return { tools: null, connection: null, oauthRequired: false, oauthUrl: null };
     }
@@ -317,8 +326,18 @@ export class MCPConnectionFactory {
     basic: t.BasicConnectionOptions,
     options?: t.OAuthConnectionOptions | t.UserConnectionContext,
   ): Promise<t.BasicConnectionOptions> {
+    const scheduledConfig = await resolveScheduledMCPBearerConfig({
+      user: options?.user,
+      serverName: basic.serverName,
+      config: (basic.serverDefinition ?? basic.serverConfig) as t.ParsedServerConfig,
+      context: options?.requestScopedConnections,
+      signal: options?.signal,
+    });
     const bearerConfig = await resolveDirectOpenIDBearerConfig({
-      config: basic.serverConfig,
+      config:
+        scheduledConfig === (basic.serverDefinition ?? basic.serverConfig)
+          ? basic.serverConfig
+          : applyRequestHeaders(scheduledConfig),
       upstreamTokenProvider: options?.upstreamTokenProvider,
       signal: options?.signal,
     });

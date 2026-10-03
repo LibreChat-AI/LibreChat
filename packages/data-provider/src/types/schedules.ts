@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { scheduledMCPFailureReasonSchema } from './scheduleConsent';
 
 /** Cadences the dialog builds from structured pickers (hour, minute, weekday). */
 export const scheduleStructuredFrequencies = ['hourly', 'daily', 'weekdays', 'weekly'] as const;
@@ -213,6 +214,9 @@ export const scheduleMCPOutcomeSchema = z.object({
   agentId: z.string().optional(),
   /** Additional diagnosis; older clients ignore unknown keys and retain the known status. */
   detail: z.enum(['unattended_auth_required']).optional(),
+  reason: scheduledMCPFailureReasonSchema.optional(),
+  recovery: z.enum(['authorize', 'configure', 'restore_permission', 'retry_later']).optional(),
+  automaticReplay: z.literal(false).optional(),
   status: z.enum([
     'ready',
     'mcp_reauth_required',
@@ -238,4 +242,57 @@ export function readScheduleMCPOutcomes(error?: string): ScheduleMCPOutcome[] {
   } catch {
     return [];
   }
+}
+
+/** Verified generation evidence only; never infer authorization from this projection. */
+export function readScheduleMCPReceipts(error?: string): ScheduleMCPOutcome[] {
+  return readScheduleMCPOutcomes(error).filter(
+    (outcome) => outcome.detail === 'unattended_auth_required' && outcome.status !== 'ready',
+  );
+}
+export function mergeScheduleMCPReceipts(
+  ...groups: readonly ScheduleMCPOutcome[][]
+): ScheduleMCPOutcome[] {
+  const merged = new Map<string, ScheduleMCPOutcome>();
+  for (const group of groups)
+    for (const outcome of group) {
+      const key = JSON.stringify([
+        outcome.server,
+        outcome.agentId,
+        outcome.status,
+        outcome.reason,
+        outcome.recovery,
+        outcome.detail,
+        outcome.automaticReplay,
+      ]);
+      merged.set(key, outcome);
+    }
+  return Array.from(merged.values());
+}
+export interface ScheduleMCPReceiptProjection {
+  status:
+    | 'success'
+    | 'error'
+    | 'requires_action'
+    | 'interrupted'
+    | 'skipped_balance'
+    | 'skipped_overlap';
+  error?: string;
+  mcp?: ScheduleMCPOutcome[];
+}
+/** A known denial dominates every ending, including paused and interrupted recovery. */
+export function projectScheduleMCPReceipt<S extends ScheduleMCPReceiptProjection['status']>(
+  outcome: Omit<ScheduleMCPReceiptProjection, 'status'> & { status: S },
+  ...receipts: readonly ScheduleMCPOutcome[][]
+): Omit<ScheduleMCPReceiptProjection, 'status'> & { status: S | 'error' } {
+  const mcp = mergeScheduleMCPReceipts(outcome.mcp ?? [], ...receipts);
+  const denied = mcp.some(
+    (item) => item.detail === 'unattended_auth_required' && item.status !== 'ready',
+  );
+  if (!denied) return { ...outcome, ...(mcp.length > 0 && { mcp }) };
+  return {
+    status: 'error',
+    mcp,
+    error: `${getScheduleMCPDisabledReason(mcp) ?? 'mcp_unavailable'}: ${JSON.stringify(mcp)}`,
+  };
 }

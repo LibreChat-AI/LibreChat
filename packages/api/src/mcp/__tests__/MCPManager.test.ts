@@ -24,6 +24,7 @@ import { MCPServersInitializer } from '~/mcp/registry/MCPServersInitializer';
 import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
+import { attachScheduledMCPBearer } from '~/schedules/bearer';
 import { MCPAuthenticationRejectedError } from '~/mcp/errors';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
 import { isMCPDomainAllowed } from '~/auth/domain';
@@ -1610,6 +1611,39 @@ describe('MCPManager', () => {
         expect.objectContaining({
           Authorization: 'Bearer {{LIBRECHAT_GRAPH_ACCESS_TOKEN}}',
         }),
+      );
+    });
+
+    it('preserves Graph preprocessing for an unrelated server in a scheduled request', async () => {
+      const config = { ...createServerConfigWithGraphPlaceholder(), source: 'yaml' as const };
+      const context = createMCPRequestContext();
+      attachScheduledMCPBearer(context, {
+        scheduleId: 's1',
+        ownerId: mockUser.id!,
+        tenantId: mockUser.tenantId ?? null,
+        agentId: 'root',
+        invocationMode: 'delegated',
+      });
+      (graphUtils.preProcessGraphTokens as jest.Mock).mockResolvedValue({
+        ...config,
+        headers: { Authorization: 'Bearer fresh-graph' },
+      });
+      mockAppConnections({ get: jest.fn().mockResolvedValue(mockConnection) });
+      (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(config);
+      const manager = await MCPManager.createInstance(newMCPServersConfig());
+      await manager.callTool({
+        user: mockUser as IUser,
+        serverName,
+        toolName: 'test_tool',
+        provider: 'openai',
+        flowManager: mockFlowManager as unknown as Parameters<
+          typeof manager.callTool
+        >[0]['flowManager'],
+        requestScopedConnections: context,
+        graphTokenResolver: jest.fn(),
+      });
+      expect(mockConnection.setRequestHeaders).toHaveBeenCalledWith(
+        expect.objectContaining({ Authorization: 'Bearer fresh-graph' }),
       );
     });
 

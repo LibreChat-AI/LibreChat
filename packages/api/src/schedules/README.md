@@ -85,3 +85,31 @@ authorization requires a separate implementation. Scopes are not an STS audience
 mapping and authorization remain the host's responsibility.
 
 This interface adds no token store, STS exchange, consent API, or new MCP credential mode.
+
+
+## Host-Supplied Resource Bearers
+
+Scheduled direct-bearer MCP configurations require an explicit trusted host.
+`createScheduledMCPBearerHost` accepts the A1 resource-bearer resolver, current
+invocation authority, and live enrollment resolver. Supply the same host to
+`createMCPPreflight({ scheduledBearerHost })` and
+`createInitializeClient({ scheduledBearerHost })`. The default application
+installs neither adapter, so unattended direct-bearer use fails closed.
+
+The accepted resource must use `credentialMode: resource_bearer`, an exact URL,
+issuer, audience, scopes and configuration revision. Existing browser-bearer
+routing is supported only through its Authorization header; resource tokens
+cannot enter URLs, subprocess arguments, OBO assertions or OAuth exchanges.
+No login refresh token or second credential store is added.
+
+The request captures owner, tenant and enrolled root identity, including restored
+approval requests. Every mint/use rechecks current authority and read-only policy.
+Tokens are cached only within that request and binding, never allow decisions.
+Resource rejection ends the attempt without minting/replaying `tools/call`.
+Interactive sessions, stored OAuth, OBO and static sibling servers retain their
+credential paths. Legacy jobs missing trusted identity cannot acquire a bearer.
+
+A3 execution enforcement, provider acceptance and compatible all-replica upgrade
+remain activation prerequisites. Keep enrollment disabled during upgrade/drain;
+old workers cannot inherit the new guards. Local SDK fixtures certify this wiring,
+not a deployed provider. No managed infrastructure is required by the interface.

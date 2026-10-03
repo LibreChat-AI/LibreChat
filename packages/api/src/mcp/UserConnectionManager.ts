@@ -26,6 +26,11 @@ import {
   MCP_APPS_CAPABILITY_PROFILE,
   STANDARD_MCP_CAPABILITY_PROFILE,
 } from './capabilities';
+import {
+  resolveScheduledMCPBearerConfig,
+  isScheduledMCPBearer,
+  ScheduledMCPBearerError,
+} from '~/schedules/bearer';
 import { resolveDirectOpenIDBearerConfig, usesDirectOpenIDBearerRecovery } from '~/mcp/openid';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
@@ -717,6 +722,7 @@ export abstract class UserConnectionManager {
       oboTokenResolver,
       oboTrustChecker,
       upstreamTokenProvider,
+      requestScopedConnections,
       upstreamTokenProviderResolver,
       oboIdentityContext,
       onOAuthCredentialsChanged,
@@ -881,10 +887,19 @@ export abstract class UserConnectionManager {
 
     try {
       signal?.throwIfAborted();
+      const scheduledConfig = await resolveScheduledMCPBearerConfig({
+        user,
+        serverName,
+        config: declaredConfig,
+        context: requestScopedConnections,
+        signal,
+      });
       const bearerConfig =
-        directBearerResolvedConfig ??
+        (!isScheduledMCPBearer(requestScopedConnections) && directBearerResolvedConfig) ||
         (await resolveDirectOpenIDBearerConfig({
-          config,
+          config: isScheduledMCPBearer(requestScopedConnections)
+            ? applyRequestHeaders(scheduledConfig)
+            : config,
           upstreamTokenProvider,
           signal,
         }));
@@ -981,6 +996,7 @@ export abstract class UserConnectionManager {
         }
 
         connectionOptions = {
+          requestScopedConnections,
           useOAuth: true,
           user: user,
           customUserVars: customUserVars,
@@ -1005,6 +1021,7 @@ export abstract class UserConnectionManager {
         };
       } else {
         connectionOptions = {
+          requestScopedConnections,
           user,
           customUserVars,
           requestBody,
@@ -1053,6 +1070,8 @@ export abstract class UserConnectionManager {
         signal?.throwIfAborted();
         const toolListAuthenticationError = toolListSnapshot?.authenticationError;
         if (toolListAuthenticationError && directBearerRecovery && user) {
+          if (isScheduledMCPBearer(requestScopedConnections))
+            throw new ScheduledMCPBearerError('credential_rejected', serverName);
           if (directBearerRecoveryState.attempted) {
             throw new MCPAuthenticationRejectedError(
               serverName,

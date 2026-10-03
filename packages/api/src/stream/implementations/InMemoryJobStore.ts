@@ -43,6 +43,7 @@ import {
   recoveredSteerPayloadMatches,
   RecoveredSteerPayloadMismatchError,
 } from '~/stream/SteerRecovery';
+import { retainedScheduleReceipt } from '~/stream/internal/scheduleReceipts';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { toPendingSteer } from '~/stream/SteeringLifecycle';
 
@@ -145,6 +146,7 @@ interface ContentState {
  * - No chunk persistence needed - same instance handles generation and reconnects
  */
 export class InMemoryJobStore implements IJobStoreV2 {
+  readonly durableScheduleReceipts = false;
   readonly detachedAgentEventActionStoreMode = 'process_local' as const;
 
   private jobs = new Map<string, SerializableJobData>();
@@ -364,6 +366,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
       const currentCreatedAt = current?.createdAt ?? this.getRetainedGenerationEpoch(streamId);
       if (
         current?.terminalHostActionPending === true ||
+        current?.preserveForScheduleReconcile === true ||
         (rejectActivePredecessor === true &&
           (current?.status === 'running' ||
             current?.status === 'requires_action' ||
@@ -724,7 +727,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
     // Plain field writer. Membership-aware status transitions
     // (running ⇄ requires_action) go solely through transitionStatus.
-    Object.assign(job, updates);
+    Object.assign(job, updates, retainedScheduleReceipt(job, updates));
   }
 
   async markProviderExecutionDrained(
@@ -800,12 +803,10 @@ export class InMemoryJobStore implements IJobStoreV2 {
       this.parkQueuedSteers(streamId, job, Date.now());
     }
     job.status = args.to;
-    if (args.patch) {
-      Object.assign(job, args.patch);
-    }
-    for (const field of args.clear ?? []) {
-      delete job[field];
-    }
+    const receipt = retainedScheduleReceipt(job, args.patch ?? {}, args.clear ?? []);
+    if (args.patch) Object.assign(job, args.patch);
+    for (const field of args.clear ?? []) delete job[field];
+    Object.assign(job, receipt);
     const receiptEntries = this.steerReceipts.get(streamId)?.values() ?? [];
     if (args.to === 'requires_action' && args.patch?.pendingAction?.expiresAt == null) {
       // Unlike Redis, this store has no paused-job backstop eviction. Preserve
@@ -1121,6 +1122,30 @@ export class InMemoryJobStore implements IJobStoreV2 {
     return pending;
   }
 
+  async getScheduleReconcileJobs(limit: number): Promise<SerializableJobData[]> {
+    const held: SerializableJobData[] = [];
+    const now = Date.now();
+    let remaining = this.jobs.size;
+    for (const [stream, job] of this.jobs) {
+      if (remaining-- <= 0) break;
+      if (job.preserveForScheduleReconcile !== true) continue;
+      if (
+        job.status !== 'running' &&
+        job.status !== 'requires_action' &&
+        job.providerDrained === false &&
+        job.completedAt != null &&
+        now - job.completedAt >= PROVIDER_DRAIN_TIMEOUT_MS
+      )
+        job.providerDrained = true;
+      held.push(job);
+      // Rotate retry attempts so a failed first batch cannot starve later obligations.
+      this.jobs.delete(stream);
+      this.jobs.set(stream, job);
+      if (held.length >= limit) break;
+    }
+    return held;
+  }
+
   async clearTerminalHostAction(streamId: string, expectedCreatedAt?: number): Promise<void> {
     const job = this.jobs.get(streamId);
     // Identity-fenced: a replacement generation at this streamId (a newer createdAt) must
@@ -1135,6 +1160,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
     const now = Date.now();
     const toDelete: Array<{ streamId: string; createdAt: number }> = [];
     let staleRunning = 0;
+    let retainedRecovered = 0;
 
     // Expired parked steers are otherwise only purged by a claim.
     for (const [streamId, parked] of this.parkedSteers) {
@@ -1267,7 +1293,13 @@ export class InMemoryJobStore implements IJobStoreV2 {
             continue;
           }
           this.parkQueuedSteers(streamId, job, now);
-          toDelete.push({ streamId, createdAt: job.createdAt });
+          if (job.preserveForScheduleReconcile === true) {
+            job.status = 'error';
+            job.completedAt = now;
+            job.error = 'Scheduled generation owner became unavailable';
+            job.steersClosed = true;
+            retainedRecovered++;
+          } else toDelete.push({ streamId, createdAt: job.createdAt });
           staleRunning++;
         }
       }
@@ -1301,7 +1333,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
       logger.debug(`[InMemoryJobStore] Cleaned up ${toDelete.length} expired jobs`);
     }
 
-    return toDelete.length;
+    return toDelete.length + retainedRecovered;
   }
 
   private async evictOldest(): Promise<void> {
