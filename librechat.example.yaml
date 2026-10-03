@@ -1104,6 +1104,19 @@ endpoints:
       # reasoningLabelMaxPerRun: 8
       modelDisplayLabel: 'Claude (Compatible)'
 
+    # llmman Example (local model runner)
+    # Serves the Ollama API, so models are discovered from the running server.
+    # `default` needs at least one entry, and `apiKey` any placeholder.
+    - name: 'llmman'
+      apiKey: 'llmman'
+      baseURL: 'http://host.docker.internal:17434/v1/'
+      models:
+        default: ['llama3.2']
+        fetch: true
+      titleConvo: true
+      titleModel: 'current_model'
+      modelDisplayLabel: 'llmman'
+
     # Groq Example
     - name: 'groq'
       apiKey: '${GROQ_API_KEY}'

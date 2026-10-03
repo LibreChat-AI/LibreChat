@@ -211,7 +211,13 @@ export async function fetchModels({
     }
   }
 
-  if (name && name.toLowerCase().startsWith(KnownEndpoints.ollama)) {
+  // llmman serves the Ollama API, so model discovery uses the same fetcher.
+  const normalizedName = name?.toLowerCase();
+  if (
+    normalizedName &&
+    (normalizedName.startsWith(KnownEndpoints.ollama) ||
+      normalizedName.startsWith(KnownEndpoints.llmman))
+  ) {
     let ollamaModels: string[] | null = null;
     try {
       ollamaModels = await fetchOllamaModels(baseURL ?? '', {

@@ -51,6 +51,7 @@ export const knownEndpointToProvider: Record<KnownEndpoints, ProviderId> = {
   [KnownEndpoints.huggingface]: ProviderId.huggingface,
   [KnownEndpoints.lemonade]: ProviderId.lemonade,
   [KnownEndpoints.mistral]: ProviderId.mistral,
+  [KnownEndpoints.llmman]: ProviderId.ollama,
   [KnownEndpoints.mlx]: ProviderId.mlx,
   [KnownEndpoints.ollama]: ProviderId.ollama,
   [KnownEndpoints.openrouter]: ProviderId.openrouter,
