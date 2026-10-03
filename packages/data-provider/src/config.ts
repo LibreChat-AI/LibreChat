@@ -2573,6 +2573,20 @@ export const interfaceSchema = z
          *  marketplace request; the count is also how many automatic attempts there are.
          *  An empty array leaves only the manual Retry. Omit for LibreChat's sequence. */
         retryDelaysMs: z.array(z.number().int().min(0).max(600_000)).max(20).optional(),
+        categories: z
+          .object({
+            enableDefaultCategories: z.boolean().optional(),
+            list: z
+              .array(
+                z.object({
+                  value: z.string(),
+                  label: z.string().optional(),
+                  description: z.string().optional(),
+                }),
+              )
+              .optional(),
+          })
+          .optional(),
       })
       .optional(),
     fileSearch: z.boolean().optional(),

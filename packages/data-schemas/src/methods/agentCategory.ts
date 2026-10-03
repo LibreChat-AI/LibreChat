@@ -1,6 +1,7 @@
 import type { Model, Types } from 'mongoose';
 import type { IAgentCategory } from '~/types';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { runAsSystem } from '~/config/tenantContext';
 
 export function createAgentCategoryMethods(mongoose: typeof import('mongoose')): {
   getActiveCategories: () => Promise<IAgentCategory[]>;
@@ -50,7 +51,7 @@ export function createAgentCategoryMethods(mongoose: typeof import('mongoose')):
     ]);
 
     const countMap = new Map(categoryCounts.map((c) => [c._id, c.count]));
-    const categories = await getActiveCategories();
+    const categories = await runAsSystem(() => getActiveCategories());
 
     return categories.map((category) => ({
       ...category,

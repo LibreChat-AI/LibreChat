@@ -280,6 +280,25 @@ interface:
     roles: true
   marketplace:
     use: false
+    # categories is only applied when marketplace is enabled above
+    categories:
+      # When false, the built-in categories are hidden. `general` always stays
+      # active because it is the fallback category assigned to new agents.
+      enableDefaultCategories: true
+      list:
+        # `label` and `description` are optional and fall back to `value`.
+        # A value starting with `com_` is resolved as a UI translation key and
+        # must exist in the bundled locale files, otherwise the key itself is
+        # displayed. Omit `label` to show `value` exactly as typed.
+        - value: "Education"
+          description: "Educational agents."
+        - value: "Productivity"
+          description: "Productivity agents."
+        # Declaring a built-in category overrides its label and description, and
+        # keeps it visible even when enableDefaultCategories is false.
+        - value: "aftersales"
+          label: "Customer Success"
+
   fileCitations: true
   # Show the thumbs up/thumbs down feedback buttons on responses (default: true)
   feedback: true
