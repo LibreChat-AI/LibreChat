@@ -40,6 +40,7 @@ import useLocalize, { TranslationKeys } from '~/hooks/useLocalize';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useDelayedUploadToast } from './useDelayedUploadToast';
 import { useChatContext } from '~/Providers/ChatContext';
+import { importWithRecovery } from '~/lib/assets/lazy';
 import { ephemeralAgentByConvoId } from '~/store';
 import useClientResize from './useClientResize';
 import useUpdateFiles from './useUpdateFiles';
@@ -617,14 +618,15 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
         }
 
         const heicProcessedFile = isHEIC
-          ? await import('~/utils/heicConverter').then(({ processFileForUpload }) =>
-              processFileForUpload(originalFile, 0.9, (conversionProgress) => {
-                const adjustedProgress = 0.1 + conversionProgress * 0.4;
-                replaceFile({
-                  ...initialExtendedFile,
-                  progress: adjustedProgress,
-                });
-              }),
+          ? await importWithRecovery(() => import('~/utils/heicConverter')).then(
+              ({ processFileForUpload }) =>
+                processFileForUpload(originalFile, 0.9, (conversionProgress) => {
+                  const adjustedProgress = 0.1 + conversionProgress * 0.4;
+                  replaceFile({
+                    ...initialExtendedFile,
+                    progress: adjustedProgress,
+                  });
+                }),
             )
           : originalFile;
 

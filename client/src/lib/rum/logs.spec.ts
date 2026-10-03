@@ -467,6 +467,73 @@ describe('client log lifecycle', () => {
     visibility.mockRestore();
   });
 
+  it.each(['fulfilled', 'rejected'])(
+    'reserves keepalive bytes across restarts until the old request is %s',
+    async (outcome) => {
+      let resolve: (value: { status: number }) => void = () => undefined;
+      let reject: (error: Error) => void = () => undefined;
+      fetchMock.mockImplementationOnce(
+        () =>
+          new Promise((res, rej) => {
+            resolve = res;
+            reject = rej;
+          }),
+      );
+      startClientLogs(options());
+      const logLargeRecord = (i: number) =>
+        logger.error(
+          `Large record ${i}`,
+          `${i} ${'界'.repeat(500)}`,
+          Object.assign(new Error('x'), {
+            stack: [
+              'Error: x',
+              ...Array.from(
+                { length: 12 },
+                (_, frame) => `    at frame${frame} (/assets/${'a'.repeat(170)}.js:1:2)`,
+              ),
+            ].join('\n'),
+          }),
+        );
+      for (let i = 0; i < 20; i += 1) {
+        logLargeRecord(i);
+      }
+      window.dispatchEvent(new Event('pagehide'));
+      await jest.advanceTimersByTimeAsync(0);
+      expect(recordsAt(0)).toHaveLength(20);
+      stopClientLogs();
+      startClientLogs(options());
+      for (let i = 20; i < 30; i += 1) {
+        logLargeRecord(i);
+      }
+      window.dispatchEvent(new Event('pagehide'));
+      const encodedBytes = () =>
+        fetchMock.mock.calls.reduce(
+          (bytes, [, init]) => bytes + new TextEncoder().encode(String(init.body)).length,
+          0,
+        );
+      expect(encodedBytes()).toBeLessThanOrEqual(CLIENT_LOG_LIMITS.maxPayloadBytes);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(allRecords().length).toBeLessThan(30);
+      if (outcome === 'fulfilled') {
+        resolve({ status: 200 });
+      } else {
+        reject(new Error('cancelled'));
+      }
+      await jest.advanceTimersByTimeAsync(0);
+      window.dispatchEvent(new Event('pagehide'));
+      await jest.advanceTimersByTimeAsync(0);
+      expect(allRecords()).toHaveLength(30);
+      expect(
+        fetchMock.mock.calls
+          .slice(1)
+          .reduce(
+            (bytes, [, init]) => bytes + new TextEncoder().encode(String(init.body)).length,
+            0,
+          ),
+      ).toBeLessThanOrEqual(CLIENT_LOG_LIMITS.maxPayloadBytes);
+    },
+  );
+
   it('preserves the minute and page record budgets across exporter restarts', async () => {
     for (let pageWindow = 0; pageWindow < 10; pageWindow += 1) {
       if (pageWindow > 0) {

@@ -65,6 +65,7 @@ function createPageState() {
     shutdown: false,
     backoffUntil: 0,
     consecutiveFailures: 0,
+    keepaliveBytes: 0,
   };
 }
 
@@ -305,7 +306,6 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
   /** Records of the regular request in flight, re-sent by the page-hide flush if unanswered. */
   let activeBatch: LogEntry[] = [];
   let sendSeq = 0;
-  let keepaliveBytes = 0;
   let disabled = pageState.shutdown;
 
   const sessionId = (): string => {
@@ -552,7 +552,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       }
     };
     const requestBytes = keepalive ? byteLength(body) : 0;
-    keepaliveBytes += requestBytes;
+    pageState.keepaliveBytes += requestBytes;
     try {
       const response = await send(options.endpoint, {
         method: 'POST',
@@ -569,7 +569,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
     } catch {
       handleResponse();
     } finally {
-      keepaliveBytes -= requestBytes;
+      pageState.keepaliveBytes -= requestBytes;
       if (keepalive && queue.length > 0) {
         schedule(Math.max(Date.now() + limits.flushIntervalMs, pageState.backoffUntil));
       }
@@ -592,7 +592,7 @@ export function createClientLogExporter(options: ClientLogsOptions): ClientLogEx
       });
       queue = [...unacknowledged, ...queue];
       void transmit(
-        takeBatch(Number.POSITIVE_INFINITY, limits.maxPayloadBytes - keepaliveBytes),
+        takeBatch(Number.POSITIVE_INFINITY, limits.maxPayloadBytes - pageState.keepaliveBytes),
         true,
       ).catch(() => undefined);
       return;
