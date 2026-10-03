@@ -38,6 +38,66 @@
       ],
       "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
     },
+    "@librechat/backend#test:ci": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "test/.env.test",
+        "$TURBO_ROOT$/config/jest*.{js,cjs}",
+        "$TURBO_ROOT$/config/connect.js",
+        "$TURBO_ROOT$/config/migrate-orphaned-agent-files.js"
+      ],
+      "outputs": ["coverage/**"],
+      "env": [
+        "CI",
+        "COVERAGE",
+        "RUN_*_LIVE_TESTS",
+        "LIBRECHAT_CODE_TEST_*",
+        "GRAPH_SUBAGENT_*",
+        "ANTHROPIC_USAGE_LIVE_MODEL",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY"
+      ],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
+    },
+    "@librechat/data-schemas#test:ci": {
+      "dependsOn": ["^build", "librechat-data-provider#build"],
+      "inputs": ["$TURBO_DEFAULT$", "test/.env.test", "$TURBO_ROOT$/config/jest*.{js,cjs}"],
+      "outputs": ["coverage/**"],
+      "env": [
+        "CI",
+        "COVERAGE",
+        "RUN_*_LIVE_TESTS",
+        "LIBRECHAT_CODE_TEST_*",
+        "GRAPH_SUBAGENT_*",
+        "ANTHROPIC_USAGE_LIVE_MODEL",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY"
+      ],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
+    },
+    "@librechat/api#test:ci": {
+      "dependsOn": ["^build", "librechat-data-provider#build", "@librechat/data-schemas#build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "test/.env.test",
+        "$TURBO_ROOT$/config/jest*.{js,cjs}",
+        "$TURBO_ROOT$/client/src/components/Chat/Messages/Content/Parts/handle.ts",
+        "$TURBO_ROOT$/client/src/components/Chat/approval/preview.ts"
+      ],
+      "outputs": ["coverage/**"],
+      "env": [
+        "CI",
+        "COVERAGE",
+        "RUN_*_LIVE_TESTS",
+        "LIBRECHAT_CODE_TEST_*",
+        "GRAPH_SUBAGENT_*",
+        "ANTHROPIC_USAGE_LIVE_MODEL",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY"
+      ],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
+    },
     "@librechat/data-schemas#build": {
       "dependsOn": ["^build", "librechat-data-provider#build"],
       "inputs": [
