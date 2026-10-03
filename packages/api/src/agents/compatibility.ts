@@ -7,6 +7,7 @@ import {
 } from '@librechat/data-schemas';
 import type { IAgentEventActorSummary } from '@librechat/data-schemas';
 import { NO_CHAT_PROJECT_CONTEXT_KEY } from '../projects/context';
+import { canonicalize } from '~/utils/canonicalize';
 
 export const AGENT_CONTEXT_FINGERPRINT_VERSION = 1;
 export const AGENT_GRAPH_SCHEMA_VERSION = 1;
@@ -192,35 +193,6 @@ function redactModelParameterCredentials(value: object | undefined): object | un
     redacted[key] = item;
   }
   return redacted;
-}
-
-function canonicalize(value: unknown, seen: WeakSet<object>): unknown {
-  if (value == null || typeof value === 'string' || typeof value === 'boolean') {
-    return value;
-  }
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : String(value);
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => canonicalize(item, seen)).filter((item) => item !== undefined);
-  }
-  if (typeof value !== 'object') {
-    return undefined;
-  }
-  if (seen.has(value)) {
-    throw new TypeError('Agent semantic context cannot contain circular references');
-  }
-  seen.add(value);
-  const record = value as Record<string, unknown>;
-  const normalized: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) {
-    const item = canonicalize(record[key], seen);
-    if (item !== undefined) {
-      normalized[key] = item;
-    }
-  }
-  seen.delete(value);
-  return normalized;
 }
 
 function sortSkillIdentities(

@@ -160,7 +160,7 @@ const vanillaOverrides = {
    *  login page load spends a passkey request on autofill; the defaults allow 2 and 20. */
   RESET_PASSWORD_MAX: '100',
   PASSKEY_MAX: '500',
-  OPENAI_API_KEY: 'user_provided',
+  OPENAI_API_KEY: 'e2e-mock-openai-key',
   OPENID_CLIENT_ID: '',
   OPENID_ISSUER: '',
   OPENID_AUTO_REDIRECT: 'false',

@@ -127,6 +127,103 @@ export function buildAgentAdditionalInstructions({
 }
 
 /**
+ * Records the author's `additional_instructions` before anything runtime-scoped
+ * joins that field, because the prompt cache identity follows the configured
+ * half and nothing downstream can separate the two again.
+ *
+ * Idempotent on purpose, and called from both places that write to the field:
+ * `initializeAgent` moves temporally resolved instructions into it (a value
+ * that changes every day and must stay out of the identity), and
+ * `applyContextToAgent` appends this run's memory, file and MCP context. The
+ * first caller wins, so whichever runs first records the configured text.
+ */
+export function captureConfiguredAdditionalInstructions(agent: {
+  additional_instructions?: string | null;
+  configuredAdditionalInstructions?: string;
+}): void {
+  if ('configuredAdditionalInstructions' in agent) {
+    return;
+  }
+  agent.configuredAdditionalInstructions = agent.additional_instructions || undefined;
+}
+
+/**
+ * Appends to an agent's dynamic instruction tail, recording the contribution
+ * as part of the prompt cache identity unless it is explicitly request-scoped.
+ *
+ * Stable by default on purpose. The identity has to cover every
+ * configuration-derived addition to this field — the artifact prompt, the
+ * skill catalog, the memory-tool guard — and the recurring defect was an
+ * addition that nobody remembered to record, which silently reused a key for
+ * a different system prefix. Forgetting the flag now over-partitions (a cache
+ * miss) instead, and only three writers pass `stable: false`: the temporally
+ * resolved instruction block, this run's context, and the per-run dynamic tool
+ * instructions.
+ */
+/**
+ * Prepends to an agent's dynamic instruction tail, ahead of everything already
+ * there, without recording the text as part of the identity.
+ *
+ * The direction is the point. The tail is sent after the instructions field,
+ * so a block moved out of that field and appended lands behind the repository
+ * instructions, the memory guard and the author's own tail, reversing an order
+ * the agent was saved with. One caller: instructions carrying temporal
+ * variables, whose resolved text leaves the cached prefix but must keep its
+ * place in what the model reads.
+ *
+ * `configured` is the identity's form of the same block, written to the same
+ * end of the recorded text. One writer owns both halves on purpose: the digest
+ * is a join of this field, so text placed first on the wire and recorded last
+ * makes two different prefixes read as one identity. They cannot drift while
+ * the same call places both.
+ */
+export function prependAgentInstructionTail(
+  agent: {
+    additional_instructions?: string | null;
+    configuredAdditionalInstructions?: string;
+  },
+  text?: string | null,
+  options: { configured?: string | null } = {},
+): void {
+  if (text == null || text === '') {
+    return;
+  }
+  captureConfiguredAdditionalInstructions(agent);
+  agent.additional_instructions = [text, agent.additional_instructions ?? '']
+    .filter(Boolean)
+    .join('\n\n');
+  const configured = options.configured;
+  if (configured == null || configured === '') {
+    return;
+  }
+  agent.configuredAdditionalInstructions = [configured, agent.configuredAdditionalInstructions]
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .join('\n\n');
+}
+
+export function appendAgentInstructionTail(
+  agent: {
+    additional_instructions?: string | null;
+    configuredAdditionalInstructions?: string;
+  },
+  text?: string | null,
+  options: { stable?: boolean } = {},
+): void {
+  if (text == null || text === '') {
+    return;
+  }
+  agent.additional_instructions = [agent.additional_instructions ?? '', text]
+    .filter(Boolean)
+    .join('\n\n');
+  if (options.stable === false) {
+    return;
+  }
+  agent.configuredAdditionalInstructions = [agent.configuredAdditionalInstructions, text]
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .join('\n\n');
+}
+
+/**
  * Applies run context and MCP instructions to an agent's configuration.
  * Mutates the agent object in place.
  *
@@ -158,6 +255,7 @@ export async function applyContextToAgent({
 }): Promise<void> {
   const baseInstructions = agent.instructions || '';
   const additionalInstructions = agent.additional_instructions || '';
+  captureConfiguredAdditionalInstructions(agent);
 
   try {
     const mcpServers = ephemeralAgent?.mcp?.length ? ephemeralAgent.mcp : extractMCPServers(agent);

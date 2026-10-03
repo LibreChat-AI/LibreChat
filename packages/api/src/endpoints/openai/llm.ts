@@ -14,6 +14,14 @@ import type { SettingDefinition } from 'librechat-data-provider';
 import type { OpenAI } from 'openai';
 import type * as t from '~/types';
 import {
+  PROMPT_CACHE_ADMIN_FIELDS,
+  PROMPT_CACHE_WIRE_FIELDS,
+  PROMPT_CACHE_LEVERS,
+  PROMPT_CACHE_KEY_LEVER,
+  PROMPT_CACHE_RETENTION_LEVER,
+  isPromptCacheLeverDropped,
+} from './promptCache';
+import {
   sanitizeModelName,
   constructAzureURL,
   isCanonicalAzureURL,
@@ -57,6 +65,17 @@ export const knownOpenAIParams: Set<string> = new Set([
   'service_tier',
   'supportsStrictToolCalling',
   'useResponsesApi',
+  /**
+   * Prompt caching. These are LangChain constructor fields that serialize to
+   * `prompt_cache_key` / `prompt_cache_retention`, and the agents SDK field
+   * that emits `prompt_cache_options` plus the explicit breakpoints. They must
+   * route here rather than to `modelKwargs`: on Chat Completions the explicit
+   * fields are spread *after* `modelKwargs`, so a raw snake_case kwarg is
+   * overwritten with `undefined` and silently never reaches the wire.
+   */
+  'promptCacheKey',
+  'promptCacheRetention',
+  'promptCacheExplicit',
   'configuration',
   // Call-time Options
   'tools',
@@ -590,6 +609,46 @@ export function applyDefaultParams(
   }
 }
 
+/**
+ * Removes every administrator-owned prompt-cache field from one set of client
+ * options and from any fallback client options nested under it.
+ *
+ * The fallbacks matter as much as the top level: `withModelCallbacks` builds a
+ * fallback client from its own `clientOptions`, so an author-supplied key or a
+ * billed `24h` retention there would reach the provider the moment the primary
+ * client failed — past the policy this enforces.
+ */
+function stripPromptCacheControls(options: Record<string, unknown>): void {
+  for (const field of PROMPT_CACHE_ADMIN_FIELDS) {
+    delete options[field];
+  }
+  /**
+   * The wire spellings too, wherever they can ride along. `modelKwargs` is
+   * forwarded to the request body verbatim, so an author who writes
+   * `prompt_cache_key` there reaches the provider without passing any of the
+   * policy above — the same hole as the camelCase fields, one layer down.
+   */
+  const nested = options.modelKwargs;
+  if (nested != null && typeof nested === 'object') {
+    for (const field of [...PROMPT_CACHE_WIRE_FIELDS, ...PROMPT_CACHE_ADMIN_FIELDS]) {
+      delete (nested as Record<string, unknown>)[field];
+    }
+  }
+  for (const field of PROMPT_CACHE_WIRE_FIELDS) {
+    delete options[field];
+  }
+  const fallbacks = options.fallbacks;
+  if (!Array.isArray(fallbacks)) {
+    return;
+  }
+  for (const fallback of fallbacks) {
+    const nested = (fallback as { clientOptions?: unknown } | null)?.clientOptions;
+    if (nested != null && typeof nested === 'object') {
+      stripPromptCacheControls(nested as Record<string, unknown>);
+    }
+  }
+}
+
 export function getOpenAILLMConfig({
   azure,
   apiKey,
@@ -600,6 +659,9 @@ export function getOpenAILLMConfig({
   dropParams,
   defaultParams,
   useOpenRouter,
+  promptCacheKeyEnabled,
+  promptCacheScope,
+  promptCacheRetention,
   reasoningFormat = ReasoningParameterFormat.reasoningEffort,
   modelOptions: _modelOptions,
 }: {
@@ -613,6 +675,9 @@ export function getOpenAILLMConfig({
   defaultParams?: Record<string, unknown>;
   useOpenRouter?: boolean;
   reasoningFormat?: ReasoningParameterFormat;
+  promptCacheKeyEnabled?: boolean;
+  promptCacheScope?: t.OpenAIPromptCacheScope;
+  promptCacheRetention?: t.OpenAIPromptCacheRetention;
   azure?: false | t.AzureOptions;
 }): Pick<t.LLMConfigResult, 'llmConfig' | 'tools'> & {
   azure?: t.AzureOptions;
@@ -646,6 +711,20 @@ export function getOpenAILLMConfig({
     },
     modelOptions,
   ) as OpenAILLMConfig;
+
+  /**
+   * Prompt caching is an administrator lever, so nothing about it may arrive
+   * through model parameters. An agent's `model_parameters` are author-owned
+   * and land on the client options wholesale, which would otherwise let any
+   * author set `promptCacheScope: 'shared'` — dropping the user from the key
+   * and opting every consumer of a shared agent into cross-user accounting,
+   * where a cache hit reveals that someone else already sent a guessable
+   * prompt — or pin a key, buy billed `24h` retention, or forge the partition
+   * identity `createRun` stamps. The policy below re-adds each of these from
+   * endpoint configuration, and `addParams` remains the administrator's route
+   * to a pinned key.
+   */
+  stripPromptCacheControls(llmConfig as Record<string, unknown>);
 
   if (frequency_penalty != null) {
     llmConfig.frequencyPenalty = frequency_penalty;
@@ -926,6 +1005,159 @@ export function getOpenAILLMConfig({
 
   const tier = gpt6Tier(llmConfig.model);
   const solLunaRulesApply = firstPartyEndpoint && (tier === 'sol' || tier === 'luna');
+
+  /**
+   * Prompt caching, first-party OpenAI and Azure only. A gateway or custom
+   * OpenAI-compatible endpoint shares the request shape but not the caching
+   * contract, so it keeps whatever it is configured with.
+   *
+   * `getOpenAILLMConfig` can decide *whether* a deterministic cache key is
+   * allowed, but not what it is: the key hashes the agent's stable
+   * instructions and tool schemas, which are only assembled at run time.
+   * `createRun` reads `promptCacheKeyEnabled` and fills in `promptCacheKey`.
+   *
+   * The marker is therefore withheld whenever an administrator has already
+   * settled the key here — pinned through `addParams`, or removed through
+   * `dropParams` — because `createRun` would otherwise synthesize over that
+   * decision. `dropParams` has to be read directly: it deletes
+   * `promptCacheKey` further down and never sees this separate marker.
+   *
+   * The scope rides along with the marker: it only describes a key `createRun`
+   * is going to build, so carrying it when no key is coming would leave a
+   * setting on the request that nothing reads. The partition *identity* is not
+   * resolved here at all — `createRun` takes it from the authenticated user of
+   * the run, because every field on this config can be rewritten by
+   * `addParams`, removed by `dropParams`, or dropped by a model rule below.
+   */
+  /**
+   * `promptCacheKey: false` is documented as sending no key at all, so it also
+   * removes one an administrator pinned through `addParams` — those are applied
+   * above, and declining to synthesize would otherwise leave the pinned value
+   * on every request.
+   */
+  if (firstPartyEndpoint && promptCacheKeyEnabled === false) {
+    delete llmConfig.promptCacheKey;
+    /**
+     * And the wire spelling: `addParams` runs after the sanitizer above, so an
+     * administrator's raw `prompt_cache_key` is sitting in the request kwargs
+     * by now, and Responses forwards them verbatim. "Send no key at all" has
+     * to mean that in both alphabets — and only that: retention and the
+     * explicit controls are separate levers with their own policy, so this
+     * switch leaves them to it.
+     */
+    delete modelKwargs.prompt_cache_key;
+  }
+  /**
+   * Both spellings count as an administrator's decision. `addParams` routes the
+   * raw `prompt_cache_key` into the request kwargs, which the request forwards
+   * verbatim, so treating only the constructor field as pinned would let
+   * `createRun` synthesize a second key over the operator's own.
+   */
+  const promptCacheKeyPinned =
+    typeof llmConfig.promptCacheKey === 'string' ||
+    typeof modelKwargs.prompt_cache_key === 'string';
+  const promptCacheKeyDropped = isPromptCacheLeverDropped(PROMPT_CACHE_KEY_LEVER, dropParams);
+  /**
+   * Moved onto the constructor field, not left where it landed: LangChain
+   * spreads `modelKwargs` before writing its own `promptCacheKey` on Chat
+   * Completions, so a raw pinned key left in the kwargs is overwritten with
+   * `undefined` and never sent — recognizing it as pinned would otherwise
+   * mean withholding synthesis and sending nothing at all.
+   */
+  if (firstPartyEndpoint && typeof modelKwargs.prompt_cache_key === 'string') {
+    llmConfig.promptCacheKey = modelKwargs.prompt_cache_key;
+    delete modelKwargs.prompt_cache_key;
+  }
+  /**
+   * A host-only control that no request body accepts. `addParams` routes an
+   * unknown name into the request kwargs, so a model group that scopes its
+   * own caching would otherwise send `promptCacheScope` to the provider; it
+   * is lifted out and treated as the more specific value instead.
+   */
+  const groupPromptCacheScope =
+    typeof modelKwargs.promptCacheScope === 'string' ? modelKwargs.promptCacheScope : undefined;
+  delete modelKwargs.promptCacheScope;
+  if (
+    firstPartyEndpoint &&
+    promptCacheKeyEnabled !== false &&
+    !promptCacheKeyPinned &&
+    !promptCacheKeyDropped
+  ) {
+    llmConfig.promptCacheKeyEnabled = true;
+    const scope = groupPromptCacheScope ?? promptCacheScope;
+    if (scope != null) {
+      llmConfig.promptCacheScope = scope as typeof promptCacheScope;
+    }
+  }
+  /**
+   * The wire spelling drops it too. `dropParams: ['prompt_cache_retention']`
+   * is the spelling an operator reads in OpenAI's own documentation, and
+   * without this the constructor field is set anyway and LangChain serializes
+   * it straight back to the field they excluded — with billed retention
+   * attached, which is the version of this mistake that costs money.
+   */
+  const promptCacheRetentionDropped = isPromptCacheLeverDropped(
+    PROMPT_CACHE_RETENTION_LEVER,
+    dropParams,
+  );
+  /**
+   * The endpoint value is a default, not an override. `addParams` is the most
+   * specific layer an operator has — a model group's own retention, in either
+   * spelling — and it is applied before this point, so overwriting it would
+   * bill a group at the endpoint's rate against its explicit instruction.
+   */
+  /**
+   * Moved onto the constructor field for the same reason the pinned key is:
+   * the serializer spreads the kwargs first and then writes its own
+   * `promptCacheRetention`, so a raw value left behind is overwritten with
+   * undefined and no retention is sent at all — while still counting as a
+   * parameter-supplied value that suppresses the endpoint default.
+   */
+  if (firstPartyEndpoint && typeof modelKwargs.prompt_cache_retention === 'string') {
+    llmConfig.promptCacheRetention =
+      modelKwargs.prompt_cache_retention as typeof llmConfig.promptCacheRetention;
+    delete modelKwargs.prompt_cache_retention;
+  }
+  const retentionSuppliedByParams = llmConfig.promptCacheRetention != null;
+  if (
+    firstPartyEndpoint &&
+    promptCacheRetention != null &&
+    !promptCacheRetentionDropped &&
+    !retentionSuppliedByParams
+  ) {
+    llmConfig.promptCacheRetention = promptCacheRetention;
+  }
+  if (promptCacheRetentionDropped) {
+    delete llmConfig.promptCacheRetention;
+    delete modelKwargs.prompt_cache_retention;
+  }
+  /**
+   * The last word on every lever, after the generic drop cascade has run.
+   *
+   * The cascade removes the exact name an operator wrote, and by the time it
+   * runs the value is no longer under that name: a request-body spelling has
+   * been promoted onto the constructor field so the serializer cannot
+   * overwrite it, which is what let `dropParams: ['prompt_cache_key']` pass
+   * over a key it had already moved. Each lever is therefore re-read here from
+   * one table and removed under both of its names, so a drop means the same
+   * thing in either alphabet no matter which one the value was resolved from.
+   * A gateway keeps whatever it is configured with.
+   */
+  const finalizePromptCachePolicy = () => {
+    if (!firstPartyEndpoint) {
+      return;
+    }
+    for (const lever of PROMPT_CACHE_LEVERS) {
+      if (!isPromptCacheLeverDropped(lever, dropParams)) {
+        continue;
+      }
+      delete (llmConfig as Record<string, unknown>)[lever.field];
+      for (const name of lever.wire) {
+        delete modelKwargs[name];
+      }
+    }
+  };
+
   if (!useOpenRouter) {
     hasModelKwargs =
       applyReasoningConfig({
@@ -1072,6 +1304,7 @@ export function getOpenAILLMConfig({
   }
 
   if (!azure) {
+    finalizePromptCachePolicy();
     llmConfig.apiKey = apiKey;
     return { llmConfig, tools };
   }
@@ -1084,6 +1317,7 @@ export function getOpenAILLMConfig({
     : azure.azureOpenAIApiDeploymentName ||
       getAzureDeploymentName(baseURL, azure) ||
       (firstPartyResponsesModel || llmConfig.useResponsesApi ? model : undefined);
+  finalizePromptCachePolicy();
 
   if (process.env.AZURE_OPENAI_DEFAULT_MODEL) {
     llmConfig.model = process.env.AZURE_OPENAI_DEFAULT_MODEL;
