@@ -96,6 +96,8 @@ interface Run {
   stepDur: number;
   waitMove: boolean;
   moved: boolean;
+  /** A move waiting for the page to have a layout. */
+  pending: NonNullable<StepSpec['m']> | null;
   poseStart: number;
 }
 
@@ -223,7 +225,8 @@ export class LiaEngine {
 
   noteTyping(now = performance.now()) {
     this.typingUntil = now + 1500;
-    this.lastUser = now;
+    /* Typing is deliberate: it wakes a napping Lia rather than cancelling the nap. */
+    this.noteActivity(true, now);
     if (this.run && this.run.prio <= 1 && (this.run.def.moves || BIG.has(this.run.def.cat))) {
       this.stopRun();
       this.nextLifeAt = now + this.gap(now);
@@ -246,6 +249,7 @@ export class LiaEngine {
       stepDur: 0,
       waitMove: false,
       moved: false,
+      pending: null,
       poseStart: now,
     };
     this.host.onAction?.(def.label);
@@ -387,6 +391,7 @@ export class LiaEngine {
     run.stepDur = stepDuration(dur);
     run.waitMove = m != null;
     run.moved = false;
+    run.pending = null;
     if (m) {
       this.startMove(m, run, now);
     }
@@ -395,9 +400,10 @@ export class LiaEngine {
   private startMove(m: NonNullable<StepSpec['m']>, run: Run, now: number) {
     const platform = this.host.platform();
     if (!platform) {
-      run.moved = true;
+      run.pending = m;
       return;
     }
+    run.pending = null;
     const tx = clamp(this.resolveTarget(m.to, platform), platform.x0, platform.x1);
     const style = m.style ?? 'walk';
     if (this.reducedMotion || style === 'teleport') {
@@ -428,6 +434,11 @@ export class LiaEngine {
     const run = this.run;
     if (!run) {
       return;
+    }
+    if (run.pending) {
+      /* The layout arrived: the step starts now, with its move. */
+      run.stepStart = now;
+      this.startMove(run.pending, run, now);
     }
     if (run.waitMove && !run.moved && now - run.stepStart > MOVE_TIMEOUT_MS && this.move) {
       this.gx = this.move.tx;
@@ -467,6 +478,8 @@ export class LiaEngine {
     const move = this.move;
     if (move) {
       const style = STYLES[move.style];
+      /* The platform can shrink mid-walk; aim for the nearest end Lia can still reach. */
+      move.tx = clamp(move.tx, platform.x0, platform.x1);
       const d = move.tx - this.gx;
       const stepPx = style.speed * S * dt * (this.mood.energy < 0.3 ? 0.7 : 1);
       if (Math.abs(d) <= stepPx) {

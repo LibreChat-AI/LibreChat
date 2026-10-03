@@ -112,6 +112,13 @@ describe('LiaEngine', () => {
     expect(engine.current?.id).toBe('r-wake');
   });
 
+  it('wakes from a nap when the user starts typing', () => {
+    const { engine } = setup();
+    engine.play('nap', 1, 0);
+    engine.noteTyping(100);
+    expect(engine.current?.id).toBe('r-wake');
+  });
+
   it('wakes from a nap on a click without turning it into a pet', () => {
     const { engine } = setup();
     engine.play('nap', 1, 0);
@@ -160,6 +167,42 @@ describe('LiaEngine', () => {
     run(engine, 200, 1200);
     expect(engine.position.x).toBe(at);
     expect(engine.current?.id).not.toBe('travel-walk');
+  });
+
+  it('finishes a walk at the platform edge when the platform shrinks under it', () => {
+    jest.spyOn(Math, 'random').mockReturnValue(0.99);
+    const platform = { ...PLATFORM };
+    const engine = new LiaEngine(
+      document.createElement('canvas'),
+      { platform: () => platform, onBubble: () => undefined },
+      0,
+    );
+    engine.life = false;
+    engine.play('travel-walk', 2, 0);
+    run(engine, 0, 200);
+    platform.x1 = 300;
+    run(engine, 200, 1200);
+    expect(engine.position.x).toBe(300);
+    expect(engine.current).toBeNull();
+  });
+
+  it('walks once the page has a layout when an action starts before it', () => {
+    jest.spyOn(Math, 'random').mockReturnValue(0.99);
+    let ready = false;
+    const engine = new LiaEngine(
+      document.createElement('canvas'),
+      { platform: () => (ready ? PLATFORM : null), onBubble: () => undefined },
+      0,
+    );
+    engine.life = false;
+    engine.play('travel-walk', 2, 0);
+    run(engine, 0, 100);
+    ready = true;
+    run(engine, 100, 400);
+    const start = engine.position.x;
+    run(engine, 400, 6000);
+    expect(engine.position.x).toBeGreaterThan(start);
+    expect(engine.position.x).toBeCloseTo(PLATFORM.x0 + 0.99 * (PLATFORM.x1 - PLATFORM.x0));
   });
 
   it('reports speech bubbles to the host and clears them', () => {
