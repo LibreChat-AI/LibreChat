@@ -1,5 +1,10 @@
 import yauzl from 'yauzl';
-import { excelMimeTypes, megabyte } from 'librechat-data-provider';
+import {
+  excelMimeTypes,
+  megabyte,
+  OFFICE_DOC_DATA_SLOT,
+  OFFICE_FILE_SHELL_MARKER,
+} from 'librechat-data-provider';
 import { tryLibreOfficePreview } from './libreoffice';
 import { assertSafeZipSize } from './zipSafety';
 
@@ -363,6 +368,8 @@ const MAX_DOCX_CDN_BINARY_BYTES = 350 * 1024;
  * `cap-mirrors-extract` test in `html.spec.ts` pins the relationship.
  */
 const OFFICE_HTML_OUTPUT_CAP = 512 * 1024;
+const OFFICE_OVERSIZED_NOTICE =
+  'This document is too large for the simplified preview. Download it to view the full content.';
 
 /**
  * Build the CDN-rendered HTML document for a DOCX. The base64 payload
@@ -377,7 +384,11 @@ const OFFICE_HTML_OUTPUT_CAP = 512 * 1024;
  * for inline images), styles inline (`docx-preview` injects per-doc
  * styles into `<head>` at render time).
  */
-function buildDocxCdnDocument(base64: string, mammothFallbackHtml: string): string {
+function buildDocxCdnDocument(
+  base64: string,
+  mammothFallbackHtml: string,
+  fileShell = false,
+): string {
   /* `connect-src` allows fetches to:
    *   - `'self'`: the sandpack-static-server origin the iframe runs in
    *     (covers any same-origin sourcemap fetches the bundler embedded)
@@ -415,6 +426,7 @@ function buildDocxCdnDocument(base64: string, mammothFallbackHtml: string): stri
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
+${fileShell ? OFFICE_FILE_SHELL_MARKER : ''}
 <title>Preview</title>
 <style>
 /* Lock the docx-preview iframe to LIGHT color-scheme. docx-preview
@@ -467,10 +479,10 @@ ${DOCX_EXTRA_CSS}
 <body>
 <div id="lc-render"><div class="lc-docx-loading">Loading preview…</div></div>
 <div id="lc-fallback" hidden>
-<p id="lc-fallback-notice">High-fidelity renderer unavailable (CDN blocked or offline). Showing the simplified preview below.</p>
+<p id="lc-fallback-notice">${fileShell && !mammothFallbackHtml ? OFFICE_OVERSIZED_NOTICE : 'High-fidelity renderer unavailable (CDN blocked or offline). Showing the simplified preview below.'}</p>
 <article class="lc-docx">${mammothFallbackHtml}</article>
 </div>
-<script id="lc-doc-data" type="application/octet-stream;base64">${base64}</script>
+${fileShell ? OFFICE_DOC_DATA_SLOT : `<script id="lc-doc-data" type="application/octet-stream;base64">${base64}</script>`}
 <script>
 (function () {
   function showFallback(reason) {
@@ -493,12 +505,16 @@ ${DOCX_EXTRA_CSS}
       console.warn('[docx-preview] CDN renderer fell through to mammoth:', reasonText);
     }
   }
+  var b64 = document.getElementById('lc-doc-data').textContent.trim();
+  if (!b64) {
+    showFallback('no-data');
+    return;
+  }
   if (typeof docx === 'undefined' || typeof docx.renderAsync !== 'function') {
     showFallback('renderer-not-loaded');
     return;
   }
   try {
-    var b64 = document.getElementById('lc-doc-data').textContent.trim();
     var bytes = Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); });
     docx.renderAsync(bytes.buffer, document.getElementById('lc-render'), null, {
       className: 'docx',
@@ -549,8 +565,16 @@ async function renderMammothBody(buffer: Buffer): Promise<string> {
   return sanitizeOfficeHtml(result.value);
 }
 
-async function wordDocToHtmlViaCdn(buffer: Buffer, mammothFallbackBody: string): Promise<string> {
-  return buildDocxCdnDocument(buffer.toString('base64'), mammothFallbackBody);
+async function wordDocToHtmlViaCdn(
+  buffer: Buffer,
+  mammothFallbackBody: string,
+  fileShell = false,
+): Promise<string> {
+  return buildDocxCdnDocument(
+    fileShell ? '' : buffer.toString('base64'),
+    mammothFallbackBody,
+    fileShell,
+  );
 }
 
 async function wordDocToHtmlViaMammoth(buffer: Buffer): Promise<string> {
@@ -609,7 +633,11 @@ function isOfficePreviewCdnDisabled(): boolean {
  * sub-1MB compressed bomb to 200+ MB of XML. See SEC review on PR
  * #12934 for the original DoS finding.
  */
-export async function wordDocToHtml(buffer: Buffer): Promise<string> {
+export async function wordDocToHtml(
+  buffer: Buffer,
+  options: { fileShell?: boolean } = {},
+): Promise<string> {
+  const fileShell = options.fileShell === true;
   await assertSafeZipSize(buffer, { name: 'docx' });
   /* Opt-in LibreOffice path: highest fidelity for any DOCX feature
    * mammoth/docx-preview can't reproduce (complex tables, drawing
@@ -621,7 +649,7 @@ export async function wordDocToHtml(buffer: Buffer): Promise<string> {
   if (lo) {
     return lo;
   }
-  if (isOfficePreviewCdnDisabled() || buffer.length > MAX_DOCX_CDN_BINARY_BYTES) {
+  if (isOfficePreviewCdnDisabled() || (!fileShell && buffer.length > MAX_DOCX_CDN_BINARY_BYTES)) {
     return wordDocToHtmlViaMammoth(buffer);
   }
   /* Render mammoth first so its sanitized output can be embedded as
@@ -631,7 +659,10 @@ export async function wordDocToHtml(buffer: Buffer): Promise<string> {
    * size budget applies after mammoth runs because we can't know its
    * output size from the binary size alone. */
   const mammothBody = await renderMammothBody(buffer);
-  const cdnDoc = await wordDocToHtmlViaCdn(buffer, mammothBody);
+  const cdnDoc = await wordDocToHtmlViaCdn(buffer, mammothBody, fileShell);
+  if (fileShell && Buffer.byteLength(cdnDoc, 'utf-8') > OFFICE_HTML_OUTPUT_CAP) {
+    return wordDocToHtmlViaCdn(buffer, '', true);
+  }
   if (Buffer.byteLength(cdnDoc, 'utf-8') > OFFICE_HTML_OUTPUT_CAP) {
     return wrapAsDocument(`<article class="lc-docx">${mammothBody}</article>`, DOCX_EXTRA_CSS);
   }
@@ -1080,7 +1111,11 @@ const MAX_PPTX_CDN_BINARY_BYTES = 350 * 1024;
  * iframe via `transform: scale(...)`. The slides scroll vertically
  * once the renderer paints them.
  */
-function buildPptxCdnDocument(base64: string, slideListFallbackBody: string): string {
+function buildPptxCdnDocument(
+  base64: string,
+  slideListFallbackBody: string,
+  fileShell = false,
+): string {
   /* PPTX-specific CSP relaxations vs DOCX:
    *   - `worker-src blob:` — pptx-preview's bundled echarts dep spins up
    *     Web Workers via blob: URLs for chart rendering. Without this,
@@ -1120,10 +1155,17 @@ function buildPptxCdnDocument(base64: string, slideListFallbackBody: string): st
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
+${fileShell ? OFFICE_FILE_SHELL_MARKER : ''}
 <title>Preview</title>
 <style>
 :root { color-scheme: light dark; --bg: #ffffff; --fg: #1f2937; --muted: #6b7280; }
 @media (prefers-color-scheme: dark) { :root { --bg: #1a1a2e; --fg: #e5e7eb; --muted: #9ca3af; } }
+/* Reserves the vertical scrollbar's width up front so its appearance
+ * never changes the document's content width. Without this, a deck
+ * whose height sits within a few px of the iframe height flips the
+ * scrollbar on and off every refit as the resulting width change
+ * alternately fits and overflows the content. */
+html { scrollbar-gutter: stable; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
 #lc-render { padding: 16px; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 16px; }
 /* Each rendered slide is wrapped post-hoc by the bootstrap script in
@@ -1148,6 +1190,21 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); fon
   left: 0;
   transform-origin: top left;
 }
+/* Slide blocks now stack inside the library's own wrapper box instead of
+ * as direct children of #lc-render, so #lc-render's flex gap no longer
+ * separates them — restore the 16px rhythm here instead. */
+.lc-slide-wrap + .lc-slide-wrap {
+  margin-top: 16px;
+}
+/* pptx-preview's own init() sets a fixed inline width (and an opaque
+ * background) on the wrapper box it creates around the slides.
+ * Override so it hugs the stacked .lc-slide-wrap blocks' actual width
+ * instead of clipping them, and drops its own background so it
+ * doesn't paint a second boxed panel behind the per-slide cards. */
+.pptx-preview-wrapper {
+  width: auto !important;
+  background: transparent !important;
+}
 #lc-fallback { padding: 16px; font-size: 14px; line-height: 1.5; color: var(--fg); }
 #lc-fallback-notice { font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin: 0 0 16px; }
 .lc-pptx-loading { display: flex; align-items: center; justify-content: center; height: 60vh; color: var(--muted); font-size: 14px; }
@@ -1164,14 +1221,14 @@ ${PPTX_SLIDE_LIST_CSS}
 <body>
 <div id="lc-render"><div class="lc-pptx-loading">Loading preview…</div></div>
 <div id="lc-fallback" hidden>
-  <p id="lc-fallback-notice">High-fidelity renderer unavailable or returned no slide content. Showing the simplified slide-list view below.</p>
+  <p id="lc-fallback-notice">${fileShell && !slideListFallbackBody ? OFFICE_OVERSIZED_NOTICE : 'High-fidelity renderer unavailable or returned no slide content. Showing the simplified slide-list view below.'}</p>
   ${slideListFallbackBody}
   <details style="font-size: 12px; color: var(--muted); margin: 16px 0 0;">
     <summary style="cursor: pointer;">Diagnostic details</summary>
     <div id="lc-fallback-reason" style="margin-top: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-word;"></div>
   </details>
 </div>
-<script id="lc-doc-data" type="application/octet-stream;base64">${base64}</script>
+${fileShell ? OFFICE_DOC_DATA_SLOT : `<script id="lc-doc-data" type="application/octet-stream;base64">${base64}</script>`}
 <script>
 (function () {
   var settled = false;
@@ -1225,12 +1282,16 @@ ${PPTX_SLIDE_LIST_CSS}
     showFallback((e.error && e.error.message) || e.message || 'script-error');
   });
 
+  var b64 = document.getElementById('lc-doc-data').textContent.trim();
+  if (!b64) {
+    showFallback('no-data');
+    return;
+  }
   if (typeof pptxPreview === 'undefined' || typeof pptxPreview.init !== 'function') {
     showFallback('renderer-not-loaded');
     return;
   }
   try {
-    var b64 = document.getElementById('lc-doc-data').textContent.trim();
     var bytes = Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); });
     var container = document.getElementById('lc-render');
     var loading = document.querySelector('.lc-pptx-loading');
@@ -1244,7 +1305,12 @@ ${PPTX_SLIDE_LIST_CSS}
      * doesnt see the unscaled 960px-wide flash. We reveal once
      * wrap+scale has settled. */
     container.style.visibility = 'hidden';
-    var previewer = pptxPreview.init(container, { width: SLIDE_W, height: SLIDE_H });
+    /* No height option: passing one bounds the librarys own render
+     * box to that pixel height, which nests a scrollable region inside
+     * the panel instead of letting the panel itself scroll to the last
+     * slide. Width alone is enough — wrapSlides() below fits each
+     * slide to the panel on its own. */
+    var previewer = pptxPreview.init(container, { width: SLIDE_W });
 
     function availableWidth() {
       /* clientWidth includes the 16px padding on each side via
@@ -1279,12 +1345,17 @@ ${PPTX_SLIDE_LIST_CSS}
      * move slides out from under the librarys references and break
      * its internal state. */
     function wrapSlides() {
-      var children = Array.prototype.slice.call(container.children);
-      for (var i = 0; i < children.length; i++) {
-        var slide = children[i];
-        if (!slide.classList || slide.classList.contains('lc-slide-wrap') || slide.classList.contains('lc-pptx-loading')) {
-          continue;
-        }
+      /* pptx-preview nests every rendered slide inside its own
+       * .pptx-preview-wrapper box rather than appending them directly
+       * to the render container — walking the containers immediate
+       * children only ever finds that one box, wrapping the whole deck
+       * as a single unit instead of one block per slide. Querying the
+       * slides directly finds each one wherever the library nested it,
+       * and each wrap is inserted next to its own slide via
+       * slide.parentNode. */
+      var slides = Array.prototype.slice.call(container.querySelectorAll('.pptx-preview-slide-wrapper'));
+      for (var i = 0; i < slides.length; i++) {
+        var slide = slides[i];
         /* Cache the slides actual rendered size BEFORE applying any
          * transform — measurements after a CSS scale no longer reflect
          * native pixels and would feed back into wrong sizing on
@@ -1300,10 +1371,26 @@ ${PPTX_SLIDE_LIST_CSS}
         wrap.className = 'lc-slide-wrap';
         wrap.style.width = (nativeW * scale) + 'px';
         wrap.style.height = (nativeH * scale) + 'px';
+        /* pptx-preview sets an inline auto-centering margin on every
+         * slide. That inline rule beats our stylesheet, so above 960px
+         * content width the auto margins push the slide right before the
+         * scale is applied, shifting it out of this block and clipping
+         * it against the wraps overflow. Clear it so the slide pins to
+         * the blocks own left edge. */
+        slide.style.margin = '0';
         slide.style.transformOrigin = 'top left';
         slide.style.transform = 'scale(' + scale + ')';
-        container.insertBefore(wrap, slide);
+        slide.parentNode.insertBefore(wrap, slide);
         wrap.appendChild(slide);
+      }
+      /* The CSS rule above already wins in a real browser (a plain inline
+       * style loses to a stylesheet !important), but clear it here too so
+       * the librarys own box never keeps a fixed pixel width wider than
+       * the stacked slide blocks it now contains. */
+      var libraryBoxes = container.querySelectorAll('.pptx-preview-wrapper');
+      for (var j = 0; j < libraryBoxes.length; j++) {
+        libraryBoxes[j].style.width = 'auto';
+        libraryBoxes[j].style.background = 'transparent';
       }
     }
 
@@ -1342,6 +1429,11 @@ ${PPTX_SLIDE_LIST_CSS}
     }
 
     function finalize() {
+      /* previewer.preview() and the safety-net timer both call this; the
+       * timer already guards on settled before calling it, but the
+       * promise path does not, so guard here once for both callers
+       * instead of at each call site. */
+      if (settled) { return; }
       wrapSlides();
       if (!hasRenderedContent()) {
         showFallback('renderer-empty-slide-list');
@@ -1403,8 +1495,16 @@ async function renderPptxSlidesBodyForBuffer(buffer: Buffer): Promise<string> {
   return renderPptxSlidesBody(slides);
 }
 
-async function pptxToHtmlViaCdn(buffer: Buffer, slideListFallbackBody: string): Promise<string> {
-  return buildPptxCdnDocument(buffer.toString('base64'), slideListFallbackBody);
+async function pptxToHtmlViaCdn(
+  buffer: Buffer,
+  slideListFallbackBody: string,
+  fileShell = false,
+): Promise<string> {
+  return buildPptxCdnDocument(
+    fileShell ? '' : buffer.toString('base64'),
+    slideListFallbackBody,
+    fileShell,
+  );
 }
 
 /**
@@ -1426,7 +1526,11 @@ async function pptxToHtmlViaCdn(buffer: Buffer, slideListFallbackBody: string): 
  * Pre-flights through `assertSafeZipSize` so a zip-bomb PPTX is
  * rejected before either renderer touches it.
  */
-export async function pptxToHtml(buffer: Buffer): Promise<string> {
+export async function pptxToHtml(
+  buffer: Buffer,
+  options: { fileShell?: boolean } = {},
+): Promise<string> {
+  const fileShell = options.fileShell === true;
   await assertSafeZipSize(buffer, { name: 'pptx' });
   /* Opt-in LibreOffice path: PDF rendering of slides preserves layout,
    * fonts, charts, and embedded objects far better than the slide-list
@@ -1436,7 +1540,7 @@ export async function pptxToHtml(buffer: Buffer): Promise<string> {
   if (lo) {
     return lo;
   }
-  if (isOfficePreviewCdnDisabled() || buffer.length > MAX_PPTX_CDN_BINARY_BYTES) {
+  if (isOfficePreviewCdnDisabled() || (!fileShell && buffer.length > MAX_PPTX_CDN_BINARY_BYTES)) {
     return pptxToSlideListHtmlInternal(buffer);
   }
   /* Render the slide-list first so we can embed it inside the CDN doc
@@ -1446,7 +1550,10 @@ export async function pptxToHtml(buffer: Buffer): Promise<string> {
    * the empty-render case and reveals this slide-list fallback so the
    * user always gets readable content. Manual e2e on PR #12934. */
   const slideListBody = await renderPptxSlidesBodyForBuffer(buffer);
-  const cdnDoc = await pptxToHtmlViaCdn(buffer, slideListBody);
+  const cdnDoc = await pptxToHtmlViaCdn(buffer, slideListBody, fileShell);
+  if (fileShell && Buffer.byteLength(cdnDoc, 'utf-8') > OFFICE_HTML_OUTPUT_CAP) {
+    return pptxToHtmlViaCdn(buffer, '', true);
+  }
   /* Combined size budget: if base64 binary + slide-list fallback +
    * wrapper would exceed the cache cap, drop CDN entirely and ship
    * the slide-list standalone. Same pattern as the DOCX dispatcher's

@@ -48,6 +48,7 @@ const mockExtractCodeArtifactInspectionText = jest.fn(async () => ({
   complete: false,
 }));
 const mockExtractCodeArtifactText = jest.fn(async () => null);
+const mockOfficePreviewFailure = jest.fn(() => 'parser-error');
 const mockExecuteWorkspaceTool = jest.fn();
 const mockGetExtractedTextFormat = jest.fn((_name, _mime, text) => (text == null ? null : 'text'));
 /* `hasOfficeHtmlPath` gates the persist-then-render split: when true, processCodeOutput
@@ -160,6 +161,7 @@ jest.mock('@librechat/api', () => {
     extractCodeArtifactRawText: (...args) => mockExtractCodeArtifactRawText(...args),
     extractCodeArtifactInspectionText: (...args) => mockExtractCodeArtifactInspectionText(...args),
     extractCodeArtifactText: (...args) => mockExtractCodeArtifactText(...args),
+    officePreviewFailure: (...args) => mockOfficePreviewFailure(...args),
     getBoundedCodeOutputByteLimit: (configured) =>
       typeof configured === 'number' && Number.isFinite(configured) && configured > 0
         ? Math.min(configured, 64 * 1024 * 1024)
@@ -1722,6 +1724,7 @@ describe('Code Process', () => {
        * The `hasOfficeHtmlPath` mock is the gate. Other tests keep it
        * at `false` (legacy single-phase path); we flip it on here. */
       const { updateFile } = require('~/models');
+      const pptxMime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
       beforeEach(() => {
         mockHasOfficeHtmlPath.mockReturnValue(true);
@@ -1808,6 +1811,71 @@ describe('Code Process', () => {
           }),
           { previewRevision: 'mock-uuid-1234' },
         );
+      });
+
+      it('finalize() stores the failure label the helper returns for the buffer size, name, type and setting', async () => {
+        mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
+        determineFileType.mockResolvedValue({
+          mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        });
+        mockExtractCodeArtifactText.mockResolvedValueOnce(null);
+        mockOfficePreviewFailure.mockReturnValueOnce('too-large');
+
+        const { finalize } = await processCodeOutput({ ...baseParams, name: 'deck.pptx' });
+        await finalize();
+
+        expect(mockOfficePreviewFailure).toHaveBeenCalledWith(
+          100,
+          'deck.pptx',
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          expect.objectContaining({ enabled: true }),
+        );
+        expect(updateFile).toHaveBeenCalledWith(
+          expect.objectContaining({ status: 'failed', previewError: 'too-large' }),
+          { previewRevision: 'mock-uuid-1234' },
+        );
+      });
+
+      it('finalize() passes the resolved officePreview setting to the extractor', async () => {
+        mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
+        determineFileType.mockResolvedValue({
+          mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        });
+        mockExtractCodeArtifactText.mockResolvedValueOnce('<html></html>');
+
+        const { finalize } = await processCodeOutput({ ...baseParams, name: 'deck.pptx' });
+        await finalize();
+
+        expect(mockExtractCodeArtifactText).toHaveBeenCalledWith(
+          expect.any(Buffer),
+          'deck.pptx',
+          expect.any(String),
+          expect.any(String),
+          expect.objectContaining({ enabled: true, fileSizeLimit: 25 * 1024 * 1024 }),
+        );
+      });
+
+      it('finalize() hands a yaml fileSizeLimit in megabytes to the extractor and the failure label in bytes', async () => {
+        mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
+        determineFileType.mockResolvedValue({ mime: pptxMime });
+        mockExtractCodeArtifactText.mockResolvedValueOnce(null);
+        const req = {
+          ...mockReq,
+          config: { ...mockReq.config, fileConfig: { officePreview: { fileSizeLimit: 5 } } },
+        };
+        const merged = { enabled: true, fileSizeLimit: 5 * 1024 * 1024 };
+
+        const { finalize } = await processCodeOutput({ ...baseParams, req, name: 'deck.pptx' });
+        await finalize();
+
+        expect(mockExtractCodeArtifactText).toHaveBeenCalledWith(
+          expect.any(Buffer),
+          'deck.pptx',
+          pptxMime,
+          expect.any(String),
+          merged,
+        );
+        expect(mockOfficePreviewFailure).toHaveBeenCalledWith(100, 'deck.pptx', pptxMime, merged);
       });
 
       it('finalize() transitions to failed with previewError:timeout when the outer timeout rejects', async () => {

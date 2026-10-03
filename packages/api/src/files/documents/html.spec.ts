@@ -1,7 +1,14 @@
 import path from 'path';
 import * as fs from 'fs';
 import JSZip from 'jszip';
-import { megabyte } from 'librechat-data-provider';
+import { randomBytes } from 'crypto';
+import {
+  megabyte,
+  isOfficeFileShell,
+  fillOfficeFileShell,
+  OFFICE_DOC_DATA_SLOT,
+  OFFICE_FILE_SHELL_MARKER,
+} from 'librechat-data-provider';
 import {
   _internal,
   bufferToOfficeHtml,
@@ -618,6 +625,52 @@ describe('Office HTML producers', () => {
          * on resize never measures an already-transformed box. */
         expect(html).toContain('lcNativeW');
       });
+
+      test('initializes pptx-preview with only a width so it never boxes the deck into a fixed-height viewport', async () => {
+        /* Passing `height` bounded the librarys own render box, which
+         * produced a nested scroll region for multi-slide decks instead
+         * of letting the panel itself scroll to the last slide. Width
+         * alone is enough — the wrap+scale step above fits each slide
+         * to the panel. */
+        const pptx = await buildPptx([{ title: 'A' }]);
+        const html = await _internal.pptxToHtmlViaCdn(
+          pptx,
+          '<ol class="lc-pptx-list"><li>fb</li></ol>',
+        );
+        expect(html).toContain('pptxPreview.init(container, { width: SLIDE_W })');
+        expect(html).not.toContain('height: SLIDE_H');
+      });
+
+      test('wraps each rendered slide directly instead of the containers immediate children', async () => {
+        /* pptx-preview nests every `.pptx-preview-slide-wrapper` inside
+         * one library-owned `.pptx-preview-wrapper` box, so
+         * `container.children` only ever finds that single box —
+         * wrapping it as one unit jammed every slide into one shared
+         * block. Querying `.pptx-preview-slide-wrapper` directly finds
+         * each slide wherever the library actually nested it, and each
+         * wrap is inserted next to its own slide via `slide.parentNode`
+         * rather than `container`. */
+        const pptx = await buildPptx([{ title: 'A' }, { title: 'B' }]);
+        const html = await _internal.pptxToHtmlViaCdn(
+          pptx,
+          '<ol class="lc-pptx-list"><li>fb</li></ol>',
+        );
+        expect(html).toContain("container.querySelectorAll('.pptx-preview-slide-wrapper')");
+        expect(html).not.toContain('container.children');
+        expect(html).toContain('slide.parentNode.insertBefore(wrap, slide)');
+      });
+
+      test('overrides the librarys own wrapper box to hug the stacked slides width with a transparent background', async () => {
+        const pptx = await buildPptx([{ title: 'A' }]);
+        const html = await _internal.pptxToHtmlViaCdn(
+          pptx,
+          '<ol class="lc-pptx-list"><li>fb</li></ol>',
+        );
+        expect(html).toMatch(/\.pptx-preview-wrapper\s*\{[^}]*width:\s*auto\s*!important/);
+        expect(html).toMatch(
+          /\.pptx-preview-wrapper\s*\{[^}]*background:\s*transparent\s*!important/,
+        );
+      });
     });
 
     describe('OFFICE_PREVIEW_DISABLE_CDN escape hatch', () => {
@@ -977,5 +1030,198 @@ describe('Office HTML producers', () => {
       expect(out).not.toMatch(/<iframe\b/i);
       expect(out).not.toContain('evil.test');
     });
+  });
+});
+
+describe('office file shells', () => {
+  const padded = async (fixture: string, entry: string, bytes: number): Promise<Buffer> => {
+    const zip = await JSZip.loadAsync(readFixture(fixture));
+    zip.file(entry, randomBytes(bytes), { compression: 'STORE' });
+    return zip.generateAsync({ type: 'nodebuffer' });
+  };
+  const cap = _internal.OFFICE_HTML_OUTPUT_CAP;
+
+  test('builds a pptx shell with an empty slot', async () => {
+    const pptx = await padded('sample.pptx', 'ppt/media/padding.bin', megabyte);
+    const html = await pptxToHtml(pptx, { fileShell: true });
+    expect(isOfficeFileShell(html)).toBe(true);
+    expect(html).toContain(OFFICE_FILE_SHELL_MARKER);
+    expect(html.split(OFFICE_DOC_DATA_SLOT)).toHaveLength(2);
+    expect(html).toContain('class="lc-pptx-list"');
+    expect(Buffer.byteLength(html, 'utf-8')).toBeLessThanOrEqual(cap);
+  });
+
+  test('builds a docx shell with an empty slot', async () => {
+    const docx = await padded('sample.docx', 'word/media/padding.bin', megabyte);
+    const html = await wordDocToHtml(docx, { fileShell: true });
+    expect(isOfficeFileShell(html)).toBe(true);
+    expect(html).toContain(OFFICE_FILE_SHELL_MARKER);
+    expect(html.split(OFFICE_DOC_DATA_SLOT)).toHaveLength(2);
+    expect(html).toContain('<article class="lc-docx">');
+    expect(Buffer.byteLength(html, 'utf-8')).toBeLessThanOrEqual(cap);
+  });
+
+  test('keeps small files inline', async () => {
+    const pptx = readFixture('sample.pptx');
+    const docx = readFixture('sample.docx');
+    const pptxHtml = await pptxToHtml(pptx);
+    const docxHtml = await wordDocToHtml(docx);
+    expect(isOfficeFileShell(pptxHtml)).toBe(false);
+    expect(isOfficeFileShell(docxHtml)).toBe(false);
+    expect(pptxHtml).toContain(pptx.toString('base64'));
+    expect(docxHtml).toContain(docx.toString('base64'));
+  });
+
+  test('trims an oversized fallback in a shell', async () => {
+    const zip = await JSZip.loadAsync(readFixture('sample.pptx'));
+    const line = 'x'.repeat(3000);
+    const slideXml = (n: number) =>
+      `<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Slide ${n}</a:t></a:r></a:p><a:p><a:r><a:t>${line}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`;
+    Object.keys(zip.files)
+      .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+      .forEach((name) => zip.remove(name));
+    for (let n = 1; n <= 300; n++) {
+      zip.file(`ppt/slides/slide${n}.xml`, slideXml(n));
+    }
+    const pptx = await zip.generateAsync({ type: 'nodebuffer' });
+    const untrimmed = await pptxToSlideListHtml(pptx);
+    expect(Buffer.byteLength(untrimmed, 'utf-8')).toBeGreaterThan(cap);
+
+    const html = await pptxToHtml(pptx, { fileShell: true });
+    expect(isOfficeFileShell(html)).toBe(true);
+    expect(html).toContain('id="lc-fallback-notice"');
+    expect(html).not.toContain('class="lc-pptx-list"');
+    expect(html).not.toContain(line);
+    expect(Buffer.byteLength(html, 'utf-8')).toBeLessThanOrEqual(cap);
+  });
+  const OVERSIZED_NOTICE =
+    'This document is too large for the simplified preview. Download it to view the full content.';
+
+  const oversizedNoticeChecks = (html: string): string | undefined => {
+    expect(isOfficeFileShell(html)).toBe(true);
+    expect(html).toContain(OVERSIZED_NOTICE);
+    const notice = /<p id="lc-fallback-notice">([^<]*)<\/p>/.exec(html)?.[1];
+    expect(notice).toBe(OVERSIZED_NOTICE);
+    expect(notice).not.toContain('below');
+    expect(html).toContain('id="lc-doc-data"');
+    expect(Buffer.byteLength(html, 'utf-8')).toBeLessThanOrEqual(cap);
+    return notice;
+  };
+
+  test('shows a short notice when a pptx shell drops its oversized fallback', async () => {
+    const zip = await JSZip.loadAsync(readFixture('sample.pptx'));
+    const line = 'x'.repeat(3000);
+    Object.keys(zip.files)
+      .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+      .forEach((name) => zip.remove(name));
+    for (let n = 1; n <= 300; n++) {
+      zip.file(
+        `ppt/slides/slide${n}.xml`,
+        `<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>${line}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+      );
+    }
+    const pptx = await zip.generateAsync({ type: 'nodebuffer' });
+    expect(oversizedNoticeChecks(await pptxToHtml(pptx, { fileShell: true }))).toBe(
+      OVERSIZED_NOTICE,
+    );
+  });
+
+  test('shows a short notice when a docx shell drops its oversized fallback', async () => {
+    const zip = await JSZip.loadAsync(readFixture('sample.docx'));
+    const paragraph = `<w:p><w:r><w:t>${'y'.repeat(3000)}</w:t></w:r></w:p>`;
+    const doc = await zip.file('word/document.xml')!.async('string');
+    zip.file('word/document.xml', doc.replace('<w:body>', `<w:body>${paragraph.repeat(300)}`));
+    const docx = await zip.generateAsync({ type: 'nodebuffer' });
+    expect(oversizedNoticeChecks(await wordDocToHtml(docx, { fileShell: true }))).toBe(
+      OVERSIZED_NOTICE,
+    );
+  });
+});
+
+describe('office shell base64 encoding', () => {
+  const padded = async (fixture: string, entry: string): Promise<Buffer> => {
+    const zip = await JSZip.loadAsync(readFixture(fixture));
+    zip.file(entry, randomBytes(400 * 1024), { compression: 'STORE' });
+    return zip.generateAsync({ type: 'nodebuffer' });
+  };
+  const base64Calls = (spy: jest.SpyInstance): number =>
+    spy.mock.calls.filter(([encoding]) => encoding === 'base64').length;
+  let spy: jest.SpyInstance;
+
+  beforeEach(() => {
+    spy = jest.spyOn(Buffer.prototype, 'toString');
+  });
+  afterEach(() => spy.mockRestore());
+
+  test('does not base64-encode a pptx or docx when building a shell', async () => {
+    const pptx = await padded('sample.pptx', 'ppt/media/padding.bin');
+    const docx = await padded('sample.docx', 'word/media/padding.bin');
+    spy.mockClear();
+    await pptxToHtml(pptx, { fileShell: true });
+    await wordDocToHtml(docx, { fileShell: true });
+    expect(base64Calls(spy)).toBe(0);
+  });
+
+  test('still base64-encodes a small pptx and docx on the inline path', async () => {
+    spy.mockClear();
+    await pptxToHtml(readFixture('sample.pptx'));
+    await wordDocToHtml(readFixture('sample.docx'));
+    expect(base64Calls(spy)).toBe(2);
+  });
+});
+
+describe('office shell size and head', () => {
+  const padded = async (fixture: string, entry: string, bytes: number): Promise<Buffer> => {
+    const zip = await JSZip.loadAsync(readFixture(fixture));
+    zip.file(entry, randomBytes(bytes), { compression: 'STORE' });
+    return zip.generateAsync({ type: 'nodebuffer' });
+  };
+  const headOf = (html: string): string => /<head>[\s\S]*?<\/head>/.exec(html)?.[0] ?? '';
+  const cdnScripts = (head: string): string[] => head.match(/<script src=[^>]*><\/script>/g) ?? [];
+  const csp = (head: string): string[] =>
+    head.match(/<meta http-equiv="Content-Security-Policy"[^>]*>/g) ?? [];
+
+  const cases = [
+    ['pptx', 'sample.pptx', 'ppt/media/padding.bin', pptxToHtml],
+    ['docx', 'sample.docx', 'word/media/padding.bin', wordDocToHtml],
+  ] as const;
+
+  it.each(cases)(
+    'keeps the %s head the same in a shell as inline',
+    async (_n, fixture, entry, render) => {
+      const inline = await render(readFixture(fixture));
+      const shell = await render(await padded(fixture, entry, 400 * 1024), { fileShell: true });
+      const filled = fillOfficeFileShell(shell, 'QUJD');
+
+      expect(isOfficeFileShell(shell)).toBe(true);
+      expect(cdnScripts(headOf(inline)).length).toBeGreaterThan(0);
+      expect(
+        cdnScripts(headOf(inline)).every((tag) =>
+          /integrity="sha\w+-[^"]+" crossorigin=/.test(tag),
+        ),
+      ).toBe(true);
+      expect(csp(headOf(inline))).toHaveLength(1);
+      expect(cdnScripts(headOf(shell))).toEqual(cdnScripts(headOf(inline)));
+      expect(csp(headOf(shell))).toEqual(csp(headOf(inline)));
+      expect(headOf(filled)).toBe(headOf(shell));
+      expect(filled).toContain('>QUJD</script>');
+    },
+  );
+
+  it('keeps a 4 MB deck shell small once its fallback is removed', async () => {
+    const pptx = await padded('sample.pptx', 'ppt/media/padding.bin', 4 * megabyte);
+    expect(pptx.length).toBeGreaterThanOrEqual(4 * megabyte);
+    const html = await pptxToHtml(pptx, { fileShell: true });
+    expect(html).toContain('class="lc-pptx-list"');
+    const bare = html.replace(
+      /(<div id="lc-fallback" hidden>)[\s\S]*?(<\/div>\s*<script id="lc-doc-data")/,
+      '$1$2',
+    );
+    expect(bare.length).toBeLessThan(html.length);
+    expect(bare).toContain('<div id="lc-fallback" hidden></div>');
+    expect(bare).not.toContain('class="lc-pptx-list"');
+    expect(isOfficeFileShell(bare)).toBe(true);
+    expect(Buffer.byteLength(bare, 'utf-8')).toBeLessThanOrEqual(16 * 1024);
+    expect(Buffer.byteLength(html, 'utf-8')).toBeLessThanOrEqual(512 * 1024);
   });
 });
