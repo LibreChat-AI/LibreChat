@@ -89,6 +89,11 @@ jest.mock('./addedConvo', () => ({
   processAddedConvo: jest.fn().mockResolvedValue({ userMCPAuthMap: undefined }),
 }));
 
+const mockResolveLinkedInstructions = jest.fn();
+jest.mock('./linkedInstructions', () => ({
+  getLinkedInstructionsResolver: jest.fn(() => mockResolveLinkedInstructions),
+}));
+
 jest.mock('~/cache', () => ({
   logViolation: jest.fn(),
 }));
@@ -248,6 +253,45 @@ describe('initializeClient — processAgent ACL gate', () => {
     });
 
     expect(resolveUpstreamTokenProvider).not.toHaveBeenCalled();
+  });
+
+  it('forwards the linked-instructions resolver and records usage by default', async () => {
+    mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
+
+    await initializeClient({
+      req: makeReq(),
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+
+    expect(mockInitializeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resolveLinkedInstructions: mockResolveLinkedInstructions,
+        recordLinkedPromptUsage: true,
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('forwards recordLinkedPromptUsage: false for every agent initialized on the resume path', async () => {
+    mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
+
+    await initializeClient({
+      req: makeReq(),
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+      isResume: true,
+    });
+
+    expect(mockInitializeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resolveLinkedInstructions: mockResolveLinkedInstructions,
+        recordLinkedPromptUsage: false,
+      }),
+      expect.anything(),
+    );
   });
 
   it('replaces untrusted artifact route metadata with the executing agent context', async () => {

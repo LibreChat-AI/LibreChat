@@ -18,6 +18,7 @@ import {
 } from 'librechat-data-provider';
 import type { Agent, AgentUpdateParams } from 'librechat-data-provider';
 import type { FieldNamesMarkedBoolean } from 'react-hook-form';
+import type { InstructionsPromptStatus } from './Instructions';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { AgentParameterConfig } from './parameters';
 import type { AgentForm, StringOption } from '~/common';
@@ -28,6 +29,11 @@ import {
   useGetExpandedAgentByIdQuery,
   useUploadAgentAvatarMutation,
 } from '~/data-provider';
+import {
+  isRestrictedInstructionsPrompt,
+  getInstructionsPromptErrorCode,
+  instructionsPromptErrorKeys,
+} from './instructionsPromptUtils';
 import {
   createProviderOption,
   getAvailableAgentSelection,
@@ -119,18 +125,28 @@ export function isSavedAgentOption(
  * Handles avatar reset requests for persistent agents independently of avatar uploads.
  * @param {AgentForm} data - Form data from the agent configuration form.
  * @param {string | null} [agent_id] - Agent identifier, if the agent already exists.
+ * @param {AgentParameterConfig} [parameterConfig] - Model parameter schema context.
+ * @param {{ instructionsPromptChanged: boolean }} flags - Whether the linked-prompt
+ *   selection changed, so an update sends the field only on an actual edit. Required,
+ *   with no default, so a caller can never silently overwrite a stored link. A create
+ *   (no `agent_id`) always sends the resolved link regardless of this flag: there is no
+ *   stored value to diff against, and the new agent must not end up unlinked just
+ *   because the selection happens to match whatever agent was last open in the panel.
  * @returns {{ payload: Partial<AgentForm>; provider: string; model: string }} Payload metadata.
  */
 export function composeAgentUpdatePayload(
   data: AgentForm,
-  agent_id?: string | null,
-  parameterConfig?: AgentParameterConfig,
+  agent_id: string | null | undefined,
+  parameterConfig: AgentParameterConfig | undefined,
+  flags: { instructionsPromptChanged: boolean },
 ) {
   const {
     name,
     artifacts,
     description,
     instructions,
+    instructionsSource,
+    instructionsPrompt,
     model: _model,
     model_parameters: currentModelParameters,
     provider: _provider,
@@ -158,6 +174,16 @@ export function composeAgentUpdatePayload(
     memory_scope,
     avatar_action: avatarActionState,
   } = data;
+
+  /** Never re-sends the restricted stub; a real link only exists in `'prompt'` mode. */
+  const resolvedInstructionsPrompt =
+    instructionsSource === 'prompt' && !isRestrictedInstructionsPrompt(instructionsPrompt)
+      ? (instructionsPrompt ?? null)
+      : null;
+  /** A create has no stored link to diff against, so it always carries the resolved
+   *  value; an update sends it only when `flags.instructionsPromptChanged` says the
+   *  selection actually moved. */
+  const sendInstructionsPrompt = !agent_id || flags.instructionsPromptChanged;
 
   /* stateful_code_sessions requires Code Interpreter; force it off on save when
    * execute_code is disabled so a stale opt-in can't silently reactivate later. */
@@ -205,6 +231,7 @@ export function composeAgentUpdatePayload(
       artifacts,
       description,
       instructions,
+      ...(sendInstructionsPrompt ? { instructionsPrompt: resolvedInstructionsPrompt } : {}),
       model,
       provider,
       model_parameters,
@@ -245,6 +272,49 @@ export function composeAgentUpdatePayload(
     provider,
     model,
   } as const;
+}
+
+/**
+ * Resolves the linked-prompt value a submission would actually send: `null` in
+ * inline mode or for a restricted stub, otherwise the link. Mirrors
+ * `resolvedInstructionsPrompt` in `composeAgentUpdatePayload`, so callers on both
+ * sides of an equality check agree on what "no editable link" means.
+ */
+const resolveInstructionsPromptLink = (
+  source: AgentForm['instructionsSource'],
+  prompt: AgentForm['instructionsPrompt'],
+): AgentForm['instructionsPrompt'] =>
+  source === 'prompt' && !isRestrictedInstructionsPrompt(prompt) ? (prompt ?? null) : null;
+
+/**
+ * Whether the form's linked-prompt selection differs from the agent last loaded from
+ * the server, so a save sends `instructionsPrompt` only on an actual edit. Compares
+ * resolved links rather than `dirtyFields.instructionsPrompt`: a post-save
+ * `reset(..., { keepDirtyValues: true })` can leave that field dirty even though its
+ * value already matches what was just persisted, which would resend the link on the
+ * next unrelated save and risk overwriting a concurrent change to it.
+ */
+export function computeInstructionsPromptChanged(
+  formSource: AgentForm['instructionsSource'],
+  formPrompt: AgentForm['instructionsPrompt'],
+  lastLoadedPrompt: AgentForm['instructionsPrompt'] | null | undefined,
+): boolean {
+  /** `resolveInstructionsPromptLink` collapses both a restricted stub and inline mode
+   *  to `null`, so diffing resolved values can't tell "still the stub" apart from
+   *  "switched to Inline" when the loaded link was a stub — both resolve to `null` on
+   *  the current side. Settle that case directly: it's changed when the form switched
+   *  to Inline (the removal must still reach the save) or now holds a real link. */
+  if (isRestrictedInstructionsPrompt(lastLoadedPrompt)) {
+    return (
+      formSource === 'inline' || (formPrompt != null && !isRestrictedInstructionsPrompt(formPrompt))
+    );
+  }
+  const current = resolveInstructionsPromptLink(formSource, formPrompt);
+  const stored = resolveInstructionsPromptLink(
+    lastLoadedPrompt != null ? 'prompt' : 'inline',
+    lastLoadedPrompt ?? null,
+  );
+  return !isEqual(current, stored);
 }
 
 type UploadAvatarFn = (variables: { agent_id: string; formData: FormData }) => Promise<Agent>;
@@ -421,12 +491,28 @@ export default function AgentPanel() {
   );
 
   const canEdit = hasPermission(PermissionBits.EDIT);
+  /** Same editor-visibility bypass `canEditAgent` grants admins below: an admin can open
+   *  the editor for a linked agent even without ACL EDIT on it. */
+  const hasEditorAccess = canEdit || user?.role === SystemRoles.ADMIN;
 
   const expandedAgentQuery = useGetExpandedAgentByIdQuery(current_agent_id ?? '', {
-    enabled: !isEphemeralAgent(current_agent_id) && canEdit && !permissionsLoading,
+    enabled: !isEphemeralAgent(current_agent_id) && hasEditorAccess && !permissionsLoading,
   });
 
-  const agentQuery = canEdit && expandedAgentQuery.data ? expandedAgentQuery : basicAgentQuery;
+  const agentQuery =
+    hasEditorAccess && expandedAgentQuery.data ? expandedAgentQuery : basicAgentQuery;
+
+  const isPersistedAgent = Boolean(current_agent_id) && !isEphemeralAgent(current_agent_id);
+  /** `instructionsPrompt` only ever arrives on the expanded query. A persisted,
+   *  editable agent stays in a disabled loading (or error) state here until that
+   *  query resolves, instead of briefly reading a linked agent as unlinked. */
+  let instructionsPromptStatus: InstructionsPromptStatus = 'ready';
+  if (isPersistedAgent && hasEditorAccess && !expandedAgentQuery.data) {
+    instructionsPromptStatus = expandedAgentQuery.isError ? 'error' : 'loading';
+  }
+  const retryInstructionsPrompt = useCallback(() => {
+    expandedAgentQuery.refetch();
+  }, [expandedAgentQuery]);
 
   const modelsReady = modelsQuery.isFetchedAfterMount && !modelsQuery.isFetching;
   const modelsError = modelsQuery.isFetchedAfterMount && !modelsQuery.isSuccess;
@@ -517,6 +603,32 @@ export default function AgentPanel() {
   const previousVersionRef = useRef<number | undefined>();
   const submittedDirtyRef = useRef(false);
   const submittedRef = useRef<{ payload?: AgentUpdateParams; previous?: Agent }>({});
+  /** The linked-prompt selection last seen from the server, compared against the form's
+   *  current value to decide whether a save carries an actual edit (see
+   *  `computeInstructionsPromptChanged`). `AgentSelect`'s post-save `reset(..., {
+   *  keepDirtyValues: true })` can leave `dirtyFields.instructionsPrompt` true even after
+   *  the field's value again matches what was just persisted, so `dirtyFields` alone
+   *  cannot answer "did this save change the link" without risking a stale resend that
+   *  overwrites a concurrent edit. */
+  const lastLoadedInstructionsPromptRef = useRef<AgentForm['instructionsPrompt']>(null);
+  /** Clears the remembered link the moment the selected agent changes, including a
+   *  switch to "create new" (`current_agent_id` becomes `undefined`). Without this, a
+   *  stale ref from the previously open agent survives the switch, `agentQuery.data`
+   *  never turns truthy again for the id that's gone, and the effect below never gets a
+   *  chance to correct it, so a new agent linked to the same group as the old one reads
+   *  as "unchanged" and the link is dropped from the create payload. */
+  useEffect(() => {
+    lastLoadedInstructionsPromptRef.current = null;
+  }, [current_agent_id]);
+  useEffect(() => {
+    /** Only a 'ready' status carries data that can speak to the link: the expanded
+     *  query resolved, or editor access doesn't apply and the basic query is all
+     *  there is. A pending or failed expanded query must not overwrite the ref with
+     *  the basic projection's `undefined`. */
+    if (instructionsPromptStatus === 'ready' && agentQuery.data) {
+      lastLoadedInstructionsPromptRef.current = agentQuery.data.instructionsPrompt ?? null;
+    }
+  }, [agentQuery.data, instructionsPromptStatus]);
 
   const allowedProviders = useMemo(
     () => new Set(agentsConfig?.allowedProviders),
@@ -648,6 +760,14 @@ export default function AgentPanel() {
       submittedRef.current = {};
     },
     onError: (err) => {
+      const instructionsPromptErrorCode = getInstructionsPromptErrorCode(err);
+      if (instructionsPromptErrorCode) {
+        showToast({
+          message: localize(instructionsPromptErrorKeys[instructionsPromptErrorCode]),
+          status: 'error',
+        });
+        return;
+      }
       const error = err as Error;
       showToast({
         message: `${localize('com_agents_update_error')}${
@@ -679,6 +799,14 @@ export default function AgentPanel() {
       }
     },
     onError: (err) => {
+      const instructionsPromptErrorCode = getInstructionsPromptErrorCode(err);
+      if (instructionsPromptErrorCode) {
+        showToast({
+          message: localize(instructionsPromptErrorKeys[instructionsPromptErrorCode]),
+          status: 'error',
+        });
+        return;
+      }
       const error = err as Error;
       showToast({
         message: `${localize('com_agents_create_error')}${
@@ -693,14 +821,28 @@ export default function AgentPanel() {
     async (data: AgentForm) => {
       const tools = Array.from(new Set([...(data.tools ?? []), ...resolveCapabilityTools(data)]));
 
+      /** A persisted agent whose expanded query hasn't resolved (or failed) carries no
+       *  trustworthy link to diff against: the form may still hold the previously
+       *  selected agent's link (see `AgentSelect`). Force the flag false so the save
+       *  cannot patch that stale link onto this agent; other fields still save. */
+      const instructionsPromptChanged =
+        agent_id && instructionsPromptStatus !== 'ready'
+          ? false
+          : computeInstructionsPromptChanged(
+              data.instructionsSource,
+              data.instructionsPrompt,
+              lastLoadedInstructionsPromptRef.current,
+            );
       const {
         payload: basePayload,
         provider,
         model,
-      } = composeAgentUpdatePayload(data, agent_id, {
-        endpointsConfig,
-        startupConfig,
-      });
+      } = composeAgentUpdatePayload(
+        data,
+        agent_id,
+        { endpointsConfig, startupConfig },
+        { instructionsPromptChanged },
+      );
 
       if (agent_id) {
         if (data.avatar_action === 'upload' && isAvatarUploadOnlyDirty(dirtyFields)) {
@@ -767,6 +909,7 @@ export default function AgentPanel() {
       dirtyFields,
       endpointsConfig,
       handleAvatarUpload,
+      instructionsPromptStatus,
       models,
       modelsError,
       modelsReady,
@@ -788,12 +931,8 @@ export default function AgentPanel() {
       return true;
     }
 
-    if (user?.role === SystemRoles.ADMIN) {
-      return true;
-    }
-
-    return canEdit;
-  }, [agentQuery.data?.id, user?.role, canEdit]);
+    return hasEditorAccess;
+  }, [agentQuery.data?.id, hasEditorAccess]);
 
   return (
     <FormProvider {...methods}>
@@ -811,6 +950,7 @@ export default function AgentPanel() {
                 setCurrentAgentId={setCurrentAgentId}
                 selectedAgentId={agentQuery.isInitialLoading ? null : (current_agent_id ?? null)}
                 defaultStatefulCodeEnvironment={defaultStatefulCodeEnvironment}
+                instructionsPromptReady={instructionsPromptStatus === 'ready'}
               />
             </div>
             {agent_id && (
@@ -864,7 +1004,10 @@ export default function AgentPanel() {
             />
           )}
           {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.builder && (
-            <AgentConfig />
+            <AgentConfig
+              instructionsPromptStatus={instructionsPromptStatus}
+              onRetryInstructionsPrompt={retryInstructionsPrompt}
+            />
           )}
           {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.advanced && (
             <AdvancedPanel />

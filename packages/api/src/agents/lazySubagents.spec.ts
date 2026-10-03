@@ -75,6 +75,36 @@ describe('getLazySubagentConfigId', () => {
     );
   });
 
+  it('changes when the linked instructions prompt changes, even at the same version', () => {
+    const linkedA = {
+      ...agent,
+      instructionsPrompt: {
+        source: 'native' as const,
+        groupId: 'group-a',
+        selection: { type: 'production' as const },
+      },
+    };
+    const linkedB = {
+      ...agent,
+      instructionsPrompt: {
+        source: 'native' as const,
+        groupId: 'group-b',
+        selection: { type: 'production' as const },
+      },
+    };
+
+    // Same `version` on both sides reproduces a revert that restores an older link
+    // without bumping the version number.
+    expect(getLazySubagentConfigId(linkedA)).not.toBe(getLazySubagentConfigId(linkedB));
+  });
+
+  it('leaves the descriptor identity unchanged for an agent with no linked prompt', () => {
+    const withoutLink = getLazySubagentConfigId(agent);
+    const explicitlyUnset = getLazySubagentConfigId({ ...agent, instructionsPrompt: undefined });
+
+    expect(explicitlyUnset).toBe(withoutLink);
+  });
+
   it('changes when the persisted skill catalog scope changes', () => {
     expect(
       getLazySubagentConfigId({

@@ -28,12 +28,18 @@ function AgentSelect({
   setCurrentAgentId,
   createMutation,
   defaultStatefulCodeEnvironment,
+  instructionsPromptReady = true,
 }: {
   selectedAgentId: string | null;
   agentQuery: QueryObserverResult<Agent>;
   setCurrentAgentId: React.Dispatch<React.SetStateAction<string | undefined>>;
   createMutation: UseMutationResult<Agent, Error, AgentCreateParams>;
   defaultStatefulCodeEnvironment: StatefulCodeEnvironment;
+  /** Whether `agentQuery.data` is the expanded agent (the only source of
+   * `instructionsPrompt`) rather than the basic projection, which never carries it.
+   * `false` keeps the form's existing instructions-source/-prompt values instead of
+   * reading a linked agent as unlinked while the expanded query is still loading. */
+  instructionsPromptReady?: boolean;
 }) {
   const localize = useLocalize();
   const lastSelectedAgent = useRef<string | null>(null);
@@ -98,6 +104,19 @@ function AgentSelect({
         agentTools.push(tool);
       });
 
+      /** The basic projection never carries `instructionsPrompt`, so deriving from it
+       * here would read a linked agent as unlinked until the expanded query resolves.
+       * Keep whatever the form already has until then. */
+      let resolvedInstructionsPrompt: AgentForm['instructionsPrompt'];
+      let resolvedInstructionsSource: AgentForm['instructionsSource'];
+      if (instructionsPromptReady) {
+        resolvedInstructionsPrompt = fullAgent.instructionsPrompt ?? null;
+        resolvedInstructionsSource = resolvedInstructionsPrompt != null ? 'prompt' : 'inline';
+      } else {
+        resolvedInstructionsPrompt = getValues('instructionsPrompt');
+        resolvedInstructionsSource = getValues('instructionsSource');
+      }
+
       const formValues: Partial<AgentForm & TAgentCapabilities> = {
         ...capabilities,
         agent: update,
@@ -118,6 +137,8 @@ function AgentSelect({
         repositoryInstructions: fullAgent.repositoryInstructions,
         code_workspace_id: fullAgent.code_workspace_id,
         git_identity: fullAgent.git_identity,
+        instructionsSource: resolvedInstructionsSource,
+        instructionsPrompt: resolvedInstructionsPrompt,
       };
 
       Object.entries(fullAgent).forEach(([name, value]) => {
@@ -212,7 +233,7 @@ function AgentSelect({
         setValue('tools', mergedDirtyTools, { shouldDirty: true });
       }
     },
-    [getValues, reset, setValue],
+    [getValues, reset, setValue, instructionsPromptReady],
   );
 
   const onSelect = useCallback(
@@ -323,7 +344,8 @@ const MemoizedAgentSelect = memo(
     prevProps.agentQuery.data === nextProps.agentQuery.data &&
     prevProps.agentQuery.isSuccess === nextProps.agentQuery.isSuccess &&
     prevProps.createMutation.data?.id === nextProps.createMutation.data?.id &&
-    prevProps.createMutation.isLoading === nextProps.createMutation.isLoading,
+    prevProps.createMutation.isLoading === nextProps.createMutation.isLoading &&
+    prevProps.instructionsPromptReady === nextProps.instructionsPromptReady,
 );
 MemoizedAgentSelect.displayName = 'AgentSelect';
 
