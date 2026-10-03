@@ -97,7 +97,9 @@ test('identical user and tool identifiers stay isolated between tenants', async 
   ).toBe(true);
 });
 
-test('resetting an unknown tool does not create arbitrary records', async () => {
-  await storage.resetToolApprovalGrants(scope.userId, 'unknown-agent', 'unknown-tool');
-  expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+test('reset before the first stored grant fences a late approved execution', async () => {
+  const initial = (await storage.getToolApprovalGrants(scope, [grant]))[0];
+  await storage.resetToolApprovalGrants(scope.userId, grant.agentId, grant.toolName);
+  await storage.rememberToolApprovalGrants(scope, [{ ...grant, revocation: initial.revocation }]);
+  expect((await storage.getToolApprovalGrants(scope, [grant]))[0].approved).toBe(false);
 });

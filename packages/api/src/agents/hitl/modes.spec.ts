@@ -238,3 +238,52 @@ test('a grant lookup failure or timeout returns manual review', async () => {
   expect(await result).toMatchObject({ decision: 'ask' });
   jest.useRealTimers();
 });
+
+test('templated connection authorities never reuse remembered approval', () => {
+  const base = {
+    type: 'streamable-http' as const,
+    url: 'https://mcp.example.test/mcp',
+    source: 'yaml' as const,
+  };
+  expect(buildMCPToolApprovalBinding('db', base)).toEqual(expect.any(String));
+  expect(
+    buildMCPToolApprovalBinding('db', {
+      ...base,
+      url: '{{MCP_URL}}',
+      customUserVars: { MCP_URL: { title: 'URL', description: 'Target server' } },
+    }),
+  ).toBeUndefined();
+  expect(
+    buildMCPToolApprovalBinding('db', {
+      ...base,
+      headers: { Authorization: 'Bearer ${MCP_TOKEN}' },
+    }),
+  ).toBeUndefined();
+});
+
+test('collision-preserved tool keys remain distinct and resettable', () => {
+  const other = 'db_query_mcp_db';
+  const source = agent('always');
+  source.tool_options![other] = { approval_mode: 'always', approval_revision: revision };
+  source.toolDefinitions!.push(
+    bindToolApproval({ name: other, serverName: 'db', parameters: { type: 'object' } }, 'source-a'),
+  );
+  const first = resolveAgentToolGrantBinding(source, name, scope)!;
+  const second = resolveAgentToolGrantBinding(source, other, scope)!;
+  expect(second.toolName).toBe(other);
+  expect(second.binding).not.toBe(first.binding);
+});
+
+test('only a verified catalog alias changes the remembered grant key', () => {
+  const legacy = 'db_query_mcp_db';
+  const source = agent('always');
+  source.tool_options![legacy] = { approval_mode: 'always', approval_revision: revision };
+  source.toolDefinitions!.push(
+    bindToolApproval(
+      { name: legacy, serverName: 'db', parameters: { type: 'object' } },
+      'source-a',
+      name,
+    ),
+  );
+  expect(resolveAgentToolGrantBinding(source, legacy, scope)?.toolName).toBe(name);
+});

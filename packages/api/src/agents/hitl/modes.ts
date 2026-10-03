@@ -1,10 +1,4 @@
 import { digestMCPAuthorityValue, logger } from '@librechat/data-schemas';
-import {
-  normalizeServerName,
-  stripServerNamePrefix,
-  splitMCPToolKey,
-  Constants,
-} from 'librechat-data-provider';
 import type {
   AgentToolOptions,
   ToolApprovalGrantStorage,
@@ -14,7 +8,7 @@ import type {
 } from 'librechat-data-provider';
 import type { HookCallback } from '@librechat/agents';
 import type { ParsedServerConfig } from '~/mcp/types';
-import { bindToolApproval, getToolApprovalBinding } from '~/tools/approval';
+import { bindToolApproval, getToolApprovalBinding, getToolApprovalName } from '~/tools/approval';
 import { requiresEphemeralUserConnection } from '~/mcp/utils';
 
 export interface AgentApprovalDefinition {
@@ -35,7 +29,12 @@ export function buildMCPToolApprovalBinding(
   serverName: string,
   config: ParsedServerConfig | undefined,
 ): string | undefined {
-  if (!config || requiresEphemeralUserConnection(config)) return undefined;
+  if (
+    !config ||
+    requiresEphemeralUserConnection(config) ||
+    /\{\{[^{}]+\}\}|\$\{[^{}]+\}/.test(JSON.stringify(config))
+  )
+    return undefined;
   return digestMCPAuthorityValue({ serverName, config });
 }
 
@@ -63,12 +62,7 @@ export function resolveAgentToolGrantBinding(
   if (!definition) return undefined;
   const sourceBinding = getToolApprovalBinding(definition);
   if (!sourceBinding) return undefined;
-  const serverName = definition.serverName;
-  const normalizedServer = serverName && normalizeServerName(serverName);
-  const [toolPart] = splitMCPToolKey(toolName, serverName ? [serverName, normalizedServer!] : []);
-  const canonicalName = normalizedServer
-    ? `${stripServerNamePrefix(toolPart, normalizedServer)}${Constants.mcp_delimiter}${normalizedServer}`
-    : toolName;
+  const canonicalName = getToolApprovalName(definition) ?? toolName;
   return {
     canRemember: true,
     instanceName: toolName,
