@@ -100,9 +100,23 @@ async function initializeGeminiClient(options = {}) {
   }
 
   const googleKey = options.GOOGLE_KEY;
-  if (googleKey) {
+  const isADC = googleKey === 'ADC';
+
+  if (googleKey && !isADC) {
     logger.debug('[GeminiImageGen] Using Gemini API with GOOGLE_KEY');
     return new GoogleGenAI({ apiKey: googleKey });
+  }
+
+  if (isADC) {
+    logger.debug('[GeminiImageGen] Using Gemini API with Application Default Credentials (ADC)');
+    return new GoogleGenAI({
+      vertexai: true,
+      project: process.env.VERTEX_PROJECT_ID ??
+        process.env.GOOGLE_CLOUD_PROJECT ??
+        process.env.GCLOUD_PROJECT ??
+        process.env.GOOGLE_PROJECT_ID,
+      location: process.env.GOOGLE_CLOUD_LOCATION || process.env.GOOGLE_LOC || 'global',
+    });
   }
 
   logger.debug('[GeminiImageGen] Using Vertex AI with service account');
