@@ -905,6 +905,7 @@ endpoints:
   #     deny: ["mcp:*:delete_*"] # Deny rules always take precedence
   #     ask: ["mcp:*:*"]
   #     reason: "Review {tool} before it runs."
+  #     allowAlways: false # Offer "Always allow" to stop prompting for a tool for the rest of a conversation
   #   # (optional) Persist Agent runs paused for approval or Ask User. MongoDB is the durable default.
   #   checkpointer:
   #     type: mongo # mongo (default) or memory (single-process development only)

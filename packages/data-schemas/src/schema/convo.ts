@@ -42,6 +42,9 @@ const convoSchema: Schema<IConversation> = new Schema(
     },
     ...conversationPreset,
     codeEnvironmentRevision: { type: Number, select: false },
+    /** Exact tool names the owner chose to auto-approve for this conversation.
+     *  Server-written only, through `addConvoToolApprovalAllows`. */
+    toolApprovalAllows: { type: [String], default: undefined },
     agent_id: {
       type: String,
     },
