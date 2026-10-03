@@ -812,6 +812,9 @@ export default function CodeWorkspaceMenu({
               <Ariakit.MenuButton
                 disabled={buttonDisabled}
                 onClick={() => setMachineId(null)}
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') setMachineId(null);
+                }}
                 data-testid={renamesForMove ? 'code-workspace-move' : 'code-workspace'}
                 aria-describedby={requirements.length > 0 ? requirementsId : undefined}
                 aria-label={

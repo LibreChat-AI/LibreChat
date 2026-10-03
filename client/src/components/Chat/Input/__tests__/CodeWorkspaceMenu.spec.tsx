@@ -180,6 +180,62 @@ describe('CodeWorkspaceMenu', () => {
     read.mockRestore();
   });
 
+  test.each(['ArrowDown', 'ArrowUp'])(
+    'reopens current folders with %s after cancelling another machine',
+    async (key) => {
+      const alternate = { ...environment, id: 'runtime-vm', name: 'Runtime VM' };
+      const read = jest.spyOn(dataService, 'getCodeEnvironmentStatus').mockResolvedValue({
+        environmentId: alternate.id,
+        status: 'ready',
+        operations: ['read_file'],
+        workspaces: [{ id: 'runtime', name: 'Runtime Project' }],
+      });
+      const graph = workspace({ machineOptions: [environment, alternate] });
+      graph.environments[0].environment = {
+        ...environment,
+        configSchema: { workspaces: { allowCheckoutSelection: true } },
+      };
+      graph.environments[0].workspaces[0].workspaceInstances = ['git_worktree'];
+      const selected = {
+        environmentId: environment.id,
+        workspaceId: 'project-a',
+        checkout: 'source' as const,
+      };
+      graph.environments[0].selected = selected;
+      const setter = jest.fn();
+      renderMenu(<CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />);
+      await userEvent.click(screen.getByTestId('code-machine'));
+      await userEvent.click(screen.getByRole('menuitem', { name: alternate.name }));
+      const alternateFolder = await screen.findByRole('menuitemradio', { name: /Runtime Project/ });
+      await waitFor(() =>
+        expect(alternateFolder.closest('[role="menu"]')).toContainElement(
+          document.activeElement as HTMLElement,
+        ),
+      );
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() =>
+        expect(screen.queryByRole('menu', { hidden: true })).not.toBeInTheDocument(),
+      );
+      const folderButton = screen.getByTestId('code-workspace');
+      folderButton.focus();
+      await userEvent.keyboard(`{${key}}`);
+      expect(await screen.findByRole('menuitemradio', { name: /Project A/ })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      );
+      expect(
+        screen.getByRole('menuitemradio', { name: /com_ui_code_checkout_source/ }),
+      ).toHaveAttribute('aria-checked', 'true');
+      expect(
+        screen.queryByRole('menuitemradio', { name: /Runtime Project/ }),
+      ).not.toBeInTheDocument();
+      expect(setter).not.toHaveBeenCalled();
+      expect(graph.rememberSelection).not.toHaveBeenCalled();
+      expect(graph.environments[0].selected).toEqual(selected);
+      read.mockRestore();
+    },
+  );
+
   test.each(['source', 'isolated', undefined] as const)(
     'shows and updates the inline worktree control for %s without losing ownership',
     async (checkout) => {
