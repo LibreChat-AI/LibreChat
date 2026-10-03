@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import { apiBaseUrl, QueryKeys, request, dataService } from 'librechat-data-provider';
 import type { Agents, TConversation, TPendingSteer } from 'librechat-data-provider';
-import { isNotFoundError, updateConvoInAllQueries, setDocumentTitle } from '~/utils';
+import {
+  isNotFoundError,
+  updateConvoInAllQueries,
+  setDocumentTitle,
+  findManualConvoTitleInAllQueries,
+} from '~/utils';
 import { generationProtocolHeaders, withGenerationProtocolQuery } from './protocol';
 import { useGetStartupConfig } from '../Endpoints';
 
@@ -182,16 +187,9 @@ export function useTitleGeneration(enabled = true) {
 
       if (titleQuery.isSuccess && titleQuery.data) {
         const incoming = titleQuery.data;
-        const applyTitle = (convo: TConversation): TConversation => {
-          if (
-            convo.titleSetByUser &&
-            convo.title != null &&
-            (!incoming.titleSetByUser || (convo.titleRevision ?? 0) > (incoming.titleRevision ?? 0))
-          ) {
-            return convo;
-          }
-          return { ...convo, ...incoming };
-        };
+        const titleState =
+          findManualConvoTitleInAllQueries(queryClient, conversationId, incoming) ?? incoming;
+        const applyTitle = (convo: TConversation): TConversation => ({ ...convo, ...titleState });
         queryClient.setQueryData<TConversation>(
           [QueryKeys.conversation, conversationId],
           (convo) => (convo ? applyTitle(convo) : convo),

@@ -24,6 +24,7 @@ import type {
 } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type { TResData, TFinalResData, ConvoGenerator } from '~/common';
+import type { ConvoTitleState } from '~/utils/convos';
 import {
   logger,
   setDraft,
@@ -40,6 +41,7 @@ import {
   markLocallyCommittedReply,
   removeConvoFromAllQueries,
   findConvoInAllQueries,
+  findManualConvoTitleInAllQueries,
   preserveStreamedContentIdentity,
   isEmptyContentPart,
   getPartKeyIndex,
@@ -530,8 +532,6 @@ export const buildRecoveryPreset = (
     ),
   );
 
-type ConvoTitleState = Pick<TConversation, 'title' | 'titleSetByUser' | 'titleRevision'>;
-
 export const getConvoTitle = ({
   queryClient,
   currentTitle,
@@ -552,16 +552,8 @@ export const getConvoTitle = ({
     return incoming;
   }
   const cached = queryClient.getQueryData<TConversation>([QueryKeys.conversation, conversationId]);
-  const listed = findConvoInAllQueries(queryClient, conversationId);
-  let owned: ConvoTitleState | undefined;
-  for (const candidate of [cached, listed, incoming]) {
-    if (
-      candidate?.titleSetByUser &&
-      (!owned || (candidate.titleRevision ?? 0) >= (owned.titleRevision ?? 0))
-    ) {
-      owned = candidate;
-    }
-  }
+  const owned = findManualConvoTitleInAllQueries(queryClient, conversationId, incoming);
+  const listed = owned ? undefined : findConvoInAllQueries(queryClient, conversationId);
   let selected = owned;
   if (!selected) {
     if (authoritative && hasRealTitle(incoming.title)) {

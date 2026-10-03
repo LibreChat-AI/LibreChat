@@ -326,6 +326,48 @@ describe('stream title reconciliation', () => {
     ).toBe('Legacy remote rename');
   });
 
+  it('does not propagate an older owned point snapshot over a newer list rename', async () => {
+    const { result, queryClient } = setup();
+    queryClient.clear();
+    const old = {
+      ...initialConversation,
+      title: 'Old owned title',
+      titleSetByUser: true,
+      titleRevision: 1,
+      lastResponseAt: '2026-08-16T10:05:00.000Z',
+    };
+    await queryClient.fetchQuery([QueryKeys.allConversations], async () => ({
+      pages: [
+        {
+          conversations: [{ ...old, title: 'New owned title', titleRevision: 2 }],
+          nextCursor: null,
+        },
+      ],
+      pageParams: [],
+    }));
+    await queryClient.fetchQuery([QueryKeys.conversation, 'saved-chat'], async () => old);
+    act(() =>
+      result.current.finalHandler(
+        {
+          conversation: old,
+          requestMessage: submission.userMessage,
+          responseMessage: { ...submission.initialResponse, text: 'Finished reply' },
+        },
+        submission,
+      ),
+    );
+    const expected = { title: 'New owned title', titleSetByUser: true, titleRevision: 2 };
+    expect(result.current.conversation).toEqual(expect.objectContaining(expected));
+    expect(queryClient.getQueryData([QueryKeys.conversation, 'saved-chat'])).toEqual(
+      expect.objectContaining(expected),
+    );
+    expect(
+      queryClient.getQueryData<{ pages: { conversations: TConversation[] }[] }>([
+        QueryKeys.allConversations,
+      ])?.pages[0].conversations[0],
+    ).toEqual(expect.objectContaining(expected));
+  });
+
   it('does not mistake a processed automatic title for a manual placeholder rename', () => {
     const { result, queryClient } = setup();
     markTitleGenerationProcessed('saved-chat');

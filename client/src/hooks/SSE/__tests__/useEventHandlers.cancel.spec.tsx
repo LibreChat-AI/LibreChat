@@ -65,6 +65,7 @@ jest.mock('~/utils', () => ({
   updateConvoInAllQueries: jest.fn(),
   removeConvoFromAllQueries: jest.fn(),
   findConvoInAllQueries: () => undefined,
+  findManualConvoTitleInAllQueries: () => undefined,
   preserveStreamedContentIdentity: (_old: unknown, current: unknown) => current,
   isEmptyContentPart: () => false,
   getPartKeyIndex: jest.fn(),
