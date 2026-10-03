@@ -19,6 +19,10 @@ jest.mock('~/hooks', () => ({
   }),
 }));
 
+jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: () => ({ data: undefined }),
+}));
+
 jest.mock('~/Providers', () => ({
   usePromptGroupsContext: () => ({ hasAccess: true }),
   useLiveAnnouncer: () => ({ announcePolite: mockAnnouncePolite }),

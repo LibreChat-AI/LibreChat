@@ -311,6 +311,31 @@ describe('Prompt Routes - ACL Permissions', () => {
       await expect(PromptGroup.countDocuments()).resolves.toBe(0);
     });
 
+    it('should reject a reserved category on create', async () => {
+      const response = await request(app)
+        .post('/api/prompts')
+        .send({
+          prompt: { prompt: 'Category prompt', type: 'text' },
+          group: { name: 'Category Group', category: 'sys__x' },
+        });
+
+      expect(response.status).toBe(400);
+      await expect(PromptGroup.countDocuments()).resolves.toBe(0);
+    });
+
+    it('should store a valid custom category trimmed on create', async () => {
+      const response = await request(app)
+        .post('/api/prompts')
+        .send({
+          prompt: { prompt: 'Category prompt', type: 'text' },
+          group: { name: 'Category Group', category: '  Onboarding  ' },
+        });
+
+      expect(response.status).toBe(200);
+      const stored = await PromptGroup.findOne({ name: 'Category Group' }).lean();
+      expect(stored.category).toBe('Onboarding');
+    });
+
     it('should create a prompt and grant owner permissions', async () => {
       const promptData = {
         prompt: {
@@ -891,6 +916,16 @@ describe('Prompt Routes - ACL Permissions', () => {
     afterEach(async () => {
       await PromptGroup.deleteMany({});
       await AclEntry.deleteMany({});
+    });
+
+    it('should reject an over-long category on update and keep the stored category', async () => {
+      await request(app)
+        .patch(`/api/prompts/groups/${testGroup._id}`)
+        .send({ category: 'a'.repeat(101) })
+        .expect(400);
+
+      const stored = await PromptGroup.findById(testGroup._id).lean();
+      expect(stored.category).toBe('security-test');
     });
 
     it('should allow updating allowed fields (name, category, oneliner)', async () => {

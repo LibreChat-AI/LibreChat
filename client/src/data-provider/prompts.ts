@@ -1,6 +1,6 @@
 import { useRecoilValue } from 'recoil';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { dataService, QueryKeys } from 'librechat-data-provider';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { UseMutationResult } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
 import {
@@ -86,6 +86,7 @@ export const useUpdatePromptGroup = (
     },
     onSuccess: (response, variables, context) => {
       updateGroupInAll(queryClient, { _id: variables.id, ...response });
+      queryClient.invalidateQueries([QueryKeys.categories]);
       if (onSuccess) {
         onSuccess(response, variables, context);
       }
@@ -126,6 +127,7 @@ export const useCreatePrompt = (
         );
 
         addGroupToAll(queryClient, group);
+        queryClient.invalidateQueries([QueryKeys.categories]);
       }
 
       if (onSuccess) {
@@ -192,6 +194,7 @@ export const useDeletePrompt = (
         );
 
         removeGroupFromAll(queryClient, promptGroupId);
+        queryClient.invalidateQueries([QueryKeys.categories]);
       } else {
         queryClient.setQueryData<t.TPrompt[]>(
           [QueryKeys.prompts, variables.groupId],
@@ -251,6 +254,7 @@ export const useDeletePromptGroup = (
       );
 
       removeGroupFromAll(queryClient, variables.id);
+      queryClient.invalidateQueries([QueryKeys.categories]);
       if (onSuccess) {
         onSuccess(response, variables, context);
       }
