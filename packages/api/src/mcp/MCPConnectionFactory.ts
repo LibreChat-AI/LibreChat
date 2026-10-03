@@ -695,7 +695,11 @@ export class MCPConnectionFactory {
       this.upstreamTokenProvider = createLazyOboUpstreamTokenProvider(
         this.upstreamTokenProviderResolver,
         this.signal,
-        { mcpServer: this.serverName, scopes: oboConfig.scopes },
+        {
+          mcpServer: this.serverName,
+          scopes: oboConfig.scopes,
+          url: 'url' in this.serverConfig ? this.serverConfig.url : undefined,
+        },
       );
     }
     if (!this.upstreamTokenProvider) {

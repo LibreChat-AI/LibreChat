@@ -178,6 +178,8 @@ export interface OpenIDSessionRefreshService {
   createOpenIDSessionTokenProvider: (
     input: CreateOpenIDSessionTokenProviderInput,
   ) => (options?: { forceRefresh?: boolean; signal?: AbortSignal }) => Promise<OIDCTokens | null>;
+  /** Uses the same JWT-exp and opaque-token expiry policy for scheduled OBO enrollment. */
+  isLiveAccessTokenValid: (tokens: SessionOpenIDTokens) => boolean;
   refreshOpenIDSession: (
     req: OpenIDRequest,
     res: OpenIDResponse | undefined,
@@ -2174,6 +2176,7 @@ export function createOpenIDSessionRefreshService(
   return {
     createOpenIDSessionTokenProvider,
     refreshOpenIDSession,
+    isLiveAccessTokenValid: (tokens) => isLiveSessionTokenStillValid(tokens, 'access_token'),
     /** Exposed for tests; not a public API. */
     __internals: {
       UPSTREAM_TOKEN_EXPIRY_BUFFER_SECONDS,

@@ -6529,7 +6529,11 @@ describe('MCPConnectionFactory', () => {
       expect(upstreamTokenProviderResolver).toHaveBeenCalledTimes(1);
       expect(upstreamTokenProviderResolver).toHaveBeenCalledWith(
         expect.objectContaining({
-          target: { mcpServer: 'obo-srv', scopes: oboServerConfig.obo?.scopes },
+          target: {
+            mcpServer: 'obo-srv',
+            scopes: oboServerConfig.obo?.scopes,
+            url: 'url' in oboServerConfig ? oboServerConfig.url : undefined,
+          },
         }),
       );
       expect(resolveOboToken).toHaveBeenCalledWith(

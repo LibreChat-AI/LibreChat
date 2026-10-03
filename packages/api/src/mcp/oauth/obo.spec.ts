@@ -38,6 +38,24 @@ const liveTokens = {
 const liveProvider: UpstreamTokenProvider = jest.fn().mockResolvedValue(liveTokens);
 const nullProvider: UpstreamTokenProvider = jest.fn().mockResolvedValue(null);
 
+it('uses a tagged downstream scheduled grant without trying to exchange it as an upstream assertion', async () => {
+  const exchange = jest.fn();
+  const grant = jest.fn(async () => ({
+    scheduledObo: true as const,
+    access_token: 'downstream',
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  await expect(
+    resolveOboToken({ id: 'owner' } as IUser, { scopes: 'read' }, exchange, grant),
+  ).resolves.toMatchObject({ access_token: 'downstream', token_type: 'Bearer' });
+  expect(exchange).not.toHaveBeenCalled();
+  expect(grant).toHaveBeenCalledWith();
+  await expect(
+    resolveOboToken({ id: 'owner' } as IUser, { scopes: 'read' }, exchange, grant, undefined, true),
+  ).resolves.toMatchObject({ access_token: 'downstream' });
+  expect(grant).toHaveBeenLastCalledWith({ forceDownstreamRefresh: true });
+});
+
 describe('selectMCPUpstreamTokenProvider', () => {
   it.each([false, true])(
     'keeps explicit credentials regardless of deferred OBO lookup (%s)',
@@ -265,6 +283,28 @@ describe('resolveOboToken', () => {
       mockUser,
       'live-access-token',
       'api://mcp-server-id/Mcp.Tools.ReadWrite',
+      false,
+      undefined,
+    );
+  });
+
+  it('reuses a valid upstream assertion for downstream rejection without forcing its browser refresh', async () => {
+    const upstreamRefresh = jest.fn(async () => {
+      throw new Error('invalid_grant: browser refresh expired');
+    });
+    const browserProvider: UpstreamTokenProvider = jest.fn(async (options) => {
+      if (options?.forceRefresh) await upstreamRefresh();
+      return liveTokens;
+    });
+    await expect(
+      resolveOboToken(mockUser as IUser, oboConfig, mockResolver, browserProvider, undefined, true),
+    ).resolves.toMatchObject({ access_token: 'exchanged-mcp-token' });
+    expect(upstreamRefresh).not.toHaveBeenCalled();
+    expect(browserProvider).toHaveBeenCalledWith({ forceDownstreamRefresh: true });
+    expect(mockResolver).toHaveBeenCalledWith(
+      mockUser,
+      'live-access-token',
+      oboConfig.scopes,
       false,
       undefined,
     );

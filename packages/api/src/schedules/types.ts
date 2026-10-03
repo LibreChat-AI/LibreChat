@@ -7,6 +7,7 @@ import type {
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type { AgentTriggerEnqueueOptions, AgentTriggerEnvelope } from '../agents/triggers';
+import type { ScheduleWritePreflight } from './context';
 import type { SlotClaimResult } from './capacity';
 
 export interface ScheduleLimits {
@@ -30,6 +31,7 @@ export interface ScheduleLimits {
    *  stores, at write time and at fire time alike — the pin is a policy about where
    *  scheduled runs land, and a stored id from before the pin must not outrank it. */
   projectId?: string;
+  oboServers?: string[];
 }
 
 export const DEFAULT_SCHEDULE_LIMITS: ScheduleLimits = {
@@ -330,5 +332,19 @@ export type FireableSchedule = ISchedule;
 export type ScheduleMCPPreflight = (
   agentId: string,
   user: ScheduleUserContext,
-  options: { concurrency: number; signal?: AbortSignal; deadlineMs?: number; scheduleId?: string },
+  options: {
+    concurrency: number;
+    signal?: AbortSignal;
+    deadlineMs?: number;
+    scheduleId?: string;
+    /** Only a disabled row being explicitly activated may probe its already-enrolled grant. */
+    activationPreflight?: boolean;
+    writePreflight?: ScheduleWritePreflight;
+    /** Resume admission checks existing OBO targets even after enrollment policy removal. */
+    oboOnly?: boolean;
+    inspectOboTarget?: {
+      serverName: string;
+      onSelected: (config: import('../mcp/types').ParsedServerConfig) => Promise<void>;
+    };
+  },
 ) => Promise<ScheduleMCPOutcome[]>;

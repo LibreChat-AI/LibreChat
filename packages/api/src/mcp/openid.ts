@@ -190,6 +190,11 @@ export async function resolveDirectOpenIDBearerConfig({
     reauthError.cause = error;
     throw reauthError;
   }
+  if (tokens?.scheduledObo === true) {
+    throw new OpenIDReauthRequiredError(
+      'A downstream OBO grant cannot authenticate an OpenID bearer server.',
+    );
+  }
   if (!tokens?.access_token) {
     /** A verified bearer-authenticated request has no Express session to refresh. Its
      * strategy-populated user token remains the authoritative non-forced fallback. */

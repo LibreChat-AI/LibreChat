@@ -137,6 +137,7 @@
     "b:list-balances": "bun config/list-balances.js",
     "reset-terms": "node config/reset-terms.js",
     "migrate:tenant-indexes": "node config/migrate-tenant-indexes.js",
+    "migrate:scheduled-obo": "node config/migrate-scheduled-obo-grants.js",
     "migrate:tenant-indexes:dry-run": "node config/migrate-tenant-indexes.js --dry-run",
     "migrate:terms-timestamp": "node config/migrate-terms-timestamp.js",
     "flush-cache": "node config/flush-cache.js",

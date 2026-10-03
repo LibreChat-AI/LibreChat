@@ -33,6 +33,7 @@ let mockLimits: {
   minIntervalMinutes: number;
   requireProject: boolean;
   projectId?: string;
+  oboServers?: string[];
 } = {
   maxPerUser: 10,
   minIntervalMinutes: 0,
@@ -123,6 +124,20 @@ const fillRequiredFields = async (user: ReturnType<typeof userEvent.setup>) => {
 };
 
 describe('ScheduleDialog', () => {
+  it('creates a paused schedule for separately authorized OBO instead of silently persisting login credentials', async () => {
+    mockLimits.oboServers = ['Files'];
+    const user = userEvent.setup();
+    renderDialog();
+    await fillRequiredFields(user);
+    const checkbox = screen.getByRole('checkbox', { name: 'com_ui_schedule_obo_prepare' });
+    expect(checkbox).not.toBeChecked();
+    await user.click(checkbox);
+    await user.click(screen.getByRole('button', { name: 'com_ui_create' }));
+    await waitFor(() =>
+      expect(mockMutate).toHaveBeenCalledWith(expect.objectContaining({ enabled: false })),
+    );
+  });
+
   afterEach(() => {
     jest.clearAllMocks();
     mockLimits = { maxPerUser: 10, minIntervalMinutes: 0, requireProject: false };

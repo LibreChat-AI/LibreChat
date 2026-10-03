@@ -27,7 +27,7 @@ import {
 import { createSessionMethods, DEFAULT_REFRESH_TOKEN_EXPIRY, type SessionMethods } from './session';
 import { createPasskeyMethods, type PasskeyMethods } from './passkey';
 import { createUserMethods, DEFAULT_SESSION_EXPIRY, type UserMethods } from './user';
-import { createTokenMethods, type TokenMethods } from './token';
+import { createTokenMethods, type TokenMethods, type ScheduledOboGrantMethods } from './token';
 import { createRoleMethods, RoleConflictError } from './role';
 import { createKeyMethods, type KeyMethods } from './key';
 import { createFileMethods } from './file';
@@ -249,6 +249,7 @@ export {
 export type AllMethods = UserMethods &
   SessionMethods &
   TokenMethods &
+  ScheduledOboGrantMethods &
   RefreshTokenBridgeMethods &
   OpenIDRefreshFlightMethods &
   PasskeyMethods &
@@ -552,6 +553,7 @@ export type {
   PasskeyMethods,
   SessionMethods,
   TokenMethods,
+  ScheduledOboGrantMethods,
   RefreshTokenBridgeMethods,
   OpenIDRefreshFlightMethods,
   RoleMethods,

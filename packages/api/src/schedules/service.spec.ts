@@ -4,6 +4,7 @@ import type { SchedulesServiceDeps } from './service';
 import { createSchedulesService, recordScheduledMCPToolAuthFailure } from './service';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { isShutdownInProgress } from '../app/shutdown';
+import { ScheduleMCPError } from './mcp';
 
 /** Swappable per test: null keeps the no-job-store harness the drain tests rely on. */
 let mockJobStore: { getJob: jest.Mock; deleteJob?: jest.Mock } | null = null;
@@ -48,6 +49,8 @@ function makeService(
   getActiveRunsForUser: jest.Mock<Promise<ActiveRun[]>, [string]>,
   getAppConfig?: SchedulesServiceDeps['getAppConfig'],
   enqueueAgentTrigger: SchedulesServiceDeps['enqueueAgentTrigger'] = jest.fn(async () => undefined),
+  drainOboWrites?: SchedulesServiceDeps['drainOboWrites'],
+  isScheduledOboAvailable?: SchedulesServiceDeps['isScheduledOboAvailable'],
 ): ReturnType<typeof createSchedulesService> {
   recordRunOutcome = jest.fn(async () => undefined);
   const methods = {
@@ -63,6 +66,8 @@ function makeService(
   };
   const deps = {
     methods,
+    drainOboWrites,
+    isScheduledOboAvailable,
     getAppConfig: getAppConfig ?? jest.fn(async () => ({})),
     findUserById: jest.fn(async () => null),
     findBalance: jest.fn(async () => null),
@@ -1104,6 +1109,56 @@ describe('isScheduleLive policy recheck', () => {
     }
   });
 
+  it.each([['Files'], [], undefined])(
+    'checks OBO readiness after approval with enrollment policy %j',
+    async (oboServers) => {
+      const service = makeService(
+        jest.fn<Promise<ActiveRun[]>, [string]>().mockResolvedValue([]),
+        jest.fn(async () => ({
+          interfaceConfig: {
+            schedules: {
+              use: true,
+              oboServers,
+            },
+          },
+        })) as unknown as SchedulesServiceDeps['getAppConfig'],
+      );
+      const methods = service.engineDeps.methods as unknown as {
+        getScheduleById: jest.Mock;
+        getRoleByName: jest.Mock;
+      };
+      methods.getScheduleById = jest.fn(async () => ({
+        id: 's1',
+        user: 'u1',
+        agent_id: 'root',
+        enabled: true,
+      }));
+      methods.getRoleByName = jest.fn(async () => ({
+        permissions: { SCHEDULES: { USE: true } },
+      }));
+      (service.engineDeps as unknown as { getUserContext: jest.Mock }).getUserContext = jest.fn(
+        async () => ({ id: 'u1', role: 'USER' }),
+      );
+      const preflight = service.engineDeps.preflightMCP as jest.Mock;
+      await expect(service.isScheduleLive('s1', undefined, { policy: true })).resolves.toBe(true);
+      expect(preflight).toHaveBeenCalledWith(
+        'root',
+        expect.objectContaining({ id: 'u1' }),
+        expect.objectContaining({ scheduleId: 's1' }),
+      );
+      preflight.mockRejectedValueOnce(
+        new ScheduleMCPError([
+          {
+            server: 'Files',
+            status: 'mcp_configuration_missing',
+            detail: 'unattended_auth_required',
+          },
+        ]),
+      );
+      await expect(service.isScheduleLive('s1', undefined, { policy: true })).resolves.toBe(false);
+    },
+  );
+
   it('refuses a resume when the owner lost SCHEDULES:USE', async () => {
     const service = makeService(jest.fn<Promise<ActiveRun[]>, [string]>().mockResolvedValue([]));
     const methods = service.engineDeps.methods as unknown as {
@@ -1313,6 +1368,43 @@ describe('isScheduleLive policy recheck', () => {
 });
 
 describe('quiesceUserSchedules drain wait', () => {
+  it('drains credential persistence before suspending schedules or confirming account cleanup', async () => {
+    const order: string[] = [];
+    const drainOboWrites = jest.fn(async () => {
+      order.push('credentials');
+    });
+    const runs = jest.fn(async (_owner: string) => {
+      order.push('runs');
+      return [];
+    });
+    const service = makeService(
+      runs,
+      undefined,
+      jest.fn(async () => undefined),
+      drainOboWrites,
+    );
+    await expect(service.quiesceUserSchedules('user-1', 'deletion')).resolves.toBe(true);
+    expect(drainOboWrites).toHaveBeenCalledWith('user-1');
+    expect(order[0]).toBe('credentials');
+  });
+
+  it('refuses account cleanup if credential writers cannot be drained', async () => {
+    const runs = jest.fn(async (_owner: string) => []);
+    const service = makeService(
+      runs,
+      undefined,
+      jest.fn(async () => undefined),
+      async () => {
+        throw new Error('credential fence unavailable');
+      },
+    );
+    await expect(service.quiesceUserSchedules('user-1', 'deletion')).rejects.toThrow(
+      'credential fence unavailable',
+    );
+    expect(runs).not.toHaveBeenCalled();
+    expect(service.engineDeps.methods.suspendUserSchedulesForDeletion).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     mockJobStore = null;
     jest.useRealTimers();
@@ -2168,5 +2260,26 @@ describe('provider-drained schedule aborts', () => {
       awaitProviderDrain: true,
     });
     expect(deleteJob).toHaveBeenCalledWith('c1', 7);
+  });
+});
+
+describe('scheduled OBO capability projection', () => {
+  it.each<{ available?: () => boolean; expected?: string[] }>([
+    {},
+    { available: () => false },
+    { available: () => true, expected: ['Files'] },
+  ])('advertises allowlisted servers only with invocation authority: %p', async (testCase) => {
+    const service = makeService(
+      jest.fn(async (_userId: string) => []),
+      jest.fn(async () => ({
+        interfaceConfig: { schedules: { use: true, oboServers: ['Files'] } },
+      })) as unknown as SchedulesServiceDeps['getAppConfig'],
+      undefined,
+      undefined,
+      testCase.available,
+    );
+    const limits = await service.getLimits();
+    expect(limits.oboServers).toEqual(testCase.expected);
+    expect(limits.enabled).toBe(true);
   });
 });

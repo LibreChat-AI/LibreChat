@@ -557,6 +557,7 @@ export async function createOAuthMCPServer(
 }
 
 export interface InMemoryToken {
+  scope?: string;
   userId: string;
   type: string;
   identifier: string;
@@ -582,14 +583,18 @@ export class InMemoryTokenStore {
   findToken = (async (filter: {
     userId?: string;
     type?: string;
-    identifier?: string;
+    identifier?: string | RegExp;
     token?: string;
     metadataCredentialSetId?: string | null;
   }): Promise<InMemoryToken | null> => {
     for (const token of this.tokens.values()) {
       const matchUserId = !filter.userId || token.userId === filter.userId;
       const matchType = !filter.type || token.type === filter.type;
-      const matchIdentifier = !filter.identifier || token.identifier === filter.identifier;
+      const matchIdentifier =
+        !filter.identifier ||
+        (filter.identifier instanceof RegExp
+          ? filter.identifier.test(token.identifier)
+          : token.identifier === filter.identifier);
       const matchToken = !filter.token || token.token === filter.token;
       const matchCredentialSet =
         filter.metadataCredentialSetId === undefined ||
@@ -602,6 +607,36 @@ export class InMemoryTokenStore {
     }
     return null;
   }) as unknown as TokenMethods['findToken'];
+
+  listScheduledOboGrantIdentifiers = async (userId: string): Promise<string[]> => {
+    const owned = [...this.tokens.values()].filter((token) => token.userId === userId);
+    return owned
+      .filter((token) => {
+        if (token.type !== 'mcp_oauth_refresh') return false;
+        if (token.identifier.startsWith('scheduled-mcp:schedule-obo:')) return true;
+        if (!token.identifier.startsWith('mcp:schedule-obo:')) return false;
+        const storedMetadata =
+          token.metadata instanceof Map ? Object.fromEntries(token.metadata) : token.metadata;
+        if (storedMetadata?.credential_purpose === 'scheduled_obo') return true;
+        const client = owned.find(
+          (record) =>
+            record.type === 'mcp_oauth_client' &&
+            record.identifier === token.identifier.replace(/:refresh$/, ':client'),
+        );
+        const clientMetadata =
+          client?.metadata instanceof Map ? Object.fromEntries(client.metadata) : client?.metadata;
+        const tokenMetadata =
+          token.metadata instanceof Map ? Object.fromEntries(token.metadata) : token.metadata;
+        const legacy =
+          typeof clientMetadata?.openid_subject === 'string' &&
+          typeof clientMetadata.openid_issuer === 'string' &&
+          typeof clientMetadata.credential_set_id === 'string' &&
+          clientMetadata.credential_set_id === tokenMetadata?.credential_set_id;
+        if (legacy) token.metadata = { ...tokenMetadata, credential_purpose: 'scheduled_obo' };
+        return legacy;
+      })
+      .map((token) => token.identifier);
+  };
 
   createToken = (async (data: {
     userId: string;
@@ -624,6 +659,28 @@ export class InMemoryTokenStore {
     this.tokens.set(this.key(data), token);
     return token;
   }) as unknown as TokenMethods['createToken'];
+
+  replaceTokenIfCurrent: TokenMethods['replaceTokenIfCurrent'] = async (
+    scope,
+    expectedToken,
+    data,
+  ) => {
+    const existing = this.tokens.get(`scope:${scope}`);
+    if (expectedToken === null ? existing != null : existing?.token !== expectedToken) {
+      return false;
+    }
+    this.tokens.set(`scope:${scope}`, {
+      scope,
+      userId: data.userId?.toString() ?? '',
+      type: data.type ?? '',
+      identifier: data.identifier ?? '',
+      token: data.token,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + data.expiresIn * 1000),
+      metadata: data.metadata,
+    });
+    return true;
+  };
 
   updateToken = (async (
     filter: {
@@ -675,7 +732,7 @@ export class InMemoryTokenStore {
   deleteTokens = (async (query: {
     userId?: string;
     type?: string;
-    identifier?: string;
+    identifier?: string | RegExp;
     token?: string;
     metadataCredentialSetId?: string | null;
   }): Promise<{ acknowledged: boolean; deletedCount: number }> => {
@@ -684,7 +741,10 @@ export class InMemoryTokenStore {
       const match =
         (!query.userId || token.userId === query.userId) &&
         (!query.type || token.type === query.type) &&
-        (!query.identifier || token.identifier === query.identifier) &&
+        (!query.identifier ||
+          (query.identifier instanceof RegExp
+            ? query.identifier.test(token.identifier)
+            : token.identifier === query.identifier)) &&
         (!query.token || token.token === query.token) &&
         (query.metadataCredentialSetId === undefined ||
           (query.metadataCredentialSetId === null

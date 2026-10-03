@@ -1343,6 +1343,27 @@ export function runScheduleNow(id: string): Promise<sch.TScheduleRunNowResponse>
   return request.post(endpoints.runSchedule(id), {});
 }
 
+export function inspectScheduledObo(
+  id: string,
+  server: string,
+  signal?: AbortSignal,
+): Promise<sch.TScheduledOboTarget> {
+  return request.get(endpoints.scheduledObo(id, server), { signal });
+}
+
+export function authorizeScheduledObo(
+  id: string,
+  server: string,
+  expectedScopes: string,
+  expectedBinding: string,
+): Promise<void> {
+  return request.post(endpoints.scheduledObo(id, server), { expectedScopes, expectedBinding });
+}
+
+export function revokeScheduledObo(id: string, server: string): Promise<void> {
+  return request.delete(endpoints.scheduledObo(id, server));
+}
+
 export function getSkill(id: string): Promise<sk.TSkill> {
   return request.get(endpoints.getSkill(id));
 }

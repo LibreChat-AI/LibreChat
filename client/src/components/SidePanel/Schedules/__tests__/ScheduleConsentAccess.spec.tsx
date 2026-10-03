@@ -18,6 +18,9 @@ jest.mock('react-i18next', () => ({
 }));
 jest.mock('~/data-provider', () => ({
   useGetAgentByIdQuery: () => ({}),
+  useScheduledOboTargetQuery: () => ({ isFetching: false }),
+  useAuthorizeScheduledOboMutation: () => ({ mutate: jest.fn(), isLoading: false }),
+  useRevokeScheduledOboMutation: () => ({ mutate: jest.fn(), isLoading: false }),
   useDeleteScheduleMutation: () => ({ mutate: jest.fn(), isLoading: false }),
   useUpdateScheduleMutation: () => ({ mutate: jest.fn(), isLoading: false }),
   useRunScheduleNowMutation: () => ({ mutate: jest.fn(), isLoading: false }),

@@ -16,6 +16,19 @@ const directBearerConfig = (
 });
 
 describe('direct OpenID bearer recovery', () => {
+  it('never sends a scheduled downstream OBO token as an OpenID bearer', async () => {
+    const upstreamTokenProvider = jest.fn(async () => ({
+      scheduledObo: true as const,
+      access_token: 'scoped-to-a-different-resource',
+    }));
+    await expect(
+      resolveDirectOpenIDBearerConfig({
+        config: directBearerConfig('yaml'),
+        upstreamTokenProvider,
+      }),
+    ).rejects.toBeInstanceOf(OpenIDReauthRequiredError);
+  });
+
   it('forwards cancellation to live refresh and preserves the caller abort reason', async () => {
     const controller = new AbortController();
     const reason = new Error('request stopped');

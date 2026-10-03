@@ -1,6 +1,8 @@
 import { AgentCapabilities, Permissions, PermissionTypes } from 'librechat-data-provider';
 import type { IUser, IRole, AppConfig, AgentGraphNode } from '@librechat/data-schemas';
+import type { HostUpstreamTokenProviderResolver } from './mcp';
 import type { UpstreamTokenProvider } from '../mcp/oauth/obo';
+import type { ScheduleWritePreflight } from './context';
 import type { ParsedServerConfig } from '../mcp/types';
 import {
   bindUpstreamTokenProviderResolver,
@@ -8,6 +10,7 @@ import {
   ScheduleMCPError,
 } from './mcp';
 import { OboTokenResolutionError, createLazyOboUpstreamTokenProvider } from '../mcp/oauth/obo';
+import { MCPServersRegistry } from '../mcp/registry/MCPServersRegistry';
 
 const principal = { id: 'owner', role: 'USER' };
 const server: ParsedServerConfig = { type: 'streamable-http', url: 'https://mcp.example.test/mcp' };
@@ -99,6 +102,13 @@ function setup(tools = ['search_mcp_docs']) {
         signal?: AbortSignal;
         deadlineMs?: number;
         scheduleId?: string;
+        activationPreflight?: boolean;
+        writePreflight?: ScheduleWritePreflight;
+        oboOnly?: boolean;
+        inspectOboTarget?: {
+          serverName: string;
+          onSelected: (config: ParsedServerConfig) => Promise<void>;
+        };
       },
     ) => preflight(agentId, user, { concurrency: 3, ...options }),
   };
@@ -150,6 +160,239 @@ it('lazily resolves an upstream token provider for an OBO preflight', async () =
   expect(deps.connect).toHaveBeenCalledWith(
     expect.objectContaining({ upstreamTokenProviderResolver: expect.any(Function) }),
   );
+});
+
+it('allows disabled-grant reads only in the owner activation preflight context', async () => {
+  const { check, deps } = setup();
+  deps.getServerConfigs = jest.fn(async () => ({
+    docs: { ...server, obo: { scopes: 'api://mcp/.default' } },
+  }));
+  const provider = jest.fn(async () => ({ access_token: 'enrolled-access' }));
+  deps.resolveUpstreamTokenProvider = jest.fn(async () => provider);
+  const connect = deps.connect;
+  deps.connect = jest.fn(async (options) => {
+    const resolved = await options.upstreamTokenProviderResolver?.({
+      target: { mcpServer: options.serverName, scopes: options.serverConfig!.obo!.scopes },
+    });
+    await resolved?.();
+    return connect(options);
+  });
+
+  await check('agent', principal, { scheduleId: 'schedule', activationPreflight: true });
+  expect(deps.resolveUpstreamTokenProvider).toHaveBeenLastCalledWith(
+    expect.objectContaining({ id: 'owner' }),
+    expect.objectContaining({
+      activationPreflight: true,
+      context: expect.objectContaining({ scheduleId: 'schedule' }),
+    }),
+  );
+  await check('agent', principal, { scheduleId: 'schedule' });
+  expect(jest.mocked(deps.resolveUpstreamTokenProvider!).mock.lastCall?.[1]).not.toHaveProperty(
+    'activationPreflight',
+  );
+  await check('agent', principal, { activationPreflight: true });
+  expect(jest.mocked(deps.resolveUpstreamTokenProvider!).mock.lastCall?.[1]).not.toHaveProperty(
+    'activationPreflight',
+  );
+});
+
+it('captures a trusted prospective snapshot only for scoped write preflight', async () => {
+  const lookup = jest.fn<
+    ReturnType<HostUpstreamTokenProviderResolver>,
+    Parameters<HostUpstreamTokenProviderResolver>
+  >(async () => jest.fn(async () => ({ access_token: 'token' })));
+  const snapshot = { agentId: 'persisted', configRevision: 7 };
+  const context = {
+    scheduleId: 'schedule',
+    ownerId: 'owner',
+    agentId: 'prospective',
+    invocationMode: 'delegated' as const,
+  };
+  const bound = bindUpstreamTokenProviderResolver(
+    principal,
+    lookup,
+    undefined,
+    context,
+    false,
+    snapshot,
+  )!;
+  snapshot.agentId = 'injected';
+  snapshot.configRevision = 9;
+  await bound();
+  expect(lookup).toHaveBeenLastCalledWith(
+    principal,
+    expect.objectContaining({
+      context,
+      writePreflight: { agentId: 'persisted', configRevision: 7 },
+    }),
+  );
+  const run = bindUpstreamTokenProviderResolver(principal, lookup, undefined, context)!;
+  await run();
+  expect(lookup.mock.lastCall?.[1]).not.toHaveProperty('writePreflight');
+  const unscoped = bindUpstreamTokenProviderResolver(
+    principal,
+    lookup,
+    undefined,
+    undefined,
+    false,
+    snapshot,
+  )!;
+  await unscoped();
+  expect(lookup.mock.lastCall?.[1]).not.toHaveProperty('writePreflight');
+});
+
+it('resume preflight checks OBO targets without probing unrelated direct OAuth servers', async () => {
+  const { check, deps } = setup(['search_mcp_obo', 'search_mcp_direct']);
+  deps.getServerConfigs = jest.fn(async () => ({
+    obo: { ...server, obo: { scopes: 'read' } },
+    direct: server,
+  }));
+  await expect(check('agent', principal, { oboOnly: true })).resolves.toEqual([
+    { server: 'obo', status: 'ready' },
+  ]);
+  expect(deps.connect).toHaveBeenCalledTimes(1);
+  expect(deps.connect).toHaveBeenCalledWith(expect.objectContaining({ serverName: 'obo' }));
+});
+
+it('resume cannot prune OBO introduced by an effective admin override', async () => {
+  const { check, deps } = setup();
+  const base: ParsedServerConfig = { ...server, source: 'yaml' };
+  const override: ParsedServerConfig = {
+    ...base,
+    source: 'config',
+    obo: { scopes: 'api://resource/Read' },
+  };
+  const registry = {
+    getBaseServerConfigs: async () => ({ docs: base }),
+  } as unknown as MCPServersRegistry;
+  const appConfig = (await deps.getAppConfig({}))!;
+  deps.getAppConfig = jest.fn(async () => ({ ...appConfig, mcpConfig: { docs: override } }));
+  deps.ensureConfigServers = jest.fn(async () => ({ docs: override }));
+  deps.getServerConfigs = jest.fn(async (userId, overrides, role) =>
+    MCPServersRegistry.prototype.getAllServerConfigs.call(registry, userId, overrides, role),
+  );
+  deps.connect = jest.fn(async () => {
+    throw new OboTokenResolutionError('missing_upstream_provider', 'No authorized offline grant');
+  });
+
+  await expect(check('agent', principal, { oboOnly: true })).rejects.toMatchObject({
+    code: 'mcp_configuration_missing',
+    outcomes: [{ server: 'docs', detail: 'unattended_auth_required' }],
+  });
+  expect(deps.connect).toHaveBeenCalledWith(
+    expect.objectContaining({ serverConfig: expect.objectContaining({ obo: override.obo }) }),
+  );
+});
+
+it.each(['user', 'process'] as const)(
+  'does not apply a shadowed OBO override to a %s direct-only resume target',
+  async (kind) => {
+    const { check, deps } = setup();
+    const base: ParsedServerConfig =
+      kind === 'process'
+        ? { type: 'stdio', command: 'test-command', args: [], source: 'yaml' }
+        : { ...server, source: 'user' };
+    const override: ParsedServerConfig = {
+      ...server,
+      source: 'config',
+      obo: { scopes: 'api://resource/Read' },
+    };
+    const registry = {
+      getBaseServerConfigs: async () => ({ docs: base }),
+    } as unknown as MCPServersRegistry;
+    const appConfig = (await deps.getAppConfig({}))!;
+    deps.getAppConfig = jest.fn(async () => ({
+      ...appConfig,
+      endpoints: { ...appConfig.endpoints, agents: { capabilities: [] } },
+      mcpConfig: { docs: override },
+    }));
+    deps.ensureConfigServers = jest.fn(async () => ({ docs: override }));
+    deps.getServerConfigs = jest.fn(async (userId, overrides, role) =>
+      MCPServersRegistry.prototype.getAllServerConfigs.call(registry, userId, overrides, role),
+    );
+
+    await expect(check('agent', principal, { oboOnly: true })).resolves.toEqual([]);
+    expect(deps.ensureConfigServers).not.toHaveBeenCalled();
+    expect(deps.connect).not.toHaveBeenCalled();
+  },
+);
+
+it('does not add OBO resume checks to a direct-only schedule when MCP permission was revoked', async () => {
+  const { check, deps } = setup();
+  deps.getRoleByName = jest.fn(async () => ({ permissions: {} }) as IRole);
+  deps.getAppConfig = jest.fn(
+    async () =>
+      ({ endpoints: { agents: { capabilities: [] } } }) as Partial<AppConfig> as AppConfig,
+  );
+  await expect(check('agent', principal, { oboOnly: true })).resolves.toEqual([]);
+  expect(deps.connect).not.toHaveBeenCalled();
+  expect(deps.findPluginAuthsByKeys).not.toHaveBeenCalled();
+});
+
+it('inspection uses the same resolved user URL as runtime preflight', async () => {
+  const { check, deps } = setup(['search_mcp_docs']);
+  deps.getServerConfigs = jest.fn(async () => ({
+    docs: {
+      ...server,
+      url: 'https://mcp.test/{{LIBRECHAT_USER_ID}}',
+      source: 'yaml' as const,
+      obo: { scopes: 'read' },
+    },
+  }));
+  const selected = jest.fn(async () => undefined);
+  await check('agent', principal, {
+    inspectOboTarget: { serverName: 'docs', onSelected: selected },
+  });
+  expect(selected).toHaveBeenCalledWith(expect.objectContaining({ url: 'https://mcp.test/owner' }));
+  expect(deps.connect).not.toHaveBeenCalled();
+});
+
+it('inspects only an accessible, selected operator-owned OBO target before enrollment', async () => {
+  const { check, deps } = setup(['search_mcp_docs']);
+  const selected = { ...server, source: 'yaml' as const, obo: { scopes: 'api://files/Read' } };
+  deps.getServerConfigs = jest.fn(async () => ({ docs: selected }));
+  deps.getAppConfig = jest.fn(
+    async () =>
+      ({
+        endpoints: { agents: { capabilities: [AgentCapabilities.tools] } },
+        mcpConfig: { docs: selected },
+      }) as Partial<AppConfig> as AppConfig,
+  );
+  const onSelected = jest.fn(async () => undefined);
+  await expect(
+    check('agent', principal, {
+      inspectOboTarget: {
+        serverName: 'docs',
+        onSelected,
+      },
+    }),
+  ).resolves.toEqual([{ server: 'docs', status: 'ready' }]);
+  expect(onSelected).toHaveBeenCalledWith(selected);
+  expect(deps.connect).not.toHaveBeenCalled();
+  await expect(
+    check('agent', principal, {
+      inspectOboTarget: {
+        serverName: 'other',
+        onSelected,
+      },
+    }),
+  ).rejects.toMatchObject({ code: 'mcp_configuration_missing' });
+  expect(onSelected).toHaveBeenCalledTimes(1);
+  deps.getAppConfig = jest.fn(
+    async () =>
+      ({
+        endpoints: { agents: { capabilities: [AgentCapabilities.tools] } },
+      }) as Partial<AppConfig> as AppConfig,
+  );
+  // Operator-owned YAML servers live in the registry rather than principal mcpConfig.
+  await expect(
+    check('agent', principal, {
+      inspectOboTarget: {
+        serverName: 'docs',
+        onSelected,
+      },
+    }),
+  ).resolves.toEqual([{ server: 'docs', status: 'ready' }]);
 });
 
 it('reports missing unattended OBO credentials without offering a browser reconnect', async () => {

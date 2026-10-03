@@ -460,6 +460,8 @@ export const schedules = () => `${BASE_URL}/api/schedules`;
 export const schedule = (id: string) => `${schedules()}/${encodeURIComponent(id)}`;
 export const scheduleMCPConsent = (id: string) => `${schedule(id)}/mcp-consent`;
 export const runSchedule = (id: string) => `${schedule(id)}/run`;
+export const scheduledObo = (id: string, server: string) =>
+  `${schedule(id)}/obo/${encodeURIComponent(server)}`;
 
 /* Skills */
 export const skills = () => `${BASE_URL}/api/skills`;

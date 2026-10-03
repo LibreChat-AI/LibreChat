@@ -1629,7 +1629,11 @@ Please follow these instructions when using tools from the respective MCP server
             oboUpstreamTokenProvider = createLazyOboUpstreamTokenProvider(
               upstreamTokenProviderResolver,
               options?.signal,
-              { mcpServer: serverName, scopes: oboConfig.scopes },
+              {
+                mcpServer: serverName,
+                scopes: oboConfig.scopes,
+                url: 'url' in currentOptions ? currentOptions.url : undefined,
+              },
             );
           }
           if (!oboUpstreamTokenProvider) {

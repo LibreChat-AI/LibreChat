@@ -89,3 +89,47 @@ describe('MCPTokenStorage.storeTokens expiry handling', () => {
     expect(stored.expiresIn).toBe(DEFAULT_TTL_SECONDS);
   });
 });
+
+it('keeps a failing persistence rollback inside the caller-owned guard', async () => {
+  const events: string[] = [];
+  const createToken = jest.fn<
+    ReturnType<TokenMethods['createToken']>,
+    Parameters<TokenMethods['createToken']>
+  >(async () => {
+    events.push('write');
+    throw new Error('write failed');
+  });
+  await expect(
+    MCPTokenStorage.storeTokens({
+      userId: 'user-1',
+      serverName: 'guarded',
+      tokens: { access_token: 'test-access', token_type: 'Bearer', expires_in: 3600 },
+      createToken,
+      withPersistence: async (persist) => {
+        events.push('enter');
+        try {
+          return await persist();
+        } finally {
+          events.push('release');
+        }
+      },
+    }),
+  ).rejects.toThrow('write failed');
+  expect(events).toEqual(['enter', 'write', 'release']);
+});
+
+it('never writes credentials when the caller-owned guard refuses persistence', async () => {
+  const createToken = jest.fn();
+  await expect(
+    MCPTokenStorage.storeTokens({
+      userId: 'user-1',
+      serverName: 'guarded',
+      tokens: { access_token: 'test-access', token_type: 'Bearer' },
+      createToken,
+      withPersistence: async () => {
+        throw new Error('owner deleted');
+      },
+    }),
+  ).rejects.toThrow('owner deleted');
+  expect(createToken).not.toHaveBeenCalled();
+});

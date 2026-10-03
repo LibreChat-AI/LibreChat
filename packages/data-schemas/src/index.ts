@@ -113,6 +113,7 @@ export {
   createMCPAuthorityLookupIndexes,
   dropSupersededTenantIndexes,
   migrateTenantIndexes,
+  migrateScheduledOboGrantProvenance,
   dropSupersededPromptGroupIndexes,
   backfillMCPServerNormalizedNames,
 } from './migrations';

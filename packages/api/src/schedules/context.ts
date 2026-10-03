@@ -7,6 +7,13 @@ export interface ScheduledTokenContext {
   readonly invocationMode: 'delegated';
 }
 
+/** Persisted state an owner PATCH read before validating its prospective agent.
+ * This write-only capability is never restored from jobs or sent to tools. */
+export interface ScheduleWritePreflight {
+  readonly agentId: string;
+  readonly configRevision?: number;
+}
+
 interface ScheduleJobIdentity {
   userId?: string;
   tenantId?: string;

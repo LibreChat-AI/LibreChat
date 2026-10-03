@@ -15,7 +15,10 @@ import { isInvalidClientMessage } from '~/mcp/utils';
 import { isSystemUserId } from '~/mcp/enum';
 
 export class ReauthenticationRequiredError extends Error {
-  constructor(serverName: string, reason: 'expired' | 'missing' | 'invalid_client' | 'binding') {
+  constructor(
+    serverName: string,
+    readonly reason: 'expired' | 'missing' | 'invalid_client' | 'binding',
+  ) {
     let detail: string;
     if (reason === 'invalid_client') {
       detail = 'stored client registration is no longer valid';
@@ -27,6 +30,30 @@ export class ReauthenticationRequiredError extends Error {
     super(`Re-authentication required for "${serverName}": ${detail}`);
     this.name = 'ReauthenticationRequiredError';
   }
+}
+
+/** Persisted purpose is outside the user-configurable server-name namespace. */
+export const getMCPOAuthTokenIdentifier = (serverName: string, scheduledGrant?: true): string =>
+  `${scheduledGrant === true ? 'scheduled-mcp' : 'mcp'}:${serverName}`;
+
+/** Legacy pre-release grants lack a separate identifier; never adopt one as ordinary OAuth. */
+async function assertCredentialNamespace(
+  serverName: string,
+  scheduledGrant: true | undefined,
+  findToken?: TokenMethods['findToken'],
+  userId?: string,
+): Promise<void> {
+  if (scheduledGrant || !serverName.startsWith('schedule-obo:') || !findToken || !userId) return;
+  const [client, refresh] = await Promise.all([
+    findToken({ userId, type: 'mcp_oauth_client', identifier: `mcp:${serverName}:client` }),
+    findToken({ userId, type: 'mcp_oauth_refresh', identifier: `mcp:${serverName}:refresh` }),
+  ]);
+  const metadata = getTokenMetadata(client);
+  if (
+    getTokenMetadata(refresh).credential_purpose === 'scheduled_obo' ||
+    (typeof metadata.openid_subject === 'string' && typeof metadata.openid_issuer === 'string')
+  )
+    throw new ReauthenticationRequiredError(serverName, 'binding');
 }
 
 /** Durable credentials could not be read or decrypted. This is retryable infrastructure state,
@@ -46,7 +73,13 @@ export class MCPTokenRefreshUnavailableError extends Error {
   }
 }
 
+/** Caller-owned lifetime around credential persistence, including rollback. Never wraps wire redemption. */
+type TokenPersistenceGuard = (persist: () => Promise<MCPOAuthTokens>) => Promise<MCPOAuthTokens>;
+
 interface StoreTokensParams {
+  /** Internal scheduled grants are not ordinary named MCP server credentials. */
+  scheduledGrant?: true;
+  withPersistence?: TokenPersistenceGuard;
   /** Interactive writers share the persistence fence with refresh, adoption, and teardown. */
   flowManager?: Pick<FlowStateManager, 'acquireLease'>;
   persistenceWaitTimeoutMs?: number;
@@ -76,6 +109,9 @@ interface StoreTokensParams {
 }
 
 interface GetTokensParams {
+  /** Internal scheduled grants are not ordinary named MCP server credentials. */
+  scheduledGrant?: true;
+  withPersistence?: TokenPersistenceGuard;
   userId: string;
   serverName: string;
   findToken: TokenMethods['findToken'];
@@ -85,6 +121,8 @@ interface GetTokensParams {
       userId: string;
       serverName: string;
       identifier: string;
+      /** Generation actually redeemed under the refresh flight, not the caller's earlier snapshot. */
+      credentialSetId?: string;
       clientInfo?: OAuthClientInformation;
       storedTokenEndpoint?: string;
       storedAuthMethods?: string[];
@@ -139,7 +177,14 @@ export const getMCPOAuthLeaseId = (
   userId: string,
   serverName: string,
   tenantId: string | undefined = getTenantId(),
-): string => JSON.stringify([tenantId ?? '', userId, serverName]);
+  scheduledGrant?: true,
+): string =>
+  JSON.stringify([
+    tenantId ?? '',
+    userId,
+    serverName,
+    ...(scheduledGrant ? ['scheduled-obo'] : []),
+  ]);
 
 /**
  * Lease that serializes refresh-token redemption for one stored credential across replicas.
@@ -160,7 +205,15 @@ export const getMCPOAuthRefreshFlightLeaseId = (
   userId: string,
   serverName: string,
   tenantId: string | undefined = getTenantId(),
-): string => JSON.stringify(['refresh', tenantId ?? '', userId, serverName]);
+  scheduledGrant?: true,
+): string =>
+  JSON.stringify([
+    'refresh',
+    tenantId ?? '',
+    userId,
+    serverName,
+    ...(scheduledGrant ? ['scheduled-obo'] : []),
+  ]);
 
 /**
  * Reads the `exp` claim (RFC 7519 §4.1.4 / RFC 9068) from a JWT-format access
@@ -169,7 +222,7 @@ export const getMCPOAuthRefreshFlightLeaseId = (
  * not verified — the protected resource server validates the token; here we
  * only read its self-declared expiry to avoid a lossy default.
  */
-function getJwtAccessTokenExpiry(accessToken?: string): number | null {
+export function getJwtAccessTokenExpiry(accessToken?: string): number | null {
   if (!accessToken) {
     return null;
   }
@@ -321,22 +374,30 @@ export class MCPTokenStorage {
     userId: string,
     serverName: string,
     tenantId: string | undefined = getTenantId(),
+    scheduledGrant?: true,
   ): string {
-    return JSON.stringify([tenantId ?? '', userId, serverName]);
+    return getMCPOAuthLeaseId(userId, serverName, tenantId, scheduledGrant);
   }
 
   static isRefreshTeardownActive(
     userId: string,
     serverName: string,
     tenantId: string | undefined = getTenantId(),
+    scheduledGrant?: true,
   ): boolean {
-    return this.refreshTeardownCounts.has(this.getRefreshOwnerKey(userId, serverName, tenantId));
+    return this.refreshTeardownCounts.has(
+      this.getRefreshOwnerKey(userId, serverName, tenantId, scheduledGrant),
+    );
   }
 
   /** Holds a per-user/server gate, then aborts and joins every process-local refresh that entered
    * before it. The returned release keeps successor refreshes out until teardown finishes. */
-  static async beginRefreshTeardown(userId: string, serverName: string): Promise<() => void> {
-    const ownerKey = this.getRefreshOwnerKey(userId, serverName);
+  static async beginRefreshTeardown(
+    userId: string,
+    serverName: string,
+    scheduledGrant?: true,
+  ): Promise<() => void> {
+    const ownerKey = this.getRefreshOwnerKey(userId, serverName, undefined, scheduledGrant);
     this.refreshTeardownCounts.set(ownerKey, (this.refreshTeardownCounts.get(ownerKey) ?? 0) + 1);
     const refreshes: Promise<MCPOAuthTokens | null>[] = [];
     for (const [key, refresh] of this.inflightRefreshes) {
@@ -366,6 +427,7 @@ export class MCPTokenStorage {
   static async markAuthorizationRejected({
     userId,
     serverName,
+    scheduledGrant,
     credentialSetId,
     findToken,
     updateToken,
@@ -374,6 +436,7 @@ export class MCPTokenStorage {
   }: {
     userId: string;
     serverName: string;
+    scheduledGrant?: true;
     credentialSetId: string;
     findToken: TokenMethods['findToken'];
     updateToken: TokenMethods['updateToken'];
@@ -381,9 +444,12 @@ export class MCPTokenStorage {
     persistenceWaitTimeoutMs?: number;
   }): Promise<void> {
     const lease = flowManager
-      ? await flowManager.acquireLease(getMCPOAuthLeaseId(userId, serverName), {
-          waitMs: this.resolvePersistenceWaitMs(persistenceWaitTimeoutMs),
-        })
+      ? await flowManager.acquireLease(
+          getMCPOAuthLeaseId(userId, serverName, undefined, scheduledGrant),
+          {
+            waitMs: this.resolvePersistenceWaitMs(persistenceWaitTimeoutMs),
+          },
+        )
       : undefined;
     if (flowManager && !lease) {
       throw new MCPTokenStorageUnavailableError(
@@ -394,7 +460,7 @@ export class MCPTokenStorage {
     const scope = {
       userId,
       type: 'mcp_oauth_client',
-      identifier: `mcp:${serverName}:client`,
+      identifier: `${getMCPOAuthTokenIdentifier(serverName, scheduledGrant)}:client`,
       metadataCredentialSetId: credentialSetId,
     };
     try {
@@ -415,18 +481,26 @@ export class MCPTokenStorage {
   static async hasStoredAuthorization({
     userId,
     serverName,
+    scheduledGrant,
     findToken,
     validateClientBinding,
   }: {
     userId: string;
     serverName: string;
+    scheduledGrant?: true;
     findToken: TokenMethods['findToken'];
     validateClientBinding: (
       clientInfo: OAuthClientInformation,
       storedMetadata: Partial<OAuthStoredClientMetadata>,
     ) => void;
   }): Promise<boolean> {
-    const identifier = `mcp:${serverName}`;
+    try {
+      await assertCredentialNamespace(serverName, scheduledGrant, findToken, userId);
+    } catch (error) {
+      if (error instanceof ReauthenticationRequiredError) return false;
+      throw error;
+    }
+    const identifier = getMCPOAuthTokenIdentifier(serverName, scheduledGrant);
     try {
       const [accessTokenData, clientInfoData] = await Promise.all([
         findToken({ userId, type: 'mcp_oauth', identifier }),
@@ -499,21 +573,29 @@ export class MCPTokenStorage {
   static async isCurrentAccessToken({
     userId,
     serverName,
+    scheduledGrant,
     accessToken,
     credentialSetId,
     findToken,
   }: {
     userId: string;
     serverName: string;
+    scheduledGrant?: true;
     accessToken: string;
     credentialSetId: string | undefined;
     findToken: TokenMethods['findToken'];
   }): Promise<boolean> {
     try {
+      await assertCredentialNamespace(serverName, scheduledGrant, findToken, userId);
+    } catch (error) {
+      if (error instanceof ReauthenticationRequiredError) return false;
+      throw error;
+    }
+    try {
       const tokenData = await findToken({
         userId,
         type: 'mcp_oauth',
-        identifier: `mcp:${serverName}`,
+        identifier: getMCPOAuthTokenIdentifier(serverName, scheduledGrant),
       });
       if (!tokenData || (tokenData.expiresAt && new Date() >= tokenData.expiresAt)) {
         return false;
@@ -555,9 +637,15 @@ export class MCPTokenStorage {
    * This is useful when refreshing tokens, as getTokens() already has the token state.
    */
   static async storeTokens(params: StoreTokensParams): Promise<MCPOAuthTokens> {
+    await assertCredentialNamespace(
+      params.serverName,
+      params.scheduledGrant,
+      params.findToken,
+      params.userId,
+    );
     const lease = params.flowManager
       ? await params.flowManager.acquireLease(
-          getMCPOAuthLeaseId(params.userId, params.serverName),
+          getMCPOAuthLeaseId(params.userId, params.serverName, undefined, params.scheduledGrant),
           { waitMs: this.resolvePersistenceWaitMs(params.persistenceWaitTimeoutMs) },
         )
       : undefined;
@@ -568,7 +656,8 @@ export class MCPTokenStorage {
       );
     }
     try {
-      return await this.storeTokensUnderLease(params);
+      const persist = () => this.storeTokensUnderLease(params);
+      return await (params.withPersistence ? params.withPersistence(persist) : persist());
     } finally {
       if (lease)
         await this.releaseRefreshFlight(lease, this.getLogPrefix(params.userId, params.serverName));
@@ -578,6 +667,7 @@ export class MCPTokenStorage {
   private static async storeTokensUnderLease({
     userId,
     serverName,
+    scheduledGrant,
     tokens,
     createToken,
     updateToken,
@@ -595,7 +685,7 @@ export class MCPTokenStorage {
     const rollbackWrites: Array<() => Promise<void>> = [];
 
     try {
-      const identifier = `mcp:${serverName}`;
+      const identifier = getMCPOAuthTokenIdentifier(serverName, scheduledGrant);
       const tokenCredentialSetId = (tokens as Partial<MCPOAuthTokens>).credential_set_id;
       const metadataCredentialSetId = metadata?.credential_set_id;
       const validTokenCredentialSetId =
@@ -624,7 +714,11 @@ export class MCPTokenStorage {
          */
         credentialSetId = validTokenCredentialSetId ?? randomUUID();
       }
-      const tokenMetadata = { credential_set_id: credentialSetId };
+      const tokenMetadata = {
+        credential_set_id: credentialSetId,
+        ...(scheduledGrant && { credential_purpose: 'scheduled_obo' }),
+      };
+      let clientExpiresIn = 365 * 24 * 60 * 60;
 
       /**
        * Snapshot every record before the first write. Conditional updates below use these
@@ -661,6 +755,13 @@ export class MCPTokenStorage {
           refreshLookup,
           clientLookup,
         ]);
+      }
+
+      if (!tokens.refresh_token && existingRefreshToken?.expiresAt) {
+        clientExpiresIn = Math.max(
+          clientExpiresIn,
+          Math.ceil((existingRefreshToken.expiresAt.getTime() - Date.now()) / 1000),
+        );
       }
 
       if (expectedCredentialSetId) {
@@ -872,6 +973,8 @@ export class MCPTokenStorage {
           metadata: tokenMetadata,
         };
 
+        clientExpiresIn = Math.max(clientExpiresIn, refreshTokenData.expiresIn);
+
         plannedWrites.push({
           type: 'mcp_oauth_refresh',
           identifier: `${identifier}:refresh`,
@@ -908,8 +1011,8 @@ export class MCPTokenStorage {
           type: 'mcp_oauth_client',
           identifier: `${identifier}:client`,
           token: encryptedClientInfo,
-          expiresIn: 365 * 24 * 60 * 60,
-          metadata: { ...metadata, credential_set_id: credentialSetId },
+          expiresIn: clientExpiresIn,
+          metadata: { ...metadata, ...tokenMetadata },
         };
 
         plannedWrites.push({
@@ -1044,6 +1147,12 @@ export class MCPTokenStorage {
       existingAccessToken?: IToken | null;
     },
   ): Promise<MCPOAuthTokens | null> {
+    await assertCredentialNamespace(
+      params.serverName,
+      params.scheduledGrant,
+      params.findToken,
+      params.userId,
+    );
     const {
       userId,
       serverName,
@@ -1055,7 +1164,7 @@ export class MCPTokenStorage {
     } = params;
     const logPrefix = this.getLogPrefix(userId, serverName);
 
-    const ownerKey = this.getRefreshOwnerKey(userId, serverName);
+    const ownerKey = this.getRefreshOwnerKey(userId, serverName, undefined, params.scheduledGrant);
     if (this.refreshTeardownCounts.has(ownerKey)) {
       logger.debug(`${logPrefix} Skipping token refresh during OAuth teardown`);
       return null;
@@ -1065,6 +1174,7 @@ export class MCPTokenStorage {
       userId,
       serverName,
       singleFlightScope ?? '',
+      ...(params.scheduledGrant ? ['scheduled-obo'] : []),
       ...(params.coordinateRefresh === true
         ? [
             params.rejectedCredentialSetId === undefined
@@ -1100,7 +1210,7 @@ export class MCPTokenStorage {
       return null;
     }
 
-    const leaseId = getMCPOAuthLeaseId(userId, serverName);
+    const leaseId = getMCPOAuthLeaseId(userId, serverName, undefined, params.scheduledGrant);
     /**
      * The shared redemption is owner-neutral: no caller's `AbortSignal` is
      * threaded into the execution, so an impatient waiter (e.g. the silent
@@ -1132,6 +1242,7 @@ export class MCPTokenStorage {
       if (flowManager && params.coordinateRefresh === true) {
         try {
           flight = await this.beginRefreshFlight({
+            scheduledGrant: params.scheduledGrant,
             userId,
             serverName,
             findToken: params.findToken,
@@ -1173,6 +1284,7 @@ export class MCPTokenStorage {
                 findToken: params.findToken,
                 accessToken: flight.adoptedTokens.access_token,
                 credentialSetId: flight.adoptedTokens.credential_set_id,
+                scheduledGrant: params.scheduledGrant,
               }))
             ) {
               throw new MCPTokenStorageUnavailableError(
@@ -1273,6 +1385,7 @@ export class MCPTokenStorage {
       await this.markAuthorizationRejected({
         userId: params.userId,
         serverName: params.serverName,
+        scheduledGrant: params.scheduledGrant,
         credentialSetId: params.rejectedCredentialSetId,
         findToken: params.findToken,
         updateToken: params.updateToken,
@@ -1311,6 +1424,7 @@ export class MCPTokenStorage {
   private static async beginRefreshFlight({
     userId,
     serverName,
+    scheduledGrant,
     findToken,
     flowManager,
     existingRefreshToken,
@@ -1322,6 +1436,7 @@ export class MCPTokenStorage {
   }: {
     userId: string;
     serverName: string;
+    scheduledGrant?: true;
     findToken: GetTokensParams['findToken'];
     flowManager: NonNullable<GetTokensParams['flowManager']>;
     existingRefreshToken?: IToken | null;
@@ -1332,7 +1447,12 @@ export class MCPTokenStorage {
     signal: AbortSignal;
     logPrefix: string;
   }): Promise<MCPRefreshFlight> {
-    const flightLeaseId = getMCPOAuthRefreshFlightLeaseId(userId, serverName);
+    const flightLeaseId = getMCPOAuthRefreshFlightLeaseId(
+      userId,
+      serverName,
+      undefined,
+      scheduledGrant,
+    );
     const leaseMs = MCPTokenStorage.REFRESH_FLIGHT_LEASE_MS;
 
     /**
@@ -1351,6 +1471,7 @@ export class MCPTokenStorage {
     if (!observedRefreshToken) {
       try {
         observedRefreshToken = await this.readRefreshTokenRecord({
+          scheduledGrant,
           userId,
           serverName,
           findToken,
@@ -1374,6 +1495,7 @@ export class MCPTokenStorage {
       const lease = await flowManager.acquireLease(flightLeaseId, { leaseMs, waitMs: 0 });
       if (lease) {
         return await this.resolveAcquiredFlight({
+          scheduledGrant,
           userId,
           serverName,
           findToken,
@@ -1421,6 +1543,7 @@ export class MCPTokenStorage {
   private static async resolveAcquiredFlight({
     userId,
     serverName,
+    scheduledGrant,
     findToken,
     lease,
     observedRefreshToken,
@@ -1430,6 +1553,7 @@ export class MCPTokenStorage {
   }: {
     userId: string;
     serverName: string;
+    scheduledGrant?: true;
     findToken: GetTokensParams['findToken'];
     lease: FlowLease;
     observedRefreshToken: IToken | null;
@@ -1439,7 +1563,12 @@ export class MCPTokenStorage {
   }): Promise<MCPRefreshFlight> {
     let leasedRefreshToken: IToken | null;
     try {
-      leasedRefreshToken = await this.readRefreshTokenRecord({ userId, serverName, findToken });
+      leasedRefreshToken = await this.readRefreshTokenRecord({
+        userId,
+        serverName,
+        scheduledGrant,
+        findToken,
+      });
     } catch (readError) {
       await this.releaseRefreshFlight(lease, logPrefix);
       throw new MCPTokenRefreshUnavailableError(serverName, readError);
@@ -1448,6 +1577,7 @@ export class MCPTokenStorage {
     let adoptedTokens: MCPOAuthTokens | null;
     try {
       adoptedTokens = await this.adoptRotatedTokens({
+        scheduledGrant,
         userId,
         serverName,
         findToken,
@@ -1480,16 +1610,18 @@ export class MCPTokenStorage {
   private static readRefreshTokenRecord({
     userId,
     serverName,
+    scheduledGrant,
     findToken,
   }: {
     userId: string;
     serverName: string;
+    scheduledGrant?: true;
     findToken: GetTokensParams['findToken'];
   }): Promise<IToken | null> {
     return findToken({
       userId,
       type: 'mcp_oauth_refresh',
-      identifier: `mcp:${serverName}:refresh`,
+      identifier: `${getMCPOAuthTokenIdentifier(serverName, scheduledGrant)}:refresh`,
     });
   }
 
@@ -1507,6 +1639,7 @@ export class MCPTokenStorage {
   private static async adoptRotatedTokens({
     userId,
     serverName,
+    scheduledGrant,
     findToken,
     observedRefreshToken,
     existingAccessToken,
@@ -1515,6 +1648,7 @@ export class MCPTokenStorage {
   }: {
     userId: string;
     serverName: string;
+    scheduledGrant?: true;
     findToken: GetTokensParams['findToken'];
     /** The credential as this replica saw it before contending for the flight. */
     observedRefreshToken: IToken | null;
@@ -1541,7 +1675,7 @@ export class MCPTokenStorage {
     const accessTokenData = await findToken({
       userId,
       type: 'mcp_oauth',
-      identifier: `mcp:${serverName}`,
+      identifier: getMCPOAuthTokenIdentifier(serverName, scheduledGrant),
     });
     if (
       !rotated &&
@@ -1564,7 +1698,13 @@ export class MCPTokenStorage {
         new Error('Peer credential already expired'),
       );
     }
-    return await this.readStoredTokens({ userId, serverName, findToken, accessTokenData });
+    return await this.readStoredTokens({
+      userId,
+      serverName,
+      scheduledGrant,
+      findToken,
+      accessTokenData,
+    });
   }
 
   /**
@@ -1609,6 +1749,7 @@ export class MCPTokenStorage {
   private static async executeTokenRefresh({
     userId,
     serverName,
+    scheduledGrant,
     findToken,
     createToken,
     updateToken,
@@ -1618,6 +1759,7 @@ export class MCPTokenStorage {
     leasedRefreshToken,
     onRefreshSuccess,
     onRefreshPreparing,
+    withPersistence,
     signal,
     flowManager,
     leaseId,
@@ -1638,7 +1780,7 @@ export class MCPTokenStorage {
     leaseGeneration?: number;
   }): Promise<MCPOAuthTokens | null> {
     const logPrefix = this.getLogPrefix(userId, serverName);
-    const identifier = `mcp:${serverName}`;
+    const identifier = getMCPOAuthTokenIdentifier(serverName, scheduledGrant);
 
     const refreshTokenData =
       leasedRefreshToken ??
@@ -1728,6 +1870,7 @@ export class MCPTokenStorage {
         userId,
         serverName,
         identifier,
+        credentialSetId: refreshCredentialSetId,
         clientInfo,
         storedTokenEndpoint,
         storedAuthMethods,
@@ -1792,37 +1935,40 @@ export class MCPTokenStorage {
       let storedTokens: MCPOAuthTokens;
       try {
         let preparedRefreshCommit: ((tokens?: MCPOAuthTokens) => Promise<void>) | undefined;
-        storedTokens = await this.storeTokensUnderLease({
-          userId,
-          serverName,
-          tokens: newTokens,
-          createToken,
-          updateToken,
-          deleteTokens,
-          findToken,
-          clientInfo,
-          /** Rejection evidence may change during redemption; read its rollback snapshot under the lease. */
-          existingTokens: {
-            accessToken: existingAccessToken ?? undefined,
-            refreshToken: refreshTokenData,
-          },
-          metadata: storedClientMetadata,
-          expectedCredentialSetId: refreshCredentialSetId,
-          signal,
-          onStorePreparing:
-            onRefreshPreparing == null
-              ? undefined
-              : async () => {
-                  preparedRefreshCommit = await onRefreshPreparing();
-                },
-          onStoreCommitted: async (tokens) => {
-            if (preparedRefreshCommit != null) {
-              await preparedRefreshCommit(tokens);
-            } else {
-              await onRefreshSuccess?.(tokens);
-            }
-          },
-        });
+        const persist = () =>
+          this.storeTokensUnderLease({
+            scheduledGrant,
+            userId,
+            serverName,
+            tokens: newTokens,
+            createToken,
+            updateToken,
+            deleteTokens,
+            findToken,
+            clientInfo,
+            /** Read client rejection evidence under the lease; never roll back a stale snapshot. */
+            existingTokens: {
+              accessToken: existingAccessToken ?? undefined,
+              refreshToken: refreshTokenData,
+            },
+            metadata: storedClientMetadata,
+            expectedCredentialSetId: refreshCredentialSetId,
+            signal,
+            onStorePreparing:
+              onRefreshPreparing == null
+                ? undefined
+                : async () => {
+                    preparedRefreshCommit = await onRefreshPreparing();
+                  },
+            onStoreCommitted: async (tokens) => {
+              if (preparedRefreshCommit != null) {
+                await preparedRefreshCommit(tokens);
+              } else {
+                await onRefreshSuccess?.(tokens);
+              }
+            },
+          });
+        storedTokens = await (withPersistence ? withPersistence(persist) : persist());
       } finally {
         try {
           await persistenceLease?.release();
@@ -1845,7 +1991,9 @@ export class MCPTokenStorage {
       }
       if (
         signal.aborted &&
-        this.refreshTeardownCounts.has(this.getRefreshOwnerKey(userId, serverName))
+        this.refreshTeardownCounts.has(
+          this.getRefreshOwnerKey(userId, serverName, undefined, scheduledGrant),
+        )
       ) {
         return null;
       }
@@ -1908,6 +2056,7 @@ export class MCPTokenStorage {
   static async getTokens({
     userId,
     serverName,
+    scheduledGrant,
     findToken,
     createToken,
     updateToken,
@@ -1921,11 +2070,13 @@ export class MCPTokenStorage {
     onRefreshSuccess,
     onRefreshPreparing,
     onTokensAdopted,
+    withPersistence,
   }: GetTokensParams): Promise<MCPOAuthTokens | null> {
+    await assertCredentialNamespace(serverName, scheduledGrant, findToken, userId);
     const logPrefix = this.getLogPrefix(userId, serverName);
 
     try {
-      const identifier = `mcp:${serverName}`;
+      const identifier = getMCPOAuthTokenIdentifier(serverName, scheduledGrant);
 
       // Get access token
       const accessTokenData = await findToken({
@@ -1963,6 +2114,7 @@ export class MCPTokenStorage {
         return await this.forceRefreshTokens({
           userId,
           serverName,
+          scheduledGrant,
           findToken,
           createToken,
           updateToken,
@@ -1978,6 +2130,7 @@ export class MCPTokenStorage {
           onTokensAdopted,
           existingAccessToken: accessTokenData,
           existingRefreshToken: refreshTokenData,
+          withPersistence,
         });
       }
 
@@ -1987,6 +2140,7 @@ export class MCPTokenStorage {
       }
 
       const tokens = await this.readStoredTokens({
+        scheduledGrant,
         userId,
         serverName,
         findToken,
@@ -2018,16 +2172,18 @@ export class MCPTokenStorage {
   private static async readStoredTokens({
     userId,
     serverName,
+    scheduledGrant,
     findToken,
     accessTokenData,
   }: {
     userId: string;
     serverName: string;
+    scheduledGrant?: true;
     findToken: GetTokensParams['findToken'];
     accessTokenData: IToken;
   }): Promise<MCPOAuthTokens> {
     const logPrefix = this.getLogPrefix(userId, serverName);
-    const identifier = `mcp:${serverName}`;
+    const identifier = getMCPOAuthTokenIdentifier(serverName, scheduledGrant);
 
     const credentialSetId = getCredentialSetId(accessTokenData);
     if (!credentialSetId) {
@@ -2070,16 +2226,19 @@ export class MCPTokenStorage {
   static async getClientInfoAndMetadata({
     userId,
     serverName,
+    scheduledGrant,
     findToken,
   }: {
     userId: string;
     serverName: string;
+    scheduledGrant?: true;
     findToken: TokenMethods['findToken'];
   }): Promise<{
     clientInfo: OAuthClientInformation;
     clientMetadata: Record<string, unknown>;
   } | null> {
-    const identifier = `mcp:${serverName}`;
+    await assertCredentialNamespace(serverName, scheduledGrant, findToken, userId);
+    const identifier = getMCPOAuthTokenIdentifier(serverName, scheduledGrant);
 
     const clientInfoData: IToken | null = await findToken({
       userId,
@@ -2105,15 +2264,17 @@ export class MCPTokenStorage {
   static async deleteClientRegistration({
     userId,
     serverName,
+    scheduledGrant,
     deleteTokens,
     credentialSetId,
   }: {
     userId: string;
     serverName: string;
+    scheduledGrant?: true;
     deleteTokens: TokenMethods['deleteTokens'];
     credentialSetId?: string;
   }): Promise<void> {
-    const identifier = `mcp:${serverName}`;
+    const identifier = getMCPOAuthTokenIdentifier(serverName, scheduledGrant);
     await deleteTokens({
       userId,
       type: 'mcp_oauth_client',
@@ -2130,13 +2291,15 @@ export class MCPTokenStorage {
   static async deleteUserTokens({
     userId,
     serverName,
+    scheduledGrant,
     deleteToken,
   }: {
     userId: string;
     serverName: string;
+    scheduledGrant?: true;
     deleteToken: (filter: { userId: string; type: string; identifier: string }) => Promise<void>;
   }): Promise<void> {
-    const identifier = `mcp:${serverName}`;
+    const identifier = getMCPOAuthTokenIdentifier(serverName, scheduledGrant);
 
     // delete client info token
     await deleteToken({
