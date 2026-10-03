@@ -2,6 +2,15 @@
 
 The mock e2e profile is the safest default for generated tests. It starts LibreChat with `e2e/config/librechat.e2e.yaml`, injects an in-process fake LLM (via `LIBRECHAT_TEST_RUN_HOOK`), creates an authenticated e2e user, and avoids real provider credentials.
 
+## Automatic title regressions
+
+The standard mock profile disables automatic titles. CI runs the title-enabled cases once on the first memory shard. To run them locally after building the app:
+
+```sh
+E2E_TITLE_CONVO=true npx playwright test --config=e2e/playwright.config.mock.ts \
+  conversation-management.spec.ts --grep first-turn
+```
+
 ## Deployed-instance smoke test
 
 The deployed profile exercises an existing LibreChat deployment without starting another app or

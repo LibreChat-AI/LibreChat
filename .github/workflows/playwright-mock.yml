@@ -412,14 +412,14 @@ jobs:
         run: >-
           npx playwright test --config=e2e/playwright.config.mock.ts
           conversation-management.spec.ts --grep first-turn --reporter=line
-          --output=e2e/specs/.title-test-results
+          --output=e2e/specs/.test-results/title-ownership
 
       - name: Upload title ownership diagnostics
         if: ${{ always() && matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/') }}
         uses: actions/upload-artifact@v6
         with:
           name: playwright-title-ownership-${{ matrix.artifact }}
-          path: e2e/specs/.title-test-results/**
+          path: e2e/specs/.test-results/title-ownership/**
           retention-days: 7
           if-no-files-found: ignore
 

@@ -168,6 +168,70 @@ test.describe('conversation management', () => {
     });
   }
 
+  test('keeps a rename when an older navigation refresh lands before the next message', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    const label = uniqueLabel('refresh-rename');
+    const originalTitle = `Original ${label}`;
+    const renamedTitle = `Renamed ${label}`;
+    await openMockChat(page);
+    await sendAndExpectReply(page, label);
+    await renameConversation(page, firstConversation(page), originalTitle);
+    const conversationId = new URL(page.url()).pathname.split('/').pop()!;
+    await page.getByRole('link', { name: 'New chat', exact: true }).click();
+    let release!: () => void;
+    let captured!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      captured = resolve;
+    });
+    const pattern = `**/api/convos/${conversationId}`;
+    await page.route(pattern, async (route) => {
+      const response = await route.fetch();
+      captured();
+      await gate;
+      await route.fulfill({ response });
+    });
+    await firstConversation(page).click();
+    await ready;
+    await renameConversation(page, firstConversation(page), renamedTitle);
+    const staleRead = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === `/api/convos/${conversationId}`,
+    );
+    release();
+    await staleRead;
+    await page.unroute(pattern);
+    await expect(firstConversation(page)).toContainText(renamedTitle);
+    expect(
+      (await sendMessageAndWaitForCompletion(page, replyPrompt(`${label}-next`))).ok(),
+    ).toBeTruthy();
+    await expect(firstConversation(page)).toContainText(renamedTitle);
+    await page.reload();
+    await expect(page.getByTestId('convo-item').filter({ hasText: renamedTitle })).toBeVisible();
+  });
+
+  test('leaves the native context menu available on a portaled shared-link input', async ({
+    page,
+  }) => {
+    await openMockChat(page);
+    await sendAndExpectReply(page, uniqueLabel('portal-context'));
+    await firstConversation(page).click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Share', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Share link to chat' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Create a shared link' }).click();
+    const input = dialog.getByTestId('shared-link-url');
+    await expect(input).toHaveValue(/\/share\//);
+    const nativeMenuAllowed = await input.evaluate((element) =>
+      element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })),
+    );
+    expect(nativeMenuAllowed).toBe(true);
+    await expect(dialog).toBeVisible();
+  });
+
   test('returns focus after right-clicking an unopened running menu on a small screen', async ({
     page,
   }) => {
@@ -180,6 +244,8 @@ test.describe('conversation management', () => {
     await expect(page.getByRole('button', { name: 'Stop generating' })).toBeVisible();
     await openSidebar(page);
     await page.getByRole('link', { name: 'New chat', exact: true }).click();
+    await expect(page).toHaveURL(/\/c\/new$/);
+    await expect(page.locator('#mobile-drawer')).toHaveCSS('visibility', 'hidden');
     await openSidebar(page);
     const row = firstConversation(page);
     await expect(row.getByRole('img', { name: 'Generating' })).toBeVisible();

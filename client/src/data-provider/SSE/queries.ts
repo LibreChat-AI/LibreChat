@@ -77,7 +77,7 @@ const queueListeners = new Set<() => void>();
 
 /** Queue a conversation for title generation (call when starting new conversation) */
 export function queueTitleGeneration(conversationId: string) {
-  if (!processedTitles.has(conversationId)) {
+  if (!isTitleGenerationProcessed(conversationId)) {
     titleQueue.add(conversationId);
     queueListeners.forEach((listener) => listener());
   }
@@ -181,7 +181,12 @@ export function useTitleGeneration(enabled = true) {
       }
 
       if (titleQuery.isSuccess && titleQuery.data) {
-        const { title } = titleQuery.data;
+        const cached = queryClient.getQueryData<TConversation>([
+          QueryKeys.conversation,
+          conversationId,
+        ]);
+        const title =
+          cached?.titleSetByUser && cached.title != null ? cached.title : titleQuery.data.title;
         queryClient.setQueryData(
           [QueryKeys.conversation, conversationId],
           (convo: TConversation | undefined) => (convo ? { ...convo, title } : convo),

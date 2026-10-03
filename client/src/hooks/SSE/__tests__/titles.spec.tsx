@@ -82,6 +82,7 @@ function setup() {
     queryClient.setQueryData([QueryKeys.conversation, 'saved-chat'], {
       ...initialConversation,
       title,
+      titleSetByUser: true,
     });
   };
   return { ...hook, queryClient, rename };
@@ -161,6 +162,60 @@ describe('stream title reconciliation', () => {
     expect(
       queryClient.getQueryData<TConversation>([QueryKeys.conversation, 'saved-chat'])?.title,
     ).toBe('New Chat');
+  });
+
+  it('does not replace a manual title when an old title event is replayed after reload', () => {
+    const { result, queryClient } = setup();
+    queryClient.setQueryData([QueryKeys.conversation, 'saved-chat'], {
+      ...initialConversation,
+      title: 'New Chat',
+      titleSetByUser: true,
+    });
+    act(() =>
+      result.current.titleHandler({
+        event: 'title',
+        data: { conversationId: 'saved-chat', title: 'Old generated title' },
+      }),
+    );
+    expect(
+      queryClient.getQueryData<TConversation>([QueryKeys.conversation, 'saved-chat'])?.title,
+    ).toBe('New Chat');
+  });
+
+  it('accepts a server-owned rename over an unowned stale point record', () => {
+    const { result } = setup();
+    act(() =>
+      result.current.finalHandler(
+        {
+          conversation: { ...initialConversation, title: 'Persisted rename', titleSetByUser: true },
+          requestMessage: submission.userMessage,
+          responseMessage: { ...submission.initialResponse, text: 'Finished reply' },
+        },
+        submission,
+      ),
+    );
+    expect(result.current.conversation?.title).toBe('Persisted rename');
+  });
+
+  it('does not mistake a processed automatic title for a manual placeholder rename', () => {
+    const { result, queryClient } = setup();
+    markTitleGenerationProcessed('saved-chat');
+    queryClient.clear();
+    queryClient.setQueryData([QueryKeys.conversation, 'saved-chat'], {
+      ...initialConversation,
+      title: 'New Chat',
+    });
+    act(() =>
+      result.current.finalHandler(
+        {
+          conversation: { ...initialConversation, title: 'Generated title' },
+          requestMessage: submission.userMessage,
+          responseMessage: { ...submission.initialResponse, text: 'Finished reply' },
+        },
+        submission,
+      ),
+    );
+    expect(result.current.conversation?.title).toBe('Generated title');
   });
 
   it('accepts the final server title when no local title is available', () => {

@@ -23,6 +23,7 @@ let mockQueriesResults: Array<{
 let mockCapturedQueries: Array<{ queryKey: unknown[] }> = [];
 
 const mockSetQueryData = jest.fn();
+const mockGetQueryData = jest.fn();
 const mockRemoveQueries = jest.fn();
 const mockResetQueries = jest.fn();
 const mockUpdateConvoInAllQueries = jest.fn();
@@ -35,6 +36,7 @@ jest.mock('@tanstack/react-query', () => ({
   }),
   useQueryClient: jest.fn(() => ({
     setQueryData: mockSetQueryData,
+    getQueryData: mockGetQueryData,
     removeQueries: mockRemoveQueries,
     resetQueries: mockResetQueries,
   })),
@@ -81,6 +83,7 @@ beforeEach(() => {
   mockQueriesResults = [];
   mockCapturedQueries = [];
   jest.clearAllMocks();
+  mockGetQueryData.mockReset();
 });
 
 describe('useTitleGeneration — eligibility', () => {
@@ -124,6 +127,19 @@ describe('useTitleGeneration — eligibility', () => {
 });
 
 describe('useTitleGeneration — result handling', () => {
+  it('keeps a persisted manual title when an old title poll resolves', () => {
+    const id = 'conv-manual-poll';
+    const owned = { title: 'New Chat', titleSetByUser: true };
+    mockGetQueryData.mockImplementation((key: string[]) => (key[1] === id ? owned : undefined));
+    const { rerender } = renderHook(() => useTitleGeneration(true));
+    act(() => queueTitleGeneration(id));
+    mockQueriesResults = [{ isSuccess: true, data: { title: 'Old generated title' } }];
+    rerender();
+    const call = mockSetQueryData.mock.calls.find(([key]) => key[1] === id);
+    const updater = call?.[1] as (value: typeof owned) => typeof owned;
+    expect(updater(owned)).toEqual(owned);
+  });
+
   it('applies the fetched title to the conversation caches on success', () => {
     mockTiming = 'immediate';
     mockActiveJobIds = ['conv-ok'];

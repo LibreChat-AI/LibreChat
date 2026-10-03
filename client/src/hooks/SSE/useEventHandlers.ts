@@ -48,7 +48,6 @@ import {
   startupConfigKey,
   queueTitleGeneration,
   markTitleGenerationProcessed,
-  isTitleGenerationProcessed,
   useReconcileConversationCodeEnvironmentMutation,
 } from '~/data-provider';
 import {
@@ -535,10 +534,12 @@ export const getConvoTitle = ({
   queryClient,
   currentTitle,
   conversationId,
+  titleSetByUser,
 }: {
   queryClient: ReturnType<typeof useQueryClient>;
   currentTitle?: string | null;
   conversationId?: string | null;
+  titleSetByUser?: boolean;
 }): string | null | undefined => {
   if (!conversationId) {
     return currentTitle;
@@ -547,14 +548,19 @@ export const getConvoTitle = ({
     QueryKeys.conversation,
     conversationId,
   ]);
-  if (
-    cachedConvo &&
-    (hasRealTitle(cachedConvo.title) || isTitleGenerationProcessed(conversationId))
-  ) {
+  if (cachedConvo?.titleSetByUser) {
+    return cachedConvo.title;
+  }
+  if (titleSetByUser && currentTitle != null) {
+    return currentTitle;
+  }
+  if (hasRealTitle(cachedConvo?.title)) {
     return cachedConvo.title;
   }
   const listedConvo = findConvoInAllQueries(queryClient, conversationId);
-  return hasRealTitle(listedConvo?.title) ? listedConvo.title : currentTitle;
+  return listedConvo?.titleSetByUser || hasRealTitle(listedConvo?.title)
+    ? listedConvo.title
+    : currentTitle;
 };
 
 export default function useEventHandlers({
@@ -982,10 +988,16 @@ export default function useEventHandlers({
 
   const titleHandler = useCallback(
     (event: TTitleEvent) => {
-      const { conversationId, title } = event.data ?? {};
-      if (!conversationId || !hasRealTitle(title) || isTitleGenerationProcessed(conversationId)) {
+      const { conversationId, title: generatedTitle } = event.data ?? {};
+      if (!conversationId || !hasRealTitle(generatedTitle)) {
         return;
       }
+      const title =
+        getConvoTitle({
+          queryClient,
+          conversationId,
+          currentTitle: generatedTitle,
+        }) ?? generatedTitle;
 
       queryClient.setQueryData<TConversation>([QueryKeys.conversation, conversationId], (convo) =>
         convo ? { ...convo, title } : convo,
@@ -1243,7 +1255,9 @@ export default function useEventHandlers({
               getConvoTitle({
                 queryClient,
                 conversationId: conversation.conversationId,
+                titleSetByUser: conversation.titleSetByUser,
                 currentTitle:
+                  !hasRealTitle(conversation.title) &&
                   prevState?.conversationId === conversation.conversationId &&
                   hasRealTitle(prevState.title)
                     ? prevState.title

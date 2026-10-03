@@ -1,7 +1,7 @@
 import { RecoilRoot } from 'recoil';
 import { renderHook, act } from '@testing-library/react';
 import { QueryKeys, dataService } from 'librechat-data-provider';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, isCancelledError } from '@tanstack/react-query';
 import type { TConversation } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { useUpdateConversationMutation } from '../mutations';
@@ -81,5 +81,49 @@ describe('useUpdateConversationMutation', () => {
     const cached = activeQueryClient.getQueryData<TConversation>([QueryKeys.conversation, 'c2']);
     expect(cached?.title).toBe('Fresh');
     expect(cached?.chatProjectId).toBe('project-a');
+  });
+  it.each([true, false])('fences a delayed point read (warm cache: %s)', async (warm) => {
+    const { result } = renderHook(() => useUpdateConversationMutation('refreshing'), { wrapper });
+    const key = [QueryKeys.conversation, 'refreshing'];
+    const old = { conversationId: 'refreshing', title: 'Old' } as TConversation;
+    if (warm) activeQueryClient.setQueryData(key, old);
+    let release!: (value: TConversation) => void;
+    const delayed = activeQueryClient
+      .fetchQuery(
+        key,
+        () =>
+          new Promise<TConversation>((resolve) => {
+            release = resolve;
+          }),
+      )
+      .catch((error) => isCancelledError(error));
+    updateConversation.mockResolvedValueOnce({ ...old, title: 'Renamed' });
+    await act(async () =>
+      result.current.mutateAsync({ conversationId: 'refreshing', title: 'Renamed' }),
+    );
+    expect(await delayed).toBe(true);
+    release(old);
+    await act(async () => Promise.resolve());
+    expect(activeQueryClient.getQueryData<TConversation>(key)).toEqual(
+      expect.objectContaining({
+        title: 'Renamed',
+        titleSetByUser: true,
+      }),
+    );
+  });
+  it('does not publish ownership when the rename response is invalid', async () => {
+    const { result } = renderHook(() => useUpdateConversationMutation('invalid-rename'), {
+      wrapper,
+    });
+    const key = [QueryKeys.conversation, 'invalid-rename'];
+    const old = { conversationId: 'invalid-rename', title: 'Old' } as TConversation;
+    activeQueryClient.setQueryData(key, old);
+    updateConversation.mockResolvedValueOnce({ ...old, title: null });
+    await act(async () => {
+      await expect(
+        result.current.mutateAsync({ conversationId: 'invalid-rename', title: 'New' }),
+      ).rejects.toThrow('Conversation rename did not return a title');
+    });
+    expect(activeQueryClient.getQueryData(key)).toEqual(old);
   });
 });

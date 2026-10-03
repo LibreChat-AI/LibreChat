@@ -131,6 +131,7 @@ export const excludedKeys = new Set([
   'agentEventActorLegacyTurn',
   'subagentThread',
   'title',
+  'titleSetByUser',
   'iconURL',
   'greeting',
   'endpoint',

@@ -135,6 +135,7 @@ const server = http.createServer(async (req, res) => {
 
   /** Specs reset between cases so counts and prompts stay per-test. */
   if (req.method === 'POST' && url.pathname === '/__e2e/release') {
+    behavior.hold = false;
     for (const release of heldResponses) release();
     heldResponses.clear();
     sendJson(res, 200, { ok: true });

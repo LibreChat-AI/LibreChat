@@ -331,7 +331,11 @@ function Conversation({
       onPointerLeave={() => setIsHovered(false)}
       onPointerCancel={() => setIsHovered(false)}
       onContextMenu={(event) => {
-        if (renaming) {
+        if (
+          renaming ||
+          !(event.target instanceof Node) ||
+          !event.currentTarget.contains(event.target)
+        ) {
           return;
         }
         event.preventDefault();
