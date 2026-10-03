@@ -3985,14 +3985,16 @@ function attachedEditRejection(
  * A worker is outside LibreChat's trust boundary, so its conflict text is never forwarded: only the
  * facts a strict parse recovers from it (which edits failed, how, and on which lines) reach the
  * model, in LibreChat's own words. The one exception is a well-formed excerpt of the edited file's
- * current text, which is file content like any read_file result and passes the same file-content
- * policy first. Anything else gets the generic retry guidance.
+ * current text, which is file content like any read_file result: it is quoted only when the selected
+ * workspace allows read_file, and only after it passes the same file-content policy. Anything else
+ * gets the generic retry guidance.
  */
 function attachedEditConflict(
   tc: ToolCallRequest,
   req: ServerRequest | undefined,
   filePath: string,
   error: WorkspaceToolHttpError,
+  canRead: boolean,
 ): AttachedEditRejectionError {
   const conflict = error.editConflict;
   const settle = (message: string, modelMessage = message) =>
@@ -4011,7 +4013,7 @@ function attachedEditConflict(
   const path = `workspace/${filePath}`;
   const message = formatEditConflict(path, report);
   const excerpts = editConflictExcerptText(report);
-  if (!excerpts || filteredFileResult(tc, req, filePath, excerpts) != null) {
+  if (!canRead || !excerpts || filteredFileResult(tc, req, filePath, excerpts) != null) {
     return settle(message);
   }
   return settle(message, formatEditConflict(path, report, true));
@@ -4146,7 +4148,13 @@ async function handleAttachedWorkspaceEditFileCall({
       }
       const code = error.upstreamCode;
       throw code == null || code === 'EDIT_CONFLICT'
-        ? attachedEditConflict(tc, req, path.filePath, error)
+        ? attachedEditConflict(
+            tc,
+            req,
+            path.filePath,
+            error,
+            selectedWorkspaceId(codeExecutionContext, 'read_file') != null,
+          )
         : attachedEditRejection(path.filePath, error, code);
     }
     if (signal?.aborted === true && isAbortError(error)) throw error;

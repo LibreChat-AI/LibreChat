@@ -6971,6 +6971,39 @@ describe('createToolExecuteHandler', () => {
       );
     });
 
+    it('never quotes file text when the selected workspace does not allow read_file', async () => {
+      const context = negotiatedEditContext(['expected_base_sha256', 'tolerant_match']);
+      const handler = makeSandboxAuthoringHandler(
+        {
+          editWorkspaceFile: jest.fn(async () => {
+            throw new WorkspaceToolHttpError(
+              'rejected',
+              409,
+              JSON.stringify({ error: excerptDiagnostic, code: 'EDIT_CONFLICT' }),
+            );
+          }),
+        },
+        {
+          codeExecutionContext: {
+            ...context.codeExecutionContext,
+            codeWorkspace: {
+              ...context.codeExecutionContext.codeWorkspace,
+              operations: TEST_ATTACHED_WORKSPACE_OPERATIONS.filter(
+                (operation) => operation !== 'read_file',
+              ),
+            },
+          },
+        },
+      );
+
+      const [result] = await invokeHandler(handler, [conflictCall]);
+
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toBe(
+        'The edit to "workspace/src/app.ts" did not apply, so nothing was written: old_text was not found; its first line is at line 1, but the lines after it differ.',
+      );
+    });
+
     it('names other 409 rejections by code instead of calling them a text mismatch', async () => {
       const errorSpy = jest.spyOn(logger, 'error').mockReturnValue(logger);
       const handler = conflictingEditHandler(
