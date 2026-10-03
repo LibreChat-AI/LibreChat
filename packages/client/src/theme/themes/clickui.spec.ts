@@ -15,6 +15,7 @@ import {
 import { OGDialog, OGDialogContent, OGDialogTitle } from '../../components/OriginalDialog';
 import { resolveTheme, themeAppearanceProperties } from '../registry';
 import { Tabs, TabsList, TabsTrigger } from '../../components/Tabs';
+import { Checkbox } from '../../components/Checkbox';
 import { Button } from '../../components/Button';
 import { Switch } from '../../components/Switch';
 import Dropdown from '../../components/Dropdown';
@@ -900,6 +901,9 @@ function mount(tree: ReactElement, selector: string): Element {
 const switchProbe = (checked: boolean) => () =>
   mount(createElement(Switch, { 'aria-label': 'probe', checked }), '[role="switch"]');
 
+const checkboxProbe = (checked: boolean) => () =>
+  mount(createElement(Checkbox, { 'aria-label': 'probe', checked }), '[role="checkbox"]');
+
 const tableProbe = (selector: string) => () =>
   mount(
     createElement(
@@ -1253,6 +1257,44 @@ const parityProbes: Record<string, ParityProbe> = {
     utility: 'rounded',
     element: switchProbe(false),
   },
+  'Checkbox fill, checked': {
+    token: 'click.checkbox.color.background.active',
+    kind: 'color',
+    utility: 'bg',
+    variant: 'data-[state=checked]:',
+    element: checkboxProbe(true),
+    near: ['light'],
+  },
+  'Checkbox fill, unchecked': {
+    token: 'click.checkbox.color.background.default',
+    kind: 'color',
+    utility: 'bg',
+    element: checkboxProbe(false),
+  },
+  'Checkbox check, checked': {
+    token: 'click.checkbox.color.check.active',
+    kind: 'color',
+    utility: 'text',
+    variant: 'data-[state=checked]:',
+    element: checkboxProbe(true),
+    near: ['dark'],
+  },
+  'Checkbox stroke': {
+    token: 'click.checkbox.color.stroke.default',
+    kind: 'color',
+    utility: 'border',
+    element: checkboxProbe(false),
+    deviation: {
+      light: 'border-xheavy holds the box edge to the 3:1 non-text floor #b3b6bd misses',
+      dark: 'border-xheavy holds the box edge to the 3:1 non-text floor #414141 misses',
+    },
+  },
+  'Checkbox corner': {
+    token: 'click.checkbox.radii.all',
+    kind: 'shape',
+    utility: 'rounded',
+    element: checkboxProbe(false),
+  },
   'Table header fill': {
     token: 'click.table.header.color.background.default',
     kind: 'color',
@@ -1347,7 +1389,20 @@ interface NotExpressible {
  * close it. Remove an entry when the change that closes it lands, and pin its decisions to what
  * they then measure.
  */
-const notExpressible: Record<string, NotExpressible> = {};
+const notExpressible: Record<string, NotExpressible> = {
+  'Checkbox unchecked fill': {
+    decisions: { light: ['Checkbox fill, unchecked'], dark: ['Checkbox fill, unchecked'] },
+    reason:
+      'the checkbox paints no fill of its own and shows the surface behind it; no role carries checkbox.color.background.default',
+    issue: 'https://github.com/berry-13/LibreChat/issues/250',
+  },
+  'Checkbox corner': {
+    decisions: { light: ['Checkbox corner'], dark: ['Checkbox corner'] },
+    reason:
+      'the checkbox corner reads radiusSm, which the theme sets to border.radii.1 for every small corner; checkbox.radii.all is 0.125rem',
+    issue: 'https://github.com/berry-13/LibreChat/issues/250',
+  },
+};
 
 type Verdict = 'match' | 'near' | 'deviation' | 'not expressible';
 
