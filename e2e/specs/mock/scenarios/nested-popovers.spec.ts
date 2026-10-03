@@ -70,7 +70,12 @@ async function openWorkspaceSelect(page: Page): Promise<Locator> {
   const trigger = dialog.getByTestId('default-stateful-workspace');
   await expect(trigger).toBeVisible();
   await trigger.click();
-  await expect(page.getByRole('listbox')).toBeVisible();
+  const listbox = page.getByRole('listbox');
+  await expect(listbox).toBeVisible();
+  /** The list zooms in, so a box read before the animation settles is scaled. */
+  await listbox.evaluate((element) =>
+    Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished)),
+  );
   return trigger;
 }
 
