@@ -60,6 +60,8 @@ function ConvoOptions({
   setIsPopoverActive,
   isActiveConvo,
   isShiftHeld = false,
+  isGenerating = false,
+  contextMenuPosition,
 }: {
   conversationId: string | null;
   chatProjectId?: string | null;
@@ -74,6 +76,8 @@ function ConvoOptions({
   setIsPopoverActive: (open: boolean) => void;
   isActiveConvo: boolean;
   isShiftHeld?: boolean;
+  isGenerating?: boolean;
+  contextMenuPosition?: { x: number; y: number };
 }) {
   const localize = useLocalize();
   const queryClient = useQueryClient();
@@ -431,7 +435,7 @@ function ConvoOptions({
   );
 
   const buttonClassName = rowActionClasses({
-    visible: isActiveConvo === true || isPopoverActive || isSmallScreen,
+    visible: isActiveConvo === true || isPopoverActive || isSmallScreen || isGenerating,
   });
 
   if (isShiftHeld && isActiveConvo && !isPopoverActive && !showShareDialog && !showDeleteDialog) {
@@ -473,6 +477,9 @@ function ConvoOptions({
          * `document.body` outside it.
          */
         portal={true}
+        getAnchorRect={
+          contextMenuPosition ? () => ({ ...contextMenuPosition, width: 0, height: 0 }) : undefined
+        }
         menuId={menuId}
         focusLoop={true}
         className="z-[125]"
@@ -502,7 +509,13 @@ function ConvoOptions({
               }
             }}
           >
-            <Ellipsis className="icon-md" aria-hidden={true} />
+            {isGenerating ? (
+              <span role="img" aria-label={localize('com_ui_generating')}>
+                <Spinner className="h-5 w-5 shrink-0" />
+              </span>
+            ) : (
+              <Ellipsis className="icon-md" aria-hidden={true} />
+            )}
           </Ariakit.MenuButton>
         }
         items={dropdownItems}
@@ -550,6 +563,8 @@ export default memo(ConvoOptions, (prevProps, nextProps) => {
     prevProps.isUnseen === nextProps.isUnseen &&
     prevProps.isPopoverActive === nextProps.isPopoverActive &&
     prevProps.isActiveConvo === nextProps.isActiveConvo &&
-    prevProps.isShiftHeld === nextProps.isShiftHeld
+    prevProps.isShiftHeld === nextProps.isShiftHeld &&
+    prevProps.isGenerating === nextProps.isGenerating &&
+    prevProps.contextMenuPosition === nextProps.contextMenuPosition
   );
 });

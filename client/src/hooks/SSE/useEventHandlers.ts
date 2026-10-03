@@ -22,10 +22,8 @@ import type {
   ChatCreatedFrame,
   TMessageContentParts,
 } from 'librechat-data-provider';
-import type { InfiniteData } from '@tanstack/react-query';
 import type { SetterOrUpdater } from 'recoil';
 import type { TResData, TFinalResData, ConvoGenerator } from '~/common';
-import type { ConversationCursorData } from '~/utils';
 import {
   logger,
   setDraft,
@@ -41,7 +39,7 @@ import {
   applyServerReplyStamp,
   markLocallyCommittedReply,
   removeConvoFromAllQueries,
-  findConversationInInfinite,
+  findConvoInAllQueries,
   preserveStreamedContentIdentity,
   isEmptyContentPart,
   getPartKeyIndex,
@@ -533,34 +531,26 @@ export const buildRecoveryPreset = (
   );
 
 export const getConvoTitle = ({
-  parentId,
   queryClient,
   currentTitle,
   conversationId,
 }: {
-  parentId?: string | null;
   queryClient: ReturnType<typeof useQueryClient>;
   currentTitle?: string | null;
   conversationId?: string | null;
 }): string | null | undefined => {
-  if (
-    parentId !== Constants.NO_PARENT &&
-    (currentTitle?.toLowerCase().includes('new chat') ?? false)
-  ) {
-    const currentConvo = queryClient.getQueryData<TConversation>([
-      QueryKeys.conversation,
-      conversationId,
-    ]);
-    if (currentConvo?.title) {
-      return currentConvo.title;
-    }
-    const convos = queryClient.getQueryData<InfiniteData<ConversationCursorData>>([
-      QueryKeys.allConversations,
-    ]);
-    const cachedConvo = findConversationInInfinite(convos, conversationId ?? '');
-    return cachedConvo?.title ?? currentConvo?.title ?? null;
+  if (!conversationId) {
+    return currentTitle;
   }
-  return currentTitle;
+  const cachedConvo = queryClient.getQueryData<TConversation>([
+    QueryKeys.conversation,
+    conversationId,
+  ]);
+  if (hasRealTitle(cachedConvo?.title)) {
+    return cachedConvo.title;
+  }
+  const listedConvo = findConvoInAllQueries(queryClient, conversationId);
+  return hasRealTitle(listedConvo?.title) ? listedConvo.title : currentTitle;
 };
 
 export default function useEventHandlers({
@@ -842,9 +832,7 @@ export default function useEventHandlers({
       let update = {} as TConversation;
       if (setConversation && !isAddedRequest) {
         setConversation((prevState) => {
-          const parentId = requestMessage.parentMessageId;
           const title = getConvoTitle({
-            parentId,
             queryClient,
             conversationId,
             currentTitle: prevState?.title,
@@ -927,9 +915,7 @@ export default function useEventHandlers({
       let update = {} as TConversation;
       if (setConversation && !isAddedRequest) {
         setConversation((prevState) => {
-          const parentId = isRegenerate ? userMessage.overrideParentMessageId : parentMessageId;
           const title = getConvoTitle({
-            parentId,
             queryClient,
             conversationId,
             currentTitle: prevState?.title,
@@ -1223,12 +1209,7 @@ export default function useEventHandlers({
           removeConvoFromAllQueries(queryClient, submissionConvo.conversationId);
         }
 
-        /** A title applied locally (e.g. an immediate-mode title fetched while the
-         *  response was still streaming) must survive the final event, whose
-         *  `conversation` was built before the title was saved and so carries no
-         *  title yet, otherwise the chat reverts to "New Chat" until reload. This
-         *  holds for a stopped turn too: the server persists a title that finished
-         *  generating before the Stop, so the local one stays in sync. */
+        /** Stream snapshots cannot overwrite a rename or generated title already in the cache. */
         if (setConversation && isAddedRequest !== true) {
           /* Pair the durable server stamp with the exact final messages cache object before
            * point/list cache events can ask useConversationSeen to acknowledge it. */
@@ -1254,10 +1235,16 @@ export default function useEventHandlers({
             if (prevState?.model != null && prevState.model !== submissionConvo.model) {
               update.model = prevState.model;
             }
-            const prevTitle = prevState?.title;
-            if (!hasRealTitle(conversation.title) && hasRealTitle(prevTitle)) {
-              update.title = prevTitle;
-            }
+            update.title =
+              getConvoTitle({
+                queryClient,
+                conversationId: conversation.conversationId,
+                currentTitle:
+                  prevState?.conversationId === conversation.conversationId &&
+                  hasRealTitle(prevState.title)
+                    ? prevState.title
+                    : conversation.title,
+              }) ?? null;
             if (conversation.conversationId) {
               queryClient.setQueryData<TConversation>(
                 [QueryKeys.conversation, conversation.conversationId],
@@ -1269,10 +1256,7 @@ export default function useEventHandlers({
                       : cachedConvo,
                     conversation.conversationId,
                   );
-                  const cachedTitle = cachedConvo?.title;
-                  if (!hasRealTitle(serverConversation.title) && hasRealTitle(cachedTitle)) {
-                    merged.title = cachedTitle;
-                  }
+                  merged.title = update.title;
                   return merged;
                 },
               );

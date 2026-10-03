@@ -77,10 +77,15 @@ const conversation = {
   title: 'Mobile UI redesign',
 } as TConversation;
 
-const renderRow = () =>
+const renderRow = (isGenerating = false) =>
   render(
     <DndProvider backend={HTML5Backend}>
-      <Conversation conversation={conversation} retainView={jest.fn()} toggleNav={jest.fn()} />
+      <Conversation
+        conversation={conversation}
+        isGenerating={isGenerating}
+        retainView={jest.fn()}
+        toggleNav={jest.fn()}
+      />
     </DndProvider>,
   );
 
@@ -155,5 +160,36 @@ describe('Conversation row on touch', () => {
     renderRow();
 
     expect(screen.queryByTestId('convo-options-trigger')).not.toBeInTheDocument();
+  });
+});
+
+describe('Conversation context menu', () => {
+  beforeEach(() => {
+    mockConvoOptionsProps.length = 0;
+    mockIsSmallScreen = false;
+  });
+
+  it.each([false, true])('opens on right-click (generating: %s)', (isGenerating) => {
+    renderRow(isGenerating);
+    fireEvent.contextMenu(screen.getByTestId('convo-item'), { clientX: 120, clientY: 80 });
+    expect(screen.getByTestId('convo-options')).toHaveAttribute('data-open', 'true');
+    expect(mockConvoOptionsProps.at(-1)).toEqual(
+      expect.objectContaining({
+        isGenerating,
+        contextMenuPosition: { x: 120, y: 80 },
+      }),
+    );
+    act(() => mockCloseMenu());
+    expect(screen.getByTestId('convo-options')).toHaveAttribute('data-open', 'false');
+    expect(mockConvoOptionsProps.at(-1)).toEqual(
+      expect.objectContaining({ contextMenuPosition: undefined }),
+    );
+  });
+
+  it('offers a clickable generating indicator before hover', () => {
+    renderRow(true);
+    expect(screen.getByRole('img', { name: 'com_ui_generating' })).toBeVisible();
+    fireEvent.click(screen.getByTestId('convo-options-trigger'));
+    expect(screen.getByTestId('convo-options')).toHaveAttribute('data-open', 'true');
   });
 });

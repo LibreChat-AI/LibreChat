@@ -26,6 +26,7 @@ interface DropdownProps {
   mountByState?: boolean;
   unmountOnHide?: boolean;
   finalFocus?: React.RefObject<HTMLElement>;
+  getAnchorRect?: Ariakit.MenuProps['getAnchorRect'];
 }
 
 type MenuProps = Omit<

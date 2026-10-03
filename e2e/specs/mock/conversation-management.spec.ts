@@ -7,6 +7,7 @@ import {
   replyPrompt,
   replyText,
   selectMockEndpoint,
+  sendMessage,
   sendMessageAndWaitForCompletion,
 } from './helpers';
 
@@ -82,9 +83,81 @@ test.describe('conversation management', () => {
     await sendAndExpectReply(page, label);
 
     await renameConversation(page, firstConversation(page), renamedTitle);
+    const followUp = await sendMessage(page, `E2E_SLOW_REPLY:${label}-follow-up`);
+    expect(followUp.ok()).toBeTruthy();
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeVisible();
+    await expect(firstConversation(page)).toContainText(renamedTitle);
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
+      timeout: 30000,
+    });
+    await expect(firstConversation(page)).toContainText(renamedTitle);
     await page.reload({ timeout: 10000 });
     await expect(page.getByTestId('convo-item').filter({ hasText: renamedTitle })).toBeVisible();
   });
+
+  for (const background of [false, true]) {
+    test(`right-clicks and renames a running ${background ? 'background' : 'active'} chat`, async ({
+      page,
+    }) => {
+      test.setTimeout(60000);
+      const label = uniqueLabel(`running-${background ? 'background' : 'active'}`);
+      const originalTitle = `Original ${label}`;
+      const renamedTitle = `Renamed ${label}`;
+      await openMockChat(page);
+      await sendAndExpectReply(page, label);
+      await renameConversation(page, firstConversation(page), originalTitle);
+      const conversationUrl = page.url();
+      const run = await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
+      expect(run.ok()).toBeTruthy();
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toBeVisible();
+      if (background) {
+        await page.getByRole('link', { name: 'New chat', exact: true }).click();
+        await expect(page).toHaveURL(/\/c\/new$/);
+      }
+      const row = page.getByTestId('convo-item').filter({ hasText: originalTitle });
+      await expect(row.getByRole('img', { name: 'Generating' })).toBeVisible();
+      await row.click({ button: 'right' });
+      const menu = page.getByRole('menu');
+      await expect(menu).toBeVisible();
+      const expectedOptions = ['Share', 'Pin'];
+      if (background) expectedOptions.push('Mark as unread');
+      expectedOptions.push('Rename', 'Duplicate', 'Change project', 'Archive', 'Delete');
+      await expect(menu.getByRole('menuitem')).toHaveText(expectedOptions);
+      await expect(page).toHaveURL(background ? /\/c\/new$/ : conversationUrl);
+      await expect(row.getByRole('img', { name: 'Generating' })).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(menu).toBeHidden();
+      await expect(row.getByRole('button', { name: 'Conversation Menu Options' })).toBeFocused();
+      await row.click({ button: 'right' });
+      await page.getByRole('menuitem', { name: 'Rename' }).click();
+      const titleInput = row.getByRole('textbox', { name: 'New Conversation Title' });
+      await titleInput.fill(renamedTitle);
+      const [renamed] = await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.request().method() === 'POST' &&
+            new URL(response.url()).pathname === '/api/convos/update',
+        ),
+        row.getByRole('button', { name: 'Save' }).click(),
+      ]);
+      expect(renamed.ok()).toBeTruthy();
+      const renamedRow = page.getByTestId('convo-item').filter({ hasText: renamedTitle });
+      await expect(renamedRow.getByRole('img', { name: 'Generating' })).toBeVisible();
+      if (background) {
+        await renamedRow.click();
+        await expect(page).toHaveURL(conversationUrl);
+      }
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
+        timeout: 30000,
+      });
+      await expect(renamedRow).toBeVisible();
+      await expect(page.getByTestId('convo-item').filter({ hasText: originalTitle })).toHaveCount(
+        0,
+      );
+      await page.reload({ timeout: 10000 });
+      await expect(renamedRow).toBeVisible();
+    });
+  }
 
   test('deletes a conversation, clears its messages, and blocks direct URL access', async ({
     page,

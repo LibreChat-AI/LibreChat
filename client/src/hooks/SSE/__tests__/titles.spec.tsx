@@ -1,0 +1,165 @@
+import { useState } from 'react';
+import { Provider } from 'jotai';
+import { RecoilRoot } from 'recoil';
+import { MemoryRouter } from 'react-router-dom';
+import { act, renderHook } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Constants, EModelEndpoint, QueryKeys } from 'librechat-data-provider';
+import type { EventSubmission, TConversation } from 'librechat-data-provider';
+import useEventHandlers from '../useEventHandlers';
+
+jest.mock('~/hooks/Agents', () => ({ useApplyAgentTemplate: () => jest.fn() }));
+jest.mock('~/hooks/AuthContext', () => ({ useAuthContext: () => ({ token: 'test' }) }));
+jest.mock('~/Providers', () => ({ useLiveAnnouncer: () => ({ announcePolite: jest.fn() }) }));
+jest.mock('../useContentHandler', () => () => ({}));
+jest.mock('../useAttachmentHandler', () => () => jest.fn());
+jest.mock('../useStepHandler', () => () => ({
+  resetSubagentAtoms: jest.fn(),
+  resetPtcAtoms: jest.fn(),
+}));
+
+const initialConversation = {
+  conversationId: 'saved-chat',
+  endpoint: EModelEndpoint.agents,
+  title: 'Old title',
+} as TConversation;
+const submission: EventSubmission = {
+  isTemporary: false,
+  endpointOption: { endpoint: EModelEndpoint.agents },
+  conversation: initialConversation,
+  messages: [],
+  userMessage: {
+    messageId: 'user-1',
+    text: 'Hello',
+    sender: 'User',
+    isCreatedByUser: true,
+    parentMessageId: 'previous-reply',
+    conversationId: 'saved-chat',
+  },
+  initialResponse: {
+    messageId: 'response-1',
+    parentMessageId: 'user-1',
+    conversationId: 'saved-chat',
+    text: '',
+    sender: 'Assistant',
+    isCreatedByUser: false,
+  },
+};
+
+function setup() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData([QueryKeys.conversation, 'saved-chat'], initialConversation);
+  queryClient.setQueryData([QueryKeys.allConversations], {
+    pages: [{ conversations: [initialConversation], nextCursor: null }],
+    pageParams: [],
+  });
+  const wrapper = ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={queryClient}>
+      <Provider>
+        <RecoilRoot>
+          <MemoryRouter initialEntries={['/c/saved-chat']}>{children}</MemoryRouter>
+        </RecoilRoot>
+      </Provider>
+    </QueryClientProvider>
+  );
+  const hook = renderHook(
+    () => {
+      const [conversation, setConversation] = useState<TConversation | null>(initialConversation);
+      const handlers = useEventHandlers({
+        setConversation,
+        setMessages: jest.fn(),
+        getMessages: () => [submission.userMessage, submission.initialResponse],
+        setCompleted: jest.fn(),
+        setIsSubmitting: jest.fn(),
+        setShowStopButton: jest.fn(),
+      });
+      return { conversation, ...handlers };
+    },
+    { wrapper },
+  );
+  const rename = (title: string) => {
+    queryClient.setQueryData([QueryKeys.conversation, 'saved-chat'], {
+      ...initialConversation,
+      title,
+    });
+  };
+  return { ...hook, queryClient, rename };
+}
+
+describe('stream title reconciliation', () => {
+  it.each(['created', 'sync'] as const)(
+    'keeps a rename on %s, even with a root parent',
+    (frame) => {
+      const { result, rename } = setup();
+      rename('Renamed chat');
+      const rootSubmission = {
+        ...submission,
+        userMessage: { ...submission.userMessage, parentMessageId: String(Constants.NO_PARENT) },
+      };
+      act(() => {
+        if (frame === 'created') {
+          result.current.createdHandler(
+            { created: true, message: rootSubmission.userMessage },
+            rootSubmission,
+          );
+        } else {
+          result.current.syncHandler(
+            {
+              sync: true,
+              conversationId: 'saved-chat',
+              thread_id: 'thread',
+              requestMessage: rootSubmission.userMessage,
+              responseMessage: rootSubmission.initialResponse,
+            },
+            rootSubmission,
+          );
+        }
+      });
+      expect(result.current.conversation?.title).toBe('Renamed chat');
+    },
+  );
+
+  it.each(['Old title', 'New Chat', null])(
+    'keeps an in-flight rename over final title %s',
+    (title) => {
+      const { result, queryClient, rename } = setup();
+      act(() =>
+        result.current.createdHandler(
+          { created: true, message: submission.userMessage },
+          submission,
+        ),
+      );
+      rename('Renamed while running');
+      act(() =>
+        result.current.finalHandler(
+          {
+            conversation: { ...initialConversation, title },
+            requestMessage: submission.userMessage,
+            responseMessage: { ...submission.initialResponse, text: 'Finished reply' },
+          },
+          submission,
+        ),
+      );
+      expect(result.current.conversation?.title).toBe('Renamed while running');
+      expect(
+        queryClient.getQueryData<TConversation>([QueryKeys.conversation, 'saved-chat'])?.title,
+      ).toBe('Renamed while running');
+    },
+  );
+
+  it('accepts the final server title when no local title is available', () => {
+    const { result, queryClient } = setup();
+    queryClient.clear();
+    act(() =>
+      result.current.finalHandler(
+        {
+          conversation: { conversationId: 'new-saved-chat', title: 'Generated title' },
+          requestMessage: submission.userMessage,
+          responseMessage: { ...submission.initialResponse, text: 'Finished reply' },
+        },
+        submission,
+      ),
+    );
+    expect(result.current.conversation?.title).toBe('Generated title');
+  });
+});

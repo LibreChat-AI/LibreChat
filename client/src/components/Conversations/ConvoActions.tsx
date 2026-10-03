@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
 import { Ellipsis } from 'lucide-react';
-import { Button, useMediaQuery } from '@librechat/client';
+import { Button, Spinner, useMediaQuery } from '@librechat/client';
 import type { MouseEvent } from 'react';
 import { ConvoOptions } from './ConvoOptions';
 import { useLocalize } from '~/hooks';
@@ -15,6 +15,8 @@ export type ConvoActionsProps = {
   isActiveConvo: boolean;
   isShiftHeld?: boolean;
   isPopoverActive: boolean;
+  isGenerating?: boolean;
+  contextMenuPosition?: { x: number; y: number };
   /** True once the pointer or focus has reached the row. */
   hasInteracted: boolean;
   retainView: () => void;
@@ -53,6 +55,7 @@ function ConvoActions({
   hasInteracted,
   isActiveConvo,
   isPopoverActive,
+  isGenerating = false,
   onOpenChange,
   ...options
 }: ConvoActionsProps) {
@@ -69,12 +72,13 @@ function ConvoActions({
 
   const showMenu = isSmallScreen
     ? isPopoverActive || isActiveConvo || hasOpenedMenu
-    : hasInteracted || isActiveConvo;
+    : isPopoverActive || hasOpenedMenu || hasInteracted || isActiveConvo;
 
   if (showMenu) {
     return (
       <ConvoOptions
         {...options}
+        isGenerating={isGenerating}
         isActiveConvo={isActiveConvo}
         isPopoverActive={isPopoverActive}
         setIsPopoverActive={handleOpenChange}
@@ -82,7 +86,7 @@ function ConvoActions({
     );
   }
 
-  if (!isSmallScreen) {
+  if (!isSmallScreen && !isGenerating) {
     return null;
   }
 
@@ -92,13 +96,19 @@ function ConvoActions({
       variant="ghost"
       aria-label={localize('com_nav_convo_menu_options')}
       data-testid="convo-options-trigger"
-      className="text-text-secondary size-9"
+      className="size-9"
       onClick={(event) => {
         event.stopPropagation();
         handleOpenChange(true);
       }}
     >
-      <Ellipsis className="icon-md" aria-hidden="true" />
+      {isGenerating ? (
+        <span role="img" aria-label={localize('com_ui_generating')}>
+          <Spinner className="h-5 w-5 shrink-0" />
+        </span>
+      ) : (
+        <Ellipsis className="icon-md" aria-hidden="true" />
+      )}
     </Button>
   );
 }
