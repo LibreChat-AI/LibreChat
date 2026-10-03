@@ -1,4 +1,4 @@
-const { Constants, ForkOptions, RetentionMode } = require('librechat-data-provider');
+const { Constants, ContentTypes, ForkOptions, RetentionMode } = require('librechat-data-provider');
 
 const mockLogger = {
   debug: jest.fn(),
@@ -967,6 +967,46 @@ describe('forkSharedConversation', () => {
     // Render-only metadata is preserved
     expect(message.files[0].filepath).toBe('/images/owner/a.png');
     expect(message.attachments[0].toolCallId).toBe('tool_1');
+  });
+
+  /**
+   * Steer parts carry user file refs inline in `content`, so a fork that only cleaned
+   * `files`/`attachments` would still persist the sharer's ids and let the next turn's
+   * file-resend path rehydrate them into the viewer's run.
+   */
+  test('should strip file ids carried by steer parts inside content', async () => {
+    getSharedMessages.mockResolvedValue({
+      ...mockShare,
+      messages: [
+        {
+          messageId: 'msg_a',
+          parentMessageId: Constants.NO_PARENT,
+          text: 'Message with a parsed document',
+          isCreatedByUser: true,
+          createdAt: '2021-01-01',
+          files: [{ file_id: 'owner-doc-1', filename: 'report.docx' }],
+          content: [
+            {
+              type: ContentTypes.STEER,
+              files: [{ file_id: 'owner-doc-2', filename: 'notes.pdf' }],
+            },
+          ],
+        },
+      ],
+    });
+
+    await forkSharedConversation({
+      shareId: 'share123',
+      requestUserId: 'user1',
+    });
+
+    const [message] = bulkSaveMessages.mock.calls[0][0];
+    expect(message.files[0]).not.toHaveProperty('file_id');
+    expect(message.files[0].filename).toBe('report.docx');
+
+    const [steerPart] = message.content;
+    expect(steerPart.files[0]).not.toHaveProperty('file_id');
+    expect(steerPart.files[0].filename).toBe('notes.pdf');
   });
 
   test('should resolve interfaceConfig from the app config and pass it to the builder', async () => {

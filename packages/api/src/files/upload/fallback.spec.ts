@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { EventEmitter } from 'events';
 import type { FiltersConfig } from 'librechat-data-provider';
 import type { UploadFallbackTextExtractors } from './fallback';
 import {
@@ -123,10 +124,18 @@ describe('resolveUploadFallbackText', () => {
       mimetype: XLSX_MIME,
     } as Express.Multer.File;
 
-    await expect(
-      resolveUploadFallbackText({ ...route, file, fileId: 'file-1', extractors }),
-    ).resolves.toBe('Sheet One:\nData,on,first,sheet\nSecond Sheet:\nData,On\nSecond,Sheet\n');
-    expect(extractors.parseDocument).toHaveBeenCalledWith({ file });
+    const text = await resolveUploadFallbackText({
+      ...route,
+      file,
+      fileId: 'file-1',
+      extractors,
+    });
+    /* The parser preserves the workbook's structure as markdown instead of flattening it. */
+    expect(text).toContain('## Sheet One');
+    expect(text).toContain('| Data | on | first | sheet |');
+    expect(text).toContain('## Second Sheet');
+    expect(text).toContain('| Second | Sheet |');
+    expect(extractors.parseDocument).toHaveBeenCalledWith(expect.objectContaining({ file }));
     expect(extractors.parseTextNative).not.toHaveBeenCalled();
   });
 
@@ -204,6 +213,102 @@ describe('resolveUploadFallbackText', () => {
         file: csvUpload('empty.csv', ''),
         fileId: 'file-1',
         filters,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('parses with the deployment parser bounds instead of the defaults', async () => {
+    const extractors = spiedExtractors();
+    const file = {
+      originalname: 'sample.xlsx',
+      path: path.join(__dirname, '../documents/sample.xlsx'),
+      mimetype: XLSX_MIME,
+    } as Express.Multer.File;
+
+    await expect(
+      resolveUploadFallbackText({
+        ...route,
+        file,
+        fileId: 'file-1',
+        documentParser: { fileSizeLimit: 1, timeoutMs: 5_000, maxPageCount: 3 },
+        extractors,
+      }),
+    ).resolves.toBeUndefined();
+    expect(extractors.parseDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ file, maxFileSize: 1, timeoutMs: 5_000, maxPageCount: 3 }),
+    );
+  });
+
+  it('plans a document reported under a generic type by its resolved type', async () => {
+    const extractors = spiedExtractors();
+    const file = {
+      originalname: 'sample.xlsx',
+      path: path.join(__dirname, '../documents/sample.xlsx'),
+      mimetype: 'application/octet-stream',
+    } as Express.Multer.File;
+
+    await resolveUploadFallbackText({ ...route, file, fileId: 'file-1', extractors });
+    expect(extractors.parseDocument).toHaveBeenCalledWith(expect.objectContaining({ file }));
+  });
+
+  it('cancels the parse when the upload closes, and does not report it as a missing fallback', async () => {
+    const connection = new EventEmitter();
+    const file = {
+      originalname: 'report.pdf',
+      path: '/tmp/report.pdf',
+      mimetype: 'application/pdf',
+    } as Express.Multer.File;
+    let received: AbortSignal | undefined;
+    const extractors = {
+      parseDocument: jest.fn(
+        ({ signal }: { signal?: AbortSignal }) =>
+          new Promise<{ text: string }>((_resolve, reject) => {
+            received = signal;
+            signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          }),
+      ),
+      parseTextNative: jest.fn(parseTextNative),
+    } satisfies UploadFallbackTextExtractors;
+
+    const pending = resolveUploadFallbackText({
+      ...route,
+      file,
+      fileId: 'file-1',
+      connection,
+      extractors,
+    });
+    await Promise.resolve();
+    connection.emit('close');
+
+    await expect(pending).rejects.toThrow('aborted');
+    expect(received?.aborted).toBe(true);
+    expect(connection.listenerCount('close')).toBe(0);
+  });
+
+  it('stores incomplete text only while no blocking policy needs the whole document', async () => {
+    const file = {
+      originalname: 'report.pdf',
+      path: '/tmp/report.pdf',
+      mimetype: 'application/pdf',
+    } as Express.Multer.File;
+    const extractors = {
+      parseDocument: jest.fn(async () => ({ text: 'page one', pagesNeedingOcr: [2] })),
+      parseTextNative: jest.fn(parseTextNative),
+    } satisfies UploadFallbackTextExtractors;
+    const blocking: FiltersConfig = {
+      files: { pii: { fields: ['extracted_text'], starterPatterns: [], uninspectable: 'block' } },
+    };
+
+    await expect(
+      resolveUploadFallbackText({ ...route, file, fileId: 'file-1', extractors }),
+    ).resolves.toBe('page one');
+    await expect(
+      resolveUploadFallbackText({
+        ...route,
+        file,
+        fileId: 'file-1',
+        filters: blocking,
+        extractors,
       }),
     ).resolves.toBeUndefined();
   });

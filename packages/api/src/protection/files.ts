@@ -5,9 +5,15 @@ import {
   hasActivePiiFields,
   hasActivePiiPatterns,
   isAssistantsEndpoint,
+  resolveEffectiveMimeType,
   isPermissiveMimeConfig,
 } from 'librechat-data-provider';
-import type { FileConfig, FileFilterField, FiltersConfig } from 'librechat-data-provider';
+import type {
+  FileConfig,
+  FileFilterField,
+  FiltersConfig,
+  RegexLike,
+} from 'librechat-data-provider';
 import type { ContentTraversalLimitReason } from './adapters/nested';
 import type { LocatorTraversalReporter } from './diagnostics';
 import {
@@ -343,13 +349,128 @@ export function getUploadExtractedTextPlan(
   ) {
     return UPLOAD_EXTRACTED_TEXT_PLANS.configuredRAG;
   }
-  const isDocumentParserEligible = documentParserMimeTypes.some((mimePattern) =>
+  return getDocumentParserEligibility(input).parserEligible
+    ? UPLOAD_EXTRACTED_TEXT_PLANS.documentParser
+    : null;
+}
+
+/**
+ * Whether the built-in parser accepts a type, and whether it is one of the types the
+ * parser is shipped for rather than one an operator added to its list.
+ */
+function getDocumentParserEligibility(input: UploadExtractedTextPlanInput): {
+  isKnownDocumentType: boolean;
+  parserEligible: boolean;
+} {
+  const parserMimeTypes =
+    input.fileConfig.documentParser?.supportedMimeTypes ?? documentParserMimeTypes;
+  const isKnownDocumentType = documentParserMimeTypes.some((mimePattern) =>
     mimePattern.test(input.mimeType),
   );
-  if (!isDocumentParserEligible) {
-    return null;
+  return {
+    isKnownDocumentType,
+    parserEligible:
+      input.fileConfig.checkType?.(input.mimeType, parserMimeTypes) ?? isKnownDocumentType,
+  };
+}
+
+export interface DocumentExtractionPlan {
+  /** The extraction path this upload qualifies for, or `null` when it has none. */
+  readonly plan: UploadExtractedTextPlan | null;
+  /** The type the parser routes on: the declared type, or the one resolved from the
+   * filename when an operator added the declared type to the parser's list. */
+  readonly parserMimeType: string;
+  /** Whether the built-in parser accepts the type at all. */
+  readonly parserEligible: boolean;
+  /** Whether the parser ships support for the type, whatever the operator's list says.
+   * A shipped type the operator excluded is a deliberate refusal, not a format nothing
+   * here knows how to read, and the upload route says so. */
+  readonly isBuiltInDocumentType: boolean;
+  /** Extraction is a configured text service's job, so the parser must stand down. */
+  readonly useConfiguredText: boolean;
+  /** A configured OCR service can read this upload. */
+  readonly useConfiguredOCR: boolean;
+  /** The built-in parser runs. */
+  readonly useDocumentParser: boolean;
+}
+
+/**
+ * Which extraction engines an upload runs, so the upload route invokes engines rather
+ * than deciding between them.
+ *
+ * Both engines can be selected: the parser reads what it can and a configured OCR
+ * service covers what it could not, which is how a part-scanned document comes back
+ * whole. An operator who adds a type to the parser's list gets the same escalation,
+ * which is why the alias resolved from the filename is offered to the OCR gate too:
+ * the declared type of such an upload is by definition not one OCR advertises.
+ */
+export function planDocumentExtraction(
+  input: UploadExtractedTextPlanInput & {
+    /** Upload filename, read only to resolve an operator alias. */
+    readonly fileName?: string;
+  },
+): DocumentExtractionPlan {
+  const plan = getUploadExtractedTextPlan(input);
+  const { isKnownDocumentType, parserEligible } = getDocumentParserEligibility(input);
+  const useConfiguredText = plan === UPLOAD_EXTRACTED_TEXT_PLANS.configuredRAG;
+  const isAlias = !isKnownDocumentType && parserEligible;
+  const parserMimeType = isAlias
+    ? resolveEffectiveMimeType(input.fileName ?? '', '')
+    : input.mimeType;
+  const aliasSupportsOCR =
+    isAlias &&
+    !useConfiguredText &&
+    (input.fileConfig.checkType?.(parserMimeType, input.fileConfig.ocr?.supportedMimeTypes ?? []) ??
+      false);
+  return {
+    plan,
+    parserMimeType,
+    parserEligible,
+    isBuiltInDocumentType: isKnownDocumentType,
+    useConfiguredText,
+    useConfiguredOCR:
+      input.ocrConfigured &&
+      (plan === UPLOAD_EXTRACTED_TEXT_PLANS.configuredOCR || aliasSupportsOCR),
+    useDocumentParser: !useConfiguredText && parserEligible,
+  };
+}
+
+/**
+ * Whether an upload's type is admissible at all: accepted by the endpoint's own list, or
+ * named in `documentParser.supportedMimeTypes`, which is an operator saying the server
+ * parses it.
+ *
+ * Two gates ask this question about the same upload and must not drift. Multer's filter
+ * runs while the file part is still streaming, so it cannot see a `tool_resource` sent
+ * after the file and admits parser types unscoped (`admitParserTypes: true`); the only
+ * thing it lets through is a temporary file the next gate deletes. `filterFile` has the
+ * complete body and passes its `toolResource`, which scopes the parser list to the context
+ * path, the only one that reaches the parser. Legacy `ocr` is the same path under its old
+ * name: routing promotes it to `context`, so admission does too.
+ */
+export function isAdmissibleUploadType(input: {
+  readonly mimeType: string;
+  readonly fileConfig: FileConfig;
+  /** The endpoint's own allowlist, already resolved by the caller. */
+  readonly endpointMimeTypes: RegexLike[] | undefined;
+  readonly admitParserTypes?: boolean;
+  readonly toolResource?: string | null;
+}): boolean {
+  const checkType = input.fileConfig.checkType;
+  if (checkType == null) {
+    return false;
   }
-  return UPLOAD_EXTRACTED_TEXT_PLANS.documentParser;
+  if (checkType(input.mimeType, input.endpointMimeTypes ?? [])) {
+    return true;
+  }
+  const parserMimeTypes = input.fileConfig.documentParser?.supportedMimeTypes;
+  const reachesParser =
+    input.admitParserTypes === true ||
+    input.toolResource === EToolResources.context ||
+    input.toolResource === EToolResources.ocr;
+  return reachesParser && parserMimeTypes != null
+    ? checkType(input.mimeType, parserMimeTypes)
+    : false;
 }
 
 /** Whether a context upload has a downstream extraction step that can inspect derived text. */

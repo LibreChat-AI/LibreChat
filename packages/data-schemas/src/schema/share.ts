@@ -14,6 +14,7 @@ export interface ISharedLink extends Document {
   tenantId?: string;
   snapshotFiles?: boolean;
   fileSnapshots?: SharedFileSnapshot[];
+  snapshotVersion?: number;
 }
 
 /**
@@ -79,6 +80,9 @@ const shareSchema: Schema<ISharedLink> = new Schema(
     fileSnapshots: {
       type: [fileSnapshotSchema],
       default: undefined,
+    },
+    snapshotVersion: {
+      type: Number,
     },
   },
   { timestamps: true },

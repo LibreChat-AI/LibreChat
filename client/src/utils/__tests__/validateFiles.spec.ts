@@ -1,9 +1,11 @@
-import { megabyte, fileConfig as defaultFileConfig } from 'librechat-data-provider';
+import { megabyte, EToolResources, fileConfig as defaultFileConfig } from 'librechat-data-provider';
 import type { EndpointFileConfig, FileConfig } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
 import { validateFiles, validateFileSizes, partitionUploads } from '../files';
 
 const supportedMimeTypes = defaultFileConfig.endpoints.default.supportedMimeTypes;
+const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const VENDOR_SCAN = 'application/x-vendor-scan';
 
 function makeEndpointConfig(overrides: Partial<EndpointFileConfig> = {}): EndpointFileConfig {
   return {
@@ -139,6 +141,297 @@ describe('validateFiles', () => {
     const result = validateFiles({ files, fileList, setError, endpointFileConfig, fileConfig });
     expect(result).toBe(false);
     expect(setError).toHaveBeenCalledWith('Unsupported file type: application/x-unknown');
+  });
+
+  it('accepts a document-parser-only MIME type for context uploads', () => {
+    const contextFileConfig = {
+      text: { supportedMimeTypes: [/^text\/plain$/] },
+      ocr: { supportedMimeTypes: [] },
+      documentParser: { supportedMimeTypes: [/^application\/rtf$/] },
+      stt: { supportedMimeTypes: [] },
+    } as unknown as FileConfig;
+    const fileList = [makeFile('notes.rtf', 'application/rtf', 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: contextFileConfig,
+      toolResource: EToolResources.context,
+    });
+
+    expect(result).toBe(true);
+    expect(setError).not.toHaveBeenCalled();
+  });
+
+  it('canonicalizes a generic document MIME before context validation', () => {
+    const contextFileConfig = {
+      text: { supportedMimeTypes: [] },
+      ocr: { supportedMimeTypes: [] },
+      documentParser: { supportedMimeTypes: [new RegExp(`^${DOCX}$`)] },
+      stt: { supportedMimeTypes: [] },
+    } as unknown as FileConfig;
+    const fileList = [makeFile('report.docx', 'application/octet-stream', 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: contextFileConfig,
+      toolResource: EToolResources.context,
+    });
+
+    expect(result).toBe(true);
+    expect(fileList[0].type).toBe(DOCX);
+    expect(setError).not.toHaveBeenCalled();
+  });
+
+  it('accepts configured OCR when the document-parser allowlist excludes the type', () => {
+    const contextFileConfig = {
+      text: { supportedMimeTypes: [/^[\w.-]+\/[\w.-]+$/] },
+      ocr: { supportedMimeTypes: [new RegExp(`^${DOCX}$`)], enabled: true },
+      documentParser: { supportedMimeTypes: [/^application\/pdf$/] },
+      stt: { supportedMimeTypes: [] },
+    } as unknown as FileConfig;
+    const fileList = [makeFile('report.docx', DOCX, 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: contextFileConfig,
+      toolResource: EToolResources.context,
+    });
+
+    expect(result).toBe(true);
+    expect(setError).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The upload path routes a document to RAG when the admin names it in a narrowed text
+   * allowlist and a RAG service exists, whether or not the local parser still claims the
+   * type. Refusing it here would reject a file the server accepts.
+   */
+  it('accepts a locally excluded document that configured RAG text handles', () => {
+    const contextFileConfig = {
+      text: { supportedMimeTypes: [new RegExp(`^${DOCX}$`)], enabled: true },
+      ocr: { supportedMimeTypes: [] },
+      documentParser: { supportedMimeTypes: [/^application\/pdf$/] },
+      stt: { supportedMimeTypes: [] },
+    } as unknown as FileConfig;
+    const fileList = [makeFile('report.docx', DOCX, 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: contextFileConfig,
+      toolResource: EToolResources.context,
+    });
+
+    expect(result).toBe(true);
+    expect(setError).not.toHaveBeenCalled();
+  });
+
+  /**
+   * An operator who adds a vendor alias to the parser allowlist has told the server to
+   * parse that type, and the server obeys the allowlist whether or not the type is one
+   * it ships with. Gating the client on the built-in list refuses an upload the server
+   * would have accepted.
+   */
+  it('accepts a vendor MIME alias the operator added to the parser allowlist', () => {
+    const vendorType = 'application/vnd.vendor.word';
+    const contextFileConfig = {
+      text: { supportedMimeTypes: [] },
+      ocr: { supportedMimeTypes: [] },
+      documentParser: { supportedMimeTypes: [new RegExp(`^${vendorType}$`)] },
+      stt: { supportedMimeTypes: [] },
+    } as unknown as FileConfig;
+    const fileList = [makeFile('report.docx', vendorType, 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig: makeEndpointConfig({
+        supportedMimeTypes: [new RegExp(`^${vendorType}$`)],
+      }),
+      fileConfig: contextFileConfig,
+      toolResource: EToolResources.context,
+    });
+
+    expect(result).toBe(true);
+    expect(setError).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The upload options already refuse this combination; validation did not, so an agent
+   * without the OCR capability could still pick Context explicitly and be told by the
+   * server what the client already knew.
+   */
+  it('rejects a configured-OCR document when the agent lacks the OCR capability', () => {
+    const contextFileConfig = {
+      text: { supportedMimeTypes: [] },
+      ocr: { supportedMimeTypes: [new RegExp(`^${DOCX}$`)], enabled: true },
+      documentParser: { supportedMimeTypes: [/^application\/pdf$/] },
+      stt: { supportedMimeTypes: [] },
+    } as unknown as FileConfig;
+    const fileList = [makeFile('report.docx', DOCX, 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: contextFileConfig,
+      toolResource: EToolResources.context,
+      ocrEnabled: false,
+    });
+
+    expect(result).toBe(false);
+    expect(setError).toHaveBeenCalledWith(`Unsupported file type: ${DOCX}`);
+  });
+
+  it('accepts the same document when the agent may use OCR', () => {
+    const contextFileConfig = {
+      text: { supportedMimeTypes: [] },
+      ocr: { supportedMimeTypes: [new RegExp(`^${DOCX}$`)], enabled: true },
+      documentParser: { supportedMimeTypes: [/^application\/pdf$/] },
+      stt: { supportedMimeTypes: [] },
+    } as unknown as FileConfig;
+    const fileList = [makeFile('report.docx', DOCX, 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: contextFileConfig,
+      toolResource: EToolResources.context,
+      ocrEnabled: true,
+    });
+
+    expect(result).toBe(true);
+  });
+
+  it('rejects a non-document OCR type when the provider is disabled', () => {
+    const contextFileConfig = {
+      text: { supportedMimeTypes: [] },
+      ocr: { supportedMimeTypes: [new RegExp(`^${VENDOR_SCAN}$`)], enabled: false },
+      documentParser: { supportedMimeTypes: [/^application\/pdf$/] },
+      stt: { supportedMimeTypes: [] },
+    } as unknown as FileConfig;
+    const fileList = [makeFile('page.scan', VENDOR_SCAN, 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: contextFileConfig,
+      toolResource: EToolResources.context,
+      ocrEnabled: true,
+    });
+
+    expect(result).toBe(false);
+    expect(setError).toHaveBeenCalledWith(`Unsupported file type: ${VENDOR_SCAN}`);
+  });
+
+  it('rejects a locally excluded document when no RAG service is configured', () => {
+    const contextFileConfig = {
+      text: { supportedMimeTypes: [new RegExp(`^${DOCX}$`)] },
+      ocr: { supportedMimeTypes: [] },
+      documentParser: { supportedMimeTypes: [/^application\/pdf$/] },
+      stt: { supportedMimeTypes: [] },
+    } as unknown as FileConfig;
+    const fileList = [makeFile('report.docx', DOCX, 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: contextFileConfig,
+      toolResource: EToolResources.context,
+    });
+
+    expect(result).toBe(false);
+    expect(setError).toHaveBeenCalledWith(`Unsupported file type: ${DOCX}`);
+  });
+
+  it('rejects a locally excluded document when the text allowlist is the permissive default', () => {
+    const contextFileConfig = {
+      text: { supportedMimeTypes: [/^[\w.-]+\/[\w.-]+$/], enabled: true },
+      ocr: { supportedMimeTypes: [] },
+      documentParser: { supportedMimeTypes: [/^application\/pdf$/] },
+      stt: { supportedMimeTypes: [] },
+    } as unknown as FileConfig;
+    const fileList = [makeFile('report.docx', DOCX, 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: contextFileConfig,
+      toolResource: EToolResources.context,
+    });
+
+    expect(result).toBe(false);
+  });
+
+  it('rejects a locally excluded document when OCR only has default type metadata', () => {
+    const contextFileConfig = {
+      text: { supportedMimeTypes: [/^[\w.-]+\/[\w.-]+$/] },
+      ocr: { supportedMimeTypes: [new RegExp(`^${DOCX}$`)] },
+      documentParser: { supportedMimeTypes: [/^application\/pdf$/] },
+      stt: { supportedMimeTypes: [] },
+    } as unknown as FileConfig;
+    const fileList = [makeFile('report.docx', DOCX, 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: contextFileConfig,
+      toolResource: EToolResources.context,
+    });
+
+    expect(result).toBe(false);
+    expect(setError).toHaveBeenCalledWith(`Unsupported file type: ${DOCX}`);
+  });
+
+  /**
+   * A client that types uploads by magic bytes calls a `.docx` an archive. The server
+   * routes it by the same resolution, so leaving the filename out here would reject an
+   * upload the backend parses, or offer one it refuses.
+   */
+  it('resolves a zip-typed office document to its own type before validation', () => {
+    const contextFileConfig = {
+      text: { supportedMimeTypes: [new RegExp(`^${DOCX}$`)] },
+      ocr: { supportedMimeTypes: [] },
+      documentParser: { supportedMimeTypes: [new RegExp(`^${DOCX}$`)] },
+      stt: { supportedMimeTypes: [] },
+    } as unknown as FileConfig;
+    const fileList = [makeFile('report.docx', 'application/zip', 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: contextFileConfig,
+      toolResource: EToolResources.context,
+    });
+
+    expect(result).toBe(true);
+    expect(fileList[0].type).toBe(DOCX);
+    expect(setError).not.toHaveBeenCalled();
   });
 
   it('normalizes Windows ZIP MIME type before validation', () => {

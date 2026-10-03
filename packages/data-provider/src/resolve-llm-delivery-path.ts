@@ -7,6 +7,7 @@ import {
   isExplicitMimeConfig,
   isBedrockDocumentType,
   codeInterpreterMimeTypes,
+  documentParserMimeTypes,
   fileConfig as baseFileConfig,
 } from './file-config';
 import {
@@ -102,12 +103,12 @@ const TEXT_RECOVERABLE_MIME_TYPES: RegExp[] = [
   /^audio\//,
   /^application\/(json|javascript|xml|sql|yaml|x-yaml|csv|typescript|x-sh|vnd\.coffeescript)$/,
   /^application\/pdf$/,
-  /* Only the formats the built-in document parser handles. Presentations and graphics
-   * are absent from documentParserMimeTypes, so on a deployment without OCR they would
-   * fall through to the permissive text matcher and be decoded as ZIP bytes. */
-  /^application\/vnd\.openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet)$/,
-  /^application\/vnd\.oasis\.opendocument\.(text|spreadsheet)$/,
-  /^application\/(vnd\.ms-excel|x-msexcel|msexcel|x-ms-excel|x-excel|x-dos_ms_excel|xls|x-xls)$/,
+  /* Exactly the formats the built-in document parser reads, taken from its own catalog
+   * rather than restated here: a type the server extracts must reach the extraction
+   * step, and one it does not must never fall through to the permissive text matcher
+   * and be decoded as ZIP bytes. Presentations, legacy Word, EPUB and the
+   * macro-enabled containers are in that catalog. */
+  ...documentParserMimeTypes,
   /^message\/rfc822$/,
 ];
 

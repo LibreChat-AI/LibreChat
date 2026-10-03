@@ -56,6 +56,11 @@ export interface ISharedLink {
   snapshotFiles?: boolean;
   /** Per-share file snapshot referenced by the share-scoped file routes. */
   fileSnapshots?: SharedFileSnapshot[];
+  /**
+   * Build version of `fileSnapshots`. Absent on links snapshotted before versioning,
+   * whose arrays omit records later builds capture; those are rebuilt on next view.
+   */
+  snapshotVersion?: number;
 }
 
 export interface ShareServiceError extends Error {

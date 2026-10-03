@@ -1,13 +1,32 @@
-import { useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useToastContext } from '@librechat/client';
-import { EToolResources } from 'librechat-data-provider';
+import { EToolResources, FileSources, isParsedDocument } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
 import { useDeleteFilesMutation } from '~/data-provider';
 import { logger, getCachedPreview } from '~/utils';
 import { useFileDeletion } from '~/hooks/Files';
+import FileTextDialog from './FileTextDialog';
 import FileContainer from './FileContainer';
 import { useLocalize } from '~/hooks';
 import Image from './Image';
+
+/**
+ * Whether a staged upload already has extracted text to show.
+ *
+ * Parsing happens server-side on upload, so the text exists as soon as the
+ * progress bar completes, before the message is ever sent. The routing fields are
+ * copied onto the staged record by the same update that sets `progress` to 1.
+ *
+ * `llmDeliveryPath: 'text'` is what the upload path stamps on a record whose text
+ * replaces its bytes for the model; `FileSources.text` is the same statement from
+ * records written before storage kept the original document. The same PDF sent to
+ * file_search or execute_code carries neither and is stored as a binary with no text.
+ */
+const hasExtractedText = (file: ExtendedFile): boolean =>
+  !!file.file_id &&
+  file.progress >= 1 &&
+  (file.llmDeliveryPath === 'text' || file.source === FileSources.text) &&
+  isParsedDocument(file.type, file.filename);
 
 /**
  * Shared wrapper with a stable module-scope identity. Passing an inline arrow as
@@ -59,6 +78,7 @@ export default function FileRow({
 }) {
   const localize = useLocalize();
   const { showToast } = useToastContext();
+  const [textFile, setTextFile] = useState<ExtendedFile | null>(null);
   const files = Array.from(_files?.values() ?? []).filter((file) =>
     fileFilter ? fileFilter(file) : true,
   );
@@ -166,6 +186,20 @@ export default function FileRow({
               file.progress >= 1 &&
               isPastedTextFile(file) &&
               !isPasteActionPending?.(file);
+            const showsText = hasExtractedText(file);
+            /** One chip, one primary action: returning a paste to the composer takes
+             * precedence over opening extracted text, and an inert chip gets neither. */
+            let onChipClick: (() => void) | undefined;
+            let chipAriaLabel: string | undefined;
+            if (isEditablePaste) {
+              onChipClick = () => onEditPastedText(file);
+              chipAriaLabel = localize('com_ui_pasted_text_edit_chip', { 0: file.filename ?? '' });
+            } else if (showsText) {
+              onChipClick = () => setTextFile(file);
+              chipAriaLabel = localize('com_ui_view_extracted_text_var', {
+                0: file.filename ?? '',
+              });
+            }
 
             return (
               /* Sized by its content, not parked in a fixed 70px slot: a 56px
@@ -191,12 +225,8 @@ export default function FileRow({
                     file={file}
                     onDelete={handleDelete}
                     buttonClassName="h-[58px]"
-                    onClick={isEditablePaste ? () => onEditPastedText(file) : undefined}
-                    ariaLabel={
-                      isEditablePaste
-                        ? localize('com_ui_pasted_text_edit_chip', { 0: file.filename ?? '' })
-                        : undefined
-                    }
+                    onClick={onChipClick}
+                    ariaLabel={chipAriaLabel}
                     subtitleAction={
                       isEditablePaste && onMovePastedTextInline != null
                         ? {
@@ -214,9 +244,28 @@ export default function FileRow({
     );
   };
 
+  const textDialog = (
+    <FileTextDialog
+      open={textFile !== null}
+      onOpenChange={(open) => !open && setTextFile(null)}
+      fileId={textFile?.file_id ?? ''}
+      filename={textFile?.filename ?? ''}
+    />
+  );
+
   if (Wrapper) {
-    return <Wrapper>{renderFiles()}</Wrapper>;
+    return (
+      <>
+        <Wrapper>{renderFiles()}</Wrapper>
+        {textDialog}
+      </>
+    );
   }
 
-  return renderFiles();
+  return (
+    <>
+      {renderFiles()}
+      {textDialog}
+    </>
+  );
 }
