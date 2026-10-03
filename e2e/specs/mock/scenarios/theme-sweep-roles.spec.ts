@@ -22,6 +22,9 @@ import { getE2EUser } from '../../../setup/user';
  */
 
 const THEME_PARAM = 'e2eThemeMode';
+/** Present only on the navigations that should render the reference definition. */
+const DEFINITION_PARAM = 'e2eThemeDefinition';
+const PHONE_VIEWPORT = { width: 390, height: 844 };
 const ROOT_PARENT = '00000000-0000-0000-0000-000000000000';
 const ARTIFACT_TITLE = 'Overlay roles';
 const ARTIFACT_TEXT = [
@@ -36,6 +39,7 @@ const REFERENCE_COLORS = {
   'rgb-text-primary': '201 202 203',
   'rgb-surface-overlay': '40 50 60',
   'rgb-surface-media-overlay': '10 20 30',
+  'rgb-text-on-media': '250 240 230',
 };
 const REFERENCE_THEME = {
   version: 1,
@@ -45,24 +49,32 @@ const REFERENCE_THEME = {
 
 type Paint = { background: string; color: string; roles: Record<string, string> };
 
-/** Same bridge as `dialog-scrim-role`: the mode rides in the URL, the definition in storage. */
-async function installThemeBridge(page: Page, definition?: unknown) {
+/**
+ * One bridge per page, as in `dialog-scrim-role`: Playwright leaves the order of
+ * several init scripts undefined, so the URL decides both the mode and whether
+ * the reference definition is in storage for that navigation.
+ */
+async function installThemeBridge(page: Page) {
   await page.addInitScript((stored) => {
-    const mode = new URL(location.href).searchParams.get('e2eThemeMode');
+    const params = new URL(location.href).searchParams;
+    const mode = params.get('e2eThemeMode');
     if (mode) {
       localStorage.setItem('color-theme', mode);
     }
     localStorage.removeItem('theme-colors');
     localStorage.removeItem('theme-name');
-    if (stored) {
+    if (params.has('e2eThemeDefinition')) {
       localStorage.setItem('theme-definition', JSON.stringify(stored));
       localStorage.setItem('theme-source', 'definition');
     } else {
       localStorage.removeItem('theme-definition');
       localStorage.removeItem('theme-source');
     }
-  }, definition ?? null);
+  }, REFERENCE_THEME);
 }
+
+const themeQuery = (mode: string, themed: boolean) =>
+  `?${THEME_PARAM}=${mode}${themed ? `&${DEFINITION_PARAM}=1` : ''}`;
 
 /** The project's own scheme, so each project checks the palette it renders. */
 const projectMode = (): 'light' | 'dark' =>
@@ -103,8 +115,8 @@ async function readPaint(target: Locator, roles: string[]): Promise<Paint> {
 const withAlpha = (rgb: string, alpha: number) =>
   rgb.replace('rgb(', 'rgba(').replace(')', `, ${alpha})`);
 
-async function showProviderChip(page: Page, mode: string): Promise<Locator> {
-  await page.goto(`${NEW_CHAT_PATH}?${THEME_PARAM}=${mode}`, { timeout: 15000 });
+async function showProviderChip(page: Page, mode: string, themed: boolean): Promise<Locator> {
+  await page.goto(`${NEW_CHAT_PATH}${themeQuery(mode, themed)}`, { timeout: 15000 });
   await openAgentBuilder(page, { navigate: false });
   await selectMockModel(page, true);
   const chip = page.locator('#provider').locator('div.rounded-full').first();
@@ -112,8 +124,8 @@ async function showProviderChip(page: Page, mode: string): Promise<Locator> {
   return chip;
 }
 
-async function openArtifact(page: Page, conversationId: string, mode: string) {
-  await page.goto(`/c/${conversationId}?${THEME_PARAM}=${mode}`, { timeout: 15000 });
+async function openArtifact(page: Page, conversationId: string, mode: string, themed: boolean) {
+  await page.goto(`/c/${conversationId}${themeQuery(mode, themed)}`, { timeout: 15000 });
   await messagesView(page).locator('[data-artifact-trigger]').first().click();
   const panel = page.locator('#artifact-viewer');
   await expect(panel).toBeVisible({ timeout: 15000 });
@@ -133,16 +145,14 @@ test.describe('theme sweep roles', () => {
     const mode = projectMode();
     await installThemeBridge(page);
 
-    const bundled = await readPaint(await showProviderChip(page, mode), [
+    const bundled = await readPaint(await showProviderChip(page, mode, false), [
       'surface-primary',
       'text-primary',
     ]);
     expect(bundled.background).toBe(bundled.roles['surface-primary']);
     expect(bundled.color).toBe(bundled.roles['text-primary']);
 
-    /** Registered later, so it runs after the first bridge and wins. */
-    await installThemeBridge(page, REFERENCE_THEME);
-    const chip = await showProviderChip(page, mode);
+    const chip = await showProviderChip(page, mode, true);
     await expect(page.locator('html')).toHaveAttribute('data-theme', REFERENCE_THEME.name);
     const themed = await readPaint(chip, []);
     expect(themed.background).toBe('rgb(12, 34, 56)');
@@ -173,29 +183,37 @@ test.describe('theme sweep roles', () => {
 
     try {
       await installThemeBridge(page);
-      let { veil, backdrop } = await openArtifact(page, conversationId, mode);
-      const roles = ['surface-media-overlay', 'surface-overlay'];
+      const roles = ['surface-media-overlay', 'surface-overlay', 'text-on-media'];
+      let { veil, backdrop } = await openArtifact(page, conversationId, mode, false);
       const bundledVeil = await readPaint(veil, roles);
       expect(bundledVeil.background).toBe(
         withAlpha(bundledVeil.roles['surface-media-overlay'], 0.7),
       );
       expect(bundledVeil.background).toBe('rgba(0, 0, 0, 0.7)');
-      if (isMobile) {
-        const bundledBackdrop = await readPaint(backdrop, roles);
-        expect(bundledBackdrop.background).toBe(bundledBackdrop.roles['surface-overlay']);
-      }
-
-      await installThemeBridge(page, REFERENCE_THEME);
-      ({ veil, backdrop } = await openArtifact(page, conversationId, mode));
-      await expect(page.locator('html')).toHaveAttribute('data-theme', REFERENCE_THEME.name);
-      expect((await readPaint(veil, [])).background).toBe('rgba(10, 20, 30, 0.7)');
-      if (isMobile) {
-        /** Its class carries no alpha; the fade is the inline `opacity`. */
-        expect((await readPaint(backdrop, [])).background).toBe('rgb(40, 50, 60)');
-      } else {
+      expect(bundledVeil.color).toBe(bundledVeil.roles['text-on-media']);
+      if (!isMobile) {
         /** The desktop rail mounts no backdrop at all. */
         await expect(page.locator('* + #artifact-viewer')).toHaveCount(0);
       }
+
+      ({ veil } = await openArtifact(page, conversationId, mode, true));
+      await expect(page.locator('html')).toHaveAttribute('data-theme', REFERENCE_THEME.name);
+      const themedVeil = await readPaint(veil, []);
+      expect(themedVeil.background).toBe('rgba(10, 20, 30, 0.7)');
+      expect(themedVeil.color).toBe('rgb(250, 240, 230)');
+
+      /**
+       * The backdrop only mounts below the 868px breakpoint, so every project
+       * checks it at a phone width, loaded fresh at that width.
+       */
+      await page.setViewportSize(PHONE_VIEWPORT);
+      ({ backdrop } = await openArtifact(page, conversationId, mode, false));
+      const bundledBackdrop = await readPaint(backdrop, roles);
+      expect(bundledBackdrop.background).toBe(bundledBackdrop.roles['surface-overlay']);
+
+      ({ backdrop } = await openArtifact(page, conversationId, mode, true));
+      /** Its class carries no alpha; the fade is the inline `opacity`. */
+      expect((await readPaint(backdrop, [])).background).toBe('rgb(40, 50, 60)');
     } finally {
       await deleteMessagesByConversation([conversationId]);
       await deleteConversations([conversationId]);

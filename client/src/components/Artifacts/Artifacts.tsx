@@ -663,7 +663,7 @@ export default function Artifacts() {
 
             <div
               className={cn(
-                'bg-surface-media-overlay/70 absolute inset-0 z-[60] flex items-center justify-center backdrop-blur-xs transition-opacity duration-300 ease-in-out',
+                'bg-surface-media-overlay/70 text-text-on-media absolute inset-0 z-[60] flex items-center justify-center backdrop-blur-xs transition-opacity duration-300 ease-in-out',
                 isRefreshing ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0',
               )}
               aria-hidden={!isRefreshing}
