@@ -177,6 +177,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
           process.env.BEDROCK_AWS_SECRET_ACCESS_KEY === AuthType.USER_PROVIDED,
         userProvideSessionToken: process.env.BEDROCK_AWS_SESSION_TOKEN === AuthType.USER_PROVIDED,
         userProvideBearerToken: process.env.BEDROCK_AWS_BEARER_TOKEN === AuthType.USER_PROVIDED,
+        userProvideRegion: process.env.BEDROCK_AWS_DEFAULT_REGION === AuthType.USER_PROVIDED,
       };
     }
 

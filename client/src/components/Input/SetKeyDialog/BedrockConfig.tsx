@@ -9,6 +9,7 @@ const BedrockConfig = ({
   userProvideSecretAccessKey,
   userProvideSessionToken,
   userProvideBearerToken,
+  userProvideRegion,
 }: {
   endpoint: EModelEndpoint | string;
   userProvideURL?: boolean | null;
@@ -16,6 +17,7 @@ const BedrockConfig = ({
   userProvideSecretAccessKey?: boolean;
   userProvideSessionToken?: boolean;
   userProvideBearerToken?: boolean;
+  userProvideRegion?: boolean;
 }) => {
   const { control } = useFormContext();
   const localize = useLocalize();
@@ -94,6 +96,26 @@ const BedrockConfig = ({
               id="bedrockBearerToken"
               {...field}
               label={localize('com_endpoint_config_bedrock_bearer_token')}
+              labelClassName="mb-1"
+              inputClassName="mb-2"
+            />
+          )}
+        />,
+      );
+    }
+
+    if (userProvideRegion) {
+      if (fields.length > 0) fields.push(<div key="spacer4" className="mt-3" />);
+      fields.push(
+        <Controller
+          key="bedrockRegion"
+          name="bedrockRegion"
+          control={control}
+          render={({ field }) => (
+            <InputWithLabel
+              id="bedrockRegion"
+              {...field}
+              label={localize('com_endpoint_config_bedrock_region')}
               labelClassName="mb-1"
               inputClassName="mb-2"
             />
