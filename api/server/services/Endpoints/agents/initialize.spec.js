@@ -1648,6 +1648,125 @@ describe('initializeClient — subagent loading', () => {
     expect(mockInitializeAgent).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ['db_query_mcp_DB', 'query_mcp_DB', 'DB'],
+    ['db_ops_query_mcp_db ops', 'query_mcp_db_ops', 'db ops'],
+    ['db_ops_query_mcp_db_ops', 'query_mcp_db ops', 'db ops'],
+  ])(
+    'classifies a real normalized lazy selection before resolution: %s',
+    async (selected, current, raw) => {
+      const child = await createAgent({
+        id: SUBAGENT_ID,
+        name: 'Normalized review selection',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: testUser._id,
+        tools: [selected],
+        tool_options: { [current]: { approval_mode: 'chat' } },
+      });
+      await grantView(child);
+      mockGetAccessibleMcpServerNames.mockResolvedValue([raw]);
+      mockInitializeAgent.mockResolvedValue(
+        makePrimaryConfig({
+          subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+        }),
+      );
+      const req = makeSubagentReq();
+      req.config.endpoints.agents.capabilities.push('tools');
+      await initializeClient({
+        req,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      });
+      expect(
+        jest.requireActual('@librechat/api').canAgentGraphPause({
+          policy: { enabled: true, mode: 'bypass' },
+          agents: [agentClientArgs.agent],
+        }),
+      ).toBe(true);
+      expect(mockInitializeAgent).toHaveBeenCalledTimes(1);
+      expect(agentClientArgs.agent.lazySubagentConfigs[0]).not.toHaveProperty('mcpToolAliases');
+      expect(agentClientArgs.agent.lazySubagentConfigs[0]).not.toHaveProperty('tool_options');
+    },
+  );
+
+  it.each([
+    'active',
+    'disabled-skills',
+    'disabled-tools',
+    'agent-opt-out',
+    'inactive',
+    'out-of-scope',
+    'deselected',
+    'raw-key',
+  ])('uses the real gated skill-only lazy surface for admission: %s', async (state) => {
+    const current = 'query_mcp_db_ops';
+    const { skill } = await createSkill({
+      name: 'approval-skill',
+      description: 'Adds a reviewed query.',
+      body: '# Approval query\n',
+      alwaysApply: true,
+      frontmatter: { 'allowed-tools': [state === 'raw-key' ? 'db_ops_query_mcp_db ops' : current] },
+      author: testUser._id,
+      authorName: testUser.name,
+    });
+    await AclEntry.create({
+      principalType: PrincipalType.USER,
+      principalId: testUser._id,
+      principalModel: PrincipalModel.USER,
+      resourceType: ResourceType.SKILL,
+      resourceId: skill._id,
+      permBits: PermissionBits.VIEW,
+      grantedBy: testUser._id,
+    });
+    const child = await createAgent({
+      id: SUBAGENT_ID,
+      name: 'Skill-only review selection',
+      provider: 'openai',
+      model: 'gpt-4',
+      author: testUser._id,
+      tools: [],
+      skills_enabled: state !== 'agent-opt-out',
+      skills: [
+        state === 'out-of-scope' ? new mongoose.Types.ObjectId().toString() : skill._id.toString(),
+      ],
+      tool_options: {
+        [state === 'deselected' ? 'other_mcp_db_ops' : current]: { approval_mode: 'ask' },
+      },
+    });
+    await grantView(child);
+    if (state === 'inactive')
+      await User.updateOne(
+        { _id: testUser._id },
+        { $set: { skillStates: { [skill._id.toString()]: false } } },
+      );
+    mockGetAccessibleMcpServerNames.mockResolvedValue(['db ops']);
+    mockInitializeAgent.mockResolvedValue(
+      makePrimaryConfig({
+        subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+      }),
+    );
+    const req = makeSubagentReq();
+    if (state !== 'disabled-skills') req.config.endpoints.agents.capabilities.push('skills');
+    if (state !== 'disabled-tools') req.config.endpoints.agents.capabilities.push('tools');
+    await initializeClient({
+      req,
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+    expect(
+      jest.requireActual('@librechat/api').canAgentGraphPause({
+        policy: { enabled: true, mode: 'bypass' },
+        agents: [agentClientArgs.agent],
+      }),
+    ).toBe(state === 'active' || state === 'raw-key');
+    expect(mockInitializeAgent).toHaveBeenCalledTimes(1);
+    expect(agentClientArgs.agent.lazySubagentConfigs[0]).not.toHaveProperty('tools');
+    expect(agentClientArgs.agent.lazySubagentConfigs[0]).not.toHaveProperty('tool_options');
+  });
+
   it('includes current always-apply Skill revisions in lazy descriptor metadata', async () => {
     const secondSubagentId = 'agent_subagent_skill_2';
     const { skill } = await createSkill({

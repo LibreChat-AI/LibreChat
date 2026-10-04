@@ -1206,6 +1206,11 @@ const initializeClientWithProvider = async ({
         skillAuthoringAvailable: skillAuthoringAvailable === true,
       },
       agent,
+      {
+        skillPrimes: alwaysApplySkillPrimes,
+        rawMcpServerNames: historicalMcpServerNames,
+        toolsAvailable: enabledCapabilities.has(AgentCapabilities.tools),
+      },
     );
   };
 
