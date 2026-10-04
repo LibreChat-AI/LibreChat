@@ -9,6 +9,7 @@ import {
   prepareToolCallPreviews,
   previewMessagesToolCalls,
   rejectToolCallPreviewWrites,
+  withToolCallPreviews,
   TOOL_CALL_PREVIEW_ELISION,
 } from './previews';
 
@@ -238,6 +239,37 @@ describe('previewToolCall', () => {
     expect(previewToolCall(toolCall, limits)).toBe(toolCall);
   });
 
+  it('leaves image cards whole, since their details dialog shows the prompt directly', () => {
+    for (const name of ['image_gen_oai', 'image_edit_oai', 'gemini_image_gen']) {
+      const image = toolPart({
+        name,
+        args: JSON.stringify({ prompt: 'p'.repeat(4_000) }),
+        output: 'o'.repeat(4_000),
+      }).tool_call;
+      expect(previewToolCall(image, limits)).toBe(image);
+    }
+  });
+
+  it('sends a background-task result whole when no valid JSON preview fits', () => {
+    const tasks = Array.from({ length: 200 }, (_, i) => ({
+      task_id: `task_${i}`,
+      status: i === 7 ? 'error' : 'completed',
+      tool: 'bash_tool',
+    }));
+    const output = JSON.stringify({
+      tasks,
+      partial: true,
+      warning: 'Some tasks are still running',
+    });
+    const check = toolPart({ name: 'check_background_task', output }).tool_call;
+    expect(previewToolCall(check, limits).output).toBe(output);
+
+    const other = toolPart({ name: 'list_issues_mcp_linear', output }).tool_call;
+    const otherPreview = previewToolCall(other, limits);
+    expect(otherPreview.outputTruncated).toBe(true);
+    expect(otherPreview.output?.length).toBeLessThanOrEqual(limits.outputChars);
+  });
+
   it('leaves the question-and-answer record and legacy Assistants calls whole', () => {
     const ask = toolPart({ name: 'ask_user_question', output: 'a'.repeat(5_000) }).tool_call;
     expect(previewToolCall(ask, limits)).toBe(ask);
@@ -317,6 +349,45 @@ describe('prepareToolCallPreviews', () => {
     const preview = prepareToolCallPreviews({ query: { toolPreviews: '1' } }, { getAppConfig });
     const [message] = await preview(messages);
     expect(message.content?.[0]).toMatchObject({ tool_call: { outputTruncated: true } });
+  });
+});
+
+describe('withToolCallPreviews', () => {
+  const result = () => ({
+    conversation: { conversationId: 'fork-1' },
+    messages: [{ messageId: 'm1', content: [toolPart({ output: 'o'.repeat(10_000) })] }],
+  });
+  const config = (toolCallPreviews: Partial<AppConfig['toolCallPreviews']> = {}) => ({
+    toolCallPreviews: toolCallPreviewsConfigSchema.parse(toolCallPreviews),
+  });
+
+  it('previews a fork or duplicate response for a client that asked', () => {
+    const original = result();
+    const previewed = withToolCallPreviews(
+      { query: { toolPreviews: '1' }, config: config() },
+      original,
+    );
+    expect(previewed).not.toBe(original);
+    expect(previewed.conversation).toBe(original.conversation);
+    expect(previewed.messages[0].content[0]).toMatchObject({
+      tool_call: { outputTruncated: true },
+    });
+    expect(original.messages[0].content[0].tool_call.output).toHaveLength(10_000);
+  });
+
+  it('returns the response untouched otherwise', () => {
+    const original = result();
+    expect(withToolCallPreviews({ query: {}, config: config() }, original)).toBe(original);
+    expect(
+      withToolCallPreviews(
+        { query: { toolPreviews: '1' }, config: config({ enabled: false }) },
+        original,
+      ),
+    ).toBe(original);
+    const noMessages: { conversation: object; messages?: TestMessage[] } = {
+      conversation: { conversationId: 'x' },
+    };
+    expect(withToolCallPreviews({ query: { toolPreviews: '1' } }, noMessages)).toBe(noMessages);
   });
 });
 

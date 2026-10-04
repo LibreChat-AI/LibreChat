@@ -1,5 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import {
+  Constants,
   ContentTypes,
   TOOL_CALL_PREVIEWS_PARAM,
   TOOL_CALL_PREVIEWS_VERSION,
@@ -27,10 +28,25 @@ const MIN_JSON_STRING_CHARS = 8;
 const MAX_TRAILER_CHARS = 2_048;
 
 /**
- * Tools whose cards render their full record without an expand step, so a preview would
- * be what the reader sees: the question-and-answer record reads both fields directly.
+ * Tools whose cards show their full record without going through a card disclosure, so a
+ * preview would be what the reader sees: the question-and-answer record reads both fields
+ * directly, and an image card's details dialog shows the prompt from its arguments.
  */
-const FULL_CONTENT_TOOLS: ReadonlySet<string> = new Set(['ask_user_question']);
+const FULL_CONTENT_TOOLS: ReadonlySet<string> = new Set([
+  'ask_user_question',
+  'image_gen_oai',
+  'image_edit_oai',
+  'gemini_image_gen',
+]);
+
+/**
+ * Tools whose collapsed card parses its JSON output for the row's verdict (task failures,
+ * partial results, warnings). When even a structure-preserving preview cannot fit, their output
+ * goes in full rather than as text that no longer parses.
+ */
+const PARSED_OUTPUT_TOOLS: ReadonlySet<string> = new Set<string>([
+  Constants.CHECK_BACKGROUND_TASK as string,
+]);
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
@@ -254,7 +270,17 @@ export function previewToolCallOutput(
   }
   const parsed = parseJsonContainer(output);
   const shrunk = parsed === undefined ? undefined : shrinkJsonToFit(parsed, maxChars);
-  return shrunk ?? previewOutputText(output, maxChars, commandTrailerLength(toolCall, output));
+  if (shrunk != null) {
+    return shrunk;
+  }
+  if (
+    parsed !== undefined &&
+    typeof toolCall.name === 'string' &&
+    PARSED_OUTPUT_TOOLS.has(toolCall.name)
+  ) {
+    return output;
+  }
+  return previewOutputText(output, maxChars, commandTrailerLength(toolCall, output));
 }
 
 /**
@@ -430,6 +456,31 @@ export function containsToolCallPreviews(content: unknown): boolean {
     }
   }
   return false;
+}
+
+interface PreviewableResultRequest {
+  query?: unknown;
+  config?: { toolCallPreviews?: TToolCallPreviewsConfig } | null;
+}
+
+/**
+ * Previews the messages a fork, duplicate or shared-link fork returns, so a client that asked
+ * for previews does not seed its conversation cache with the full history. Reads the bounds
+ * from the config the route already resolved.
+ */
+export function withToolCallPreviews<T extends { messages?: PreviewableMessage[] | null }>(
+  req: PreviewableResultRequest,
+  result: T,
+): T {
+  if (!wantsToolCallPreviews(req.query) || !Array.isArray(result?.messages)) {
+    return result;
+  }
+  const limits = req.config?.toolCallPreviews ?? toolCallPreviewsConfigSchema.parse({});
+  if (!limits.enabled) {
+    return result;
+  }
+  const messages = previewMessagesToolCalls(result.messages, limits);
+  return messages === result.messages ? result : { ...result, messages };
 }
 
 interface MessageWriteRequest {

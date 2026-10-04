@@ -17,7 +17,9 @@ import { getDraft } from '~/utils';
 
 const mockUseSubagentThreadQuery = jest.fn();
 const mockUseToolCallPartQuery = jest.fn(
-  (..._args: unknown[]): { data?: unknown; isError: boolean } => ({
+  (
+    ..._args: unknown[]
+  ): { data?: unknown; isError: boolean; refetch?: () => Promise<unknown> } => ({
     data: undefined,
     isError: false,
   }),
@@ -1573,8 +1575,13 @@ describe('SubagentThreadPanel', () => {
       expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-state', 'ready');
     });
 
-    it('reports a failed load instead of rendering the preview', () => {
-      mockUseToolCallPartQuery.mockImplementation(() => ({ data: undefined, isError: true }));
+    it('reports a failed load with a retry instead of rendering the preview', () => {
+      const refetch = jest.fn().mockResolvedValue(undefined);
+      mockUseToolCallPartQuery.mockImplementation(() => ({
+        data: undefined,
+        isError: true,
+        refetch,
+      }));
 
       render(
         <Root>
@@ -1584,6 +1591,9 @@ describe('SubagentThreadPanel', () => {
 
       expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-state', 'error');
       expect(screen.queryByText('Shortened final ans…')).not.toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveTextContent('com_ui_tool_content_error');
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+      expect(refetch).toHaveBeenCalledTimes(1);
     });
 
     it('reads nothing for a call that arrived in full', () => {

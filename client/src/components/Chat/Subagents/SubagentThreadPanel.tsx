@@ -1330,11 +1330,27 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         )}
       </div>
     ) : null;
+  const storedPartRetry =
+    awaitsStoredPart && storedToolCall == null && storedPart.isError ? (
+      <div role="alert" className="flex items-center justify-center gap-2 px-4 py-2 text-sm">
+        <span className="text-text-secondary">{localize('com_ui_tool_content_error')}</span>
+        <Button type="button" variant="ghost" size="sm" onClick={() => void storedPart.refetch()}>
+          {localize('com_ui_retry')}
+        </Button>
+      </div>
+    ) : null;
+  const activityNotice =
+    droppedNotice == null && storedPartRetry == null ? null : (
+      <>
+        {droppedNotice}
+        {storedPartRetry}
+      </>
+    );
   let activityPanel: ReactNode;
   if (hasConversationProjection) {
     activityPanel = (
       <SubagentActivityScrollSurface padded={false} headerInset>
-        {droppedNotice}
+        {activityNotice}
         {showUnavailableHistoryBoundary && (
           <div
             role="status"
@@ -1393,7 +1409,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   ) {
     activityPanel = (
       <SubagentActivityScrollSurface padded={false} headerInset>
-        {droppedNotice}
+        {activityNotice}
         <div data-subagent-thread-timeline>
           {timelinePrefix}
           {visibleEventTasks.map(renderEventTask)}
@@ -1409,7 +1425,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         state={panelState}
         showPrompt={false}
         headerInset
-        notice={droppedNotice}
+        notice={activityNotice}
         onCancelControl={
           controlAvailable && !controlPending
             ? (controlId) => submitControl('cancel_message', controlId)

@@ -26,6 +26,7 @@ const {
   recordShareLinkRejection,
   traceIdForMessage,
   resolveDownloadPath,
+  withToolCallPreviews,
 } = require('@librechat/api');
 const {
   logger,
@@ -444,7 +445,7 @@ if (allowSharedLinks) {
         if (!result) {
           return res.status(404).json({ message: 'Shared conversation not found' });
         }
-        return res.status(201).json(result);
+        return res.status(201).json(withToolCallPreviews(req, result));
       } catch (error) {
         if (isContentFilterError(error)) {
           return res.status(error.statusCode).json(error.body);

@@ -970,14 +970,20 @@ export const getCustomConfigSpeech = (): Promise<t.TCustomConfigSpeechResponse> 
 
 /* conversations */
 
+/** Asks for tool-call previews in a response whose messages seed the conversation cache. */
+function withToolCallPreviews(url: string): string {
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}${TOOL_CALL_PREVIEWS_PARAM}=${TOOL_CALL_PREVIEWS_VERSION}`;
+}
+
 export function duplicateConversation(
   payload: t.TDuplicateConvoRequest,
 ): Promise<t.TDuplicateConvoResponse> {
-  return request.post(endpoints.duplicateConversation(), payload);
+  return request.post(withToolCallPreviews(endpoints.duplicateConversation()), payload);
 }
 
 export function forkConversation(payload: t.TForkConvoRequest): Promise<t.TForkConvoResponse> {
-  return request.post(endpoints.forkConversation(), payload);
+  return request.post(withToolCallPreviews(endpoints.forkConversation()), payload);
 }
 
 export function forkSharedConversation(
@@ -985,7 +991,7 @@ export function forkSharedConversation(
   targetMessageIndex?: number,
   shareRevision?: string,
 ): Promise<t.TForkConvoResponse> {
-  return request.post(endpoints.forkSharedMessages(shareId), {
+  return request.post(withToolCallPreviews(endpoints.forkSharedMessages(shareId)), {
     targetMessageIndex,
     shareRevision,
   });
@@ -1178,10 +1184,7 @@ export function getMessagesByConvoId(
     return Promise.resolve([]);
   }
   const url = endpoints.messages({ conversationId });
-  if (options?.toolPreviews !== true) {
-    return request.get(url);
-  }
-  return request.get(`${url}?${TOOL_CALL_PREVIEWS_PARAM}=${TOOL_CALL_PREVIEWS_VERSION}`);
+  return request.get(options?.toolPreviews === true ? withToolCallPreviews(url) : url);
 }
 
 export function getToolCallPart(params: q.ToolCallPartParams): Promise<q.ToolCallPartResponse> {

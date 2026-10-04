@@ -9,6 +9,7 @@ const validateEmailLogin = require('./validateEmailLogin');
 const validateMessageReq = require('./validateMessageReq');
 const {
   canReadActiveJobConversation,
+  createMessageRequestValidation,
   prepareMessageRequestValidation,
   sendValidationResponse,
 } = require('./messageValidation');
@@ -67,6 +68,7 @@ module.exports = {
   validateMessageReq,
   canReadActiveJobConversation,
   sendValidationResponse,
+  createMessageRequestValidation,
   prepareMessageRequestValidation,
   buildEndpointOption,
   validateRegistration,

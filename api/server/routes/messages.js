@@ -43,6 +43,7 @@ const {
   configMiddleware,
   sendValidationResponse,
   canReadActiveJobConversation,
+  createMessageRequestValidation,
   prepareMessageRequestValidation,
 } = require('~/server/middleware');
 const db = require('~/models');
@@ -65,7 +66,11 @@ const filterFeedbackContent = createContentFilter({
   extract: (req) => extractFeedbackContent(req.body),
 });
 const toolCallPreviewDeps = { getAppConfig };
-const readToolCallPart = createToolCallPartHandler({ getMessages: db.getMessages });
+const readToolCallPart = createToolCallPartHandler({
+  getMessages: db.getMessages,
+  validate: (req) => createMessageRequestValidation(req, { activeJobMessageRead: true }),
+  sendValidationResponse: (res, result) => sendValidationResponse(res, result),
+});
 const messageMutationMiddleware = [validateMessageReq, configMiddleware];
 const storedMessageMutationMiddleware = [
   validateMessageReq,
@@ -619,7 +624,7 @@ router.get('/:conversationId/:messageId', validateMessageReq, async (req, res) =
   }
 });
 
-router.get('/:conversationId/:messageId/parts/:partIndex', validateMessageReq, readToolCallPart);
+router.get('/:conversationId/:messageId/parts/:partIndex', readToolCallPart);
 
 router.put('/:conversationId/:messageId', messageMutationMiddleware, async (req, res) => {
   try {

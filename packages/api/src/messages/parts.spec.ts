@@ -12,6 +12,8 @@ import {
 } from '@librechat/data-schemas';
 import type { AllMethods, IMessage } from '@librechat/data-schemas';
 import type { NextFunction, Request, Response } from 'express';
+import type { MessageValidationResult } from '~/middleware/messageValidation';
+import type { ToolCallPartDeps, ToolCallPartHandlerDeps } from './parts';
 import { previewMessagesToolCalls } from './previews';
 import { createToolCallPartHandler } from './parts';
 
@@ -107,6 +109,27 @@ function withUser(req: Request, _res: Response, next: NextFunction) {
   tenantStorage.run({ tenantId }, () => next());
 }
 
+const allow = (): Pick<ToolCallPartHandlerDeps, 'validate' | 'sendValidationResponse'> => ({
+  validate: () => ({
+    conversationId,
+    shouldFetchMessages: true,
+    promise: Promise.resolve<MessageValidationResult>({ ok: true }),
+  }),
+  sendValidationResponse: (res, result) => res.status(result.status).json(result.body),
+});
+
+const handler = (
+  getMessages: ToolCallPartDeps['getMessages'],
+  validation: Partial<ToolCallPartHandlerDeps> = {},
+) => createToolCallPartHandler({ getMessages, ...allow(), ...validation });
+
+const mount = (route: ReturnType<typeof handler>) => {
+  const server = express();
+  server.use(withUser);
+  server.get('/api/messages/:conversationId/:messageId/parts/:partIndex', route);
+  return server;
+};
+
 const partUrl = (index: number | string, toolCallId?: string, convo = conversationId) =>
   `/api/messages/${convo}/${messageId}/parts/${index}${
     toolCallId == null ? '' : `?toolCallId=${encodeURIComponent(toolCallId)}`
@@ -122,7 +145,7 @@ beforeAll(async () => {
   app.use(withUser);
   app.get(
     '/api/messages/:conversationId/:messageId/parts/:partIndex',
-    createToolCallPartHandler({ getMessages: methods.getMessages }),
+    handler((filter, select) => methods.getMessages(filter, select)),
   );
 });
 
@@ -216,12 +239,7 @@ describe('GET /api/messages/:conversationId/:messageId/parts/:partIndex', () => 
 
   it('rejects malformed coordinates before reading', async () => {
     const getMessages = jest.fn();
-    const strict = express();
-    strict.use(withUser);
-    strict.get(
-      '/api/messages/:conversationId/:messageId/parts/:partIndex',
-      createToolCallPartHandler({ getMessages }),
-    );
+    const strict = mount(handler(getMessages));
     expect((await request(strict).get(partUrl('-1'))).status).toBe(400);
     expect((await request(strict).get(partUrl('1.5'))).status).toBe(400);
     expect((await request(strict).get(partUrl('9999999'))).status).toBe(400);
@@ -229,13 +247,72 @@ describe('GET /api/messages/:conversationId/:messageId/parts/:partIndex', () => 
     expect(getMessages).not.toHaveBeenCalled();
   });
 
-  it('reports a read failure as a server error without leaking it', async () => {
-    const failing = express();
-    failing.use(withUser);
-    failing.get(
-      '/api/messages/:conversationId/:messageId/parts/:partIndex',
-      createToolCallPartHandler({ getMessages: jest.fn().mockRejectedValue(new Error('db down')) }),
+  it('starts the part read beside access validation and answers only once it passes', async () => {
+    await seed();
+    const events: string[] = [];
+    let release: (result: MessageValidationResult) => void = () => undefined;
+    const pending = new Promise<MessageValidationResult>((resolve) => (release = resolve));
+    const server = mount(
+      handler(
+        (filter, select) => {
+          events.push('read');
+          return methods.getMessages(filter, select);
+        },
+        { validate: () => ({ conversationId, shouldFetchMessages: true, promise: pending }) },
+      ),
     );
+    const response = request(server)
+      .get(partUrl(1))
+      .then((res) => res);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    events.push('validated');
+    release({ ok: true });
+    expect((await response).status).toBe(200);
+    expect(events).toEqual(['read', 'validated']);
+  });
+
+  it('sends the validation verdict, never the part, when access is refused', async () => {
+    await seed();
+    const server = mount(
+      handler((filter, select) => methods.getMessages(filter, select), {
+        validate: () => ({
+          conversationId,
+          shouldFetchMessages: true,
+          promise: Promise.resolve<MessageValidationResult>({
+            ok: false,
+            status: 403,
+            body: { error: 'User not authorized for this conversation' },
+          }),
+        }),
+      }),
+    );
+    const response = await request(server).get(partUrl(1));
+    expect(response.status).toBe(403);
+    expect(JSON.stringify(response.body)).not.toContain('line of build output');
+  });
+
+  it('answers not found for the placeholder conversation without reading', async () => {
+    const getMessages = jest.fn();
+    const server = mount(
+      handler(getMessages, {
+        validate: () => ({
+          conversationId: 'new',
+          shouldFetchMessages: false,
+          promise: Promise.resolve<MessageValidationResult>({
+            ok: false,
+            status: 200,
+            body: [],
+            send: true,
+          }),
+        }),
+      }),
+    );
+    expect((await request(server).get(partUrl(1))).status).toBe(404);
+    expect(getMessages).not.toHaveBeenCalled();
+  });
+
+  it('reports a read failure as a server error without leaking it', async () => {
+    const failing = mount(handler(jest.fn().mockRejectedValue(new Error('db down'))));
     const response = await request(failing).get(partUrl(1));
     expect(response.status).toBe(500);
     expect(response.body).toEqual({ error: 'Internal server error' });

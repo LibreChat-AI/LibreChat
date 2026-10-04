@@ -2,6 +2,10 @@ import { ContentTypes } from 'librechat-data-provider';
 import { logger, CLIENT_MESSAGE_SELECT } from '@librechat/data-schemas';
 import type { FullToolCall, ToolCallPartResponse } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
+import type {
+  MessageRequestValidation,
+  FailedMessageValidationResult,
+} from '~/middleware/messageValidation';
 
 /** Scopes a read to one message the authenticated user owns. */
 export interface ToolCallPartFilter {
@@ -100,12 +104,24 @@ export async function readToolCallPart(
   return { ok: true, value: located };
 }
 
-type ToolCallPartRequest = Request<
+export type ToolCallPartRequest = Request<
   { conversationId?: string; messageId?: string; partIndex?: string },
   ToolCallPartResponse | { error: string },
   unknown,
   { toolCallId?: unknown }
-> & { user?: { id?: string } };
+> & { user?: { id?: string; tenantId?: string | null } };
+
+export interface ToolCallPartHandlerDeps extends ToolCallPartDeps {
+  /**
+   * Starts the conversation access check the message routes use (ownership, the active-job
+   * fallback, child-thread refusal). The part read runs beside it, and nothing is sent until it
+   * passes.
+   */
+  validate: (req: ToolCallPartRequest) => MessageRequestValidation;
+  sendValidationResponse: (res: Response, result: FailedMessageValidationResult) => unknown;
+}
+
+type SettledRead = { ok: true; value: ToolCallPartResult } | { ok: false; error: unknown };
 
 function parsePartIndex(value: string | undefined): number | undefined {
   if (value == null || !PART_INDEX_PATTERN.test(value)) {
@@ -127,13 +143,14 @@ function parseToolCallId(value: unknown): string | undefined | null {
 }
 
 /**
- * `GET /api/messages/:conversationId/:messageId/parts/:partIndex[?toolCallId=]`. Mount it behind
- * the same authentication and conversation-ownership validation as the message routes; the read
- * itself is also scoped to the authenticated user, so a message id from another conversation or
+ * `GET /api/messages/:conversationId/:messageId/parts/:partIndex[?toolCallId=]`, mounted behind
+ * authentication. Conversation access is validated as the message routes do it, with the
+ * user-scoped part read started alongside so an expansion costs one round trip of latency; the
+ * read is itself scoped to the authenticated user, so a message id from another conversation or
  * account resolves to not found.
  */
 export function createToolCallPartHandler(
-  deps: ToolCallPartDeps,
+  deps: ToolCallPartHandlerDeps,
 ): (req: ToolCallPartRequest, res: Response) => Promise<void> {
   return async (req, res) => {
     const userId = req.user?.id;
@@ -149,13 +166,31 @@ export function createToolCallPartHandler(
       return;
     }
     try {
-      const result = await readToolCallPart(deps, {
+      const validation = deps.validate(req);
+      if (!validation.shouldFetchMessages) {
+        res.status(404).json({ error: 'Tool call not found' });
+        return;
+      }
+      const read: Promise<SettledRead> = readToolCallPart(deps, {
         user: userId,
         conversationId,
         messageId,
         partIndex,
         toolCallId,
-      });
+      }).then(
+        (value) => ({ ok: true, value }),
+        (error: unknown) => ({ ok: false, error }),
+      );
+      const verdict = await validation.promise;
+      if (!verdict.ok) {
+        deps.sendValidationResponse(res, verdict);
+        return;
+      }
+      const settled = await read;
+      if (!settled.ok) {
+        throw settled.error;
+      }
+      const result = settled.value;
       if (!result.ok) {
         res.status(404).json({ error: 'Tool call not found' });
         return;

@@ -231,6 +231,66 @@ describe('tool-call previews on the message routes', () => {
     expect(JSON.stringify(other.body)).not.toContain('compiled module');
   });
 
+  describe('a conversation still only live as an active job', () => {
+    const { GenerationJobManager } = require('@librechat/api');
+    let liveConversationId;
+
+    beforeEach(async () => {
+      liveConversationId = uuidv4();
+      await mockDb.methods.saveMessage(
+        { userId: OWNER },
+        {
+          messageId: 'live-response',
+          conversationId: liveConversationId,
+          isCreatedByUser: false,
+          content: assistantContent(),
+        },
+      );
+    });
+
+    afterEach(() => {
+      GenerationJobManager.getJob.mockResolvedValue(null);
+    });
+
+    const partUrl = () => `/api/messages/${liveConversationId}/live-response/parts/1`;
+
+    it('serves the part to the job owner, as the conversation read does', async () => {
+      GenerationJobManager.getJob.mockResolvedValue({
+        status: 'running',
+        metadata: { userId: OWNER },
+      });
+      const list = await request(app).get(`/api/messages/${liveConversationId}?toolPreviews=1`);
+      expect(list.status).toBe(200);
+      expect(list.body[0].content[1].tool_call.outputTruncated).toBe(true);
+
+      const part = await request(app).get(partUrl());
+      expect(part.status).toBe(200);
+      expect(part.body.tool_call.output).toBe(fullOutput);
+    });
+
+    it("refuses another user's job and a job from another tenant", async () => {
+      GenerationJobManager.getJob.mockResolvedValue({
+        status: 'running',
+        metadata: { userId: OTHER },
+      });
+      expect((await request(app).get(partUrl())).status).toBe(404);
+
+      GenerationJobManager.getJob.mockResolvedValue({
+        status: 'running',
+        metadata: { userId: OWNER, tenantId: 'tenant-b' },
+      });
+      expect((await request(app).get(partUrl())).status).toBe(404);
+    });
+
+    it('refuses once the job is no longer active', async () => {
+      GenerationJobManager.getJob.mockResolvedValue({
+        status: 'complete',
+        metadata: { userId: OWNER },
+      });
+      expect((await request(app).get(partUrl())).status).toBe(404);
+    });
+  });
+
   it('does not serve parts of a durable child thread', async () => {
     const childId = uuidv4();
     await mongoose.models.Conversation.create({
