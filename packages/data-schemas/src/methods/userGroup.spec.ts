@@ -1462,6 +1462,14 @@ describe('userGroup methods', () => {
       expect(strong).toBeGreaterThan(weak);
     });
 
+    it('scores a name equal to the query up to separators as an exact match', () => {
+      const score = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'Mary-Jane', source: 'local' },
+        'mary jane',
+      );
+      expect(score).toBe(100);
+    });
+
     it('picks the highest score across multiple fields', () => {
       const score = methods.calculateRelevanceScore(
         {

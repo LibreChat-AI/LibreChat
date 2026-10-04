@@ -71,6 +71,14 @@ function words(normalized: string): string[] {
     .map((word) => truncate(word, MAX_SEARCH_TOKEN_LENGTH));
 }
 
+/**
+ * A value reduced to the words the filter matches, joined by single spaces, so
+ * relevance scoring sees "Mary-Jane" and "mary jane" as the same text.
+ */
+export function normalizeSearchPhrase(value: string): string {
+  return words(normalizeSearchText(value)).join(' ');
+}
+
 /** Derives the stored token array for one field value. Non-strings yield no tokens. */
 export function computeSearchTokens(kind: SearchTokenKind, value: unknown): string[] {
   if (typeof value !== 'string') {
