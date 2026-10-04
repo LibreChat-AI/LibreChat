@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import { SoleToolContext, useToolAutoExpand } from '../disclosure';
+import { LoneGroupContext, SoleToolContext, useToolAutoExpand } from '../disclosure';
 import { FailedRevealContext, useFailedReveal } from '../reveal';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
 import ToolCallGroup from '../ToolCallGroup';
@@ -1729,6 +1729,36 @@ describe('ToolCallGroup sole tool', () => {
     renderGroup(props(['only']));
     fireEvent.click(screen.getByRole('button', { expanded: false }));
     expect(screen.getByTestId('probe-0')).toHaveTextContent('true');
+  });
+
+  it('marks a one-call group as lone even when its phase holds several calls', () => {
+    function LoneProbe() {
+      return <div data-testid="lone">{String(useContext(LoneGroupContext))}</div>;
+    }
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={false}>
+          <ToolCallGroup
+            {...props(['only'])}
+            renderPart={(_p: TMessageContentParts, idx: number) => <LoneProbe key={idx} />}
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('lone')).toHaveTextContent('true');
+  });
+
+  it('does not mark a two-call group as lone', () => {
+    function LoneProbe({ idx }: { idx: number }) {
+      return <div data-testid={`lone-${idx}`}>{String(useContext(LoneGroupContext))}</div>;
+    }
+    renderGroup({
+      ...props(['a', 'b']),
+      renderPart: (_p: TMessageContentParts, idx: number) => <LoneProbe key={idx} idx={idx} />,
+    });
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('lone-0')).toHaveTextContent('false');
   });
 
   it('keeps a one-call group collapsed when its phase holds several calls', () => {

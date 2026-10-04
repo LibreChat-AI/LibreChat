@@ -2,7 +2,7 @@ import { useCallback, useContext } from 'react';
 import type { PartMetadata } from 'librechat-data-provider';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { isError } from '~/components/Chat/Messages/Content/ToolOutput';
-import { SoleToolContext, useToolExpansion } from '../disclosure';
+import { LoneGroupContext, SoleToolContext, useToolExpansion } from '../disclosure';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useExpandCollapse } from '~/hooks';
 
@@ -94,8 +94,9 @@ export default function useToolCallState({
    *  already the row, so the card renders its panel alone, held open. While it
    *  runs, or once it failed or was stopped, the row is the only place that
    *  says so, and `keepRow` covers a state the phase cannot express. */
+  const lone = useContext(LoneGroupContext);
   const bare =
-    useContext(SoleToolContext) === true &&
+    (useContext(SoleToolContext) === true || lone) &&
     (panelReady ?? hasContent) &&
     phase === 'completed' &&
     !keepRow;

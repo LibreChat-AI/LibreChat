@@ -5,7 +5,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { TStartupConfig } from 'librechat-data-provider';
 import { MCPAppsPolicyProvider } from '~/Providers/MCPAppsPolicyContext';
 import { ToolAuthWarningContext } from '../auth';
-import { SoleToolContext } from '../disclosure';
+import { LoneGroupContext, SoleToolContext } from '../disclosure';
 import ToolCall from '../ToolCall';
 import { logger } from '~/utils';
 import store from '~/store';
@@ -1008,6 +1008,32 @@ describe('ToolCall sole tool disclosure', () => {
       </RecoilRoot>,
     );
     expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  });
+
+  it('drops its row when its group holds one call inside a phase of several', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value={false}>
+            <LoneGroupContext.Provider value>
+              <ToolCall
+                args='{"query":"weather"}'
+                name="lookup"
+                output="sunny"
+                initialProgress={1}
+                isSubmitting={false}
+              />
+            </LoneGroupContext.Provider>
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
+    expect(screen.getByTestId('tool-call-info')).toBeInTheDocument();
   });
 
   it('keeps the row of an only call that is still running', () => {

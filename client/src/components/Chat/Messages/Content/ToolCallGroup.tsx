@@ -38,7 +38,7 @@ import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from './rows';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { parseToolName } from '~/utils/toolLabels';
 import { StackedToolIcons } from './ToolOutput';
-import { SoleToolContext } from './disclosure';
+import { LoneGroupContext, SoleToolContext } from './disclosure';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
 import SearchVerticals from './verticals';
@@ -681,57 +681,60 @@ export default function ToolCallGroup({
             />
             <ToolAuthWarningContext.Provider value>
               <FailedRevealContext.Provider value={revealValue}>
-                <SoleToolContext.Provider value={phaseSole ?? count === 1}>
-                  <div className="flex flex-col py-0.5">
-                    {parts.map(({ part, idx }, partIndex) => {
-                      if (part.type === ContentTypes.THINK) {
-                        const think = part.think;
-                        const reasoning = typeof think === 'string' ? think : (think?.value ?? '');
-                        /** A detached-subagent projection carries an empty THINK
-                         *  part flagged `reasoning_unavailable`, which `Part`
-                         *  renders as a `ReasoningMarker`. `ReasoningCompact` has
-                         *  no text to show and returns null, so the marker has to
-                         *  keep going through the standalone path or it vanishes
-                         *  the moment its call joins a group. */
-                        if (reasoning.trim() === '' && part.reasoning_unavailable === true) {
-                          return renderPart(
-                            part,
-                            idx,
-                            isLast && idx === lastContentIdx,
-                            handleToolExpand,
+                <LoneGroupContext.Provider value={count === 1}>
+                  <SoleToolContext.Provider value={phaseSole ?? count === 1}>
+                    <div className="flex flex-col py-0.5">
+                      {parts.map(({ part, idx }, partIndex) => {
+                        if (part.type === ContentTypes.THINK) {
+                          const think = part.think;
+                          const reasoning =
+                            typeof think === 'string' ? think : (think?.value ?? '');
+                          /** A detached-subagent projection carries an empty THINK
+                           *  part flagged `reasoning_unavailable`, which `Part`
+                           *  renders as a `ReasoningMarker`. `ReasoningCompact` has
+                           *  no text to show and returns null, so the marker has to
+                           *  keep going through the standalone path or it vanishes
+                           *  the moment its call joins a group. */
+                          if (reasoning.trim() === '' && part.reasoning_unavailable === true) {
+                            return renderPart(
+                              part,
+                              idx,
+                              isLast && idx === lastContentIdx,
+                              handleToolExpand,
+                            );
+                          }
+                          const streaming = isSubmitting && idx === lastContentIdx;
+                          const isAfterTool =
+                            partIndex > 0 &&
+                            parts[partIndex - 1]?.part.type === ContentTypes.TOOL_CALL;
+                          /** Mirrors the standalone `Reasoning` path: the authored
+                           *  label wins, generic text is only a fallback. */
+                          const generatedLabel = part.reasoning_label?.trim();
+                          const label =
+                            generatedLabel ||
+                            (streaming ? localize('com_ui_thinking') : localize('com_ui_thoughts'));
+                          return (
+                            <ReasoningCompact
+                              key={`reasoning-${idx}`}
+                              partKeyIndex={getPartKeyIndex(part, idx)}
+                              reasoning={reasoning}
+                              label={label}
+                              showThinking={showThinking}
+                              isAfterTool={isAfterTool}
+                              isStreaming={streaming}
+                            />
                           );
                         }
-                        const streaming = isSubmitting && idx === lastContentIdx;
-                        const isAfterTool =
-                          partIndex > 0 &&
-                          parts[partIndex - 1]?.part.type === ContentTypes.TOOL_CALL;
-                        /** Mirrors the standalone `Reasoning` path: the authored
-                         *  label wins, generic text is only a fallback. */
-                        const generatedLabel = part.reasoning_label?.trim();
-                        const label =
-                          generatedLabel ||
-                          (streaming ? localize('com_ui_thinking') : localize('com_ui_thoughts'));
-                        return (
-                          <ReasoningCompact
-                            key={`reasoning-${idx}`}
-                            partKeyIndex={getPartKeyIndex(part, idx)}
-                            reasoning={reasoning}
-                            label={label}
-                            showThinking={showThinking}
-                            isAfterTool={isAfterTool}
-                            isStreaming={streaming}
-                          />
+                        return renderPart(
+                          part,
+                          idx,
+                          isLast && idx === lastContentIdx,
+                          handleToolExpand,
                         );
-                      }
-                      return renderPart(
-                        part,
-                        idx,
-                        isLast && idx === lastContentIdx,
-                        handleToolExpand,
-                      );
-                    })}
-                  </div>
-                </SoleToolContext.Provider>
+                      })}
+                    </div>
+                  </SoleToolContext.Provider>
+                </LoneGroupContext.Provider>
               </FailedRevealContext.Provider>
             </ToolAuthWarningContext.Provider>
             {hasPendingAuthRequest && <ToolAuthWarning className="mt-2.5 mb-1" />}

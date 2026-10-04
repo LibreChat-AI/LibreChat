@@ -2,7 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import copy from 'copy-to-clipboard';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { SoleToolContext } from '../../disclosure';
+import { LoneGroupContext, SoleToolContext } from '../../disclosure';
 import BashCall from '../BashCall';
 import store from '~/store';
 
@@ -378,6 +378,26 @@ describe('BashCall sole tool disclosure', () => {
       </RecoilRoot>,
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Check the build');
+  });
+
+  it('drops its row when its group holds one call inside a phase of several', () => {
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={false}>
+          <LoneGroupContext.Provider value>
+            <BashCall
+              initialProgress={1}
+              isSubmitting={false}
+              args={{ command: 'echo hi' }}
+              output="hi"
+              runStepStatus="completed"
+            />
+          </LoneGroupContext.Provider>
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
+    expect(screen.getByText('hi')).toBeInTheDocument();
   });
 
   it('keeps its row while the only call is still running', () => {

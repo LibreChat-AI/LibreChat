@@ -8,7 +8,12 @@ import {
   splitToolCallName,
 } from 'librechat-data-provider';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import { toolPanelSpacingClassName, useToolExpansion, SoleToolContext } from './disclosure';
+import {
+  toolPanelSpacingClassName,
+  useToolExpansion,
+  LoneGroupContext,
+  SoleToolContext,
+} from './disclosure';
 import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { cn, getToolDisplayLabel, logger, openInNewTab } from '~/utils';
 import { isToolCallPreparing, useToolPreparation } from './preparation';
@@ -227,8 +232,9 @@ export default function ToolCall({
    *  with a model-authored intent. */
   const intent = useToolCallIntent(_args);
   const isActionCall = domain != null && domain !== '';
+  const loneGroup = useContext(LoneGroupContext);
   const bare =
-    soleTool &&
+    (soleTool || loneGroup) &&
     hasInfo &&
     phase === 'completed' &&
     !isMCPToolCall &&
