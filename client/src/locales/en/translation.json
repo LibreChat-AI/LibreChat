@@ -585,6 +585,7 @@
   "com_error_files_process": "An error occurred while processing the file.",
   "com_error_files_skipped_dupe": "Skipped duplicate file(s): {{0}}",
   "com_error_files_skipped_size": "Skipped file(s) over the {{0}} MB size limit: {{1}}",
+  "com_error_files_skipped_type": "Skipped file(s) with unsupported type: {{0}}",
   "com_error_files_unsupported": "This file type can't be attached here.",
   "com_error_files_upload": "An error occurred while uploading the file.",
   "com_error_files_upload_canceled": "The file upload request was canceled. Note: the file upload may still be processing and will need to be manually deleted.",
