@@ -1224,5 +1224,120 @@ describe('definitions.ts', () => {
         expect(registryEntry?.allowed_callers).toContain('direct');
       });
     });
+
+    describe('server-level deferLoading (event-driven parity)', () => {
+      const mcpAllTool = 'sys__all__sys_mcp_serverX';
+      const serverTools = {
+        list_files_mcp_serverX: {
+          function: {
+            name: 'list_files_mcp_serverX',
+            description: 'List files',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+        read_file_mcp_serverX: {
+          function: {
+            name: 'read_file_mcp_serverX',
+            description: 'Read a file',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+      };
+
+      it("defers all of a server's tools and injects tool_search when getServerDeferLoading returns true and there are no per-agent options", async () => {
+        mockGetOrFetchMCPServerTools.mockResolvedValue(serverTools);
+        const mockGetServerDeferLoading = jest.fn().mockResolvedValue(true);
+
+        const result = await loadToolDefinitions(
+          {
+            userId: 'user-123',
+            agentId: 'agent-123',
+            tools: [mcpAllTool],
+            deferredToolsEnabled: true,
+          },
+          {
+            getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+            getServerDeferLoading: mockGetServerDeferLoading,
+            isBuiltInTool: mockIsBuiltInTool,
+          },
+        );
+
+        expect(mockGetServerDeferLoading).toHaveBeenCalledWith('user-123', 'serverX');
+        expect(result.hasDeferredTools).toBe(true);
+        expect(result.toolRegistry.get('list_files_mcp_serverX')?.defer_loading).toBe(true);
+        expect(result.toolRegistry.get('read_file_mcp_serverX')?.defer_loading).toBe(true);
+        expect(result.toolDefinitions.some((d) => d.name === 'tool_search')).toBe(true);
+        expect(result.toolRegistry.has('tool_search')).toBe(true);
+      });
+
+      it('does not defer when getServerDeferLoading returns false', async () => {
+        mockGetOrFetchMCPServerTools.mockResolvedValue(serverTools);
+        const mockGetServerDeferLoading = jest.fn().mockResolvedValue(false);
+
+        const result = await loadToolDefinitions(
+          {
+            userId: 'user-123',
+            agentId: 'agent-123',
+            tools: [mcpAllTool],
+            deferredToolsEnabled: true,
+          },
+          {
+            getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+            getServerDeferLoading: mockGetServerDeferLoading,
+            isBuiltInTool: mockIsBuiltInTool,
+          },
+        );
+
+        expect(result.hasDeferredTools).toBe(false);
+        expect(result.toolRegistry.get('list_files_mcp_serverX')?.defer_loading).toBe(false);
+        expect(result.toolDefinitions.some((d) => d.name === 'tool_search')).toBe(false);
+      });
+
+      it('lets an explicit per-agent false override the server default', async () => {
+        mockGetOrFetchMCPServerTools.mockResolvedValue(serverTools);
+        const mockGetServerDeferLoading = jest.fn().mockResolvedValue(true);
+
+        const result = await loadToolDefinitions(
+          {
+            userId: 'user-123',
+            agentId: 'agent-123',
+            tools: [mcpAllTool],
+            deferredToolsEnabled: true,
+            toolOptions: {
+              list_files_mcp_serverX: { defer_loading: false },
+            },
+          },
+          {
+            getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+            getServerDeferLoading: mockGetServerDeferLoading,
+            isBuiltInTool: mockIsBuiltInTool,
+          },
+        );
+
+        expect(result.toolRegistry.get('list_files_mcp_serverX')?.defer_loading).toBe(false);
+        expect(result.toolRegistry.get('read_file_mcp_serverX')?.defer_loading).toBe(true);
+        expect(result.hasDeferredTools).toBe(true);
+      });
+
+      it('treats a missing getServerDeferLoading dep as not deferred', async () => {
+        mockGetOrFetchMCPServerTools.mockResolvedValue(serverTools);
+
+        const result = await loadToolDefinitions(
+          {
+            userId: 'user-123',
+            agentId: 'agent-123',
+            tools: [mcpAllTool],
+            deferredToolsEnabled: true,
+          },
+          {
+            getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+            isBuiltInTool: mockIsBuiltInTool,
+          },
+        );
+
+        expect(result.hasDeferredTools).toBe(false);
+        expect(result.toolRegistry.get('list_files_mcp_serverX')?.defer_loading).toBe(false);
+      });
+    });
   });
 });

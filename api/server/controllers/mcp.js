@@ -228,6 +228,7 @@ const getMCPTools = async (req, res) => {
           }),
           authConfig: [],
           tools: [],
+          deferLoading: serverConfig?.deferLoading === true,
         };
 
         // Set authentication config once for the server

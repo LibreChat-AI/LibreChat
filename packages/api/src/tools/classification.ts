@@ -39,6 +39,8 @@ export interface ToolDefinition {
   serverToolName?: string;
   /** Current catalog tool name when a LEGACY persisted key kept its pre-strip spelling */
   currentToolName?: string;
+  /** Server-level deferLoading default for this tool's MCP server. */
+  serverDeferLoading?: boolean;
 }
 
 /** An MCP tool name plus its OTHER spelling (legacy for stripped instances, current for legacy-named ones). */
@@ -139,7 +141,10 @@ export function buildToolRegistryFromAgentOptions(
         ? agentOptions.allowed_callers
         : ['direct'];
 
-    const defer_loading = agentOptions?.defer_loading === true;
+    const defer_loading =
+      agentOptions?.defer_loading !== undefined
+        ? agentOptions.defer_loading
+        : tool.serverDeferLoading === true;
 
     const toolDef: LCTool = {
       name,
@@ -176,6 +181,8 @@ interface MCPToolInstance {
   mcpServerToolName?: string;
   /** Current catalog tool name when a legacy persisted key kept its pre-strip spelling */
   mcpCurrentToolName?: string;
+  /** Server-level deferLoading default, stamped at tool creation time */
+  mcpServerDeferLoading?: boolean;
 }
 
 /**
@@ -207,6 +214,10 @@ export function extractMCPToolDefinition(tool: MCPToolInstance): ToolDefinition 
 
   if (tool.mcpCurrentToolName) {
     def.currentToolName = tool.mcpCurrentToolName;
+  }
+
+  if (tool.mcpServerDeferLoading) {
+    def.serverDeferLoading = true;
   }
 
   return def;
@@ -252,6 +263,7 @@ function buildToolRegistry(
       description: toolDef.description,
       parameters: toolDef.parameters,
       serverName: toolDef.serverName,
+      defer_loading: toolDef.serverDeferLoading === true,
       toolType: 'mcp',
     });
   }

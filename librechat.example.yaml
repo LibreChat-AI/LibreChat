@@ -620,6 +620,10 @@ actions:
 #     url: http://localhost:3001/sse
 #     # proxy: "${MCP_PROXY_URL}"  # optional outbound proxy (http/https/socks/socks5)
 #     timeout: 60000  # 1 minute timeout for this server, this is the default timeout for MCP servers.
+#     # deferLoading: true  # Defer every tool from this server by default: the model receives the
+#     #                     # `tool_search` tool plus a name-only listing instead of each tool's full
+#     #                     # schema. Saves context on large tool sets. A per-agent tool toggle overrides
+#     #                     # this. Requires the `deferred_tools` agent capability to be enabled.
 #   coordinated-oauth:
 #     type: streamable-http
 #     url: https://mcp.example.com/mcp

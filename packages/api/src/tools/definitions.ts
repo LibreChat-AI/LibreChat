@@ -90,6 +90,8 @@ export interface LoadToolDefinitionsDeps {
   getOrFetchMCPServerTools: (userId: string, serverName: string) => Promise<MCPServerTools | null>;
   /** Bypasses a non-empty stale catalog when it does not contain a selected tool. */
   refreshMCPServerTools?: (userId: string, serverName: string) => Promise<MCPServerTools | null>;
+  /** Resolves the server-level `deferLoading` default from the merged MCP config */
+  getServerDeferLoading?: (userId: string, serverName: string) => Promise<boolean>;
   /** Checks if a tool name is a known built-in tool */
   isBuiltInTool: (toolName: string) => boolean;
   /** Loads action tool definitions (schemas) from OpenAPI specs */
@@ -143,6 +145,7 @@ export async function loadToolDefinitions(
   const {
     getOrFetchMCPServerTools,
     refreshMCPServerTools,
+    getServerDeferLoading,
     isBuiltInTool,
     getActionToolDefinitions,
   } = deps;
@@ -176,6 +179,7 @@ export async function loadToolDefinitions(
   const refreshedServerNames = new Set<string>();
   /** Parsed key segment → the RAW server name it resolved to (direct-first). */
   const resolvedServerNames = new Map<string, string>();
+  const mcpServerDeferLoadingCache = new Map<string, boolean>();
   const mcpToolDefs: ToolDefinition[] = [];
   const builtInToolDefs: ToolDefinition[] = [];
   let actionToolDefs: ToolDefinition[] = [];
@@ -259,6 +263,11 @@ export async function loadToolDefinitions(
       }
       mcpServerToolsCache.set(parsed, fetched || {});
       resolvedServerNames.set(parsed, resolvedName);
+      /** Config lookups are keyed by the resolved RAW server name. */
+      const deferLoading = getServerDeferLoading
+        ? await getServerDeferLoading(userId, resolvedName)
+        : false;
+      mcpServerDeferLoadingCache.set(parsed, deferLoading);
     }
 
     const serverName = resolvedServerNames.get(parsed) ?? parsed;
@@ -308,6 +317,8 @@ export async function loadToolDefinitions(
       }
     }
 
+    const serverDeferLoading = mcpServerDeferLoadingCache.get(parsed) === true;
+
     if (isMCPAllPlaceholder(toolName)) {
       for (const [actualToolName, toolDef] of Object.entries(serverTools)) {
         if (toolDef?.function) {
@@ -317,6 +328,7 @@ export async function loadToolDefinitions(
             parameters: buildMcpParameters(toolDef.function.parameters),
             serverName,
             serverToolName: toolDef.serverToolName,
+            serverDeferLoading,
           });
           resolvedMCPToolCount++;
         }
@@ -333,6 +345,7 @@ export async function loadToolDefinitions(
         serverName,
         serverToolName: toolMatch.def.serverToolName,
         currentToolName: toolMatch.currentToolName,
+        serverDeferLoading,
       });
       resolvedMCPToolCount++;
     }
@@ -361,6 +374,7 @@ export async function loadToolDefinitions(
     mcpRawServerName: def.serverName,
     mcpServerToolName: def.serverToolName,
     mcpCurrentToolName: def.currentToolName,
+    mcpServerDeferLoading: def.serverDeferLoading,
   })) as unknown as GenericTool[];
 
   const classificationResult = await buildToolClassification({
