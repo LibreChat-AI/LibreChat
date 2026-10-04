@@ -16,9 +16,22 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('~/models', () => ({ updateUser: jest.fn() }));
 
+jest.mock('@librechat/api', () => ({
+  generateTwoFactorLoginChallengeToken: jest.fn(),
+  ...jest.requireActual('../../../packages/api/src/auth/recovery'),
+}));
+
 const { generateTOTP, verifyTOTP, generateTOTPSecret } = require('./twoFactorService');
 
 describe('verifyTOTP', () => {
+  it('keeps existing 80-bit TOTP enrollments valid', async () => {
+    const secret = 'JBSWY3DPEHPK3PXP';
+    await expect(verifyTOTP(secret, await generateTOTP(secret))).resolves.toBe(true);
+  });
+
+  it('produces a 160-bit secret for new enrollments', () => {
+    expect(generateTOTPSecret()).toMatch(/^[A-Z2-7]{32}$/);
+  });
   it('accepts a valid current TOTP code', async () => {
     const secret = generateTOTPSecret();
     const code = await generateTOTP(secret);

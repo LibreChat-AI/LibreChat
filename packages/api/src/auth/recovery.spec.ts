@@ -1,0 +1,81 @@
+import { createHash } from 'node:crypto';
+import {
+  createBackupCodeVerifier,
+  generateBackupCodes,
+  generateTOTPSecret,
+  matchesBackupCode,
+} from './recovery';
+
+describe('two-factor credential generation', () => {
+  it('generates a 160-bit Base32 TOTP secret', () => {
+    expect(generateTOTPSecret()).toMatch(/^[A-Z2-7]{32}$/);
+    expect(generateTOTPSecret()).not.toBe(generateTOTPSecret());
+  });
+
+  it('generates ten 128-bit backup codes with individual salts', async () => {
+    const { plainCodes, codeObjects } = await generateBackupCodes();
+    expect(plainCodes).toHaveLength(10);
+    expect(new Set(plainCodes).size).toBe(10);
+    expect(new Set(codeObjects.map((entry) => entry.codeHash.split(':')[1])).size).toBe(10);
+    plainCodes.forEach((code, i) => {
+      expect(code).toMatch(/^[a-f0-9]{32}$/);
+      expect(codeObjects[i].codeHash).toMatch(/^sha256:[a-f0-9]{32}:[a-f0-9]{64}$/);
+      expect(matchesBackupCode(code, codeObjects[i].codeHash)).toBe(true);
+      expect(matchesBackupCode('not-the-code', codeObjects[i].codeHash)).toBe(false);
+      expect(codeObjects[i]).toMatchObject({ used: false, usedAt: null });
+    });
+  });
+
+  it('accepts legacy unsalted SHA-256 digests', () => {
+    const hash = createHash('sha256').update('deadbeef').digest('hex');
+    expect(matchesBackupCode('deadbeef', hash)).toBe(true);
+    expect(matchesBackupCode('feedface', hash)).toBe(false);
+  });
+
+  it.each(['', 'sha256:x:y', 'sha256:' + 'a'.repeat(32) + ':bad', 'bcrypt:invalid'])(
+    'rejects malformed stored hashes: %s',
+    (hash) => {
+      expect(matchesBackupCode('deadbeef', hash)).toBe(false);
+    },
+  );
+
+  it('consumes the matched code without changing remaining codes', async () => {
+    const { plainCodes, codeObjects } = await generateBackupCodes(2);
+    const user = { _id: 'user', backupCodes: codeObjects };
+    const updateUser = jest.fn(async (_id, update) => {
+      user.backupCodes = update.backupCodes;
+    });
+    const verify = createBackupCodeVerifier(updateUser);
+    expect(await verify({ user, backupCode: ` ${plainCodes[0]} ` })).toBe(true);
+    expect(updateUser).toHaveBeenCalledWith('user', {
+      backupCodes: [{ ...codeObjects[0], used: true, usedAt: expect.any(Date) }, codeObjects[1]],
+    });
+    expect(await verify({ user, backupCode: plainCodes[0] })).toBe(false);
+    expect(await verify({ user, backupCode: plainCodes[1], persist: false })).toBe(true);
+    expect(updateUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows an existing legacy code without persistence during replacement', async () => {
+    const updateUser = jest.fn();
+    const user = {
+      _id: 'user',
+      backupCodes: [
+        {
+          codeHash: createHash('sha256').update('deadbeef').digest('hex'),
+          used: false,
+        },
+      ],
+    };
+    expect(
+      await createBackupCodeVerifier(updateUser)({ user, backupCode: 'deadbeef', persist: false }),
+    ).toBe(true);
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+
+  it('does not persist an invalid code', async () => {
+    const updateUser = jest.fn();
+    const user = { _id: 'user', backupCodes: (await generateBackupCodes()).codeObjects };
+    expect(await createBackupCodeVerifier(updateUser)({ user, backupCode: 'bad' })).toBe(false);
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+});
