@@ -33,6 +33,9 @@ export interface IThemeRGB {
   'rgb-ring-primary'?: string;
   'rgb-focus-outline'?: string;
   'rgb-focus-control'?: string;
+  /** The keyboard ring of a row or control inside content (tool rows, attachments, summaries,
+   *  message navigation); `rgb-border-heavy` when a theme omits it. */
+  'rgb-focus-subtle'?: string;
 
   // Header colors
   'rgb-header-primary'?: string;
@@ -265,6 +268,7 @@ export interface IThemeVariables {
   '--ring-primary': string;
   '--focus-outline': string;
   '--focus-control': string;
+  '--focus-subtle': string;
   '--header-primary': string;
   '--header-hover': string;
   '--header-button-hover': string;
@@ -424,6 +428,7 @@ export interface IThemeColors {
   'ring-primary'?: string;
   'focus-outline'?: string;
   'focus-control'?: string;
+  'focus-subtle'?: string;
   'header-primary'?: string;
   'header-hover'?: string;
   'header-button-hover'?: string;

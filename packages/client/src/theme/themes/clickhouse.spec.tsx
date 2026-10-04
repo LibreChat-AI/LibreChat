@@ -403,6 +403,12 @@ describe('clickhouse theme definition', () => {
     ).toEqual([]);
   });
 
+  /** Click UI's keyboard outline is the focus ring, on rows inside content as on controls. */
+  it.each<ThemeMode>(['light', 'dark'])('rings subtle focus in the outline in %s', (mode) => {
+    const { colors } = resolveTheme(clickHouseTheme, mode);
+    expect(colors['rgb-focus-subtle']).toBe(colors['rgb-focus-outline']);
+  });
+
   /** Click UI's control height, button padding and gap, `transition.default`, and the two steps of
    *  its `spaces` scale the shared spacing takes. */
   it('sizes theme controls and the shared spacing from Click UI', () => {

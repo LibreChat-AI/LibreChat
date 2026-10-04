@@ -157,7 +157,7 @@ const buttonVariantRecipe = cva(
          * is inset because the row sits flush against the panel it opens.
          */
         disclosure:
-          'w-full justify-start focus-visible:ring-border-heavy focus-visible:ring-offset-0 disabled:opacity-100',
+          'w-full justify-start focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100',
         /**
          * A full-width answer row in an option list, such as the choices of an
          * `ask_user_question`. The fill follows the pointer instantly rather than

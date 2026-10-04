@@ -105,7 +105,7 @@ export default function ToolCallInfo({ input, output }: { input: string; output?
             type="button"
             className={cn(
               'text-text-secondary inline-flex items-center gap-1 text-xs',
-              'focus-visible:ring-border-heavy focus-visible:ring-2 focus-visible:outline-hidden',
+              'focus-visible:ring-focus-subtle focus-visible:ring-2 focus-visible:outline-hidden',
             )}
             onClick={() => setShowParams((prev) => !prev)}
             aria-expanded={showParams}

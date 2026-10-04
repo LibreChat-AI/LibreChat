@@ -633,7 +633,7 @@ export default function ToolCallGroup({
         <button
           type="button"
           className={cn(
-            'text-text-secondary hover:text-text-secondary focus-visible:ring-border-heavy inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none',
+            'text-text-secondary hover:text-text-secondary focus-visible:ring-focus-subtle inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none',
             /** An open header is the title of the rows under it, so it is the
              *  one line in the fold set in the primary colour. */
             isExpanded && 'text-text-primary hover:text-text-primary',

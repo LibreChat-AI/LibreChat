@@ -715,6 +715,11 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors?.['rgb-border-light'] !== undefined
       ? { 'rgb-chart-widget-stroke': customColors['rgb-border-light'] }
       : {};
+  const focusSubtleFallback: IThemeRGB =
+    customColors?.['rgb-focus-subtle'] === undefined &&
+    customColors?.['rgb-border-heavy'] !== undefined
+      ? { 'rgb-focus-subtle': customColors['rgb-border-heavy'] }
+      : {};
   const borderControlSource =
     customColors != null ? controlBorderFallback(customColors) : undefined;
   const borderControlFallback: IThemeRGB =
@@ -789,6 +794,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...drawerEdgeFallback,
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
+      ...focusSubtleFallback,
       ...switchThumbFallback,
       ...fieldFillFallback,
       ...overlayFallback,

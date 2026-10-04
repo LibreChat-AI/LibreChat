@@ -84,6 +84,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-border-destructive': '220 38 38', // #dc2626 (red-600)
   'rgb-border-control': '227 227 227', // #e3e3e3 (gray-200), the stock field edge
   'rgb-border-field-focus': '33 33 33', // #212121 (gray-800, matching focus-control)
+  'rgb-focus-subtle': '153 150 150', // #999696 (gray-400, matching border-heavy)
   'rgb-field-fill': '255 255 255', // #fff (white, matching surface-primary)
   'rgb-field-text': '33 33 33', // #212121 (gray-800, matching text-primary)
   'rgb-surface-tooltip': '255 255 255', // matching surface-primary

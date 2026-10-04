@@ -304,6 +304,21 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-chart-widget-stroke']).toBe('50 51 52');
   });
 
+  it('rings subtle focus in the heavy border for a theme that predates the role', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'heavy-border-reference',
+        modes: { light: { colors: { 'rgb-border-heavy': '10 20 30' } } },
+      },
+      'light',
+    );
+
+    expect(resolved.colors['rgb-focus-subtle']).toBe('10 20 30');
+    expect(defaultTheme['rgb-focus-subtle']).toBe(defaultTheme['rgb-border-heavy']);
+    expect(darkTheme['rgb-focus-subtle']).toBe(darkTheme['rgb-border-heavy']);
+  });
+
   it('accepts table lengths in px or rem, zero included, and rejects other units', () => {
     const withTable = (tableCellSpaceY: string, tableRowStroke: string) =>
       ({

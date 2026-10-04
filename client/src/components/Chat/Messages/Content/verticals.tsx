@@ -128,7 +128,7 @@ function ImageStrip({ images, label }: { images: ImageResult[]; label: string })
               target="_blank"
               rel="noopener noreferrer"
               aria-label={image.title || image.domain || label}
-              className="border-border-light focus-visible:ring-border-heavy block h-28 overflow-hidden rounded-xl border no-underline focus-visible:ring-2 focus-visible:outline-hidden"
+              className="border-border-light focus-visible:ring-focus-subtle block h-28 overflow-hidden rounded-xl border no-underline focus-visible:ring-2 focus-visible:outline-hidden"
               style={{ aspectRatio: ratio }}
             >
               <img
@@ -157,7 +157,7 @@ function ShoppingStrip({ items, label }: { items: ShoppingResult[]; label: strin
             href={safeUrl(item.link)}
             target="_blank"
             rel="noopener noreferrer"
-            className="border-border-light hover:bg-surface-hover focus-visible:ring-border-heavy flex w-full flex-col rounded-xl border p-2 no-underline transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+            className="border-border-light hover:bg-surface-hover focus-visible:ring-focus-subtle flex w-full flex-col rounded-xl border p-2 no-underline transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
           >
             {safeUrl(item.imageUrl) && (
               <div className="bg-surface-tertiary mb-2 aspect-square w-full shrink-0 overflow-hidden rounded-lg">
@@ -209,7 +209,7 @@ function PlaceList({ places, label }: { places: PlaceResult[]; label: string }) 
             href={mapLink(place)}
             target="_blank"
             rel="noopener noreferrer"
-            className="hover:bg-surface-hover focus-visible:ring-border-heavy flex items-center gap-2.5 px-3 py-2 no-underline transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+            className="hover:bg-surface-hover focus-visible:ring-focus-subtle flex items-center gap-2.5 px-3 py-2 no-underline transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
           >
             <MapPin className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
             <span className="min-w-0 flex-1">

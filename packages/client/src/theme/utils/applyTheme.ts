@@ -99,6 +99,10 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
     variables.push(['--chart-widget-stroke', colors['rgb-border-light']]);
   }
 
+  if (colors['rgb-focus-subtle'] === undefined && colors['rgb-border-heavy'] !== undefined) {
+    variables.push(['--focus-subtle', colors['rgb-border-heavy']]);
+  }
+
   const legacyControlBorder = controlBorderFallback(colors);
   if (legacyControlBorder !== undefined) {
     variables.push(['--border-control', legacyControlBorder]);

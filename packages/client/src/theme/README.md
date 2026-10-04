@@ -433,6 +433,10 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   and Dialog scrims: `surface-overlay` at the `scrimOpacity`,
   `alertScrimOpacity` and `modalScrimOpacity` appearance roles (80%, 90% and
   65% by default). A bundled scrim dims the page and never lifts it.
+- `ring-focus-subtle` / `outline-focus-subtle` - The keyboard ring of a row or
+  control inside content (tool rows, attachments, summaries, message
+  navigation). Defaults to `border-heavy`, so a theme that names neither keeps
+  the ring it had.
 - `ring-focus-control` - The keyboard focus ring of the shared primitives
   (`Checkbox`, `Switch`, `Field`, `IconButton` and their siblings). Defaults to
   the primary text ink; a theme that names only `rgb-text-primary` rings its

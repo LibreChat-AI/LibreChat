@@ -242,7 +242,7 @@ const MermaidExport = memo(function MermaidExport({
                 aria-busy={isBusy || undefined}
                 className={cn(
                   'text-text-secondary flex items-center justify-center rounded-lg p-1.5 transition-colors motion-reduce:transition-none',
-                  'hover:bg-surface-hover hover:text-text-primary focus-visible:outline-border-heavy focus-visible:outline focus-visible:outline-2',
+                  'hover:bg-surface-hover hover:text-text-primary focus-visible:outline-focus-subtle focus-visible:outline focus-visible:outline-2',
                   buttonClassName,
                 )}
               >

@@ -167,7 +167,7 @@ export default function BackgroundTaskCall({
                     <ul
                       tabIndex={0}
                       aria-label={localize('com_ui_background_tasks')}
-                      className="focus-visible:ring-border-heavy flex max-h-96 flex-col gap-2 overflow-y-auto pr-1 focus-visible:ring-2 focus-visible:outline-none"
+                      className="focus-visible:ring-focus-subtle flex max-h-96 flex-col gap-2 overflow-y-auto pr-1 focus-visible:ring-2 focus-visible:outline-none"
                     >
                       {display.tasks.map((task) => (
                         <li key={task.taskId}>
@@ -218,7 +218,7 @@ export default function BackgroundTaskCall({
                   className="border-border-light border-t px-3 py-2"
                   onToggle={(event) => setShowRaw(event.currentTarget.open)}
                 >
-                  <summary className="text-text-secondary hover:text-text-primary focus-visible:ring-border-heavy cursor-pointer rounded text-xs focus-visible:ring-2 focus-visible:outline-none">
+                  <summary className="text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle cursor-pointer rounded text-xs focus-visible:ring-2 focus-visible:outline-none">
                     {localize('com_ui_background_tasks_raw_details')}
                   </summary>
                   {showRaw && (

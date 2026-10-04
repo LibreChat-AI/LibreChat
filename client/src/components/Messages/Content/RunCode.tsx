@@ -108,7 +108,7 @@ const RunCode: React.FC<CodeBarProps & { iconOnly?: boolean }> = React.memo(
         className={cn(
           'text-text-secondary inline-flex items-center justify-center transition-all duration-200 ease-out select-none',
           'hover:bg-surface-hover hover:text-text-primary',
-          'focus-visible:outline-border-heavy focus-visible:outline focus-visible:outline-2',
+          'focus-visible:outline-focus-subtle focus-visible:outline focus-visible:outline-2',
           'disabled:pointer-events-none disabled:opacity-50',
           isError && 'text-text-destructive hover:text-text-destructive',
           iconOnly

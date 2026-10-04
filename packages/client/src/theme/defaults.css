@@ -156,6 +156,7 @@ html {
   --border-destructive: var(--red-600);
   --border-control: var(--gray-200);
   --border-field-focus: var(--focus-control);
+  --focus-subtle: var(--border-heavy);
   --field-fill: var(--surface-primary);
   --field-text: var(--text-primary);
   --surface-tooltip: var(--surface-primary);

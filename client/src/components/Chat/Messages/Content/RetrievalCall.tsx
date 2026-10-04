@@ -299,7 +299,7 @@ function FileHeader({
         <button
           type="button"
           onClick={onOpenPreview}
-          className="text-text-primary decoration-border-medium hover:text-text-secondary focus-visible:ring-border-heavy min-w-0 truncate text-left text-xs font-medium underline underline-offset-2 transition-colors focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:outline-hidden"
+          className="text-text-primary decoration-border-medium hover:text-text-secondary focus-visible:ring-focus-subtle min-w-0 truncate text-left text-xs font-medium underline underline-offset-2 transition-colors focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:outline-hidden"
           aria-label={`${localize('com_ui_preview')}: ${fileName}`}
         >
           {fileName}
