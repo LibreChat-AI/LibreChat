@@ -5438,12 +5438,17 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         async (role) => {
           mockReq.user.role = role;
           mockReq.user.idOnTheSource = null;
+          await db.grantCapability({
+            principalType: PrincipalType.ROLE,
+            principalId: role,
+            capability: SystemCapabilities.MANAGE_PROMPTS,
+          });
           if (role !== 'ADMIN') {
-            await db.grantCapability({
-              principalType: PrincipalType.ROLE,
-              principalId: role,
-              capability: SystemCapabilities.MANAGE_PROMPTS,
-            });
+            await mongoose.models.Role.findOneAndUpdate(
+              { name: role },
+              { $set: { [`permissions.${PermissionTypes.PROMPTS}.${Permissions.USE}`]: true } },
+              { upsert: true },
+            );
           }
           const { groupId, promptId } = await createPromptGroupFixture();
           const productionLink = { source: 'native', groupId, selection: { type: 'production' } };
