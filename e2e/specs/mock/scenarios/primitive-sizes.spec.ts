@@ -53,6 +53,8 @@ async function sizes(page: Page): Promise<Record<string, string>> {
     ['h-theme-target', 'height'],
     ['min-w-theme-target', 'min-width'],
     ['min-w-theme-tab', 'min-width'],
+    ['min-w-theme-list', 'min-width'],
+    ['max-h-theme-list', 'max-height'],
     ['select-item', 'border-top-left-radius'],
   ];
   const result: Record<string, string> = {};
@@ -87,6 +89,8 @@ const DEFAULT_SIZES = {
   'h-theme-target': '24px',
   'min-w-theme-target': '24px',
   'min-w-theme-tab': '100px',
+  'min-w-theme-list': '128px',
+  'max-h-theme-list': '384px',
   'select-item': '8px',
 };
 
@@ -121,6 +125,7 @@ test.describe('primitive size roles', () => {
         'size-theme-icon-button-sm': '24px',
         'select-item': '4px',
         'min-w-theme-tab': '0px',
+        'min-w-theme-list': '0px',
         'h-theme-field': '32px',
       });
     }

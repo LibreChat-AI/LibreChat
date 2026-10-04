@@ -27,6 +27,8 @@ const {
   mergeUserSubmittedMessageFieldPaths,
   isContentFilterError,
   withoutTraceRefs,
+  createPrivateTextView,
+  stripPrivateMessageFields,
   applyForcedRetention,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
@@ -66,6 +68,13 @@ const storedMessageMutationMiddleware = [
 ];
 
 router.use(requireJwtAuth);
+router.post(
+  '/:conversationId/owner-text',
+  createPrivateTextView({
+    read: db.getPrivateMessageTexts,
+    getKey: () => process.env.CREDS_KEY ?? '',
+  }),
+);
 
 async function rejectSubagentThreadWrite(req, res, conversationId) {
   const blocked = await isSubagentThreadWriteBlocked(
@@ -194,9 +203,8 @@ router.get('/', async (req, res) => {
       for (const message of cleanedMessages) {
         const convo = result.convoMap[message.conversationId];
         const dbMessage = dbMessageMap[message.messageId];
-        /** Search hydrates every schema field; server-private state never leaves. */
-        const publicHit = { ...message };
-        delete publicHit.contextMeta;
+        /** Search may hydrate server-private fields; only a public projection leaves. */
+        const publicHit = stripPrivateMessageFields(message);
 
         activeMessages.push({
           ...publicHit,
@@ -238,9 +246,7 @@ router.get('/', async (req, res) => {
  * @returns {TMessage}
  */
 function toClientMessage(message) {
-  const clientMessage = { ...message };
-  delete clientMessage.contextMeta;
-  return clientMessage;
+  return stripPrivateMessageFields(message);
 }
 
 router.post('/branch', configMiddleware, async (req, res) => {

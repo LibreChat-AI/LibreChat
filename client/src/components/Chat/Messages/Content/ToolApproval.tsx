@@ -1,6 +1,14 @@
 import { useId, useContext, useEffect, useMemo } from 'react';
 import { Button, TextareaAutosize } from '@librechat/client';
-import { Check, X, Pencil, MessageSquare, ShieldQuestion, TriangleAlert } from 'lucide-react';
+import {
+  X,
+  Check,
+  Pencil,
+  CheckCheck,
+  MessageSquare,
+  ShieldQuestion,
+  TriangleAlert,
+} from 'lucide-react';
 import type { Agents } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import { useComposerPresentsApproval } from '~/components/Chat/approval/state';
@@ -90,10 +98,12 @@ export default function ToolApproval({
 }) {
   const localize = useLocalize();
   const invalidJsonId = useId();
+  const allowAlwaysHintId = useId();
   const { actionId, allowed_decisions: allowedDecisions, description } = approval;
   const conversationId = useContext(ChatContext)?.conversation?.conversationId;
   const composerPresents = useComposerPresentsApproval(conversationId, actionId);
   const deferToComposer = surface === 'thread' && composerPresents;
+  const canAllowAlways = approval.allow_always === true && allowedDecisions.includes('approve');
   const {
     registerToolCall,
     unregisterToolCall,
@@ -119,12 +129,14 @@ export default function ToolApproval({
       : seedArgs(args);
   const decisionDraft = getDecisionDraft(actionId, toolCallId) ?? {
     active: initialDecision?.decision ?? null,
+    allowAlways: canAllowAlways && initialDecision?.scope === 'session',
     editText: initialEditText,
     responseText:
       initialDecision?.decision === 'respond' ? (initialDecision.responseText ?? '') : '',
     reason: initialDecision?.decision === 'reject' ? (initialDecision.reason ?? '') : '',
   };
   const { active, editText, responseText, reason } = decisionDraft;
+  const allowAlways = canAllowAlways && active === 'approve' && decisionDraft.allowAlways === true;
   const updateDecisionDraft = (updates: Partial<typeof decisionDraft>) =>
     setDecisionDraft(actionId, toolCallId, { ...decisionDraft, ...updates });
 
@@ -151,7 +163,11 @@ export default function ToolApproval({
       return;
     }
     if (active === 'approve') {
-      setDecision(actionId, toolCallId, { tool_call_id: toolCallId, decision: 'approve' });
+      setDecision(actionId, toolCallId, {
+        tool_call_id: toolCallId,
+        decision: 'approve',
+        ...(allowAlways && { scope: 'session' }),
+      });
       return;
     }
     if (active === 'reject') {
@@ -187,7 +203,17 @@ export default function ToolApproval({
         setDecision(actionId, toolCallId, null);
       }
     }
-  }, [active, editText, responseText, reason, locked, setDecision, actionId, toolCallId]);
+  }, [
+    active,
+    allowAlways,
+    editText,
+    responseText,
+    reason,
+    locked,
+    setDecision,
+    actionId,
+    toolCallId,
+  ]);
 
   const editIsValid = useMemo(() => {
     if (active !== 'edit') {
@@ -248,14 +274,17 @@ export default function ToolApproval({
       <div className="flex flex-wrap gap-2">
         {allowedDecisions.map((decision) => {
           const Icon = DECISION_ICON[decision];
+          const pressed = active === decision && (decision !== 'approve' || !allowAlways);
           return (
             <Button
               key={decision}
               size="sm"
-              variant={active === decision ? 'default' : 'outline'}
+              variant={pressed ? 'default' : 'outline'}
               disabled={locked}
-              aria-pressed={active === decision}
-              onClick={() => updateDecisionDraft({ active: active === decision ? null : decision })}
+              aria-pressed={pressed}
+              onClick={() =>
+                updateDecisionDraft({ active: pressed ? null : decision, allowAlways: false })
+              }
               className="inline-flex items-center gap-1.5"
             >
               <Icon className="h-4 w-4" aria-hidden="true" />
@@ -263,7 +292,33 @@ export default function ToolApproval({
             </Button>
           );
         })}
+        {canAllowAlways && (
+          <Button
+            size="sm"
+            variant={allowAlways ? 'default' : 'outline'}
+            disabled={locked}
+            aria-pressed={allowAlways}
+            aria-describedby={allowAlwaysHintId}
+            onClick={() =>
+              updateDecisionDraft({
+                active: allowAlways ? null : 'approve',
+                allowAlways: !allowAlways,
+              })
+            }
+          >
+            <CheckCheck className="h-4 w-4" aria-hidden="true" />
+            {localize('com_ui_approve_always')}
+          </Button>
+        )}
       </div>
+      {canAllowAlways && (
+        <p
+          id={allowAlwaysHintId}
+          className={cn('text-text-secondary text-xs', !allowAlways && 'sr-only')}
+        >
+          {localize('com_ui_approve_always_hint')}
+        </p>
+      )}
 
       {active === 'edit' && (
         <div className="flex flex-col gap-1">

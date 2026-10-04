@@ -1,4 +1,4 @@
-import React, { forwardRef, useMemo } from 'react';
+import React, { forwardRef, useMemo, useRef } from 'react';
 import { useWatch } from 'react-hook-form';
 import { Zap, Clock, OctagonPause, ZapOff } from 'lucide-react';
 import { composerSubmitClasses, SendActions, SendIcon } from '@librechat/client';
@@ -42,6 +42,8 @@ const DuringRunSendButton = React.memo(
     const localize = useLocalize();
     const { shortcutsEnabled, submitOverride, yieldedChords } = useComposerBindings();
     const { steering, enterToSend } = props;
+    const disabledRef = useRef(props.disabled);
+    disabledRef.current = props.disabled;
     const { steerInterruptsByDefault } = steering;
     const data = useWatch({ control: props.control });
     const content = data?.text?.trim();
@@ -107,6 +109,9 @@ const DuringRunSendButton = React.memo(
     }
 
     const runAction = (action: (text: string) => boolean | void) => {
+      if (disabledRef.current) {
+        return;
+      }
       const text = props.getText().trim();
       if (text.length === 0) {
         return;
@@ -127,7 +132,7 @@ const DuringRunSendButton = React.memo(
       kbd: steerKbd,
       icon: <Zap className="text-status-warning h-4 w-4" aria-hidden="true" />,
       // A staged reasoning choice is a queued full turn, not a live steer.
-      disabled: !steering.canSteer || steering.pendingReasoningOverride != null,
+      disabled: props.disabled || !steering.canSteer || steering.pendingReasoningOverride != null,
       onClick: () => runAction((text) => steering.steerFromComposer(text)),
     };
     const queueRow: ActionRow = {
@@ -135,6 +140,7 @@ const DuringRunSendButton = React.memo(
       label: localize('com_ui_queue'),
       kbd: primary === 'queue' ? submitHint : alternateHint,
       icon: <Clock className="text-status-info h-4 w-4" aria-hidden="true" />,
+      disabled: props.disabled,
       onClick: () => runAction((text) => steering.queueFromComposer(text)),
     };
     /** When steering is available, keeps visible text; a new chat instead hard-stops. */
@@ -146,6 +152,7 @@ const DuringRunSendButton = React.memo(
       kbd: interruptSteerKbd,
       icon: <ZapOff className="text-status-warning h-4 w-4" aria-hidden="true" />,
       disabled:
+        props.disabled ||
         steering.pausedOnApproval ||
         !steering.canControlGeneration ||
         steering.pendingReasoningOverride != null,
@@ -156,7 +163,7 @@ const DuringRunSendButton = React.memo(
       label: localize('com_ui_interrupt_send'),
       kbd: verdicts.altEnter === 'interrupt' ? altEnter : undefined,
       icon: <OctagonPause className="text-status-error h-4 w-4" aria-hidden="true" />,
-      disabled: !steering.canControlGeneration,
+      disabled: props.disabled || !steering.canControlGeneration,
       onClick: () => runAction((text) => steering.interruptAndSend(text)),
     };
     const rows = primary === 'steer' ? [steerRow, queueRow] : [queueRow, steerRow];

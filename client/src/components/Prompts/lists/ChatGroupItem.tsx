@@ -1,7 +1,8 @@
 import { useState, memo, useRef, useCallback, useId, useMemo } from 'react';
 import * as Ariakit from '@ariakit/react';
+import { PermissionBits } from 'librechat-data-provider';
 import { useNavigate, useParams } from 'react-router-dom';
-import { PermissionBits, ResourceType } from 'librechat-data-provider';
+import { hasPermissions } from 'librechat-data-provider/react-query';
 import { Ellipsis, Eye, SquarePen, Trash, EarthIcon, User } from 'lucide-react';
 import {
   Label,
@@ -14,9 +15,9 @@ import {
   useToastContext,
 } from '@librechat/client';
 import type { TPromptGroup } from 'librechat-data-provider';
-import { useLocalize, useAuthContext, useSubmitMessage, useResourcePermissions } from '~/hooks';
 import { detectVariables, cn, rowActionClasses, rowActionSlotClasses } from '~/utils';
 import { useRecordPromptUsage, useDeletePromptGroup } from '~/data-provider';
+import { useLocalize, useAuthContext, useSubmitMessage } from '~/hooks';
 import VariableDialog from '../dialogs/VariableDialog';
 import PreviewPrompt from '../dialogs/PreviewPrompt';
 import CategoryIcon from '../utils/CategoryIcon';
@@ -27,9 +28,11 @@ const PROMPT_PATH = '/prompts';
 function ChatGroupItem({
   group,
   isChatRoute = true,
+  permissionBits = 0,
 }: {
   group: TPromptGroup;
   isChatRoute?: boolean;
+  permissionBits?: number;
 }) {
   const localize = useLocalize();
   const navigate = useNavigate();
@@ -49,9 +52,8 @@ function ChatGroupItem({
 
   const groupIsGlobal = group.isPublic === true;
 
-  const { hasPermission } = useResourcePermissions(ResourceType.PROMPTGROUP, group._id || '');
-  const canEdit = hasPermission(PermissionBits.EDIT);
-  const canDelete = hasPermission(PermissionBits.DELETE);
+  const canEdit = hasPermissions(permissionBits, PermissionBits.EDIT);
+  const canDelete = hasPermissions(permissionBits, PermissionBits.DELETE);
 
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
 

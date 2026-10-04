@@ -84,6 +84,8 @@ export type QueuedMessage = {
    * the failure surface offers Retry and "Send as new", and auto-sending here
    * would start a turn the user never asked for with text that was refused. */
   needsExplicitSend?: boolean;
+  /** Set when the user chose "Disable Queue" on this row, so only that choice can undo the hold. */
+  heldByUser?: boolean;
   /** Stable identity for server enqueue/retry. Recovered steer rows also use
    * it to dismiss their parked source; a later recovery attempt gets a fresh
    * identity. */

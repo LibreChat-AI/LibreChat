@@ -28,6 +28,7 @@ export interface ScheduleMCPConsentStorage {
     expectedConfigRevision: number;
     revision: string;
     consentId: string;
+    requireEnabled?: boolean;
   }) => Promise<boolean>;
 }
 
@@ -134,7 +135,7 @@ export function createScheduleMCPConsentStorage(
           ...configFilter(input.expectedConfigRevision),
           ...revisionFilter(input.revision),
           agent_id: input.identity.agentId,
-          enabled: true,
+          ...(input.requireEnabled !== false && { enabled: true }),
           'mcpConsent.consents': {
             $elemMatch: { id: input.consentId, revision: input.revision, revokedAtMs: null },
           },

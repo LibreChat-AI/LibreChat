@@ -82,6 +82,9 @@ const mockFetchQuery = jest.fn();
 const mockInvalidateQueries = jest.fn();
 const mockRemoveQueries = jest.fn();
 const mockBackingQueryClient = new QueryClient();
+const mockCancelQueries = jest.fn(
+  mockBackingQueryClient.cancelQueries.bind(mockBackingQueryClient),
+);
 const mockQueryCache = mockBackingQueryClient.getQueryCache();
 const mockFindAll = jest.fn((_queryKey?: QueryKey): Query[] => []);
 const mockQueryClient = {
@@ -90,6 +93,8 @@ const mockQueryClient = {
   fetchQuery: mockFetchQuery,
   invalidateQueries: mockInvalidateQueries,
   removeQueries: mockRemoveQueries,
+  cancelQueries: mockCancelQueries,
+  getQueryState: mockBackingQueryClient.getQueryState.bind(mockBackingQueryClient),
   getQueryCache: () => ({
     findAll: mockFindAll,
     getAll: mockQueryCache.getAll.bind(mockQueryCache),
@@ -426,6 +431,7 @@ describe('useResumableSSE', () => {
     );
     mockInvalidateQueries.mockClear();
     mockRemoveQueries.mockClear();
+    mockCancelQueries.mockClear();
     mockFindAll.mockReset();
     mockFindAll.mockReturnValue([]);
     mockBackingQueryClient.clear();
@@ -780,6 +786,11 @@ describe('useResumableSSE', () => {
     });
     expect(mockRemoveQueries).toHaveBeenCalledWith({
       queryKey: ['streamStatus', 'stream-123'],
+    });
+
+    expect(mockCancelQueries).toHaveBeenCalledWith({
+      queryKey: [QueryKeys.runningConversation, 'stream-123'],
+      exact: true,
     });
 
     const allConversationWrites = mockSetQueryData.mock.calls.filter(

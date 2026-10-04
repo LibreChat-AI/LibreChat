@@ -769,7 +769,8 @@ export default function InsightsView() {
               className="w-full min-w-0 sm:w-72"
               selectClassName="h-8 w-full rounded border border-border-medium bg-surface-tertiary px-3 py-1 shadow-none hover:border-border-heavy data-[state=open]:border-border-heavy dark:hover:bg-chart-widget-stroke dark:data-[state=open]:bg-chart-widget-stroke"
               itemClassName="rounded-none px-4 py-1.5"
-              popoverClassName="max-h-80 rounded border-border-medium bg-surface-primary px-0 py-2 dark:bg-chart-widget-surface"
+              popoverClassName="max-h-80 rounded border-border-medium px-0 py-2"
+              surface="widget"
               renderSelectedValues={(values) => {
                 if (values.length === 0) {
                   return localize('com_insights_no_agents_selected');

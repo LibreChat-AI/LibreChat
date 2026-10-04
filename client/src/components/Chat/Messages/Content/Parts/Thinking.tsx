@@ -19,14 +19,38 @@ import { AnimatedText } from '../animate';
 import { ROW_GLYPH_SLOT } from '../rows';
 import { cn } from '~/utils';
 
+/** Whether any part of `el` is inside the viewport and every clipping ancestor. */
+function isRectVisible(el: HTMLElement): boolean {
+  const rect = el.getBoundingClientRect();
+  let top = Math.max(rect.top, 0);
+  let bottom = Math.min(rect.bottom, window.innerHeight);
+  for (let node = el.parentElement; node != null && top < bottom; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node);
+    if (overflowY === 'visible') {
+      continue;
+    }
+    const clip = node.getBoundingClientRect();
+    top = Math.max(top, clip.top);
+    bottom = Math.min(bottom, clip.bottom);
+  }
+  return top < bottom;
+}
+
 /**
  * Tracks whether the referenced element is within the viewport. Mirrors the
  * CodeBlock pattern: the header copy/collapse controls live at the top, and the
  * floating bottom-right bar only takes over once the header scrolls out of view.
+ *
+ * The observer is only a trigger. Its entries can be stale: a header mounted
+ * inside a fold that is still opening is first reported hidden, and that report
+ * can land after the pointer has already revealed the bar. So every
+ * notification re-measures the header's real position instead of trusting
+ * `isIntersecting`, and `recheck` does the same for callers about to reveal.
  */
 export function useInViewport(): {
   ref: React.RefObject<HTMLDivElement>;
   inViewport: boolean;
+  recheck: () => boolean;
 } {
   const ref = useRef<HTMLDivElement>(null);
   const [inViewport, setInViewport] = useState(true);
@@ -36,7 +60,7 @@ export function useInViewport(): {
     if (!el) {
       return;
     }
-    const observer = new IntersectionObserver(([entry]) => setInViewport(entry.isIntersecting), {
+    const observer = new IntersectionObserver(() => setInViewport(isRectVisible(el)), {
       root: null,
       threshold: 0,
     });
@@ -44,7 +68,14 @@ export function useInViewport(): {
     return () => observer.disconnect();
   }, []);
 
-  return { ref, inViewport };
+  const recheck = useCallback(() => {
+    const el = ref.current;
+    const visible = el == null ? true : isRectVisible(el);
+    setInViewport(visible);
+    return visible;
+  }, []);
+
+  return { ref, inViewport, recheck };
 }
 
 /**
@@ -61,7 +92,7 @@ export const ThinkingContent: FC<{
     animate && typeof children === 'string' ? <AnimatedText text={children} /> : children;
 
   return (
-    <div className="border-border-light bg-surface-secondary text-text-secondary relative rounded-lg border p-3 pb-8">
+    <div className="border-border-light bg-surface-secondary text-text-secondary relative rounded-lg border p-3">
       <p className={cn('leading-[26px] whitespace-pre-wrap', fontSize)}>{content}</p>
     </div>
   );
@@ -243,7 +274,9 @@ export const FloatingThinkingBar = memo(
     return (
       <div
         className={cn(
-          'absolute right-3 bottom-3 flex items-center gap-2 transition-opacity duration-150',
+          /* Laid over the text rather than reserved below it, so the box keeps
+             even padding; the fill keeps the controls legible over a line. */
+          'bg-surface-secondary absolute right-3 bottom-3 flex items-center gap-2 rounded-lg transition-opacity duration-150',
           isVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
       >
@@ -304,7 +337,7 @@ const Thinking: React.ElementType = memo(({ children }: { children: React.ReactN
   const [isExpanded, setIsExpanded] = useState(showThinking);
   const [isBarVisible, setIsBarVisible] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { ref: headerRef, inViewport: headerInViewport } = useInViewport();
+  const { ref: headerRef, inViewport: headerInViewport, recheck: recheckHeader } = useInViewport();
   const contentId = useId();
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
 
@@ -314,8 +347,9 @@ const Thinking: React.ElementType = memo(({ children }: { children: React.ReactN
   }, []);
 
   const handleFocus = useCallback(() => {
+    recheckHeader();
     setIsBarVisible(true);
-  }, []);
+  }, [recheckHeader]);
 
   const handleBlur = useCallback((e: FocusEvent) => {
     if (!containerRef.current?.contains(e.relatedTarget as Node)) {
@@ -324,8 +358,9 @@ const Thinking: React.ElementType = memo(({ children }: { children: React.ReactN
   }, []);
 
   const handleMouseEnter = useCallback(() => {
+    recheckHeader();
     setIsBarVisible(true);
-  }, []);
+  }, [recheckHeader]);
 
   const handleMouseLeave = useCallback(() => {
     if (!containerRef.current?.contains(document.activeElement)) {

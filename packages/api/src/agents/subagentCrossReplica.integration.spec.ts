@@ -342,7 +342,10 @@ describeWithRedis('subagent cross-replica orchestration', () => {
       accepted(first).task.threadId!,
       firstTaskId,
       {
-        onEvent: (event) => remoteActivity.push(event),
+        onEvent: (event) =>
+          remoteActivity.push(
+            ...(event.event === 'subagent_activity_replay' ? event.data : [event]),
+          ),
         onDone: (event) => resolveRemoteDone(event.status),
       },
     );

@@ -1,5 +1,6 @@
 export { Button, FieldMessage } from '@librechat/client';
 export { default as Collapse } from './Collapse';
+export { default as AutoHeight } from './AutoHeight';
 export { default as Description } from './Description';
 export { getPlainDescription, isHtmlDescription } from './Description';
 export { default as CustomIcon } from './CustomIcon';

@@ -54,6 +54,7 @@ export type MinimalConversation = Pick<
   | 'lastResponseAt'
   | 'lastResponseMessageId'
   | 'lastResponseIsManual'
+  | 'isMarkedUnread'
   | 'lastSeenAt'
 >;
 

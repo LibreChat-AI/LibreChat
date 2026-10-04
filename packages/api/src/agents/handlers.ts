@@ -38,6 +38,7 @@ import type { CodeEnvRef, CodeWorkspaceOperation, PtcToolCallEvent } from 'libre
 import type { StructuredToolInterface } from '@librechat/agents/langchain/tools';
 import type { CodeEnvFile, CodeSessionContext } from '@librechat/agents';
 import type {
+  WorkspaceAdmissionOptions,
   WorkspaceEditResult,
   WorkspaceTextEdit,
   WorkspacePreviewEditResult,
@@ -52,6 +53,7 @@ import type {
   BackgroundToolWakeupRegistration,
   PendingBackgroundCompletionControls,
 } from './backgroundCompletion';
+import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
 import type { ArtifactDeliveryFailure } from '~/files/code';
 import type { BackgroundToolResultState } from './harvest';
@@ -105,6 +107,7 @@ import {
 import {
   resolveAttachedWorkspaceReadFileLines,
   WorkspaceToolHttpError,
+  resolveAttachedWorkspaceAdmissionOptions,
   WORKSPACE_EDIT_MAX_COUNT,
   WORKSPACE_WRITE_MAX_BYTES,
 } from '~/code/workspace';
@@ -137,17 +140,20 @@ import {
   stripIntentLabelsFromToolDefinitions,
   INTENT_ARG,
 } from './intent';
+import { editConflictExcerptText, formatEditConflict, parseEditConflict } from '~/code/edits';
 import { buildSkillPrimeMessage, isSkillFilePath, SKILL_FILE_PREFIX } from './skills';
 import { resolveCallerCapabilityProjectionSnapshot } from './callerCapabilities';
-import { formatEditConflict, parseEditConflict } from '~/code/edits';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
 import { toolValidationFeedback } from './validationFeedback';
+import { explainWorkspacePathRejection } from '~/code/paths';
 import { createSkillContentDigest } from './compatibility';
 import { isMissingSandboxPathError } from '~/files/code';
+import { applyHostTextEdits } from './files/processing';
 import { deleteSkillWithRetry } from '~/skills/cleanup';
 import { resolveDownloadPath } from '~/storage/path';
 import { parseFrontmatter } from '../skills/import';
+import { HostEditError } from './files/matching';
 import { cleanCodeToolOutput } from './cleanup';
 import { primeSkillFiles } from './skillFiles';
 import { instrumentPtcToolMap } from './ptc';
@@ -273,6 +279,8 @@ export function createOwnedToolEndHandler(
 }
 
 export interface ToolExecuteOptions {
+  /** Host-captured authority ceiling, never runnable/model metadata. */
+  scheduledMCPExecution?: Pick<ScheduleMCPExecution, 'enrolled' | 'identity'>;
   /**
    * Host-owned signal for the foreground run. This is authoritative across
    * graph reconstruction (including approval resume); the SDK event signal is
@@ -599,6 +607,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceReadResult>;
   /** Searches literal text within an attached worker's logical workspace. */
@@ -616,6 +626,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceSearchResult>;
   /** Lists relative file paths within an attached worker's logical workspace. */
@@ -633,6 +645,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceListResult>;
   /** Writes a UTF-8 file within an attached worker's logical workspace. */
@@ -650,6 +664,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceWriteResult>;
   /** Previews exact replacements without mutating an attached worker workspace. */
@@ -668,6 +684,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspacePreviewEditResult>;
   /** Applies exact replacements atomically within an attached worker workspace. */
@@ -687,6 +705,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceEditResult>;
   /** Bounded reads return complete text; omitted maxBytes retains the legacy stdout path. */
@@ -893,7 +913,11 @@ function getSafeToolError(
   message: string;
   logContext: Record<string, unknown>;
 } {
-  const rawMessage = feedback ?? getThrownValueMessage(error);
+  const thrownMessage = feedback ?? getThrownValueMessage(error);
+  /** File text an attached edit conflict quotes goes to the model only, never to the logs. */
+  const rawMessage =
+    !feedback && error instanceof AttachedEditRejectionError ? error.modelMessage : thrownMessage;
+  const logMessage = truncateMiddle(thrownMessage, MAX_TOOL_ERROR_MESSAGE_CHARS);
   const message = truncateMiddle(rawMessage, MAX_TOOL_ERROR_MESSAGE_CHARS);
   const stack = !feedback && error instanceof Error && error.stack ? error.stack : undefined;
 
@@ -908,7 +932,7 @@ function getSafeToolError(
             upstreamBodyTruncated: error.upstreamBodyTruncated,
           }
         : {}),
-      errorMessage: message,
+      errorMessage: logMessage,
       messageLength: rawMessage.length,
       messageTruncated: message.length !== rawMessage.length,
       stack: stack ? truncateMiddle(stack, MAX_TOOL_ERROR_STACK_CHARS) : undefined,
@@ -1140,13 +1164,6 @@ type ParsedSkillAuthoringPath = {
   relativePath: string;
   displayPath: string;
 };
-
-type MatchedRange = { index: number; length: number };
-
-type MatchStatus =
-  | { status: 'matched'; index: number; length: number; strategy: string }
-  | { status: 'none' }
-  | { status: 'ambiguous'; strategy: string; count: number; matches: MatchedRange[] };
 
 type LoadedSkillText =
   | { status: 'loaded'; content: string; bytes: number; fileId?: string }
@@ -1729,368 +1746,6 @@ function getAuthorInfo(req: ServerRequest): {
     authorName: user.name ?? user.username ?? 'Unknown',
     ...(user.tenantId ? { tenantId: user.tenantId } : {}),
   };
-}
-
-/**
- * Ranges a whitespace-tolerant strategy collects before it stops looking. An
- * internal memory bound, not a policy: ambiguity only needs a second match, and
- * exact `replace_all` never collects ranges at all.
- */
-const MAX_EDIT_MATCHES = 10_000;
-
-/** Pieces buffered before they are flattened into one bounded output chunk. */
-const REPLACE_ALL_FLUSH_PIECES = 1_024;
-const REPLACE_ALL_FLUSH_CHARS = 16 * 1024;
-
-/**
- * `content.split(needle).join(replacement)` without one array entry per match: pieces are
- * flattened into chunks of bounded size, so memory tracks the output, not the match count.
- */
-function replaceAllExact(content: string, needle: string, replacement: string): string {
-  const chunks: string[] = [];
-  let pieces: string[] = [];
-  let pendingChars = 0;
-  const flush = () => {
-    chunks.push(pieces.join(''));
-    pieces = [];
-    pendingChars = 0;
-  };
-  let cursor = 0;
-  for (let index = content.indexOf(needle); index !== -1; index = content.indexOf(needle, cursor)) {
-    pieces.push(content.slice(cursor, index), replacement);
-    pendingChars += index - cursor + replacement.length;
-    cursor = index + needle.length;
-    if (pieces.length >= REPLACE_ALL_FLUSH_PIECES || pendingChars >= REPLACE_ALL_FLUSH_CHARS) {
-      flush();
-    }
-  }
-  pieces.push(content.slice(cursor));
-  flush();
-  return chunks.join('');
-}
-
-/** Non-overlapping exact occurrences, counted without retaining their positions. */
-function countExactMatches(content: string, needle: string): number {
-  let count = 0;
-  for (
-    let index = content.indexOf(needle);
-    index !== -1;
-    index = content.indexOf(needle, index + needle.length)
-  ) {
-    count++;
-  }
-  return count;
-}
-
-function countExactOccurrences(content: string, needle: string): number[] {
-  const indexes: number[] = [];
-  let start = 0;
-  while (start <= content.length && indexes.length <= MAX_EDIT_MATCHES) {
-    const index = content.indexOf(needle, start);
-    if (index === -1) {
-      break;
-    }
-    indexes.push(index);
-    start = index + Math.max(1, needle.length);
-  }
-  return indexes;
-}
-
-function findExactMatch(content: string, needle: string): MatchStatus {
-  const matches = countExactOccurrences(content, needle);
-  if (matches.length === 1) {
-    return { status: 'matched', index: matches[0], length: needle.length, strategy: 'exact' };
-  }
-  if (matches.length > 1) {
-    return {
-      status: 'ambiguous',
-      strategy: 'exact',
-      count: matches.length,
-      matches: matches.map((index) => ({ index, length: needle.length })),
-    };
-  }
-  return { status: 'none' };
-}
-
-function lineStarts(content: string): number[] {
-  const starts = [0];
-  for (let i = 0; i < content.length; i++) {
-    if (content[i] === '\n') {
-      starts.push(i + 1);
-    }
-  }
-  return starts;
-}
-
-function commonIndent(lines: string[]): number {
-  const indents = lines
-    .filter((line) => line.trim().length > 0)
-    .map((line) => {
-      const match = /^(\s*)/.exec(line);
-      return match ? match[1].length : 0;
-    });
-  return indents.length > 0 ? Math.min(...indents) : 0;
-}
-
-function stripCommonIndent(text: string): string {
-  const lines = text.split('\n');
-  const indent = commonIndent(lines);
-  if (indent === 0) {
-    return text;
-  }
-  return lines.map((line) => line.slice(Math.min(indent, line.length))).join('\n');
-}
-
-function findLineWindowMatch(
-  content: string,
-  needle: string,
-  strategy: 'line-trimmed' | 'indentation-flexible',
-): MatchStatus {
-  const contentLines = content.split('\n');
-  const needleLines = needle.split('\n');
-  if (needleLines.length > contentLines.length) {
-    return { status: 'none' };
-  }
-
-  const starts = lineStarts(content);
-  const matches: Array<{ index: number; length: number }> = [];
-  const addMatch = (startLine: number) => {
-    const index = starts[startLine];
-    const endLine = startLine + needleLines.length;
-    const end = endLine < starts.length ? starts[endLine] - 1 : content.length;
-    matches.push({ index, length: end - index });
-  };
-
-  if (strategy === 'line-trimmed') {
-    // Intern normalized lines so KMP compares integer IDs, not overlapping strings.
-    const ids = new Map<string, number>();
-    const pattern = needleLines.map((line) => {
-      const normalized = line.trimEnd();
-      let id = ids.get(normalized);
-      if (id == null) {
-        id = ids.size;
-        ids.set(normalized, id);
-      }
-      return id;
-    });
-    const prefixes = new Uint32Array(pattern.length);
-    let matched = 0;
-    for (let i = 1; i < pattern.length; i++) {
-      while (matched > 0 && pattern[i] !== pattern[matched]) {
-        matched = prefixes[matched - 1];
-      }
-      if (pattern[i] === pattern[matched]) matched++;
-      prefixes[i] = matched;
-    }
-
-    matched = 0;
-    for (let i = 0; i < contentLines.length && matches.length <= MAX_EDIT_MATCHES; i++) {
-      const id = ids.get(contentLines[i].trimEnd());
-      while (matched > 0 && id !== pattern[matched]) {
-        matched = prefixes[matched - 1];
-      }
-      if (id === pattern[matched]) matched++;
-      if (matched === pattern.length) {
-        addMatch(i - pattern.length + 1);
-        // Keep overlapping occurrences for ambiguity detection and replace_all.
-        matched = prefixes[matched - 1];
-      }
-    }
-  } else {
-    // This fallback runs only after line-trimmed and whitespace-normalized miss.
-    // Two nonblank needle lines imply at least two tokens: any indentation match
-    // would already have matched whitespace-normalized. An all-blank needle would
-    // already have matched line-trimmed. Only a single nonblank line remains.
-    let anchor = -1;
-    for (let i = 0; i < needleLines.length; i++) {
-      if (needleLines[i].trim().length === 0) continue;
-      if (anchor !== -1) return { status: 'none' };
-      anchor = i;
-    }
-    if (anchor === -1) return { status: 'none' };
-
-    const normalizedNeedle = stripCommonIndent(needle).split('\n');
-    const nonblank = new Uint32Array(contentLines.length + 1);
-    for (let i = 0; i < contentLines.length; i++) {
-      nonblank[i + 1] = nonblank[i] + Number(contentLines[i].trim().length > 0);
-    }
-    for (let i = anchor; i < contentLines.length && matches.length <= MAX_EDIT_MATCHES; i++) {
-      if (nonblank[i + 1] === nonblank[i]) continue;
-      const start = i - anchor;
-      const end = start + needleLines.length;
-      if (end > contentLines.length) break;
-      if (nonblank[end] - nonblank[start] !== 1) continue;
-      const indent = contentLines[i].length - contentLines[i].trimStart().length;
-      let matchesNeedle = true;
-      // Eligible windows have one nonblank line at a fixed offset. Each file line
-      // can belong to at most two of them, so these comparisons stay linear too.
-      for (let j = 0; j < needleLines.length; j++) {
-        if (contentLines[start + j].slice(indent) !== normalizedNeedle[j]) {
-          matchesNeedle = false;
-          break;
-        }
-      }
-      if (matchesNeedle) addMatch(start);
-    }
-  }
-
-  if (matches.length === 1) {
-    return { status: 'matched', ...matches[0], strategy };
-  }
-  if (matches.length > 1) {
-    return { status: 'ambiguous', strategy, count: matches.length, matches };
-  }
-  return { status: 'none' };
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function findWhitespaceNormalizedMatch(content: string, needle: string): MatchStatus {
-  const tokens = needle.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length < 2) {
-    return { status: 'none' };
-  }
-  const pattern = tokens.map(escapeRegExp).join('\\s+');
-  const regex = new RegExp(pattern, 'g');
-  const matches: Array<{ index: number; length: number }> = [];
-  let match: RegExpExecArray | null;
-  while (matches.length <= MAX_EDIT_MATCHES && (match = regex.exec(content)) != null) {
-    matches.push({ index: match.index, length: match[0].length });
-    if (match[0].length === 0) {
-      regex.lastIndex += 1;
-    }
-  }
-  if (matches.length === 1) {
-    return { status: 'matched', ...matches[0], strategy: 'whitespace-normalized' };
-  }
-  if (matches.length > 1) {
-    return {
-      status: 'ambiguous',
-      strategy: 'whitespace-normalized',
-      count: matches.length,
-      matches,
-    };
-  }
-  return { status: 'none' };
-}
-
-function findReplacementMatch(content: string, needle: string): MatchStatus {
-  const exact = findExactMatch(content, needle);
-  if (exact.status !== 'none') {
-    return exact;
-  }
-  const lineTrimmed = findLineWindowMatch(content, needle, 'line-trimmed');
-  if (lineTrimmed.status !== 'none') {
-    return lineTrimmed;
-  }
-  const whitespaceNormalized = findWhitespaceNormalizedMatch(content, needle);
-  if (whitespaceNormalized.status !== 'none') {
-    return whitespaceNormalized;
-  }
-  return findLineWindowMatch(content, needle, 'indentation-flexible');
-}
-
-/** Keeps the earliest of any overlapping matches so replacements never collide. */
-function nonOverlapping(matches: readonly MatchedRange[]): MatchedRange[] {
-  const kept: MatchedRange[] = [];
-  let end = -1;
-  for (const match of [...matches].sort((a, b) => a.index - b.index)) {
-    if (match.index < end) continue;
-    kept.push(match);
-    end = match.index + match.length;
-  }
-  return kept;
-}
-
-function describeMatchCount(count: number): string {
-  return count > MAX_EDIT_MATCHES ? `more than ${MAX_EDIT_MATCHES}` : String(count);
-}
-
-/**
- * The size `replace_all` would produce, computed before any replacement text is
- * built so an oversized result is refused without allocating it.
- */
-function projectedReplaceAllBytes(
-  content: string,
-  matches: readonly MatchedRange[],
-  text: string,
-): number {
-  const replacementBytes = Buffer.byteLength(text, 'utf8');
-  let bytes = Buffer.byteLength(content, 'utf8');
-  for (const match of matches) {
-    bytes +=
-      replacementBytes -
-      Buffer.byteLength(content.slice(match.index, match.index + match.length), 'utf8');
-  }
-  return bytes;
-}
-
-function replaceMatches(content: string, matches: readonly MatchedRange[], text: string): string {
-  let result = '';
-  let cursor = 0;
-  for (const match of matches) {
-    result += content.slice(cursor, match.index) + text;
-    cursor = match.index + match.length;
-  }
-  return result + content.slice(cursor);
-}
-
-function applyTextEdits(
-  content: string,
-  edits: TextEdit[],
-): { content: string; strategies: string[] } {
-  let working = content;
-  const strategies: string[] = [];
-
-  for (const edit of edits) {
-    const exactCount = edit.replace_all === true ? countExactMatches(working, edit.old_text) : 0;
-    if (exactCount > 0) {
-      const projectedBytes =
-        Buffer.byteLength(working, 'utf8') +
-        exactCount *
-          (Buffer.byteLength(edit.new_text, 'utf8') - Buffer.byteLength(edit.old_text, 'utf8'));
-      if (projectedBytes > MAX_AUTHORING_BYTES) {
-        throw new Error(
-          `replace_all would make the file larger than ${MAX_AUTHORING_BYTES} bytes; nothing was written.`,
-        );
-      }
-      working = replaceAllExact(working, edit.old_text, edit.new_text);
-      strategies.push(exactCount > 1 ? `exact x${exactCount}` : 'exact');
-      continue;
-    }
-    const match = findReplacementMatch(working, edit.old_text);
-    if (match.status === 'none') {
-      throw new Error('old_text did not match the file content.');
-    }
-    if (match.status === 'ambiguous' && edit.replace_all !== true) {
-      throw new Error(
-        `old_text matched ${describeMatchCount(match.count)} locations with ${match.strategy}; make it unique or set replace_all before retrying.`,
-      );
-    }
-    if (match.status === 'ambiguous') {
-      if (match.count > MAX_EDIT_MATCHES) {
-        throw new Error(
-          `replace_all with whitespace-tolerant matching is limited to ${MAX_EDIT_MATCHES} locations, and old_text matched more; copy the exact text or narrow old_text before retrying.`,
-        );
-      }
-      const matches = nonOverlapping(match.matches);
-      if (projectedReplaceAllBytes(working, matches, edit.new_text) > MAX_AUTHORING_BYTES) {
-        throw new Error(
-          `replace_all would make the file larger than ${MAX_AUTHORING_BYTES} bytes; nothing was written.`,
-        );
-      }
-      working = replaceMatches(working, matches, edit.new_text);
-      strategies.push(`${match.strategy} x${matches.length}`);
-      continue;
-    }
-    working =
-      working.slice(0, match.index) + edit.new_text + working.slice(match.index + match.length);
-    strategies.push(match.strategy);
-  }
-
-  return { content: working, strategies };
 }
 
 function formatRange(start: number, count: number): string {
@@ -2771,7 +2426,9 @@ async function handleWorkspaceFileRead(
       }),
     );
   } catch (error) {
-    if (error instanceof WorkspaceToolHttpError) throw error;
+    if (error instanceof WorkspaceToolHttpError) {
+      throw explainWorkspacePathRejection(error, 'read', `workspace/${filePath}`);
+    }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn(
       '[handleWorkspaceFileRead] Attached workspace read failed',
@@ -2865,7 +2522,13 @@ async function handleWorkspaceSearchCall(
       content: truncated ? `${content}${truncationNotice}` : content,
     };
   } catch (error) {
-    if (error instanceof WorkspaceToolHttpError) throw error;
+    if (error instanceof WorkspaceToolHttpError) {
+      throw explainWorkspacePathRejection(
+        error,
+        'search',
+        `workspace/${typeof args.path === 'string' ? args.path : ''}`,
+      );
+    }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn(
       '[handleWorkspaceSearchCall] Attached workspace search failed',
@@ -2975,7 +2638,13 @@ async function handleWorkspaceListCall(
       content: `${content}${truncationNotice}`,
     };
   } catch (error) {
-    if (error instanceof WorkspaceToolHttpError) throw error;
+    if (error instanceof WorkspaceToolHttpError) {
+      throw explainWorkspacePathRejection(
+        error,
+        'list',
+        `workspace/${typeof args.path === 'string' ? args.path : ''}`,
+      );
+    }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn(
       '[handleWorkspaceListCall] Attached workspace file listing failed',
@@ -3204,6 +2873,7 @@ async function writeSandboxTextForAuthoring({
   created,
   sandboxContext,
   codeExecutionContext,
+  signal,
 }: {
   tc: ToolCallRequest;
   options: ToolExecuteOptions;
@@ -3214,6 +2884,7 @@ async function writeSandboxTextForAuthoring({
   created: boolean;
   sandboxContext?: SandboxSessionContext;
   codeExecutionContext?: CodeExecutionContext;
+  signal?: AbortSignal;
 }): AuthoringResult {
   if (!options.writeSandboxFile) {
     return errorResult(
@@ -3236,6 +2907,7 @@ async function writeSandboxTextForAuthoring({
   }
   const ctx = sandboxSessionContext(tc, sandboxContext);
   let writeResult: Awaited<ReturnType<NonNullable<ToolExecuteOptions['writeSandboxFile']>>>;
+  signal?.throwIfAborted();
   try {
     writeResult = await options.writeSandboxFile({
       file_path: filePath,
@@ -3246,6 +2918,7 @@ async function writeSandboxTextForAuthoring({
       ...(req ? { req } : {}),
     });
   } catch (error) {
+    if (signal?.aborted === true && isAbortError(error)) throw error;
     const message = getThrownValueMessage(error);
     logger.warn('[file_authoring] Sandbox write failed', getSafeErrorMetadata(error));
     return errorResult(
@@ -3887,6 +3560,7 @@ async function writeSkillMd({
   skill,
   skillName,
   content,
+  signal,
 }: {
   tc: ToolCallRequest;
   options: ToolExecuteOptions;
@@ -3896,6 +3570,7 @@ async function writeSkillMd({
   skill: AuthoringSkill | null;
   skillName: string;
   content: string;
+  signal?: AbortSignal;
 }): AuthoringResult {
   const normalized = normalizeSkillMdContent(content, skillName);
   if (normalized.status === 'error') {
@@ -4015,6 +3690,7 @@ async function writeSkillMd({
   ) {
     diff = '';
   }
+  signal?.throwIfAborted();
   const result = await options.updateSkill({
     id: skill._id.toString(),
     expectedVersion: skill.version,
@@ -4067,6 +3743,7 @@ async function writeBundledSkillFile({
   oldContent,
   fileId,
   created,
+  signal,
 }: {
   tc: ToolCallRequest;
   options: ToolExecuteOptions;
@@ -4078,6 +3755,7 @@ async function writeBundledSkillFile({
   oldContent?: string;
   fileId?: string;
   created: boolean;
+  signal?: AbortSignal;
 }): AuthoringResult {
   const editDenied = await ensureCanEditSkill(tc, options, req, skill._id);
   if (editDenied) {
@@ -4132,6 +3810,7 @@ async function writeBundledSkillFile({
   }
 
   try {
+    signal?.throwIfAborted();
     await options.saveSkillFileContent({
       req,
       skillId: skill._id,
@@ -4177,10 +3856,11 @@ function attachedWorkspaceAuthoringPath(
 function attachedWorkspaceRequestLimits(codeExecutionContext: CodeExecutionContext): {
   maxQueueWaitMs: number;
   maxRequestTimeoutMs?: number;
-} {
+} & WorkspaceAdmissionOptions {
   const config = codeExecutionContext.codeEnvironmentConfigSchema;
   const maxRequestTimeoutMs = resolveAttachedWorkspaceRequestTimeoutMs(config);
   return {
+    ...resolveAttachedWorkspaceAdmissionOptions(config),
     maxQueueWaitMs: resolveAttachedWorkspaceQueueWaitMs(config),
     ...(maxRequestTimeoutMs == null ? {} : { maxRequestTimeoutMs }),
   };
@@ -4203,8 +3883,9 @@ function attachedWorkspaceMutationParams(
   maxQueueWaitMs: number;
   maxRequestTimeoutMs?: number;
   deadlineAtMs?: number;
-} {
+} & WorkspaceAdmissionOptions {
   const limits = attachedWorkspaceRequestLimits(codeExecutionContext);
+  const runTimeoutMs = limits.maxRunTimeoutMs ?? limits.maxRequestTimeoutMs;
   return {
     workspace_id: workspaceId,
     ...(codeExecutionContext.codeWorkspace?.workspaceInstanceId
@@ -4213,9 +3894,7 @@ function attachedWorkspaceMutationParams(
     ...(codeExecutionContext.codeWorkspace?.linkedWorktrees ? { linked_worktrees: true } : {}),
     codeApiBaseUrl: codeExecutionContext.baseUrl,
     ...limits,
-    ...(limits.maxRequestTimeoutMs == null
-      ? {}
-      : { deadlineAtMs: Date.now() + limits.maxRequestTimeoutMs }),
+    ...(runTimeoutMs == null ? {} : { deadlineAtMs: Date.now() + runTimeoutMs }),
     executionProfile: codeExecutionContext.executionProfile,
     ...(codeExecutionContext.bridgeWorkerId
       ? { bridgeWorkerId: codeExecutionContext.bridgeWorkerId }
@@ -4276,7 +3955,7 @@ async function handleAttachedWorkspaceCreateFileCall({
       if (error.upstreamStatus === 409 && !overwrite) {
         error.message += '. File already exists. Pass overwrite: true to replace.';
       }
-      throw error;
+      throw explainWorkspacePathRejection(error, 'write', `workspace/${path.filePath}`);
     }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn('[file_authoring] Attached workspace write failed', getSafeErrorMetadata(error));
@@ -4301,33 +3980,75 @@ function describeAttachedEdit(filePath: string, result: WorkspaceEditResult): st
 }
 
 /**
- * A worker is outside LibreChat's trust boundary, so its conflict text is never forwarded: only the
- * facts a strict parse recovers from it (which edits failed, how, and on which lines) reach the
- * model, in LibreChat's own words. Anything else gets the generic retry guidance.
+ * A rejected attached edit that keeps its status and code but none of its body, so logs never
+ * retain upstream text. `message` is what logs keep; `modelMessage` may add the current file text
+ * a worker quoted, which the model sees just as it would see a read_file result.
  */
-function describeAttachedEditConflict(filePath: string, error: WorkspaceToolHttpError): string {
-  const conflict = error.editConflict;
-  if (conflict?.startsWith('Workspace file changed')) {
-    return `"workspace/${filePath}" changed while this edit was being applied, so nothing was written. Re-read the file and retry.`;
+class AttachedEditRejectionError extends WorkspaceToolHttpError {
+  constructor(
+    reason: WorkspaceToolHttpError['reason'],
+    message: string,
+    public readonly modelMessage: string,
+    code = 'EDIT_CONFLICT',
+  ) {
+    super(reason, 409, JSON.stringify({ code }));
+    this.message = message;
   }
-  const report = conflict == null ? undefined : parseEditConflict(conflict);
-  if (report) {
-    return formatEditConflict(`workspace/${filePath}`, report);
-  }
-  return `The edit to "workspace/${filePath}" did not apply, so nothing was written. The requested text did not match exactly once; re-read the file and retry.`;
 }
 
-/** The only body a sanitized conflict carries, so logs never retain worker-supplied text. */
-const SANITIZED_EDIT_CONFLICT_BODY = JSON.stringify({ code: 'EDIT_CONFLICT' });
-
-/** A copy of a worker conflict that keeps its status but none of its body or message. */
-function sanitizedEditConflict(
+/**
+ * Any other 409, such as a quarantined workspace, is not a text mismatch the model can fix by
+ * re-reading. Only its validated code is kept, in host words.
+ */
+function attachedEditRejection(
+  filePath: string,
   error: WorkspaceToolHttpError,
-  message: string,
-): WorkspaceToolHttpError {
-  const sanitized = new WorkspaceToolHttpError(error.reason, 409, SANITIZED_EDIT_CONFLICT_BODY);
-  sanitized.message = message;
-  return sanitized;
+  code: string,
+): AttachedEditRejectionError {
+  const guidance =
+    code === 'WORKSPACE_QUARANTINED'
+      ? ' The workspace is quarantined after an earlier operation did not finish; it must be reset on its machine before edits can apply, so retrying will not help.'
+      : '';
+  const message = `The edit to "workspace/${filePath}" was rejected by the code environment (${code}), so nothing was written.${guidance}`;
+  return new AttachedEditRejectionError(error.reason, message, message, code);
+}
+
+/**
+ * A worker is outside LibreChat's trust boundary, so its conflict text is never forwarded: only the
+ * facts a strict parse recovers from it (which edits failed, how, and on which lines) reach the
+ * model, in LibreChat's own words. The one exception is a well-formed excerpt of the edited file's
+ * current text, which is file content like any read_file result: it is quoted only when the selected
+ * workspace allows read_file, and only after it passes the same file-content policy. Anything else
+ * gets the generic retry guidance.
+ */
+function attachedEditConflict(
+  tc: ToolCallRequest,
+  req: ServerRequest | undefined,
+  filePath: string,
+  error: WorkspaceToolHttpError,
+  canRead: boolean,
+): AttachedEditRejectionError {
+  const conflict = error.editConflict;
+  const settle = (message: string, modelMessage = message) =>
+    new AttachedEditRejectionError(error.reason, message, modelMessage);
+  if (conflict?.startsWith('Workspace file changed')) {
+    return settle(
+      `"workspace/${filePath}" changed while this edit was being applied, so nothing was written. Re-read the file and retry.`,
+    );
+  }
+  const report = conflict == null ? undefined : parseEditConflict(conflict);
+  if (!report) {
+    return settle(
+      `The edit to "workspace/${filePath}" did not apply, so nothing was written. The requested text did not match exactly once; re-read the file and retry.`,
+    );
+  }
+  const path = `workspace/${filePath}`;
+  const message = formatEditConflict(path, report);
+  const excerpts = editConflictExcerptText(report);
+  if (!canRead || !excerpts || filteredFileResult(tc, req, filePath, excerpts) != null) {
+    return settle(message);
+  }
+  return settle(message, formatEditConflict(path, report, true));
 }
 
 async function handleAttachedWorkspaceEditFileCall({
@@ -4454,10 +4175,19 @@ async function handleAttachedWorkspaceEditFileCall({
     });
   } catch (error) {
     if (error instanceof WorkspaceToolHttpError) {
-      if (error.upstreamStatus === 409) {
-        throw sanitizedEditConflict(error, describeAttachedEditConflict(path.filePath, error));
+      if (error.upstreamStatus !== 409) {
+        throw explainWorkspacePathRejection(error, 'edit', `workspace/${path.filePath}`);
       }
-      throw error;
+      const code = error.upstreamCode;
+      throw code == null || code === 'EDIT_CONFLICT'
+        ? attachedEditConflict(
+            tc,
+            req,
+            path.filePath,
+            error,
+            selectedWorkspaceId(codeExecutionContext, 'read_file') != null,
+          )
+        : attachedEditRejection(path.filePath, error, code);
     }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn('[file_authoring] Attached workspace edit failed', getSafeErrorMetadata(error));
@@ -4531,6 +4261,12 @@ async function handleSandboxCreateFileCall({
   });
 }
 
+function hostEditFailure(tc: ToolCallRequest, error: unknown): ToolExecuteResult {
+  if (error instanceof HostEditError) return errorResult(tc, error.message);
+  logger.warn('[file_authoring] Host edit processing failed', getSafeErrorMetadata(error));
+  return errorResult(tc, 'File edit processing failed. Nothing was written.');
+}
+
 async function handleSandboxEditFileCall({
   tc,
   options,
@@ -4583,10 +4319,17 @@ async function handleSandboxEditFileCall({
 
   let edited: { content: string; strategies: string[] };
   try {
-    edited = applyTextEdits(current.content, edits);
+    edited = await applyHostTextEdits(
+      current.content,
+      edits,
+      req?.config?.endpoints?.agents?.hostFileEdits,
+      signal,
+    );
   } catch (error) {
-    return errorResult(tc, error instanceof Error ? error.message : 'Failed to edit file');
+    if (signal?.aborted) throw error;
+    return hostEditFailure(tc, error);
   }
+  signal?.throwIfAborted();
   if (Buffer.byteLength(edited.content, 'utf8') > MAX_AUTHORING_BYTES) {
     return errorResult(tc, `edited content exceeds ${MAX_AUTHORING_BYTES} byte limit`);
   }
@@ -4598,6 +4341,7 @@ async function handleSandboxEditFileCall({
     filePath,
     content: edited.content,
     oldContent: current.content,
+    signal,
     created: false,
     sandboxContext,
     codeExecutionContext,
@@ -4816,10 +4560,17 @@ async function handleEditFileCall(
 
   let edited: { content: string; strategies: string[] };
   try {
-    edited = applyTextEdits(current.content, edits);
+    edited = await applyHostTextEdits(
+      current.content,
+      edits,
+      req?.config?.endpoints?.agents?.hostFileEdits,
+      signal,
+    );
   } catch (error) {
-    return errorResult(tc, error instanceof Error ? error.message : 'Failed to edit file');
+    if (signal?.aborted) throw error;
+    return hostEditFailure(tc, error);
   }
+  signal?.throwIfAborted();
   if (Buffer.byteLength(edited.content, 'utf8') > MAX_AUTHORING_BYTES) {
     return errorResult(tc, `edited content exceeds ${MAX_AUTHORING_BYTES} byte limit`);
   }
@@ -4833,6 +4584,7 @@ async function handleEditFileCall(
       skill,
       skillName: parsed.skillName,
       content: edited.content,
+      signal,
     });
     if (result.status === 'success') {
       result.artifact = {
@@ -4853,6 +4605,7 @@ async function handleEditFileCall(
     relativePath: parsed.relativePath,
     displayPath: parsed.displayPath,
     content: edited.content,
+    signal,
     oldContent: current.content,
     fileId: current.fileId,
     created: false,
@@ -5867,6 +5620,7 @@ function createSkillFilesHandoff(
 
 export function createToolExecuteHandler(options: ToolExecuteOptions): EventHandler {
   const {
+    scheduledMCPExecution,
     runSignal: hostRunSignal,
     foregroundRunId,
     loadTools,
@@ -6312,6 +6066,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                 ) {
                   try {
                     const admission = await backgroundToolCompletion.preregister({
+                      scheduleMCPIdentity: scheduledMCPExecution?.identity ?? null,
                       taskId: task.id,
                       toolCallId: tc.id,
                       toolName: tc.name,
@@ -6446,6 +6201,9 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                               kind: current.resultClaim.kind,
                               claimId: current.resultClaim.claimId,
                               claimedAt: new Date(current.resultClaim.claimedAt),
+                              ...(current.resultClaim.receiptReconciled === true && {
+                                receiptReconciled: true,
+                              }),
                               ...(current.resultClaim.generationId == null
                                 ? {}
                                 : { generationId: current.resultClaim.generationId }),
@@ -7419,6 +7177,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                 }
 
                 if (
+                  scheduledMCPExecution?.enrolled !== true &&
                   backgroundToolSet.has(tc.name) &&
                   isBackgroundRequested(tc.args) &&
                   !toolRequiresEphemeralConnection(toolMap.get(tc.name)) &&

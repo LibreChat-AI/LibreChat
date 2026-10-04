@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { useSetRecoilState } from 'recoil';
 import { useNavigate } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, isCancelledError } from '@tanstack/react-query';
 import {
   QueryKeys,
   Constants,
@@ -167,6 +167,9 @@ const useNavigateToConvo = (index = 0) => {
         spec: data.spec,
       }));
     } catch (error) {
+      if (isCancelledError(error)) {
+        return;
+      }
       logger.error('conversation', 'Error refreshing conversation record on navigation', error);
       /** Only a conversation that is confirmed GONE invalidates what is on
        * screen. The messages query is already mounted by now, so dropping its
@@ -205,11 +208,22 @@ const useNavigateToConvo = (index = 0) => {
       record = await fetchConversationRecord(conversationId);
       logger.log('conversation', 'Fetched fresh conversation data', record);
     } catch (error) {
-      logger.error('conversation', 'Error fetching conversation data on navigation', error);
-      /** Nothing is mounted for this conversation yet, so clearing a warm
-       * cache here still predates the route change: the target mounts a fresh
-       * query rather than rendering contents that may no longer exist. */
-      queryClient.removeQueries([QueryKeys.messages, conversationId]);
+      if (isCancelledError(error)) {
+        const committed = queryClient.getQueryData<TConversation>([
+          QueryKeys.conversation,
+          conversationId,
+        ]);
+        if (!committed) {
+          return;
+        }
+        record = committed;
+      } else {
+        logger.error('conversation', 'Error fetching conversation data on navigation', error);
+        /** Nothing is mounted for this conversation yet, so clearing a warm
+         * cache here still predates the route change: the target mounts a fresh
+         * query rather than rendering contents that may no longer exist. */
+        queryClient.removeQueries([QueryKeys.messages, conversationId]);
+      }
     }
     if (generation !== navigationGeneration || currentRoute() !== routeAtStart) {
       logger.log('conversation', 'Discarding superseded navigation', conversationId);

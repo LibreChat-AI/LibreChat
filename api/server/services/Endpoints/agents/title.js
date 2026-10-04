@@ -1,8 +1,8 @@
-const { isEnabled } = require('@librechat/api');
+const { isEnabled, publishConversationTitle } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
 const getLogStores = require('~/cache/getLogStores');
-const { saveConvo } = require('~/models');
+const { saveConvo, getConvo } = require('~/models');
 const { resolveConversationTitle } = require('../titlePolicy');
 
 /**
@@ -30,8 +30,7 @@ const { resolveConversationTitle } = require('../titlePolicy');
  *   clobber the conversation now owned by the newer run. A plain user Stop does
  *   NOT abort this — its generated title is kept.
  * @param {(params: { conversationId: string, title: string }) => Promise<void>|void} [params.onTitleGenerated]
- *   Called after the title is cached and before persistence waits for the
- *   conversation row. Used by live streams to push the title immediately.
+ *   Called after caching the title for the live stream.
  */
 const addTitle = async (
   req,
@@ -124,62 +123,21 @@ const addTitle = async (
       return;
     }
 
-    await titleCache.set(key, title, 120000);
-
-    if (!signal?.aborted && typeof onTitleGenerated === 'function') {
-      try {
-        await onTitleGenerated({ conversationId: convoId, title });
-      } catch (error) {
-        logger.error('Error emitting generated title:', error);
-      }
-    }
-
-    /** In immediate mode the title is generated in parallel with the response,
-     *  so the conversation row may not exist yet. `saveConvo` with `noUpsert`
-     *  is a silent no-op when the row is missing, which would drop the title
-     *  from the database (the cache above still serves the live UI). Wait for
-     *  the controller to signal the conversation has been persisted. */
-    if (convoReady) {
-      await convoReady;
-    }
-
-    if (discardSignal?.aborted) {
-      // This stream was superseded by a newer run (or the turn failed) after the
-      // title had already been generated — discard it so a stale title does not
-      // clobber the conversation now owned by the newer run. A plain user Stop is
-      // not a discard: its generated title falls through and is persisted below.
-      // Only clear the cache if it still holds THIS task's title: a replacement
-      // stream shares the `userId-conversationId` key and may have already cached
-      // its own (valid) title that we must not remove.
-      const cached = await titleCache.get(key);
-      if (cached === title) {
-        await titleCache.delete(key);
-      }
-      return;
-    }
-
-    await saveConvo(
+    await publishConversationTitle(
+      { saveConvo, getConvo, titleCache },
       {
-        userId: req?.user?.id,
-        isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
-        expiredAt: req?.resolvedConversation?.expiredAt,
-        interfaceConfig: req?.config?.interfaceConfig,
-      },
-      {
+        ctx: {
+          userId: req?.user?.id,
+          isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+          expiredAt: req?.resolvedConversation?.expiredAt,
+          interfaceConfig: req?.config?.interfaceConfig,
+        },
         conversationId: convoId,
         title,
-      },
-      {
-        context: 'api/server/services/Endpoints/agents/title.js',
-        noUpsert: true,
-        preserveUpdatedAt: true,
-        /** Metadata-only: write the title and nothing else. Without this, `saveConvo`
-         *  reads every message id and `$set`s the whole `messages` array, and an
-         *  immediate-mode title saves while the turn is still running — so a response
-         *  appending its own id between that read and that write would be erased from
-         *  the array for good. An empty append is the option's no-message path: it
-         *  skips both the read and the rewrite. */
-        appendMessageIds: [],
+        convoReady,
+        discardSignal,
+        signal,
+        onTitleGenerated,
       },
     );
   } catch (error) {

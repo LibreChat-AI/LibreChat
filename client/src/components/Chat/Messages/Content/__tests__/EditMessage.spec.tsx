@@ -129,6 +129,28 @@ describe('EditMessage', () => {
     expect(enterEdit).toHaveBeenCalledWith(true);
   });
 
+  it('clears the private revision when a protected message is saved', async () => {
+    const protectedMessage = { ...message, privacyRevision: 'previous-revision' };
+    mockGetMessages.mockReturnValue([protectedMessage]);
+    const user = userEvent.setup();
+    renderEditor({ editedMessage: protectedMessage });
+
+    await user.clear(screen.getByTestId('message-text-editor'));
+    await user.type(screen.getByTestId('message-text-editor'), 'Clean edited message');
+    await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+
+    await waitFor(() =>
+      expect(mockSetMessages).toHaveBeenCalledWith([
+        expect.objectContaining({
+          messageId: message.messageId,
+          text: 'Clean edited message',
+          privacyRevision: undefined,
+        }),
+      ]),
+    );
+    expect(protectedMessage.privacyRevision).toBe('previous-revision');
+  });
+
   it('writes the save onto the thread as it stands when the request resolves', async () => {
     const user = userEvent.setup();
     const streamedAnswer = {

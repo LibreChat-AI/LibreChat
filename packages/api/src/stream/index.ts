@@ -63,6 +63,9 @@ export {
 } from './SteerRecovery';
 export type { RecoveredSteerPayload } from './SteerRecovery';
 
+export { logGenerationStartFailure } from './admission';
+export type { GenerationStartFailureContext } from './admission';
+
 export { createStreamServices } from './createStreamServices';
 export type { StreamServicesConfig, StreamServices } from './createStreamServices';
 export { filterPersistableAbortContent, hasPersistableAbortContent } from './abortContent';

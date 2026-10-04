@@ -54,6 +54,10 @@ jest.mock('@librechat/api', () => {
     /** The real helper, without loading the rest of the package this suite mocks around. */
     withoutTraceRefs: jest.requireActual('../../../../packages/api/src/langfuse/trace.ts')
       .withoutTraceRefs,
+    createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
+    stripPrivateMessageFields: jest.requireActual(
+      '../../../../packages/api/src/protection/private/view',
+    ).stripPrivateMessageFields,
     createContentFilter: jest.fn(() => (req, res, next) => next()),
     inspectContent,
     extractChatContent,
@@ -641,6 +645,8 @@ describe('message route conversation ownership filters', () => {
           messageId: 'hit-1',
           conversationId: 'convo-1',
           text: 'needle in a haystack',
+          privateText: 'v1:encrypted-original',
+          privacyRevision: 'public-revision',
           contextMeta: {
             calibrationRatio: 1.2,
             encoding: 'claude',
@@ -662,6 +668,8 @@ describe('message route conversation ownership filters', () => {
     expect(response.body.messages).toHaveLength(1);
     expect(response.body.messages[0]).toMatchObject({ messageId: 'hit-1', title: 'Found' });
     expect(response.body.messages[0]).not.toHaveProperty('contextMeta');
+    expect(response.body.messages[0]).not.toHaveProperty('privateText');
+    expect(response.body.messages[0].privacyRevision).toBe('public-revision');
   });
 
   it('returns indistinguishable not-found responses for child and missing query reads', async () => {
