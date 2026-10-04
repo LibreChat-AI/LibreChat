@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { scheduledMCPFailureReasonSchema } from './scheduleConsent';
 
 /** Cadences the dialog builds from structured pickers (hour, minute, weekday). */
 export const scheduleStructuredFrequencies = ['hourly', 'daily', 'weekdays', 'weekly'] as const;
@@ -195,6 +196,14 @@ export type TScheduleRunNowResponse = {
   status: 'started';
 };
 
+/** A durable invocation receipt, not a readiness snapshot or an arbitrary tool error. */
+export function isScheduleMCPAuthorizationFailure(outcome: ScheduleMCPOutcome): boolean {
+  return (
+    outcome.detail === 'unattended_auth_required' ||
+    (outcome.status !== 'ready' && outcome.reason != null && outcome.automaticReplay === false)
+  );
+}
+
 /** Only structured schedule preflight failures may request immediate suspension. */
 export function getScheduleMCPDisabledReason(
   outcomes?: ScheduleMCPOutcome[],
@@ -213,6 +222,9 @@ export const scheduleMCPOutcomeSchema = z.object({
   agentId: z.string().optional(),
   /** Additional diagnosis; older clients ignore unknown keys and retain the known status. */
   detail: z.enum(['unattended_auth_required']).optional(),
+  reason: scheduledMCPFailureReasonSchema.optional(),
+  recovery: z.enum(['authorize', 'configure', 'restore_permission', 'retry_later']).optional(),
+  automaticReplay: z.literal(false).optional(),
   status: z.enum([
     'ready',
     'mcp_reauth_required',

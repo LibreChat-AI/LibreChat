@@ -158,6 +158,7 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
                     actionId: pendingAction.actionId,
                     allowed_decisions: config.allowed_decisions,
                     description: preview.description,
+                    allow_always: config.allow_always === true,
                   }}
                   toolCallId={request.tool_call_id}
                   args={request.arguments}

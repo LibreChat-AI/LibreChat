@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
-import { Button, TextareaAutosize } from '@librechat/client';
-import { Check, ChevronUp, TriangleAlert, X } from 'lucide-react';
+import { TriangleAlert } from 'lucide-react';
+import { Input, Button } from '@librechat/client';
 import type { Agents } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
 import useAskQuestionsForm from '~/hooks/Input/useAskQuestionsForm';
+import AskOptions from '~/components/Chat/ask/options';
 import { splitOtherOption } from '~/utils/approval';
+import { AutoHeight } from '~/components/ui';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -17,14 +20,14 @@ export default function AskUserQuestions({
   actionId,
   questions,
   className,
-  onExpand,
-  onDismiss,
+  headerAction,
 }: {
   actionId: string;
   questions: Agents.AskUserQuestionBatchItem[];
   className?: string;
-  onExpand?: () => void;
-  onDismiss?: () => void;
+  /** The surface's own control (move to chat, move back), set in the
+   *  question's header row so it shares the form's inset. */
+  headerAction?: ReactNode;
 }) {
   const localize = useLocalize();
   const promptId = useId();
@@ -81,19 +84,12 @@ export default function AskUserQuestions({
     return null;
   }
 
-  const question = questions[activeIndex];
-  if (question == null) {
+  if (questions[activeIndex] == null) {
     return null;
   }
 
-  const { choices, otherLabel } = splitOtherOption(question.options);
-  const selected = Object.hasOwn(form.state.selected, question.id)
-    ? form.state.selected[question.id]
-    : [];
-  const text = Object.hasOwn(form.state.text, question.id) ? form.state.text[question.id] : '';
-  const legend = question.header ?? (stepped ? null : localize('com_ui_question_number', { 0: 1 }));
   /** Only worth surfacing when the gap is somewhere the user cannot see: the
-   *  last step's own blank textarea already explains a disabled Submit. */
+   *  last step's own blank answer field already explains a disabled Submit. */
   const remaining = total - Object.keys(form.answers).length;
   const showRemaining =
     stepped &&
@@ -102,168 +98,175 @@ export default function AskUserQuestions({
     firstUnanswered >= 0 &&
     firstUnanswered !== activeIndex;
 
+  const question = questions[activeIndex];
+  const { choices, otherLabel } = splitOtherOption(question.options);
+  const selected = Object.hasOwn(form.state.selected, question.id)
+    ? form.state.selected[question.id]
+    : [];
+  const selectedIndices = choices.flatMap((option, optionIndex) =>
+    selected.includes(option.value) ? [optionIndex] : [],
+  );
+  const text = Object.hasOwn(form.state.text, question.id) ? form.state.text[question.id] : '';
+
   return (
     <div className={cn('flex min-h-0 flex-col', className)}>
-      {(onExpand != null || onDismiss != null) && (
-        <div className="border-border-light flex shrink-0 items-center justify-end border-b px-2 py-1">
-          {onExpand != null && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={localize('com_ui_expand')}
-              className="text-text-secondary"
-              onClick={onExpand}
-            >
-              <ChevronUp className="h-4 w-4" aria-hidden="true" />
-            </Button>
-          )}
-          {/** The collapsed card is the ONLY surface left for a collapsed
-           *   batch, so it has to carry the popover's dismiss too — without it
-           *   the pause can only be answered or skipped. */}
-          {onDismiss != null && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={localize('com_ui_close')}
-              className="text-text-secondary"
-              onClick={onDismiss}
-            >
-              <X className="h-4 w-4" aria-hidden="true" />
-            </Button>
-          )}
-        </div>
-      )}
-      {stepped && (
-        <div className="border-border-light flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
-          <p className="text-text-secondary text-xs font-medium" aria-live="polite">
+      {/* Only the active step renders, laid out at its final size at once.
+          One `AutoHeight` holds everything above the buttons and clips only at
+          its bottom edge, so the header and title stay put and the footer
+          rides that edge as the card eases to the new height. */}
+      <AutoHeight>
+        {stepped && (
+          <p className="sr-only" aria-live="polite">
             {localize('com_ui_question_step', { 0: activeIndex + 1, 1: total })}
           </p>
-          <div
-            role="group"
-            aria-label={localize('com_ui_question_navigation')}
-            className="flex flex-wrap items-center justify-end"
-          >
-            {questions.map((item, index) => {
-              const isAnswered = Object.hasOwn(form.answers, item.id);
-              const isActive = index === activeIndex;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  disabled={navLocked}
-                  aria-current={isActive ? 'step' : undefined}
-                  aria-label={localize(
-                    isAnswered
-                      ? 'com_ui_question_step_answered'
-                      : 'com_ui_question_step_unanswered',
-                    { 0: index + 1 },
-                  )}
-                  className="flex h-6 items-center justify-center px-1"
-                  onClick={() => goToStep(index)}
-                >
-                  <span
-                    className={cn(
-                      'h-2 rounded-full',
-                      isActive ? 'w-4' : 'w-2',
-                      isAnswered ? 'bg-surface-submit' : 'bg-border-heavy',
-                    )}
-                  />
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-3">
-        {/* The height floor sits on the step itself, not the scroll container:
-            the container needs `min-h-0` to shrink inside the flex column, and
-            tailwind-merge would drop it for a second `min-h-*`. */}
-        <fieldset
-          ref={stepRef}
-          tabIndex={-1}
-          aria-labelledby={promptId}
-          className={cn('py-3 outline-hidden', stepped && 'min-h-40')}
-        >
-          {legend != null && (
-            <legend className="text-text-secondary mb-1 text-xs font-medium">{legend}</legend>
-          )}
-          <p
-            id={promptId}
-            className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]"
-          >
-            {question.question}
-          </p>
-          {question.description != null && question.description.length > 0 && (
-            <p className="text-text-secondary mt-1 text-sm [overflow-wrap:anywhere]">
-              {question.description}
+        )}
+        <div className="text-text-secondary flex shrink-0 items-start justify-between gap-2 px-3 pt-3">
+          {/* Bounded so a long prompt scrolls rather than pushing the composer
+              popover past the top of the viewport. */}
+          <div className="max-h-[25vh] min-w-0 flex-1 overflow-y-auto">
+            {question.header != null && question.header !== '' && (
+              <p className="mb-1 text-xs font-medium">{question.header}</p>
+            )}
+            <p
+              id={promptId}
+              className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]"
+            >
+              {question.question}
             </p>
-          )}
-          {choices.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-2" role="group">
-              {choices.map((option) => {
-                const isSelected = selected.includes(option.value);
-                return (
-                  <Button
-                    key={option.value}
-                    type="button"
-                    size="sm"
-                    variant={isSelected ? 'submit' : 'choice'}
-                    role={question.multiSelect === true ? 'checkbox' : undefined}
-                    aria-checked={question.multiSelect === true ? isSelected : undefined}
-                    aria-pressed={question.multiSelect === true ? undefined : isSelected}
-                    disabled={form.locked}
-                    className="h-auto min-h-9 max-w-full py-1.5 text-left [overflow-wrap:anywhere] whitespace-normal"
-                    onClick={() => handleSelectOption(question, option.value)}
-                  >
-                    {question.multiSelect === true && isSelected && (
-                      <Check className="mr-1.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                    )}
-                    {option.label}
-                  </Button>
-                );
-              })}
+            {question.description != null && question.description.length > 0 && (
+              <p className="mt-0.5 text-sm [overflow-wrap:anywhere]">{question.description}</p>
+            )}
+          </div>
+          {(stepped || headerAction != null) && (
+            <div className="flex shrink-0 items-center gap-1">
+              {stepped && (
+                <div
+                  role="group"
+                  aria-label={localize('com_ui_question_navigation')}
+                  className="flex items-center"
+                >
+                  {questions.map((item, index) => {
+                    const isAnswered = Object.hasOwn(form.answers, item.id);
+                    const isActive = index === activeIndex;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        disabled={navLocked}
+                        aria-current={isActive ? 'step' : undefined}
+                        aria-label={localize(
+                          isAnswered
+                            ? 'com_ui_question_step_answered'
+                            : 'com_ui_question_step_unanswered',
+                          { 0: index + 1 },
+                        )}
+                        className="flex h-7 items-center justify-center px-1"
+                        onClick={() => goToStep(index)}
+                      >
+                        <span
+                          className={cn(
+                            'h-2 rounded-full transition-all duration-300 ease-out motion-reduce:transition-none',
+                            isActive ? 'w-4' : 'w-2',
+                            isAnswered ? 'bg-surface-submit' : 'bg-border-heavy',
+                          )}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {headerAction}
             </div>
           )}
-          <TextareaAutosize
-            value={text}
-            disabled={form.locked}
-            onChange={(event) => form.setText(question, event.target.value)}
-            minRows={1}
-            maxRows={6}
-            placeholder={otherLabel ?? localize('com_ui_your_answer')}
-            className="border-border-xheavy bg-surface-primary text-text-primary mt-2 w-full resize-none rounded-md border p-2 text-sm"
-            aria-label={`${question.question} ${localize('com_ui_your_answer')}`}
-          />
-        </fieldset>
-      </div>
-      {(form.status === 'error' || form.status === 'expired') && (
-        <div className="text-text-warning flex items-center gap-1.5 px-3 py-1 text-xs">
-          <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
-          {form.status === 'expired'
-            ? localize('com_ui_approval_expired')
-            : localize('com_ui_ask_answer_error')}
         </div>
-      )}
-      {showRemaining && (
-        <button
-          type="button"
-          className="text-text-secondary hover:text-text-primary shrink-0 px-3 py-1 text-left text-xs hover:underline"
-          onClick={() => goToStep(firstUnanswered)}
-        >
-          {localize(
-            remaining === 1 ? 'com_ui_questions_remaining_one' : 'com_ui_questions_remaining',
-            { 0: remaining },
+        {/* `pb-1 -mb-1` keeps the answer field's focus ring inside the padding
+          box, so focusing it never counts as overflow and draws a scrollbar. */}
+        <div ref={scrollRef} className="-mb-1 max-h-[45vh] overflow-y-auto px-3 pb-1">
+          <fieldset
+            key={question.id}
+            ref={stepRef}
+            tabIndex={-1}
+            aria-labelledby={promptId}
+            className="flex flex-col gap-2 pt-3 outline-hidden"
+          >
+            {choices.length > 0 && (
+              <AskOptions
+                options={choices}
+                multiSelect={question.multiSelect === true}
+                checked={selectedIndices}
+                selected={question.multiSelect === true ? null : (selectedIndices[0] ?? null)}
+                selectedIsAnswer
+                locked={form.locked || text.trim().length > 0}
+                onActivate={(optionIndex) =>
+                  handleSelectOption(question, choices[optionIndex].value)
+                }
+                className="flex flex-col"
+              />
+            )}
+            <Input
+              value={text}
+              disabled={form.locked}
+              onChange={(event) => form.setText(question, event.target.value)}
+              onKeyDown={(event) => {
+                /* The composer popover sits inside the chat form, where Enter in a
+                   single-line field would submit the composer draft instead.
+                   Enter confirms this answer: the next step, or the batch. An Enter that
+                   confirms an IME composition is left alone, with the same Safari
+                   fallback as the composer. */
+                if (
+                  event.key !== 'Enter' ||
+                  event.nativeEvent.isComposing ||
+                  event.nativeEvent.keyCode === 229
+                ) {
+                  return;
+                }
+                event.preventDefault();
+                if (!isLastStep) {
+                  if (!navLocked) {
+                    refocusRef.current = true;
+                    goToStep(activeIndex + 1);
+                  }
+                  return;
+                }
+                form.submit();
+              }}
+              placeholder={otherLabel ?? localize('com_ui_your_answer')}
+              aria-label={`${question.question} ${localize('com_ui_your_answer')}`}
+            />
+          </fieldset>
+        </div>
+        <div className="shrink-0 px-3">
+          {(form.status === 'error' || form.status === 'expired') && (
+            <div className="text-text-warning flex items-center gap-1.5 pt-2 text-xs">
+              <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
+              {form.status === 'expired'
+                ? localize('com_ui_approval_expired')
+                : localize('com_ui_ask_answer_error')}
+            </div>
           )}
-        </button>
-      )}
+          {showRemaining && (
+            <button
+              type="button"
+              className="text-text-secondary hover:text-text-primary pt-2 text-left text-xs select-none hover:underline"
+              onClick={() => goToStep(firstUnanswered)}
+            >
+              {localize(
+                remaining === 1 ? 'com_ui_questions_remaining_one' : 'com_ui_questions_remaining',
+                { 0: remaining },
+              )}
+            </button>
+          )}
+        </div>
+      </AutoHeight>
       <div
         className={cn(
-          'border-border-light flex shrink-0 items-center gap-2 border-t p-3',
+          'flex shrink-0 items-center gap-2 p-3',
           stepped ? 'justify-between' : 'justify-end',
         )}
       >
         <Button
           type="button"
+          className="select-none"
           size="sm"
           variant="outline"
           disabled={form.locked}
@@ -275,6 +278,7 @@ export default function AskUserQuestions({
           {stepped && (
             <Button
               type="button"
+              className="select-none"
               size="sm"
               variant="outline"
               disabled={navLocked || activeIndex === 0}
@@ -286,6 +290,7 @@ export default function AskUserQuestions({
           {isLastStep ? (
             <Button
               type="button"
+              className="select-none"
               size="sm"
               variant="submit"
               disabled={!form.canSubmit}
@@ -298,6 +303,7 @@ export default function AskUserQuestions({
           ) : (
             <Button
               type="button"
+              className="select-none"
               size="sm"
               variant="submit"
               disabled={navLocked}

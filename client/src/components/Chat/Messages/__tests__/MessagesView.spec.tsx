@@ -157,6 +157,18 @@ describe('MessagesView pending steers', () => {
     expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-conversation-id', 'convo-2');
   });
 
+  it('pins the screenshot identity to the rendered transcript and replaces it on navigation', () => {
+    const view = render(<MessagesView messagesTree={messageTree} messages={messageTree} />);
+    const initialTarget = screen.getByTestId('screenshot-target');
+    expect(initialTarget).toHaveAttribute('data-conversation-id', 'convo-1');
+    const destinationTree = [{ ...messageTree[0], conversationId: 'convo-2' }];
+    view.rerender(<MessagesView messagesTree={destinationTree} messages={destinationTree} />);
+    const destinationTarget = screen.getByTestId('screenshot-target');
+    expect(destinationTarget).toHaveAttribute('data-conversation-id', 'convo-2');
+    expect(destinationTarget).not.toBe(initialTarget);
+    expect(initialTarget.isConnected).toBe(false);
+  });
+
   it('keeps recovery visible while the message tree is temporarily empty', () => {
     render(<MessagesView messagesTree={[]} messages={[]} />);
 

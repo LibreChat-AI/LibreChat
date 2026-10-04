@@ -21,6 +21,16 @@ import type { LocalizeFunction, TMessageProps } from '~/common';
 export const TEXT_KEY_DIVIDER = '|||';
 export const STREAM_START_FAILED_METADATA_KEY = 'streamStartFailed';
 
+/** A locally submitted user row is not canonical until the server acknowledges it. */
+export function isUnacknowledgedUserMessage(message: TMessage): boolean {
+  return (
+    message.isCreatedByUser === true &&
+    message.clientTimestamp != null &&
+    message.createdAt == null &&
+    !message.privacyRevision
+  );
+}
+
 type SiblingIndexLookup = (parentMessageId: string | null | undefined) => number;
 
 export type BranchSiblingIndex = {
@@ -886,6 +896,7 @@ export function areMessageFieldsEqual(
   return (
     prevMsg.messageId === nextMsg.messageId &&
     prevMsg.text === nextMsg.text &&
+    prevMsg.privacyRevision === nextMsg.privacyRevision &&
     prevMsg.error === nextMsg.error &&
     prevMsg.unfinished === nextMsg.unfinished &&
     /** Read by the row: `useGenerationsByLatest` gates the Continue button on it and

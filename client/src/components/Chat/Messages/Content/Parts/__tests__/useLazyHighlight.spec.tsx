@@ -1,5 +1,5 @@
-import { act, renderHook, waitFor } from '@testing-library/react';
-import useLazyHighlight from '../useLazyHighlight';
+import { act, render, renderHook, waitFor } from '@testing-library/react';
+import useLazyHighlight, { HIGHLIGHT_THROTTLE_MS } from '../useLazyHighlight';
 
 /** Real grammars, behind spies, so the count of tokenizations is observable. */
 const mockHighlightCalls: string[] = [];
@@ -108,6 +108,47 @@ describe('useLazyHighlight', () => {
     rerender({ code: undefined, lang: 'javascript' });
     await settle();
     expect(result.current).toBeNull();
+  });
+
+  it.each([
+    ['bash', 'echo "hello"\n'],
+    ['python', 'print("hello")\n'],
+    ['javascript', 'const greeting = "hello";\n'],
+  ])('keeps %s streaming text current and highlights only after it settles', async (lang, line) => {
+    jest.useFakeTimers();
+    try {
+      function Code({ code }: { code: string }) {
+        return <code>{useLazyHighlight(code, lang)}</code>;
+      }
+      let code = line;
+      const { container, rerender } = render(<Code code={code} />);
+      await settle();
+      expect(container.querySelector('span')).not.toBeNull();
+      mockHighlightCalls.length = 0;
+
+      for (let i = 0; i < 20; i++) {
+        act(() => jest.advanceTimersByTime(50));
+        code += line;
+        rerender(<Code code={code} />);
+        expect(container.textContent).toBe(code);
+        expect(container.querySelector('span')).toBeNull();
+        expect(mockHighlightCalls).toEqual([]);
+      }
+
+      act(() => jest.advanceTimersByTime(HIGHLIGHT_THROTTLE_MS - 1));
+      expect(container.querySelector('span')).toBeNull();
+      act(() => jest.advanceTimersByTime(1));
+      expect(container.textContent).toBe(code);
+      expect(container.querySelector('span')).not.toBeNull();
+      expect(mockHighlightCalls).toEqual([lang]);
+
+      rerender(<Code code={code} />);
+      act(() => jest.advanceTimersByTime(HIGHLIGHT_THROTTLE_MS * 2));
+      expect(container.querySelector('span')).not.toBeNull();
+      expect(mockHighlightCalls).toEqual([lang]);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('highlights again when the code changes', async () => {

@@ -554,7 +554,7 @@ describe('SubagentThreadPanel', () => {
       { keepPreviousData: true },
     );
     expect(mockUseSubagentActivityStream).toHaveBeenCalledWith(selection, false);
-    expect(screen.getByText('Research child')).toBeInTheDocument();
+    expect(screen.getByText('Analyst One')).toBeInTheDocument();
     expect(screen.queryByText('com_ui_subagent_depth')).not.toBeInTheDocument();
     expect(screen.getByText('Investigate the release.')).toBeInTheDocument();
     expect(screen.getByText('The release is ready.')).toBeInTheDocument();

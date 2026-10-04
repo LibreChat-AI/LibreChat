@@ -2,7 +2,7 @@ import { useState } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import { X, ChevronLeft } from 'lucide-react';
 import { SettingsTabValues } from 'librechat-data-provider';
-import { Button, useMediaQuery, DIALOG_SCRIM_CLASS } from '@librechat/client';
+import { Button, DialogLayer, useMediaQuery, DIALOG_SCRIM_CLASS } from '@librechat/client';
 import { Dialog, DialogPanel, DialogTitle, Transition, TransitionChild } from '@headlessui/react';
 import type { TDialogProps } from '~/common';
 import type { SettingsTab } from './types';
@@ -101,38 +101,42 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
                   <X className="h-5 w-5" aria-hidden="true" />
                 </Button>
               </DialogTitle>
-              <Tabs.Root
-                value={effectiveTab}
-                onValueChange={(v) => setActiveTab(v as SettingsTab)}
-                orientation="vertical"
-                className="flex flex-1 flex-col gap-4 overflow-hidden p-5 md:flex-row md:gap-6"
-              >
-                {showSidebar && (
-                  <Sidebar
-                    ctx={ctx}
-                    query={query}
-                    onQueryChange={setQuery}
-                    onSelectTab={selectTab}
-                    showChevron={isSmallScreen}
-                    hideTabs={hideTabs}
-                  />
-                )}
-                {showContent && (
-                  <div className="flex-1 overflow-y-auto md:pr-1">
-                    {searching ? (
-                      <Content activeTab={effectiveTab} query={query} ctx={ctx} />
-                    ) : (
-                      <Tabs.Content
-                        value={effectiveTab}
-                        tabIndex={-1}
-                        className="focus:outline-hidden"
-                      >
+              {/* A Headless UI panel, so it counts itself as a dialog level for the popovers its
+                  settings open (Select lists, menus, tooltips) to layer above it. */}
+              <DialogLayer>
+                <Tabs.Root
+                  value={effectiveTab}
+                  onValueChange={(v) => setActiveTab(v as SettingsTab)}
+                  orientation="vertical"
+                  className="flex flex-1 flex-col gap-4 overflow-hidden p-5 md:flex-row md:gap-6"
+                >
+                  {showSidebar && (
+                    <Sidebar
+                      ctx={ctx}
+                      query={query}
+                      onQueryChange={setQuery}
+                      onSelectTab={selectTab}
+                      showChevron={isSmallScreen}
+                      hideTabs={hideTabs}
+                    />
+                  )}
+                  {showContent && (
+                    <div className="flex-1 overflow-y-auto md:pr-1">
+                      {searching ? (
                         <Content activeTab={effectiveTab} query={query} ctx={ctx} />
-                      </Tabs.Content>
-                    )}
-                  </div>
-                )}
-              </Tabs.Root>
+                      ) : (
+                        <Tabs.Content
+                          value={effectiveTab}
+                          tabIndex={-1}
+                          className="focus:outline-hidden"
+                        >
+                          <Content activeTab={effectiveTab} query={query} ctx={ctx} />
+                        </Tabs.Content>
+                      )}
+                    </div>
+                  )}
+                </Tabs.Root>
+              </DialogLayer>
             </DialogPanel>
           </div>
         </TransitionChild>

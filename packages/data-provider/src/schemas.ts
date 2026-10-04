@@ -7,6 +7,7 @@ import type { TFile } from './types/files';
 import {
   CODE_ENVIRONMENT_MODES,
   CODE_WORKSPACE_ID_PATTERN,
+  CODE_WORKSPACE_CHECKOUT_MODES,
   MAX_AGENT_CODE_ENVIRONMENT_CHOICES,
 } from './code/workspace';
 import { userSubmittedMessageFieldPathSchema } from './filters';
@@ -944,6 +945,8 @@ export const tMessageSchema = z.object({
   /** @deprecated */
   generation: z.string().nullable().optional(),
   isCreatedByUser: z.boolean(),
+  /** Opaque revision of the separately authorized owner display. */
+  privacyRevision: z.string().optional(),
   /** True when the complete stored row came from outside the model. */
   isUserSubmitted: z.boolean().optional(),
   /** JSON pointers to caller-authored fields in an otherwise mixed model response. */
@@ -1200,6 +1203,7 @@ export const tConversationSchema = z.object({
         .object({
           environmentId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
           workspaceId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
+          checkout: z.enum(CODE_WORKSPACE_CHECKOUT_MODES).optional(),
           agentIds: z
             .array(z.string().regex(CODE_WORKSPACE_ID_PATTERN))
             .min(1)
@@ -1210,6 +1214,9 @@ export const tConversationSchema = z.object({
     )
     .optional(),
   title: z.string().nullable().or(z.literal('New Chat')).default('New Chat'),
+  /** Server-owned title authority; ordinary chat saves cannot set or clear it. */
+  titleSetByUser: z.boolean().optional(),
+  titleRevision: z.number().int().nonnegative().optional(),
   user: z.string().optional(),
   messages: z.array(z.string()).optional(),
   tools: z.union([z.array(tPluginSchema), z.array(z.string())]).optional(),
@@ -1251,7 +1258,9 @@ export const tConversationSchema = z.object({
   lastResponseMessageId: z.string().optional(),
   /** True only while `lastResponseAt` is the synthetic marker from "mark unread". */
   lastResponseIsManual: z.boolean().optional(),
-  /** Set when the user has the newest message on screen; compared against `lastResponseAt`. */
+  /** True: manual reminder; false: real reply; absent: legacy/unknown intent. */
+  isMarkedUnread: z.boolean().optional(),
+  /** Read acknowledgement; epoch is the explicit unseen-reply watermark. */
   lastSeenAt: z.string().optional(),
   /* Files */
   resendFiles: z.boolean().optional(),
@@ -1317,11 +1326,14 @@ export const tPresetSchema = tConversationSchema
     createdAt: true,
     updatedAt: true,
     title: true,
+    titleSetByUser: true,
+    titleRevision: true,
     /* Runtime unseen-reply state must not ride into presets: applying one would stamp
        stale timestamps back onto conversations. */
     lastResponseAt: true,
     lastResponseMessageId: true,
     lastResponseIsManual: true,
+    isMarkedUnread: true,
     lastSeenAt: true,
   })
   .merge(

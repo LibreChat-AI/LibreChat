@@ -56,10 +56,13 @@ function ConvoOptions({
   isUnseen = false,
   retainView,
   renameHandler,
+  canRename = true,
   isPopoverActive,
   setIsPopoverActive,
   isActiveConvo,
   isShiftHeld = false,
+  isGenerating = false,
+  contextMenuPosition,
 }: {
   conversationId: string | null;
   chatProjectId?: string | null;
@@ -70,10 +73,13 @@ function ConvoOptions({
   isUnseen?: boolean;
   retainView: () => void;
   renameHandler: (e: MouseEvent) => void;
+  canRename?: boolean;
   isPopoverActive: boolean;
   setIsPopoverActive: (open: boolean) => void;
   isActiveConvo: boolean;
   isShiftHeld?: boolean;
+  isGenerating?: boolean;
+  contextMenuPosition?: { x: number; y: number };
 }) {
   const localize = useLocalize();
   const queryClient = useQueryClient();
@@ -354,6 +360,7 @@ function ConvoOptions({
       {
         label: localize('com_ui_rename'),
         onClick: renameHandler,
+        disabled: !canRename,
         icon: <Pen className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
       },
       {
@@ -414,6 +421,7 @@ function ConvoOptions({
       shareHandler,
       startupConfig,
       renameHandler,
+      canRename,
       deleteHandler,
       isArchiveLoading,
       isArchived,
@@ -431,7 +439,7 @@ function ConvoOptions({
   );
 
   const buttonClassName = rowActionClasses({
-    visible: isActiveConvo === true || isPopoverActive || isSmallScreen,
+    visible: isActiveConvo === true || isPopoverActive || isSmallScreen || isGenerating,
   });
 
   if (isShiftHeld && isActiveConvo && !isPopoverActive && !showShareDialog && !showDeleteDialog) {
@@ -473,8 +481,13 @@ function ConvoOptions({
          * `document.body` outside it.
          */
         portal={true}
+        getAnchorRect={
+          contextMenuPosition ? () => ({ ...contextMenuPosition, width: 0, height: 0 }) : undefined
+        }
         menuId={menuId}
         focusLoop={true}
+        finalFocus={menuButtonRef}
+        autoFocusOnShow={true}
         className="z-[125]"
         unmountOnHide={true}
         isOpen={isPopoverActive}
@@ -544,12 +557,15 @@ export default memo(ConvoOptions, (prevProps, nextProps) => {
   return (
     prevProps.conversationId === nextProps.conversationId &&
     prevProps.title === nextProps.title &&
+    prevProps.canRename === nextProps.canRename &&
     prevProps.chatProjectId === nextProps.chatProjectId &&
     prevProps.isPinned === nextProps.isPinned &&
     prevProps.isArchived === nextProps.isArchived &&
     prevProps.isUnseen === nextProps.isUnseen &&
     prevProps.isPopoverActive === nextProps.isPopoverActive &&
     prevProps.isActiveConvo === nextProps.isActiveConvo &&
-    prevProps.isShiftHeld === nextProps.isShiftHeld
+    prevProps.isShiftHeld === nextProps.isShiftHeld &&
+    prevProps.isGenerating === nextProps.isGenerating &&
+    prevProps.contextMenuPosition === nextProps.contextMenuPosition
   );
 });

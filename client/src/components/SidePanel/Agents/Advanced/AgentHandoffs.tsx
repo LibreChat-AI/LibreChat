@@ -47,6 +47,18 @@ const AgentHandoffs: React.FC<AgentHandoffsProps> = ({ field, currentAgentId }) 
       ),
     [options, selectedAgentIds],
   );
+  const rowOptionsByIndex = useMemo(
+    () =>
+      edges.map((edge) => {
+        const targetAgentId = getTargetAgentId(edge.to);
+        return options.filter(
+          (option) =>
+            typeof option.value === 'string' &&
+            (option.value === targetAgentId || !selectedAgentIds.has(option.value)),
+        );
+      }),
+    [options, selectedAgentIds, edges],
+  );
 
   useEffect(() => {
     if (!newAgentId) {
@@ -126,11 +138,7 @@ const AgentHandoffs: React.FC<AgentHandoffsProps> = ({ field, currentAgentId }) 
           const targetAgentId = getTargetAgentId(edge.to);
           const isExpanded = expandedIndices.has(idx);
           const targetName = getAgent(targetAgentId)?.name ?? localize('com_ui_agent');
-          const rowOptions = options.filter(
-            (option) =>
-              typeof option.value === 'string' &&
-              (option.value === targetAgentId || !selectedAgentIds.has(option.value)),
-          );
+          const rowOptions = rowOptionsByIndex[idx];
 
           return (
             <React.Fragment key={idx}>

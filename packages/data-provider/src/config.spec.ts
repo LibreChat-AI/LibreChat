@@ -10,6 +10,7 @@ import {
   DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
   codeEnvironmentUserConfigSchema,
   interfaceSchema,
+  supportsConversationTitleOwnership,
   CODE_ENVIRONMENT_ADMISSION_MAX_MS,
   excludedKeys,
   DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
@@ -41,6 +42,32 @@ const endpointsConfig: TEndpointsConfig = {
   'Some Endpoint': { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
   Gemini: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
 };
+
+describe('host-side file edit limits', () => {
+  it('keeps configuration optional and resolves safe defaults when configured', () => {
+    expect(agentsEndpointSchema.parse({}).hostFileEdits).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ hostFileEdits: {} }).hostFileEdits).toEqual({
+      maxEdits: 100,
+      maxWorkBytes: 67108864,
+      maxOccurrences: 100000,
+      timeoutMs: 2000,
+      maxConcurrent: 2,
+    });
+  });
+  it.each([
+    { maxEdits: 101 },
+    { maxEdits: 0 },
+    { maxWorkBytes: 0 },
+    { maxOccurrences: 1000001 },
+    { timeoutMs: 0 },
+    { timeoutMs: 10001 },
+    { maxConcurrent: 9 },
+    { maxConcurrent: 1.5 },
+    { ignored: true },
+  ])('rejects unsafe limits %p', (hostFileEdits) => {
+    expect(agentsEndpointSchema.safeParse({ hostFileEdits }).success).toBe(false);
+  });
+});
 
 describe('authenticated 2FA management rate limits', () => {
   it('accepts an account budget and defaults an empty configuration to seven requests', () => {
@@ -963,8 +990,18 @@ describe('attached code environment user config schema', () => {
     });
   });
 
+  it('keeps checkout selection disabled by default without creating workspace policy', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({})).not.toHaveProperty('workspaces');
+    expect(codeEnvironmentUserConfigSchema.parse({ workspaces: {} }).workspaces).toEqual({
+      allowCheckoutSelection: false,
+    });
+  });
+
   it.each([
     [{ linkedWorktrees: true }, true],
+    [{ allowCheckoutSelection: true }, true],
+    [{ allowCheckoutSelection: false }, true],
+    [{ allowCheckoutSelection: 'yes' }, false],
     [{ linkedWorktrees: 'yes' }, false],
     [{ linkedWorktrees: true, subdirectories: true }, false],
   ])('validates the linked worktree lane toggle %p', (workspaces, valid) => {
@@ -1053,6 +1090,19 @@ describe('agent background completion batch config', () => {
       endpoints: { agents: { backgroundTasks: {} } },
     });
     expect(defaults.endpoints?.agents?.backgroundTasks?.completionResultBatchSize).toBe(8);
+    expect(defaults.endpoints?.agents?.backgroundTasks?.completionReceiptBatching).toBe(true);
+    expect(
+      configSchema.parse({
+        version: '1.0',
+        endpoints: { agents: { backgroundTasks: { completionReceiptBatching: false } } },
+      }).endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
+    ).toBe(false);
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { backgroundTasks: { completionReceiptBatching: 'false' } } },
+      }).success,
+    ).toBe(false);
 
     for (const completionResultBatchSize of [0, 17, 1.5]) {
       expect(
@@ -1161,6 +1211,7 @@ describe('agent background task config', () => {
     }
     expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({
       completionResultBatchSize: 8,
+      completionReceiptBatching: true,
       completionWakeups: true,
       completionResultMaxChars: 24 * 1024,
       ordinaryToolCancellation: false,
@@ -1180,6 +1231,7 @@ describe('agent background task config', () => {
     }
     expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({
       completionResultBatchSize: 8,
+      completionReceiptBatching: true,
       completionWakeups: false,
       completionResultMaxChars: 24 * 1024,
       ordinaryToolCancellation: false,
@@ -1199,6 +1251,7 @@ describe('agent background task config', () => {
     }
     expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({
       completionResultBatchSize: 8,
+      completionReceiptBatching: true,
       completionWakeups: true,
       completionResultMaxChars: 24 * 1024,
       ordinaryToolCancellation: true,
@@ -2421,6 +2474,116 @@ describe('built-in endpoint model lists', () => {
     'rejects a non-array models value for %s',
     (endpoint) => {
       expect(parse({ [endpoint]: { models: 'model-a' } }).success).toBe(false);
+    },
+  );
+});
+
+describe('subagent activity policy', () => {
+  it('defaults operational controls through the config schema', () => {
+    const parsed = configSchema.parse({
+      version: '1.3.17',
+      endpoints: { agents: { subagentActivity: {} } },
+    });
+    expect(parsed.endpoints?.agents?.subagentActivity).toEqual({
+      replayTtlMs: 300_000,
+      publicationTimeoutMs: 1_000,
+      retryAttempts: 3,
+      retryBaseDelayMs: 100,
+      recoveryDelayMs: 1_000,
+      memoryMaxStreams: 1_000,
+      memoryMaxBytes: 16_777_216,
+    });
+  });
+  it('retains operator overrides and rejects unsafe budgets', () => {
+    const config = {
+      version: '1.3.17',
+      endpoints: {
+        agents: {
+          subagentActivity: {
+            replayTtlMs: 3_600_000,
+            publicationTimeoutMs: 5_000,
+            retryAttempts: 2,
+            memoryMaxBytes: 65_536,
+          },
+        },
+      },
+    };
+    expect(configSchema.parse(config).endpoints?.agents?.subagentActivity).toMatchObject(
+      config.endpoints.agents.subagentActivity,
+    );
+    expect(
+      configSchema.safeParse({
+        ...config,
+        endpoints: { agents: { subagentActivity: { retryAttempts: 0 } } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('conversation title ownership rollout', () => {
+  it('defaults running rename off and accepts only an explicit deployment opt-in', () => {
+    expect(interfaceSchema.parse({}).runningChatRename).toBe(false);
+    expect(interfaceSchema.parse(undefined).runningChatRename).toBe(false);
+    expect(interfaceSchema.parse({ runningChatRename: true }).runningChatRename).toBe(true);
+  });
+  it('fails closed when an old replica omits the version or the operator leaves the fence off', () => {
+    expect(supportsConversationTitleOwnership(undefined)).toBe(false);
+    expect(supportsConversationTitleOwnership({ interface: { runningChatRename: true } })).toBe(
+      false,
+    );
+    expect(supportsConversationTitleOwnership({ conversationTitleOwnershipVersion: 1 })).toBe(
+      false,
+    );
+    expect(
+      supportsConversationTitleOwnership({
+        conversationTitleOwnershipVersion: 1,
+        interface: { runningChatRename: true },
+      }),
+    ).toBe(true);
+  });
+});
+
+describe('workspace admission configuration', () => {
+  it('preserves absent defaults and resolves an explicit admission policy', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({})).toEqual({});
+    expect(codeEnvironmentUserConfigSchema.parse({ admission: {} }).admission).toEqual({
+      initialDelayMs: 1_000,
+      maxDelayMs: 30_000,
+      multiplier: 1,
+      jitterRatio: 0,
+    });
+    expect(
+      codeEnvironmentUserConfigSchema.parse({
+        admission: { queueWaitMs: 180_000, multiplier: 2, jitterRatio: 0.2 },
+        limits: { maxRequestTimeoutMs: 220_000, maxRunTimeoutMs: 400_000 },
+      }),
+    ).toMatchObject({
+      admission: { queueWaitMs: 180_000, multiplier: 2, jitterRatio: 0.2 },
+      limits: { maxRequestTimeoutMs: 220_000, maxRunTimeoutMs: 400_000 },
+    });
+  });
+
+  it.each([
+    { queueWaitMs: 0 },
+    { queueWaitMs: 300_001 },
+    { initialDelayMs: 99 },
+    { initialDelayMs: 2_000, maxDelayMs: 1_000 },
+    { multiplier: 0 },
+    { jitterRatio: -0.1 },
+    { jitterRatio: 1.1 },
+    { maxDelayMs: Infinity },
+    { queueWaitMs: 1.5 },
+    { unexpected: true },
+  ])('rejects an invalid policy %j', (admission) => {
+    expect(codeEnvironmentUserConfigSchema.safeParse({ admission }).success).toBe(false);
+  });
+
+  it.each([0, 1, -1, 1.5, 20_000, 610_001, Infinity])(
+    'rejects an invalid run deadline %s',
+    (maxRunTimeoutMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { maxRunTimeoutMs } }).success,
+      ).toBe(false);
     },
   );
 });

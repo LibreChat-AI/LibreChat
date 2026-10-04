@@ -615,7 +615,8 @@ test.describe('mid-run steering and queuing', () => {
     await expect(row).toBeVisible({ timeout: 15000 });
     await expect(row.getByRole('button', { name: 'Remove message', exact: true })).toBeVisible();
 
-    const edit = row.getByRole('button', { name: 'Edit message', exact: true });
+    await row.getByRole('button', { name: 'More options' }).click();
+    const edit = page.getByRole('menuitem', { name: 'Edit message', exact: true });
     await expect(edit).toBeVisible();
     await edit.click();
 

@@ -355,13 +355,20 @@ describe('fireSchedule', () => {
 
   it('marks a Run Now trigger as manual for downstream limiter policy', async () => {
     const { methods } = makeMethods();
+    const deps = makeDeps(methods);
+    const preflight = jest.spyOn(deps, 'preflightMCP');
     const enqueueTrigger = jest.fn<
       ReturnType<ScheduleEngineDeps['enqueueTrigger']>,
       Parameters<ScheduleEngineDeps['enqueueTrigger']>
     >(async () => undefined);
-    await fireSchedule(makeDeps(methods, { enqueueTrigger }), makeSchedule(), LIMITS, dueAt(), {
+    await fireSchedule({ ...deps, enqueueTrigger }, makeSchedule(), LIMITS, dueAt(), {
       manual: true,
     });
+    expect(preflight).toHaveBeenCalledWith(
+      'agent-1',
+      expect.anything(),
+      expect.objectContaining({ manual: true }),
+    );
     const envelope = enqueueTrigger.mock.calls[0][0];
     expect(envelope).toMatchObject({
       mode: 'fire',

@@ -1737,11 +1737,88 @@ describe('User parameter passing tests', () => {
       ).rejects.toThrow();
       expect(receipt).toHaveBeenCalledWith({
         error,
+        identity: undefined,
         streamId: 'scheduled-conversation',
         jobCreatedAt: 42,
         userId: 'scheduled-owner',
         serverName: 'test-server',
       });
+    });
+
+    it('carries captured schedule identity into the transport failure receipt', async () => {
+      const {
+        createScheduleMCPExecution,
+        createMCPRequestContext,
+        ScheduledMCPPolicyError,
+      } = require('@librechat/api');
+      const user = { id: 'scheduled-owner', tenantId: 'tenant', role: 'USER' };
+      const identity = {
+        scheduleId: 'schedule',
+        ownerId: user.id,
+        tenantId: 'tenant',
+        agentId: 'root',
+        invocationMode: 'delegated',
+      };
+      const context = createMCPRequestContext();
+      const execution = createScheduleMCPExecution({
+        storage: {
+          readScheduleMCPConsent: async () => ({
+            agentId: 'root',
+            enabled: true,
+            configRevision: 0,
+            enrollment: null,
+            compatible: true,
+          }),
+        },
+        loadAuthorization: async () => {
+          throw new Error('Unused legacy policy loader');
+        },
+      });
+      await execution.attach(context, identity, 'invoke');
+      const error = new ScheduledMCPPolicyError('consent_revoked', 'test-server', 'child');
+      const receipt = require('~/server/services/Schedules').recordMCPToolAuthFailure;
+      require('~/models').getRoleByName.mockResolvedValue({
+        permissions: { [PermissionTypes.MCP_SERVERS]: { [Permissions.USE]: true } },
+      });
+      mockGetMCPManager.mockReturnValue({ callTool: jest.fn().mockRejectedValue(error) });
+      const tool = await createMCPTool({
+        agentId: 'child',
+        user,
+        toolKey: `test-tool${D}test-server`,
+        provider: 'openai',
+        streamId: 'scheduled-conversation',
+        jobCreatedAt: 42,
+        requestScopedConnections: context,
+        config: { type: 'streamable-http', url: 'https://mcp.example.com' },
+        availableTools: {
+          [`test-tool${D}test-server`]: {
+            function: { description: 'Test MCP', parameters: { type: 'object', properties: {} } },
+          },
+        },
+      });
+      // Model/run metadata cannot replace the tool-construction identity.
+      const expectedIdentity = { ...identity };
+      identity.scheduleId = 'mutated';
+      await expect(
+        tool.func({}, undefined, {
+          configurable: {
+            user,
+            requestScopedConnections: createMCPRequestContext(),
+            scheduleId: 'forged',
+          },
+          metadata: { provider: 'openai', thread_id: 'scheduled-conversation', run_id: 'run' },
+          toolCall: {},
+        }),
+      ).rejects.toBe(error);
+      expect(receipt).toHaveBeenCalledWith({
+        error,
+        identity: expectedIdentity,
+        streamId: 'scheduled-conversation',
+        jobCreatedAt: 42,
+        userId: 'scheduled-owner',
+        serverName: 'test-server',
+      });
+      expect(Object.isFrozen(receipt.mock.calls.at(-1)[0].identity)).toBe(true);
     });
 
     it('keeps shared OAuth recovery alive when one tool caller aborts', async () => {

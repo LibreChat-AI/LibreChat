@@ -970,70 +970,105 @@ describe('MCP Routes', () => {
       expect(mockFlowManager.completeFlow).not.toHaveBeenCalled();
     });
 
-    it('refreshes a previous account binding and recovers after a stale callback consumes CSRF', async () => {
-      const flowId = 'test-user-id:test-server';
-      const mockFlowManager = {
-        getFlowState: jest.fn().mockResolvedValue({
-          status: 'PENDING',
-          createdAt: Date.now(),
-        }),
-        completeFlow: jest.fn().mockResolvedValue(true),
-        deleteFlow: jest.fn().mockResolvedValue(true),
-      };
+    describe.each(['', '/chat', '/apps/librechat'])(
+      'browser binding at public path %p',
+      (publicPath) => {
+        let originalEnv;
+        beforeEach(() => {
+          originalEnv = process.env;
+          process.env = {
+            ...originalEnv,
+            DOMAIN_CLIENT: `http://localhost${publicPath}`,
+            DOMAIN_SERVER: `http://localhost${publicPath}`,
+            SESSION_COOKIE_SECURE: 'false',
+          };
+        });
+        afterEach(() => {
+          process.env = originalEnv;
+        });
 
-      getLogStores.mockReturnValue({});
-      require('~/config').getFlowStateManager.mockReturnValue(mockFlowManager);
-      MCPOAuthHandler.getFlowState.mockResolvedValue({
-        state: flowId,
-        serverName: 'test-server',
-        userId: 'test-user-id',
-        metadata: {},
-        clientInfo: {},
-        codeVerifier: 'current-verifier',
-      });
-      mockOAuthCompletion({ access_token: 'test-token' });
-      mockTokenStorageCommit();
-      mockRegistryInstance.getServerConfig.mockResolvedValue({});
+        it('refreshes a previous account binding and recovers after a stale callback consumes CSRF', async () => {
+          const flowId = 'test-user-id:test-server';
+          const mockFlowManager = {
+            getFlowState: jest.fn().mockResolvedValue({
+              status: 'PENDING',
+              createdAt: Date.now(),
+            }),
+            completeFlow: jest.fn().mockResolvedValue(true),
+            deleteFlow: jest.fn().mockResolvedValue(true),
+          };
 
-      const mockMcpManager = createLeasedMcpManager({
-        fetchToolsSnapshot: jest.fn().mockResolvedValue({ tools: [], complete: true }),
-      });
-      require('~/config').getMCPManager.mockReturnValue(mockMcpManager);
-      require('~/config').getOAuthReconnectionManager.mockReturnValue({
-        clearReconnection: jest.fn(),
-      });
-      require('~/server/services/Config/mcp').updateMCPServerTools.mockResolvedValue();
+          getLogStores.mockReturnValue({});
+          require('~/config').getFlowStateManager.mockReturnValue(mockFlowManager);
+          MCPOAuthHandler.getFlowState.mockResolvedValue({
+            state: flowId,
+            serverName: 'test-server',
+            userId: 'test-user-id',
+            metadata: {},
+            clientInfo: {},
+            codeVerifier: 'current-verifier',
+          });
+          mockOAuthCompletion({ access_token: 'test-token' });
+          mockTokenStorageCommit();
+          mockRegistryInstance.getServerConfig.mockResolvedValue({});
 
-      const browser = request.agent(app);
-      const binding = await browser
-        .post('/api/mcp/test-server/oauth/bind')
-        .set('Cookie', [`oauth_session=${generateTestCsrfToken('previous-user-id')}`])
-        .expect(200);
-      expect(binding.headers['set-cookie']).toEqual(
-        expect.arrayContaining([
-          expect.stringContaining(`oauth_session=${generateTestCsrfToken('test-user-id')}`),
-        ]),
-      );
+          const mockMcpManager = createLeasedMcpManager({
+            fetchToolsSnapshot: jest.fn().mockResolvedValue({ tools: [], complete: true }),
+          });
+          require('~/config').getMCPManager.mockReturnValue(mockMcpManager);
+          require('~/config').getOAuthReconnectionManager.mockReturnValue({
+            clearReconnection: jest.fn(),
+          });
+          require('~/server/services/Config/mcp').updateMCPServerTools.mockResolvedValue();
 
-      MCPOAuthHandler.resolveStateToFlowId.mockResolvedValueOnce(flowId);
-      const staleResponse = await browser
-        .get('/api/mcp/test-server/oauth/callback')
-        .query({ code: 'stale-auth-code', state: 'superseded-attempt-state' });
+          const publicApp = express();
+          publicApp.use(cookieParser());
+          publicApp.use((req, _res, next) => {
+            req.user = { id: 'test-user-id' };
+            next();
+          });
+          publicApp.use(`${publicPath}/api/mcp`, mcpRouter);
+          const browser = request.agent(publicApp);
+          const binding = await browser
+            .post(`${publicPath}/api/mcp/test-server/oauth/bind`)
+            .set('Cookie', [`oauth_session=${generateTestCsrfToken('previous-user-id')}`])
+            .expect(200);
+          expect(binding.headers['set-cookie']).toEqual(
+            expect.arrayContaining([
+              expect.stringContaining(`oauth_session=${generateTestCsrfToken('test-user-id')}`),
+              expect.stringContaining(`Path=${publicPath}/api/mcp;`),
+              expect.stringContaining(`Path=${publicPath}/api;`),
+            ]),
+          );
 
-      const basePath = getBasePath();
-      expect(staleResponse.status).toBe(302);
-      expect(staleResponse.headers.location).toBe(`${basePath}/oauth/error?error=invalid_state`);
-      expect(MCPOAuthHandler.completeOAuthFlow).not.toHaveBeenCalled();
+          MCPOAuthHandler.resolveStateToFlowId.mockResolvedValueOnce(flowId);
+          const staleResponse = await browser
+            .get(`${publicPath}/api/mcp/test-server/oauth/callback`)
+            .query({ code: 'stale-auth-code', state: 'superseded-attempt-state' });
 
-      /** The stale callback consumed the CSRF cookie; the initiating browser retains its session binding. */
-      const legitResponse = await browser
-        .get('/api/mcp/test-server/oauth/callback')
-        .query({ code: 'current-auth-code', state: flowId });
+          const basePath = getBasePath();
+          expect(staleResponse.status).toBe(302);
+          expect(staleResponse.headers.location).toBe(
+            `${basePath}/oauth/error?error=invalid_state`,
+          );
+          expect(MCPOAuthHandler.completeOAuthFlow).not.toHaveBeenCalled();
+          expect(MCPTokenStorage.storeTokens).not.toHaveBeenCalled();
+          expect(mockFlowManager.completeFlow).not.toHaveBeenCalled();
+          expect(staleResponse.headers['set-cookie']).toEqual([
+            expect.stringContaining(`Path=${publicPath}/api/mcp;`),
+          ]);
 
-      expect(legitResponse.status).toBe(302);
-      expect(legitResponse.headers.location).toContain(`${basePath}/oauth/success`);
-      expect(MCPOAuthHandler.completeOAuthFlow).toHaveBeenCalledTimes(1);
-    });
+          /** The stale callback consumed the CSRF cookie; the initiating browser retains its session binding. */
+          const legitResponse = await browser
+            .get(`${publicPath}/api/mcp/test-server/oauth/callback`)
+            .query({ code: 'current-auth-code', state: flowId });
+
+          expect(legitResponse.status).toBe(302);
+          expect(legitResponse.headers.location).toContain(`${basePath}/oauth/success`);
+          expect(MCPOAuthHandler.completeOAuthFlow).toHaveBeenCalledTimes(1);
+        });
+      },
+    );
 
     describe('browser binding for active PENDING flows', () => {
       it.each([

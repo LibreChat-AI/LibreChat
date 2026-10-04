@@ -517,16 +517,10 @@ describe('BashCall output pane', () => {
   const numbered = (count: number) =>
     Array.from({ length: count }, (_, i) => `line ${i + 1}`).join('\n');
 
-  it('collapses long output to its tail and expands to the full text', () => {
+  it('shows long output in full with no show more toggle', () => {
     finished(numbered(40));
-    const pre = screen.getByText(/line 40/);
-    const shown = () => (pre.textContent ?? '').split('\n');
-    expect(shown()).toEqual(numbered(40).split('\n').slice(-15));
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-    expect(shown()).toHaveLength(40);
-    expect(shown()[0]).toBe('line 1');
-    expect(screen.getByRole('button', { name: 'Show less' })).toBeInTheDocument();
+    expect(screen.getByText(/line 40/).textContent).toBe(numbered(40));
+    expect(screen.queryByRole('button', { name: 'Show more' })).not.toBeInTheDocument();
   });
 
   it('keeps leading whitespace and blank lines verbatim', () => {

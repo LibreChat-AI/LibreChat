@@ -53,6 +53,42 @@ async function waitForSubagentTaskToSettle(
   throw new Error('Timed out waiting for the detached subagent task.');
 }
 
+describe('manual reconciliation restoration', () => {
+  it('upgrades only the confirmed local owner and preserves the marker on replay', () => {
+    const registry = new BackgroundTaskRegistryClass();
+    const created = registry.create({
+      userId: 'marker-user',
+      conversationId: 'marker-convo',
+      toolCallId: 'marker-call',
+      toolName: 'tool',
+    });
+    if ('atCapacity' in created) throw new Error('Unexpected capacity');
+    registry.complete('marker-user', 'marker-convo', created.task.id, { content: 'done' });
+    const claim = { kind: 'manual' as const, claimId: 'poll' };
+    expect(registry.claimResult('marker-user', 'marker-convo', created.task.id, claim)).toBe(
+      'acquired',
+    );
+    expect(
+      registry.claimResult('marker-user', 'marker-convo', created.task.id, {
+        ...claim,
+        claimId: 'foreign',
+        receiptReconciled: true,
+      }),
+    ).toBe('claimed');
+    expect(created.task.resultClaim?.receiptReconciled).toBeUndefined();
+    expect(
+      registry.claimResult('marker-user', 'marker-convo', created.task.id, {
+        ...claim,
+        receiptReconciled: true,
+      }),
+    ).toBe('replay');
+    expect(registry.claimResult('marker-user', 'marker-convo', created.task.id, claim)).toBe(
+      'replay',
+    );
+    expect(created.task.resultClaim?.receiptReconciled).toBe(true);
+  });
+});
+
 describe('isBackgroundEligibleToolName', () => {
   it('excludes direct-path, host-special, and machinery tools', () => {
     for (const name of [

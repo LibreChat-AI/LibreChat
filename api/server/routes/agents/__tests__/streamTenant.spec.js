@@ -90,7 +90,10 @@ describe('SSE stream tenant isolation', () => {
       checkpointIds: ['checkpoint-a'],
     });
     mockDeleteAgentCheckpoint.mockResolvedValue(undefined);
-    mockSaveMessage.mockResolvedValue({ persisted: true });
+    mockSaveMessage.mockImplementation(async (_context, message) => ({
+      ...message,
+      persisted: true,
+    }));
     mockGenerationJobManager.getActiveJobIdsForUser.mockResolvedValue([]);
     mockGenerationJobManager.steering.claim.mockResolvedValue([]);
     mockGenerationJobManager.steering.claimDetailed.mockResolvedValue({
@@ -1002,7 +1005,7 @@ describe('SSE stream tenant isolation', () => {
         1,
         expect.any(Object),
         expect.objectContaining({ messageId: 'user-1', isCreatedByUser: true }),
-        expect.any(Object),
+        expect.objectContaining({ insertOnly: true }),
       );
       expect(mockSaveMessage).toHaveBeenNthCalledWith(
         2,

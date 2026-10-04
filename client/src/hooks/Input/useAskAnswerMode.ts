@@ -229,24 +229,11 @@ export default function useAskAnswerMode(conversationId?: string | null) {
   }, [liveAsk?.actionId, setSelected, setChecked]);
 
   /** Popover ⇄ chat-card handoffs run inside a view transition: both
-   *  surfaces carry the same `view-transition-name`, so the browser morphs
-   *  one into the other instead of swapping. Both are user-event driven,
-   *  which morphTransition's synchronous flush requires.
-   *
-   *  Batches opt out: only the single-question surfaces declare
-   *  `view-transition-name: ask-question`, so wrapping a batch handoff would
-   *  give the browser nothing to pair and it would cross-fade the whole root
-   *  (chat plus composer) instead. */
-  const runHandoff = useCallback(
-    (update: () => void) => {
-      if (batchMode) {
-        update();
-        return;
-      }
-      morphTransition(update);
-    },
-    [batchMode],
-  );
+   *  surfaces carry the same `view-transition-name`, single questions and
+   *  batches alike, so the browser morphs one into the other instead of
+   *  swapping. Both are user-event driven, which morphTransition's
+   *  synchronous flush requires. */
+  const runHandoff = morphTransition;
 
   const collapse = useCallback(() => {
     if (liveAsk) {

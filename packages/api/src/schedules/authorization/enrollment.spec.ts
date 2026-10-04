@@ -27,6 +27,11 @@ function setup() {
           schedules: {
             mcpConsent: {
               enabled: true,
+              readOnlyPolicy: {
+                warehouse: {
+                  tools: { query: { effect: 'read_only', definitionSha256: 'a'.repeat(64) } },
+                },
+              },
               resources: {
                 warehouse: {
                   url: 'https://warehouse.example/mcp',
@@ -353,4 +358,58 @@ it('does not offer owner consent for recipient-defining custom user variables', 
     }),
   ).rejects.toMatchObject({ code: 'consent_unavailable' });
   expect(confirm).not.toHaveBeenCalled();
+});
+
+it.each([
+  undefined,
+  {},
+  { tools: {} },
+  { tools: { query: { effect: 'write', definitionSha256: 'a'.repeat(64) } } },
+  { tools: { other: { effect: 'read_only', definitionSha256: 'a'.repeat(64) } } },
+])('does not offer or confirm unusable read-only consent for policy %s', async (policy) => {
+  const f = setup();
+  const config = (await f.deps.getAppConfig({}))!;
+  if (typeof config.interfaceConfig?.schedules !== 'object')
+    throw new Error('Expected schedule config');
+  config.interfaceConfig.schedules.mcpConsent!.readOnlyPolicy = { warehouse: policy } as never;
+  jest.mocked(f.deps.getAppConfig).mockResolvedValue(config);
+  const storage: ScheduleMCPConsentStorage = {
+    readScheduleMCPConsent: jest.fn(async () => ({
+      agentId: 'root',
+      enabled: true,
+      configRevision: 0,
+      enrollment: null,
+    })),
+    confirmScheduleMCPConsent: jest.fn(async () => true),
+    revokeScheduleMCPConsent: jest.fn(async () => true),
+    admitScheduleMCPConsent: jest.fn(async () => true),
+  };
+  const service = createScheduleMCPConsentService({
+    storage,
+    resolveEnrollment: f.resolve,
+    getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
+    canUse: async () => true,
+  });
+  await expect(service.view(identity)).rejects.toMatchObject({ code: 'consent_unavailable' });
+  await expect(
+    service.confirm(identity, {
+      expectedRevision: null,
+      offerDigest: 'outdated',
+      lifetimeHours: 1,
+    }),
+  ).rejects.toMatchObject({ code: 'consent_unavailable' });
+  expect(storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+});
+
+it('cannot offer read-only authority supplied only by a principal-specific configuration override', async () => {
+  const f = setup();
+  const effective = (await f.deps.getAppConfig({}))!;
+  const base = structuredClone(effective);
+  if (typeof base.interfaceConfig?.schedules !== 'object')
+    throw new Error('Expected schedule config');
+  delete base.interfaceConfig.schedules.mcpConsent!.readOnlyPolicy;
+  jest
+    .mocked(f.deps.getAppConfig)
+    .mockImplementation(async (options) => (options.baseOnly ? base : effective));
+  await expect(f.resolve(identity, {})).rejects.toMatchObject({ code: 'consent_unavailable' });
 });

@@ -1,5 +1,6 @@
 import type {
   ScheduleMCPOutcome,
+  ScheduledMCPFailureReason,
   ScheduledMCPIdentity,
   ScheduledMCPResource,
   ScheduledMCPConsent,
@@ -13,21 +14,7 @@ export type {
   ScheduledMCPToolSelection,
 } from 'librechat-data-provider';
 
-export type ScheduledMCPFailureReason =
-  | 'consent_missing'
-  | 'consent_expired'
-  | 'consent_revoked'
-  | 'binding_mismatch'
-  | 'rbac_denied'
-  | 'tool_policy_denied'
-  | 'approval_required'
-  | 'credential_missing'
-  | 'credential_rejected'
-  | 'resource_permission_denied'
-  | 'provider_missing'
-  | 'resource_unverified'
-  | 'unsupported_mode'
-  | 'dependency_unavailable';
+export type { ScheduledMCPFailureReason } from 'librechat-data-provider';
 
 /** Safe diagnosis projected onto existing schedule statuses. */
 export interface ScheduledMCPFailure {
@@ -46,6 +33,8 @@ export interface ScheduledMCPAuthorizationRequest {
   readonly identity: ScheduledMCPIdentity;
   readonly resource: ScheduledMCPResource;
   readonly stage: 'activation' | 'mint' | 'invoke' | 'resume';
+  /** Set only by the owner-authorized manual trigger or its verified resume metadata. */
+  readonly manual?: boolean;
   readonly selection: ScheduledMCPToolSelection;
 }
 

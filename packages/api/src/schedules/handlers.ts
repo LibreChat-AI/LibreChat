@@ -399,6 +399,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     try {
       await deps.preflightMCP(agentId, requestUser(req), {
         scheduleId,
+        stage: 'activation',
         signal,
         concurrency: limits.mcpPreflightConcurrency,
         deadlineMs: Date.now() + limits.mcpPreflightTimeoutMs,
@@ -1113,6 +1114,13 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // loser simply retries against fresh state.
     const schedule = await deps.methods.updateScheduleById(existing.id, user.id, update, unset, {
       expectedConfigRevision: existing.configRevision,
+      ...(existing.mcpConsent &&
+        existing.mcpConsent.scheduleRevision === existing.configRevision &&
+        Object.keys(editedFields).every((key) => key === 'enabled') &&
+        !clearsProject &&
+        (chatProjectId == null || chatProjectId === existing.chatProjectId) && {
+          preserveMCPConsentRevision: existing.mcpConsent.revision,
+        }),
     });
     if (schedule == null) {
       // Either the row is gone, or a concurrent edit moved the revision. Distinguish

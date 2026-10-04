@@ -1,5 +1,6 @@
 const {
   createBackgroundToolCompletionWakeupHandler,
+  GenerationJobManager,
   createBackgroundToolDeadClaimRecovery,
   createPendingBackgroundCompletions,
   createBackgroundToolResultHandler,
@@ -7,12 +8,15 @@ const {
 } = require('@librechat/api');
 const {
   listPendingAgentBackgroundToolCompletions,
+  getAgentBackgroundToolResultBatch,
+  confirmAgentBackgroundToolResultBatch,
   listUndeliveredAgentTriggerTaskIds,
 } = require('~/models');
 const {
   enqueueAgentTrigger,
   persistAgentBackgroundToolResult,
   getAgentBackgroundToolResultClaim,
+  getBackgroundCompletionReceiptBatching,
   releaseAgentBackgroundToolResultClaims,
   renewAgentTriggerProducerLease,
   retireAgentTrigger,
@@ -26,6 +30,7 @@ const preregisterBackgroundToolCompletion = createBackgroundToolCompletionWakeup
   (deliveryKey, sourceId, result) =>
     persistAgentBackgroundToolResult({ deliveryKey, sourceId, result }),
   (deliveryKey) => expediteCompletionWakeups({ deliveryKeys: [deliveryKey] }),
+  getBackgroundCompletionReceiptBatching,
 );
 
 const pendingBackgroundToolCompletions = createPendingBackgroundCompletions({
@@ -52,6 +57,8 @@ function createDeadBackgroundToolClaimRecovery(
     getGenerationJob,
     fenceGenerationClaim,
     releaseAgentBackgroundToolResultClaims,
+    { getAgentBackgroundToolResultBatch, confirmAgentBackgroundToolResultBatch },
+    (...args) => GenerationJobManager.getGenerationAdmissionEvidence(...args),
   );
 }
 

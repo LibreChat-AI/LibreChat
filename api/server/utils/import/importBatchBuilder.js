@@ -7,6 +7,8 @@ const {
   executeConversationImportWrites,
   resolveImportRetentionFields,
   resolveImportTagCounts,
+  getNativeCopyInspectionTokens,
+  saveNativeCopyMessages,
 } = require('@librechat/api');
 const {
   getTenantId,
@@ -173,6 +175,7 @@ class ImportBatchBuilder {
     delete convo.lastResponseAt;
     delete convo.lastResponseMessageId;
     delete convo.lastResponseIsManual;
+    delete convo.isMarkedUnread;
     delete convo.lastSeenAt;
     this.conversations.push(convo);
 
@@ -202,6 +205,7 @@ class ImportBatchBuilder {
       {
         user: { id: this.requestUserId },
         getFiles,
+        privateTextTokens: getNativeCopyInspectionTokens(this.messages),
         ...(this.legacyPii == null ? {} : { legacyPii: this.legacyPii }),
       },
     );
@@ -220,7 +224,7 @@ class ImportBatchBuilder {
     try {
       await executeConversationImportWrites({
         saveConversations: () => bulkSaveConvos(this.conversations),
-        saveMessages: () => bulkSaveMessages(this.messages, true),
+        saveMessages: () => saveNativeCopyMessages(bulkSaveMessages, this.messages),
         updateTagCounts: () => bulkIncrementTagCounts(this.requestUserId, tags),
         deleteMessages: () => deleteImportedMessages(cleanupScope),
         deleteConversations: () => deleteImportedConversations(cleanupScope),

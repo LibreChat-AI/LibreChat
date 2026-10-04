@@ -13,6 +13,7 @@ import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
 import { fitBoundAppSnapshots, hasBoundAppSnapshots } from './appSnapshots';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { tenantStorage } from '~/config/tenantContext';
 import logger from '~/config/winston';
 
 /** Simple UUID v4 regex to replace zod validation */
@@ -293,6 +294,7 @@ function buildMessageSaveUpdate(
   options: {
     stampModelOutputOnInsert: boolean;
     unsetContextMeta: boolean;
+    unsetPrivateText?: boolean;
     retentionOnInsert?: { expiredAt: Date; isTemporary: false };
   },
 ): UpdateQuery<IMessage> {
@@ -305,7 +307,16 @@ function buildMessageSaveUpdate(
         ...options.retentionOnInsert,
       },
     }),
-    ...(options.unsetContextMeta && { $unset: { contextMeta: 1 } }),
+    ...((options.unsetContextMeta || options.unsetPrivateText) && {
+      $unset: {
+        ...(options.unsetContextMeta && { contextMeta: 1 }),
+        ...(options.unsetPrivateText && {
+          privateText: 1,
+          privacyRevision: 1,
+          ...(update.privateTextTokens === undefined && { privateTextTokens: 1 }),
+        }),
+      },
+    }),
   };
 }
 
@@ -319,6 +330,7 @@ async function findOneAndMergeMessageProvenance(
     upsert: boolean;
     stampModelOutputOnInsert?: boolean;
     unsetContextMeta?: boolean;
+    unsetPrivateText?: boolean;
     retentionOnInsert?: { expiredAt: Date; isTemporary: false };
     prepareAppUpdate?: (
       current: Record<string, unknown> | null,
@@ -392,7 +404,16 @@ async function findOneAndMergeMessageProvenance(
           $inc: { __v: 1 },
           ...(current == null &&
             options.retentionOnInsert != null && { $setOnInsert: options.retentionOnInsert }),
-          ...(options.unsetContextMeta && { $unset: { contextMeta: 1 } }),
+          ...((options.unsetContextMeta || options.unsetPrivateText) && {
+            $unset: {
+              ...(options.unsetContextMeta && { contextMeta: 1 }),
+              ...(options.unsetPrivateText && {
+                privateText: 1,
+                privacyRevision: 1,
+                ...(update.privateTextTokens === undefined && { privateTextTokens: 1 }),
+              }),
+            },
+          }),
         },
         { upsert: options.upsert && current == null, new: true, timestamps: options.timestamps },
       );
@@ -499,6 +520,8 @@ export const CLIENT_MESSAGE_SELECT: string = [
   '-conversationSignature',
   '-summary',
   '-summaryTokenCount',
+  '-privateText',
+  '-privateTextTokens',
   '-contextMeta',
   '-langfuseSampled',
   '-langfuseDestinationIds',
@@ -544,7 +567,13 @@ export type BackgroundToolResultClaim =
   | { status: 'outcome_unknown'; toolName: string }
   | {
       status: 'claimed';
-      claim?: { kind: 'manual' | 'wakeup'; claimId: string; generationId?: string };
+      claim?: {
+        kind: 'manual' | 'wakeup';
+        claimId: string;
+        generationId?: string;
+        batchId?: string;
+        receiptReconciled?: true;
+      };
       messageId?: string;
     }
   | { status: 'acquired'; results: BackgroundToolResultRecord[]; messageId?: string };
@@ -682,7 +711,37 @@ function toSettledAt(value: unknown): Date | undefined {
   return undefined;
 }
 
+export interface PrivateTextWrite {
+  readonly envelope: string;
+  readonly revision: string;
+}
+
+export interface PrivateTextRead {
+  readonly _id?: unknown;
+  readonly messageId: string;
+  readonly text: string;
+  readonly privacyRevision: string;
+  readonly privateText: string;
+}
+
 export interface MessageMethods {
+  getPersistedPrivateTextId(
+    input: Parameters<MessageMethods['hasPersistedPrivateText']>[0],
+  ): Promise<string | null>;
+  hasPersistedPrivateText(input: {
+    userId: string;
+    tenantId?: string;
+    conversationId: string;
+    messageId: string;
+    privacyRevision: string;
+    text: string;
+  }): Promise<boolean>;
+  getPrivateMessageTexts(input: {
+    userId: string;
+    tenantId?: string;
+    conversationId: string;
+    messageIds: readonly string[];
+  }): Promise<PrivateTextRead[]>;
   saveMessage(
     ctx: {
       userId: string;
@@ -694,7 +753,7 @@ export interface MessageMethods {
       newMessageId?: string;
       contextMeta?: IMessage['contextMeta'] | null;
     },
-    metadata?: { context?: string },
+    metadata?: { context?: string; privateText?: PrivateTextWrite; insertOnly?: boolean },
   ): Promise<IMessage | null | undefined>;
   /**
    * Reads the references a trace viewer needs for one of the user's
@@ -759,6 +818,7 @@ export interface MessageMethods {
   bulkSaveMessages(
     messages: Array<Partial<IMessage>>,
     overrideTimestamp?: boolean,
+    provenance?: { privateTextTokens: ReadonlyMap<string, readonly string[]> },
   ): Promise<unknown>;
   recordMessage(params: {
     user: string;
@@ -792,6 +852,7 @@ export interface MessageMethods {
         claimId: string;
         claimedAt: Date;
         generationId?: string;
+        receiptReconciled?: true;
       };
     };
   }): Promise<{ matched: boolean; unfinished: boolean }>;
@@ -804,6 +865,8 @@ export interface MessageMethods {
     agentId?: string;
     kind: 'manual' | 'wakeup';
     claimId: string;
+    /** Physical receipt-batch identity, independent of its logical request. */
+    batchId?: string;
     /** Response generation that owns this manual result delivery. */
     generationId?: string;
     /** Manual owner-process takeover after automatic delivery was retired. */
@@ -812,12 +875,24 @@ export interface MessageMethods {
     /** Includes JSON escaping, delimiters, and empty result fields. */
     maxMetadataChars?: number;
   }): Promise<BackgroundToolResultClaim>;
+  confirmBackgroundToolResultClaim(params: {
+    userId: string;
+    conversationId: string;
+    messageId: string;
+    taskId: string;
+    claimId: string;
+  }): Promise<boolean>;
   releaseBackgroundToolResultClaims(params: {
     userId: string;
     conversationId: string;
     messageId: string;
     /** Omit to release every sibling owned by this exact batch claim. */
     taskIds?: string[];
+    /** Receipt-backed results can precede the message projection. */
+    allowMissingMessage?: true;
+    /** Manual rollback must not erase a committed receipt handoff. */
+    onlyIfUnreconciled?: true;
+    batchId?: string;
     kind: 'manual' | 'wakeup';
     claimId: string;
   }): Promise<boolean>;
@@ -1007,6 +1082,7 @@ export function createMessageMethods(
       stampModelOutputOnInsert?: boolean;
       unsetContextMeta?: boolean;
       retentionOnInsert?: { expiredAt: Date; isTemporary: false };
+      unsetPrivateText?: boolean;
       timestamps?: boolean;
       onWrite?: (inserted: boolean, id: unknown) => void;
     },
@@ -1027,6 +1103,7 @@ export function createMessageMethods(
             stampModelOutputOnInsert: options.stampModelOutputOnInsert ?? false,
             unsetContextMeta: options.unsetContextMeta ?? false,
             retentionOnInsert: options.retentionOnInsert,
+            unsetPrivateText: options.unsetPrivateText,
           }),
           {
             upsert: options.upsert,
@@ -1071,7 +1148,7 @@ export function createMessageMethods(
       /** `null` unsets a previously stored value; omission leaves it in place. */
       contextMeta?: IMessage['contextMeta'] | null;
     },
-    metadata?: { context?: string },
+    metadata?: { context?: string; privateText?: PrivateTextWrite; insertOnly?: boolean },
   ) {
     if (!userId) {
       throw new Error('User not authenticated');
@@ -1092,6 +1169,16 @@ export function createMessageMethods(
         user: userId,
         messageId: params.newMessageId || params.messageId,
       };
+      delete update.privateText;
+      delete update.privacyRevision;
+      delete update.privateTextTokens;
+      if (metadata?.privateText != null) {
+        if (params.isCreatedByUser !== true || typeof params.text !== 'string') {
+          throw new Error('Private text requires a user message.');
+        }
+        update.privateText = metadata.privateText.envelope;
+        update.privacyRevision = metadata.privateText.revision;
+      }
       delete update.isTemporary;
       delete update.expiredAt;
       let retentionOnInsert: { expiredAt: Date; isTemporary: false } | undefined;
@@ -1184,10 +1271,38 @@ export function createMessageMethods(
       delete update.__v;
       const stampModelOutputOnInsert =
         params.isCreatedByUser === false && params.isUserSubmitted === undefined;
+      if (metadata?.insertOnly === true) {
+        if (metadata.privateText != null) {
+          throw new Error('A private message cannot use the ordinary insert-only writer.');
+        }
+        const now = new Date();
+        const existingOrInserted = await Message.findOneAndUpdate(
+          { messageId: params.messageId, user: userId },
+          {
+            $setOnInsert: {
+              ...update,
+              ...(userSubmittedPaths.length > 0 && { userSubmittedPaths }),
+              ...(userSubmittedMessageFieldPaths.length > 0 && { userSubmittedMessageFieldPaths }),
+              ...retentionOnInsert,
+              createdAt: now,
+              updatedAt: now,
+            },
+          },
+          { upsert: true, new: true, timestamps: false },
+        );
+        return existingOrInserted?.toObject();
+      }
       const message = await writeMessage(
         { messageId: params.messageId, user: userId },
         { ...update, userSubmittedPaths, userSubmittedMessageFieldPaths },
-        { upsert: true, stampModelOutputOnInsert, unsetContextMeta, retentionOnInsert },
+        {
+          upsert: true,
+          stampModelOutputOnInsert,
+          unsetContextMeta,
+          retentionOnInsert,
+          unsetPrivateText:
+            metadata?.privateText == null && Object.prototype.hasOwnProperty.call(update, 'text'),
+        },
       );
 
       if (message == null) {
@@ -1268,27 +1383,45 @@ export function createMessageMethods(
   async function bulkSaveMessages(
     messages: Array<Record<string, unknown>>,
     overrideTimestamp = false,
+    provenance?: { privateTextTokens: ReadonlyMap<string, readonly string[]> },
   ) {
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
       const bulkOps = messages.map((message) => {
         const normalizedMessage = sanitizeMessageUpdate(message);
-        const provenance = capNormalizedProvenance(
+        delete normalizedMessage.privateText;
+        delete normalizedMessage.privacyRevision;
+        delete normalizedMessage.privateTextTokens;
+        const tokens = provenance?.privateTextTokens.get(String(message.messageId));
+        const text = message.text;
+        if (
+          tokens?.length &&
+          tokens.length <= 4096 &&
+          message.isCreatedByUser === true &&
+          typeof text === 'string'
+        ) {
+          normalizedMessage.privateTextTokens = tokens.filter(
+            (token) =>
+              /^\[(?:EMAIL|PHONE|NAME|CREDENTIAL|CUSTOM)_\d+_[a-f0-9]{32}\]$/.test(token) &&
+              text.includes(token),
+          );
+        }
+        const submittedProvenance = capNormalizedProvenance(
           normalizeUserSubmittedPaths(message.userSubmittedPaths),
           normalizeUserSubmittedMessageFieldPaths(message.userSubmittedMessageFieldPaths),
         );
-        if (provenance.userSubmittedPaths.length > 0) {
-          normalizedMessage.userSubmittedPaths = provenance.userSubmittedPaths;
+        if (submittedProvenance.userSubmittedPaths.length > 0) {
+          normalizedMessage.userSubmittedPaths = submittedProvenance.userSubmittedPaths;
         } else {
           delete normalizedMessage.userSubmittedPaths;
         }
-        if (provenance.userSubmittedMessageFieldPaths.length > 0) {
+        if (submittedProvenance.userSubmittedMessageFieldPaths.length > 0) {
           normalizedMessage.userSubmittedMessageFieldPaths =
-            provenance.userSubmittedMessageFieldPaths;
+            submittedProvenance.userSubmittedMessageFieldPaths;
         } else {
           delete normalizedMessage.userSubmittedMessageFieldPaths;
         }
-        if (provenance.promoteWholeMessage) {
+        if (submittedProvenance.promoteWholeMessage) {
           normalizedMessage.isUserSubmitted = true;
         }
         return {
@@ -1297,7 +1430,15 @@ export function createMessageMethods(
               messageId: message.messageId,
               ...(message.user != null ? { user: message.user } : {}),
             },
-            update: { $set: normalizedMessage, $inc: { __v: 1 } },
+            update: {
+              $set: normalizedMessage,
+              $inc: { __v: 1 },
+              $unset: {
+                privateText: 1,
+                privacyRevision: 1,
+                ...(normalizedMessage.privateTextTokens == null && { privateTextTokens: 1 }),
+              },
+            },
             timestamps: !overrideTimestamp,
             upsert: true,
           },
@@ -1357,6 +1498,7 @@ export function createMessageMethods(
       for (const op of guarded) {
         await writeMessage(op.updateOne.filter, op.updateOne.update.$set, {
           upsert: true,
+          unsetPrivateText: true,
           timestamps: !overrideTimestamp,
           onWrite: (inserted, id) => {
             if (inserted) {
@@ -1417,6 +1559,9 @@ export function createMessageMethods(
         userSubmittedMessageFieldPaths: _userSubmittedMessageFieldPaths,
         ...safeRest
       } = rest;
+      delete safeRest.privateText;
+      delete safeRest.privacyRevision;
+      delete safeRest.privateTextTokens;
       const message = {
         user,
         endpoint,
@@ -1434,6 +1579,7 @@ export function createMessageMethods(
       };
       return await writeMessage({ user, messageId }, message, {
         upsert: true,
+        unsetPrivateText: Object.prototype.hasOwnProperty.call(safeRest, 'text'),
         stampModelOutputOnInsert:
           rest.isCreatedByUser === false && rest.isUserSubmitted === undefined,
       });
@@ -1451,7 +1597,11 @@ export function createMessageMethods(
     { messageId, text }: { messageId: string; text: string },
   ) {
     try {
-      await writeMessage({ messageId, user: userId }, { text }, { upsert: false });
+      await writeMessage(
+        { messageId, user: userId },
+        { text },
+        { upsert: false, unsetPrivateText: true },
+      );
     } catch (err) {
       logger.error('Error updating message text:', err);
       throw err;
@@ -1854,7 +2004,15 @@ export function createMessageMethods(
   function readBackgroundToolResultClaim(
     row: Pick<IMessage, 'content'>,
     taskId: string,
-  ): { kind: 'manual' | 'wakeup'; claimId: string; generationId?: string } | undefined {
+  ):
+    | {
+        kind: 'manual' | 'wakeup';
+        claimId: string;
+        generationId?: string;
+        batchId?: string;
+        receiptReconciled?: true;
+      }
+    | undefined {
     for (const part of row.content ?? []) {
       if (part == null || typeof part !== 'object' || Array.isArray(part)) {
         continue;
@@ -1864,7 +2022,13 @@ export function createMessageMethods(
           tool_call?: {
             backgroundTask?: {
               taskId?: unknown;
-              resultClaim?: { kind?: unknown; claimId?: unknown; generationId?: unknown };
+              resultClaim?: {
+                kind?: unknown;
+                claimId?: unknown;
+                generationId?: unknown;
+                batchId?: unknown;
+                receiptReconciled?: unknown;
+              };
             };
           };
         }
@@ -1881,6 +2045,8 @@ export function createMessageMethods(
         return {
           kind: claim.kind,
           claimId: claim.claimId,
+          ...(typeof claim.batchId === 'string' && { batchId: claim.batchId }),
+          ...(claim.receiptReconciled === true && { receiptReconciled: true }),
           ...(typeof claim.generationId === 'string' && claim.generationId.length > 0
             ? { generationId: claim.generationId }
             : {}),
@@ -1892,7 +2058,7 @@ export function createMessageMethods(
 
   function parseBackgroundToolResults(
     message: IMessage,
-    claim: { kind: 'manual' | 'wakeup'; claimId: string },
+    claim: { kind: 'manual' | 'wakeup'; claimId: string; batchId?: string },
   ): BackgroundToolResultRecord[] {
     const results: BackgroundToolResultRecord[] = [];
     for (const part of message.content ?? []) {
@@ -1911,7 +2077,7 @@ export function createMessageMethods(
             status?: unknown;
             cancelled?: unknown;
             settledAt?: unknown;
-            resultClaim?: { kind?: unknown; claimId?: unknown };
+            resultClaim?: { kind?: unknown; claimId?: unknown; batchId?: unknown };
           };
         };
       };
@@ -1923,7 +2089,8 @@ export function createMessageMethods(
         typeof task.toolName !== 'string' ||
         (task.status !== 'completed' && task.status !== 'error') ||
         task.resultClaim?.kind !== claim.kind ||
-        task.resultClaim.claimId !== claim.claimId
+        task.resultClaim.claimId !== claim.claimId ||
+        task.resultClaim.batchId !== claim.batchId
       ) {
         continue;
       }
@@ -2004,6 +2171,7 @@ export function createMessageMethods(
     kind,
     claimId,
     generationId,
+    batchId,
     allowUnfinished = false,
     limit = kind === 'wakeup' ? 8 : 1,
     maxMetadataChars,
@@ -2015,6 +2183,7 @@ export function createMessageMethods(
     if (
       (requestedMessageId != null &&
         (requestedMessageId.length === 0 || requestedMessageId.length > 256)) ||
+      (batchId != null && (batchId.length === 0 || batchId.length > 128 || kind !== 'wakeup')) ||
       taskId.length === 0 ||
       taskId.length > 256 ||
       claimId.length === 0 ||
@@ -2085,7 +2254,10 @@ export function createMessageMethods(
     }
     const recoveredSource = requestedMessageId == null ? { messageId: resolvedMessageId } : {};
     const requestedClaim = readBackgroundToolResultClaim(row, taskId);
-    const replaying = requestedClaim?.kind === kind && requestedClaim.claimId === claimId;
+    const replaying =
+      requestedClaim?.kind === kind &&
+      requestedClaim.claimId === claimId &&
+      requestedClaim.batchId === batchId;
     const candidates: string[] = [];
     const costs = new Map<string, number>();
     let receiptBacked = false;
@@ -2104,8 +2276,13 @@ export function createMessageMethods(
       }
       const terminal = task?.status === 'completed' || task?.status === 'error';
       const wakeupEligible = kind !== 'wakeup' || task?.completionWakeup === true;
-      const resultClaim = task?.resultClaim as { kind?: unknown; claimId?: unknown } | undefined;
-      const replay = resultClaim?.kind === kind && resultClaim.claimId === claimId;
+      const resultClaim = task?.resultClaim as
+        | { kind?: unknown; claimId?: unknown; batchId?: unknown }
+        | undefined;
+      const replay =
+        resultClaim?.kind === kind &&
+        resultClaim.claimId === claimId &&
+        resultClaim.batchId === batchId;
       const sameAgent =
         agentId == null ||
         partAgentId == null ||
@@ -2186,105 +2363,103 @@ export function createMessageMethods(
       kind,
       claimId,
       claimedAt,
+      ...(batchId != null && { batchId }),
       ...(kind === 'manual' && requestedGenerationId != null
         ? { generationId: requestedGenerationId }
         : {}),
     };
-    const updated = await Message.findOneAndUpdate(
-      {
-        user: userId,
-        conversationId,
-        messageId: resolvedMessageId,
-        ...(kind === 'manual' && allowUnfinished ? {} : { unfinished: { $ne: true } }),
-        content: {
-          $elemMatch: {
-            type: 'tool_call',
-            'tool_call.backgroundTask.taskId': taskId,
-            'tool_call.backgroundTask.status': { $in: ['completed', 'error'] },
-            ...(kind === 'wakeup' ? { 'tool_call.backgroundTask.completionWakeup': true } : {}),
-            ...(replaying
-              ? {
-                  'tool_call.backgroundTask.resultClaim.kind': kind,
-                  'tool_call.backgroundTask.resultClaim.claimId': claimId,
-                }
-              : /** Missing OR stored null: the in-memory claimable scan, the
-                 * claim arrayFilters, and the settle stamp all treat a null
-                 * claim as unclaimed, and the subfield-preserving settle write
-                 * keeps a persisted null a whole-object rewrite used to drop.
-                 * `$exists: false` here would strand such a part as terminal
-                 * but permanently unclaimable. */
-                { 'tool_call.backgroundTask.resultClaim': null }),
-          },
+    const claimFilter: FilterQuery<IMessage> = {
+      user: userId,
+      conversationId,
+      messageId: resolvedMessageId,
+      ...(kind === 'manual' && allowUnfinished ? {} : { unfinished: { $ne: true } }),
+      content: {
+        $elemMatch: {
+          type: 'tool_call',
+          'tool_call.backgroundTask.taskId': taskId,
+          'tool_call.backgroundTask.status': { $in: ['completed', 'error'] },
+          ...(kind === 'wakeup' ? { 'tool_call.backgroundTask.completionWakeup': true } : {}),
+          ...(replaying
+            ? {
+                'tool_call.backgroundTask.resultClaim.kind': kind,
+                'tool_call.backgroundTask.resultClaim.claimId': claimId,
+                'tool_call.backgroundTask.resultClaim.batchId': batchId ?? null,
+              }
+            : /** Missing OR stored null: the in-memory claimable scan, the
+               * claim arrayFilters, and the settle stamp all treat a null
+               * claim as unclaimed, and the subfield-preserving settle write
+               * keeps a persisted null a whole-object rewrite used to drop.
+               * `$exists: false` here would strand such a part as terminal
+               * but permanently unclaimable. */
+              { 'tool_call.backgroundTask.resultClaim': null }),
         },
-        ...(agentId != null
-          ? {
-              $expr: {
-                $anyElementTrue: {
-                  $map: {
-                    input: { $ifNull: ['$content', []] },
-                    as: 'candidate',
-                    in: {
-                      $and: [
-                        { $eq: ['$$candidate.tool_call.backgroundTask.taskId', taskId] },
-                        {
-                          $in: [
-                            {
-                              $ifNull: [
-                                {
-                                  $ifNull: ['$$candidate.agentId', '$$candidate.tool_call.agentId'],
-                                },
-                                null,
-                              ],
-                            },
-                            [null, agentId],
-                          ],
-                        },
-                      ],
-                    },
+      },
+      ...(agentId != null
+        ? {
+            $expr: {
+              $anyElementTrue: {
+                $map: {
+                  input: { $ifNull: ['$content', []] },
+                  as: 'candidate',
+                  in: {
+                    $and: [
+                      { $eq: ['$$candidate.tool_call.backgroundTask.taskId', taskId] },
+                      {
+                        $in: [
+                          {
+                            $ifNull: [
+                              {
+                                $ifNull: ['$$candidate.agentId', '$$candidate.tool_call.agentId'],
+                              },
+                              null,
+                            ],
+                          },
+                          [null, agentId],
+                        ],
+                      },
+                    ],
                   },
                 },
               },
-            }
-          : {}),
-      },
-      /** Stamps the claim onto every part this pass admitted. The filtered
-       * positional operator selects those parts by predicate, so the write
-       * touches only them instead of re-emitting the whole content array, and
-       * needs no read-modify-write. Amazon DocumentDB rejects the
-       * aggregation-pipeline form this replaces. */
-      { $set: { 'content.$[part].tool_call.backgroundTask.resultClaim': claimStamp } },
-      {
-        new: true,
-        projection: { content: 1 },
-        arrayFilters: [
+            },
+          }
+        : {}),
+    };
+    const updated = replaying
+      ? await Message.findOne(claimFilter).select({ content: 1 }).lean<IMessage | null>()
+      : await Message.findOneAndUpdate(
+          claimFilter,
+          /** Stamps the claim onto every part this pass admitted. The filtered
+           * positional operator selects those parts by predicate, so the write
+           * touches only them instead of re-emitting the whole content array, and
+           * needs no read-modify-write. Amazon DocumentDB rejects the
+           * aggregation-pipeline form this replaces. */
+          { $set: { 'content.$[part].tool_call.backgroundTask.resultClaim': claimStamp } },
           {
-            'part.type': 'tool_call',
-            'part.tool_call.backgroundTask.taskId': { $in: candidates },
-            'part.tool_call.backgroundTask.status': { $in: ['completed', 'error'] },
-            ...(kind === 'wakeup'
-              ? { 'part.tool_call.backgroundTask.completionWakeup': true }
-              : {}),
-            $and: [
+            new: true,
+            projection: { content: 1 },
+            arrayFilters: [
               {
-                /** Unclaimed, or already held by this exact claimant (replay). */
-                $or: [
-                  { 'part.tool_call.backgroundTask.resultClaim': null },
+                'part.type': 'tool_call',
+                'part.tool_call.backgroundTask.taskId': { $in: candidates },
+                'part.tool_call.backgroundTask.status': { $in: ['completed', 'error'] },
+                ...(kind === 'wakeup'
+                  ? { 'part.tool_call.backgroundTask.completionWakeup': true }
+                  : {}),
+                $and: [
                   {
-                    'part.tool_call.backgroundTask.resultClaim.kind': kind,
-                    'part.tool_call.backgroundTask.resultClaim.claimId': claimId,
+                    'part.tool_call.backgroundTask.resultClaim': null,
                   },
+                  ...(agentId == null ? [] : [agentOwnershipFilter('part.', agentId)]),
                 ],
               },
-              ...(agentId == null ? [] : [agentOwnershipFilter('part.', agentId)]),
             ],
           },
-        ],
-      },
-    ).lean<IMessage | null>();
+        ).lean<IMessage | null>();
     if (updated == null) {
       return { status: 'not_ready' };
     }
-    const results = parseBackgroundToolResults(updated, { kind, claimId });
+    const results = parseBackgroundToolResults(updated, { kind, claimId, batchId });
     const competingClaim = readBackgroundToolResultClaim(updated, taskId);
     return results.some((result) => result.taskId === taskId)
       ? { status: 'acquired', results, ...recoveredSource }
@@ -2295,21 +2470,82 @@ export function createMessageMethods(
         };
   }
 
+  /** Manual ownership is committed only after receipt arbitration completes. */
+  async function confirmBackgroundToolResultClaim(
+    input: Parameters<MessageMethods['confirmBackgroundToolResultClaim']>[0],
+  ): Promise<boolean> {
+    const Message = mongoose.models.Message as Model<IMessage>;
+    const identity = {
+      'tool_call.backgroundTask.taskId': input.taskId,
+      'tool_call.backgroundTask.resultClaim.kind': 'manual',
+      'tool_call.backgroundTask.resultClaim.claimId': input.claimId,
+    };
+    try {
+      const confirmed = await Message.updateOne(
+        {
+          user: input.userId,
+          conversationId: input.conversationId,
+          messageId: input.messageId,
+          content: { $elemMatch: identity },
+        },
+        {
+          $set: { 'content.$[part].tool_call.backgroundTask.resultClaim.receiptReconciled': true },
+        },
+        {
+          arrayFilters: [
+            {
+              'part.tool_call.backgroundTask.taskId': input.taskId,
+              'part.tool_call.backgroundTask.resultClaim.kind': 'manual',
+              'part.tool_call.backgroundTask.resultClaim.claimId': input.claimId,
+            },
+          ],
+        },
+      );
+      return confirmed.matchedCount === 1;
+    } catch (error) {
+      // A lost write reply is not an uncommitted handoff. Read only the exact
+      // manual claim, never manufacture success from another claimant.
+      const committed = await Message.exists({
+        user: input.userId,
+        conversationId: input.conversationId,
+        messageId: input.messageId,
+        content: {
+          $elemMatch: {
+            ...identity,
+            'tool_call.backgroundTask.resultClaim.receiptReconciled': true,
+          },
+        },
+      });
+      if (committed != null) return true;
+      throw error;
+    }
+  }
+
   async function releaseBackgroundToolResultClaims({
     userId,
     conversationId,
     messageId,
     taskIds,
+    allowMissingMessage,
+    onlyIfUnreconciled,
     kind,
     claimId,
+    batchId,
   }: {
     userId: string;
     conversationId: string;
     messageId: string;
     taskIds?: string[];
+    /** Receipt-backed results can precede the message projection. */
+    allowMissingMessage?: true;
+    /** Manual rollback must not erase a committed receipt handoff. */
+    onlyIfUnreconciled?: true;
+    batchId?: string;
     kind: 'manual' | 'wakeup';
     claimId: string;
   }): Promise<boolean> {
+    if (onlyIfUnreconciled === true && kind !== 'manual')
+      throw new TypeError('Unreconciled rollback requires a manual claim');
     if (taskIds?.length === 0) {
       return true;
     }
@@ -2331,6 +2567,10 @@ export function createMessageMethods(
           {
             'part.tool_call.backgroundTask.resultClaim.kind': kind,
             'part.tool_call.backgroundTask.resultClaim.claimId': claimId,
+            'part.tool_call.backgroundTask.resultClaim.batchId': batchId ?? null,
+            ...(onlyIfUnreconciled === true && {
+              'part.tool_call.backgroundTask.resultClaim.receiptReconciled': { $ne: true },
+            }),
             ...(taskIds == null
               ? {}
               : { 'part.tool_call.backgroundTask.taskId': { $in: taskIds } }),
@@ -2345,9 +2585,13 @@ export function createMessageMethods(
         messageId,
         content: { $not: { $type: 'array' } },
       });
-      return arraylessRow != null;
+      if (arraylessRow != null) return true;
+      return (
+        allowMissingMessage === true &&
+        (await Message.exists({ user: userId, conversationId, messageId })) == null
+      );
     }
-    const remaining = parseBackgroundToolResults(updated, { kind, claimId });
+    const remaining = parseBackgroundToolResults(updated, { kind, claimId, batchId });
     return taskIds == null
       ? remaining.length === 0
       : !remaining.some((result) => taskIds.includes(result.taskId));
@@ -2363,8 +2607,12 @@ export function createMessageMethods(
   ) {
     try {
       const { messageId, ...update } = message;
+      delete update.privateText;
+      delete update.privacyRevision;
+      delete update.privateTextTokens;
       const updatedMessage = await writeMessage({ messageId, user: userId }, update, {
         upsert: false,
+        unsetPrivateText: Object.prototype.hasOwnProperty.call(update, 'text'),
       });
 
       if (!updatedMessage) {
@@ -4038,13 +4286,85 @@ export function createMessageMethods(
     return Message.meiliSearch(query, searchOptions, hydrate);
   }
 
+  async function getPersistedPrivateTextId(input: {
+    userId: string;
+    tenantId?: string;
+    conversationId: string;
+    messageId: string;
+    privacyRevision: string;
+    text: string;
+  }): Promise<string | null> {
+    if (
+      !input.userId ||
+      !input.messageId ||
+      !input.privacyRevision ||
+      !UUID_REGEX.test(input.conversationId)
+    ) {
+      return null;
+    }
+    const activeTenant = tenantStorage.getStore()?.tenantId;
+    if (activeTenant != null && activeTenant !== input.tenantId) {
+      return null;
+    }
+    const Message = mongoose.models.Message as Model<IMessage>;
+    const stored = await Message.exists({
+      user: input.userId,
+      ...traceTenantScope(input.tenantId),
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      text: input.text,
+      privacyRevision: input.privacyRevision,
+      privateText: { $exists: true },
+      $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }],
+    });
+    return stored == null ? null : String(stored._id);
+  }
+
+  async function hasPersistedPrivateText(
+    input: Parameters<MessageMethods['hasPersistedPrivateText']>[0],
+  ): Promise<boolean> {
+    return (await getPersistedPrivateTextId(input)) != null;
+  }
+
+  async function getPrivateMessageTexts(input: {
+    userId: string;
+    tenantId?: string;
+    conversationId: string;
+    messageIds: readonly string[];
+  }): Promise<PrivateTextRead[]> {
+    if (!input.userId || !UUID_REGEX.test(input.conversationId) || input.messageIds.length > 50) {
+      throw new Error('Invalid private message read.');
+    }
+    const activeTenant = tenantStorage.getStore()?.tenantId;
+    if (activeTenant != null && activeTenant !== input.tenantId) {
+      return [];
+    }
+    const Message = mongoose.models.Message as Model<IMessage>;
+    return Message.find({
+      user: input.userId,
+      ...traceTenantScope(input.tenantId),
+      conversationId: input.conversationId,
+      messageId: { $in: input.messageIds },
+      isCreatedByUser: true,
+      privateText: { $exists: true },
+      $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }],
+    })
+      .select('messageId text privacyRevision +privateText')
+      .limit(50)
+      .lean<PrivateTextRead[]>();
+  }
+
   return {
+    hasPersistedPrivateText,
+    getPersistedPrivateTextId,
+    getPrivateMessageTexts,
     saveMessage,
     bulkSaveMessages,
     recordMessage,
     updateMessageText,
     updateToolCallResult,
     claimBackgroundToolResults,
+    confirmBackgroundToolResultClaim,
     releaseBackgroundToolResultClaims,
     updateMessage,
     recordSubagentTaskControlReceipt,

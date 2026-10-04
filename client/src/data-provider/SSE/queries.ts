@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import { apiBaseUrl, QueryKeys, request, dataService } from 'librechat-data-provider';
 import type { Agents, TConversation, TPendingSteer } from 'librechat-data-provider';
-import { isNotFoundError, updateConvoInAllQueries, setDocumentTitle } from '~/utils';
+import {
+  isNotFoundError,
+  updateConvoInAllQueries,
+  setDocumentTitle,
+  findManualConvoTitleInAllQueries,
+} from '~/utils';
 import { generationProtocolHeaders, withGenerationProtocolQuery } from './protocol';
 import { useGetStartupConfig } from '../Endpoints';
 
@@ -77,10 +82,14 @@ const queueListeners = new Set<() => void>();
 
 /** Queue a conversation for title generation (call when starting new conversation) */
 export function queueTitleGeneration(conversationId: string) {
-  if (!processedTitles.has(conversationId)) {
+  if (!isTitleGenerationProcessed(conversationId)) {
     titleQueue.add(conversationId);
     queueListeners.forEach((listener) => listener());
   }
+}
+
+export function isTitleGenerationProcessed(conversationId: string): boolean {
+  return processedTitles.has(conversationId);
 }
 
 export function markTitleGenerationProcessed(conversationId: string) {
@@ -177,12 +186,18 @@ export function useTitleGeneration(enabled = true) {
       }
 
       if (titleQuery.isSuccess && titleQuery.data) {
-        const { title } = titleQuery.data;
-        queryClient.setQueryData(
+        const incoming = titleQuery.data;
+        const titleState =
+          findManualConvoTitleInAllQueries(queryClient, conversationId, incoming) ?? incoming;
+        const applyTitle = (convo: TConversation): TConversation => ({ ...convo, ...titleState });
+        queryClient.setQueryData<TConversation>(
           [QueryKeys.conversation, conversationId],
-          (convo: TConversation | undefined) => (convo ? { ...convo, title } : convo),
+          (convo) => (convo ? applyTitle(convo) : convo),
         );
-        updateConvoInAllQueries(queryClient, conversationId, (c) => ({ ...c, title }));
+        updateConvoInAllQueries(queryClient, conversationId, applyTitle);
+        const title =
+          queryClient.getQueryData<TConversation>([QueryKeys.conversation, conversationId])
+            ?.title ?? incoming.title;
         // Only update document title if this conversation is currently active
         if (window.location.pathname.includes(conversationId)) {
           setDocumentTitle(title);

@@ -62,8 +62,9 @@ do not relax that policy to make the test pass.
     Both chats read different physical files. An offline B never falls back to A.
 
 The disposable fixture enables `endpoints.agents.statefulCodeSessions.allowEnvironmentSelection`
-and the environment-decision protocol. Production deployments keep fixed-agent routing unless
-that opt-in is enabled and the agent has a nonempty `code_environment_ids` list. The default
+and the environment-decision protocol. Machine selection is on by default, but an agent keeps
+fixed routing unless it has a nonempty `code_environment_ids` list, and a deployment can turn it
+off with `allowEnvironmentSelection: false`. The default
 `code_environment_id` is implicitly allowed; every additional machine still requires the user's
 own access and current worker capabilities. This does not move an existing chat between machines.
 

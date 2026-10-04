@@ -2184,6 +2184,60 @@ describe('primeResources', () => {
       expect(statefulFile.metadata?.codeEnvRefs?.default).toBeDefined();
     });
 
+    it("authenticates an attached route's probe for its worker without the managed key", async () => {
+      /* The managed key authorizes only the default Code API; an attached route answers
+       * it with a 401, so it is neither loaded nor sent, and the probe carries the
+       * route's profile and worker for a worker-bound bearer instead. */
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const checkSessionsAlive = jest.fn().mockResolvedValue(new Set(['attached-file']));
+      const loadCodeApiKey = jest.fn().mockResolvedValue('managed-key');
+      const attachedFile = makeCodeFile({
+        file_id: 'attached-file',
+        metadata: {
+          codeEnvRefs: {
+            'stateful:env1': {
+              kind: 'user',
+              id: 'user1',
+              storage_session_id: 'sess-attached',
+              file_id: 'remote-attached',
+              executionProfile: 'stateful',
+              executionRouteKey: 'stateful:env1',
+            },
+          },
+        },
+      });
+
+      await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([attachedFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        checkSessionsAlive,
+        loadCodeApiKey,
+        codeRouteKey: 'stateful:env1',
+        codeBaseUrl: 'https://code-byom.example.com/v1',
+        codeExecutionProfile: 'stateful',
+        codeBridgeWorkerId: 'worker-1',
+      });
+
+      expect(loadCodeApiKey).not.toHaveBeenCalled();
+      expect(checkSessionsAlive).toHaveBeenCalledWith(
+        expect.objectContaining({
+          req: mockReq,
+          apiKey: undefined,
+          baseURL: 'https://code-byom.example.com/v1',
+          routeKey: 'stateful:env1',
+          executionProfile: 'stateful',
+          bridgeWorkerId: 'worker-1',
+        }),
+      );
+    });
+
     it('keeps alive pre-categorized files out of the provisioning queue', async () => {
       process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
       const checkSessionsAlive = jest.fn().mockResolvedValue(new Set(['alive-file']));

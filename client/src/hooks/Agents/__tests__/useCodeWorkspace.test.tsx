@@ -43,6 +43,69 @@ const conversation = (codeWorkspaces?: TConversation['codeWorkspaces']): TConver
   }) as TConversation;
 
 describe('useCodeWorkspace', () => {
+  it.each([
+    { enabled: false, capable: true },
+    { enabled: true, capable: false },
+  ])('blocks a restored isolation choice when support disappears: %j', ({ enabled, capable }) => {
+    mockAgentsConfig().agentsConfig.statefulCodeSessions.environments[0].configSchema = {
+      workspaces: { allowCheckoutSelection: enabled },
+    };
+    mockStatus.mockReturnValue([
+      {
+        data: {
+          environmentId: 'personal-vm',
+          status: 'ready',
+          workspaces: [
+            { id: 'project-a', ...(capable ? { workspaceInstances: ['git_worktree'] } : {}) },
+          ],
+        },
+      },
+    ]);
+    const selected = [
+      { environmentId: 'personal-vm', workspaceId: 'project-a', checkout: 'isolated' as const },
+    ];
+    const { result } = renderHook(() =>
+      useCodeWorkspace({
+        ...conversation(selected),
+        conversationId: 'saved',
+        codeEnvironmentMode: 'attached',
+      }),
+    );
+    expect(result.current.canSubmit).toBe(false);
+    expect(result.current.resolveSubmission(selected)).toBeUndefined();
+  });
+
+  it.each(['source', 'isolated'] as const)(
+    'retains %s checkout through submission and restored-session resolution',
+    (checkout) => {
+      mockAgentsConfig().agentsConfig.statefulCodeSessions.environments[0].configSchema = {
+        workspaces: { allowCheckoutSelection: true },
+      };
+      mockStatus.mockReturnValue([
+        {
+          data: {
+            environmentId: 'personal-vm',
+            status: 'ready',
+            workspaces: [{ id: 'project-a', workspaceInstances: ['git_worktree'] }],
+          },
+        },
+      ]);
+      const selection = [{ environmentId: 'personal-vm', workspaceId: 'project-a', checkout }];
+      const { result, rerender } = renderHook(
+        ({ saved }) =>
+          useCodeWorkspace({
+            ...conversation(selection),
+            conversationId: saved ? 'saved' : 'new',
+            codeEnvironmentMode: 'attached',
+          }),
+        { initialProps: { saved: false } },
+      );
+      expect(result.current.resolveSubmission(selection)?.codeWorkspaces).toEqual(selection);
+      rerender({ saved: true });
+      expect(result.current.resolveSubmission(selection)?.codeWorkspaces).toEqual(selection);
+    },
+  );
+
   describe('per-chat machines', () => {
     function enableChoices() {
       const config = mockAgentsConfig().agentsConfig;
@@ -1550,13 +1613,34 @@ describe('useCodeWorkspace', () => {
       });
     });
 
-    it('keeps a reachable sealed workspace out of the composer', () => {
+    it('keeps a healthy attached workspace visible with an explicit detach action', () => {
       const kept = { environmentId: 'personal-vm', workspaceId: 'project-a' };
 
       const { result } = renderHook(() => useCodeWorkspace(sealed([kept])));
 
       expect(result.current.state).toBe('ready');
       expect(result.current.canSubmit).toBe(true);
+      expect(result.current.transition).toMatchObject({
+        kind: 'detach',
+        from: [kept],
+        retained: [kept],
+        targets: [],
+        detachable: true,
+      });
+      expect(result.current.visible).toBe(true);
+      expect(result.current.resolveSubmission([kept], 'attached')).toEqual({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [kept],
+      });
+    });
+
+    it('does not offer healthy detach to a replica that only supports moves', () => {
+      mockStartupConfig.mockReturnValue({
+        codeEnvironmentDecisionVersion: 1,
+        codeEnvironmentMoveVersion: 1,
+      });
+      const kept = { environmentId: 'personal-vm', workspaceId: 'project-a' };
+      const { result } = renderHook(() => useCodeWorkspace(sealed([kept])));
       expect(result.current.transition).toBeUndefined();
       expect(result.current.visible).toBe(false);
     });
