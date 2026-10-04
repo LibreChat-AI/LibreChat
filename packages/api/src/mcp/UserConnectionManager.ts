@@ -510,13 +510,15 @@ export abstract class UserConnectionManager {
           if (activeRecovery) {
             await this.waitForConnectionRecovery(activeRecovery, opts.signal);
           }
-          let connected = await existing.isConnected();
+          let connected = await existing.isConnected(opts.signal);
+          opts.signal?.throwIfAborted();
           let recovery = this.getActiveConnectionRecovery(existing);
           this.propagateDirectBearerRecoveryState(existing, opts.directBearerRecoveryState);
           while (recovery && recovery !== awaitedRecovery) {
             awaitedRecovery = recovery;
             await this.waitForConnectionRecovery(recovery, opts.signal);
-            connected = await existing.isConnected();
+            connected = await existing.isConnected(opts.signal);
+            opts.signal?.throwIfAborted();
             recovery = this.getActiveConnectionRecovery(existing);
             this.propagateDirectBearerRecoveryState(existing, opts.directBearerRecoveryState);
           }

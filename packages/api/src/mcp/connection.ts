@@ -1658,7 +1658,10 @@ export class MCPConnection extends EventEmitter {
       signal = signal ? AbortSignal.any([signal, connectionSignal]) : connectionSignal;
       signal.throwIfAborted();
       // Detach this waiter only; shared mints retain their occurrence-owned signal.
-      const headers = await awaitOboOperation(this.resolveRequestHeaders(signal), signal);
+      const headers = await awaitOboOperation(
+        this.resolveRequestHeaders(signal, (error) => this.stopRequestAuthorization(error)),
+        signal,
+      );
       signal.throwIfAborted();
       if (this.requestAuthorization.closed) throw new Error('MCP connection is closed');
       return headers;
@@ -1668,10 +1671,14 @@ export class MCPConnection extends EventEmitter {
     }
   }
 
-  private failRequestAuthorization(error: unknown): Promise<never> {
-    // Stop retries before receipt admission waits; failure evidence outlives SDK deadlines.
+  private stopRequestAuthorization(error: unknown): void {
     this.requestAuthorization.error = error;
     this.shouldStopReconnecting = true;
+  }
+
+  private failRequestAuthorization(error: unknown): Promise<never> {
+    // Stop retries before receipt admission waits; failure evidence outlives SDK deadlines.
+    this.stopRequestAuthorization(error);
     const failure = (async () => {
       try {
         if (this.resolveRequestHeaders?.recordFailure)

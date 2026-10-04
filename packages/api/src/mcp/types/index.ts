@@ -237,6 +237,8 @@ export interface DirectBearerRecoveryState {
 /** Host-supplied live headers; transport requests cannot reuse a prior allow observation. */
 export type MCPRequestHeaderResolver = ((
   signal?: AbortSignal,
+  /** Stops this connection's retries at observation, before denial admission awaits. */
+  onDenied?: (error: unknown) => void,
 ) => Promise<Record<string, string>>) & {
   /** Synchronous completion/owner cutoff, checked beside dispatch with no intervening await. */
   assertOpen?: () => void;

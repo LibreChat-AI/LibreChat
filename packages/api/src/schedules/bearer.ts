@@ -33,6 +33,7 @@ import { readScheduleFireContext, isScheduleFireRequest } from './trigger';
 import { getScheduleMCPExecution } from './authorization/execution';
 import { ScheduleMCPConsentError } from './authorization/service';
 import { usesDirectOpenIDBearerRecovery } from '~/mcp/openid';
+import { holdMCPRequestFailure } from '~/mcp/signal';
 import { awaitOboOperation } from '~/mcp/oauth/obo';
 import { isOwnedAbortError } from '~/utils/errors';
 import { applyRequestHeaders } from '~/mcp/utils';
@@ -53,6 +54,8 @@ interface BearerInput {
   config: ParsedServerConfig;
   signal?: AbortSignal;
   selection?: ScheduledMCPToolSelection;
+  /** Registers a typed denial before waiter cancellation can detach its propagation. */
+  onFailure?: (error: ScheduledMCPBearerError) => void;
 }
 interface ScheduledBearerScope {
   readonly identity: ScheduledMCPIdentity;
@@ -63,6 +66,42 @@ const scopes = new WeakMap<RequestScopedMCPConnectionStore, ScheduledBearerScope
 const scopeSignals = new WeakMap<RequestScopedMCPConnectionStore, AbortSignal>();
 type BearerFailureRecorder = (error: ScheduledMCPBearerError) => Promise<boolean>;
 const failureRecorders = new WeakMap<RequestScopedMCPConnectionStore, BearerFailureRecorder>();
+interface BearerAdmissions {
+  reports: WeakMap<object, Promise<boolean>>;
+  pending: Set<Promise<boolean>>;
+}
+const failureAdmissions = new WeakMap<RequestScopedMCPConnectionStore, BearerAdmissions>();
+
+/** Admission belongs to the occurrence; a cancelled waiter cannot discard already-observed evidence. */
+function admitBearerFailure(
+  context: RequestScopedMCPConnectionStore,
+  error: ScheduledMCPBearerError,
+  cause: object = error,
+): Promise<boolean> | undefined {
+  const recorder = failureRecorders.get(context);
+  if (!recorder) return;
+  let state = failureAdmissions.get(context);
+  if (!state) {
+    state = { reports: new WeakMap(), pending: new Set() };
+    failureAdmissions.set(context, state);
+  }
+  let admission = state.reports.get(cause) ?? state.reports.get(error);
+  if (!admission) {
+    // The trusted recorder publishes exact-owner pending evidence before its first await.
+    admission = recorder(error);
+    state.reports.set(cause, admission);
+    state.reports.set(error, admission);
+    state.pending.add(admission);
+    const receipt = admission;
+    void admission.then(
+      (acknowledged) => {
+        if (acknowledged) state.pending.delete(receipt);
+      },
+      () => undefined,
+    );
+  }
+  return admission;
+}
 
 /** The host owns credential issuance; this module caches only within one bound occurrence. */
 export function createScheduledMCPBearerHost(deps: {
@@ -80,37 +119,46 @@ export function createScheduledMCPBearerHost(deps: {
       const cached = new Map<string, { token: string; expiresAtMs: number }>();
       const flights = new Map<string, Promise<{ token: string; expiresAtMs: number }>>();
       const rejected = new Set<string>();
-      const fail: (reason: ScheduledMCPFailure['reason'], server: string) => never = (
-        reason,
-        server,
-      ) => {
-        throw new ScheduledMCPBearerError(reason, server);
+      const fail: (
+        reason: ScheduledMCPFailure['reason'],
+        server: string,
+        onFailure?: BearerInput['onFailure'],
+      ) => never = (reason, server, onFailure) => {
+        const error = new ScheduledMCPBearerError(reason, server);
+        onFailure?.(error);
+        throw error;
       };
       const authorize = async (
         target: ScheduledMCPTarget,
         selection: ScheduledMCPToolSelection,
         phase: 'activation' | 'mint' | 'invoke' | 'resume',
         signal?: AbortSignal,
+        onFailure?: BearerInput['onFailure'],
       ) => {
-        const result = await awaitOboOperation(
-          deps.authority.authorize(
-            {
-              identity: captured,
-              resource: target.resource,
-              selection,
-              stage: phase,
-              ...(manual && { manual: true }),
-            },
-            { signal },
-          ),
+        return awaitOboOperation(
+          deps.authority
+            .authorize(
+              {
+                identity: captured,
+                resource: target.resource,
+                selection,
+                stage: phase,
+                ...(manual && { manual: true }),
+              },
+              { signal },
+            )
+            .then((result) => {
+              signal?.throwIfAborted();
+              if (result.state === 'denied')
+                fail(result.failure.reason, target.resource.serverName, onFailure);
+              if (result.state !== 'authorized')
+                fail('dependency_unavailable', target.resource.serverName, onFailure);
+              if (!Number.isSafeInteger(result.validUntilMs) || result.validUntilMs <= now())
+                fail('consent_expired', target.resource.serverName, onFailure);
+              return result;
+            }),
           signal,
         );
-        if (result.state === 'denied') fail(result.failure.reason, target.resource.serverName);
-        if (result.state !== 'authorized')
-          fail('dependency_unavailable', target.resource.serverName);
-        if (!Number.isSafeInteger(result.validUntilMs) || result.validUntilMs <= now())
-          fail('consent_expired', target.resource.serverName);
-        return result;
       };
       return {
         identity: captured,
@@ -118,16 +166,20 @@ export function createScheduledMCPBearerHost(deps: {
           rejected.add(server);
           cached.clear();
         },
-        async resolve({ user, serverName, config, signal, selection }) {
+        async resolve({ user, serverName, config, signal, selection, onFailure }) {
+          const deny: (reason: ScheduledMCPFailure['reason'], server: string) => never = (
+            reason,
+            server,
+          ) => fail(reason, server, onFailure);
           if (ownerSignal) signal = signal ? AbortSignal.any([ownerSignal, signal]) : ownerSignal;
           signal?.throwIfAborted();
           const effective = applyRequestHeaders(config);
           if (!usesDirectOpenIDBearerRecovery(effective)) return config;
-          if (!('headers' in effective)) return fail('unsupported_mode', serverName);
+          if (!('headers' in effective)) return deny('unsupported_mode', serverName);
           try {
             if (user?.id !== captured.ownerId || (user.tenantId ?? null) !== captured.tenantId)
-              fail('binding_mismatch', serverName);
-            if (rejected.has(serverName)) fail('credential_rejected', serverName);
+              deny('binding_mismatch', serverName);
+            if (rejected.has(serverName)) deny('credential_rejected', serverName);
             const targets = await awaitOboOperation(
               deps.resolveEnrollment(captured, { signal }),
               signal,
@@ -135,9 +187,9 @@ export function createScheduledMCPBearerHost(deps: {
             const candidates = targets.filter(
               (target) => target.resource.serverName === serverName,
             );
-            if (candidates.length !== 1) fail('resource_unverified', serverName);
+            if (candidates.length !== 1) deny('resource_unverified', serverName);
             const parsed = scheduledMCPTargetSchema.safeParse(candidates[0]);
-            if (!parsed.success) fail('resource_unverified', serverName);
+            if (!parsed.success) deny('resource_unverified', serverName);
             const target = parsed.data;
             const resource = target.resource;
             if (
@@ -145,12 +197,12 @@ export function createScheduledMCPBearerHost(deps: {
               !resource.issuer ||
               !resource.audience
             )
-              fail('unsupported_mode', serverName);
+              deny('unsupported_mode', serverName);
             if (
               getScheduledMCPConfigurationRevision(config, resource) !==
               resource.configurationRevision
             )
-              fail('binding_mismatch', serverName);
+              deny('binding_mismatch', serverName);
             // No resource token in URL, subprocess, OAuth exchange or non-Authorization headers.
             const authorization = Object.entries(effective.headers ?? {}).filter(
               ([name]) => name.toLowerCase() === 'authorization',
@@ -161,14 +213,14 @@ export function createScheduledMCPBearerHost(deps: {
                 extractEnvVariable(authorization[0][1]),
               )
             )
-              fail('unsupported_mode', serverName);
+              deny('unsupported_mode', serverName);
             const { [authorization[0][0]]: _authorization, ...headers } = effective.headers ?? {};
             if (/\{\{LIBRECHAT_(?:OPENID_|GRAPH_)/.test(JSON.stringify({ ...effective, headers })))
-              fail('unsupported_mode', serverName);
+              deny('unsupported_mode', serverName);
             const selections = selection ? [selection] : target.permittedTools;
-            if (!selections.length) fail('tool_policy_denied', serverName);
+            if (!selections.length) deny('tool_policy_denied', serverName);
             const authorizations = await Promise.all(
-              selections.map((item) => authorize(target, item, stage, signal)),
+              selections.map((item) => authorize(target, item, stage, signal, onFailure)),
             );
             const authorizationKey = [
               ...new Set(
@@ -190,22 +242,27 @@ export function createScheduledMCPBearerHost(deps: {
               if (!pending) {
                 pending = (async () => {
                   for (const item of selections)
-                    await authorize(target, item, mintStage, ownerSignal);
+                    await authorize(target, item, mintStage, ownerSignal, onFailure);
                   const result = await awaitOboOperation(
-                    deps.resolveBearer(
-                      {
-                        identity: captured,
-                        resource: { ...resource, credentialMode: 'resource_bearer' },
-                        selection: selections[0],
-                        stage: mintStage,
-                        ...(manual && { manual: true }),
-                      },
-                      { signal: ownerSignal },
-                    ),
+                    deps
+                      .resolveBearer(
+                        {
+                          identity: captured,
+                          resource: { ...resource, credentialMode: 'resource_bearer' },
+                          selection: selections[0],
+                          stage: mintStage,
+                          ...(manual && { manual: true }),
+                        },
+                        { signal: ownerSignal },
+                      )
+                      .then((result) => {
+                        ownerSignal?.throwIfAborted();
+                        if (result.state === 'denied') deny(result.failure.reason, serverName);
+                        if (result.state !== 'ready') deny('dependency_unavailable', serverName);
+                        return result;
+                      }),
                     ownerSignal,
                   );
-                  if (result.state === 'denied') fail(result.failure.reason, serverName);
-                  if (result.state !== 'ready') fail('dependency_unavailable', serverName);
                   if (
                     !result.accessToken ||
                     /[\r\n]/.test(result.accessToken) ||
@@ -215,7 +272,7 @@ export function createScheduledMCPBearerHost(deps: {
                     result.audience !== resource.audience ||
                     result.resourceUrl !== resource.url
                   )
-                    fail('binding_mismatch', serverName);
+                    deny('binding_mismatch', serverName);
                   return {
                     token: result.accessToken,
                     expiresAtMs: Math.min(result.expiresAtMs, validUntil),
@@ -230,17 +287,17 @@ export function createScheduledMCPBearerHost(deps: {
             }
             // Recheck authority after provider I/O, including cache hits and peer-flight adoption.
             for (const item of selections) {
-              const fresh = await authorize(target, item, stage, signal);
+              const fresh = await authorize(target, item, stage, signal, onFailure);
               if (
                 fresh.consentRevision !==
                   authorizations[selections.indexOf(item)].consentRevision ||
                 fresh.policyRevision !== authorizations[selections.indexOf(item)].policyRevision
               )
-                fail('binding_mismatch', serverName);
+                deny('binding_mismatch', serverName);
             }
             signal?.throwIfAborted();
-            if (rejected.has(serverName)) fail('credential_rejected', serverName);
-            if (credential.expiresAtMs <= now()) fail('credential_missing', serverName);
+            if (rejected.has(serverName)) deny('credential_rejected', serverName);
+            if (credential.expiresAtMs <= now()) deny('credential_missing', serverName);
             return {
               ...effective,
               headers: {
@@ -249,8 +306,8 @@ export function createScheduledMCPBearerHost(deps: {
               },
             };
           } catch (error) {
-            signal?.throwIfAborted();
             if (error instanceof ScheduledMCPBearerError) throw error;
+            signal?.throwIfAborted();
             if (error instanceof ScheduleMCPConsentError)
               throw new ScheduledMCPBearerError('binding_mismatch', serverName);
             throw new ScheduledMCPBearerError('dependency_unavailable', serverName);
@@ -301,15 +358,14 @@ export function createScheduledMCPBearerHeaderResolver(
   const { context, config, serverName } = input;
   const user = input.user && Object.freeze({ id: input.user.id, tenantId: input.user.tenantId });
   const onFailure = failureRecorders.get(context);
-  const pending = new Set<Promise<boolean>>();
-  const reports = new WeakMap<object, Promise<boolean>>();
+
   const assertOpen = () => {
     getMCPRequestSignal(context).throwIfAborted();
     scopeSignals.get(context)?.throwIfAborted();
 
     if (context.quiesceStarted || context.cleanupStarted) throw new MCPRequestQuiescedError();
   };
-  const resolver: MCPRequestHeaderResolver = async (signal) => {
+  const resolver: MCPRequestHeaderResolver = async (signal, onDenied) => {
     const ownerSignal = scopeSignals.get(context);
     if (ownerSignal) signal = signal ? AbortSignal.any([ownerSignal, signal]) : ownerSignal;
     signal?.throwIfAborted();
@@ -321,6 +377,7 @@ export function createScheduledMCPBearerHeaderResolver(
       user,
       signal,
       context,
+      onFailure: onDenied,
     });
     signal?.throwIfAborted();
     if (context.quiesceStarted) throw new MCPRequestQuiescedError();
@@ -341,26 +398,13 @@ export function createScheduledMCPBearerHeaderResolver(
       if (!error) return;
       if (rejection) rejectScheduledMCPBearer(context, serverName);
       const key = cause != null && typeof cause === 'object' ? cause : error;
-      let admission = reports.get(key);
-      if (!admission) {
-        // The recorder registers exact-owner pending evidence before its first await.
-        admission = onFailure(error);
-        reports.set(key, admission);
-        reports.set(error, admission);
-        pending.add(admission);
-        const receipt = admission;
-        void admission.then(
-          (acknowledged) => {
-            if (acknowledged) pending.delete(receipt);
-          },
-          () => undefined,
-        );
-      }
+      const admission = admitBearerFailure(context, error, key);
       if (!(await admission) || rejection) throw error;
     };
   if (onFailure)
     resolver.settle = async () => {
-      while (pending.size > 0) {
+      const pending = failureAdmissions.get(context)?.pending;
+      while (pending && pending.size > 0) {
         if ((await Promise.all(pending)).some((acknowledged) => !acknowledged))
           throw new ScheduledMCPBearerError('dependency_unavailable', serverName);
       }
@@ -401,8 +445,30 @@ export async function resolveScheduledMCPBearerConfig(
     const requestSignal = getMCPRequestSignal(input.context);
     const signal = input.signal ? AbortSignal.any([input.signal, requestSignal]) : requestSignal;
     signal.throwIfAborted();
-    // Hosts should cancel their I/O; detachment also bounds a host that ignores the signal.
-    config = await awaitOboOperation(scope.resolve({ ...input, signal }), signal);
+    let knownFailure: Promise<never> | undefined;
+    let observedError: ScheduledMCPBearerError | undefined;
+    const observe = (error: ScheduledMCPBearerError): void => {
+      if (observedError === error) return;
+      observedError = error;
+      input.onFailure?.(error);
+      const admission = admitBearerFailure(input.context!, error);
+      const failure = Promise.resolve(admission).then((): never => {
+        throw error;
+      });
+      knownFailure ??= failure;
+      holdMCPRequestFailure(failure);
+    };
+    // Observe before any outer waiter detaches; receipt admission has a separate lifetime.
+    const operation = scope.resolve({ ...input, signal, onFailure: observe }).catch((error) => {
+      if (error instanceof ScheduledMCPBearerError) observe(error);
+      throw error;
+    });
+    try {
+      config = await awaitOboOperation(operation, signal);
+    } catch (error) {
+      if (knownFailure) return await knownFailure;
+      throw error;
+    }
   }
   if (input.context?.quiesceStarted) throw new MCPRequestQuiescedError();
   if (input.context?.cleanupStarted)
