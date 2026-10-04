@@ -1,3 +1,5 @@
+import { trace } from '@opentelemetry/api';
+import { logger } from '@librechat/data-schemas';
 import { codeEnvironmentAdmissionSchema } from 'librechat-data-provider';
 import { executeWorkspaceTool } from './workspace';
 
@@ -128,7 +130,17 @@ test('lost submission with absent lookup retries only the identical request iden
     .mockRejectedValueOnce(new TypeError('lost'))
     .mockResolvedValueOnce(json({}, 404))
     .mockResolvedValueOnce(status('completed'));
-  expect(await executeWorkspaceTool({ ...input, fetchImpl })).toEqual(result);
+  expect(
+    await executeWorkspaceTool({
+      ...input,
+      admission: codeEnvironmentAdmissionSchema.parse({
+        durableRequests: true,
+        queueWaitMs: 100,
+        pollIntervalMs: 100,
+      }),
+      fetchImpl,
+    }),
+  ).toEqual(result);
   const posts = fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST');
   expect(posts).toHaveLength(2);
   expect(posts[0][1].headers['X-LibreChat-Workspace-Request-Id']).toBe(
@@ -143,4 +155,373 @@ test('rejects a run unable to reserve the complete execution budget before submi
     executeWorkspaceTool({ ...input, maxRunTimeoutMs: 1000, fetchImpl }),
   ).rejects.toThrow('cannot fit');
   expect(fetchImpl).not.toHaveBeenCalled();
+});
+
+test('zero queue retries still permits the initial durable admission attempt', async () => {
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(status('completed'));
+  expect(await executeWorkspaceTool({ ...input, maxQueueWaitMs: 0, fetchImpl })).toEqual(result);
+  const post = fetchImpl.mock.calls.find(([, init]) => init.method === 'POST');
+  expect(Number(post?.[1].headers['X-LibreChat-Workspace-Queue-Wait-Ms'])).toBeGreaterThan(0);
+});
+
+test('recovers a broken 202 body by lookup, not a second submission', async () => {
+  const broken = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"requestId":'));
+      controller.error(new TypeError('connection reset'));
+    },
+  });
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(new Response(broken, { status: 202 }))
+    .mockResolvedValueOnce(status('completed'));
+  expect(await executeWorkspaceTool({ ...input, fetchImpl })).toEqual(result);
+  expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+});
+
+test('clamps server admission to the run budget minus execution and delivery', async () => {
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(status('completed'));
+  const started = Date.now();
+  expect(
+    await executeWorkspaceTool({
+      ...input,
+      maxQueueWaitMs: 300000,
+      maxRunTimeoutMs: 60000,
+      fetchImpl,
+    }),
+  ).toEqual(result);
+  const post = fetchImpl.mock.calls.find(([, init]) => init.method === 'POST');
+  const allowance = Number(post?.[1].headers['X-LibreChat-Workspace-Queue-Wait-Ms']);
+  expect(allowance).toBeLessThanOrEqual(25000);
+  expect(allowance).toBeLessThanOrEqual(started + 60000 - Date.now() - 35000 + 100);
+});
+
+test.each(['EDIT_CONFLICT', 'FILE_EXISTS', 'WORKSPACE_QUARANTINED'])(
+  'preserves conflict status for retained %s',
+  async (code) => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+      .mockResolvedValueOnce(
+        json(
+          { requestId, state: 'failed', error: { code, message: 'private submitted content' } },
+          202,
+        ),
+      );
+    await expect(executeWorkspaceTool({ ...input, fetchImpl })).rejects.toMatchObject({
+      upstreamStatus: 409,
+      upstreamCode: code,
+    });
+  },
+);
+
+test.each(['completed', 'queued'])(
+  'resumes an accepted %s handle through lookup only',
+  async (state) => {
+    const { requestId: _fresh, ...resumeInput } = input;
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+      .mockResolvedValueOnce(status(state))
+      .mockResolvedValueOnce(status('completed'));
+    expect(
+      await executeWorkspaceTool({ ...resumeInput, resumeRequestId: requestId, fetchImpl }),
+    ).toEqual(result);
+    expect(fetchImpl.mock.calls.every(([, init]) => init.method === 'GET')).toBe(true);
+  },
+);
+
+test.each([404, 0])(
+  'never falls back or posts a resumed handle on unsupported discovery (%s)',
+  async (unsupported) => {
+    const { requestId: _fresh, ...resumeInput } = input;
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(
+        unsupported === 404 ? json({}, 404) : json({ durableWorkspaceRequests: 0 }),
+      )
+      .mockResolvedValueOnce(status('cancelled'));
+    await expect(
+      executeWorkspaceTool({ ...resumeInput, resumeRequestId: requestId, fetchImpl }),
+    ).rejects.toMatchObject({ reason: 'invalid' });
+    expect(fetchImpl.mock.calls.some(([, init]) => init.method === 'POST')).toBe(false);
+  },
+);
+
+test('an expired resumed handle cannot recreate a command or write', async () => {
+  const { requestId: _fresh, ...resumeInput } = input;
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(json({}, 404))
+    .mockResolvedValueOnce(json({}, 404));
+  await expect(
+    executeWorkspaceTool({ ...resumeInput, resumeRequestId: requestId, fetchImpl }),
+  ).rejects.toMatchObject({ reason: 'invalid' });
+  expect(fetchImpl.mock.calls.map(([, init]) => init.method)).toEqual(['GET', 'GET', 'DELETE']);
+});
+
+test('fresh and resume identities are mutually exclusive and resuming cannot use the legacy path', async () => {
+  const fetchImpl = jest.fn();
+  await expect(
+    executeWorkspaceTool({ ...input, resumeRequestId: requestId, fetchImpl }),
+  ).rejects.toMatchObject({ reason: 'invalid' });
+  const { requestId: _fresh, ...resumeInput } = input;
+  await expect(
+    executeWorkspaceTool({
+      ...resumeInput,
+      resumeRequestId: requestId,
+      admission: undefined,
+      fetchImpl,
+    }),
+  ).rejects.toMatchObject({ reason: 'invalid' });
+  expect(fetchImpl).not.toHaveBeenCalled();
+});
+
+test('lookup failures after an accepted 202 body never authorize another submission', async () => {
+  const broken = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.error(new TypeError('connection reset'));
+    },
+  });
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(new Response(broken, { status: 202 }))
+    .mockResolvedValueOnce(json({}, 404))
+    .mockResolvedValueOnce(status('cancelled'));
+  await expect(executeWorkspaceTool({ ...input, fetchImpl })).rejects.toMatchObject({
+    reason: 'invalid',
+  });
+  expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+  expect(fetchImpl.mock.calls[fetchImpl.mock.calls.length - 1]?.[1].method).toBe('DELETE');
+});
+
+test('malformed or oversized accepted bodies fail closed and cancel, without treating them as transport loss', async () => {
+  for (const body of ['{"broken":', 'x'.repeat(4 * 1024 * 1024 + 1)]) {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+      .mockResolvedValueOnce(new Response(body, { status: 202 }))
+      .mockResolvedValueOnce(status('cancelled'));
+    await expect(executeWorkspaceTool({ ...input, fetchImpl })).rejects.toMatchObject({
+      reason: 'invalid',
+    });
+    expect(fetchImpl.mock.calls.map(([, init]) => init.method)).toEqual(['GET', 'POST', 'DELETE']);
+  }
+});
+
+test('retries a lost retained-result body through lookup without a second command', async () => {
+  const broken = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.error(new Error('socket interrupted'));
+    },
+  });
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(status('admitted'))
+    .mockResolvedValueOnce(new Response(broken))
+    .mockResolvedValueOnce(status('completed'));
+  expect(await executeWorkspaceTool({ ...input, fetchImpl })).toEqual(result);
+  expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+});
+
+test('credential and discovery delays reduce the server queue allowance before the first POST', async () => {
+  let now = Date.now();
+  const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+  const authHeaders = jest.fn(async () => {
+    now += 1000;
+    return {};
+  });
+  const fetchImpl = jest
+    .fn()
+    .mockImplementationOnce(async () => {
+      now += 2000;
+      return json({ durableWorkspaceRequests: 1 });
+    })
+    .mockResolvedValueOnce(status('completed'));
+  try {
+    expect(
+      await executeWorkspaceTool({
+        ...input,
+        maxQueueWaitMs: 300000,
+        maxRunTimeoutMs: 60000,
+        authHeaders,
+        fetchImpl,
+      }),
+    ).toEqual(result);
+    expect(Number(fetchImpl.mock.calls[1][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms'])).toBe(
+      21000,
+    );
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test('a lost POST is never resent with an allowance that extends past the original run', async () => {
+  jest.useFakeTimers();
+  const fetchImpl = jest.fn().mockImplementation(async (url, init) => {
+    if (String(url).endsWith('/capabilities')) return json({ durableWorkspaceRequests: 1 });
+    if (init.method === 'POST') throw new TypeError('lost');
+    return json({}, 404);
+  });
+  try {
+    const pending = executeWorkspaceTool({
+      ...input,
+      maxRunTimeoutMs: 35100,
+      maxQueueWaitMs: 300000,
+      fetchImpl,
+    }).catch((e) => e);
+    await jest.advanceTimersByTimeAsync(35100);
+    expect(await pending).toMatchObject({ reason: 'timeout' });
+    expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+    expect(fetchImpl.mock.calls[fetchImpl.mock.calls.length - 1]?.[1].method).toBe('DELETE');
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test.each([
+  ['WORKER_OFFLINE', 503],
+  ['WORKSPACE_QUEUE_TIMEOUT', 503],
+  ['WORKER_QUEUE_FULL', 429],
+  ['ASSIGNMENT_EXPIRED', 504],
+  ['SEARCH_TIMEOUT', 504],
+  ['RESULT_INVALID', 502],
+  ['WORKER_UNAUTHORIZED', 403],
+  ['WRITE_DISABLED', 403],
+  ['WRITE_LIMIT_EXCEEDED', 413],
+  ['ASSIGNMENT_INVALID', 400],
+  ['NOT_FOUND', 422],
+  ['EXECUTION_ABORTED', 422],
+  ['UNKNOWN_PROVIDER_CODE', 422],
+  ['constructor', 422],
+])('maps retained %s to the established domain status %s', async (code, expectedStatus) => {
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(
+      json({ requestId, state: 'failed', error: { code, message: 'sensitive diagnostics' } }, 202),
+    );
+  await expect(executeWorkspaceTool({ ...input, fetchImpl })).rejects.toMatchObject({
+    upstreamStatus: expectedStatus,
+    upstreamCode: ['UNKNOWN_PROVIDER_CODE', 'constructor'].includes(String(code))
+      ? 'WORKSPACE_TOOL_REJECTED'
+      : code,
+    upstreamBody: expect.not.stringContaining('sensitive diagnostics'),
+  });
+});
+
+test.each(['completed', 'failed', 'discovery', 'fallback', 'cancelled'])(
+  'records one shared span/outcome for durable %s',
+  async (scenario) => {
+    const tracer = trace.getTracer('librechat.workspace');
+    const original = tracer.startSpan.bind(tracer);
+    const attributes = jest.fn(),
+      end = jest.fn();
+    const start = jest.spyOn(tracer, 'startSpan').mockImplementation((...args) => {
+      const span = original(...args);
+      jest.spyOn(span, 'setAttributes').mockImplementation((value) => {
+        attributes(value);
+        return span;
+      });
+      jest.spyOn(span, 'end').mockImplementation(() => {
+        end();
+      });
+      return span;
+    });
+    const get = jest.spyOn(trace, 'getTracer').mockReturnValue(tracer);
+    const log = jest.spyOn(logger, 'debug');
+    const fetchImpl = jest.fn();
+    const controller = new AbortController();
+    if (scenario === 'fallback')
+      fetchImpl.mockResolvedValueOnce(json({}, 404)).mockResolvedValueOnce(json(result));
+    else if (scenario === 'discovery') fetchImpl.mockResolvedValueOnce(json({ unsupported: true }));
+    else {
+      fetchImpl.mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }));
+      if (scenario === 'cancelled')
+        fetchImpl
+          .mockImplementationOnce(async () => {
+            controller.abort();
+            return status('queued');
+          })
+          .mockResolvedValueOnce(status('cancelled'));
+      else
+        fetchImpl.mockResolvedValueOnce(
+          scenario === 'failed'
+            ? json({ requestId, state: 'failed', error: { code: 'EDIT_CONFLICT' } }, 202)
+            : status('completed'),
+        );
+    }
+    try {
+      await executeWorkspaceTool({ ...input, signal: controller.signal, fetchImpl }).catch(
+        () => undefined,
+      );
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(end).toHaveBeenCalledTimes(1);
+      const outcomes: Record<string, string> = {
+        discovery: 'invalid',
+        failed: 'rejected',
+        cancelled: 'cancelled',
+      };
+      const expectedOutcome = outcomes[scenario] ?? 'completed';
+      expect(attributes).toHaveBeenCalledWith(
+        expect.objectContaining({
+          'workspace.outcome': expectedOutcome,
+          'workspace.transport': scenario === 'fallback' ? 'synchronous' : 'durable',
+        }),
+      );
+      expect(
+        log.mock.calls.filter(([message]) => String(message) === '[WorkspaceAdmission] outcome'),
+      ).toHaveLength(1);
+    } finally {
+      start.mockRestore();
+      get.mockRestore();
+      log.mockRestore();
+    }
+  },
+);
+
+test('resuming a completed request does not need a fresh execution reserve', async () => {
+  const { requestId: _fresh, ...resumeInput } = input;
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(status('completed'));
+  expect(
+    await executeWorkspaceTool({
+      ...resumeInput,
+      resumeRequestId: requestId,
+      maxRunTimeoutMs: 1000,
+      fetchImpl,
+    }),
+  ).toEqual(result);
+  expect(fetchImpl.mock.calls.every(([, init]) => init.method === 'GET')).toBe(true);
+});
+
+test('a terminal server cancellation retains its cancellation outcome', async () => {
+  const log = jest.spyOn(logger, 'debug');
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(status('cancelled'));
+  try {
+    await expect(executeWorkspaceTool({ ...input, fetchImpl })).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(log).toHaveBeenCalledWith(
+      '[WorkspaceAdmission] outcome',
+      expect.objectContaining({ outcome: 'cancelled' }),
+    );
+  } finally {
+    log.mockRestore();
+  }
 });
