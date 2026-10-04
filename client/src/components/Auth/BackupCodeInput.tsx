@@ -16,8 +16,7 @@ export default function BackupCodeInput({
     <Input
       aria-label={localize('com_ui_backup_code_verification_required')}
       value={value}
-      onChange={(event) => onChange(event.target.value)}
-      maxLength={32}
+      onChange={(event) => onChange(event.target.value.trim())}
       autoComplete="one-time-code"
       autoCapitalize="none"
       spellCheck={false}

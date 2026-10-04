@@ -3,13 +3,14 @@ const { decryptV3, decryptV2 } = require('@librechat/data-schemas');
 const {
   generateTwoFactorLoginChallengeToken,
   generateTOTPSecret,
-  generateBackupCodes,
+  createBackupCodeGenerator,
   createBackupCodeVerifier,
 } = require('@librechat/api');
 const { consumeBackupCode } = require('~/models');
 
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 const verifyBackupCode = createBackupCodeVerifier(consumeBackupCode);
+const generateBackupCodes = createBackupCodeGenerator(process.env.TWO_FACTOR_BACKUP_CODE_FORMAT);
 
 /**
  * Decodes a Base32 string into a Buffer.

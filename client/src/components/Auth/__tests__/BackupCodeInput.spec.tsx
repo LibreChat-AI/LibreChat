@@ -1,10 +1,33 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { DisablePhase } from '~/components/Nav/SettingsTabs/Account/TwoFactorPhases/DisablePhase';
-import { isBackupCode } from '../BackupCodeInput';
+import { BackupPhase } from '~/components/Nav/SettingsTabs/Account/TwoFactorPhases/BackupPhase';
+import BackupCodeInput, { isBackupCode } from '../BackupCodeInput';
 
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
 
 describe('backup-code form validation', () => {
+  it('shows the complete long code in a wrapping single-column layout', () => {
+    const code = '0123456789abcdef0123456789abcdef';
+    const { container } = render(
+      <BackupPhase
+        backupCodes={[code]}
+        downloaded
+        onNext={jest.fn()}
+        onDownload={jest.fn()}
+        onError={jest.fn()}
+      />,
+    );
+    expect(screen.getByText(code)).toHaveClass('break-all', 'min-w-0');
+    expect(container.querySelector('.grid')).toHaveClass('grid-cols-1');
+  });
+  it('does not truncate whitespace-padded input before normalization', () => {
+    const onChange = jest.fn();
+    render(<BackupCodeInput value="" onChange={onChange} />);
+    const input = screen.getByRole('textbox');
+    expect(input).not.toHaveAttribute('maxlength');
+    fireEvent.change(input, { target: { value: ' 0123456789abcdef0123456789abcdef\n' } });
+    expect(onChange).toHaveBeenCalledWith('0123456789abcdef0123456789abcdef');
+  });
   it.each(['deadbeef', '0123456789abcdef0123456789abcdef'])(
     'allows disabling 2FA with either backup-code format: %s',
     (code) => {

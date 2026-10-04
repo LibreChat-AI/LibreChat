@@ -1,12 +1,29 @@
 import { createHash } from 'node:crypto';
 import {
   createBackupCodeVerifier,
+  createBackupCodeGenerator,
   generateBackupCodes,
   generateTOTPSecret,
   matchesBackupCode,
 } from './recovery';
 
 describe('two-factor credential generation', () => {
+  it.each([undefined, 'legacy', 'invalid'])(
+    'keeps issuance compatible before activation: %s',
+    async (format) => {
+      const { plainCodes, codeObjects } = await createBackupCodeGenerator(format)(2);
+      plainCodes.forEach((code, index) => {
+        expect(code).toMatch(/^[a-f0-9]{8}$/);
+        expect(codeObjects[index].codeHash).toBe(createHash('sha256').update(code).digest('hex'));
+      });
+    },
+  );
+
+  it('activates strong issuance only when explicitly configured', async () => {
+    const { plainCodes, codeObjects } = await createBackupCodeGenerator('strong')(1);
+    expect(plainCodes[0]).toHaveLength(32);
+    expect(matchesBackupCode(plainCodes[0], codeObjects[0].codeHash)).toBe(true);
+  });
   it('generates a 160-bit Base32 TOTP secret', () => {
     expect(generateTOTPSecret()).toMatch(/^[A-Z2-7]{32}$/);
     expect(generateTOTPSecret()).not.toBe(generateTOTPSecret());

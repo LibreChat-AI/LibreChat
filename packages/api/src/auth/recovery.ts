@@ -29,14 +29,22 @@ function digest(code: string, salt = ''): string {
 }
 
 /** High-entropy recovery credentials do not require password-style key stretching. */
-export async function generateBackupCodes(count = 10): Promise<{
+export async function generateBackupCodes(
+  count = 10,
+  legacy = false,
+): Promise<{
   plainCodes: string[];
   codeObjects: TwoFactorBackupCode[];
 }> {
   const plainCodes: string[] = [];
   const codeObjects: TwoFactorBackupCode[] = [];
   for (let i = 0; i < count; i++) {
-    const code = randomBytes(16).toString('hex');
+    const code = randomBytes(legacy ? 4 : 16).toString('hex');
+    if (legacy) {
+      plainCodes.push(code);
+      codeObjects.push({ codeHash: digest(code), used: false, usedAt: null });
+      continue;
+    }
     const salt = randomBytes(16).toString('hex');
     plainCodes.push(code);
     codeObjects.push({
@@ -46,6 +54,11 @@ export async function generateBackupCodes(count = 10): Promise<{
     });
   }
   return { plainCodes, codeObjects };
+}
+
+/** Keep issuance compatible until the operator completes the backend/client rollout. */
+export function createBackupCodeGenerator(format?: string): typeof generateBackupCodes {
+  return (count = 10) => generateBackupCodes(count, format !== 'strong');
 }
 
 /** Accept legacy digests until the user regenerates their recovery codes. */

@@ -34,18 +34,18 @@ export const BackupPhase: React.FC<BackupPhaseProps> = ({
       <p className="text-text-primary text-sm break-keep">
         {localize('com_ui_download_backup_tooltip')}
       </p>
-      <div className="bg-surface-secondary grid grid-cols-2 gap-4 rounded-xl p-6">
+      <div className="bg-surface-secondary grid grid-cols-1 gap-4 rounded-xl p-4">
         {backupCodes.map((code, index) => (
           <motion.div
             key={code}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: index * 0.1 }}
-            className="bg-surface-tertiary rounded-lg p-3"
+            className="bg-surface-tertiary min-w-0 rounded-lg p-3"
           >
-            <div className="flex items-center justify-between">
-              <span className="text-text-primary hidden text-sm sm:inline">#{index + 1}</span>
-              <span className="text-text-primary font-mono text-lg">{code}</span>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-text-primary shrink-0 text-sm">#{index + 1}</span>
+              <span className="text-text-primary min-w-0 font-mono text-sm break-all">{code}</span>
             </div>
           </motion.div>
         ))}

@@ -45,7 +45,7 @@ describe('TwoFactorScreen verification errors', () => {
       const input = screen.getByRole('textbox', {
         name: 'com_ui_backup_code_verification_required',
       });
-      expect(input).toHaveAttribute('maxlength', '32');
+      expect(input).not.toHaveAttribute('maxlength');
       fireEvent.change(input, { target: { value: code } });
       fireEvent.click(screen.getByTestId('login-button'));
       await waitFor(() =>
