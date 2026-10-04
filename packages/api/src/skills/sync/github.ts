@@ -69,6 +69,12 @@ const VALIDATION_ISSUE_LIMIT = 5;
 const VALIDATION_ISSUE_FIELD_MAX = 100;
 const VALIDATION_ISSUE_CODE_MAX = 64;
 const VALIDATION_ISSUE_MESSAGE_MAX = 250;
+/**
+ * Bump when the mapping from an upstream package to a stored skill changes
+ * (parsing, name fallback, frontmatter cleanup, metadata shape), so every
+ * mirror takes the full sync path once and records the new fingerprint.
+ */
+const SYNC_FINGERPRINT_VERSION = 1;
 
 export { GITHUB_FINE_GRAINED_TOKEN_RECOMMENDATION };
 export type { GitHubRepoAdapterConfig };
@@ -116,6 +122,8 @@ type PreparedExistingRemoteSkill = PreparedRemoteSkill & {
 type PreparedDiscoveredSkill = {
   discovered: DiscoveredSkill;
   prepared: PreparedRemoteSkill;
+  /** The mirror already matches upstream, so syncing it writes nothing. */
+  unchanged?: boolean;
 };
 
 type SaveBufferResult = {
@@ -793,15 +801,181 @@ async function ensurePublicViewer(
   });
 }
 
-async function prepareRemoteSkill(params: {
+type SkillDefinition = Pick<
+  UpdateSkillInput,
+  'name' | 'description' | 'body' | 'frontmatter' | 'alwaysApply'
+>;
+
+/**
+ * Source metadata that identifies what a mirror was synced from, minus the
+ * per-run `commitSha` and `syncedAt`. Key order matches the stored shape.
+ */
+function makeSyncIdentity(
+  source: SkillSyncGitHubSourceConfig,
+  discovered: DiscoveredSkill,
+): Record<string, string> {
+  return {
+    provider: PROVIDER,
+    sourceId: source.id,
+    upstreamId: makeUpstreamId(source, discovered.rootPath),
+    owner: source.owner,
+    repo: source.repo,
+    ref: source.ref,
+    skillPath: discovered.rootPath,
+    skillBlobSha: discovered.skillMd.id,
+    syncStatus: 'synced',
+  };
+}
+
+/**
+ * Hashes everything that decides a mirror's stored skill row: the mapping
+ * version, the upstream identity (including the SKILL.md blob id), and the
+ * definition written from it. Recomputed from the stored row, it only matches
+ * when neither upstream nor the row changed since the last write.
+ */
+function makeSyncFingerprint(
+  identity: Record<string, string>,
+  definition: SkillDefinition,
+): string {
+  const payload = JSON.stringify({
+    version: SYNC_FINGERPRINT_VERSION,
+    identity,
+    name: definition.name,
+    description: definition.description,
+    body: definition.body,
+    frontmatter: definition.frontmatter ?? {},
+    alwaysApply: definition.alwaysApply ?? false,
+  });
+  return crypto.createHash('sha256').update(payload).digest('hex');
+}
+
+function makeCreateInput(
+  source: SkillSyncGitHubSourceConfig,
+  update: UpdateSkillInput,
+  fallbackName: string,
+): CreateSkillInput {
+  return {
+    ...(update as Omit<UpdateSkillInput, 'source'>),
+    name: update.name ?? fallbackName,
+    description: update.description ?? fallbackName,
+    author: makeSourceAuthorId(source),
+    authorName: SYSTEM_AUTHOR_NAME,
+    source: PROVIDER,
+    tenantId: source.tenantId,
+  };
+}
+
+function getFallbackSkillName(
+  source: SkillSyncGitHubSourceConfig,
+  discovered: DiscoveredSkill,
+): string {
+  return toSkillName(path.posix.basename(discovered.rootPath) || source.id);
+}
+
+async function findExistingRemoteSkill(
+  deps: GitHubSkillSyncDeps,
+  source: SkillSyncGitHubSourceConfig,
+  discovered: DiscoveredSkill,
+): Promise<(ISkill & { _id: Types.ObjectId }) | null> {
+  const sourceTenantId = source.tenantId ?? undefined;
+  const foundExisting = await deps.findSkillBySourceIdentity({
+    source: PROVIDER,
+    upstreamId: makeUpstreamId(source, discovered.rootPath),
+    tenantId: sourceTenantId,
+  });
+  return foundExisting && (foundExisting.tenantId ?? undefined) === sourceTenantId
+    ? foundExisting
+    : null;
+}
+
+function hasSameSyncMetadata(
+  stored: Record<string, unknown> | undefined,
+  expected: Record<string, string>,
+): boolean {
+  const { commitSha: _commitSha, syncedAt: _syncedAt, ...comparable } = stored ?? {};
+  const keys = new Set([...Object.keys(comparable), ...Object.keys(expected)]);
+  for (const key of keys) {
+    if (comparable[key] !== expected[key]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** True when `syncSkillFiles` would neither download, replace nor delete a file. */
+function hasSameSyncedFiles(
+  discovered: DiscoveredSkill,
+  storedFiles: Array<ISkillFile & { _id: Types.ObjectId }>,
+): boolean {
+  const remoteBlobShas = new Map<string, string>();
+  for (const entry of discovered.files) {
+    const relativePath = getDiscoveredRelativePath(discovered, entry);
+    if (!isSafeRelativePath(relativePath) || relativePath.toUpperCase() === 'SKILL.MD') {
+      continue;
+    }
+    remoteBlobShas.set(relativePath, entry.id);
+  }
+  if (storedFiles.length !== remoteBlobShas.size) {
+    return false;
+  }
+  return storedFiles.every(
+    (file) =>
+      remoteBlobShas.has(file.relativePath) &&
+      getSourceMetadataString(file, 'blobSha') === remoteBlobShas.get(file.relativePath),
+  );
+}
+
+/**
+ * Returns a prepared skill without downloading SKILL.md when the mirror is
+ * already current: its stored fingerprint matches the discovered upstream
+ * package and its own definition, and its stored files match the discovered
+ * blobs. Anything else returns null and takes the full sync path, which also
+ * records the fingerprint on mirrors that predate it.
+ */
+async function prepareUnchangedRemoteSkill(params: {
   deps: GitHubSkillSyncDeps;
   source: SkillSyncGitHubSourceConfig;
   discovered: DiscoveredSkill;
+  existing: ISkill & { _id: Types.ObjectId };
+}): Promise<PreparedExistingRemoteSkill | null> {
+  const { deps, source, discovered, existing } = params;
+  const identity = makeSyncIdentity(source, discovered);
+  const definition: SkillDefinition = {
+    name: existing.name,
+    description: existing.description,
+    body: existing.body,
+    frontmatter: existing.frontmatter,
+    alwaysApply: existing.alwaysApply,
+  };
+  const syncFingerprint = makeSyncFingerprint(identity, definition);
+  if (!hasSameSyncMetadata(existing.sourceMetadata, { ...identity, syncFingerprint })) {
+    return null;
+  }
+  const storedFiles = await deps.listSkillFiles(existing._id);
+  if (!hasSameSyncedFiles(discovered, storedFiles)) {
+    return null;
+  }
+  const update: UpdateSkillInput = {
+    ...definition,
+    source: PROVIDER,
+    sourceMetadata: existing.sourceMetadata,
+  };
+  return {
+    existing,
+    update,
+    createInput: makeCreateInput(source, update, getFallbackSkillName(source, discovered)),
+  };
+}
+
+async function prepareRemoteSkill(params: {
+  source: SkillSyncGitHubSourceConfig;
+  discovered: DiscoveredSkill;
+  existing: (ISkill & { _id: Types.ObjectId }) | null;
   skillMdContent: string;
   commitSha: string;
   syncedAt: Date;
 }): Promise<PreparedRemoteSkill> {
-  const { deps, source, discovered, skillMdContent, commitSha, syncedAt } = params;
+  const { source, discovered, existing, skillMdContent, commitSha, syncedAt } = params;
   const parsed = parseSkillMarkdown(skillMdContent);
   if (parsed.parseError) {
     throw new SkillSyncError(
@@ -815,50 +989,31 @@ async function prepareRemoteSkill(params: {
       `${discovered.rootPath}/SKILL.md contains invalid boolean frontmatter`,
     );
   }
-  const upstreamId = makeUpstreamId(source, discovered.rootPath);
-  const fallbackName = toSkillName(path.posix.basename(discovered.rootPath) || source.id);
-  const sourceMetadata = {
-    provider: PROVIDER,
-    sourceId: source.id,
-    upstreamId,
-    owner: source.owner,
-    repo: source.repo,
-    ref: source.ref,
-    skillPath: discovered.rootPath,
-    commitSha,
-    skillBlobSha: discovered.skillMd.id,
-    syncedAt: serializeDate(syncedAt),
-    syncStatus: 'synced',
-  };
-  const update: UpdateSkillInput = {
+  const fallbackName = getFallbackSkillName(source, discovered);
+  const definition: SkillDefinition = {
     name: parsed.name || fallbackName,
     description: parsed.description || parsed.name || fallbackName,
     body: skillMdContent,
     frontmatter: toCleanFrontmatter(parsed.frontmatter),
     alwaysApply: parsed.alwaysApply,
-    source: PROVIDER,
-    sourceMetadata,
   };
-  const sourceTenantId = source.tenantId ?? undefined;
-  const foundExisting = await deps.findSkillBySourceIdentity({
-    source: PROVIDER,
-    upstreamId,
-    tenantId: sourceTenantId,
-  });
-  const existing =
-    foundExisting && (foundExisting.tenantId ?? undefined) === sourceTenantId
-      ? foundExisting
-      : null;
-  const createInput: CreateSkillInput = {
-    ...(update as Omit<UpdateSkillInput, 'source'>),
-    name: update.name ?? fallbackName,
-    description: update.description ?? fallbackName,
-    author: makeSourceAuthorId(source),
-    authorName: SYSTEM_AUTHOR_NAME,
-    source: PROVIDER,
-    tenantId: source.tenantId,
+  const identity = makeSyncIdentity(source, discovered);
+  const sourceMetadata = {
+    provider: identity.provider,
+    sourceId: identity.sourceId,
+    upstreamId: identity.upstreamId,
+    owner: identity.owner,
+    repo: identity.repo,
+    ref: identity.ref,
+    skillPath: identity.skillPath,
+    commitSha,
+    skillBlobSha: identity.skillBlobSha,
+    syncedAt: serializeDate(syncedAt),
+    syncStatus: identity.syncStatus,
+    syncFingerprint: makeSyncFingerprint(identity, definition),
   };
-  return { existing, update, createInput };
+  const update: UpdateSkillInput = { ...definition, source: PROVIDER, sourceMetadata };
+  return { existing, update, createInput: makeCreateInput(source, update, fallbackName) };
 }
 
 async function commitRemoteSkill(
@@ -1609,14 +1764,23 @@ async function syncSource(params: {
       assertNotCancelled();
       try {
         assertGitHubSkillPackageManifest(discovered);
+        const existing = await findExistingRemoteSkill(deps, source, discovered);
+        assertNotCancelled();
+        const unchanged = existing
+          ? await prepareUnchangedRemoteSkill({ deps, source, discovered, existing })
+          : null;
+        if (unchanged) {
+          preparedSkills.push({ discovered, prepared: unchanged, unchanged: true });
+          continue;
+        }
         const skillMdPath = getSkillMdPath(discovered);
         const skillMdBuffer = await adapter.fetchFileContent(commit, discovered.skillMd);
         assertNotCancelled();
         assertGitHubBufferSize(skillMdBuffer, skillMdPath);
         const prepared = await prepareRemoteSkill({
-          deps,
           source,
           discovered,
+          existing,
           skillMdContent: skillMdBuffer.toString('utf-8'),
           commitSha: commit.id,
           syncedAt,
@@ -1706,10 +1870,45 @@ async function syncSource(params: {
       }
     };
 
+    /**
+     * A current mirror keeps every side effect a no-op file sync and skipped
+     * update would have had: the public viewer grant and the cleanup of a
+     * stale mirror holding its name. It is still counted as synced.
+     */
+    const syncUnchangedSkill = async (
+      discovered: DiscoveredSkill,
+      prepared: PreparedExistingRemoteSkill,
+    ): Promise<void> => {
+      await ensurePublicViewer(deps, prepared.existing._id);
+      if (canReconcileStaleSkills) {
+        const staleConflictCleanup = await deleteNameConflictingStaleSkill({
+          deps,
+          source,
+          prepared,
+          existingSyncedSkills: await getExistingSyncedSkills(),
+          discoveredUpstreamIds,
+          assertNotCancelled,
+        });
+        existingSyncedSkills = staleConflictCleanup.remainingSkills;
+        counts.deletedSkillCount += staleConflictCleanup.deletedSkillCount;
+        counts.deletedFileCount += staleConflictCleanup.deletedFileCount;
+        if (staleConflictCleanup.deletedSkill) {
+          await cleanupDeletedSyncedSkillFiles(deps, staleConflictCleanup.deletedSkill);
+        }
+      }
+      counts.syncedSkillCount++;
+      recordUnsupportedFiles(discovered);
+    };
+
     const syncPreparedSkill = async ({
       discovered,
       prepared,
+      unchanged,
     }: PreparedDiscoveredSkill): Promise<void> => {
+      if (unchanged && prepared.existing) {
+        await syncUnchangedSkill(discovered, { ...prepared, existing: prepared.existing });
+        return;
+      }
       if (!prepared.existing && !canReconcileStaleSkills) {
         const ambiguousMovedMirror = findMovedSourceSkill({
           source,

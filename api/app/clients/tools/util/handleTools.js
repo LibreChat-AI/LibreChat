@@ -686,6 +686,7 @@ const loadTools = async ({
         getMCPServerTools(userId, serverName, config, capabilityProfile),
       context: {
         mcpPermissionContext,
+        agentId: agent?.id,
         signal,
         user: safeUser,
         userMCPAuthMap,

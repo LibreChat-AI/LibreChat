@@ -1,5 +1,6 @@
 export enum QueryKeys {
   messages = 'messages',
+  ownerMessageTexts = 'ownerMessageTexts',
   sharedMessages = 'sharedMessages',
   sharedStartupConfig = 'sharedStartupConfig',
   sharedLinks = 'sharedLinks',
@@ -81,6 +82,8 @@ export enum QueryKeys {
   mcpServer = 'mcpServer',
   /* Active Jobs */
   activeJobs = 'activeJobs',
+  /** A running chat's sidebar row, for chats no loaded conversation list holds. */
+  runningConversation = 'runningConversation',
   /* Agent API Keys */
   agentApiKeys = 'agentApiKeys',
   /* Skills */

@@ -319,22 +319,23 @@ test.describe('project file workspace UI', () => {
       await page.reload({ waitUntil: 'domcontentloaded' });
 
       const picker = await openExistingFilePicker(page);
-      const results = picker.getByRole('region', { name: 'Choose from your files', exact: true });
+      const results = picker.getByRole('list', { name: 'Your files', exact: true });
       const recentName = seeded.filenames[20];
       if (!recentName) {
         throw new Error('Expected a recent seeded file for the picker page');
       }
       const recentRow = results.getByRole('listitem').filter({ hasText: recentName });
       await expect(recentRow).toBeVisible();
-      await expect(recentRow.getByRole('button')).toHaveAccessibleName(
-        new RegExp(`${escapeRegExp(recentName)}\\s+2\\.0 KB`),
+      /* The card names the file, then its type and size. */
+      await expect(recentRow.getByRole('button').first()).toHaveAccessibleName(
+        new RegExp(`^${escapeRegExp(recentName)}.*\\bKB\\b`),
       );
 
-      const search = picker.getByRole('textbox', { name: 'Search files', exact: true });
+      const search = picker.getByRole('searchbox', { name: 'Search files', exact: true });
       await search.fill(targetName.slice(0, -4));
       const targetRow = results.getByRole('listitem').filter({ hasText: targetName });
       await expect(targetRow).toHaveCount(1);
-      await expect(targetRow.getByRole('button')).toHaveAccessibleName(
+      await expect(targetRow.getByRole('button').first()).toHaveAccessibleName(
         new RegExp(escapeRegExp(targetName)),
       );
       await expect(results.getByRole('listitem').filter({ hasText: recentName })).toHaveCount(0);

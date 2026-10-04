@@ -250,6 +250,8 @@ export interface ISubagentThreadReservation {
 export interface IConversation extends Document {
   conversationId: string;
   title?: string;
+  titleSetByUser?: boolean;
+  titleRevision?: number;
   user?: string;
   messages?: Types.ObjectId[];
   isTemporary?: boolean;
@@ -286,6 +288,8 @@ export interface IConversation extends Document {
   codeEnvironmentRevision?: number;
   codeEnvironmentMode?: CodeEnvironmentMode;
   codeWorkspaces?: CodeWorkspaceSelection[];
+  /** Exact tool names auto-approved for this conversation; server-written only. */
+  toolApprovalAllows?: string[];
   /** Immutable primary persisted-agent attribution for Insights. */
   initial_agent_id?: string | null;
   subagentThread?: TSubagentThreadLineage;
@@ -344,6 +348,8 @@ export interface IConversation extends Document {
   lastResponseMessageId?: string;
   /** True only while `lastResponseAt` is the synthetic marker from "mark unread". */
   lastResponseIsManual?: boolean;
-  /** Set when the user has the newest message on screen; compared against `lastResponseAt`. */
+  /** True: manual reminder; false: real reply; absent: legacy/unknown intent. */
+  isMarkedUnread?: boolean;
+  /** Read acknowledgement; epoch is the explicit unseen-reply watermark. */
   lastSeenAt?: Date;
 }

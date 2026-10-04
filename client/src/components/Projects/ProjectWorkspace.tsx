@@ -184,7 +184,7 @@ export default function ProjectWorkspace() {
 
   if (isProjectLoading) {
     return (
-      <div className="bg-presentation text-text-primary flex h-full items-center justify-center">
+      <div className="bg-surface-primary-alt text-text-primary flex h-full items-center justify-center">
         <Spinner />
       </div>
     );
@@ -192,7 +192,7 @@ export default function ProjectWorkspace() {
 
   if (!project) {
     return (
-      <div className="bg-presentation flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+      <div className="bg-surface-primary-alt flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
         <p className="text-text-secondary text-sm">{localize('com_ui_project_not_found')}</p>
         <Button type="button" variant="outline" size="sm" onClick={() => navigate('/projects')}>
           {localize('com_ui_all_projects')}
@@ -363,8 +363,8 @@ export default function ProjectWorkspace() {
   ) : null;
 
   return (
-    <main className="bg-presentation text-text-primary flex h-full min-h-0 min-w-0 flex-col">
-      <header className="border-border-light bg-presentation sticky top-0 z-10 border-b">
+    <main className="bg-surface-primary-alt text-text-primary flex h-full min-h-0 min-w-0 flex-col">
+      <header className="border-border-light bg-surface-primary-alt sticky top-0 z-10 border-b">
         <div className="flex h-14 w-full items-center gap-2 px-4 md:h-16 md:px-6">
           {isSmallScreen ? <OpenSidebar className="size-9 shrink-0" /> : null}
           <Button

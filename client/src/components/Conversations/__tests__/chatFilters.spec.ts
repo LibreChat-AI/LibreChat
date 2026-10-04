@@ -4,7 +4,9 @@ import {
   chatFilterCountAtom,
   chatFilterStatusAtom,
   chatFilterTagsAtom,
+  resetChatFiltersAtom,
   selectableBookmarks,
+  showProjectChatsAtom,
 } from '../chatFilters';
 
 describe('chatFilterCountAtom', () => {
@@ -23,6 +25,46 @@ describe('chatFilterCountAtom', () => {
     store.set(chatFilterTagsAtom, ['work', 'travel']);
     store.set(chatFilterStatusAtom, 'archived');
     expect(store.get(chatFilterCountAtom)).toBe(2);
+  });
+});
+
+describe('showProjectChatsAtom', () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('lists project chats under Chats by default', () => {
+    expect(createStore().get(showProjectChatsAtom)).toBe(true);
+  });
+
+  it('counts hiding them as one change the menu badge and Reset own', () => {
+    const store = createStore();
+    store.set(showProjectChatsAtom, false);
+    expect(store.get(chatFilterCountAtom)).toBe(1);
+
+    store.set(resetChatFiltersAtom);
+    expect(store.get(showProjectChatsAtom)).toBe(true);
+    expect(store.get(chatFilterCountAtom)).toBe(0);
+  });
+
+  /** Storage is read once, when the module loads, which is what a new visit does. */
+  const onNextVisit = (stored: unknown): boolean => {
+    localStorage.setItem('chatListShowProjectChats', JSON.stringify(stored));
+    let value: boolean | undefined;
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const filters = require('../chatFilters') as typeof import('../chatFilters');
+      value = createStore().get(filters.showProjectChatsAtom);
+    });
+    return value as boolean;
+  };
+
+  it('keeps the choice to hide them across visits', () => {
+    expect(onNextVisit(false)).toBe(false);
+  });
+
+  it('reads a stored value that is not a boolean as the default', () => {
+    expect(onNextVisit('no')).toBe(true);
   });
 });
 

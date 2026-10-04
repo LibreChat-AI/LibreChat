@@ -88,6 +88,10 @@ export default function ModelPanel({
   /** The rendered set omits role-gated controls; `parameterSettings.parameters`
    *  stays complete so the pruning effect below still recognises them. */
   const { visibleParameters: parameters } = parameterSettings;
+  const webSearchBlocked =
+    !webSearchAllowed &&
+    (modelParameters?.web_search === true ||
+      parameterSettings.parameters.some((parameter) => parameter.key === 'web_search'));
 
   /**
    * Prunes `model_parameters` entries that no longer have a visible control (e.g. a
@@ -266,6 +270,11 @@ export default function ModelPanel({
           )}
         </div>
       </div>
+      {webSearchBlocked && (
+        <Alert variant="warning" role="status">
+          {localize('com_ui_native_web_search_denied')}
+        </Alert>
+      )}
       {/* Model Parameters */}
       {parameters && (
         <div className="h-auto max-w-full">

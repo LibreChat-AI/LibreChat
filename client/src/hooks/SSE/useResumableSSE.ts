@@ -102,6 +102,7 @@ import { useChatTransport } from '~/Providers/ChatTransportContext';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { liveAppliedSteerIdsAtom } from '~/store/steer';
 import { useAuthContext } from '~/hooks/AuthContext';
+import { fetchConvoSnapshot } from '~/utils/convos';
 import { useFileMapContext } from '~/Providers';
 import useUsageHandler from './useUsageHandler';
 import useLocalize from '~/hooks/useLocalize';
@@ -3402,11 +3403,13 @@ export default function useResumableSSE(
             // Both fresh and resumed subscriptions can miss every event of a fast turn.
             // A missing job proves neither that the conversation was saved nor that it failed.
             try {
-              const persisted = await dataService.getConversationById(recoveryConvoId);
+              const persisted = await fetchConvoSnapshot(queryClient, recoveryConvoId, () =>
+                dataService.getConversationById(recoveryConvoId),
+              );
               if (!isCurrentSubscription()) return;
               if (persisted?.conversationId === recoveryConvoId) {
                 queryClient.setQueryData([QueryKeys.conversation, recoveryConvoId], persisted);
-                upsertConvoInAllQueries(queryClient, persisted);
+                upsertConvoInAllQueries(queryClient, persisted, true, 'snapshot');
                 if (!isAddedRequest) {
                   setConversation?.((current) => {
                     if (
@@ -4615,7 +4618,11 @@ export default function useResumableSSE(
             let persistedConversation: TConversation | undefined;
             let conversationLookup: 'found' | 'not_found' | 'inconclusive' = 'inconclusive';
             try {
-              persistedConversation = await dataService.getConversationById(settledConversationId);
+              persistedConversation = await fetchConvoSnapshot(
+                queryClient,
+                settledConversationId,
+                () => dataService.getConversationById(settledConversationId),
+              );
               if (!isCurrentEffect()) {
                 return;
               }
@@ -4656,7 +4663,7 @@ export default function useResumableSSE(
                 [QueryKeys.conversation, settledConversationId],
                 conversationRecord,
               );
-              upsertConvoInAllQueries(queryClient, conversationRecord);
+              upsertConvoInAllQueries(queryClient, conversationRecord, true, 'snapshot');
               setConversation?.((current) =>
                 keepLocalCodeApprovalMode(settledCopy, current, localConversationId),
               );

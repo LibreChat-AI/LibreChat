@@ -30,6 +30,8 @@ const convoSchema: Schema<IConversation> = new Schema(
       default: 'New Chat',
       meiliIndex: true,
     },
+    titleSetByUser: { type: Boolean },
+    titleRevision: { type: Number },
     user: {
       type: String,
       index: true,
@@ -42,6 +44,9 @@ const convoSchema: Schema<IConversation> = new Schema(
     },
     ...conversationPreset,
     codeEnvironmentRevision: { type: Number, select: false },
+    /** Exact tool names the owner chose to auto-approve for this conversation.
+     *  Server-written only, through `addConvoToolApprovalAllows`. */
+    toolApprovalAllows: { type: [String], default: undefined },
     agent_id: {
       type: String,
     },
@@ -395,6 +400,9 @@ const convoSchema: Schema<IConversation> = new Schema(
     },
     /** True only for the synthetic unread marker; real replies clear this field. */
     lastResponseIsManual: {
+      type: Boolean,
+    },
+    isMarkedUnread: {
       type: Boolean,
     },
     lastSeenAt: {

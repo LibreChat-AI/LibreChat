@@ -214,6 +214,50 @@ describe('useSteering', () => {
     mockFileMap = {};
   });
 
+  it.each([
+    'steerFromComposer',
+    'queueFromComposer',
+    'interruptAndSend',
+    'interruptSteer',
+    'submitDuringRun',
+  ] as const)('holds captured %s callbacks without consuming composer context', (action) => {
+    const consumeDraft = jest.fn();
+    const setFiles = jest.fn();
+    const files = new Map<string, ExtendedFile>([
+      ['file-one', { file_id: 'file-one', type: 'text/plain', progress: 1 } as ExtendedFile],
+    ]);
+    const params: HookParams = {
+      composerDisabled: false,
+      conversation: { ...agentsConversation, endpoint: EModelEndpoint.openAI },
+      files,
+      setFiles,
+      consumeDraft,
+    };
+    const { result, rerender, stopGenerating, sendNow } = setup(params, ({ set }) => {
+      set(store.pendingQuotesByConvoId(CONVO_ID), ['preserved quote']);
+    });
+    const captured = result.current[action];
+    params.composerDisabled = true;
+    rerender();
+    act(() => expect(captured('hi')).toBe(false));
+    expect(consumeDraft).not.toHaveBeenCalled();
+    expect(setFiles).not.toHaveBeenCalled();
+    expect(mockMutate).not.toHaveBeenCalled();
+    expect(mockEnqueueQueuedTurn).not.toHaveBeenCalled();
+    expect(stopGenerating).not.toHaveBeenCalled();
+    expect(sendNow).not.toHaveBeenCalled();
+    expect(getDefaultStore().get(queuedMessagesByConvoId(CONVO_ID))).toEqual([]);
+    params.composerDisabled = false;
+    rerender();
+    act(() => expect(result.current.queueFromComposer('hi')).toBe(true));
+    expect(consumeDraft).toHaveBeenCalledTimes(1);
+    expect(getDefaultStore().get(queuedMessagesByConvoId(CONVO_ID))[0]).toMatchObject({
+      text: 'hi',
+      quotes: ['preserved quote'],
+      files: [expect.objectContaining({ file_id: 'file-one' })],
+    });
+  });
+
   it.each([true, false])(
     'reserves a recovery against queue drain while cancelling (removed=%s)',
     async (removed) => {

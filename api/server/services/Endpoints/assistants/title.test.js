@@ -2,6 +2,7 @@ const mockCache = {
   set: jest.fn(),
 };
 const mockSaveConvo = jest.fn();
+const mockGetConvo = jest.fn();
 const mockInitializeClient = jest.fn();
 
 jest.mock('@librechat/api', () => ({
@@ -23,6 +24,7 @@ jest.mock(
 );
 jest.mock('~/models', () => ({
   saveConvo: (...args) => mockSaveConvo(...args),
+  getConvo: (...args) => mockGetConvo(...args),
 }));
 
 const addTitle = require('./title');
@@ -30,6 +32,8 @@ const addTitle = require('./title');
 describe('assistants addTitle content policy', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSaveConvo.mockImplementation(async (_ctx, data) => data);
+    mockGetConvo.mockResolvedValue(null);
   });
 
   it('skips the title provider, cache, and save for a normalized temporary request', async () => {
@@ -117,5 +121,29 @@ describe('assistants addTitle content policy', () => {
       }),
       expect.objectContaining({ noUpsert: true }),
     );
+  });
+  it.each(['database', 'cache'])('owns a detached fallback %s failure', async (boundary) => {
+    mockInitializeClient.mockResolvedValue({
+      openai: {
+        chat: { completions: { create: jest.fn().mockRejectedValue(new Error('provider')) } },
+      },
+    });
+    const failure = new Error('secret-provider-payload');
+    if (boundary === 'database') mockSaveConvo.mockRejectedValueOnce(failure);
+    else mockCache.set.mockRejectedValueOnce(failure);
+    await expect(
+      addTitle(
+        { user: { id: 'user-1' }, body: {} },
+        {
+          text: 'fallback',
+          responseText: 'response',
+          conversationId: 'fallback-chat',
+        },
+      ),
+    ).resolves.toBeUndefined();
+    const { logger } = require('@librechat/data-schemas');
+    expect(logger.error).toHaveBeenCalledWith('[addTitle] Fallback publication failed', {
+      type: 'Error',
+    });
   });
 });

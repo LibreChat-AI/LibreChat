@@ -12,6 +12,7 @@ import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest, TCustomEndpointsConfig } from '~/types';
 import type { GetAppConfigOptions } from '~/app/service';
 import { loadCustomEndpointsConfig as defaultLoadCustomEndpoints } from '~/endpoints/custom';
+import { isCodeEnvironmentSelectionEnabled } from '~/code/protocol';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { getResponsesApiRouting } from './responses';
 
@@ -103,7 +104,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
       const clientStatefulCodeSessions = statefulCodeSessions
         ? {
             allowedEnvironments: statefulCodeSessions.allowedEnvironments,
-            ...(statefulCodeSessions.allowEnvironmentSelection === true
+            ...(isCodeEnvironmentSelectionEnabled(statefulCodeSessions.allowEnvironmentSelection)
               ? {
                   allowEnvironmentSelection: true,
                   maxEnvironmentChoices:

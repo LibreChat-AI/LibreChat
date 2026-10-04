@@ -50,3 +50,9 @@ describe('normalizeEditArgs', () => {
     expect(normalizeEditArgs({ edits: normalized })).toEqual(normalized);
   });
 });
+
+it('rejects oversized batches even when entries are valid or JSON-stringified', () => {
+  const edits = Array.from({ length: 101 }, () => ({ old_text: 'a', new_text: 'b' }));
+  expect(normalizeEditArgs({ edits })).toContain('limited to 100');
+  expect(normalizeEditArgs({ edits: JSON.stringify(edits) })).toContain('limited to 100');
+});
