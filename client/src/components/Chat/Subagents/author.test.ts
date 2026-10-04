@@ -1,4 +1,4 @@
-import { EModelEndpoint } from 'librechat-data-provider';
+import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import {
   isSelfSpawn,
@@ -74,4 +74,33 @@ it('retains matching historical snapshots and never borrows an enclosing avatar 
   expect(resolveSelfAuthor(parent, 'agent_missing_lane', undefined, 'Agent').name).toBe('Agent');
   expect(messageAuthor(snapshot, undefined, 'Agent', 'agent_missing_lane').name).toBe('Agent');
   expect(findAgentLaneId(snapshot, 'missing')).toBeUndefined();
+});
+
+it('retains legacy graph aliases while suppressing identities known to be agent IDs', () => {
+  expect(readableSubagentType('agent_research_team')).toBe('agent_research_team');
+  expect(readableSubagentType('agent_research_team', undefined, 'graph')).toBe(
+    'agent_research_team',
+  );
+  expect(readableSubagentType('agent_deleted', 'agent_deleted')).toBeUndefined();
+  expect(readableSubagentType('agent_deleted', undefined, 'agent')).toBeUndefined();
+});
+
+it('resolves repeated tool IDs by their content-part occurrence and rejects ambiguous legacy matches', () => {
+  const dispatch = message('dispatch', null);
+  dispatch.content = [
+    {
+      type: ContentTypes.TOOL_CALL,
+      agentId: 'first',
+      tool_call: { id: 'repeat', name: 'subagent', args: {} },
+    },
+    {
+      type: ContentTypes.TOOL_CALL,
+      agentId: 'second',
+      tool_call: { id: 'repeat', name: 'subagent', args: {} },
+    },
+  ];
+  expect(findAgentLaneId(dispatch, 'repeat', 0)).toBe('first');
+  expect(findAgentLaneId(dispatch, 'repeat', 1)).toBe('second');
+  expect(findAgentLaneId(dispatch, 'repeat')).toBeUndefined();
+  expect(findAgentLaneId(dispatch, 'repeat', 9)).toBeUndefined();
 });

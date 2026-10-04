@@ -10,9 +10,8 @@ import { useAgentsMapContext } from '~/Providers';
 /** Who wrote a turn, in the form main chat's message header shows an author. */
 export type TurnAuthor = { name: string; icon: ReactNode; agent?: Agent; agentId?: string };
 
-/** A subagent type worth showing on its own: a graph node's name, never an
- *  agent id — including `agentId`, the one the child's identity resolved to —
- *  or the `self` alias. */
+/** Keep graph and legacy aliases readable. A prefix alone cannot prove a
+ *  stored agent identity; suppress known agent IDs and the non-graph self alias. */
 export function readableSubagentType(
   subagentType?: string | null,
   agentId?: string,
@@ -21,7 +20,9 @@ export function readableSubagentType(
   if (subagentType == null || subagentType === '') return undefined;
   if (kind === 'graph') return subagentType;
   if (subagentType === 'self') return undefined;
-  return isDocumentId(subagentType) || subagentType === agentId ? undefined : subagentType;
+  return subagentType === agentId || (kind === 'agent' && isDocumentId(subagentType))
+    ? undefined
+    : subagentType;
 }
 
 /** Stored display title, excluding legacy titles that contain storage keys. */
@@ -59,12 +60,24 @@ export function resolveChildAgent(
 export function findAgentLaneId(
   message: TMessage | undefined,
   toolCallId?: string,
+  partIndex?: number,
 ): string | undefined {
   if (!toolCallId) return undefined;
-  const part = message?.content?.find(
-    (part) => part?.type === ContentTypes.TOOL_CALL && part.tool_call.id === toolCallId,
-  );
-  return part?.agentId;
+  const indexed = partIndex == null ? undefined : message?.content?.[partIndex];
+  if (indexed?.type === ContentTypes.TOOL_CALL && indexed.tool_call.id === toolCallId) {
+    return indexed.agentId;
+  }
+  /** Durable legacy selections may have no usable index. Only a unique call
+   *  can identify their lane; repeated provider IDs are ambiguous. */
+  let laneId: string | undefined;
+  let found = false;
+  for (const part of message?.content ?? []) {
+    if (part?.type !== ContentTypes.TOOL_CALL || part.tool_call.id !== toolCallId) continue;
+    if (found) return undefined;
+    found = true;
+    laneId = part.agentId;
+  }
+  return laneId;
 }
 
 /** A validated self-child identity wins when it belongs to another lane;
@@ -166,14 +179,15 @@ export function useParentAuthor(
   messageId: string,
   fallbackName: string,
   toolCallId?: string,
+  partIndex?: number,
 ): TurnAuthor {
   const queryClient = useQueryClient();
   const agentsMap = useAgentsMapContext();
   /** A different dispatch must read the latest message snapshot, even when
    *  both children belong to the same streamed parent turn. */
   const source = useMemo(
-    () => ({ conversationId, messageId, toolCallId }),
-    [conversationId, messageId, toolCallId],
+    () => ({ conversationId, messageId, toolCallId, partIndex }),
+    [conversationId, messageId, toolCallId, partIndex],
   );
   const store = useMemo(() => {
     let message: TMessage | undefined;
@@ -201,7 +215,13 @@ export function useParentAuthor(
   }, [queryClient, source]);
   const message = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   return useMemo(
-    () => messageAuthor(message, agentsMap, fallbackName, findAgentLaneId(message, toolCallId)),
-    [agentsMap, fallbackName, message, toolCallId],
+    () =>
+      messageAuthor(
+        message,
+        agentsMap,
+        fallbackName,
+        findAgentLaneId(message, toolCallId, partIndex),
+      ),
+    [agentsMap, fallbackName, message, toolCallId, partIndex],
   );
 }

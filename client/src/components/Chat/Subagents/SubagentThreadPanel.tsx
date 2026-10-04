@@ -163,6 +163,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     selection.parentMessageId,
     localize('com_ui_subagent_parent_agent'),
     selection.toolCallId,
+    selection.partIndex,
   );
   const threadId = selection.durable?.threadId ?? '';
   const taskId = selection.durable?.taskId ?? '';

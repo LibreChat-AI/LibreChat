@@ -239,15 +239,21 @@ describe('MessageRender wake-up rows', () => {
     },
   );
 
-  it('does not mistake an unindexed alias for a saved agent', () => {
+  it('preserves an unindexed legacy alias without resolving a saved agent', () => {
     mockChildren.clear();
     renderMessage(subagentWakeup('agent_reviewer'));
-    expect(screen.getByRole('heading', { name: 'com_ui_subagent_actor' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'agent_reviewer' })).toBeInTheDocument();
     expect(screen.getByTestId('author-face')).toHaveAttribute('data-agent', '');
   });
 
-  it('names an unresolvable subagent generically, never by its id', () => {
-    mockChildren.clear();
+  it('names an unresolvable known agent generically, never by its id', () => {
+    mockChildren.set('thread-1', {
+      ...mockChildren.get('thread-1')!,
+      subagentKind: 'agent',
+      agentId: 'agent_unknown',
+      subagentType: 'agent_unknown',
+      title: 'agent_unknown',
+    });
     renderMessage(subagentWakeup('agent_unknown'));
 
     expect(screen.getByRole('heading', { name: /com_ui_subagent_actor$/ })).toBeInTheDocument();

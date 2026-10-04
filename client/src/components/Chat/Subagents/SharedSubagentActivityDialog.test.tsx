@@ -126,6 +126,8 @@ function renderSharedCall(input: {
   output?: string;
   persistedContent?: TMessageContentParts[];
   detached?: boolean;
+  partIndex?: number;
+  messages?: TMessage[];
   subagentType?: string;
   subagentIdentity?: { subagentKind: 'graph'; subagentAgentId: 'graph:self' };
 }) {
@@ -136,6 +138,7 @@ function renderSharedCall(input: {
           value={{
             conversationId: 'shared-conversation',
             messageId: 'shared-parent',
+            partIndex: input.partIndex,
             isExpanded: false,
           }}
         >
@@ -151,7 +154,10 @@ function renderSharedCall(input: {
             subagentIdentity={input.subagentIdentity}
             persistedContent={input.persistedContent}
           />
-          <SharedSubagentActivityDialog shareId="share-1" messages={sharedMessages} />
+          <SharedSubagentActivityDialog
+            shareId="share-1"
+            messages={input.messages ?? sharedMessages}
+          />
         </MessageContext.Provider>
       </ShareContext.Provider>
     </ChatSurfaceHarness>,
@@ -197,6 +203,37 @@ describe('SharedSubagentActivityDialog', () => {
     expect(screen.getByRole('heading', { name: 'Lia' })).toBeInTheDocument();
     expect(screen.getByTestId('author-face')).toHaveAttribute('data-icon', '/lia.png');
     expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-author', 'Lia');
+  });
+
+  it('uses the exact shared part when provider tool IDs repeat', () => {
+    renderSharedCall({
+      subagentType: 'self',
+      partIndex: 1,
+      persistedContent: persistedContent('Lane work.'),
+      messages: [
+        {
+          ...sharedMessages[0],
+          content: [
+            {
+              type: ContentTypes.TOOL_CALL,
+              agentId: 'agent_parent',
+              tool_call: { id: 'shared-call', name: 'subagent', args: {} },
+            },
+            {
+              type: ContentTypes.TOOL_CALL,
+              agentId: 'agent_missing_lane',
+              tool_call: { id: 'shared-call', name: 'subagent', args: {} },
+            },
+          ],
+        },
+      ],
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Ran agent' }));
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'com_ui_subagent_parent_agent',
+    );
+    expect(screen.queryByRole('heading', { name: 'Lia' })).not.toBeInTheDocument();
   });
 
   it('preserves a shared graph alias named self instead of the parent author', () => {

@@ -48,9 +48,16 @@ export default function SharedSubagentActivityDialog({
       message,
       agentsMap,
       parentFallback,
-      findAgentLaneId(message, selection?.toolCallId),
+      findAgentLaneId(message, selection?.toolCallId, selection?.partIndex),
     );
-  }, [agentsMap, messages, parentFallback, parentMessageId, selection?.toolCallId]);
+  }, [
+    agentsMap,
+    messages,
+    parentFallback,
+    parentMessageId,
+    selection?.toolCallId,
+    selection?.partIndex,
+  ]);
   const childAgentId = resolveSubagentAgentId(null, selection?.subagentIdentity);
   const isSelfSpawn = isSelfSpawnType(
     selection?.subagentType,

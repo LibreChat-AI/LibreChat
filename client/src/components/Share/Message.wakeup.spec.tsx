@@ -1,5 +1,6 @@
 import { Provider } from 'jotai';
 import { RecoilRoot } from 'recoil';
+import copy from 'copy-to-clipboard';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ContentTypes, dataService, EModelEndpoint } from 'librechat-data-provider';
@@ -22,15 +23,13 @@ jest.mock('~/hooks', () => ({
   useAttachments: () => ({ attachments: [], searchResults: [] }),
   useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
   useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
+  ...jest.requireActual('~/hooks/Messages/useCopyToClipboard'),
 }));
 jest.mock('~/hooks/MCP', () => ({
   useMCPIconMap: () => new Map(),
   useMCPServerNames: () => [],
 }));
-jest.mock('~/components/Chat/Messages/MinimalHoverButtons', () => ({
-  __esModule: true,
-  default: () => null,
-}));
+jest.mock('copy-to-clipboard');
 jest.mock('~/components/Chat/Messages/Content/SearchContent', () => ({
   __esModule: true,
   default: ({ message }: { message: TMessage }) => <div>{message.text}</div>,
@@ -177,6 +176,7 @@ it.each([false, true])('keeps an ordinary public user message (content: %s)', (c
 it.each([
   ['self', 'graph', 'self'],
   ['agent_research_team', 'graph', 'agent_research_team'],
+  ['agent_research_team', undefined, 'agent_research_team'],
   ['self', 'agent', 'Dispatch Parent'],
 ] as const)('retains persisted shared alias %s with kind %s', (alias, kind, label) => {
   const dispatch: TMessage = {
@@ -203,17 +203,21 @@ it.each([
             status: 'running',
             message: 'Poll with background_task_id task.',
           }),
-          subagentIdentity: {
-            subagentKind: kind,
-            subagentAgentId: kind === 'graph' ? `graph:${alias}` : 'agent_deleted',
-          },
+          ...(kind == null
+            ? {}
+            : {
+                subagentIdentity: {
+                  subagentKind: kind,
+                  subagentAgentId: kind === 'graph' ? `graph:${alias}` : 'agent_deleted',
+                },
+              }),
         },
       },
     ],
   };
   renderShared(prompt('completed', alias), false, dispatch);
   expect(screen.getByRole('heading', { name: label })).toBeInTheDocument();
-  if (kind === 'graph') {
+  if (kind !== 'agent') {
     expect(screen.queryByRole('heading', { name: 'Dispatch Parent' })).not.toBeInTheDocument();
   } else {
     expect(screen.getByRole('img', { hidden: true })).toHaveAttribute('src', '/dispatch.png');
@@ -291,4 +295,12 @@ it('attributes a public parallel-lane self-spawn to its validated lane', () => {
   expect(screen.queryByRole('heading', { name: 'Outer Parent' })).not.toBeInTheDocument();
   expect(screen.getByRole('img', { hidden: true })).toHaveAttribute('src', '/lane.png');
   expect(dataService.getAIEndpoints).not.toHaveBeenCalled();
+});
+
+it('copies only the visible public wake-up result through its real footer', () => {
+  const clipboard = jest.mocked(copy);
+  clipboard.mockReturnValue(true);
+  renderShared(prompt(), true);
+  fireEvent.click(screen.getByRole('button', { name: 'com_ui_copy_to_clipboard' }));
+  expect(clipboard).toHaveBeenCalledWith('Shared durable result.', expect.anything());
 });
