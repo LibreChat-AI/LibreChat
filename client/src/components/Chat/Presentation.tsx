@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { EModelEndpoint, FileSources, LocalStorageKeys } from 'librechat-data-provider';
@@ -13,12 +13,15 @@ import { artifactsUndocked } from '~/components/Artifacts/state';
 import { EditorProvider, ArtifactsProvider } from '~/Providers';
 import { SidePanelGroup } from '~/components/SidePanel';
 import AppChatSurface from '~/components/Chat/Surface';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
 import { useSetFilesToDelete } from '~/hooks';
 import { failedFileIdsFrom } from '~/utils';
 import store from '~/store';
 
-const Artifacts = lazy(() => import('~/components/Artifacts/Artifacts'));
-const SubagentThreadPanel = lazy(() => import('~/components/Chat/Subagents/SubagentThreadPanel'));
+const Artifacts = lazyWithRecovery(() => import('~/components/Artifacts/Artifacts'));
+const SubagentThreadPanel = lazyWithRecovery(
+  () => import('~/components/Chat/Subagents/SubagentThreadPanel'),
+);
 
 export default function Presentation({
   children,

@@ -620,6 +620,7 @@ test.describe('the recorded design-rule backlog', () => {
       resolve(repoRoot, 'scripts/static-checks.mts'),
       join(emptyRoot, 'scripts/static-checks.mts'),
     );
+    copyFileSync(resolve(repoRoot, 'scripts/i18n.mts'), join(emptyRoot, 'scripts/i18n.mts'));
     copyFileSync(resolve(repoRoot, 'package.json'), join(emptyRoot, 'package.json'));
     symlinkSync(resolve(repoRoot, 'node_modules'), join(emptyRoot, 'node_modules'), 'dir');
     const deleted = run(
@@ -1087,6 +1088,7 @@ function syntheticRoot(): string {
 
   for (const file of [
     'scripts/static-checks.mts',
+    'scripts/i18n.mts',
     'package.json',
     'package-lock.json',
     'eslint.config.mjs',

@@ -1506,9 +1506,10 @@ export async function initializeAgent(
       resolve: params.resolveWebSearchGrant,
       getRoleByName: db.getRoleByName,
     }));
-  if (webSearchDenied && stripWebSearchPlugin(llmConfig) > 0) {
-    logger.debug(
-      `[initializeAgent] Removed the OpenRouter web search plugin; role denies WEB_SEARCH.`,
+  if (webSearchDenied) {
+    stripWebSearchPlugin(llmConfig);
+    logger.warn(
+      '[initializeAgent] Provider-native web search was requested but blocked by WEB_SEARCH.USE. Restore the role grant explicitly; removing interface.webSearch does not reset stored permissions.',
     );
   }
   const tokensModel =
@@ -2001,6 +2002,7 @@ export async function initializeAgent(
     provisionState,
     warnings: provisionWarnings,
   } = await primeResources({
+    req: params.req,
     principal: user,
     getFiles: db.getFiles as never,
     filterFiles: db.filterFilesByAgentAccess,
@@ -2017,6 +2019,8 @@ export async function initializeAgent(
     provisionCandidates: deferredProvisionFiles as unknown as TFile[],
     codeRouteKey: codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
     codeBaseUrl: codeExecutionContext.baseUrl,
+    codeExecutionProfile: codeExecutionContext.executionProfile,
+    codeBridgeWorkerId: codeExecutionContext.bridgeWorkerId,
     screenPersistentFiles: (files) => {
       /* Persistent agent files are read inside primeResources, so they miss both checks
        * the caller already applied to this turn's other files. They face the same
@@ -2285,6 +2289,7 @@ export async function initializeAgent(
       workspaceReadFileDefaultLines: attachedWorkspaceReadFileDefaultLines,
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
+      workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
     });
     toolDefinitions = codeExecResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.execute_code, codeExecResult.toolNames);
@@ -2535,6 +2540,7 @@ export async function initializeAgent(
       workspaceReadFileDefaultLines: attachedWorkspaceReadFileDefaultLines,
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
+      workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
       skillStates: params.skillStates,
       defaultActiveOnShare: params.defaultActiveOnShare,
       maxCatalogSkills: getMaxCatalogSkills(runtime),

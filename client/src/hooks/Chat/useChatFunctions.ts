@@ -69,7 +69,14 @@ const STALE_SEND_REVALIDATION_MS = 5_000;
 
 const logChatRequest = (request: Record<string, unknown>) => {
   logger.log('=====================================\nAsk function called with:');
-  logger.dir(request);
+  logger.dir({
+    conversationId: request.conversationId,
+    messageId: request.messageId,
+    parentMessageId: request.parentMessageId,
+    isEdited: request.isEdited,
+    isContinued: request.isContinued,
+    isRegenerate: request.isRegenerate,
+  });
   logger.log('=====================================');
 };
 
@@ -891,7 +898,14 @@ export default function useChatFunctions({
     askInFlightRef.current = true;
     setSubmissionStart(Date.now());
     setSubmission(submission);
-    logger.dir('message_stream', submission, { depth: null });
+    logger.dir('message_stream', {
+      conversationId,
+      messageId: currentMsg.messageId,
+      parentMessageId: currentMsg.parentMessageId,
+      isEdited: isEditOrContinue,
+      isRegenerate: regenerateShaped,
+      isContinued,
+    });
   };
 
   const regenerate = (

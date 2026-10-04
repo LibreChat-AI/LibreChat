@@ -4,6 +4,7 @@ import {
   Tools,
   isEphemeralAgentId,
   isCodeWorkspaceSelections,
+  isCodeWorkspaceCheckoutAvailable,
   resolveCodeEnvironmentSelection,
 } from 'librechat-data-provider';
 import {
@@ -74,9 +75,10 @@ export interface CodeWorkspaceEnvironmentResult {
  *   often because an agent was pointed at a different machine or its saved workspace disappeared.
  * - `attach`: the chat has been running without an attached environment and can now take one, so
  *   switching a saved chat to a coding agent is a transition rather than a dead end.
+ * - `detach`: the attached workspace is healthy, but its owner wants to continue ordinary chat.
  */
 export interface CodeWorkspaceTransition {
-  kind: 'move' | 'attach';
+  kind: 'move' | 'attach' | 'detach';
   conversationId: string;
   /** The persisted selections this replaces, exactly as the conversation stores them; empty for a
    *  chat that has been running without an attached environment. */
@@ -89,9 +91,7 @@ export interface CodeWorkspaceTransition {
   retained: CodeWorkspaceSelection[];
   /** Environments needing a new selection, including those whose workspace disappeared. */
   targets: CodeWorkspaceEnvironmentResult[];
-  /** Whether the chat may leave attached execution and continue without a workspace. Offered when
-   *  the machine it sealed is no longer usable, so an unreachable worker never silently becomes a
-   *  changed execution mode and never strands the composer either. */
+  /** Leaving attached execution is always explicit, whether its machine is healthy or unavailable. */
   detachable: boolean;
 }
 
@@ -413,8 +413,15 @@ export default function useCodeWorkspace(
     ) {
       state = 'unavailable';
     } else if (status.data.workspaces == null) state = 'unsupported';
-    else if (selected != null) state = 'ready';
-    else if (stored != null) state = 'missing';
+    else if (selected != null) {
+      state = isCodeWorkspaceCheckoutAvailable(
+        selected,
+        workspaces.find(({ id }) => id === selected.workspaceId),
+        environment.configSchema?.workspaces?.allowCheckoutSelection === true,
+      )
+        ? 'ready'
+        : 'unsupported';
+    } else if (stored != null) state = 'missing';
     else if (workspaces.length === 0) state = 'unavailable';
     return {
       environment,
@@ -449,11 +456,20 @@ export default function useCodeWorkspace(
           result.state !== 'loading' &&
           result.state !== 'unavailable' &&
           result.state !== 'unsupported' &&
-          result.workspaces.some(({ id }) => id === requested.workspaceId)
+          result.workspaces.some(
+            (descriptor) =>
+              descriptor.id === requested.workspaceId &&
+              isCodeWorkspaceCheckoutAvailable(
+                requested,
+                descriptor,
+                result.environment.configSchema?.workspaces?.allowCheckoutSelection === true,
+              ),
+          )
         ) {
           resolved.push({
             environmentId: result.environment.id,
             workspaceId: requested.workspaceId,
+            ...(requested.checkout == null ? {} : { checkout: requested.checkout }),
             ...(requested.agentIds == null ? {} : { agentIds: requested.agentIds }),
           });
           continue;
@@ -634,10 +650,16 @@ export default function useCodeWorkspace(
         )
           state = 'relocatable';
       }
+    } else if (
+      supportsEnvironmentTransitions &&
+      inferredMode === 'attached' &&
+      (storedSelections?.length ?? 0) > 0 &&
+      state === 'ready'
+    ) {
+      transition = { ...base, kind: 'detach', detachable: true };
     }
   }
-  /** A sealed chat hides the control once its decision needs nothing from its owner, except while
-   *  it runs without a workspace: that state is worth naming, and attaching one starts here. */
+  /** Keep explicit transitions visible without offering mutable picks for a sealed decision. */
   const visible =
     recovery != null ||
     transition != null ||

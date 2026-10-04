@@ -427,3 +427,17 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig).not.toHaveProperty('theme');
   });
 });
+
+describe('running chat rename deployment fence', () => {
+  it.each([undefined, false, true])(
+    'forwards operator opt-in without enabling it by default: %s',
+    async (enabled) => {
+      const configDefaults = getConfigDefaults();
+      const interfaceConfig = await loadDefaultInterface({
+        config: { interface: enabled === undefined ? {} : { runningChatRename: enabled } },
+        configDefaults,
+      });
+      expect(interfaceConfig?.runningChatRename).toBe(enabled === true);
+    },
+  );
+});

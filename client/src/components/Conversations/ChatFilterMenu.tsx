@@ -1,6 +1,6 @@
 import { memo, useCallback, useId, useMemo, useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { BookmarkFilledIcon, BookmarkIcon } from '@radix-ui/react-icons';
 import { TooltipAnchor, buttonVariants, usePopoverZIndex } from '@librechat/client';
 import { alternateName, PermissionTypes, Permissions } from 'librechat-data-provider';
@@ -13,6 +13,7 @@ import {
   Check,
   ChevronRight,
   Clock,
+  Folder,
   ListFilter,
   MessagesSquare,
   Paperclip,
@@ -35,6 +36,7 @@ import {
   resetChatFiltersAtom,
   selectableBookmarks,
   setChatFilterStatusAtom,
+  showProjectChatsAtom,
   sortFieldsFor,
   toggleChatFilterTagAtom,
 } from './chatFilters';
@@ -785,6 +787,7 @@ const ChatFilterMenu = () => {
   const facetCount = useAtomValue(facetFilterCountAtom);
   const setStatus = useSetAtom(setChatFilterStatusAtom);
   const setSort = useSetAtom(chatSortAtom);
+  const [showProjectChats, setShowProjectChats] = useAtom(showProjectChatsAtom);
   const resetFilters = useSetAtom(resetChatFiltersAtom);
   const resetAllFacets = useSetAtom(resetFacetsAtom);
 
@@ -977,6 +980,19 @@ const ChatFilterMenu = () => {
         >
           <FilterFacets showBookmarks={hasAccessToBookmarks} searchRef={facetSearchRef} />
         </PropertyRow>
+
+        {/* The archive and search already list every chat, project or not. */}
+        {status === 'active' && (
+          <>
+            <Ariakit.MenuSeparator className="border-border-medium my-1 h-px" />
+            <Toggle
+              label={localize('com_ui_show_project_chats')}
+              icon={<Folder className="size-4" />}
+              checked={showProjectChats}
+              onSelect={() => setShowProjectChats(!showProjectChats)}
+            />
+          </>
+        )}
       </Ariakit.Menu>
     </Ariakit.MenuProvider>
   );

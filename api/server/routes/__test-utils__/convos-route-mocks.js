@@ -57,6 +57,8 @@ function resetCheckpointRows(rows = []) {
 }
 const markConvoSeenHandler = jest.fn();
 const markConvoUnreadHandler = jest.fn();
+const renameConversationHandler = jest.fn((_req, res) => res.status(204).end());
+const renameHandlerInputs = [];
 
 module.exports = {
   archiveAllHandler,
@@ -71,10 +73,17 @@ module.exports = {
   resetCheckpointRows,
   markConvoSeenHandler,
   markConvoUnreadHandler,
+  renameConversationHandler,
+  renameHandlerInputs,
 
   agents: () => ({ sleep: jest.fn() }),
 
   api: (overrides = {}) => ({
+    createGeneratedTitleHandler: jest.fn(() => jest.fn()),
+    createRenameConversationHandler: jest.fn((deps) => {
+      renameHandlerInputs.push(deps);
+      return renameConversationHandler;
+    }),
     /** Mirrors the real helper so query-flag parsing (`isArchived`, `pinned`) is exercised. */
     isEnabled: jest.fn((value) => {
       if (typeof value === 'boolean') {

@@ -298,14 +298,21 @@ export function createScheduleMCPConsentService(
       if (request.resource.credentialMode === 'browser_bearer') return denial('unsupported_mode');
       if (now() >= consent.absoluteExpiresAtMs) return denial('consent_expired');
       if (
-        !snapshot!.enabled ||
+        (!snapshot!.enabled && request.stage !== 'activation' && request.manual !== true) ||
         snapshot!.agentId !== request.identity.agentId ||
         enrollment!.scheduleRevision !== snapshot!.configRevision ||
         !identityMatches(consent.identity, request.identity) ||
         !sameResource(consent.resource, request.resource)
       )
         return denial('binding_mismatch');
-      const targets = canonicalTargets(await deps.resolveEnrollment(request.identity, options));
+      let targets: ScheduledMCPTarget[];
+      try {
+        targets = canonicalTargets(await deps.resolveEnrollment(request.identity, options));
+      } catch (error) {
+        if (error instanceof ScheduleMCPConsentError)
+          return denial(error.code === 'consent_forbidden' ? 'rbac_denied' : 'binding_mismatch');
+        throw error;
+      }
       const target = targets.find((t) => t.resource.serverName === request.resource.serverName);
       if (
         !target ||
@@ -334,6 +341,7 @@ export function createScheduleMCPConsentService(
         expectedConfigRevision: snapshot!.configRevision,
         revision: enrollment!.revision,
         consentId: consent.id,
+        requireEnabled: request.stage !== 'activation' && request.manual !== true,
       });
       if (!admitted) {
         const latest = await authority.lookupConsent(request.identity, request.resource, options);
@@ -342,6 +350,8 @@ export function createScheduleMCPConsentService(
         if (now() >= latest.consent.absoluteExpiresAtMs) return denial('consent_expired');
         return denial('binding_mismatch');
       }
+      if (options.signal?.aborted) return { state: 'cancelled' };
+      if (now() >= consent.absoluteExpiresAtMs) return denial('consent_expired');
       return {
         state: 'authorized',
         consentId: consent.id,

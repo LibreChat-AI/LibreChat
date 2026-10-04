@@ -1,7 +1,26 @@
-import { useId, useState } from 'react';
+import { Fragment, useId, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { TooltipAnchor, composerControlClasses, useToastContext } from '@librechat/client';
-import { Check, ChevronDown, Folder, FolderSync, FolderX, RefreshCw, Monitor } from 'lucide-react';
+import {
+  CheckboxGlyph,
+  TooltipAnchor,
+  composerControlClasses,
+  useToastContext,
+} from '@librechat/client';
+import {
+  isCodeWorkspaceCheckoutAvailable,
+  isLinkedWorktreeRoutingAllowed,
+} from 'librechat-data-provider';
+import {
+  Check,
+  ChevronDown,
+  Folder,
+  FolderSync,
+  FolderX,
+  RefreshCw,
+  Monitor,
+  GitBranch,
+  GitFork,
+} from 'lucide-react';
 import type { CodeWorkspaceSelection, TConversation } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type {
@@ -35,6 +54,13 @@ const stateLabels: Partial<Record<CodeWorkspaceResult['state'], TranslationKeys>
 };
 
 const headingClasses = 'px-2.5 py-1.5 text-xs font-medium text-text-secondary';
+const menuClasses = cn(
+  'z-50 flex max-w-[min(360px,calc(100vw-2rem))] min-w-[280px] flex-col rounded-xl',
+  'border-border-light bg-presentation max-h-[var(--popover-available-height)] overflow-y-auto border p-1.5 shadow-lg',
+  'origin-bottom opacity-0 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none',
+  'data-[enter]:scale-100 data-[enter]:opacity-100',
+  'scale-95 data-[leave]:scale-95 data-[leave]:opacity-0',
+);
 
 const menuItemClasses = (selected = false) =>
   cn(
@@ -57,6 +83,12 @@ function describeTransition(
   transition: CodeWorkspaceTransition,
   localize: ReturnType<typeof useLocalize>,
 ): { label: string; info: string } {
+  if (transition.kind === 'detach') {
+    return {
+      label: localize('com_ui_code_workspace_detach'),
+      info: localize('com_ui_code_workspace_detach_info'),
+    };
+  }
   if (transition.targets.some(({ state }) => state === 'missing')) {
     return {
       label: localize('com_ui_code_workspace_recover'),
@@ -97,10 +129,11 @@ function describeTransition(
 /** A sole advertised workspace is the only valid pick, so it counts as chosen until changed. */
 function chosenWorkspaceId(
   target: CodeWorkspaceEnvironmentResult,
-  choices: Record<string, string>,
+  choices: Record<string, CodeWorkspaceSelection>,
 ): string | undefined {
   const choice = choices[target.environment.id];
-  if (choice != null && target.workspaces.some(({ id }) => id === choice)) return choice;
+  if (choice != null && target.workspaces.some(({ id }) => id === choice.workspaceId))
+    return choice.workspaceId;
   return target.workspaces.length === 1 ? target.workspaces[0].id : undefined;
 }
 
@@ -112,6 +145,8 @@ function EnvironmentWorkspaces({
   hideOnClick,
   isSelected,
   onSelect,
+  checkout,
+  allowCheckoutSelection = false,
 }: {
   environment: CodeWorkspaceEnvironmentResult['environment'];
   requiredBy?: CodeWorkspaceEnvironmentResult['requiredBy'];
@@ -120,6 +155,8 @@ function EnvironmentWorkspaces({
   hideOnClick: boolean;
   isSelected: (workspaceId: string) => boolean;
   onSelect: (selection: CodeWorkspaceSelection) => void;
+  checkout?: CodeWorkspaceSelection['checkout'];
+  allowCheckoutSelection?: boolean;
 }) {
   const localize = useLocalize();
   return (
@@ -140,57 +177,226 @@ function EnvironmentWorkspaces({
       {workspaces.map((descriptor) => {
         const selected = isSelected(descriptor.id);
         return (
-          <Ariakit.MenuItemRadio
-            key={descriptor.id}
-            name={`codeWorkspace:${environment.id}`}
-            value={descriptor.id}
-            checked={selected}
-            hideOnClick={hideOnClick}
-            onChange={() => onSelect({ environmentId: environment.id, workspaceId: descriptor.id })}
-            className={menuItemClasses(selected)}
-          >
-            <Folder className="text-text-secondary mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            <div className="min-w-0 flex-1 text-left">
-              <div className="text-text-primary truncate text-sm font-medium">
-                {descriptor.name ?? descriptor.id}
+          <Fragment key={descriptor.id}>
+            <Ariakit.MenuItemRadio
+              key={descriptor.id}
+              name={`codeWorkspace:${environment.id}`}
+              value={descriptor.id}
+              checked={selected}
+              hideOnClick={hideOnClick}
+              onChange={() =>
+                onSelect({ environmentId: environment.id, workspaceId: descriptor.id })
+              }
+              className={menuItemClasses(selected)}
+            >
+              <Folder className="text-text-secondary mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              <div className="min-w-0 flex-1 text-left">
+                <div className="text-text-primary truncate text-sm font-medium">
+                  {descriptor.name ?? descriptor.id}
+                </div>
+                {descriptor.name && (
+                  <p className="text-text-secondary truncate text-xs">{descriptor.id}</p>
+                )}
+                {descriptor.instructions !== undefined && (
+                  <p className="text-text-secondary truncate text-xs">
+                    {descriptor.instructions.length === 0
+                      ? localize('com_ui_repository_instructions_none')
+                      : descriptor.instructions
+                          .map(
+                            (file) =>
+                              `${file.path} · ${(file.bytes / 1024).toFixed(1)} KB${file.truncated ? ` · ${localize('com_ui_repository_instructions_truncated')}` : ''}`,
+                          )
+                          .join(', ')}
+                  </p>
+                )}
+                {(descriptor.environment?.repo || descriptor.environment?.ref) && (
+                  <p className="text-text-secondary truncate text-xs">
+                    {[descriptor.environment.repo, descriptor.environment.ref]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </p>
+                )}
               </div>
-              {descriptor.name && (
-                <p className="text-text-secondary truncate text-xs">{descriptor.id}</p>
+              {selected && (
+                <Check className="text-text-primary mt-0.5 size-4 shrink-0" aria-hidden="true" />
               )}
-              {descriptor.instructions !== undefined && (
-                <p className="text-text-secondary truncate text-xs">
-                  {descriptor.instructions.length === 0
-                    ? localize('com_ui_repository_instructions_none')
-                    : descriptor.instructions
-                        .map(
-                          (file) =>
-                            `${file.path} · ${(file.bytes / 1024).toFixed(1)} KB${file.truncated ? ` · ${localize('com_ui_repository_instructions_truncated')}` : ''}`,
-                        )
-                        .join(', ')}
-                </p>
+            </Ariakit.MenuItemRadio>
+            {selected &&
+              allowCheckoutSelection &&
+              environment.configSchema?.workspaces?.allowCheckoutSelection === true && (
+                <>
+                  <Ariakit.MenuHeading render={<div />} className={headingClasses}>
+                    {localize('com_ui_code_checkout_mode')}
+                  </Ariakit.MenuHeading>
+                  {(['isolated', 'source'] as const)
+                    .filter(
+                      (mode) =>
+                        mode === 'source' ||
+                        descriptor.workspaceInstances?.includes('git_worktree'),
+                    )
+                    .map((mode) => (
+                      <Ariakit.MenuItemRadio
+                        key={mode}
+                        name={`codeCheckout:${environment.id}`}
+                        value={mode}
+                        checked={checkout === mode}
+                        hideOnClick={hideOnClick}
+                        className={menuItemClasses(checkout === mode)}
+                        onChange={() =>
+                          onSelect({
+                            environmentId: environment.id,
+                            workspaceId: descriptor.id,
+                            checkout: mode,
+                          })
+                        }
+                      >
+                        <div className="min-w-0 flex-1 text-left">
+                          <div className="text-text-primary text-sm font-medium">
+                            {localize(
+                              mode === 'isolated'
+                                ? 'com_ui_code_checkout_isolated'
+                                : 'com_ui_code_checkout_source',
+                            )}
+                          </div>
+                          <p className="text-text-secondary text-xs">
+                            {localize(
+                              mode === 'isolated'
+                                ? 'com_ui_code_checkout_isolated_info'
+                                : 'com_ui_code_checkout_source_info',
+                            )}
+                          </p>
+                        </div>
+                        {checkout === mode && (
+                          <Check
+                            className="text-text-primary mt-0.5 size-4 shrink-0"
+                            aria-hidden="true"
+                          />
+                        )}
+                      </Ariakit.MenuItemRadio>
+                    ))}
+                </>
               )}
-              {(descriptor.environment?.repo || descriptor.environment?.ref) && (
-                <p className="text-text-secondary truncate text-xs">
-                  {[descriptor.environment.repo, descriptor.environment.ref]
-                    .filter(Boolean)
-                    .join(' · ')}
-                </p>
-              )}
-            </div>
-            {selected && (
-              <Check className="text-text-primary mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            )}
-          </Ariakit.MenuItemRadio>
+          </Fragment>
         );
       })}
     </div>
   );
 }
 
-function WorkspaceRequirements({ id, requirements }: { id: string; requirements: string[] }) {
+function GitContext({
+  target,
+  disabled,
+  locked,
+  onSelect,
+}: {
+  target: CodeWorkspaceEnvironmentResult;
+  disabled: boolean;
+  locked: boolean;
+  onSelect?: (selection: CodeWorkspaceSelection) => void;
+}) {
+  const localize = useLocalize();
+  const descriptor = target.workspaces.find(({ id }) => id === target.selected?.workspaceId);
+  if (descriptor == null) return null;
+  const supportsWorktree = descriptor.workspaceInstances?.includes('git_worktree') === true;
+  const checkout = target.selected?.checkout;
+  const checkoutSelectionAllowed =
+    target.environment.configSchema?.workspaces?.allowCheckoutSelection === true;
+  const checkoutEditable = !locked && supportsWorktree && checkoutSelectionAllowed;
+  const usesIsolation = checkout !== 'source' && supportsWorktree;
+  const showLinkedWorktrees =
+    !usesIsolation &&
+    descriptor.workspaceScopes?.includes('git_linked_worktree') &&
+    isLinkedWorktreeRoutingAllowed(target.environment.configSchema?.workspaces?.linkedWorktrees) &&
+    isCodeWorkspaceCheckoutAvailable({ checkout }, descriptor, checkoutSelectionAllowed);
+  const worktreeInfo =
+    checkout == null
+      ? localize('com_ui_code_checkout_automatic_info')
+      : localize(
+          checkout === 'isolated'
+            ? 'com_ui_code_checkout_isolated_info'
+            : 'com_ui_code_checkout_source_info',
+        );
+  return (
+    <>
+      {descriptor.environment?.ref && (
+        <TooltipAnchor
+          description={localize('com_ui_code_branch_info')}
+          render={<span className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')} />}
+        >
+          <GitBranch className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+          <span
+            data-testid="code-branch"
+            aria-label={`${localize('com_ui_code_branch')}: ${descriptor.environment.ref}`}
+            className="max-w-[12rem] min-w-0 truncate"
+          >
+            {descriptor.environment.ref}
+          </span>
+        </TooltipAnchor>
+      )}
+      {(supportsWorktree || checkout != null) && (
+        <TooltipAnchor
+          description={worktreeInfo}
+          render={
+            <button
+              type="button"
+              role="checkbox"
+              data-testid="code-worktree"
+              aria-label={localize('com_ui_code_worktree')}
+              aria-checked={checkout == null ? 'mixed' : checkout === 'isolated'}
+              disabled={disabled || !checkoutEditable}
+              className={cn(
+                composerControlClasses(),
+                'px-2.5 disabled:cursor-not-allowed disabled:opacity-50',
+              )}
+              onClick={() => {
+                if (target.selected == null || !checkoutEditable) return;
+                onSelect?.({
+                  ...target.selected,
+                  checkout: checkout === 'isolated' ? 'source' : 'isolated',
+                });
+              }}
+            />
+          }
+        >
+          <CheckboxGlyph checked={checkout === 'isolated'} />
+          <span>{localize('com_ui_code_worktree')}</span>
+          {checkout == null && (
+            <span className="text-text-secondary text-xs">
+              {localize('com_ui_code_checkout_automatic')}
+            </span>
+          )}
+        </TooltipAnchor>
+      )}
+      {showLinkedWorktrees && (
+        <TooltipAnchor
+          description={localize('com_ui_code_linked_worktrees_info')}
+          render={<span className={cn(composerControlClasses(), 'px-2.5')} />}
+        >
+          <GitFork className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+          <span>{localize('com_ui_code_linked_worktrees')}</span>
+        </TooltipAnchor>
+      )}
+    </>
+  );
+}
+
+function WorkspaceRequirements({
+  id,
+  requirements,
+  visible = false,
+}: {
+  id: string;
+  requirements: string[];
+  visible?: boolean;
+}) {
   if (requirements.length === 0) return null;
   return (
-    <div id={id} role="status" aria-live="polite" className="text-text-secondary text-xs">
+    <div
+      id={id}
+      role={visible ? undefined : 'status'}
+      aria-live={visible ? undefined : 'polite'}
+      className={visible ? 'text-text-secondary px-2.5 pb-2 text-xs' : 'sr-only'}
+    >
       {requirements.map((requirement) => (
         <p key={requirement}>{requirement}</p>
       ))}
@@ -212,6 +418,8 @@ export default function CodeWorkspaceMenu({
   const { showToast } = useToastContext();
   const menuStore = Ariakit.useMenuStore({ focusLoop: true, placement: 'top-start' });
   const isOpen = menuStore.useState('open');
+  const machineMenuStore = Ariakit.useMenuStore({ focusLoop: true, placement: 'top-start' });
+  const machineMenuOpen = machineMenuStore.useState('open');
   const [machineId, setMachineId] = useState<string | null>(null);
   const machine = workspace.machineOptions?.find(
     ({ id }) =>
@@ -234,7 +442,7 @@ export default function CodeWorkspaceMenu({
   const { refresh, isRefreshing } = useCodeWorkspaceRefresh();
   const [moveDraft, setMoveDraft] = useState<{
     conversationId: string;
-    workspaces: Record<string, string>;
+    workspaces: Record<string, CodeWorkspaceSelection>;
   } | null>(null);
 
   if (!workspace.visible) return null;
@@ -266,6 +474,13 @@ export default function CodeWorkspaceMenu({
   const { transition } = workspace;
   const environmentIds = new Set(workspace.environments.map(({ environment }) => environment.id));
   const selectWorkspace = (selection: CodeWorkspaceSelection) => {
+    if (disabled || workspace.locked) return;
+    const previous = workspace.environments.find(
+      ({ environment }) => environment.id === selection.environmentId,
+    )?.selected;
+    if (selection.checkout == null && previous?.checkout != null) {
+      selection = { ...selection, checkout: previous.checkout };
+    }
     workspace.rememberSelection(selection);
     const replacedIds = new Set(
       workspace.machineOptionGroups?.filter((ids) => ids.includes(selection.environmentId)).flat(),
@@ -303,6 +518,7 @@ export default function CodeWorkspaceMenu({
     });
   };
   const selectWithoutAttached = () => {
+    if (disabled || workspace.locked) return;
     setConversation((current) =>
       current == null
         ? current
@@ -323,12 +539,24 @@ export default function CodeWorkspaceMenu({
   const chosenTargets =
     transition?.targets.flatMap((target) => {
       const workspaceId = chosenWorkspaceId(target, moveChoices);
-      return workspaceId == null
+      const previous = transition.from?.filter(
+        ({ environmentId, agentIds }) =>
+          environmentId === target.environment.id ||
+          agentIds?.some((id) => target.selectionOwners?.includes(id)),
+      );
+      const priorModes = new Set(
+        (previous?.length ? previous : (transition.from ?? [])).map(({ checkout }) => checkout),
+      );
+      const inheritedCheckout = priorModes.size === 1 ? [...priorModes][0] : undefined;
+      /** A mixed predecessor decision requires a deliberate mode, never an automatic fallback. */
+      return workspaceId == null ||
+        (priorModes.size > 1 && moveChoices[target.environment.id]?.checkout == null)
         ? []
         : [
             {
               environmentId: target.environment.id,
               workspaceId,
+              checkout: moveChoices[target.environment.id]?.checkout ?? inheritedCheckout,
               ...(target.selectionOwners?.length ? { agentIds: target.selectionOwners } : {}),
             },
           ];
@@ -337,9 +565,23 @@ export default function CodeWorkspaceMenu({
    *  own item: this one only confirms a decision that still names at least one workspace. */
   const proposed = transition == null ? [] : [...transition.retained, ...chosenTargets];
   const offersMove =
-    transition != null && (transition.targets.length > 0 || transition.retained.length > 0);
+    transition != null &&
+    transition.kind !== 'detach' &&
+    (transition.targets.length > 0 || transition.retained.length > 0);
   const moveReady =
-    transition != null && chosenTargets.length === transition.targets.length && proposed.length > 0;
+    transition != null &&
+    chosenTargets.length === transition.targets.length &&
+    proposed.length > 0 &&
+    chosenTargets.every((selection) => {
+      const target = transition.targets.find(
+        ({ environment }) => environment.id === selection.environmentId,
+      );
+      return isCodeWorkspaceCheckoutAvailable(
+        selection,
+        target?.workspaces.find(({ id }) => id === selection.workspaceId),
+        target?.environment.configSchema?.workspaces?.allowCheckoutSelection === true,
+      );
+    });
   const applyTransition = (to: CodeWorkspaceSelection[]) => {
     if (transition == null || disabled || moveMutation.isLoading) return;
     moveMutation.mutate(
@@ -378,9 +620,15 @@ export default function CodeWorkspaceMenu({
   } else if (label == null) {
     label = labelKey ? localize(labelKey) : localize('com_ui_code_workspace_choose');
   }
-  if (onlyDescriptor && (workspace.machineOptions?.length ?? 0) > 1) {
-    label = `${onlyEnvironment?.environment.name ?? onlyEnvironment?.environment.id} · ${label}`;
-  }
+  const checkoutSummaries = workspace.environments.flatMap(
+    ({ environment, selected, workspaces }) => {
+      if (selected?.checkout == null) return [];
+      const descriptor = workspaces.find(({ id }) => id === selected.workspaceId);
+      return [
+        `${environment.name ?? environment.id} · ${descriptor?.name ?? selected.workspaceId} · ${localize(selected.checkout === 'isolated' ? 'com_ui_code_checkout_isolated' : 'com_ui_code_checkout_source')}`,
+      ];
+    },
+  );
   const Icon =
     workspace.mode === 'without_attached' ||
     workspace.state === 'missing' ||
@@ -418,6 +666,8 @@ export default function CodeWorkspaceMenu({
   ) {
     requirements.unshift(localize('com_ui_code_workspace_graph_requirement'));
   }
+  const details = [...requirements, ...checkoutSummaries];
+  const description = details.join(' ');
 
   if (workspace.locked && transition == null) {
     /** A sealed decision with no transition on offer only reports where this chat runs: without a
@@ -428,29 +678,54 @@ export default function CodeWorkspaceMenu({
         ? localize('com_ui_code_workspace_without_attached_info')
         : localize('com_ui_code_workspace_locked_recovery');
     return (
-      <div className="flex min-w-0 flex-col items-start gap-1">
-        <TooltipAnchor
-          description={requirements.join(' ') || recovery}
-          render={
-            <button
-              type="button"
-              data-testid="code-workspace-locked-status"
-              disabled={disabled || isRefreshing}
-              onClick={() => void refresh()}
-              aria-label={`${label}. ${recovery}. ${localize('com_ui_retry')}`}
-              aria-describedby={requirements.length > 0 ? requirementsId : undefined}
-              aria-busy={isRefreshing}
-              className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')}
-            />
-          }
-        >
-          <Icon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-          <span role="status" className="max-w-[16rem] min-w-0 truncate">
-            {label}
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        {onlyEnvironment != null && workspace.mode !== 'without_attached' && (
+          <span
+            data-testid="code-machine-status"
+            className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')}
+          >
+            <Monitor className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+            <span className="max-w-[12rem] min-w-0 truncate">
+              {onlyEnvironment.environment.name ?? onlyEnvironment.environment.id}
+            </span>
           </span>
-          <RefreshCw className="text-text-secondary size-3 shrink-0" aria-hidden="true" />
-        </TooltipAnchor>
-        <WorkspaceRequirements id={requirementsId} requirements={requirements} />
+        )}
+        <div className="flex min-w-0 items-center">
+          <TooltipAnchor
+            description={
+              requirements.length > 0 ? description : [recovery, ...checkoutSummaries].join(' ')
+            }
+            render={
+              <Ariakit.Button
+                type="button"
+                data-testid="code-workspace-locked-status"
+                disabled={disabled || isRefreshing}
+                accessibleWhenDisabled={true}
+                onClick={() => void refresh()}
+                aria-label={`${label}. ${recovery}. ${localize('com_ui_retry')}`}
+                aria-describedby={requirements.length > 0 ? requirementsId : undefined}
+                aria-busy={isRefreshing}
+                className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')}
+              />
+            }
+          >
+            <Icon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+            <span role="status" className="max-w-[16rem] min-w-0 truncate">
+              {label}
+            </span>
+            <RefreshCw className="text-text-secondary size-3 shrink-0" aria-hidden="true" />
+          </TooltipAnchor>
+          <WorkspaceRequirements id={requirementsId} requirements={requirements} />
+        </div>
+        {onlyEnvironment != null && workspace.mode !== 'without_attached' && (
+          <GitContext target={onlyEnvironment} disabled={disabled} locked={true} />
+        )}
+        {workspace.environments.length > 1 && (
+          <WorkspaceRequirements
+            id={`${requirementsId}-checkouts`}
+            requirements={checkoutSummaries}
+          />
+        )}
       </div>
     );
   }
@@ -462,247 +737,335 @@ export default function CodeWorkspaceMenu({
   const ButtonIcon = renamesForMove ? FolderSync : Icon;
   const ConfirmIcon = transition?.kind === 'attach' ? Folder : FolderSync;
   const buttonLabel = renamesForMove ? transitionText.label : label;
+  const machines = new Map(
+    workspace.environments.map(({ environment }) => [environment.id, environment]),
+  );
+  workspace.machineOptions?.forEach((candidate) => machines.set(candidate.id, candidate));
+  const showMachinePicker = !workspace.locked && machines.size > 0;
+  const machineLabel =
+    workspace.mode === 'without_attached' || workspace.environments.length === 0
+      ? localize('com_ui_code_machine_choose')
+      : (onlyEnvironment?.environment.name ??
+        onlyEnvironment?.environment.id ??
+        localize('com_ui_code_machines_selected', { 0: workspace.environments.length }));
 
   return (
-    <Ariakit.MenuProvider store={menuStore}>
-      <div className="flex min-w-0 flex-col items-start gap-1">
-        <TooltipAnchor
-          description={
-            transitionText?.info ?? (requirements.join(' ') || localize('com_ui_code_workspace'))
-          }
-          disabled={isOpen}
-          render={
-            <Ariakit.MenuButton
-              disabled={buttonDisabled}
-              data-testid={renamesForMove ? 'code-workspace-move' : 'code-workspace'}
-              aria-describedby={requirements.length > 0 ? requirementsId : undefined}
-              aria-label={
-                transitionText == null
-                  ? `${localize('com_ui_code_workspace')}: ${label}`
-                  : `${buttonLabel}. ${transitionText.info}`
-              }
-              className={cn(
-                composerControlClasses(),
-                'md:px-theme-control-x max-w-full min-w-0 px-2.5',
-                isOpen && 'bg-surface-hover',
-                buttonDisabled && 'cursor-not-allowed opacity-50',
-              )}
-            />
-          }
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      {workspace.locked && onlyEnvironment != null && workspace.mode !== 'without_attached' && (
+        <span
+          data-testid="code-machine-status"
+          className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')}
         >
-          <ButtonIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-          <span className="max-w-[12rem] min-w-0 truncate">{buttonLabel}</span>
-          <ChevronDown
-            className={cn(
-              'text-text-secondary size-3 shrink-0 transition-transform',
-              isOpen && 'rotate-180',
-            )}
-            aria-hidden="true"
-          />
-        </TooltipAnchor>
-        <WorkspaceRequirements id={requirementsId} requirements={requirements} />
-      </div>
-      <Ariakit.Menu
-        portal={true}
-        gutter={8}
-        unmountOnHide={true}
-        className={cn(
-          'z-50 flex max-w-[min(360px,calc(100vw-2rem))] min-w-[280px] flex-col rounded-xl',
-          'border-border-light bg-presentation max-h-[var(--popover-available-height)] overflow-y-auto border p-1.5 shadow-lg',
-          'origin-bottom opacity-0 transition-[opacity,transform] duration-200 ease-out',
-          'data-[enter]:scale-100 data-[enter]:opacity-100',
-          'scale-95 data-[leave]:scale-95 data-[leave]:opacity-0',
-        )}
-      >
-        {transition != null && transitionText != null ? (
-          <>
-            <Ariakit.MenuHeading render={<div />} className={headingClasses}>
-              {transitionText.label}
-            </Ariakit.MenuHeading>
-            <p className="text-text-secondary px-2.5 pb-2 text-xs">{transitionText.info}</p>
-            {transition.targets.map((target) => (
-              <EnvironmentWorkspaces
-                key={target.environment.id}
-                environment={target.environment}
-                requiredBy={target.requiredBy}
-                workspaces={target.workspaces}
-                emptyLabel={localize('com_ui_code_workspace_unavailable')}
-                hideOnClick={false}
-                isSelected={(workspaceId) => chosenWorkspaceId(target, moveChoices) === workspaceId}
-                onSelect={({ environmentId, workspaceId }) =>
-                  setMoveDraft({
-                    conversationId: transition.conversationId,
-                    workspaces: { ...moveChoices, [environmentId]: workspaceId },
-                  })
-                }
+          <Monitor className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+          <span className="max-w-[12rem] min-w-0 truncate">
+            {onlyEnvironment.environment.name ?? onlyEnvironment.environment.id}
+          </span>
+        </span>
+      )}
+      {showMachinePicker && (
+        <Ariakit.MenuProvider store={machineMenuStore}>
+          <TooltipAnchor
+            description={localize('com_ui_code_environment_choose_machine')}
+            render={
+              <Ariakit.MenuButton
+                data-testid="code-machine"
+                disabled={buttonDisabled}
+                aria-label={`${localize('com_ui_code_machine')}: ${machineLabel}`}
+                className={cn(
+                  composerControlClasses(),
+                  'max-w-full min-w-0 px-2.5',
+                  machineMenuOpen && 'bg-surface-hover',
+                )}
               />
-            ))}
-            <Ariakit.MenuSeparator className="border-border-light my-1 h-0 w-full border-t" />
-            {offersMove && (
-              <Ariakit.MenuItem
-                disabled={disabled || !moveReady || moveMutation.isLoading}
-                hideOnClick={true}
-                onClick={confirmMove}
-                className={cn(
-                  menuItemClasses(),
-                  'items-center aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
-                )}
-              >
-                <ConfirmIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-                <span className="text-text-primary min-w-0 flex-1 truncate text-left text-sm font-medium">
-                  {transitionText.label}
-                </span>
-              </Ariakit.MenuItem>
-            )}
-            {transition.detachable && (
-              <Ariakit.MenuItem
-                data-testid="code-workspace-detach"
-                disabled={disabled || moveMutation.isLoading}
-                hideOnClick={true}
-                onClick={confirmDetach}
-                className={cn(
-                  menuItemClasses(),
-                  'aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
-                )}
-              >
-                <FolderX
-                  className="text-text-secondary mt-0.5 size-4 shrink-0"
-                  aria-hidden="true"
-                />
-                <div className="min-w-0 flex-1 text-left">
-                  <div className="text-text-primary truncate text-sm font-medium">
-                    {localize('com_ui_code_workspace_detach')}
-                  </div>
-                  <p className="text-text-secondary text-xs">
-                    {localize('com_ui_code_workspace_detach_info')}
-                  </p>
-                </div>
-              </Ariakit.MenuItem>
-            )}
-          </>
-        ) : (
-          <>
+            }
+          >
+            <Monitor className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+            <span className="max-w-[12rem] min-w-0 truncate">{machineLabel}</span>
+            <ChevronDown className="text-text-secondary size-3 shrink-0" aria-hidden="true" />
+          </TooltipAnchor>
+          <Ariakit.Menu
+            portal
+            gutter={8}
+            unmountOnHide
+            autoFocusOnHide={() => !menuStore.getState().open}
+            className={menuClasses}
+          >
             <Ariakit.MenuHeading render={<div />} className={headingClasses}>
-              {localize('com_ui_code_environment')}
+              {localize('com_ui_code_machine')}
             </Ariakit.MenuHeading>
-            {workspace.supportsEnvironmentDecisions && (
-              <Ariakit.MenuItemRadio
-                name="codeEnvironmentMode"
-                value="without_attached"
-                checked={workspace.mode === 'without_attached'}
+            {[...machines.values()].map((candidate) => (
+              <Ariakit.MenuItem
+                key={candidate.id}
+                disabled={buttonDisabled}
                 hideOnClick={true}
-                onChange={selectWithoutAttached}
-                className={menuItemClasses(workspace.mode === 'without_attached')}
+                className={menuItemClasses(environmentIds.has(candidate.id))}
+                onClick={() => {
+                  setMachineId(candidate.id);
+                  menuStore.setAutoFocusOnShow(true);
+                  menuStore.show();
+                }}
               >
-                <FolderX
+                <Monitor
                   className="text-text-secondary mt-0.5 size-4 shrink-0"
                   aria-hidden="true"
                 />
-                <div className="min-w-0 flex-1 text-left">
-                  <div className="text-text-primary truncate text-sm font-medium">
-                    {localize('com_ui_code_workspace_without_attached')}
-                  </div>
-                  <p className="text-text-secondary text-xs">
-                    {localize('com_ui_code_workspace_without_attached_info')}
-                  </p>
-                </div>
-                {workspace.mode === 'without_attached' && (
+                <span className="text-text-primary min-w-0 flex-1 truncate text-left text-sm">
+                  {candidate.name ?? candidate.id}
+                </span>
+                {workspace.mode === 'attached' && environmentIds.has(candidate.id) && (
                   <Check className="text-text-primary mt-0.5 size-4 shrink-0" aria-hidden="true" />
                 )}
-              </Ariakit.MenuItemRadio>
-            )}
-            {workspace.environments.map(
-              ({ environment, state, workspaces, selected, requiredBy }) => (
+              </Ariakit.MenuItem>
+            ))}
+          </Ariakit.Menu>
+        </Ariakit.MenuProvider>
+      )}
+      <Ariakit.MenuProvider store={menuStore}>
+        <div className="flex min-w-0 items-center">
+          <TooltipAnchor
+            description={
+              [transitionText?.info, description].filter(Boolean).join(' ') ||
+              localize('com_ui_code_workspace')
+            }
+            render={
+              <Ariakit.MenuButton
+                disabled={buttonDisabled}
+                accessibleWhenDisabled={true}
+                onClick={() => setMachineId(null)}
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') setMachineId(null);
+                }}
+                data-testid={renamesForMove ? 'code-workspace-move' : 'code-workspace'}
+                aria-describedby={requirements.length > 0 ? requirementsId : undefined}
+                aria-label={
+                  transitionText == null
+                    ? `${localize('com_ui_code_workspace')}: ${label}`
+                    : `${buttonLabel}. ${transitionText.info}`
+                }
+                className={cn(
+                  composerControlClasses(),
+                  'md:px-theme-control-x max-w-full min-w-0 px-2.5',
+                  isOpen && 'bg-surface-hover',
+                  buttonDisabled && 'cursor-not-allowed opacity-50',
+                )}
+              />
+            }
+          >
+            <ButtonIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+            <span className="max-w-[12rem] min-w-0 truncate">{buttonLabel}</span>
+            <ChevronDown
+              className={cn(
+                'text-text-secondary size-3 shrink-0 transition-transform',
+                isOpen && 'rotate-180',
+              )}
+              aria-hidden="true"
+            />
+          </TooltipAnchor>
+          <WorkspaceRequirements id={requirementsId} requirements={requirements} />
+        </div>
+        <Ariakit.Menu portal={true} gutter={8} unmountOnHide={true} className={menuClasses}>
+          {transition != null && transitionText != null ? (
+            <>
+              <Ariakit.MenuHeading render={<div />} className={headingClasses}>
+                {transitionText.label}
+              </Ariakit.MenuHeading>
+              <p className="text-text-secondary px-2.5 pb-2 text-xs">{transitionText.info}</p>
+              {transition.targets.map((target) => (
                 <EnvironmentWorkspaces
-                  key={environment.id}
-                  environment={environment}
-                  requiredBy={requiredBy}
-                  workspaces={workspaces}
-                  emptyLabel={localize(stateLabels[state] ?? 'com_ui_code_workspace_unavailable')}
-                  hideOnClick={true}
+                  key={target.environment.id}
+                  environment={target.environment}
+                  requiredBy={target.requiredBy}
+                  workspaces={target.workspaces}
+                  emptyLabel={localize('com_ui_code_workspace_unavailable')}
+                  hideOnClick={false}
                   isSelected={(workspaceId) =>
-                    workspace.mode === 'attached' && workspaceId === selected?.workspaceId
+                    chosenWorkspaceId(target, moveChoices) === workspaceId
                   }
-                  onSelect={selectWorkspace}
+                  allowCheckoutSelection={true}
+                  checkout={
+                    chosenTargets.find(
+                      ({ environmentId }) => environmentId === target.environment.id,
+                    )?.checkout
+                  }
+                  onSelect={(selection) =>
+                    setMoveDraft({
+                      conversationId: transition.conversationId,
+                      workspaces: {
+                        ...moveChoices,
+                        [selection.environmentId]: {
+                          ...selection,
+                          checkout:
+                            selection.checkout ??
+                            chosenTargets.find(
+                              ({ environmentId }) => environmentId === selection.environmentId,
+                            )?.checkout,
+                        },
+                      },
+                    })
+                  }
                 />
-              ),
-            )}
-            {workspace.machineOptions?.some(({ id }) => !environmentIds.has(id)) && (
-              <>
-                <Ariakit.MenuSeparator className="border-border-light my-1 h-0 w-full border-t" />
-                <Ariakit.MenuHeading render={<div />} className={headingClasses}>
-                  {localize('com_ui_code_environment_choose_machine')}
-                </Ariakit.MenuHeading>
-                {workspace.machineOptions
-                  ?.filter(({ id }) => !environmentIds.has(id))
-                  .map((candidate) => (
-                    <Ariakit.MenuItem
-                      key={candidate.id}
-                      hideOnClick={false}
-                      className={menuItemClasses(machineId === candidate.id)}
-                      onClick={() => setMachineId(candidate.id)}
-                    >
-                      <Monitor
-                        className="text-text-secondary mt-0.5 size-4 shrink-0"
-                        aria-hidden="true"
-                      />
-                      <span className="text-text-primary min-w-0 flex-1 truncate text-left text-sm">
-                        {candidate.name ?? candidate.id}
-                      </span>
-                    </Ariakit.MenuItem>
-                  ))}
-                {machine != null &&
-                  (machineReady ? (
-                    <EnvironmentWorkspaces
-                      environment={machine}
-                      workspaces={machineStatus?.workspaces ?? []}
-                      emptyLabel={localize('com_ui_code_workspace_unavailable')}
-                      hideOnClick={true}
-                      isSelected={() => false}
-                      onSelect={selectWorkspace}
+              ))}
+              <Ariakit.MenuSeparator className="border-border-light my-1 h-0 w-full border-t" />
+              {offersMove && (
+                <Ariakit.MenuItem
+                  disabled={disabled || !moveReady || moveMutation.isLoading}
+                  hideOnClick={true}
+                  onClick={confirmMove}
+                  className={cn(
+                    menuItemClasses(),
+                    'items-center aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
+                  )}
+                >
+                  <ConfirmIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+                  <span className="text-text-primary min-w-0 flex-1 truncate text-left text-sm font-medium">
+                    {transitionText.label}
+                  </span>
+                </Ariakit.MenuItem>
+              )}
+              {transition.detachable && (
+                <Ariakit.MenuItem
+                  data-testid="code-workspace-detach"
+                  disabled={disabled || moveMutation.isLoading}
+                  hideOnClick={true}
+                  onClick={confirmDetach}
+                  className={cn(
+                    menuItemClasses(),
+                    'aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
+                  )}
+                >
+                  <FolderX
+                    className="text-text-secondary mt-0.5 size-4 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <div className="min-w-0 flex-1 text-left">
+                    <div className="text-text-primary truncate text-sm font-medium">
+                      {localize('com_ui_code_workspace_detach')}
+                    </div>
+                    <p className="text-text-secondary text-xs">
+                      {localize('com_ui_code_workspace_detach_info')}
+                    </p>
+                  </div>
+                </Ariakit.MenuItem>
+              )}
+            </>
+          ) : (
+            <>
+              <Ariakit.MenuHeading render={<div />} className={headingClasses}>
+                {localize('com_ui_code_workspace')}
+              </Ariakit.MenuHeading>
+              {workspace.supportsEnvironmentDecisions && (
+                <Ariakit.MenuItemRadio
+                  name="codeEnvironmentMode"
+                  value="without_attached"
+                  checked={workspace.mode === 'without_attached'}
+                  hideOnClick={true}
+                  onChange={selectWithoutAttached}
+                  className={menuItemClasses(workspace.mode === 'without_attached')}
+                >
+                  <FolderX
+                    className="text-text-secondary mt-0.5 size-4 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <div className="min-w-0 flex-1 text-left">
+                    <div className="text-text-primary truncate text-sm font-medium">
+                      {localize('com_ui_code_workspace_without_attached')}
+                    </div>
+                    <p className="text-text-secondary text-xs">
+                      {localize('com_ui_code_workspace_without_attached_info')}
+                    </p>
+                  </div>
+                  {workspace.mode === 'without_attached' && (
+                    <Check
+                      className="text-text-primary mt-0.5 size-4 shrink-0"
+                      aria-hidden="true"
                     />
-                  ) : (
-                    <Ariakit.MenuItem
-                      hideOnClick={false}
-                      className={menuItemClasses()}
-                      disabled={machineQuery?.isLoading}
-                      aria-busy={machineQuery?.isLoading}
-                      onClick={() => void machineQuery?.refetch()}
-                    >
-                      <RefreshCw
-                        className="text-text-secondary mt-0.5 size-4 shrink-0"
-                        aria-hidden="true"
-                      />
-                      <span role="status" className="text-text-secondary text-sm">
-                        {localize(
-                          machineQuery?.isLoading
-                            ? 'com_ui_code_workspace_loading'
-                            : 'com_ui_code_workspace_unavailable',
-                        )}
-                      </span>
-                    </Ariakit.MenuItem>
-                  ))}
-              </>
-            )}
-          </>
-        )}
-        <Ariakit.MenuSeparator className="border-border-light my-1 h-0 w-full border-t" />
-        <Ariakit.MenuItem
-          disabled={buttonDisabled || isRefreshing}
-          hideOnClick={false}
-          onClick={() => void refresh()}
-          aria-busy={isRefreshing}
-          className={cn(
-            menuItemClasses(),
-            'items-center aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
+                  )}
+                </Ariakit.MenuItemRadio>
+              )}
+              {workspace.environments
+                .filter(({ environment }) => machineId == null || environment.id === machineId)
+                .map(({ environment, state, workspaces, selected, requiredBy }) => (
+                  <EnvironmentWorkspaces
+                    key={environment.id}
+                    environment={environment}
+                    requiredBy={requiredBy}
+                    workspaces={workspaces}
+                    emptyLabel={localize(stateLabels[state] ?? 'com_ui_code_workspace_unavailable')}
+                    hideOnClick={true}
+                    isSelected={(workspaceId) =>
+                      workspace.mode === 'attached' && workspaceId === selected?.workspaceId
+                    }
+                    onSelect={selectWorkspace}
+                    checkout={selected?.checkout}
+                    allowCheckoutSelection={!workspace.locked}
+                  />
+                ))}
+              {machine != null &&
+                (machineReady ? (
+                  <EnvironmentWorkspaces
+                    environment={machine}
+                    workspaces={machineStatus?.workspaces ?? []}
+                    emptyLabel={localize('com_ui_code_workspace_unavailable')}
+                    hideOnClick={true}
+                    isSelected={() => false}
+                    onSelect={selectWorkspace}
+                  />
+                ) : (
+                  <Ariakit.MenuItem
+                    hideOnClick={false}
+                    className={menuItemClasses()}
+                    disabled={buttonDisabled || machineQuery?.isLoading}
+                    aria-busy={machineQuery?.isLoading}
+                    onClick={() => void machineQuery?.refetch()}
+                  >
+                    <RefreshCw
+                      className="text-text-secondary mt-0.5 size-4 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span role="status" className="text-text-secondary text-sm">
+                      {localize(
+                        machineQuery?.isLoading
+                          ? 'com_ui_code_workspace_loading'
+                          : 'com_ui_code_workspace_unavailable',
+                      )}
+                    </span>
+                  </Ariakit.MenuItem>
+                ))}
+            </>
           )}
-        >
-          <RefreshCw className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-          <span className="text-text-primary text-sm font-medium">
-            {localize('com_ui_refresh')}
-          </span>
-        </Ariakit.MenuItem>
-      </Ariakit.Menu>
-    </Ariakit.MenuProvider>
+          <WorkspaceRequirements id={`${requirementsId}-details`} requirements={details} visible />
+          <Ariakit.MenuSeparator className="border-border-light my-1 h-0 w-full border-t" />
+          <Ariakit.MenuItem
+            disabled={buttonDisabled || isRefreshing}
+            hideOnClick={false}
+            onClick={() => void refresh()}
+            aria-busy={isRefreshing}
+            className={cn(
+              menuItemClasses(),
+              'items-center aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
+            )}
+          >
+            <RefreshCw className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+            <span className="text-text-primary text-sm font-medium">
+              {localize('com_ui_refresh')}
+            </span>
+          </Ariakit.MenuItem>
+        </Ariakit.Menu>
+        {workspace.environments.length > 1 && (
+          <WorkspaceRequirements
+            id={`${requirementsId}-checkouts`}
+            requirements={checkoutSummaries}
+          />
+        )}
+      </Ariakit.MenuProvider>
+      {onlyEnvironment != null && workspace.mode !== 'without_attached' && (
+        <GitContext
+          target={onlyEnvironment}
+          disabled={buttonDisabled}
+          locked={workspace.locked}
+          onSelect={selectWorkspace}
+        />
+      )}
+    </div>
   );
 }

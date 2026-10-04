@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useMemo } from 'react';
+import { Suspense, useState, useMemo } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import {
@@ -15,11 +15,12 @@ import { artifactsUndocked } from '~/components/Artifacts/state';
 import { ArtifactsProvider, EditorProvider } from '~/Providers';
 import { useGetSharedStartupConfig } from '~/data-provider';
 import { isCodeOnlyArtifact } from '~/utils/artifacts';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
 import { useShareContext } from '~/Providers';
 import { getLatestText } from '~/utils';
 import store from '~/store';
 
-const Artifacts = lazy(() => import('~/components/Artifacts/Artifacts'));
+const Artifacts = lazyWithRecovery(() => import('~/components/Artifacts/Artifacts'));
 
 const DEFAULT_ARTIFACT_PANEL_SIZE = 40;
 const SHARE_ARTIFACT_PANEL_STORAGE_KEY = 'share:artifacts-panel-size';

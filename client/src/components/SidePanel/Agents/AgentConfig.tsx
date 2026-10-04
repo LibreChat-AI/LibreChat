@@ -117,7 +117,7 @@ export default function AgentConfig() {
           >
             <div className="flex w-full min-w-0 items-center gap-2">
               {providerValue !== undefined && (
-                <div className="shadow-stroke relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-black dark:bg-white">
+                <div className="shadow-stroke bg-surface-primary text-text-primary relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full">
                   <ResolvedProviderIcon
                     provider={providerId}
                     imageURL={imageURL}

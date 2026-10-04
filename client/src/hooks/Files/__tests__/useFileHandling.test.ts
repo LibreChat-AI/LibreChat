@@ -47,6 +47,7 @@ beforeAll(() => {
   });
 });
 
+let mockHeicModuleError: Error | undefined;
 const mockShowToast = jest.fn();
 const mockSetFilesLoading = jest.fn();
 const mockMutate = jest.fn();
@@ -137,9 +138,12 @@ jest.mock('../useDelayedUploadToast', () => ({
   })),
 }));
 
-jest.mock('~/utils/heicConverter', () => ({
-  processFileForUpload: mockProcessFileForUpload,
-}));
+jest.mock('~/utils/heicConverter', () => {
+  if (mockHeicModuleError) {
+    throw mockHeicModuleError;
+  }
+  return { processFileForUpload: mockProcessFileForUpload };
+});
 
 jest.mock('../useClientResize', () => ({
   __esModule: true,
@@ -188,6 +192,11 @@ const mockValidateFileLimit = jest.requireMock('~/utils').validateFileLimit;
 const mockValidateFileDuplicates = jest.requireMock('~/utils').validateFileDuplicates;
 
 describe('useFileHandling', () => {
+  afterEach(() => {
+    mockHeicModuleError = undefined;
+    delete window.__lcRecoverStaleAssets;
+    delete window.__lcStaleAssetRecoveryPending;
+  });
   beforeEach(() => {
     jest.clearAllMocks();
     mockValidateFiles.mockImplementation(() => true);
@@ -212,6 +221,23 @@ describe('useFileHandling', () => {
   });
 
   const loadHook = async () => (await import('../useFileHandling')).default;
+
+  it('requests recovery for the caught HEIC helper import failure without starting an upload', async () => {
+    mockHeicModuleError = new TypeError(
+      'Failed to fetch dynamically imported module: /assets/heicConverter-old.js',
+    );
+    const recover = jest.fn(() => false);
+    window.__lcRecoverStaleAssets = recover;
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const useFileHandling = await loadHook();
+    const { result } = renderHook(() => useFileHandling());
+    await act(async () => {
+      await result.current.handleFiles([new File(['heic'], 'photo.heic', { type: 'image/heic' })]);
+    });
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(mockMutate).not.toHaveBeenCalled();
+    expect(mockDeleteFileById).toHaveBeenCalledTimes(1);
+  });
 
   it('removes rejected provider audio and localizes the upload error before retry', async () => {
     const consoleLog = jest.spyOn(console, 'log').mockImplementation(() => undefined);
