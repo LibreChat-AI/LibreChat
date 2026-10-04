@@ -161,6 +161,8 @@ test('an uploaded image serves the whole image @scenario:uploaded-image-serves-w
         endpointType: 'custom',
         message_file: 'true',
         file_id: randomUUID(),
+        width: '96',
+        height: '96',
         file: {
           name: `local-save-${randomUUID()}.png`,
           mimeType: 'image/png',
@@ -233,8 +235,9 @@ test('an artifact edit keeps a closing fence longer than the opening one @scenar
       token,
     });
     expectSuccess(read, 200);
-    const saved = (asObject(read.body) as { content?: Array<{ text?: string }> }).content?.[0]
-      ?.text;
+    /* The route answers with the matching messages as an array. */
+    const [stored] = read.body as Array<{ content?: Array<{ text?: string }> }>;
+    const saved = stored?.content?.[0]?.text;
     const expected = text.replace('edit-target', 'edit-target (edited)');
     expect(saved).toBe(expected);
     expect(saved).toContain('last line\n````\n:::');
