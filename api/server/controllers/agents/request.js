@@ -1924,7 +1924,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       /** How this snapshot may persist is decided in @librechat/api: live
        *  runs keep the marker-only shape, a failed terminal write (settled
        *  for a reconciliation frame) promotes the snapshot to the turn's
-       *  terminal row, and a durably settled compaction withholds it. */
+       *  terminal row, and a durably settled turn withholds it. */
       const snapshotMode = await resolveDisconnectSnapshotMode(
         isCompaction,
         jobRecord,
@@ -1944,9 +1944,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         },
       );
       if (snapshotMode === 'skip') {
-        logger.debug(
-          '[ResumableAgentController] Skipping compaction partial save for a settled job',
-        );
+        logger.debug('[ResumableAgentController] Skipping partial save for a settled job');
         return;
       }
       if (snapshotMode !== 'terminal' && aggregatedContent.length === 0) {

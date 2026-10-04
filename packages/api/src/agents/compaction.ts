@@ -339,7 +339,7 @@ export type DisconnectSnapshotMode =
    *  snapshot is the turn's only row, so it persists with the terminal
    *  outcome and envelope. */
   | 'terminal'
-  /** A settled terminal row exists: the snapshot is withheld so it cannot
+  /** A durable terminal row exists: the snapshot is withheld so it cannot
    *  reopen the settled turn. */
   | 'skip';
 
@@ -361,14 +361,14 @@ export function resolveReconciledSnapshotEnvelope(status: unknown): {
 
 /**
  * How the last-subscriber disconnect may persist this turn's snapshot. A
- * compaction whose settling path (completion, error, abort) durably owns the
- * final row must not have it reopened as an unfinished snapshot; a compaction
- * whose terminal write settled for a reconciliation frame has no row at all,
- * so its snapshot is promoted to the terminal row, anchored on the persisted
- * leaf the injected reader confirms (the promotion must not recreate the
- * orphan an absent-anchor abort deliberately withheld); ordinary turns keep
- * writing their fallback row exactly as before, because their terminal row
- * write may still fail.
+ * turn whose settling path (completion, error, abort) durably owns the final
+ * row must not have it reopened as an unfinished snapshot; a pending terminal
+ * write or a reconciliation frame is not durable, so it does not count. A
+ * compaction whose terminal write settled for a reconciliation frame has no
+ * row at all, so its snapshot is promoted to the terminal row, anchored on
+ * the persisted leaf the injected reader confirms (the promotion must not
+ * recreate the orphan an absent-anchor abort deliberately withheld); an
+ * ordinary turn keeps its live snapshot as the fallback row.
  */
 export async function resolveDisconnectSnapshotMode(
   isCompaction: boolean,
@@ -384,13 +384,10 @@ export async function resolveDisconnectSnapshotMode(
   jobCreatedAt: number | undefined,
   { anchorExists = async () => true }: { anchorExists?: () => Promise<boolean> } = {},
 ): Promise<DisconnectSnapshotMode> {
-  if (!isCompaction) {
-    return 'live';
-  }
   if (isSettledJobRecord(jobRecord, jobCreatedAt)) {
     return 'skip';
   }
-  if (!hasDurableReconcileFrame(jobRecord?.finalEvent)) {
+  if (!isCompaction || !hasDurableReconcileFrame(jobRecord?.finalEvent)) {
     return 'live';
   }
   return (await anchorExists()) ? 'terminal' : 'skip';
