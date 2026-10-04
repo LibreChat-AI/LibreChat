@@ -102,7 +102,9 @@ describe('Telemetry wiring', () => {
     const ingressIndex = source.indexOf(
       "app.use('/api/agents/chat', agentStartupIngressMiddleware);",
     );
-    const jsonParserIndex = source.indexOf("app.use(express.json({ limit: '3mb' }));");
+    const jsonParserIndex = source.indexOf(
+      "app.use(excludeRumBodyParser(express.json({ limit: '3mb' })));",
+    );
     const recorderIndex = source.indexOf(
       "app.use('/api/agents/chat', agentStartupTelemetryMiddleware);",
     );
@@ -111,6 +113,7 @@ describe('Telemetry wiring', () => {
 
     expect(ingressIndex).toBeGreaterThan(-1);
     expect(recorderIndex).toBeGreaterThan(-1);
+    expect(jsonParserIndex).toBeGreaterThan(-1);
     expect(ingressIndex).toBeLessThan(jsonParserIndex);
     expect(tracingIndex).toBeLessThan(recorderIndex);
     expect(recorderIndex).toBeLessThan(agentsRouteIndex);
@@ -171,7 +174,9 @@ describe('Startup readiness wiring', () => {
   });
 
   it('configures subagent task routing before the server accepts requests', () => {
-    const routingIndex = source.indexOf('await configureSubagentTaskRouting();');
+    const routingIndex = source.indexOf(
+      'await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);',
+    );
     const listenIndex = source.indexOf('const server = app.listen');
 
     expect(routingIndex).toBeGreaterThan(-1);

@@ -3,7 +3,9 @@ import {
   scheduledMCPResourceSchema,
   scheduledMCPIdentitySchema,
   scheduledMCPEnrollmentSchema,
+  scheduledMCPReadOnlyPolicySchema,
 } from './scheduleConsent';
+import { scheduleMCPOutcomeSchema, readScheduleMCPOutcomes } from './schedules';
 import { configSchema } from '../config';
 
 it('keeps scheduled consent opt-in and bounds its absolute lifetime', () => {
@@ -66,4 +68,41 @@ it('does not accept an unknown persisted consent version', () => {
     scheduledMCPEnrollmentSchema.safeParse({ version: 2, revision: 'future', consents: [] })
       .success,
   ).toBe(false);
+});
+
+it('requires an explicit read-only effect and a full-definition pin, not MCP hints', () => {
+  const pin = { effect: 'read_only', definitionSha256: 'a'.repeat(64) };
+  expect(scheduledMCPReadOnlyPolicySchema.safeParse({ tools: { query: pin } }).success).toBe(true);
+  for (const invalid of [
+    { definitionSha256: pin.definitionSha256 },
+    { ...pin, effect: 'write' },
+    { ...pin, definitionSha256: '' },
+    { ...pin, readOnlyHint: true },
+  ]) {
+    expect(scheduledMCPReadOnlyPolicySchema.safeParse({ tools: { query: invalid } }).success).toBe(
+      false,
+    );
+  }
+});
+
+it('keeps legacy statuses and projects only public-safe policy denial fields', () => {
+  const outcome = {
+    server: 'warehouse',
+    status: 'mcp_permission_denied',
+    reason: 'tool_policy_denied',
+    recovery: 'configure',
+    automaticReplay: false,
+  };
+  expect(scheduleMCPOutcomeSchema.parse({ ...outcome, providerResponse: 'secret' })).toEqual(
+    outcome,
+  );
+  expect(readScheduleMCPOutcomes(`mcp_permission_denied: ${JSON.stringify([outcome])}`)).toEqual([
+    outcome,
+  ]);
+  expect(scheduleMCPOutcomeSchema.safeParse({ server: 'warehouse', status: 'ready' }).success).toBe(
+    true,
+  );
+  expect(scheduleMCPOutcomeSchema.safeParse({ ...outcome, automaticReplay: true }).success).toBe(
+    false,
+  );
 });

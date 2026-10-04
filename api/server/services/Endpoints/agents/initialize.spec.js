@@ -40,7 +40,7 @@ jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   initializeAgent: (...args) => mockInitializeAgent(...args),
   validateAgentModel: (...args) => mockValidateAgentModel(...args),
-  GenerationJobManager: { setCollectedUsage: jest.fn() },
+  GenerationJobManager: { setCollectedUsage: jest.fn(), getJobStore: jest.fn() },
   getCustomEndpointConfig: jest.fn(),
   createSequentialChainEdges: jest.fn(),
 }));
@@ -193,6 +193,16 @@ describe('initializeClient — processAgent ACL gate', () => {
         source: { type: 'schedule', id: 'sched-1' },
       },
     };
+    await db.createSchedule({
+      id: 'sched-1',
+      user: testUser._id,
+      agent_id: PRIMARY_ID,
+      name: 'Legacy read',
+      prompt: 'Read',
+      cadence: { frequency: 'hourly', minute: 0, hour: 1 },
+      timezone: 'UTC',
+      enabled: true,
+    });
     const signal = new AbortController().signal;
     mockInitializeAgent.mockImplementationOnce(async ({ loadTools, agent }) => {
       await loadTools({
@@ -233,6 +243,104 @@ describe('initializeClient — processAgent ACL gate', () => {
         invocationMode: 'delegated',
       },
     });
+  });
+
+  it('persists trusted completion lineage before initialization and rechecks it on authenticated resume', async () => {
+    const { InMemoryJobStore, GenerationJobManager } = require('@librechat/api');
+    const store = new InMemoryJobStore();
+    GenerationJobManager.getJobStore.mockReturnValue(store);
+    const req = makeReq();
+    req._isAgentTrigger = true;
+    req._resumableStreamId = 'completion-lineage';
+    req.body.conversationId = 'completion-lineage';
+    req.body.agentCompletion = {
+      version: 1,
+      sourceId: 'subagent-completion',
+      scheduleMCPIdentity: {
+        scheduleId: 'completion-schedule',
+        ownerId: req.user.id,
+        tenantId: null,
+        agentId: PRIMARY_ID,
+        invocationMode: 'delegated',
+      },
+    };
+    req.body.agent_id = PRIMARY_ID;
+    const identity = {
+      scheduleId: 'completion-schedule',
+      ownerId: req.user.id,
+      tenantId: null,
+      agentId: PRIMARY_ID,
+      invocationMode: 'delegated',
+    };
+    await db.createSchedule({
+      id: identity.scheduleId,
+      user: testUser._id,
+      agent_id: PRIMARY_ID,
+      name: 'Legacy',
+      prompt: 'Read',
+      cadence: { frequency: 'hourly', minute: 0, hour: 1 },
+      timezone: 'UTC',
+      enabled: true,
+    });
+    await db.insertScheduleRun({
+      scheduleId: identity.scheduleId,
+      user: testUser._id,
+      conversationId: req.body.conversationId,
+      scheduledFor: new Date(),
+      status: 'started',
+    });
+    const job = await store.createJob(req._resumableStreamId, req.user.id, req.body.conversationId);
+    try {
+      mockInitializeAgent.mockImplementationOnce(async () => {
+        expect((await store.getJob(job.streamId)).scheduleMCPCompletion).toEqual(identity);
+        return makePrimaryConfig([]);
+      });
+      await initializeClient({
+        req,
+        res: {},
+        endpointOption: makeEndpointOption(),
+        signal: new AbortController().signal,
+        jobCreatedAt: job.createdAt,
+      });
+      const retained = await store.getJob(job.streamId);
+      expect(retained.scheduleId).toBeUndefined();
+      await mongoose.models.Schedule.updateOne(
+        { id: identity.scheduleId },
+        { $set: { mcpConsent: { version: 999 } } },
+      );
+      mockInitializeAgent.mockClear();
+      await expect(
+        initializeClient({
+          req: { ...req, _isAgentTrigger: false },
+          res: {},
+          endpointOption: makeEndpointOption(),
+          signal: new AbortController().signal,
+          jobCreatedAt: job.createdAt,
+          scheduleJobIdentity: { scheduleMCPCompletion: retained.scheduleMCPCompletion },
+        }),
+      ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+      expect(mockInitializeAgent).not.toHaveBeenCalled();
+    } finally {
+      await store.destroy();
+    }
+  });
+
+  it('preserves the owning cancellation before scheduled preparation begins', async () => {
+    const req = makeReq();
+    req._isScheduledFire = true;
+    const controller = new AbortController();
+    const stop = new Error('Owner stopped');
+    controller.abort(stop);
+    mockInitializeAgent.mockClear();
+    await expect(
+      initializeClient({
+        req,
+        res: {},
+        endpointOption: makeEndpointOption(),
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(stop);
+    expect(mockInitializeAgent).not.toHaveBeenCalled();
   });
 
   it('keeps interactive agent initialization independent of the host resolver', async () => {

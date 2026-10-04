@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   getScheduleMCPDisabledReason,
+  isScheduleMCPAuthorizationFailure,
   readScheduleMCPOutcomes,
   scheduleMCPOutcomeSchema,
 } from './schedules';
@@ -31,4 +32,25 @@ it('preserves the previous wire status while providing an optional unattended-au
   expect(
     readScheduleMCPOutcomes(`mcp_configuration_missing: ${JSON.stringify([outcome])}`),
   ).toEqual([outcome]);
+});
+
+it('recognizes durable structured denials without treating readiness snapshots as receipts', () => {
+  const failure = {
+    server: 'warehouse',
+    status: 'mcp_reauth_required' as const,
+    reason: 'credential_rejected' as const,
+    automaticReplay: false as const,
+  };
+  expect(isScheduleMCPAuthorizationFailure(failure)).toBe(true);
+  expect(isScheduleMCPAuthorizationFailure({ ...failure, status: 'ready' })).toBe(false);
+  expect(
+    isScheduleMCPAuthorizationFailure({ server: 'warehouse', status: 'mcp_reauth_required' }),
+  ).toBe(false);
+  expect(
+    isScheduleMCPAuthorizationFailure({
+      server: 'warehouse',
+      status: 'mcp_configuration_missing',
+      detail: 'unattended_auth_required',
+    }),
+  ).toBe(true);
 });

@@ -235,6 +235,46 @@ test.describe('unseen replies', () => {
     }
   });
 
+  test('a pre-upgrade manual reminder keeps its date group after reload @scenario:legacy-manual-unread-keeps-date', async ({
+    page,
+  }) => {
+    const id = conversationId();
+    const title = `Legacy reminder ${id.slice(0, 8)}`;
+    try {
+      await seedConversation(id, title, { lastResponseAt: new Date(Date.now() - 2000) });
+      await seedReplyMessage(id, title);
+      await page.goto(NEW_CHAT_PATH);
+      await openSidebar(page);
+      const row = page.getByTestId('convo-item').filter({ hasText: title });
+      for (let pass = 0; pass < 2; pass++) {
+        if (pass > 0) {
+          await page.reload();
+          await openSidebar(page);
+        }
+        await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toBeVisible();
+        await expect
+          .poll(async () =>
+            row.evaluate((node) => {
+              let previous = node.closest('[role="row"]')?.previousElementSibling;
+              while (previous) {
+                const heading = previous.querySelector('h2');
+                if (heading) return heading.textContent;
+                previous = previous.previousElementSibling;
+              }
+              return null;
+            }),
+          )
+          .toBe('Today');
+      }
+      const stored = await readConversation(id);
+      expect(stored?.isMarkedUnread).toBeUndefined();
+      expect(stored?.lastResponseIsManual).toBeUndefined();
+      expect(stored?.lastSeenAt).toBeUndefined();
+    } finally {
+      await cleanup(id);
+    }
+  });
+
   test('marking a read conversation unread restores its dot and title count @scenario:mark-as-unread-restores-dot', async ({
     page,
   }) => {
@@ -258,6 +298,24 @@ test.describe('unseen replies', () => {
       /* At least one more, not exactly one: the other projects share this user
        * and seed unseen conversations of their own while this one runs. */
       await expect.poll(() => titleCount(page)).toBeGreaterThanOrEqual(baseline + 1);
+      await expect.poll(async () => (await readConversation(id))?.isMarkedUnread).toBe(true);
+      expect((await readConversation(id))?.lastResponseIsManual).not.toBe(true);
+      await page.reload();
+      await openSidebar(page);
+      await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toBeVisible();
+      await expect
+        .poll(async () =>
+          row.evaluate((node) => {
+            let previous = node.closest('[role="row"]')?.previousElementSibling;
+            while (previous) {
+              const heading = previous.querySelector('h2');
+              if (heading) return heading.textContent;
+              previous = previous.previousElementSibling;
+            }
+            return null;
+          }),
+        )
+        .toBe('Today');
 
       const token = await getAccessToken(page);
       const neverReplied = conversationId();

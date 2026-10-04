@@ -10,6 +10,8 @@ describe('cn', () => {
     ['h-theme-control', 'size-theme-control'],
     ['min-w-theme-target', 'min-w-0'],
     ['min-h-theme-target', 'min-h-0'],
+    ['min-w-theme-list', 'min-w-48'],
+    ['max-h-theme-list', 'max-h-60'],
   ])('lets a caller size replace %s', (role, caller) => {
     expect(cn(role, caller)).toBe(caller);
   });

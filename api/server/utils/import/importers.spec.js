@@ -38,6 +38,28 @@ afterEach(() => {
   jest.clearAllMocks();
 });
 
+it('strips server-private owner metadata from untrusted LibreChat imports', async () => {
+  const jsonData = {
+    conversationId: 'imported',
+    title: 'Imported',
+    messages: [
+      {
+        messageId: 'source',
+        parentMessageId: Constants.NO_PARENT,
+        text: '[EMAIL_1]',
+        isCreatedByUser: true,
+        privateText: 'v1:forged',
+        privacyRevision: 'forged',
+      },
+    ],
+  };
+  const importBatchBuilder = new ImportBatchBuilder('owner');
+  await getImporter(jsonData)(jsonData, 'owner', () => importBatchBuilder);
+  expect(importBatchBuilder.messages[0].text).toBe('[EMAIL_1]');
+  expect(importBatchBuilder.messages[0]).not.toHaveProperty('privateText');
+  expect(importBatchBuilder.messages[0]).not.toHaveProperty('privacyRevision');
+});
+
 describe('importChatGptConvo', () => {
   it('should import conversation correctly', async () => {
     const expectedNumberOfMessages = 19;

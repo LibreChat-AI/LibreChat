@@ -404,6 +404,25 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      - name: Run first-turn title ownership regressions
+        if: ${{ !cancelled() && matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/') }}
+        env:
+          CI: 'true'
+          E2E_TITLE_CONVO: 'true'
+        run: >-
+          npx playwright test --config=e2e/playwright.config.mock.ts
+          conversation-management.spec.ts --grep 'first-turn|final-title polling' --reporter=line
+          --output=e2e/specs/.test-results/title-ownership
+
+      - name: Upload title ownership diagnostics
+        if: ${{ always() && matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/') }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-title-ownership-${{ matrix.artifact }}
+          path: e2e/specs/.test-results/title-ownership/**
+          retention-days: 7
+          if-no-files-found: ignore
+
   mcp_tool_list_changed:
     name: MCP list_changed (replica count ${{ matrix.replicas }})
     needs: [codegraph_select]

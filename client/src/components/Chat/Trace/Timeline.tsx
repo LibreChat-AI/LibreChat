@@ -65,6 +65,53 @@ function Timeline({
     (position: number) => (position - bounds.start) / span,
     [bounds.start, span],
   );
+  const recordRects = useMemo(
+    () => (
+      <>
+        {model.turns.map((turn) => (
+          <rect
+            key={turn.key}
+            x={percent(toFraction(turnSpan(turn, scale).start))}
+            y={0}
+            width={1}
+            height="100%"
+            className="fill-border-medium"
+          />
+        ))}
+        {records.map((node) => {
+          const { record } = node;
+          const lane = lanes?.get(record.id) ?? sequenceLane(record);
+          const y = TOP_PADDING + lane * (LANE_HEIGHT + LANE_GAP);
+          const fill = record.status === 'error' ? 'fill-status-error' : appearanceOf(record).fill;
+          if (scale === 'time' && node.end == null) {
+            return (
+              <rect
+                key={record.id}
+                x={percent(toFraction(node.start))}
+                y={y - 1}
+                width={3}
+                height={LANE_HEIGHT + 2}
+                className={fill}
+              />
+            );
+          }
+          const recordSpan = spanOf(node, scale);
+          return (
+            <rect
+              key={record.id}
+              x={percent(toFraction(recordSpan.start))}
+              y={y}
+              width={`${Math.max(((recordSpan.end - recordSpan.start) / span) * 100, 0.15)}%`}
+              height={LANE_HEIGHT}
+              rx={1}
+              className={fill}
+            />
+          );
+        })}
+      </>
+    ),
+    [model.turns, records, lanes, scale, span, toFraction],
+  );
   const tick = (fraction: number) =>
     scale === 'sequence' ? String(Math.round(span * fraction)) : format.duration(span * fraction);
 
@@ -185,47 +232,7 @@ function Timeline({
         className="border-border-light bg-surface-primary-alt focus-visible:ring-ring-primary relative h-[60px] cursor-crosshair touch-none overflow-hidden rounded-lg border select-none focus-visible:ring-2 focus-visible:outline-hidden"
       >
         <svg className="absolute inset-0 h-full w-full" aria-hidden="true">
-          {model.turns.map((turn) => (
-            <rect
-              key={turn.key}
-              x={percent(toFraction(turnSpan(turn, scale).start))}
-              y={0}
-              width={1}
-              height="100%"
-              className="fill-border-medium"
-            />
-          ))}
-          {records.map((node) => {
-            const { record } = node;
-            const lane = lanes?.get(record.id) ?? sequenceLane(record);
-            const y = TOP_PADDING + lane * (LANE_HEIGHT + LANE_GAP);
-            const fill =
-              record.status === 'error' ? 'fill-status-error' : appearanceOf(record).fill;
-            if (scale === 'time' && node.end == null) {
-              return (
-                <rect
-                  key={record.id}
-                  x={percent(toFraction(node.start))}
-                  y={y - 1}
-                  width={3}
-                  height={LANE_HEIGHT + 2}
-                  className={fill}
-                />
-              );
-            }
-            const recordSpan = spanOf(node, scale);
-            return (
-              <rect
-                key={record.id}
-                x={percent(toFraction(recordSpan.start))}
-                y={y}
-                width={`${Math.max(((recordSpan.end - recordSpan.start) / span) * 100, 0.15)}%`}
-                height={LANE_HEIGHT}
-                rx={1}
-                className={fill}
-              />
-            );
-          })}
+          {recordRects}
         </svg>
         {selection && (
           <>

@@ -54,6 +54,9 @@ const renderBatch = (actionId: string, batch: Agents.AskUserQuestionBatchItem[] 
     </RecoilRoot>,
   );
 
+/** Only the active step renders. */
+const isShown = (text: string) => screen.queryByText(text) != null;
+
 describe('AskUserQuestions', () => {
   beforeEach(() => {
     mockStatus = 'idle';
@@ -63,30 +66,30 @@ describe('AskUserQuestions', () => {
   test('shows one question at a time and walks the batch with Next/Back', () => {
     renderBatch('ask-steps');
 
-    expect(screen.getByText('Where should this run?')).toBeInTheDocument();
-    expect(screen.queryByText('Which time window?')).not.toBeInTheDocument();
+    expect(isShown('Where should this run?')).toBe(true);
+    expect(isShown('Which time window?')).toBe(false);
     expect(screen.getByText('Question 1 of 2')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
 
-    expect(screen.getByText('Which time window?')).toBeInTheDocument();
-    expect(screen.queryByText('Where should this run?')).not.toBeInTheDocument();
+    expect(isShown('Which time window?')).toBe(true);
+    expect(isShown('Where should this run?')).toBe(false);
     expect(screen.getByText('Question 2 of 2')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));
 
-    expect(screen.getByText('Where should this run?')).toBeInTheDocument();
+    expect(isShown('Where should this run?')).toBe(true);
     expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
   });
 
   test('advances automatically when a single-select choice is picked', () => {
     renderBatch('ask-advance');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Staging' }));
+    fireEvent.click(screen.getByRole('button', { name: /Staging/ }));
 
-    expect(screen.getByText('Which time window?')).toBeInTheDocument();
+    expect(isShown('Which time window?')).toBe(true);
     expect(screen.getByText('Question 2 of 2')).toBeInTheDocument();
   });
 
@@ -104,16 +107,62 @@ describe('AskUserQuestions', () => {
       { id: 'window', question: 'Which time window?' },
     ]);
 
-    fireEvent.click(screen.getByRole('checkbox', { name: 'us-east' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /us-east/ }));
 
-    expect(screen.getByText('Which regions?')).toBeInTheDocument();
+    expect(isShown('Which regions?')).toBe(true);
     expect(screen.getByText('Question 1 of 2')).toBeInTheDocument();
+  });
+
+  test('marks the chosen single-select answer with a check', () => {
+    renderBatch('ask-check', [
+      {
+        id: 'tests',
+        question: 'Should I add tests?',
+        options: [
+          { label: 'Yes', value: 'yes' },
+          { label: 'No', value: 'no' },
+        ],
+      },
+    ]);
+
+    const yes = screen.getByRole('button', { name: /Yes/ });
+    expect(yes).toHaveTextContent('1');
+    fireEvent.click(yes);
+    expect(yes).toHaveAttribute('aria-pressed', 'true');
+    expect(yes).not.toHaveTextContent('1');
+    expect(yes.querySelector('svg')).not.toBeNull();
+  });
+
+  test('clears and locks the choices once an answer is typed', () => {
+    renderBatch('ask-typed', [
+      {
+        id: 'regions',
+        question: 'Which regions?',
+        multiSelect: true,
+        options: [
+          { label: 'us-east', value: 'us-east' },
+          { label: 'eu-west', value: 'eu-west' },
+        ],
+      },
+    ]);
+
+    const usEast = screen.getByRole('checkbox', { name: /us-east/ });
+    fireEvent.click(usEast);
+    expect(usEast).toHaveAttribute('aria-checked', 'true');
+
+    const field = screen.getByRole('textbox', { name: /Which regions/ });
+    fireEvent.change(field, { target: { value: 'ap-south' } });
+    expect(usEast).toHaveAttribute('aria-checked', 'false');
+    expect(usEast).toBeDisabled();
+
+    fireEvent.change(field, { target: { value: '' } });
+    expect(usEast).toBeEnabled();
   });
 
   test('submits one answer map after every question is complete', () => {
     renderBatch('ask-batch');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Staging' }));
+    fireEvent.click(screen.getByRole('button', { name: /Staging/ }));
     fireEvent.change(screen.getByRole('textbox', { name: /Which time window/ }), {
       target: { value: 'Last seven days' },
     });
@@ -147,9 +196,9 @@ describe('AskUserQuestions', () => {
     expect(screen.getByRole('button', { name: 'Submit' })).toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: '1 question still needs an answer' }));
-    expect(screen.getByText('Where should this run?')).toBeInTheDocument();
+    expect(isShown('Where should this run?')).toBe(true);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Staging' }));
+    fireEvent.click(screen.getByRole('button', { name: /Staging/ }));
     expect(screen.getByRole('button', { name: 'Submit' })).toBeEnabled();
   });
 
@@ -157,7 +206,7 @@ describe('AskUserQuestions', () => {
     renderBatch('ask-dots');
 
     fireEvent.click(screen.getByRole('button', { name: 'Go to question 2, not answered' }));
-    expect(screen.getByText('Which time window?')).toBeInTheDocument();
+    expect(isShown('Which time window?')).toBe(true);
 
     fireEvent.change(screen.getByRole('textbox', { name: /Which time window/ }), {
       target: { value: 'Today' },
@@ -165,7 +214,55 @@ describe('AskUserQuestions', () => {
     expect(screen.getByRole('button', { name: 'Go to question 2, answered' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Go to question 1, not answered' }));
-    expect(screen.getByText('Where should this run?')).toBeInTheDocument();
+    expect(isShown('Where should this run?')).toBe(true);
+  });
+
+  test('Enter in an answer field confirms the answer instead of submitting a surrounding form', () => {
+    const onFormSubmit = jest.fn((event: React.FormEvent) => event.preventDefault());
+    render(
+      <RecoilRoot>
+        <form onSubmit={onFormSubmit}>
+          <AskUserQuestions actionId="ask-enter" questions={questions} />
+          <button type="submit" aria-label="Send composer" />
+        </form>
+      </RecoilRoot>,
+    );
+
+    const first = screen.getByRole('textbox', { name: /Where should this run/ });
+    fireEvent.change(first, { target: { value: 'Locally' } });
+    fireEvent.keyDown(first, { key: 'Enter' });
+    expect(isShown('Which time window?')).toBe(true);
+
+    const last = screen.getByRole('textbox', { name: /Which time window/ });
+    fireEvent.change(last, { target: { value: 'Today' } });
+    fireEvent.keyDown(last, { key: 'Enter' });
+
+    expect(onFormSubmit).not.toHaveBeenCalled();
+    expect(mockSubmitAskAnswer).toHaveBeenCalledWith(
+      'ask-enter',
+      { environment: 'Locally', window: 'Today' },
+      expect.anything(),
+    );
+  });
+
+  test('Enter that confirms an IME composition neither advances nor submits', () => {
+    renderBatch('ask-ime');
+    const first = screen.getByRole('textbox', { name: /Where should this run/ });
+    fireEvent.change(first, { target: { value: '本番' } });
+    fireEvent.keyDown(first, { key: 'Enter', keyCode: 229 });
+
+    expect(isShown('Where should this run?')).toBe(true);
+    expect(mockSubmitAskAnswer).not.toHaveBeenCalled();
+  });
+
+  test('Enter moves focus to the next question', () => {
+    renderBatch('ask-enter-focus');
+    const first = screen.getByRole('textbox', { name: /Where should this run/ });
+    fireEvent.change(first, { target: { value: 'Locally' } });
+    fireEvent.keyDown(first, { key: 'Enter' });
+
+    expect(isShown('Which time window?')).toBe(true);
+    expect(screen.getByRole('group', { name: 'Which time window?' })).toHaveFocus();
   });
 
   test('retains partial answers and the current step across surface remounts', () => {
@@ -194,7 +291,7 @@ describe('AskUserQuestions', () => {
     expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
     expect(screen.queryByRole('group', { name: 'Question navigation' })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Yes' }));
+    fireEvent.click(screen.getByRole('button', { name: /Yes/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
 
     expect(mockSubmitAskAnswer).toHaveBeenCalledWith(
@@ -213,7 +310,7 @@ describe('AskUserQuestions', () => {
       },
     ]);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Yes' }));
+    fireEvent.click(screen.getByRole('button', { name: /Yes/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
 
     expect(mockSubmitAskAnswer).toHaveBeenCalledWith(
@@ -228,7 +325,7 @@ describe('AskUserQuestions', () => {
     const view = renderBatch('ask-expired');
 
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-    expect(screen.getByText('Which time window?')).toBeInTheDocument();
+    expect(isShown('Which time window?')).toBe(true);
 
     mockStatus = 'submitting';
     view.rerender(
