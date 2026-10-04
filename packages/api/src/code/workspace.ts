@@ -712,8 +712,10 @@ async function readBoundedJson(
   try {
     while (true) {
       const { done, value } = await reader.read().catch((error: unknown) => {
-        if (recoverTransport && signal?.aborted !== true)
+        if (recoverTransport) {
+          if (signal?.aborted === true) throw signal.reason ?? error;
           throw new WorkspaceResponseTransportError();
+        }
         throw error;
       });
       if (done) break;

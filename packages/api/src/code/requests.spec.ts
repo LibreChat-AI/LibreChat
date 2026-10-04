@@ -525,3 +525,29 @@ test('a terminal server cancellation retains its cancellation outcome', async ()
     log.mockRestore();
   }
 });
+
+test('an accepted body reset at the transport deadline recovers by lookup, not replay', async () => {
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockImplementationOnce(
+      async (_url, init) =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              init.signal.addEventListener(
+                'abort',
+                () => controller.error(new TypeError('terminated')),
+                { once: true },
+              );
+            },
+          }),
+          { status: 202 },
+        ),
+    )
+    .mockResolvedValueOnce(status('completed'));
+  expect(await executeWorkspaceTool({ ...input, maxRequestTimeoutMs: 1000, fetchImpl })).toEqual(
+    result,
+  );
+  expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+});
