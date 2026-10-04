@@ -12,6 +12,8 @@ import { useLocalize } from '~/hooks';
 
 export type DigestTreeNode = { node: SubagentDigestNode; children: DigestTreeNode[] };
 
+type Localize = ReturnType<typeof useLocalize>;
+
 const STATUS: Record<SubagentDigestStatus, { label: TranslationKeys; dot: string }> = {
   running: { label: 'com_ui_background_tasks_running', dot: 'bg-status-info' },
   ok: { label: 'com_ui_background_tasks_completed', dot: 'bg-status-success' },
@@ -38,6 +40,37 @@ export function buildDigestTree(nodes: readonly SubagentDigestNode[]): DigestTre
     (parent == null ? roots : parent.children).push(entry);
   }
   return roots;
+}
+
+const NESTED_SUMMARY = /^(\d+) turns?, (\d+) tools?$/;
+const COUNTED_ENTRY = /^(.+) ×(\d+)$/;
+const MORE_SUFFIX = / \+(\d+) more$/;
+
+/**
+ * The server folds children into a model-facing English tally ("bash_tool ×3,
+ * text +2 more", "1 turn, 2 tools"). Tool names stay as display labels and every
+ * other fragment is localized here, so the card never shows the raw prose.
+ */
+export function localizeDigestSummary(summary: string, localize: Localize): string {
+  const nested = NESTED_SUMMARY.exec(summary);
+  if (nested != null) {
+    return localize('com_ui_subagent_progress_nested', { 0: nested[1], 1: nested[2] });
+  }
+  const more = MORE_SUFFIX.exec(summary);
+  const entries = (more == null ? summary : summary.slice(0, more.index)).split(', ');
+  const parts = entries.map((entry) => {
+    const counted = COUNTED_ENTRY.exec(entry);
+    const name = counted == null ? entry : counted[1];
+    const label =
+      name === 'text'
+        ? localize('com_ui_subagent_progress_reply')
+        : getToolDisplayLabel(name, localize);
+    return counted == null ? label : `${label} ×${counted[2]}`;
+  });
+  if (more != null) {
+    parts.push(localize('com_ui_subagent_progress_more', { 0: more[1] }));
+  }
+  return parts.join(', ');
 }
 
 const isOnPath = (path: string, active?: string): boolean =>
@@ -77,7 +110,9 @@ function NodeRow({ node }: { node: SubagentDigestNode }) {
         {title}
       </span>
       {node.summary != null && (
-        <span className="text-text-tertiary min-w-0 truncate">{node.summary}</span>
+        <span className="text-text-tertiary min-w-0 truncate">
+          {localizeDigestSummary(node.summary, localize)}
+        </span>
       )}
       <span className="ms-auto flex shrink-0 items-center gap-1.5">
         {duration != null && (

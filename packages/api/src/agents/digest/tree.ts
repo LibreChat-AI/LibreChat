@@ -1,3 +1,4 @@
+import { isFailedToolOutput } from 'librechat-data-provider';
 import type { SubagentDigestStatus, SubagentActivityItem } from 'librechat-data-provider';
 import type { SubagentTaskSnapshot } from '@librechat/agents';
 
@@ -71,6 +72,12 @@ export interface ActivityTree {
   updatedAt: number;
   /** The child is reasoning with no tool call or reply in flight. */
   thinking?: boolean;
+  /**
+   * Rebuilt from the settlement-time public projection after the owner was gone.
+   * Its turn split and paths are a reconstruction and may differ from the live
+   * tree's; `partial` means the projection itself kept only the newest activity.
+   */
+  rebuilt?: { partial: boolean };
 }
 
 /** The list-path view: counts plus the node in flight, never the whole tree. */
@@ -382,7 +389,14 @@ export function boundActivityTree(value: unknown): ActivityTree | undefined {
   if (updatedAt == null || root == null) {
     return undefined;
   }
-  return { version: 1, root, updatedAt, ...(value.thinking === true ? { thinking: true } : {}) };
+  const rebuilt = isRecord(value.rebuilt) ? { partial: value.rebuilt.partial === true } : undefined;
+  return {
+    version: 1,
+    root,
+    updatedAt,
+    ...(value.thinking === true ? { thinking: true } : {}),
+    ...(rebuilt == null ? {} : { rebuilt }),
+  };
 }
 
 const PATH_PATTERN = /^\d{1,6}(?:\.\d{1,6})*$/;
@@ -442,12 +456,16 @@ export function carryActivity(
   };
 }
 
+/** Current SDK results can persist a failure as a completed message, so a
+ * completed status is re-checked against the same verdict the live recorder uses. */
 const projectionStatus = (
-  status: Extract<SubagentActivityItem, { type: 'tool' }>['status'],
+  item: Extract<SubagentActivityItem, { type: 'tool' }>,
 ): SubagentDigestStatus => {
-  if (status === 'failed') return 'error';
-  if (status === 'completed') return 'ok';
-  return status;
+  if (item.status === 'failed') return 'error';
+  if (item.status !== 'completed') return item.status;
+  const failed =
+    item.inputValidationError === true || (item.output != null && isFailedToolOutput(item.output));
+  return failed ? 'error' : 'ok';
 };
 
 /**
@@ -455,11 +473,11 @@ const projectionStatus = (
  * child persisted at settlement. It carries no timings, so every node shares the
  * task's own window; it exists so a finished result can still be navigated after
  * the owning process has gone. Tool results arrive in result order, and a reply
- * after a tool result starts the next turn.
+ * after a tool result starts the next turn, so the tree is marked `rebuilt`.
  */
 export function activityTreeFromProjection(
   items: readonly SubagentActivityItem[],
-  window: { startedAt: number; settledAt: number },
+  window: { startedAt: number; settledAt: number; truncated?: boolean },
 ): ActivityTree | undefined {
   const root: ActivityRun = { turns: [] };
   let turn: ActivityTurn | undefined;
@@ -498,7 +516,7 @@ export function activityTreeFromProjection(
     turn.children.push({
       kind: 'tool',
       name: sanitizeActivityText(item.name, ACTIVITY_TREE_LIMITS.nameChars) ?? 'tool',
-      status: projectionStatus(item.status),
+      status: projectionStatus(item),
       startedAt: window.startedAt,
       endedAt: window.settledAt,
       ...(label == null ? {} : { label }),
@@ -514,5 +532,10 @@ export function activityTreeFromProjection(
   );
   const run: ActivityRun =
     evictedTurns.length === 0 ? root : { evicted: foldTurns(evictedTurns), turns: root.turns };
-  return boundActivityTree({ version: 1, root: run, updatedAt: window.settledAt });
+  return boundActivityTree({
+    version: 1,
+    root: run,
+    updatedAt: window.settledAt,
+    rebuilt: { partial: window.truncated === true },
+  });
 }

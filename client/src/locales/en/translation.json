@@ -2847,6 +2847,8 @@
   "com_ui_subagent_activity": "Agent activity",
   "com_ui_subagent_progress": "Progress",
   "com_ui_subagent_progress_counts": "Turns {{0}} · Tool calls {{1}} · Failed {{2}}",
+  "com_ui_subagent_progress_more": "+{{0}} more",
+  "com_ui_subagent_progress_nested": "Turns {{0}} · Tool calls {{1}}",
   "com_ui_subagent_progress_evicted": "Summary only; the detail of these turns is no longer kept",
   "com_ui_subagent_progress_reply": "Reply",
   "com_ui_subagent_progress_thinking": "Thinking",

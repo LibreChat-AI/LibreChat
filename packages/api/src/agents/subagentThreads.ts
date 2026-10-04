@@ -593,8 +593,11 @@ function durableActivity(
   if (projection == null || projection.taskId !== taskId) {
     return undefined;
   }
-  const { activity } = projectPersistedMessageActivityJson(projection.activityJson);
-  return activityTreeFromProjection(activity, { startedAt, settledAt });
+  const { activity, truncated } = projectPersistedMessageActivityJson(
+    projection.activityJson,
+    projection.truncated,
+  );
+  return activityTreeFromProjection(activity, { startedAt, settledAt, truncated });
 }
 
 /** Progress is observational: a recording failure must never fail the child. */

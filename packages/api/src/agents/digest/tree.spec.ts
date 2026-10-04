@@ -11,6 +11,7 @@ import {
 } from './tree';
 import { boundedClaim } from '../subagentTaskRouting';
 import { ActivityRecorder } from './recorder';
+import { renderDigest } from './view';
 
 function recordedTree(): ActivityTree {
   const recorder = new ActivityRecorder(0);
@@ -206,6 +207,37 @@ describe('activityTreeFromProjection', () => {
     for (const secret of ['secret', 'private', '.env', 'inspect', 'command']) {
       expect(serialized).not.toContain(secret);
     }
+  });
+
+  it('re-checks completed calls for failures and marks the tree as rebuilt', () => {
+    const items: SubagentActivityItem[] = [
+      {
+        type: 'tool',
+        toolCallId: 'a',
+        name: 'bash_tool',
+        output: 'Error: tool call failed: exit 2',
+        status: 'completed',
+      },
+      {
+        type: 'tool',
+        toolCallId: 'b',
+        name: 'edit_file',
+        status: 'completed',
+        inputValidationError: true,
+      },
+      { type: 'tool', toolCallId: 'c', name: 'read_file', output: 'fine', status: 'completed' },
+    ];
+    const tree = activityTreeFromProjection(items, { startedAt: 0, settledAt: 1, truncated: true });
+    expect(tree?.root.turns[0].children.map((leaf) => leaf.status)).toEqual([
+      'error',
+      'error',
+      'ok',
+    ]);
+    expect(tree?.rebuilt).toEqual({ partial: true });
+    const digest = renderDigest(tree!, { now: 2, running: false });
+    expect(digest).toMatchObject({ errors: 2, truncated: true });
+    expect(digest.note).toContain('Rebuilt from the saved activity summary');
+    expect(digest.note).toContain('kept only the newest activity');
   });
 
   it('returns nothing for a projection without steps', () => {

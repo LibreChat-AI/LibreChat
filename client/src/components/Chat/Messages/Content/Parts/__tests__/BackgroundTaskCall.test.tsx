@@ -507,7 +507,7 @@ describe('BackgroundTaskCall', () => {
     fireEvent.click(screen.getByTestId('task-header'));
     const progress = screen.getByTestId('subagent-progress');
     expect(within(progress).getByText('com_ui_subagent_progress_counts')).toBeInTheDocument();
-    expect(within(progress).getByText('bash_tool ×2, read_file')).toBeInTheDocument();
+    expect(within(progress).getByText('Code ×2, read_file')).toBeInTheDocument();
     const active = within(progress).getByText('Running the jest suite');
     expect(active.closest('details')).toHaveAttribute('open');
     expect(within(progress).getByText('read_file').closest('details')).toBeNull();

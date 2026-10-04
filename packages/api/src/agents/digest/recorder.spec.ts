@@ -178,6 +178,46 @@ describe('ActivityRecorder', () => {
     expect(findActiveLeaf(tree.root)).toBeUndefined();
   });
 
+  it('records a failed reply step and a schema-rejected call as errors', () => {
+    const recorder = new ActivityRecorder(0);
+    recorder.record(text('msg-1', 'partial answer'), 1);
+    recorder.record(event('run_step_closed', { id: 'msg-1', status: 'failed' }), 2);
+    recorder.record(toolStep('step', [{ id: 'call', name: 'edit_file' }]), 3);
+    recorder.record(
+      event('run_step_completed', {
+        result: {
+          type: 'tool_call',
+          tool_call: { id: 'call', name: 'edit_file', inputValidationError: true },
+        },
+      }),
+      4,
+    );
+    const tree = recorder.snapshot();
+    expect(tree.root.turns.flatMap((turn) => turn.children.map((leaf) => leaf.status))).toEqual([
+      'error',
+      'error',
+    ]);
+  });
+
+  it('counts an overflowed call once across all of its events', () => {
+    const recorder = new ActivityRecorder(0);
+    const calls = Array.from({ length: ACTIVITY_TREE_LIMITS.turnChildren + 8 }, (_, index) => ({
+      id: `call-${index}`,
+      name: 'read_file',
+      args: { intent: `Read ${index}` },
+    }));
+    recorder.record(toolStep('step', calls), 1);
+    recorder.record(event('run_step', { toolCalls: calls }), 2);
+    recorder.record(event('tool_calls_dispatched', { dispatched_at: 3, toolCalls: calls }), 3);
+    for (const call of calls) {
+      recorder.record(completed(call.id, call.name, 'ok'), 4);
+    }
+    const [turn] = recorder.snapshot().root.turns;
+    expect(turn.children).toHaveLength(ACTIVITY_TREE_LIMITS.turnChildren);
+    expect(turn.overflow).toBe(8);
+    expect(turn.children.every((leaf) => leaf.status === 'ok')).toBe(true);
+  });
+
   it('nests a subagent the child starts under its calling tool, within the depth bound', () => {
     const recorder = new ActivityRecorder(0);
     recorder.record(toolStep('step', [{ id: 'spawn', name: 'subagent' }]), 1);

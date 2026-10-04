@@ -634,6 +634,17 @@ function clamp(digest: SubagentDigest): SubagentDigest {
   return clamped;
 }
 
+function rebuiltDescription(rebuilt: { partial: boolean }): string {
+  const base =
+    'Rebuilt from the saved activity summary after the process that ran this subagent ended; paths from earlier checks may not match.';
+  return rebuilt.partial ? `${base} The summary kept only the newest activity.` : base;
+}
+
+function joinNotes(...notes: Array<string | undefined>): string | undefined {
+  const present = notes.filter((note): note is string => note != null);
+  return present.length === 0 ? undefined : present.join(' ');
+}
+
 /**
  * Renders a navigable digest of one task's progress tree. With no request it
  * returns the folded history and the open turn along the active path; `since`
@@ -653,14 +664,25 @@ export function renderDigest(
     { now, labelChars: 0 },
     running,
   );
-  const withCursor = cursor == null ? head : { ...head, cursor };
+  const withCursor = {
+    ...head,
+    ...(cursor == null ? {} : { cursor }),
+    ...(tree.rebuilt?.partial === true ? { truncated: true as const } : {}),
+  };
+  const rebuiltNote = tree.rebuilt == null ? undefined : rebuiltDescription(tree.rebuilt);
 
   if (request?.expand != null) {
     const expand = request.expand;
     let digest: SubagentDigest = { ...withCursor, nodes: [], expanded: expand.text };
     for (const labelChars of EXPAND_LABEL_CHARS) {
       const { nodes, note } = expandNodes(tree, expand, { now, labelChars });
-      digest = { ...withCursor, expanded: expand.text, nodes, ...(note == null ? {} : { note }) };
+      const combined = joinNotes(rebuiltNote, note);
+      digest = {
+        ...withCursor,
+        expanded: expand.text,
+        nodes,
+        ...(combined == null ? {} : { note: combined }),
+      };
       if (fits(digest)) {
         return digest;
       }
@@ -681,10 +703,14 @@ export function renderDigest(
       ...(since == null ? {} : { since: since.text }),
       nodes,
       ...(index > 0 ? { truncated: true as const } : {}),
-      ...(since != null && nodes.length === 0
-        ? { note: `No new activity since ${since.text}.` }
-        : {}),
     };
+    const note = joinNotes(
+      rebuiltNote,
+      since != null && nodes.length === 0 ? `No new activity since ${since.text}.` : undefined,
+    );
+    if (note != null) {
+      digest.note = note;
+    }
     if (fits(digest)) {
       return digest;
     }

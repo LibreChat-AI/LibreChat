@@ -58,6 +58,12 @@ function deltaChars(data: Record<string, unknown>): number {
   return chars;
 }
 
+function closedStatus(status: unknown): SubagentDigestStatus {
+  if (status === 'cancelled') return 'cancelled';
+  if (status === 'failed' || status === 'error') return 'error';
+  return 'ok';
+}
+
 function settleLeaves(run: ActivityRun, status: SubagentDigestStatus, at: number): void {
   for (const turn of run.turns) {
     for (const leaf of turn.children) {
@@ -72,23 +78,19 @@ function settleLeaves(run: ActivityRun, status: SubagentDigestStatus, at: number
   }
 }
 
-function collectLeaves(
-  turns: readonly ActivityTurn[],
-  overflow: WeakMap<ActivityTurn, ActivityLeaf[]>,
-  into: Set<ActivityLeaf>,
-): void {
+function collectLeaves(turns: readonly ActivityTurn[], into: Set<ActivityLeaf>): void {
   for (const turn of turns) {
-    for (const leaf of overflow.get(turn) ?? []) {
-      into.add(leaf);
-    }
     for (const leaf of turn.children) {
       into.add(leaf);
       if (leaf.run != null) {
-        collectLeaves(leaf.run.turns, overflow, into);
+        collectLeaves(leaf.run.turns, into);
       }
     }
   }
 }
+
+/** Overflowed identities remembered so a later event for one is not counted again. */
+const MAX_OVERFLOW_IDS = 512;
 
 /**
  * Folds one detached child's update stream into its bounded progress tree on the
@@ -106,7 +108,7 @@ export class ActivityRecorder {
   private readonly tree: ActivityTree;
   private readonly runs = new Map<string, RunState>();
   private readonly callOwners = new Map<string, { leaf: ActivityLeaf; depth: number }>();
-  private readonly overflowLeaves = new WeakMap<ActivityTurn, ActivityLeaf[]>();
+  private readonly overflowIds = new Set<string>();
   private rootRunId?: string;
   private leaves = 0;
 
@@ -263,7 +265,9 @@ export class ActivityRecorder {
     }
     const leaf = this.ensureTool(state, id, call.name, now);
     const output = typeof call.output === 'string' ? call.output : undefined;
-    leaf.status = output != null && isFailedToolOutput(output) ? 'error' : 'ok';
+    const failed =
+      call.inputValidationError === true || (output != null && isFailedToolOutput(output));
+    leaf.status = failed ? 'error' : 'ok';
     leaf.endedAt = now;
     if (output != null) {
       leaf.chars = output.length;
@@ -287,7 +291,7 @@ export class ActivityRecorder {
     const status = data.status;
     const text = state.textByStepId.get(stepId);
     if (text?.status === 'running') {
-      text.status = status === 'cancelled' ? 'cancelled' : 'ok';
+      text.status = closedStatus(status);
       text.endedAt = now;
     }
     if (status !== 'failed' && status !== 'error' && status !== 'cancelled') {
@@ -308,11 +312,14 @@ export class ActivityRecorder {
       return;
     }
     const stepId = nonEmpty(data.id) ?? '';
+    if (this.overflowIds.has(`text:${stepId}`)) {
+      return;
+    }
     let leaf = state.textByStepId.get(stepId);
     if (leaf == null || leaf.status !== 'running') {
       leaf = { kind: 'text', status: 'running', startedAt: now, chars: 0 };
-      this.append(state, leaf, now);
-      if (state.depth > 0 && !this.isAttached(state.run)) {
+      if (!this.append(state, leaf, now)) {
+        this.rememberOverflow(`text:${stepId}`);
         return;
       }
       state.textByStepId.set(stepId, leaf);
@@ -332,8 +339,10 @@ export class ActivityRecorder {
       status: 'running',
       startedAt: now,
     };
-    this.append(state, leaf, now);
-    if (state.depth > 0 && !this.isAttached(state.run)) {
+    /** An overflowed call is counted once and never retained: later events for it
+     * update a detached leaf that no map holds, so lookups stay bounded. */
+    if (this.overflowIds.has(`tool:${id}`) || !this.append(state, leaf, now)) {
+      this.rememberOverflow(`tool:${id}`);
       return leaf;
     }
     state.toolByCallId.set(id, leaf);
@@ -341,28 +350,33 @@ export class ActivityRecorder {
     return leaf;
   }
 
-  private append(state: RunState, leaf: ActivityLeaf, now: number): void {
+  /** Returns whether the leaf was retained; a detached nested run retains nothing. */
+  private append(state: RunState, leaf: ActivityLeaf, now: number): boolean {
     const turn = this.turnFor(state, leaf.kind, now);
     while (this.leaves >= ACTIVITY_TREE_LIMITS.leaves && this.tree.root.turns.length > 1) {
       this.evictOldest(this.tree.root);
     }
     if (state.depth > 0 && !this.isAttached(state.run)) {
-      return;
+      return false;
     }
     if (
       turn.children.length >= ACTIVITY_TREE_LIMITS.turnChildren ||
       this.leaves >= ACTIVITY_TREE_LIMITS.leaves
     ) {
       turn.overflow = (turn.overflow ?? 0) + 1;
-      /** Still tracked so its completion updates it instead of counting twice, and
-       * released with its turn so a long child cannot grow the lookup maps. */
-      const overflowed = this.overflowLeaves.get(turn) ?? [];
-      overflowed.push(leaf);
-      this.overflowLeaves.set(turn, overflowed);
-      return;
+      return false;
     }
     turn.children.push(leaf);
     this.leaves += 1;
+    return true;
+  }
+
+  private rememberOverflow(key: string): void {
+    this.overflowIds.add(key);
+    if (this.overflowIds.size > MAX_OVERFLOW_IDS) {
+      const oldest = this.overflowIds.values().next().value;
+      if (oldest != null) this.overflowIds.delete(oldest);
+    }
   }
 
   private turnFor(state: RunState, kind: ActivityLeaf['kind'], now: number): ActivityTurn {
@@ -409,7 +423,7 @@ export class ActivityRecorder {
     }
     run.evicted = foldTurns([turn], run.evicted ?? emptyFold(turn.startedAt));
     const evicted = new Set<ActivityLeaf>();
-    collectLeaves([turn], this.overflowLeaves, evicted);
+    collectLeaves([turn], evicted);
     this.leaves -= countLeaves({ turns: [turn] });
     for (const state of this.runs.values()) {
       for (const [key, leaf] of state.toolByCallId) {
