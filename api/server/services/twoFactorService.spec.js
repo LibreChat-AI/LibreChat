@@ -14,7 +14,7 @@ jest.mock('@librechat/data-schemas', () => ({
   decryptV2: jest.fn(),
 }));
 
-jest.mock('~/models', () => ({ updateUser: jest.fn() }));
+jest.mock('~/models', () => ({ consumeBackupCode: jest.fn() }));
 
 jest.mock('@librechat/api', () => ({
   generateTwoFactorLoginChallengeToken: jest.fn(),

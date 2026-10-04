@@ -65,6 +65,64 @@ afterEach(() => {
   restoreAuthUserCacheEnv();
 });
 
+describe('consumeBackupCode', () => {
+  async function createRecoveryUser() {
+    return User.create({
+      email: 'recovery@example.com',
+      backupCodes: [
+        { codeHash: 'hash-a', used: false },
+        { codeHash: 'hash-b', used: false },
+      ],
+    });
+  }
+
+  it('permits exactly one simultaneous redemption of the same code', async () => {
+    const user = await createRecoveryUser();
+    const results = await Promise.all([
+      methods.consumeBackupCode(String(user._id), 'hash-a'),
+      methods.consumeBackupCode(String(user._id), 'hash-a'),
+    ]);
+    expect(results.sort()).toEqual([false, true]);
+    const stored = await User.findById(user._id).select('+backupCodes').lean();
+    expect(stored?.backupCodes?.[0]).toMatchObject({ used: true, usedAt: expect.any(Date) });
+    expect(stored?.backupCodes?.[1].used).toBe(false);
+  });
+
+  it('does not restore a consumed code when different codes redeem simultaneously', async () => {
+    const user = await createRecoveryUser();
+    expect(
+      await Promise.all([
+        methods.consumeBackupCode(String(user._id), 'hash-a'),
+        methods.consumeBackupCode(String(user._id), 'hash-b'),
+      ]),
+    ).toEqual([true, true]);
+    const stored = await User.findById(user._id).select('+backupCodes').lean();
+    expect(stored?.backupCodes?.every((code) => code.used)).toBe(true);
+  });
+
+  it('rejects a stale hash after regeneration', async () => {
+    const user = await createRecoveryUser();
+    await User.updateOne(
+      { _id: user._id },
+      { $set: { backupCodes: [{ codeHash: 'replacement', used: false }] } },
+    );
+    expect(await methods.consumeBackupCode(String(user._id), 'hash-a')).toBe(false);
+  });
+
+  it('evicts the auth cache after successful consumption', async () => {
+    enableAuthUserDocCache();
+    const user = await createRecoveryUser();
+    const cache = {
+      get: jest.fn().mockResolvedValue(['cached-user']),
+      set: jest.fn().mockResolvedValue(true),
+      delete: jest.fn().mockResolvedValue(true),
+    };
+    const cachedMethods = createUserMethods(mongoose, { getCache: () => cache });
+    expect(await cachedMethods.consumeBackupCode(String(user._id), 'hash-a')).toBe(true);
+    expect(cache.delete).toHaveBeenCalledWith('cached-user');
+  });
+});
+
 describe('User schema indexes', () => {
   test('should define an issuer-bound idOnTheSource lookup index', async () => {
     await User.syncIndexes();

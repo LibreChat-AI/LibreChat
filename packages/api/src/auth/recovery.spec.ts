@@ -42,17 +42,32 @@ describe('two-factor credential generation', () => {
   it('consumes the matched code without changing remaining codes', async () => {
     const { plainCodes, codeObjects } = await generateBackupCodes(2);
     const user = { _id: 'user', backupCodes: codeObjects };
-    const updateUser = jest.fn(async (_id, update) => {
-      user.backupCodes = update.backupCodes;
+    const consumeBackupCode = jest.fn(async (_id: string, hash: string) => {
+      const entry = user.backupCodes.find((code) => code.codeHash === hash && !code.used);
+      if (!entry) {
+        return false;
+      }
+      entry.used = true;
+      return true;
     });
-    const verify = createBackupCodeVerifier(updateUser);
+    const verify = createBackupCodeVerifier(consumeBackupCode);
     expect(await verify({ user, backupCode: ` ${plainCodes[0]} ` })).toBe(true);
-    expect(updateUser).toHaveBeenCalledWith('user', {
-      backupCodes: [{ ...codeObjects[0], used: true, usedAt: expect.any(Date) }, codeObjects[1]],
-    });
+    expect(consumeBackupCode).toHaveBeenCalledWith('user', codeObjects[0].codeHash);
+    expect(user.backupCodes[1].used).toBe(false);
     expect(await verify({ user, backupCode: plainCodes[0] })).toBe(false);
     expect(await verify({ user, backupCode: plainCodes[1], persist: false })).toBe(true);
-    expect(updateUser).toHaveBeenCalledTimes(1);
+    expect(consumeBackupCode).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an otherwise matching code when atomic consumption loses', async () => {
+    const { plainCodes, codeObjects } = await generateBackupCodes(1);
+    const consumeBackupCode = jest.fn().mockResolvedValue(false);
+    expect(
+      await createBackupCodeVerifier(consumeBackupCode)({
+        user: { _id: 'user', backupCodes: codeObjects },
+        backupCode: plainCodes[0],
+      }),
+    ).toBe(false);
   });
 
   it('allows an existing legacy code without persistence during replacement', async () => {

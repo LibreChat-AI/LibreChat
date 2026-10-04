@@ -71,6 +71,7 @@ export function createUserMethods(
     options?: { preserveExpiresAt?: boolean },
   ) => Promise<IUser | null>;
   awaitAuthUserDocEviction: (userId: string) => Promise<void>;
+  consumeBackupCode: (userId: string, codeHash: string) => Promise<boolean>;
   claimSamlIdentity: (
     userId: string,
     samlId: string,
@@ -372,6 +373,19 @@ export function createUserMethods(
       { userId, waitMs: AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS },
     );
     await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
+  }
+
+  /** Only the request that atomically consumes an unused recovery code may authenticate. */
+  async function consumeBackupCode(userId: string, codeHash: string): Promise<boolean> {
+    const result = await mongoose.models.User.updateOne(
+      { _id: userId, backupCodes: { $elemMatch: { codeHash, used: false } } },
+      { $set: { 'backupCodes.$.used': true, 'backupCodes.$.usedAt': new Date() } },
+    );
+    if (result.modifiedCount !== 1) {
+      return false;
+    }
+    await invalidateAuthUserDocCache(userId);
+    return true;
   }
 
   /** Atomically updates a SAML user only when the incoming identity can claim the document. */
@@ -934,6 +948,7 @@ export function createUserMethods(
     createUser,
     updateUser,
     awaitAuthUserDocEviction,
+    consumeBackupCode,
     claimSamlIdentity,
     updateTwoFactorEnrollment,
     acceptTerms,

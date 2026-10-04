@@ -1,6 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { StoredTwoFactorAccount, TwoFactorBackupCode } from './twoFactor';
-import type { UserDocumentId } from './verification';
 
 interface BackupCodeVerificationParams {
   user: StoredTwoFactorAccount;
@@ -68,10 +67,7 @@ export function matchesBackupCode(code: string, storedHash: string): boolean {
 }
 
 export function createBackupCodeVerifier(
-  updateUser: (
-    id: UserDocumentId,
-    update: { backupCodes: TwoFactorBackupCode[] },
-  ) => Promise<unknown>,
+  consumeBackupCode: (id: string, codeHash: string) => Promise<boolean>,
 ): (params: BackupCodeVerificationParams) => Promise<boolean> {
   return async ({
     user,
@@ -92,11 +88,7 @@ export function createBackupCodeVerifier(
       return false;
     }
     if (persist) {
-      await updateUser(user._id, {
-        backupCodes: user.backupCodes.map((entry) =>
-          entry === matching ? { ...entry, used: true, usedAt: new Date() } : entry,
-        ),
-      });
+      return consumeBackupCode(String(user._id), matching.codeHash);
     }
     return true;
   };

@@ -6,10 +6,10 @@ const {
   generateBackupCodes,
   createBackupCodeVerifier,
 } = require('@librechat/api');
-const { updateUser } = require('~/models');
+const { consumeBackupCode } = require('~/models');
 
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-const verifyBackupCode = createBackupCodeVerifier(updateUser);
+const verifyBackupCode = createBackupCodeVerifier(consumeBackupCode);
 
 /**
  * Decodes a Base32 string into a Buffer.
