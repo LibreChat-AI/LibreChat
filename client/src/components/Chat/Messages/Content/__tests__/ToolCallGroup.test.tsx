@@ -941,6 +941,29 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.getByRole('button', { name: 'Create File' })).toBeInTheDocument();
   });
 
+  it('names a lone code call by what it did, not by the bare tool name', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: makePart('code-1', 'done', 'execute_code'), idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('names a lone running code call by what it is doing', () => {
+    renderGroup({
+      ...baseProps,
+      isSubmitting: true,
+      parts: [{ part: makePart('code-1', '', 'execute_code'), idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toBeInTheDocument();
+  });
+
   it('keeps repeated action counts and failed-call status in the compact summary', () => {
     renderGroup({
       ...baseProps,

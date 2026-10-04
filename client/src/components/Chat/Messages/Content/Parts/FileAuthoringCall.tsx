@@ -169,7 +169,7 @@ export default function FileAuthoringCall({
     previewLang = fileLang;
   }
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase } = useToolCallState({
+  const { showCode, toggleCode, expandStyle, expandRef, phase, bare } = useToolCallState({
     initialProgress,
     isSubmitting,
     output,
@@ -196,35 +196,37 @@ export default function FileAuthoringCall({
 
   return (
     <>
-      <div className={TOOL_ROW_CLASSES}>
-        <ProgressText
-          phase={phase}
-          onClick={toggleCode}
-          inProgressText={
-            intent ??
-            localize(isCreate ? 'com_ui_creating_file' : 'com_ui_editing_file', {
-              0: fileName,
-            })
-          }
-          finishedText={
-            phase === 'cancelled'
-              ? localize('com_ui_cancelled')
-              : (intent ?? localize(finishedKey, { 0: fileName }))
-          }
-          durationMs={runStepDurationMs}
-          icon={
-            <Icon
-              className={cn(
-                'text-text-secondary size-4 shrink-0',
-                phase === 'running' && 'animate-pulse',
-              )}
-              aria-hidden="true"
-            />
-          }
-          hasInput={!!filePath || !!preview}
-          isExpanded={showCode}
-        />
-      </div>
+      {!bare && (
+        <div className={TOOL_ROW_CLASSES}>
+          <ProgressText
+            phase={phase}
+            onClick={toggleCode}
+            inProgressText={
+              intent ??
+              localize(isCreate ? 'com_ui_creating_file' : 'com_ui_editing_file', {
+                0: fileName,
+              })
+            }
+            finishedText={
+              phase === 'cancelled'
+                ? localize('com_ui_cancelled')
+                : (intent ?? localize(finishedKey, { 0: fileName }))
+            }
+            durationMs={runStepDurationMs}
+            icon={
+              <Icon
+                className={cn(
+                  'text-text-secondary size-4 shrink-0',
+                  phase === 'running' && 'animate-pulse',
+                )}
+                aria-hidden="true"
+              />
+            }
+            hasInput={!!filePath || !!preview}
+            isExpanded={showCode}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
           {!!preview && (

@@ -120,16 +120,18 @@ export default function BashCall({
       )
     : null;
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput } = useToolCallState({
-    initialProgress,
-    isSubmitting,
-    output,
-    hasInput: !!command,
-    onExpand,
-    runStepStatus,
-    extraError: backgroundFailed || result?.failed === true,
-    extraCancelled: cancelledInBackground,
-  });
+  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare } = useToolCallState(
+    {
+      initialProgress,
+      isSubmitting,
+      output,
+      hasInput: !!command,
+      onExpand,
+      runStepStatus,
+      extraError: backgroundFailed || result?.failed === true,
+      extraCancelled: cancelledInBackground,
+    },
+  );
 
   const highlighted = useLazyHighlight(showCode ? command || undefined : undefined, 'bash');
   const { ref: commandPaneRef, onScroll: onCommandPaneScroll } = useFollowScroll<HTMLDivElement>(
@@ -169,39 +171,41 @@ export default function BashCall({
 
   return (
     <>
-      <div className={TOOL_ROW_CLASSES}>
-        <ProgressText
-          phase={phase}
-          onClick={toggleCode}
-          inProgressText={inProgressText}
-          finishedText={
-            phase === 'cancelled'
-              ? localize('com_ui_cancelled')
-              : (backgroundFinishedText ?? intent ?? localize('com_ui_command_finished'))
-          }
-          /** A backgrounded call's run step closes when dispatch returns the
-           *  handle, so its duration is the dispatch time — showing it would
-           *  misstate a detached task's runtime as seconds. The handle check
-           *  covers the live card; the persisted `backgrounded` marker covers
-           *  the card after harvest replaces the handle with real stdout
-           *  (and after any reload), when no transient signal survives. */
-          durationMs={
-            backgroundHandle == null && backgrounded !== true ? runStepDurationMs : undefined
-          }
-          icon={
-            <LangIcon
-              lang="bash"
-              className={cn(
-                'text-text-secondary size-4 shrink-0',
-                phase === 'running' && 'animate-pulse',
-              )}
-            />
-          }
-          hasInput={!!command || hasOutput}
-          isExpanded={showCode}
-          verdict={verdict}
-        />
-      </div>
+      {!bare && (
+        <div className={TOOL_ROW_CLASSES}>
+          <ProgressText
+            phase={phase}
+            onClick={toggleCode}
+            inProgressText={inProgressText}
+            finishedText={
+              phase === 'cancelled'
+                ? localize('com_ui_cancelled')
+                : (backgroundFinishedText ?? intent ?? localize('com_ui_command_finished'))
+            }
+            /** A backgrounded call's run step closes when dispatch returns the
+             *  handle, so its duration is the dispatch time, and showing it would
+             *  misstate a detached task's runtime as seconds. The handle check
+             *  covers the live card; the persisted `backgrounded` marker covers
+             *  the card after harvest replaces the handle with real stdout
+             *  (and after any reload), when no transient signal survives. */
+            durationMs={
+              backgroundHandle == null && backgrounded !== true ? runStepDurationMs : undefined
+            }
+            icon={
+              <LangIcon
+                lang="bash"
+                className={cn(
+                  'text-text-secondary size-4 shrink-0',
+                  phase === 'running' && 'animate-pulse',
+                )}
+              />
+            }
+            hasInput={!!command || hasOutput}
+            isExpanded={showCode}
+            verdict={verdict}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
           <div

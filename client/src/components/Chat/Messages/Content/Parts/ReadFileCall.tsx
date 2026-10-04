@@ -94,43 +94,47 @@ export default function ReadFileCall({
   const fileName = filePath.split('/').pop() || filePath;
   const lang = useMemo(() => langFromPath(filePath), [filePath]);
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput } = useToolCallState({
-    initialProgress,
-    isSubmitting,
-    output,
-    hasInput: !!filePath,
-    onExpand,
-    runStepStatus,
-  });
+  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare } = useToolCallState(
+    {
+      initialProgress,
+      isSubmitting,
+      output,
+      hasInput: !!filePath,
+      onExpand,
+      runStepStatus,
+    },
+  );
 
   const highlighted = useLazyHighlight(showCode && hasOutput ? output : undefined, lang);
 
   return (
     <>
-      <div className={TOOL_ROW_CLASSES}>
-        <ProgressText
-          phase={phase}
-          onClick={toggleCode}
-          inProgressText={intent ?? localize('com_ui_reading_file', { 0: fileName })}
-          finishedText={
-            phase === 'cancelled'
-              ? localize('com_ui_cancelled')
-              : (intent ?? localize('com_ui_read_file', { 0: fileName }))
-          }
-          durationMs={runStepDurationMs}
-          icon={
-            <FileText
-              className={cn(
-                'text-text-secondary size-4 shrink-0',
-                phase === 'running' && 'animate-pulse',
-              )}
-              aria-hidden="true"
-            />
-          }
-          hasInput={!!filePath || hasOutput}
-          isExpanded={showCode}
-        />
-      </div>
+      {!bare && (
+        <div className={TOOL_ROW_CLASSES}>
+          <ProgressText
+            phase={phase}
+            onClick={toggleCode}
+            inProgressText={intent ?? localize('com_ui_reading_file', { 0: fileName })}
+            finishedText={
+              phase === 'cancelled'
+                ? localize('com_ui_cancelled')
+                : (intent ?? localize('com_ui_read_file', { 0: fileName }))
+            }
+            durationMs={runStepDurationMs}
+            icon={
+              <FileText
+                className={cn(
+                  'text-text-secondary size-4 shrink-0',
+                  phase === 'running' && 'animate-pulse',
+                )}
+                aria-hidden="true"
+              />
+            }
+            hasInput={!!filePath || hasOutput}
+            isExpanded={showCode}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
           {hasOutput && (

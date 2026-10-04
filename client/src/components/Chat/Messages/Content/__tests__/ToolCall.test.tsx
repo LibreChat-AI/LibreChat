@@ -987,6 +987,30 @@ describe('ToolCall failure fast path', () => {
 });
 
 describe('ToolCall sole tool disclosure', () => {
+  it('drops its own row once the only call has settled, leaving the info panel', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value>
+            <ToolCall
+              args='{"query":"weather"}'
+              name="lookup"
+              output="sunny"
+              initialProgress={1}
+              isSubmitting={false}
+            />
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
+    expect(screen.getByTestId('tool-call-info')).toBeInTheDocument();
+  });
+
   it('opens the only call of a group when it returned no output but has arguments', () => {
     const { container } = render(
       <RecoilRoot>

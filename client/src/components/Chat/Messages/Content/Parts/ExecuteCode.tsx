@@ -117,16 +117,18 @@ export default function ExecuteCode({
       )
     : null;
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput } = useToolCallState({
-    initialProgress,
-    isSubmitting,
-    output,
-    hasInput: !!code,
-    onExpand,
-    runStepStatus,
-    extraError: backgroundFailed,
-    extraCancelled: cancelledInBackground,
-  });
+  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare } = useToolCallState(
+    {
+      initialProgress,
+      isSubmitting,
+      output,
+      hasInput: !!code,
+      onExpand,
+      runStepStatus,
+      extraError: backgroundFailed,
+      extraCancelled: cancelledInBackground,
+    },
+  );
 
   const highlighted = useLazyHighlight(showCode ? code : undefined, lang);
   const { ref: codePaneRef, onScroll: onCodePaneScroll } = useFollowScroll<HTMLPreElement>(
@@ -137,41 +139,43 @@ export default function ExecuteCode({
 
   return (
     <>
-      <div className={TOOL_ROW_CLASSES}>
-        <ProgressText
-          phase={phase}
-          onClick={toggleCode}
-          inProgressText={
-            intent ??
-            (sandboxStarting ? localize('com_ui_sandbox_starting') : localize('com_ui_analyzing'))
-          }
-          finishedText={
-            phase === 'cancelled'
-              ? localize('com_ui_cancelled')
-              : (backgroundFinishedText ?? intent ?? localize('com_ui_analyzing_finished'))
-          }
-          /** A backgrounded call's run step closes when dispatch returns the
-           *  handle, so its duration is the dispatch time — showing it would
-           *  misstate a detached task's runtime as seconds. The handle check
-           *  covers the live card; the persisted `backgrounded` marker covers
-           *  the card after harvest replaces the handle with real stdout
-           *  (and after any reload), when no transient signal survives. */
-          durationMs={
-            backgroundHandle == null && backgrounded !== true ? runStepDurationMs : undefined
-          }
-          icon={
-            <SquareTerminal
-              className={cn(
-                'text-text-secondary size-4 shrink-0',
-                phase === 'running' && 'animate-pulse',
-              )}
-              aria-hidden="true"
-            />
-          }
-          hasInput={!!code?.length}
-          isExpanded={showCode}
-        />
-      </div>
+      {!bare && (
+        <div className={TOOL_ROW_CLASSES}>
+          <ProgressText
+            phase={phase}
+            onClick={toggleCode}
+            inProgressText={
+              intent ??
+              (sandboxStarting ? localize('com_ui_sandbox_starting') : localize('com_ui_analyzing'))
+            }
+            finishedText={
+              phase === 'cancelled'
+                ? localize('com_ui_cancelled')
+                : (backgroundFinishedText ?? intent ?? localize('com_ui_analyzing_finished'))
+            }
+            /** A backgrounded call's run step closes when dispatch returns the
+             *  handle, so its duration is the dispatch time, and showing it would
+             *  misstate a detached task's runtime as seconds. The handle check
+             *  covers the live card; the persisted `backgrounded` marker covers
+             *  the card after harvest replaces the handle with real stdout
+             *  (and after any reload), when no transient signal survives. */
+            durationMs={
+              backgroundHandle == null && backgrounded !== true ? runStepDurationMs : undefined
+            }
+            icon={
+              <SquareTerminal
+                className={cn(
+                  'text-text-secondary size-4 shrink-0',
+                  phase === 'running' && 'animate-pulse',
+                )}
+                aria-hidden="true"
+              />
+            }
+            hasInput={!!code?.length}
+            isExpanded={showCode}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
           <div

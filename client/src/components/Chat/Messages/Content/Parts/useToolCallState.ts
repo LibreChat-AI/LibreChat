@@ -1,10 +1,10 @@
-import { useCallback } from 'react';
+import { useCallback, useContext } from 'react';
 import type { PartMetadata } from 'librechat-data-provider';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { isError } from '~/components/Chat/Messages/Content/ToolOutput';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useExpandCollapse } from '~/hooks';
-import { useToolExpansion } from '../disclosure';
+import { SoleToolContext, useToolExpansion } from '../disclosure';
 
 interface ToolCallState {
   showCode: boolean;
@@ -19,6 +19,9 @@ interface ToolCallState {
   phase: ToolCallPhase;
   hasOutput: boolean;
   hasContent: boolean;
+  /** The only call of its group, with a panel to show: the group header is
+   *  already the row, so the card renders its panel alone, held open. */
+  bare: boolean;
 }
 
 export interface UseToolCallStateInput {
@@ -55,7 +58,9 @@ export default function useToolCallState({
   const hasOutput = output.length > 0;
   const hasContent = hasInput || hasOutput;
 
-  const [showCode, setExpansionOverride] = useToolExpansion(hasContent);
+  const bare = useContext(SoleToolContext) === true && hasContent;
+  const [expanded, setExpansionOverride] = useToolExpansion(hasContent);
+  const showCode = bare || expanded;
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showCode);
 
   const isClosed = runStepStatus != null;
@@ -96,5 +101,6 @@ export default function useToolCallState({
     phase,
     hasOutput,
     hasContent,
+    bare,
   };
 }

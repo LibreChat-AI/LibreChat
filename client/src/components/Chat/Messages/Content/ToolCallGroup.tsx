@@ -38,6 +38,7 @@ import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from './rows';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { StackedToolIcons } from './ToolOutput';
 import { SoleToolContext } from './disclosure';
+import { parseToolName } from '~/utils/toolLabels';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
 import SearchVerticals from './verticals';
@@ -291,6 +292,9 @@ export default function ToolCallGroup({
 
   /** For a single-tool group, lead with the tool's own (capitalized) label
    *  instead of the generic "Used 1 tool: name", which reads awkwardly. */
+  const singleToolIsCode =
+    toolMetadata[0]?.name != null &&
+    parseToolName(toolMetadata[0].name, mcpServerNames).friendlyKey === 'com_ui_tool_name_code';
   const singleToolLabel = useMemo(() => {
     const raw = getToolDisplayLabel(toolMetadata[0]?.name ?? '', localize, mcpServerNames);
     return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : '';
@@ -479,6 +483,15 @@ export default function ToolCallGroup({
       );
     }
     if (count === 1) {
+      /** A bare "Code" reads as a category, not as what the call is doing, so
+       *  the code tool says the verb its live row says. Other tools already
+       *  name an action ("Create File"). */
+      if (singleToolLabel && singleToolIsCode) {
+        return localize(
+          groupDone ? 'com_assistants_completed_function' : 'com_assistants_running_var',
+          { 0: singleToolLabel },
+        );
+      }
       return singleToolLabel || localize('com_ui_used_one_tool');
     }
     return localize(groupDone ? 'com_ui_ran_n_actions' : 'com_ui_running_n_actions', {

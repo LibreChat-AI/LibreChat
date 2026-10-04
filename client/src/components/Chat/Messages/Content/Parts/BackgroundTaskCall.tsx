@@ -68,7 +68,7 @@ export default function BackgroundTaskCall({
     () => (display?.kind === 'list' ? backgroundListGuidanceKeys(display) : []),
     [display],
   );
-  const { showCode, toggleCode, expandRef, phase, hasContent } = useToolCallState({
+  const { showCode, toggleCode, expandRef, phase, hasContent, bare } = useToolCallState({
     initialProgress,
     isSubmitting,
     output,
@@ -111,22 +111,24 @@ export default function BackgroundTaskCall({
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {announcedText}
       </span>
-      <div
-        className={TOOL_ROW_CLASSES}
-        data-testid="background-task-call"
-        data-tool-call-id={toolCallId}
-      >
-        <ProgressText
-          phase={phase}
-          onClick={handleToggle}
-          inProgressText={intent ?? localize('com_ui_background_tasks_checking')}
-          finishedText={finishedText}
-          durationMs={runStepDurationMs}
-          icon={<ToolIcon type="background_tasks" isAnimating={phase === 'running'} />}
-          hasInput={hasContent}
-          isExpanded={showCode}
-        />
-      </div>
+      {!bare && (
+        <div
+          className={TOOL_ROW_CLASSES}
+          data-testid="background-task-call"
+          data-tool-call-id={toolCallId}
+        >
+          <ProgressText
+            phase={phase}
+            onClick={handleToggle}
+            inProgressText={intent ?? localize('com_ui_background_tasks_checking')}
+            finishedText={finishedText}
+            durationMs={runStepDurationMs}
+            icon={<ToolIcon type="background_tasks" isAnimating={phase === 'running'} />}
+            hasInput={hasContent}
+            isExpanded={showCode}
+          />
+        </div>
+      )}
       <div
         data-background-task-fold
         data-expanded={showCode}

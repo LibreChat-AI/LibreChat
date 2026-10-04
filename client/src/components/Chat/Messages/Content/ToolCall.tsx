@@ -193,7 +193,13 @@ export default function ToolCall({
   /** The preference opens a card once it has output; a sole call opens on
    *  its arguments too, so a call that returned nothing still shows them. */
   const soleTool = useContext(SoleToolContext) === true;
-  const [showInfo, setShowInfo] = useToolExpansion(soleTool ? hasInfo : (output?.length ?? 0) > 0);
+  const [expandedInfo, setShowInfo] = useToolExpansion(
+    soleTool ? hasInfo : (output?.length ?? 0) > 0,
+  );
+  /** The only call of its group, with something to show: the group header is
+   *  the row, so the panel stands alone and stays open. */
+  const bare = soleTool && hasInfo;
+  const showInfo = bare || expandedInfo;
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
 
@@ -401,29 +407,35 @@ export default function ToolCall({
           return getFinishedText();
         })()}
       </span>
-      <div className={TOOL_ROW_CLASSES} data-testid="tool-call" data-tool-call-id={toolCallId}>
-        <ProgressText
-          phase={phase}
-          onClick={handleToggleInfo}
-          inProgressText={inProgressText}
-          authText={
-            phase === 'running' && authDomain.length > 0
-              ? localize('com_ui_requires_auth')
-              : undefined
-          }
-          finishedText={getFinishedText()}
-          subtitle={subtitle}
-          durationMs={runStepDurationMs}
-          toolPreparationDurationMs={toolPreparationDurationMs}
-          toolExecutionDurationMs={toolExecutionDurationMs}
-          phaseStartAt={toolDispatchedAt ?? toolPreparationStartedAt}
-          icon={
-            <ToolIcon type={toolIconType} iconUrl={mcpIconUrl} isAnimating={phase === 'running'} />
-          }
-          hasInput={hasInfo}
-          isExpanded={showInfo}
-        />
-      </div>
+      {!bare && (
+        <div className={TOOL_ROW_CLASSES} data-testid="tool-call" data-tool-call-id={toolCallId}>
+          <ProgressText
+            phase={phase}
+            onClick={handleToggleInfo}
+            inProgressText={inProgressText}
+            authText={
+              phase === 'running' && authDomain.length > 0
+                ? localize('com_ui_requires_auth')
+                : undefined
+            }
+            finishedText={getFinishedText()}
+            subtitle={subtitle}
+            durationMs={runStepDurationMs}
+            toolPreparationDurationMs={toolPreparationDurationMs}
+            toolExecutionDurationMs={toolExecutionDurationMs}
+            phaseStartAt={toolDispatchedAt ?? toolPreparationStartedAt}
+            icon={
+              <ToolIcon
+                type={toolIconType}
+                iconUrl={mcpIconUrl}
+                isAnimating={phase === 'running'}
+              />
+            }
+            hasInput={hasInfo}
+            isExpanded={showInfo}
+          />
+        </div>
+      )}
       <div
         style={expandStyle}
         onTransitionEnd={handleTransitionEnd}
