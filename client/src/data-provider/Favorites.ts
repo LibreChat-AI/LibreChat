@@ -41,6 +41,11 @@ const isForeignSession = (owner?: string): boolean =>
 const sameFavorite = (a: TToolFavorite, b: TToolFavorite) =>
   a.itemType === b.itemType && a.itemId === b.itemId;
 
+/** Extracts the set of favorited agent ids from a favorites list (which also mixes in
+ * favorited models and model specs). */
+const agentIdSet = (favorites: FavoritesState | undefined) =>
+  new Set((favorites ?? []).map((f) => f.agentId).filter((id): id is string => !!id));
+
 export const useGetFavoritesQuery = (
   config?: Omit<UseQueryOptions<FavoritesState, Error>, 'queryKey' | 'queryFn'>,
 ) => {
@@ -80,6 +85,38 @@ export const useUpdateFavoritesMutation = () => {
         if (context?.previousFavorites) {
           queryClient.setQueryData([QueryKeys.favorites], context.previousFavorites);
         }
+      },
+      // Only the 'popular' marketplace sort depends on favorite/pin counts —
+      // 'newest', 'oldest', and 'author' don't change when one user pins or
+      // unpins an agent. Mark those cached pages stale without refetching:
+      // an immediate refetch would re-sort the list out from under a user
+      // who is mid-scroll.
+      onSuccess: (_data, newFavorites, context) => {
+        const previousAgentIds = agentIdSet(context?.previousFavorites);
+        const nextAgentIds = agentIdSet(newFavorites);
+        /* An absent prior snapshot is an unknown change, not an empty one: the favorites
+           query may still be pending or failed while a restored pin is being removed, and
+           reading that as "nothing changed" would leave a stale popular page ranked by the
+           pin the user just dropped. */
+        const agentFavoritesChanged =
+          context?.previousFavorites === undefined ||
+          previousAgentIds.size !== nextAgentIds.size ||
+          [...previousAgentIds].some((id) => !nextAgentIds.has(id));
+
+        if (!agentFavoritesChanged) {
+          return;
+        }
+
+        queryClient.invalidateQueries({
+          predicate: (query) => {
+            const [key, params] = query.queryKey;
+            return (
+              key === QueryKeys.marketplaceAgents &&
+              (params as { sort?: string } | undefined)?.sort === 'popular'
+            );
+          },
+          refetchType: 'none',
+        });
       },
       onSettled: () => {
         if (

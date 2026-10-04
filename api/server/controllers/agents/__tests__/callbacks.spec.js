@@ -9,6 +9,14 @@ jest.mock('@librechat/api', () => ({
   sendEvent: jest.fn(),
   writeAttachmentEvent: jest.fn(),
   createOwnedToolEndHandler: jest.fn((callback) => ({ handle: callback })),
+  getAttachmentOwnership: jest.fn((metadata) => {
+    const agentId = metadata?.executingAgentId ?? metadata?.agentId ?? metadata?.agent_id;
+    const stepId = metadata?.stepId;
+    return {
+      ...(typeof agentId === 'string' && agentId.length > 0 ? { agentId } : {}),
+      ...(typeof stepId === 'string' && stepId.length > 0 ? { stepId } : {}),
+    };
+  }),
   GenerationJobManager: {
     emitChunk: jest.fn(),
   },
@@ -27,11 +35,13 @@ jest.mock('@librechat/api', () => ({
   collectToolCallIds: jest.requireActual('@librechat/api').collectToolCallIds,
   captureSubagentIdentity: jest.requireActual('@librechat/api').captureSubagentIdentity,
   createToolTimingAdapter: jest.requireActual('@librechat/api').createToolTimingAdapter,
+  stampCommandExecutor: jest.requireActual('@librechat/api').stampCommandExecutor,
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
     debug: jest.fn(),
+    info: jest.fn(),
     error: jest.fn(),
     warn: jest.fn(),
   },
@@ -681,6 +691,69 @@ describe('createToolEndCallback', () => {
         stepId: 'step-memory-1',
         [Tools.memory]: { key: 'project', type: 'update', value: 'owned' },
       });
+    },
+  );
+
+  it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
+    '%s preserves distinct UI owners when provider tool-call IDs repeat',
+    async (factoryName) => {
+      const { getAttachmentOwnership, writeAttachmentEvent } = require('@librechat/api');
+      const tracker = { nextSequence: jest.fn().mockReturnValueOnce(1).mockReturnValueOnce(2) };
+      res.headersSent = true;
+      res.writableEnded = false;
+      const toolEndCallback = require('../callbacks')[factoryName]({
+        req,
+        res,
+        tracker,
+        artifactPromises,
+      });
+
+      for (const [agentId, stepId] of [
+        ['agent-a', 'step-a'],
+        ['agent-b', 'step-b'],
+      ]) {
+        await toolEndCallback(
+          {
+            output: {
+              tool_call_id: 'call_0',
+              artifact: {
+                [Tools.ui_resources]: {
+                  data: [{ uri: `ui://${agentId}`, resourceId: agentId }],
+                },
+              },
+            },
+          },
+          {
+            run_id: 'run456',
+            thread_id: 'thread789',
+            executingAgentId: agentId,
+            stepId,
+          },
+        );
+      }
+
+      const results = await Promise.all(artifactPromises);
+      expect(
+        results.map(({ agentId, stepId, toolCallId, ui_resources }) => ({
+          agentId,
+          stepId,
+          toolCallId,
+          resourceId: ui_resources[0].resourceId,
+        })),
+      ).toEqual([
+        { agentId: 'agent-a', stepId: 'step-a', toolCallId: 'call_0', resourceId: 'agent-a' },
+        { agentId: 'agent-b', stepId: 'step-b', toolCallId: 'call_0', resourceId: 'agent-b' },
+      ]);
+      expect(getAttachmentOwnership).toHaveBeenCalledTimes(2);
+
+      if (factoryName === 'createResponsesToolEndCallback') {
+        expect(writeAttachmentEvent.mock.calls.map((call) => call[2])).toEqual(results);
+      } else {
+        const emitted = res.write.mock.calls.map(([event]) =>
+          JSON.parse(event.match(/^event: attachment\ndata: (.+)\n\n$/)[1]),
+        );
+        expect(emitted).toEqual(results);
+      }
     },
   );
 

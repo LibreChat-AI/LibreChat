@@ -1,6 +1,5 @@
 import { logger } from '@librechat/data-schemas';
 import {
-  CODE_ENVIRONMENT_DECISION_VERSION,
   CODE_ENVIRONMENT_MOVE_VERSION,
   CODE_ENVIRONMENT_TRANSITION_VERSION,
   CODE_WORKSPACE_RECOVERY_VERSION,
@@ -12,6 +11,12 @@ import type {
   AccessibleCodeEnvironmentConfiguration,
   CodeEnvironmentPrincipalContext,
 } from './environments';
+import { resolveCodeEnvironmentDecisionVersion } from './protocol';
+
+export {
+  resolveCodeEnvironmentDecisionVersion,
+  isCodeEnvironmentSelectionEnabled,
+} from './protocol';
 
 type ConfigurationRegistry = {
   listAccessibleConfigurations: (
@@ -24,18 +29,6 @@ type StatefulCodeConfig = NonNullable<
   NonNullable<AppConfig['endpoints']>[EModelEndpoint.agents]
 >['statefulCodeSessions'];
 type CodeEnvironmentConfig = NonNullable<NonNullable<StatefulCodeConfig>['environments']>[number];
-
-/**
- * Resolves the deployment-wide browser protocol gate. The exact version match
- * keeps older and future wire shapes on the legacy-safe path.
- */
-export function resolveCodeEnvironmentDecisionVersion(
-  configuredVersion?: string,
-): typeof CODE_ENVIRONMENT_DECISION_VERSION | undefined {
-  return configuredVersion === String(CODE_ENVIRONMENT_DECISION_VERSION)
-    ? CODE_ENVIRONMENT_DECISION_VERSION
-    : undefined;
-}
 
 function conversationMovesEnabled(appConfig?: Pick<AppConfig, 'endpoints'> | null): boolean {
   return (

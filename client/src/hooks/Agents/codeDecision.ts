@@ -1,4 +1,4 @@
-import { Constants } from 'librechat-data-provider';
+import { Constants, canonicalizeCodeWorkspaceSelections } from 'librechat-data-provider';
 import type {
   CodeEnvironmentMode,
   EventSubmission,
@@ -12,10 +12,10 @@ function sameSelections(
 ): boolean {
   if (!left?.length || !right?.length) return !left?.length && !right?.length;
   if (left.length !== right.length) return false;
-  const key = ({ environmentId, workspaceId }: CodeWorkspaceSelection) =>
-    JSON.stringify([environmentId, workspaceId]);
-  const held = new Set(left.map(key));
-  return right.every((selection) => held.has(key(selection)));
+  return (
+    JSON.stringify(canonicalizeCodeWorkspaceSelections(left)) ===
+    JSON.stringify(canonicalizeCodeWorkspaceSelections(right))
+  );
 }
 
 /**

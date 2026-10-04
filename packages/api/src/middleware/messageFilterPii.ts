@@ -147,6 +147,7 @@ export interface CreateMessageFilterPiiOptions {
   getConfig: (req: ServerRequest) => MessageFilterPiiConfig | undefined;
   getFilters?: (req: ServerRequest) => FiltersConfig | undefined;
   getFiles?: GetCanonicalFilesForInspection;
+  getPreinspectedText?: (req: ServerRequest) => string | undefined;
 }
 
 export function createMessageFilterPii(options: CreateMessageFilterPiiOptions): RequestHandler {
@@ -241,7 +242,18 @@ export function createMessageFilterPii(options: CreateMessageFilterPiiOptions): 
     if (filters != null && !collect(() => extractStoredMessageContent(req.body))) {
       return;
     }
-    const finding = inspectContent(fragments, { filters, legacyPii });
+    const preinspectedText = options.getPreinspectedText?.(req);
+    const inspectable =
+      preinspectedText == null
+        ? fragments
+        : fragments.filter(
+            (fragment) =>
+              fragment.source !== 'message' ||
+              fragment.field !== 'text' ||
+              fragment.path !== '/text' ||
+              fragment.text !== preinspectedText,
+          );
+    const finding = inspectContent(inspectable, { filters, legacyPii });
     if (finding != null) {
       if (finding.detectorId !== 'legacy-pattern') {
         res.status(400).json(contentFilterBlockResponse(finding));

@@ -457,6 +457,59 @@ describe('createToolExecuteHandler — background tool calls', () => {
     expect(retire).toHaveBeenCalledWith('background tool result was not persisted', undefined);
   });
 
+  it('copies committed manual reconciliation into the final background projection retry', async () => {
+    let finishPersistence: (persisted: boolean) => void = () => undefined;
+    let resolveProjection: (() => { resultClaim?: { receiptReconciled?: true } }) | undefined;
+    const tool = makeSearchTool({ calls: 0 });
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [tool] }),
+      backgroundToolCompletion: {
+        preregister: async () => ({
+          renew: async () => true,
+          retire: async () => true,
+          persistResult: async () => true,
+        }),
+        claim: async () => ({ status: 'not_ready' }),
+        persist: (params) => {
+          resolveProjection = params.resolveBackgroundTask;
+          return new Promise<boolean>((resolve) => {
+            finishPersistence = resolve;
+          });
+        },
+      },
+    });
+    const [dispatch] = await runBatch(handler, {
+      toolCalls: [
+        {
+          id: 'manual-marker-dispatch',
+          stepId: 'manual-marker-step',
+          name: tool.name,
+          args: { q: 'marker', run_in_background: true },
+        },
+      ],
+      agentId: 'agent_parent_1',
+      configurable: buildConfig([tool.name]),
+      metadata: { thread_id: 'manual-marker-convo', run_id: 'manual-marker-parent' },
+    });
+    await flushMicrotasks();
+    const taskId = JSON.parse(dispatch.content).background_task_id as string;
+    try {
+      expect(resolveProjection?.().resultClaim).toBeUndefined();
+      expect(
+        backgroundTaskRegistry.claimResult('exec_user', 'manual-marker-convo', taskId, {
+          kind: 'manual',
+          claimId: 'manual-marker-poll',
+          receiptReconciled: true,
+          generationId: 'manual-marker-generation',
+        }),
+      ).toBe('acquired');
+      expect(resolveProjection?.().resultClaim).toMatchObject({ receiptReconciled: true });
+    } finally {
+      finishPersistence(true);
+      await flushMicrotasks();
+    }
+  });
+
   it('falls back to the settled local result when a poll retired delivery before persistence failed', async () => {
     let finishPersistence: ((persisted: boolean) => void) | undefined;
     const persist = jest.fn(

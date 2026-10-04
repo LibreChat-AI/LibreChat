@@ -29,8 +29,16 @@ const {
   runAfterSeed,
   saveTurnConversation,
   seedTurnConversation,
+  announceReply,
   needsRetentionConversation,
   getConversationWriteContext,
+  savePrivateTextMessage,
+  stampPrivateTextMessage,
+  deferPrivateTextStart,
+  requirePrivateTextPersistence,
+  rejectPrivateTextAdmission,
+  bindPrivateTextPersistenceAbort,
+  persistedReasoningOverrideFields,
 } = require('@librechat/api');
 const {
   Constants,
@@ -587,13 +595,16 @@ class BaseClient {
     } = await this.setMessageOptions(opts);
     this.options.startupTelemetry?.mark('history_loaded');
 
-    const userMessage = this.resolveStartUserMessage({
-      opts,
-      message,
-      userMessageId,
-      parentMessageId,
-      conversationId,
-    });
+    const userMessage = stampPrivateTextMessage(
+      this.options.req,
+      this.resolveStartUserMessage({
+        opts,
+        message,
+        userMessageId,
+        parentMessageId,
+        conversationId,
+      }),
+    );
 
     /**
      * Attach quoted excerpts (the "Add to chat" selections from `req.body.quotes`)
@@ -610,6 +621,15 @@ class BaseClient {
       }
     }
 
+    Object.assign(
+      userMessage,
+      persistedReasoningOverrideFields({
+        rawReasoningOverride: this.options.req?.body?.reasoningOverride,
+        isEdited: opts.isEdited,
+        isCompaction: opts.isCompaction,
+      }),
+    );
+
     if (typeof opts?.getReqData === 'function') {
       opts.getReqData({
         userMessage,
@@ -619,10 +639,13 @@ class BaseClient {
       });
     }
 
-    if (typeof opts?.onStart === 'function') {
-      const isNewConvo = !requestConvoId && parentMessageId === Constants.NO_PARENT;
-      opts.onStart(userMessage, responseMessageId, isNewConvo);
-    }
+    this.privateTextStart = deferPrivateTextStart(
+      this.options.req,
+      opts?.onStart,
+      userMessage,
+      responseMessageId,
+      !requestConvoId && parentMessageId === Constants.NO_PARENT,
+    );
 
     return {
       ...opts,
@@ -974,17 +997,12 @@ class BaseClient {
           start,
           cancel,
         });
-        const requestAbortSignal = this.abortController?.signal;
-        if (requestAbortSignal?.aborted) {
-          /** Preserve the historical durability contract for Stop: abort
-           * persistence may publish the partial assistant response before the
-           * provider unwinds, so its parent write must already be underway. */
-          start();
-        } else if (requestAbortSignal != null) {
-          const startOnAbort = () => start();
-          requestAbortSignal.addEventListener('abort', startOnAbort, { once: true });
-          removeAbortListener = () => requestAbortSignal.removeEventListener('abort', startOnAbort);
-        }
+        removeAbortListener = bindPrivateTextPersistenceAbort(
+          this.options.req,
+          this.abortController?.signal,
+          start,
+          cancel,
+        );
         this.modelBoundUserMessagePersistence = userMessagePersistence;
         userMessagePromise = persistencePromise;
       } else {
@@ -1032,6 +1050,7 @@ class BaseClient {
 
       completionResult = await this.sendCompletion(payload, opts);
     } catch (error) {
+      rejectPrivateTextAdmission(this.options.req);
       if (userMessagePersistence?.isPending()) {
         if (isContentFilterError(error)) {
           userMessagePersistence.cancel();
@@ -1043,6 +1062,11 @@ class BaseClient {
     }
     /** A safe no-model completion (or a runtime that cannot expose the
      * admission callback) must not leave the parent-write gate pending. */
+    await requirePrivateTextPersistence(
+      this.options.req,
+      () => (userMessagePersistence != null ? userMessagePersistence.start() : userMessagePromise),
+      this.privateTextStart,
+    );
     userMessagePersistence?.start();
     const { completion, metadata } = completionResult;
     if (this.abortController) {
@@ -1261,7 +1285,8 @@ class BaseClient {
       return [];
     }
 
-    const messages = (await db.getMessages({ conversationId, user: this.user })) ?? [];
+    const messages =
+      (await db.getMessages({ conversationId, user: this.user }, '+privateTextTokens')) ?? [];
     /** A client that reads beyond the walk below (which stops at a checkpoint
      *  summary) receives every row here; the rest keep nothing. */
     this.onHistoryLoaded?.(messages);
@@ -1350,7 +1375,9 @@ class BaseClient {
       req.resolvedConversation = await db.getConvo(req.user.id, message.conversationId);
     }
     const reqCtx = getConversationWriteContext(req);
-    const savedMessage = await db.saveMessage(
+    const savedMessage = await savePrivateTextMessage(
+      db.saveMessage,
+      req,
       reqCtx,
       {
         ...message,
@@ -1362,7 +1389,32 @@ class BaseClient {
       { context: 'api/app/clients/BaseClient.js - saveMessageToDatabase #saveMessage' },
     );
 
+    /** Only a reply that is actually in the message history may light an indicator: a write
+     *  that resolved empty (duplicate-key recovery that could not re-read the row) would
+     *  otherwise announce a reply nobody can open. */
+    const persistedReply = savedMessage != null && message.isCreatedByUser === false;
+
     if (this.skipSaveConvo) {
+      /* The secondary response of an override pair persists its message but deliberately skips
+         the conversation-field save, so the stamp below is never reached. The reply still has
+         to light the indicator: the primary response's stamp is older whenever this one
+         finishes later, and absent altogether when the primary failed. Best effort, because a
+         missed indicator must not fail a reply that is already persisted. */
+      /* `user` is the same id the message was just saved under; `reqCtx` carries an empty
+         string when no request object is present, which the direct-save paths do not
+         guarantee, so the fallback turns on truthiness rather than on nullishness. */
+      await announceReply(db, {
+        userId: reqCtx.userId || user || this.user,
+        conversationId: message.conversationId,
+        reply: {
+          messageId: persistedReply ? savedMessage.messageId : undefined,
+          content: message.content,
+          text: message.text,
+          attachments: message.attachments,
+          isTemporary: reqCtx.isTemporary,
+        },
+        context: 'BaseClient - skipped conversation save',
+      });
       return { message: savedMessage };
     }
 
@@ -1376,6 +1428,14 @@ class BaseClient {
       ctx: reqCtx,
       initialized: this.fetchedConvo === true,
       savedMessageId: savedMessage?._id,
+      reply: persistedReply
+        ? {
+            messageId: savedMessage.messageId,
+            content: message.content,
+            text: message.text,
+            attachments: message.attachments,
+          }
+        : undefined,
     });
     if (initialized) {
       this.fetchedConvo = true;

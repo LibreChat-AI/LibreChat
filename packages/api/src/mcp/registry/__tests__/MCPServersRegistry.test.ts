@@ -1,6 +1,13 @@
 import './helpers/setupCredsEnv';
 import { logger } from '@librechat/data-schemas';
 import { setImmediate as realSetImmediate } from 'timers';
+import {
+  DEFAULT_MCP_APPS_POLICY,
+  DEFAULT_MCP_APP_PERSISTED_BYTES,
+  DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+  DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+  DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+} from 'librechat-data-provider';
 import type * as t from '~/mcp/types';
 import {
   MCPServersRegistry,
@@ -517,10 +524,18 @@ describe('MCPServersRegistry', () => {
       resolver?: (ctx?: { userId?: string; role?: string }) => Promise<{
         allowedDomains?: string[] | null;
         allowedAddresses?: string[] | null;
+        mcpApps: { enabled: boolean; legacyHtmlEnabled: boolean };
       }>,
+      mcpApps?: { enabled: boolean; legacyHtmlEnabled: boolean },
     ): MCPServersRegistry => {
       (MCPServersRegistry as unknown as { instance: undefined }).instance = undefined;
-      MCPServersRegistry.createInstance(mockMongoose, allowedDomains, allowedAddresses, resolver);
+      MCPServersRegistry.createInstance(
+        mockMongoose,
+        allowedDomains,
+        allowedAddresses,
+        resolver,
+        mcpApps,
+      );
       return MCPServersRegistry.getInstance();
     };
 
@@ -530,6 +545,14 @@ describe('MCPServersRegistry', () => {
         allowedDomains: ['yaml.com'],
         allowedAddresses: ['10.0.0.0/8'],
         useSSRFProtection: false,
+        mcpApps: {
+          enabled: false,
+          legacyHtmlEnabled: true,
+          maxPersistedAppBytes: DEFAULT_MCP_APP_PERSISTED_BYTES,
+          maxAdmissionRequestsPerMinute: DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+          maxActiveViews: DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+          maxActionPreviewChars: DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+        },
       });
     });
 
@@ -539,6 +562,14 @@ describe('MCPServersRegistry', () => {
         allowedDomains: undefined,
         allowedAddresses: undefined,
         useSSRFProtection: true,
+        mcpApps: {
+          enabled: false,
+          legacyHtmlEnabled: true,
+          maxPersistedAppBytes: DEFAULT_MCP_APP_PERSISTED_BYTES,
+          maxAdmissionRequestsPerMinute: DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+          maxActiveViews: DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+          maxActionPreviewChars: DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+        },
       });
     });
 
@@ -546,6 +577,7 @@ describe('MCPServersRegistry', () => {
       const resolver = jest.fn().mockResolvedValue({
         allowedDomains: ['admin-added.com'],
         allowedAddresses: ['172.16.0.0/12'],
+        mcpApps: { enabled: true, legacyHtmlEnabled: true },
       });
       const reg = createWith(['yaml.com'], null, resolver);
 
@@ -556,17 +588,21 @@ describe('MCPServersRegistry', () => {
         allowedDomains: ['admin-added.com'],
         allowedAddresses: ['172.16.0.0/12'],
         useSSRFProtection: false,
+        mcpApps: { enabled: true, legacyHtmlEnabled: true },
       });
     });
 
-    it('falls back to the YAML base allowlists when the resolver throws', async () => {
+    it('falls back to the YAML base allowlists but disables apps when the resolver throws', async () => {
       const resolver = jest.fn().mockRejectedValue(new Error('DB down'));
       const reg = createWith(['yaml.com'], null, resolver);
 
+      // Allowlists fall back to the operator baseline; apps fail closed because inline app HTML
+      // cannot be retracted once it reaches the transcript.
       await expect(reg.resolveAllowlists()).resolves.toEqual({
         allowedDomains: ['yaml.com'],
         allowedAddresses: null,
         useSSRFProtection: false,
+        mcpApps: DEFAULT_MCP_APPS_POLICY,
       });
     });
 
@@ -574,6 +610,7 @@ describe('MCPServersRegistry', () => {
       const resolver = jest.fn().mockResolvedValue({
         allowedDomains: ['admin-added.com'],
         allowedAddresses: ['10.0.0.0/8'],
+        mcpApps: { enabled: true, legacyHtmlEnabled: true },
       });
       const reg = createWith(['yaml-only.com'], null, resolver);
       const inspectSpy = jest.spyOn(MCPServerInspector, 'inspect');
@@ -615,6 +652,103 @@ describe('MCPServersRegistry', () => {
       // Different resolved allowlists ⇒ different cache keys ⇒ the second pass re-inspects
       // instead of reusing the first allowlist's cached entry.
       expect(inspectSpy).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('resolveCachedAppServerConfig', () => {
+    const rawConfig: t.MCPOptions = {
+      type: 'streamable-http',
+      url: 'https://config.example.com/mcp',
+    };
+    const allowlists = {
+      allowedDomains: ['config.example.com'],
+      allowedAddresses: null,
+    };
+
+    it('returns an exact healthy config-cache target without inspecting or connecting', async () => {
+      const cachedConfig = {
+        ...rawConfig,
+        source: 'config' as const,
+        requiresOAuth: false,
+      } as t.ParsedServerConfig;
+      const key = registry['configCacheKey']('srv', rawConfig, allowlists);
+      const { config: storedCachedConfig } = await registry['configCacheRepo'].add(
+        key,
+        cachedConfig,
+      );
+      const inspectSpy = jest.spyOn(MCPServerInspector, 'inspect');
+      inspectSpy.mockClear();
+
+      await expect(
+        registry.resolveCachedAppServerConfig({
+          serverName: 'srv',
+          userId: 'user-1',
+          role: 'USER',
+          mcpConfig: { srv: rawConfig },
+          ...allowlists,
+        }),
+      ).resolves.toEqual({
+        serverConfig: storedCachedConfig,
+        connectionOwner: 'principal',
+      });
+      expect(inspectSpy).not.toHaveBeenCalled();
+    });
+
+    it('keeps an absent or failed config-cache target unavailable instead of using a same-name base', async () => {
+      await registry['cacheConfigsRepo'].add('srv', {
+        type: 'streamable-http',
+        url: 'https://base.example.com/mcp',
+        requiresOAuth: false,
+        source: 'yaml',
+      });
+
+      await expect(
+        registry.resolveCachedAppServerConfig({
+          serverName: 'srv',
+          userId: 'user-1',
+          role: 'USER',
+          mcpConfig: { srv: rawConfig },
+          ...allowlists,
+        }),
+      ).resolves.toBeUndefined();
+
+      const key = registry['configCacheKey']('srv', rawConfig, allowlists);
+      await registry['configCacheRepo'].add(key, {
+        ...rawConfig,
+        source: 'config',
+        inspectionFailed: true,
+      } as t.ParsedServerConfig);
+      await expect(
+        registry.resolveCachedAppServerConfig({
+          serverName: 'srv',
+          userId: 'user-1',
+          role: 'USER',
+          mcpConfig: { srv: rawConfig },
+          ...allowlists,
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('uses the operator target for an admitted unmodified YAML config', async () => {
+      const yamlConfig = {
+        ...rawConfig,
+        source: 'yaml' as const,
+        requiresOAuth: false,
+      } as t.ParsedServerConfig;
+      const { config: storedYamlConfig } = await registry['cacheConfigsRepo'].add(
+        'srv',
+        yamlConfig,
+      );
+
+      await expect(
+        registry.resolveCachedAppServerConfig({
+          serverName: 'srv',
+          userId: 'user-1',
+          role: 'USER',
+          mcpConfig: { srv: rawConfig },
+          ...allowlists,
+        }),
+      ).resolves.toEqual({ serverConfig: storedYamlConfig, connectionOwner: 'operator' });
     });
   });
 
@@ -924,7 +1058,11 @@ describe('MCPServersRegistry', () => {
         mockMongoose,
         null,
         null,
-        async (ctx) => ({ allowedDomains: [`${ctx?.userId}.example.com`], allowedAddresses: null }),
+        async (ctx) => ({
+          allowedDomains: [`${ctx?.userId}.example.com`],
+          allowedAddresses: null,
+          mcpApps: { enabled: false, legacyHtmlEnabled: false },
+        }),
       );
       await tenantRegistry.reset();
       await tenantRegistry.addServerStub('stub_server', stubOptions, 'CACHE');
@@ -1057,7 +1195,11 @@ describe('MCPServersRegistry', () => {
             markResolving();
             await resolverHeld;
           }
-          return { allowedDomains: null, allowedAddresses: null };
+          return {
+            allowedDomains: null,
+            allowedAddresses: null,
+            mcpApps: { enabled: false, legacyHtmlEnabled: false },
+          };
         },
       );
       await slowRegistry.reset();

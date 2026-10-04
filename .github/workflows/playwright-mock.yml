@@ -70,7 +70,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CHANGED: ${{ github.event.pull_request.changed_files }}
           E2E_SKIP_ARMED: ${{ vars.CODEGRAPH_E2E_SKIP }}
-          FULL_INCLUDE: '{"include":[{"name":"memory, shard 1/6","stream_store":"memory","redis_image":"","suite":"full","shard":"1/6","artifact":"memory-1-of-6"},{"name":"memory, shard 2/6","stream_store":"memory","redis_image":"","suite":"full","shard":"2/6","artifact":"memory-2-of-6"},{"name":"memory, shard 3/6","stream_store":"memory","redis_image":"","suite":"full","shard":"3/6","artifact":"memory-3-of-6"},{"name":"memory, shard 4/6","stream_store":"memory","redis_image":"","suite":"full","shard":"4/6","artifact":"memory-4-of-6"},{"name":"memory, shard 5/6","stream_store":"memory","redis_image":"","suite":"full","shard":"5/6","artifact":"memory-5-of-6"},{"name":"memory, shard 6/6","stream_store":"memory","redis_image":"","suite":"full","shard":"6/6","artifact":"memory-6-of-6"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}'
+          FULL_INCLUDE: '{"include":[{"name":"memory, shard 1/6","stream_store":"memory","redis_image":"","suite":"full","shard":"1/6","artifact":"memory-1-of-6","email_change":"true"},{"name":"memory, shard 2/6","stream_store":"memory","redis_image":"","suite":"full","shard":"2/6","artifact":"memory-2-of-6"},{"name":"memory, shard 3/6","stream_store":"memory","redis_image":"","suite":"full","shard":"3/6","artifact":"memory-3-of-6"},{"name":"memory, shard 4/6","stream_store":"memory","redis_image":"","suite":"full","shard":"4/6","artifact":"memory-4-of-6"},{"name":"memory, shard 5/6","stream_store":"memory","redis_image":"","suite":"full","shard":"5/6","artifact":"memory-5-of-6"},{"name":"memory, shard 6/6","stream_store":"memory","redis_image":"","suite":"full","shard":"6/6","artifact":"memory-6-of-6"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}'
         run: |
           set +e
           note() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
@@ -165,7 +165,8 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)))
+      (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
+      github.event.pull_request.head.repo.full_name == github.repository)))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Separate runners isolate each shard's user, MongoDB, Redis and fixture state.
@@ -177,8 +178,8 @@ jobs:
           (github.event_name == 'pull_request' && needs.codegraph_select.outputs.e2e_include != '' &&
           fromJSON(needs.codegraph_select.outputs.e2e_include)) ||
           ((github.event_name == 'pull_request' || inputs.coverage == 'pr') &&
-          fromJSON('{"include":[{"name":"memory, shard 1/6","stream_store":"memory","redis_image":"","suite":"full","shard":"1/6","artifact":"memory-1-of-6"},{"name":"memory, shard 2/6","stream_store":"memory","redis_image":"","suite":"full","shard":"2/6","artifact":"memory-2-of-6"},{"name":"memory, shard 3/6","stream_store":"memory","redis_image":"","suite":"full","shard":"3/6","artifact":"memory-3-of-6"},{"name":"memory, shard 4/6","stream_store":"memory","redis_image":"","suite":"full","shard":"4/6","artifact":"memory-4-of-6"},{"name":"memory, shard 5/6","stream_store":"memory","redis_image":"","suite":"full","shard":"5/6","artifact":"memory-5-of-6"},{"name":"memory, shard 6/6","stream_store":"memory","redis_image":"","suite":"full","shard":"6/6","artifact":"memory-6-of-6"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}')) ||
-          fromJSON('{"include":[{"name":"memory, shard 1/2","stream_store":"memory","redis_image":"","suite":"full","shard":"1/2","artifact":"memory-1-of-2"},{"name":"memory, shard 2/2","stream_store":"memory","redis_image":"","suite":"full","shard":"2/2","artifact":"memory-2-of-2"},{"name":"redis, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"1/2","artifact":"redis-1-of-2"},{"name":"redis, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"2/2","artifact":"redis-2-of-2"}]}')
+          fromJSON('{"include":[{"name":"memory, shard 1/6","stream_store":"memory","redis_image":"","suite":"full","shard":"1/6","artifact":"memory-1-of-6","email_change":"true"},{"name":"memory, shard 2/6","stream_store":"memory","redis_image":"","suite":"full","shard":"2/6","artifact":"memory-2-of-6"},{"name":"memory, shard 3/6","stream_store":"memory","redis_image":"","suite":"full","shard":"3/6","artifact":"memory-3-of-6"},{"name":"memory, shard 4/6","stream_store":"memory","redis_image":"","suite":"full","shard":"4/6","artifact":"memory-4-of-6"},{"name":"memory, shard 5/6","stream_store":"memory","redis_image":"","suite":"full","shard":"5/6","artifact":"memory-5-of-6"},{"name":"memory, shard 6/6","stream_store":"memory","redis_image":"","suite":"full","shard":"6/6","artifact":"memory-6-of-6"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}')) ||
+          fromJSON('{"include":[{"name":"memory, shard 1/2","stream_store":"memory","redis_image":"","suite":"full","shard":"1/2","artifact":"memory-1-of-2","email_change":"true"},{"name":"memory, shard 2/2","stream_store":"memory","redis_image":"","suite":"full","shard":"2/2","artifact":"memory-2-of-2"},{"name":"redis, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"1/2","artifact":"redis-1-of-2"},{"name":"redis, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"2/2","artifact":"redis-2-of-2"}]}')
         }}
     services:
       redis:
@@ -372,6 +373,19 @@ jobs:
         env:
           CI: 'true'
 
+      - name: Run registered-email change e2e
+        if: matrix.email_change == 'true'
+        run: npx playwright test --config=e2e/playwright.config.email.ts
+        env:
+          CI: 'true'
+
+      - name: Run disabled registered-email change e2e
+        if: matrix.email_change == 'true'
+        run: npx playwright test --config=e2e/playwright.config.email.ts
+        env:
+          CI: 'true'
+          E2E_ALLOW_EMAIL_CHANGE: 'false'
+
       - name: Upload Playwright HTML report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v6
@@ -390,6 +404,25 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      - name: Run first-turn title ownership regressions
+        if: ${{ !cancelled() && matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/') }}
+        env:
+          CI: 'true'
+          E2E_TITLE_CONVO: 'true'
+        run: >-
+          npx playwright test --config=e2e/playwright.config.mock.ts
+          conversation-management.spec.ts --grep 'first-turn|final-title polling' --reporter=line
+          --output=e2e/specs/.test-results/title-ownership
+
+      - name: Upload title ownership diagnostics
+        if: ${{ always() && matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/') }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-title-ownership-${{ matrix.artifact }}
+          path: e2e/specs/.test-results/title-ownership/**
+          retention-days: 7
+          if-no-files-found: ignore
+
   mcp_tool_list_changed:
     name: MCP list_changed (replica count ${{ matrix.replicas }})
     needs: [codegraph_select]
@@ -400,7 +433,8 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)))
+      (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
+      github.event.pull_request.head.repo.full_name == github.repository)))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -542,27 +576,105 @@ jobs:
           ./redis-config/stop-cluster.sh || true
           redis-cli -p 6379 shutdown || true
 
+  mcp_apps:
+    name: MCP Apps (browser and server)
+    # Always run the dedicated fixture on eligible PRs, schedule, and manual runs. The regular
+    # mock shards skip it unless E2E_MCP_APPS=true; codegraph gating must not omit this lane.
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request != null &&
+      (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
+      github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      E2E_CHROMIUM_CHANNEL: chrome
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Verify Chrome is present
+        run: google-chrome --version
+
+      - name: Check MCP Apps result gating and same-repository PR eligibility
+        run: node --test e2e/mcp-apps/results.test.mjs e2e/mcp-apps/workflow.test.mjs
+
+      - name: Check real SDK server fixture
+        run: node --test e2e/mcp-apps/server.test.mjs
+
+      # The runner builds once, then runs all four browser policy phases against one disposable
+      # MongoDB. It also rejects a Playwright-successful phase if every test was skipped.
+      - name: Run MCP Apps browser fixture (enabled, disabled, omitted, quota)
+        run: node e2e/mcp-apps/run.mjs
+
+      - name: Upload per-phase Playwright reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-mcp-apps-reports
+          path: |
+            e2e/playwright-report/mcp-apps-*/**
+            e2e/.generated/mcp-apps-result-*.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload MCP Apps traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-mcp-apps-results
+          path: e2e/specs/.test-results/mcp-apps-*/**
+          retention-days: 7
+          if-no-files-found: ignore
+
   e2e:
     name: e2e
     # `!cancelled()`, not `always()`: the gate has to survive a failed shard to report it, but a
     # run superseded by `cancel-in-progress` has nothing to adjudicate. Under `always()` it was
     # still dispatched onto a fresh runner while every other job went `cancelled`, then read
     # `needs.e2e_shards.result == 'cancelled'` and exited 1 — so each superseded push left this
-    # required check red instead of cancelled. Matches the two lanes it gates.
+    # required check red instead of cancelled. Matches all three lanes it gates.
     if: >-
       !cancelled() &&
       (github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)))
-    needs: [codegraph_select, e2e_shards, mcp_tool_list_changed]
+      (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
+      github.event.pull_request.head.repo.full_name == github.repository)))
+    needs: [codegraph_select, e2e_shards, mcp_tool_list_changed, mcp_apps]
     runs-on: ubuntu-latest
     steps:
       # A codegraph-skipped MCP lane reports `skipped`; that is a decision, not a failure.
       - name: Verify every Playwright job passed
         if: >-
           needs.e2e_shards.result != 'success' ||
+          needs.mcp_apps.result != 'success' ||
           (needs.mcp_tool_list_changed.result != 'success' &&
           !(needs.mcp_tool_list_changed.result == 'skipped' && needs.codegraph_select.outputs.mcp_run == 'false'))
         run: exit 1

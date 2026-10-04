@@ -1,11 +1,10 @@
 import { useMemo } from 'react';
-import { useAtomValue } from 'jotai';
 import { SquareTerminal } from 'lucide-react';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { toolPanelSpacingClassName } from '../disclosure';
-import { sandboxStartingByToolCallId } from '~/store';
 import useLazyHighlight from './useLazyHighlight';
 import useToolCallState from './useToolCallState';
 import CodeWindowHeader from './CodeWindowHeader';
@@ -90,7 +89,8 @@ export default function ExecuteCode({
   /** Model-authored live label, streamed as the first args key; persists as
    *  the settled label (completion is a UI state, not a tense change). */
   const intent = useToolCallIntent(args);
-  const sandboxStarting = useAtomValue(sandboxStartingByToolCallId(toolCallId ?? ''));
+  const { useSandboxStarting } = useMessagePartsHost();
+  const sandboxStarting = useSandboxStarting(toolCallId ?? '');
 
   const outputHasError = useMemo(() => ERROR_PATTERNS.test(output), [output]);
   /** A backgrounded call's persisted output stays the dispatch handle until
@@ -162,7 +162,7 @@ export default function ExecuteCode({
           icon={
             <SquareTerminal
               className={cn(
-                'size-4 shrink-0 text-text-secondary',
+                'text-text-secondary size-4 shrink-0',
                 phase === 'running' && 'animate-pulse',
               )}
               aria-hidden="true"
@@ -177,7 +177,7 @@ export default function ExecuteCode({
           <div
             className={cn(
               toolPanelSpacingClassName,
-              'overflow-hidden rounded-lg border border-border-light bg-surface-secondary',
+              'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
             )}
           >
             {code && <CodeWindowHeader language={lang} code={code} />}
@@ -185,7 +185,7 @@ export default function ExecuteCode({
               <pre
                 ref={codePaneRef}
                 onScroll={onCodePaneScroll}
-                className="max-h-[300px] overflow-auto bg-surface-chat p-4 font-mono text-xs dark:bg-surface-primary-alt"
+                className="bg-surface-code-body max-h-[300px] overflow-auto p-4 font-mono text-xs"
               >
                 <code className={`hljs language-${lang} !whitespace-pre`}>
                   {highlighted ?? code}
@@ -195,16 +195,18 @@ export default function ExecuteCode({
             <PtcToolTrace
               toolCallId={toolCallId}
               expanded={showCode}
-              className={cn(code && 'border-t border-border-light')}
+              className={cn(code && 'border-border-light border-t')}
             />
             {hasOutput && backgroundHandle == null && (
               <div
                 className={cn(
-                  'bg-surface-primary-alt p-4 text-xs dark:bg-transparent',
-                  code && 'border-t border-border-light',
+                  /* No fill of its own: the output shows the panel's surface-secondary in both
+                   * modes, which is the surface-primary-alt it was painted in light. */
+                  'p-4 text-xs',
+                  code && 'border-border-light border-t',
                 )}
               >
-                <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-text-secondary">
+                <div className="text-text-secondary mb-1.5 text-[10px] font-medium tracking-wide uppercase">
                   {localize('com_ui_output')}
                 </div>
                 <div

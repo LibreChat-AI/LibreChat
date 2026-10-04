@@ -53,13 +53,15 @@ jest.mock('recoil', () => ({
 
 jest.mock('~/store', () => ({
   __esModule: true,
-  default: { allConversationsSelector: 'allConversationsSelector' },
+  default: { conversationIdByIndex: () => 'conversationIdByIndex' },
 }));
 
 jest.mock('~/utils', () => ({
+  hasRealTitle: (title: string) => !!title && title !== 'New Chat',
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
   logger: { error: jest.fn() },
   setDocumentTitle: jest.fn(),
+  isConversationUnseen: () => false,
 }));
 
 jest.mock('../ConvoOptions', () => ({

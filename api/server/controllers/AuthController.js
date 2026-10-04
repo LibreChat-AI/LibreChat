@@ -1,16 +1,23 @@
 const cookies = require('cookie');
 const jwt = require('jsonwebtoken');
-const crypto = require('node:crypto');
 const { logger, runAsSystem, tenantStorage } = require('@librechat/data-schemas');
 const {
   math,
   isEnabled,
+  createResetPasswordController,
   createAuthIdentityContext,
   createOpenIDRefreshOwnershipError,
   isOpenIDRefreshOwnershipError,
   isOpenIDSessionMissingError,
   isOpenIDSessionIdentityMatch,
   OPENID_EXPIRY_BUFFER_SECONDS,
+  clearCloudFrontCookies,
+  createLocalRefreshHandler,
+  generateTwoFactorSetupToken,
+  getValidOpenIDReuseCredential,
+  isTokenRetired,
+  isTwoFactorEnrollmentRequired,
+  sanitizeUserForAuthResponse,
 } = require('@librechat/api');
 const {
   requestPasswordReset,
@@ -22,6 +29,9 @@ const {
 } = require('~/server/services/AuthService');
 const {
   deleteAllUserSessions,
+  deletePasskeysByUser,
+  awaitAuthUserDocEviction,
+  deleteSession,
   getUserById,
   findSession,
   updateUser,
@@ -78,19 +88,6 @@ const registrationController = async (req, res) => {
   }
 };
 
-const sanitizeUserForAuthResponse = (user) => {
-  const source = (typeof user?.toObject === 'function' ? user.toObject() : user) || {};
-  const {
-    password: _pw,
-    __v: _v,
-    totpSecret: _ts,
-    backupCodes: _bc,
-    federatedTokens: _ft,
-    ...safeUser
-  } = source;
-  return safeUser;
-};
-
 const runInUserTenant = (user, fn) =>
   user.tenantId
     ? tenantStorage.run(
@@ -98,30 +95,6 @@ const runInUserTenant = (user, fn) =>
         async () => await fn(),
       )
     : runAsSystem(fn);
-
-const getValidOpenIDReuseUserId = (parsedCookies, refreshToken) => {
-  const openidUserId = parsedCookies.openid_user_id;
-  if (!openidUserId || !process.env.JWT_REFRESH_SECRET) {
-    return null;
-  }
-
-  try {
-    const payload = jwt.verify(openidUserId, process.env.JWT_REFRESH_SECRET);
-    if (typeof payload !== 'object' || payload == null || typeof payload.id !== 'string') {
-      return null;
-    }
-    if (refreshToken == null) {
-      return payload.id;
-    }
-    if (typeof payload.refreshTokenHash !== 'string') {
-      return null;
-    }
-    const refreshTokenHash = crypto.createHash('sha256').update(refreshToken).digest('base64url');
-    return payload.refreshTokenHash === refreshTokenHash ? payload.id : null;
-  } catch {
-    return null;
-  }
-};
 
 const selectOpenIDRefreshToken = (openidTokens, parsedCookies) => {
   const sessionRefreshToken = openidTokens?.refreshToken;
@@ -320,24 +293,26 @@ const resetPasswordRequestController = async (req, res) => {
   }
 };
 
-const resetPasswordController = async (req, res) => {
-  try {
-    const resetPasswordService = await resetPassword(
-      req.body.userId,
-      req.body.token,
-      req.body.password,
-    );
-    if (resetPasswordService instanceof Error) {
-      return res.status(400).json(resetPasswordService);
-    } else {
-      await deleteAllUserSessions({ userId: req.body.userId });
-      return res.status(200).json(resetPasswordService);
-    }
-  } catch (e) {
-    logger.error('[resetPasswordController]', e);
-    return res.status(400).json({ message: e.message });
-  }
-};
+const resetPasswordController = createResetPasswordController({
+  resetPassword,
+  deleteAllUserSessions,
+  deletePasskeysByUser,
+  awaitAuthUserDocEviction,
+});
+
+const refreshLocalSession = createLocalRefreshHandler({
+  userProjection: AUTH_REFRESH_USER_PROJECTION,
+  getUserById,
+  findSession,
+  setAuthTokens,
+  deleteAllUserSessions,
+  deleteSession,
+  generateTwoFactorSetupToken,
+  isTwoFactorEnrollmentRequired,
+  clearCloudFrontCookies,
+  warn: (message) => logger.warn(message),
+  error: (message, cause) => logger.error(message, cause),
+});
 
 const refreshController = async (req, res) => {
   const parsedCookies = req.headers.cookie ? cookies.parse(req.headers.cookie) : {};
@@ -361,7 +336,10 @@ const refreshController = async (req, res) => {
       const reusableSessionToken = cookieDiffersFromSession
         ? null
         : getReusableOpenIDSessionToken(req.session?.openidTokens);
-      const reuseUserId = reusableSessionToken ? getValidOpenIDReuseUserId(parsedCookies) : null;
+      const reuseCredential = reusableSessionToken
+        ? getValidOpenIDReuseCredential(parsedCookies, process.env.JWT_REFRESH_SECRET)
+        : null;
+      const reuseUserId = reuseCredential?.userId;
       if (reuseUserId) {
         const reuseSessionTokens = req.session?.openidTokens;
         try {
@@ -375,7 +353,11 @@ const refreshController = async (req, res) => {
               const user = await runAsSystem(async () =>
                 getUserById(reuseUserId, AUTH_REFRESH_USER_PROJECTION),
               );
-              if (!user || !isReusableOpenIDSessionIdentity(reuseSessionTokens, user)) {
+              if (
+                !user ||
+                isTokenRetired(reuseCredential, user) ||
+                !isReusableOpenIDSessionIdentity(reuseSessionTokens, user)
+              ) {
                 return undefined;
               }
               return sendAuthorized(() => {
@@ -406,7 +388,8 @@ const refreshController = async (req, res) => {
       }
 
       const refreshUserId =
-        req.session?.openidTokens?.appUserId ?? getValidOpenIDReuseUserId(parsedCookies);
+        req.session?.openidTokens?.appUserId ??
+        getValidOpenIDReuseCredential(parsedCookies, process.env.JWT_REFRESH_SECRET)?.userId;
       if (!refreshUserId) {
         return res.status(403).send('Invalid OpenID refresh token');
       }
@@ -541,7 +524,11 @@ const refreshController = async (req, res) => {
       const bridgeSourceToken = parsedCookies.refreshToken;
       if (isInvalidGrantError(error) && bridgeSourceToken) {
         // Bridge lookup uses the signed user-id cookie because /refresh is unauthenticated.
-        const userId = getValidOpenIDReuseUserId(parsedCookies, bridgeSourceToken);
+        const userId = getValidOpenIDReuseCredential(
+          parsedCookies,
+          process.env.JWT_REFRESH_SECRET,
+          bridgeSourceToken,
+        )?.userId;
         if (userId) {
           try {
             const bridgeUser = await runAsSystem(async () =>
@@ -611,51 +598,8 @@ const refreshController = async (req, res) => {
     }
   }
 
-  /** For non-OpenID users, read refresh token from cookies */
-  const refreshToken = parsedCookies.refreshToken;
-  if (!refreshToken) {
-    return res.status(200).send('Refresh token not provided');
-  }
-
-  try {
-    const payload = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const user = await getUserById(payload.id, AUTH_REFRESH_USER_PROJECTION);
-    if (!user) {
-      return res.status(401).redirect('/login');
-    }
-
-    const userId = payload.id;
-
-    if (process.env.NODE_ENV === 'CI') {
-      const token = await setAuthTokens(userId, res, null, req);
-      return res.status(200).send({ token, user: sanitizeUserForAuthResponse(user) });
-    }
-
-    /** Session with the hashed refresh token */
-    const session = await findSession(
-      {
-        userId: userId,
-        refreshToken: refreshToken,
-      },
-      { lean: false },
-    );
-
-    if (session && session.expiration > new Date()) {
-      const token = await setAuthTokens(userId, res, session, req);
-
-      res.status(200).send({ token, user: sanitizeUserForAuthResponse(user) });
-    } else if (req?.query?.retry) {
-      // Retrying from a refresh token request that failed (401)
-      res.status(403).send('No session found');
-    } else if (payload.exp < Date.now() / 1000) {
-      res.status(403).redirect('/login');
-    } else {
-      res.status(401).send('Refresh token expired or not found for this user');
-    }
-  } catch (err) {
-    logger.error(`[refreshController] Invalid refresh token:`, err);
-    res.status(403).send('Invalid refresh token');
-  }
+  /** For non-OpenID users, delegate refresh to the typed local handler. */
+  return refreshLocalSession(req, res, parsedCookies.refreshToken);
 };
 
 const graphTokenController = async (req, res) => {

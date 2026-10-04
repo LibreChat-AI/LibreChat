@@ -2,14 +2,10 @@ import type { TToolApprovalPolicy } from 'librechat-data-provider';
 import type { PluginHookSource } from '~/agents/hooks/source';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { ResolvedToolApprovalHook } from './hooks';
-import {
-  healToolApprovalPolicy,
-  isHITLEnabled,
-  isToolApprovalPauseCapable,
-  isToolDeniedByApprovalPolicy,
-} from './policy';
+import { isHITLEnabled, isToolApprovalPauseCapable, isToolDeniedByApprovalPolicy } from './policy';
 import { ASK_USER_QUESTION_TOOL_NAME } from './askUserQuestionTool';
 import { resolvedToolApprovalHooksCanMatch } from './hooks';
+import { buildEffectiveToolApprovalPolicy } from './allow';
 
 interface ApprovalToolReference {
   readonly name?: string;
@@ -43,6 +39,8 @@ export interface ToolApprovalAdmissionInput {
   readonly resolvedProgrammaticHooks?: readonly ResolvedToolApprovalHook[];
   readonly pluginHookSource?: PluginHookSource;
   readonly askUserQuestionAdminDisabled?: boolean;
+  /** Tools the conversation remembers; folded in exactly as `createRun` folds them. */
+  readonly toolApprovalAllows?: readonly string[];
 }
 
 function agentHasTool(agent: ToolApprovalAdmissionAgent, toolName: string): boolean {
@@ -99,6 +97,7 @@ export function canAgentGraphPause({
   resolvedProgrammaticHooks = [],
   pluginHookSource,
   askUserQuestionAdminDisabled = false,
+  toolApprovalAllows,
 }: ToolApprovalAdmissionInput): boolean {
   const asksUserQuestion =
     !askUserQuestionAdminDisabled &&
@@ -144,7 +143,7 @@ export function canAgentGraphPause({
     }
   }
 
-  const effectivePolicy = healToolApprovalPolicy(policy, aliases);
+  const effectivePolicy = buildEffectiveToolApprovalPolicy(policy, aliases, toolApprovalAllows);
   const knownToolCanPause = Array.from(toolOwners).some(([toolName, agentIds]) => {
     const matcherNames = [toolName, ...(aliasesByToolName.get(toolName) ?? [])];
     const pluginHookCanAsk = pluginHookSource?.hasToolApprovalHooks?.([toolName]) === true;

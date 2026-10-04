@@ -64,6 +64,57 @@ function getUpdateToastMessage(
 }
 
 /**
+ * Starters to send with a save, or `undefined` to leave the stored list alone.
+ * An untouched list is omitted rather than rewritten: the API accepts more than
+ * the builder renders and keeps surrounding whitespace, so an unrelated save
+ * must not trim or truncate what another client stored. An edited list is sent
+ * trimmed and without blanks; the builder already stops additions at the cap.
+ */
+export function resolveConversationStarters(
+  starters: string[] | undefined,
+  stored: string[] | undefined,
+): string[] | undefined {
+  if (!Array.isArray(starters) || isEqual(starters, stored ?? [])) {
+    return undefined;
+  }
+  return starters.map((starter) => starter.trim()).filter((starter) => starter !== '');
+}
+
+/** The starters a save was submitted with, and the agent they belong to (empty for a create). */
+export type SubmittedStarters = { agentId: string; starters: string[] | undefined };
+
+/**
+ * Whether a finished save may replace the starter rows with the stored list.
+ * Only when the form still shows the agent the save was for and the rows still
+ * hold what was submitted; edits made while the request was in flight, or rows
+ * of another agent selected meanwhile, stay as they are.
+ */
+export function shouldSyncSavedStarters(
+  submitted: SubmittedStarters | null,
+  current: SubmittedStarters,
+  savedId: string,
+): boolean {
+  if (!submitted) {
+    return false;
+  }
+  const sameAgent =
+    current.agentId === submitted.agentId || (!submitted.agentId && current.agentId === savedId);
+  return sameAgent && isEqual(current.starters ?? [], submitted.starters ?? []);
+}
+
+/**
+ * Whether a finished save may be merged into the selected agent option. The
+ * option is the baseline for untouched fields such as starters, so a save that
+ * finishes after another agent was selected must not overwrite it.
+ */
+export function isSavedAgentOption(
+  option: AgentForm['agent'],
+  savedId: string,
+): option is NonNullable<AgentForm['agent']> {
+  return option != null && typeof option !== 'string' && option.id === savedId;
+}
+
+/**
  * Normalizes the payload sent to the agent update/create endpoints.
  * Handles avatar reset requests for persistent agents independently of avatar uploads.
  * @param {AgentForm} data - Form data from the agent configuration form.
@@ -91,12 +142,14 @@ export function composeAgentUpdatePayload(
     stateful_code_sessions,
     stateful_code_environment,
     code_environment_id,
+    code_environment_ids,
     repositoryInstructions,
     code_workspace_id,
     git_identity,
     recursion_limit,
     category,
     support_contact,
+    conversation_starters,
     tool_options,
     skills,
     skills_enabled,
@@ -163,12 +216,22 @@ export function composeAgentUpdatePayload(
       stateful_code_sessions: normalizedStatefulCodeSessions,
       stateful_code_environment: normalizedStatefulCodeEnvironment,
       code_environment_id: agent_id ? code_environment_id : (code_environment_id ?? undefined),
+      code_environment_ids:
+        agent_id &&
+        typeof data.agent === 'object' &&
+        isEqual(code_environment_ids ?? [], data.agent?.code_environment_ids ?? [])
+          ? undefined
+          : code_environment_ids,
       repositoryInstructions,
       code_workspace_id,
       git_identity: normalizedGitIdentity,
       recursion_limit,
       category,
       support_contact,
+      conversation_starters: resolveConversationStarters(
+        conversation_starters,
+        data.agent?.conversation_starters,
+      ),
       tool_options: normalizedToolOptions,
       skills,
       skills_enabled,
@@ -225,7 +288,7 @@ export async function persistAvatarChanges({
 }
 
 const AVATAR_ONLY_DIRTY_FIELDS = new Set(['avatar_action', 'avatar_file', 'avatar_preview']);
-const IGNORED_DIRTY_FIELDS = new Set(['agent']);
+const IGNORED_DIRTY_FIELDS = new Set(['agent', 'conversation_starter_draft']);
 
 const isNestedDirtyField = (
   value: FieldNamesMarkedBoolean<AgentForm>[keyof AgentForm],
@@ -385,8 +448,26 @@ export default function AgentPanel() {
     reset,
     getValues,
     setValue,
+    resetField,
     formState: { dirtyFields },
   } = methods;
+  const submittedStartersRef = useRef<SubmittedStarters | null>(null);
+  /** The save may trim or drop starters; show what was stored, not what was typed. */
+  const syncSavedStarters = useCallback(
+    (saved: Agent) => {
+      const submitted = submittedStartersRef.current;
+      submittedStartersRef.current = null;
+      const current = {
+        agentId: getValues('id') ?? '',
+        starters: getValues('conversation_starters'),
+      };
+      if (!shouldSyncSavedStarters(submitted, current, saved.id)) {
+        return;
+      }
+      resetField('conversation_starters', { defaultValue: saved.conversation_starters ?? [] });
+    },
+    [getValues, resetField],
+  );
   const [isAvatarUploadInFlight, setIsAvatarUploadInFlight] = useState(false);
 
   const uploadAvatarMutation = useUploadAgentAvatarMutation({
@@ -398,7 +479,7 @@ export default function AgentPanel() {
       setValue('avatar_action', null, { shouldDirty: false });
 
       const agentOption = getValues('agent');
-      if (agentOption && typeof agentOption !== 'string') {
+      if (isSavedAgentOption(agentOption, updatedAgent.id)) {
         setValue('agent', { ...agentOption, ...updatedAgent }, { shouldDirty: false });
       }
     },
@@ -538,8 +619,10 @@ export default function AgentPanel() {
         showToast({ message: toastMessage, status: noVersionChange ? 'info' : undefined });
       }
 
+      syncSavedStarters(data);
+
       const agentOption = getValues('agent');
-      if (agentOption && typeof agentOption !== 'string') {
+      if (isSavedAgentOption(agentOption, data.id)) {
         setValue('agent', { ...agentOption, ...data }, { shouldDirty: false });
       }
 
@@ -577,6 +660,7 @@ export default function AgentPanel() {
 
   const create = useCreateAgentMutation({
     onSuccess: async (data) => {
+      syncSavedStarters(data);
       setCurrentAgentId(data.id);
       showToast({
         message: `${localize('com_assistants_create_success')} ${
@@ -637,6 +721,7 @@ export default function AgentPanel() {
           }
           return;
         }
+        submittedStartersRef.current = { agentId: agent_id, starters: data.conversation_starters };
         update.mutate({ agent_id, data: { ...basePayload, tools } });
         return;
       }
@@ -666,6 +751,7 @@ export default function AgentPanel() {
         });
       }
 
+      submittedStartersRef.current = { agentId: '', starters: data.conversation_starters };
       create.mutate({
         ...basePayload,
         git_identity: basePayload.git_identity ?? undefined,
@@ -713,7 +799,7 @@ export default function AgentPanel() {
     <FormProvider {...methods}>
       <form
         onSubmit={handleSubmit(onSubmit)}
-        className="scrollbar-gutter-stable flex flex-1 flex-col px-3 pb-3 pt-2"
+        className="flex flex-1 scrollbar-gutter-stable flex-col px-3 pt-2 pb-3"
         aria-label="Agent configuration form"
       >
         <div className="flex-1">
@@ -761,10 +847,10 @@ export default function AgentPanel() {
           {!canEditAgent && !agentQuery.isInitialLoading && (
             <div className="flex h-[30vh] w-full items-center justify-center">
               <div className="text-center">
-                <h2 className="text-token-text-primary m-2 text-xl font-semibold">
+                <h2 className="text-text-primary m-2 text-xl font-semibold">
                   {localize('com_agents_not_available')}
                 </h2>
-                <p className="text-token-text-secondary">{localize('com_agents_no_access')}</p>
+                <p className="text-text-secondary">{localize('com_agents_no_access')}</p>
               </div>
             </div>
           )}

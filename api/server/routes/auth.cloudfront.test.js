@@ -7,7 +7,11 @@ jest.mock('@librechat/api', () => ({
   limiterCache: jest.fn(),
   createTwoFactorManagementLimiter: jest.fn(() => (req, res, next) => next()),
   createSetBalanceConfig: jest.fn(() => (req, res, next) => next()),
+  requireTwoFactorSetupToken: jest.fn((req, res, next) => next()),
+  requireTwoFactorSetupAcknowledgementToken: jest.fn((req, res, next) => next()),
+  requireTwoFactorSetupFinalizationToken: jest.fn((req, res, next) => next()),
   forceRefreshCloudFrontAuthCookies: (...args) => mockForceRefreshCloudFrontAuthCookies(...args),
+  blockTwoFactorDisableWhenRequired: jest.fn((req, res, next) => next()),
 }));
 
 jest.mock('~/server/controllers/AuthController', () => ({
@@ -28,6 +32,19 @@ jest.mock('~/server/controllers/TwoFactorController', () => ({
 
 jest.mock('~/server/controllers/auth/TwoFactorAuthController', () => ({
   verify2FAWithTempToken: jest.fn((req, res) => res.status(200).end()),
+  confirm2FASetupWithTempToken: jest.fn((req, res) => res.status(200).end()),
+  acknowledge2FASetup: jest.fn((req, res) => res.status(200).end()),
+  finalize2FASetup: jest.fn((req, res) => res.status(200).end()),
+}));
+
+jest.mock('~/server/controllers/auth/PasskeyController', () => ({
+  listPasskeys: jest.fn((req, res) => res.status(204).end()),
+  updatePasskey: jest.fn((req, res) => res.status(204).end()),
+  removePasskey: jest.fn((req, res) => res.status(204).end()),
+  authenticatePasskey: jest.fn((req, res, next) => next()),
+  loginPasskeyOptions: jest.fn((req, res) => res.status(204).end()),
+  registerPasskeyOptions: jest.fn((req, res) => res.status(204).end()),
+  registerPasskeyVerify: jest.fn((req, res) => res.status(204).end()),
 }));
 
 jest.mock('~/server/controllers/auth/LogoutController', () => ({
@@ -53,9 +70,15 @@ jest.mock('~/server/middleware', () => {
     logHeaders: pass,
     requireSameOrigin: pass,
     loginLimiter: pass,
+    passkeyLimiter: pass,
+    passkeyStepUpLimiter: pass,
     setTwoFactorTempUser: pass,
+    setTwoFactorAcknowledgementTempUser: pass,
+    setTwoFactorFinalizationTempUser: pass,
     twoFactorTempLimiter: pass,
+    twoFactorSetupLimiter: pass,
     checkBan: pass,
+    blockRetiredSetupToken: pass,
     validateEmailLogin: pass,
     requireLocalAuth: pass,
     requireLdapAuth: pass,

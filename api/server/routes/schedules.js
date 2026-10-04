@@ -86,6 +86,12 @@ const handlers = createSchedulesHandlers({
   isUserDeleting,
 });
 
+const consentHost = require('~/server/services/Schedules/consent').consent;
+
+router.get('/:id/mcp-consent', consentHost.handlers.get);
+router.post('/:id/mcp-consent', checkSchedulesCreate, consentHost.handlers.confirm);
+router.delete('/:id/mcp-consent', consentHost.handlers.revoke);
+
 router.get('/', checkSchedulesAccess, handlers.listSchedules);
 router.get('/:id', checkSchedulesAccess, handlers.getSchedule);
 router.post('/', checkSchedulesCreate, handlers.createSchedule);

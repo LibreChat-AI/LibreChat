@@ -180,6 +180,13 @@ export type PartMetadata = {
    */
   backgrounded?: boolean;
   /**
+   * Stamped by the server when the run step completes, and only when the call
+   * resolved to the attached-workspace `bash_tool` instance. The sandbox tool
+   * shares that name, so this is the only trustworthy sign that the output
+   * ends in an exit-status trailer; it is never derived from output text.
+   */
+  executor?: 'attached_workspace';
+  /**
    * Content index this part occupied while its run streamed. The aggregator
    * writes parts at provider-source indexes, so the streamed array is sparse;
    * persistence compacts it and every part after a hole shifts down. The

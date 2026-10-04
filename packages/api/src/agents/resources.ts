@@ -18,6 +18,7 @@ import type {
 } from 'librechat-data-provider';
 import type { IMongoFile, AppConfig, IUser } from '@librechat/data-schemas';
 import type { FilterQuery, QueryOptions, ProjectionType } from 'mongoose';
+import type { CodeExecutionContext } from './execution';
 import type { ServerRequest } from '~/types';
 
 import { TOOL_RESOURCE_KEYS } from './orphans';
@@ -79,6 +80,8 @@ export type TCheckSessionsAlive = (params: {
   staleSafeWindowMs?: number;
   baseURL?: string;
   routeKey?: string;
+  executionProfile?: CodeExecutionContext['executionProfile'];
+  bridgeWorkerId?: string;
 }) => Promise<Set<string>>;
 
 /** Loads CODE_API_KEY for a user. Call once per request. */
@@ -90,6 +93,8 @@ export type ProvisionState = {
   codeEnvFiles: TFile[];
   /** Names from cleared refs on this state's active route; never reusable storage pointers. */
   codeEnvRecoveryNames?: Map<string, { name: string; isTargetScope: boolean }>;
+  /** Destination names advertised to the model before lazy code-file provisioning. */
+  codeEnvDestinations?: Map<string, string>;
   /** Files that need embedding into the vector DB for file_search */
   vectorDBFiles: TFile[];
   /** Set of file_ids confirmed alive in code env (from staleness check) */
@@ -400,6 +405,8 @@ const computeProvisionState = async ({
   agentId,
   codeRouteKey,
   codeBaseUrl,
+  codeExecutionProfile,
+  codeBridgeWorkerId,
   agentScopedFileIds,
   persistedResourceMembership,
   staleSafeWindowMs,
@@ -410,6 +417,9 @@ const computeProvisionState = async ({
   codeRouteKey?: string;
   /** Base URL of the deployment this turn runs on, used to probe its own refs. */
   codeBaseUrl?: string;
+  /** Wire profile and worker of that deployment, which decide the probe's auth. */
+  codeExecutionProfile?: CodeExecutionContext['executionProfile'];
+  codeBridgeWorkerId?: string;
   agentScopedFileIds?: ReadonlySet<string>;
   resourcePrincipal?: Pick<IUser, 'id' | 'role'>;
   enabledToolResources?: Set<EToolResources>;
@@ -488,9 +498,15 @@ const computeProvisionState = async ({
 
   /** Code API auth is optional: deployments may use a legacy key, JWT bearer minting,
    *  or no auth at all, and the upload path handles each. Credentials therefore gate
-   *  only the liveness probe, never whether files are queued for provisioning. */
+   *  only the liveness probe, never whether files are queued for provisioning. The
+   *  legacy key authorizes only the default Code API, so another route never loads it. */
   let codeApiKey: string | undefined;
-  if (filesWithIdentifiers.length > 0 && loadCodeApiKey && resourcePrincipal?.id) {
+  if (
+    filesWithIdentifiers.length > 0 &&
+    activeCodeRouteKey === 'default' &&
+    loadCodeApiKey &&
+    resourcePrincipal?.id
+  ) {
     try {
       codeApiKey = await loadCodeApiKey(resourcePrincipal.id);
     } catch (error) {
@@ -509,6 +525,8 @@ const computeProvisionState = async ({
       apiKey: codeApiKey,
       baseURL: codeBaseUrl,
       routeKey: activeCodeRouteKey,
+      executionProfile: codeExecutionProfile,
+      bridgeWorkerId: codeBridgeWorkerId,
       staleSafeWindowMs,
     });
   }
@@ -641,6 +659,8 @@ export const primeResources = async ({
   screenPersistentFiles,
   codeRouteKey,
   codeBaseUrl,
+  codeExecutionProfile,
+  codeBridgeWorkerId,
 }: {
   req?: ServerRequest;
   principal?: Pick<IUser, 'id' | 'role'>;
@@ -673,6 +693,10 @@ export const primeResources = async ({
   /** Base URL of that deployment. Refs are deployment-local, so the liveness probe runs
    *  against the Code API that issued them rather than the default one. */
   codeBaseUrl?: string;
+  /** Wire profile and worker of that deployment. The probe authenticates to it the way
+   *  its uploads and executions do, so a worker-bound route gets a worker-bound bearer. */
+  codeExecutionProfile?: CodeExecutionContext['executionProfile'];
+  codeBridgeWorkerId?: string;
 }): Promise<{
   attachments: Array<TFile | undefined> | undefined;
   requestAttachments: Array<TFile | undefined> | undefined;
@@ -902,6 +926,8 @@ export const primeResources = async ({
         agentId,
         codeRouteKey,
         codeBaseUrl,
+        codeExecutionProfile,
+        codeBridgeWorkerId,
         agentScopedFileIds: persistedResourceFileIds,
         persistedResourceMembership,
         staleSafeWindowMs: appConfig?.fileConfig?.codeEnvLivenessSafeWindowMs,
@@ -966,6 +992,8 @@ export const primeResources = async ({
       agentId,
       codeRouteKey,
       codeBaseUrl,
+      codeExecutionProfile,
+      codeBridgeWorkerId,
       agentScopedFileIds: persistedResourceFileIds,
       persistedResourceMembership,
       staleSafeWindowMs: appConfig?.fileConfig?.codeEnvLivenessSafeWindowMs,

@@ -78,17 +78,17 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
   return (
     <div className="flex h-full flex-col">
       {/* Header — fixed h-10 prevents layout shift when toggle appears/disappears */}
-      <div className="flex h-10 items-center gap-2 border-b border-border-medium px-4">
+      <div className="border-border-medium flex h-10 items-center gap-2 border-b px-4">
         <button
           type="button"
           onClick={() => navigate(`/skills/${skillId}`)}
-          className="rounded-md p-1 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+          className="text-text-secondary hover:bg-surface-hover hover:text-text-primary rounded-md p-1 transition-colors"
           aria-label={localize('com_ui_back')}
         >
           <ArrowLeft className="size-4" />
         </button>
-        <FileText className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-text-primary">
+        <FileText className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+        <span className="text-text-primary min-w-0 flex-1 truncate text-sm font-medium">
           {data?.filename ?? relativePath}
         </span>
 
@@ -107,7 +107,7 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
                       setEditingFile({ ...data, content: data.content });
                     }
                   }}
-                  className="rounded-md p-1 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+                  className="text-text-secondary hover:bg-surface-hover hover:text-text-primary rounded-md p-1 transition-colors"
                   aria-label={localize('com_ui_edit')}
                 >
                   <Pencil className="size-4" />
@@ -123,7 +123,7 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
                 <button
                   type="button"
                   onClick={handleCopy}
-                  className="rounded-md p-1 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+                  className="text-text-secondary hover:bg-surface-hover hover:text-text-primary rounded-md p-1 transition-colors"
                   aria-label={localize('com_ui_copy_to_clipboard')}
                 >
                   <MorphIcon icon={isCopied ? Check : Copy} className="size-4" />
@@ -153,12 +153,12 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
           <>
             {isLoading && (
               <div className="flex items-center justify-center py-12">
-                <Spinner className="size-6 text-text-secondary" />
+                <Spinner className="text-text-secondary size-6" />
               </div>
             )}
 
             {(isError || data === null) && !data && (
-              <div className="flex flex-col items-center justify-center gap-2 py-12 text-text-secondary">
+              <div className="text-text-secondary flex flex-col items-center justify-center gap-2 py-12">
                 <FileQuestion className="size-8" />
                 <p className="text-sm">{localize('com_ui_skill_file_load_error')}</p>
                 <Button
@@ -183,13 +183,13 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
                 )}
 
                 {data.isBinary && !isImage && (
-                  <div className="flex flex-col items-center justify-center gap-2 py-12 text-text-secondary">
+                  <div className="text-text-secondary flex flex-col items-center justify-center gap-2 py-12">
                     <FileQuestion className="size-8" />
                     <p className="text-sm">{localize('com_ui_skill_file_binary')}</p>
                     <a
                       href={rawUrl}
                       download
-                      className="text-sm text-text-primary underline hover:no-underline"
+                      className="text-text-primary text-sm underline hover:no-underline"
                     >
                       {localize('com_ui_skill_file_download')}
                     </a>
@@ -203,8 +203,8 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
                       <div className="mb-3 grid grid-cols-[max-content_1fr] items-baseline gap-x-8 gap-y-2">
                         {parsed.fields.map(({ key, value }) => (
                           <React.Fragment key={key}>
-                            <span className="text-xs capitalize text-text-secondary">{key}</span>
-                            <span className="text-sm text-text-primary">{value}</span>
+                            <span className="text-text-secondary text-xs capitalize">{key}</span>
+                            <span className="text-text-primary text-sm">{value}</span>
                           </React.Fragment>
                         ))}
                       </div>
@@ -216,7 +216,7 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
                         currentFilePath={relativePath}
                       />
                     ) : (
-                      <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-text-primary">
+                      <pre className="text-text-primary font-mono text-sm leading-relaxed whitespace-pre-wrap">
                         {data.content}
                       </pre>
                     )}
@@ -225,20 +225,20 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
 
                 {/* Non-markdown text */}
                 {isText && !isMarkdown && (
-                  <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-text-primary">
+                  <pre className="text-text-primary font-mono text-sm leading-relaxed whitespace-pre-wrap">
                     {data.content}
                   </pre>
                 )}
 
                 {/* Text file too large for JSON response — offer download */}
                 {!data.isBinary && data.content == null && (
-                  <div className="flex flex-col items-center justify-center gap-2 py-12 text-text-secondary">
+                  <div className="text-text-secondary flex flex-col items-center justify-center gap-2 py-12">
                     <FileText className="size-8" />
                     <p className="text-sm">{localize('com_ui_skill_file_download')}</p>
                     <a
                       href={rawUrl}
                       download
-                      className="text-sm text-text-primary underline hover:no-underline"
+                      className="text-text-primary text-sm underline hover:no-underline"
                     >
                       {localize('com_ui_skill_file_download')}
                     </a>

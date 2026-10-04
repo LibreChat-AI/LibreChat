@@ -389,10 +389,12 @@ test.describe('Agent Builder skills', () => {
       await expectSkillInPicker(page, manualPickerSearch, inlineSkillName);
       await skillPickerOption(page, inlineSkillName).click();
       await expect(manualPickerSearch).toBeHidden();
+      // Manual skill picks stage as tray chips (shared "Staged context" list).
       await expect(
         page
-          .getByRole('list', { name: 'Skills queued for next submission' })
-          .getByText(inlineSkillName, { exact: true }),
+          .getByTestId('composer-tray')
+          .getByTestId('composer-chip-skill')
+          .filter({ hasText: inlineSkillName }),
       ).toBeVisible();
 
       const manualResponse = await sendMessage(

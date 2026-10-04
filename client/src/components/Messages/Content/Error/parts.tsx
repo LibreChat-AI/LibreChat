@@ -277,7 +277,7 @@ export function ErrorDetails({ label, children }: { label: string; children: Rea
         onClick={() => setOpen((expanded) => !expanded)}
         aria-expanded={open}
         aria-controls={panelId}
-        className="flex items-center gap-1 rounded-md text-xs font-medium text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+        className="text-text-secondary hover:text-text-primary focus-visible:ring-text-primary flex items-center gap-1 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
       >
         {label}
         <ChevronRight
@@ -290,7 +290,7 @@ export function ErrorDetails({ label, children }: { label: string; children: Rea
       </button>
       <div id={panelId} style={panelStyle} aria-hidden={!open}>
         <div ref={panelRef} className="overflow-hidden">
-          <div className="mt-1 whitespace-pre-wrap break-words text-xs text-text-secondary">
+          <div className="text-text-secondary mt-1 text-xs break-words whitespace-pre-wrap">
             {children}
           </div>
         </div>

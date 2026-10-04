@@ -17,6 +17,7 @@ export * from './auth';
 export * from './apiKeys';
 /* MCP */
 export * from './mcp/mcpConfig';
+export * from './mcp/capabilities';
 export * from './mcp/authority';
 export * from './mcp/registry/MCPServersRegistry';
 export * from './mcp/MCPManager';
@@ -30,6 +31,11 @@ export * from './mcp/loading';
 export * from './mcp/openid';
 export * from './mcp/cache';
 export * from './mcp/tools';
+export * from './mcp/apps';
+export * from './mcp/apps/controller';
+export * from './mcp/apps/binding';
+export * from './mcp/apps/limits';
+export * from './mcp/sandbox';
 export * from './mcp/catalog/store';
 export * from './mcp/catalog/recovery';
 export * from './mcp/authorization';
@@ -123,6 +129,7 @@ export * from './stream';
 export { memoryDiagnostics } from './utils/memory';
 /* RUM */
 export * from './rum/proxy';
+export * from './rum/limiter';
 /* OpenAPI */
 export { createOpenApiRouter } from './openapi/router';
 export type { OpenApiRouterDeps } from './openapi/router';

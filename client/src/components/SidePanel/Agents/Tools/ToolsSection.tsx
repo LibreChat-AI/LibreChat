@@ -349,10 +349,10 @@ function SelectedSection({
   return (
     <div className="mb-3 flex flex-col">
       <div className="mb-1 flex items-center justify-between">
-        <label className="block text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+        <label className="text-text-secondary block text-[11px] font-medium tracking-wide uppercase">
           {title}
           {badge != null && (
-            <span className="ml-1.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-surface-tertiary px-1.5 text-[10px] font-medium normal-case tracking-normal text-text-secondary">
+            <span className="bg-surface-tertiary text-text-secondary ml-1.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1.5 text-[10px] font-medium tracking-normal normal-case">
               {badge}
             </span>
           )}
@@ -361,7 +361,7 @@ function SelectedSection({
           type="button"
           onClick={onAdd}
           aria-label={addLabel}
-          className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition hover:bg-surface-secondary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+          className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition focus:outline-hidden focus-visible:ring-2"
         >
           <Plus className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
           {localize('com_ui_add')}
@@ -371,11 +371,11 @@ function SelectedSection({
         <button
           type="button"
           onClick={onAdd}
-          className="flex w-full flex-col items-center gap-1 rounded-xl border border-dashed border-border-light px-2 py-4 text-text-secondary transition-colors hover:border-border-medium hover:bg-surface-secondary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+          className="border-border-medium text-text-secondary hover:border-border-heavy hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary flex w-full flex-col items-center gap-1 rounded-xl border border-dashed px-2 py-4 transition-colors focus:outline-hidden focus-visible:ring-2"
         >
           <Plus className="h-4 w-4" aria-hidden="true" />
           <span className="text-xs">{emptyLabel}</span>
-          <span className="text-[11px] text-text-secondary">{emptyHint}</span>
+          <span className="text-text-secondary text-[11px]">{emptyHint}</span>
         </button>
       ) : (
         <ul className="flex flex-col gap-1.5">

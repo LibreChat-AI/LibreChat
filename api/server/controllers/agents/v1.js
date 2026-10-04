@@ -11,18 +11,15 @@ const {
   agentCreateSchema,
   agentUpdateSchema,
   agentSubagentsSchema,
-  refreshListAvatars,
+  resolveAvatarRefresh,
+  applyCachedAvatarUrl,
   collectEdgeAgentIds,
   replaceEdgeSourceId,
   mergeDeploymentSkillIds,
   getAgentListAccess,
-  isFullAgentListAvatarCacheEntry,
   getAgentListAvatarRefreshKey,
-  refreshAgentListAvatarsBeforePage,
-  refreshManagedAgentListPageAvatars,
   mergeAgentOcrConversion,
   sanitizeModelParameters,
-  MAX_AVATAR_REFRESH_AGENTS,
   collectToolResourceFileIds,
   convertOcrToContextInPlace,
   normalizeToolResourceFiles,
@@ -47,7 +44,11 @@ const {
   reconcileAgentWorkspaceDefault,
   resolveAgentWorkspaceRestoreConfiguration,
   shouldValidateAgentWorkspaceDefaultBinding,
-  validateAgentWorkspaceDefaultBinding,
+  validateStatefulCodeEnvironment,
+  validateAgentCodeEnvironmentAllowlist,
+  marketplaceMineFilter,
+  resolveMarketplaceListQuery,
+  mapMarketplaceListError,
 } = require('@librechat/api');
 const {
   Time,
@@ -55,7 +56,6 @@ const {
   SkillsScope,
   CacheKeys,
   Constants,
-  FileSources,
   ResourceType,
   AccessRoleIds,
   PrincipalType,
@@ -65,7 +65,7 @@ const {
   actionDelimiter,
   AgentCapabilities,
   EModelEndpoint,
-  resolveAllowedStatefulCodeEnvironments,
+  FileSources,
   removeCodeExecutionCaller,
   hasActivePiiFields,
   hasActivePiiPatterns,
@@ -481,69 +481,6 @@ const isCodeInterpreterCapabilityEnabled = (req) => {
   return capabilities.includes(AgentCapabilities.execute_code);
 };
 
-/** Reject a newly selected stateful workspace scope that the deployment owner
- * has excluded. Disabled sessions and unrelated edits remain saveable so an
- * allowlist tightening never silently rewrites or strands an existing agent. */
-const validateStatefulCodeEnvironment = (
-  req,
-  res,
-  enabled,
-  environment,
-  environmentId,
-  environmentIdSelected = false,
-  workspaceId,
-  currentWorkspaceId,
-  currentEnvironmentId,
-) => {
-  const configuredEnvironments =
-    req.config?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments ?? [];
-  const workspaceValidation = validateAgentWorkspaceDefaultBinding({
-    workspaceId,
-    environmentId,
-    currentWorkspaceId,
-    currentEnvironmentId,
-    environments: configuredEnvironments,
-  });
-  if (!workspaceValidation.valid) {
-    res.status(400).json({ error: workspaceValidation.error });
-    return false;
-  }
-  if (enabled !== true && !environmentIdSelected) {
-    return true;
-  }
-  if (environmentId != null) {
-    const configuredEnvironment = configuredEnvironments.find(
-      (configured) => configured.id === environmentId,
-    );
-    const pairingOnly =
-      configuredEnvironment?.pairing?.allowPrincipalWorkers === true &&
-      configuredEnvironment.pairing.workerId == null &&
-      configuredEnvironment.workerId == null;
-    if (configuredEnvironment == null || pairingOnly) {
-      res.status(400).json({
-        error: `Stateful code environment is not configured: ${environmentId}`,
-      });
-      return false;
-    }
-  }
-  if (enabled !== true) {
-    return true;
-  }
-
-  const allowedEnvironments = resolveAllowedStatefulCodeEnvironments(
-    req.config?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.allowedEnvironments,
-  );
-  const resolvedEnvironment = environment ?? 'user';
-  if (allowedEnvironments.includes(resolvedEnvironment)) {
-    return true;
-  }
-
-  res.status(403).json({
-    error: `Stateful code environment is not allowed by this deployment: ${resolvedEnvironment}`,
-  });
-  return false;
-};
-
 /**
  * @param {import('librechat-data-provider').AgentSubagentsConfig | undefined} subagents
  * @param {Express.Request} req
@@ -806,6 +743,9 @@ const createAgentHandler = async (req, res) => {
         agentData.code_environment_id,
         agentData.code_environment_id != null,
         agentData.code_workspace_id,
+        undefined,
+        undefined,
+        agentData.code_environment_ids,
       )
     ) {
       return;
@@ -1084,6 +1024,9 @@ const updateAgentHandler = async (req, res) => {
     /** See the create path: retain hydrated file IDs through validation. */
     normalizeToolResourceFiles(req.body?.tool_resources);
     const validatedData = agentUpdateSchema.parse(req.body);
+    if (!validateAgentCodeEnvironmentAllowlist(req, res, validatedData.code_environment_ids)) {
+      return;
+    }
     // Preserve explicit null for avatar to allow resetting the avatar
     const {
       avatar: avatarField,
@@ -1470,6 +1413,9 @@ const duplicateAgentHandler = async (req, res) => {
       id: newAgentId,
       author: userId,
     });
+    if (!validateAgentCodeEnvironmentAllowlist(req, res, newAgentData.code_environment_ids)) {
+      return;
+    }
     if (
       isActiveAgentWorkspaceConfiguration(newAgentData) &&
       !validateStatefulCodeEnvironment(
@@ -1717,12 +1663,19 @@ const deleteAgentHandler = async (req, res) => {
  * @param {object} req - Express Request
  * @param {object} req.query - Request query
  * @param {string} [req.query.user] - The user ID of the agent's author.
+ * @param {string} [req.query.sort] - One of 'newest' | 'oldest' | 'popular' | 'author'.
+ *   Invalid, repeated and missing values leave the order unset, so the endpoint keeps
+ *   serving its most-recently-edited order; the marketplace asks for 'newest' explicitly.
+ * @param {string} [req.query.mine] - '1' to restrict results to agents authored by the
+ *   caller; any other value is ignored.
  * @returns {Promise<AgentListResponse>} 200 - success response - application/json
  */
 const getListAgentsHandler = async (req, res) => {
   try {
     const userId = req.user.id;
     const { category, search, limit = 100, cursor, promoted } = req.query;
+    const listQuery = resolveMarketplaceListQuery(req.query);
+    const sortMode = listQuery.sort;
     let requiredPermission = req.query.requiredPermission;
     if (typeof requiredPermission === 'string') {
       requiredPermission = parseInt(requiredPermission, 10);
@@ -1747,6 +1700,10 @@ const getListAgentsHandler = async (req, res) => {
     } else if (promoted === '0') {
       filter.is_promoted = { $ne: true };
     }
+
+    // "Only my agents": the contribution comes from `marketplaceMineFilter`, which owns
+    // what the filter says; this merges it on top of the ACL-resolved `accessibleIds`.
+    Object.assign(filter, marketplaceMineFilter(listQuery, userId));
 
     // Handle search filter (escape regex and cap length)
     if (search && search.trim() !== '') {
@@ -1797,63 +1754,8 @@ const getListAgentsHandler = async (req, res) => {
           }),
     ]);
 
-    const isValidCachedRefresh = isFullAgentListAvatarCacheEntry(cachedRefreshEntry);
-
-    /**
-     * Refresh all S3 avatars for this user's accessible agent set (not only the current page)
-     * This addresses page-size limits preventing refresh of agents beyond the first page.
-     *
-     * Scoped to agents that actually carry an S3 avatar so the `MAX_AVATAR_REFRESH_AGENTS`
-     * budget is spent on agents that can do work. Unfiltered, that budget is the most
-     * recently updated accessible agents regardless of avatar, and because a refresh writes
-     * through `updateAgent` and advances `updatedAt`, the window is self-reinforcing: an
-     * S3-avatar agent ranked past the budget never enters it and its presigned URL is never
-     * regenerated. The predicate is not indexed (`avatar` is `Mixed`), so this trades docs
-     * examined for that coverage.
-     *
-     * Must settle BEFORE the list query below, and is deliberately not parallelized with
-     * it. `updateAgent` writes through `findOneAndUpdate` on a `timestamps: true` schema,
-     * so refreshing an avatar advances `updatedAt`, the very field
-     * `getListAgentsByAccess` sorts and cursors on. A refresh landing after the first
-     * page's snapshot would move that agent ahead of the returned cursor, dropping it
-     * from every later page and silently truncating the caller's flattened list.
-     * Serializing costs nothing on the common path: a cache hit returns below without
-     * issuing any query, so only the once-per-30-minutes miss pays for the ordering.
-     */
-    const resolveAvatarRefresh = async () => {
-      if (isValidCachedRefresh) {
-        logger.debug('[/Agents] S3 avatar refresh already checked, skipping');
-        return cachedRefreshEntry;
-      }
-      try {
-        const fullList = await db.getListAgentsByAccess({
-          accessibleIds,
-          otherParams: { 'avatar.source': FileSources.s3 },
-          limit: MAX_AVATAR_REFRESH_AGENTS,
-          after: null,
-        });
-        const { urlCache } = await refreshListAvatars({
-          agents: fullList?.data ?? [],
-          userId,
-          refreshS3Url,
-          updateAgent: db.updateAgent,
-        });
-        const refreshEntry = { urlCache };
-        await cache.set(refreshKey, refreshEntry, Time.THIRTY_MINUTES);
-        return refreshEntry;
-      } catch (err) {
-        logger.error('[/Agents] Error refreshing avatars for full list: %o', err);
-        return null;
-      }
-    };
-
-    const cachedRefreshBeforePage = await refreshAgentListAvatarsBeforePage(
-      accessibleIds,
-      cachedRefreshEntry,
-      resolveAvatarRefresh,
-    );
-
-    // Use the ACL-scoped or explicitly tenant-scoped list query.
+    // Use the ACL-aware function before refreshing so the requested ordering and page
+    // determine which avatars receive bounded S3 work.
     const data = await db.getListAgentsByAccess({
       accessibleIds,
       tenantId: req.user.tenantId ?? null,
@@ -1862,22 +1764,25 @@ const getListAgentsHandler = async (req, res) => {
       after: cursor,
       includeSkillConfig: true,
       includeExecutionConfig: true,
+      sort: sortMode,
+    });
+    const agents = data?.data ?? [];
+
+    const cachedRefresh = await resolveAvatarRefresh({
+      agents,
+      userId,
+      cachedRefreshEntry,
+      cache,
+      refreshKey,
+      cacheTtl: Time.THIRTY_MINUTES,
+      coverageLimit: req.config?.endpoints?.[EModelEndpoint.agents]?.avatarRefresh?.coverageLimit,
+      refreshS3Url,
+      updateAgent: db.updateAgentAvatar,
     });
 
-    const agents = data?.data ?? [];
     if (!agents.length) {
       return res.json(data);
     }
-
-    const cachedRefresh = await refreshManagedAgentListPageAvatars({
-      accessibleIds,
-      agents,
-      cachedEntry: cachedRefreshBeforePage,
-      refreshS3Url,
-      cacheSet: cache.set.bind(cache),
-      cacheKey: refreshKey,
-      ttl: Time.THIRTY_MINUTES,
-    });
 
     const accessibleSkillSet = canReturnSkillConfig
       ? null
@@ -1888,7 +1793,6 @@ const getListAgentsHandler = async (req, res) => {
     const editableSet = editableIds ? new Set(editableIds) : null;
     const agentsWithContacts = await attachOwnerContacts(agents);
 
-    const urlCache = cachedRefresh?.urlCache;
     data.data = agentsWithContacts.map((agent) => {
       if (accessibleSkillSet) {
         sanitizeViewerSkillScope(agent, accessibleSkillSet);
@@ -1898,14 +1802,7 @@ const getListAgentsHandler = async (req, res) => {
           agent.isPublic = true;
         }
         agent.isEditable = editableSet == null || editableSet.has(agent?._id?.toString());
-        if (
-          urlCache &&
-          agent?.id &&
-          agent?.avatar?.source === FileSources.s3 &&
-          urlCache[agent.id]
-        ) {
-          agent.avatar = { ...agent.avatar, filepath: urlCache[agent.id] };
-        }
+        return applyCachedAvatarUrl(agent, cachedRefresh);
       } catch (err) {
         logger.warn('[/Agents] Error mapping agent %s for list response: %o', agent?.id, err);
       }
@@ -1914,8 +1811,12 @@ const getListAgentsHandler = async (req, res) => {
 
     return res.json(data);
   } catch (error) {
+    const mappedError = mapMarketplaceListError(error);
+    if (mappedError) {
+      return res.status(mappedError.status).json(mappedError.body);
+    }
     logger.error('[/Agents] Error listing Agents: %o', error);
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 };
 
@@ -2069,6 +1970,9 @@ const revertAgentVersionHandler = async (req, res) => {
     }
 
     const revertVersion = existingAgent.versions?.[version_index];
+    if (!validateAgentCodeEnvironmentAllowlist(req, res, revertVersion?.code_environment_ids)) {
+      return;
+    }
     const restoredWorkspaceConfiguration = revertVersion
       ? resolveAgentWorkspaceRestoreConfiguration({
           version: revertVersion,
@@ -2225,8 +2129,10 @@ const revertAgentVersionHandler = async (req, res) => {
  */
 const getAgentCategories = async (_req, res) => {
   try {
-    const categories = await db.getCategoriesWithCounts();
-    const promotedCount = await db.countPromotedAgents();
+    const [categories, promotedCount] = await Promise.all([
+      db.getCategoriesWithCounts(),
+      db.countPromotedAgents(),
+    ]);
     const formattedCategories = categories.map((category) => ({
       value: category.value,
       label: category.label,

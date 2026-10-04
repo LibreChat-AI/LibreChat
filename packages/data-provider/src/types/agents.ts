@@ -118,6 +118,8 @@ export namespace Agents {
     };
     /** The tool call was rejected before execution because its input failed schema validation. */
     inputValidationError?: true;
+    /** Server-stamped provenance; see `PartMetadata.executor`. */
+    executor?: 'attached_workspace';
     /** Auth URL */
     auth?: string;
     /** Expiration time */
@@ -131,6 +133,8 @@ export namespace Agents {
       actionId: string;
       allowed_decisions: ToolApprovalDecisionType[];
       description?: string;
+      /** Server-authored: an `approve` may carry `scope: 'session'` for this call. */
+      allow_always?: boolean;
     };
   };
 
@@ -296,6 +300,8 @@ export namespace Agents {
 
   /** User message metadata for rebuilding submission on reconnect */
   export interface UserMessageMeta {
+    /** Canonical, nonsecret revision used to verify owner-only private text. */
+    privacyRevision?: string;
     messageId: string;
     parentMessageId?: string;
     conversationId?: string;
@@ -469,6 +475,12 @@ export namespace Agents {
     action_name: string;
     tool_call_id: string;
     allowed_decisions: ToolApprovalDecisionType[];
+    /**
+     * Server-authored: the user may approve this call for the rest of the conversation
+     * (`scope: 'session'`). Absent when `toolApproval.allowAlways` is off or the tool is
+     * ineligible (admin `deny`/`ask` match, native code tool, wildcard name).
+     */
+    allow_always?: boolean;
   }
 
   /** Interrupt payload for a tool-approval pause. */
@@ -560,6 +572,11 @@ export namespace Agents {
      */
     threadId?: string;
     /**
+     * Stable server-only project context identity captured when this action paused.
+     * This is intentionally omitted from all client-facing projections.
+     */
+    projectContextKey?: string;
+    /**
      * Fingerprint of the request fields that determine the agent/graph + tool set
      * (endpoint, agent_id, model, spec, ephemeralAgent), captured at pause time. The
      * resume route recomputes it from the resume request and rejects a mismatch — the
@@ -582,6 +599,12 @@ export namespace Agents {
      * tool execution so an approval cannot migrate to another VM or workspace.
      */
     codeExecutionBinding?: CodeExecutionApprovalBinding;
+    /**
+     * Server-only MCP key-spelling pairs the paused run knew for the tools it offered
+     * "Always allow", including pairs lazily resolved subagents reported. Resume rechecks
+     * eligibility against them before remembering a tool.
+     */
+    toolApprovalAliases?: Array<{ name: string; aliasName: string }>;
   }
 
   export interface CodeExecutionApprovalTargetBinding {
@@ -597,9 +620,10 @@ export namespace Agents {
   }
 
   /**
-   * Scope of a tool-approval decision — drives the "remember this" persistence
-   * envelope. Storage of session/always decisions is a Slice B+ concern; the
-   * field is on the wire today so route signatures don't break later.
+   * Scope of a tool-approval decision. `once` (the default) applies to this call only.
+   * `session` on an `approve` auto-approves the same tool for the rest of the
+   * conversation, and is accepted only when the call's review config sets
+   * `allow_always`. `always` is reserved and currently rejected.
    */
   export type DecisionScope = 'once' | 'session' | 'always';
 
@@ -1033,6 +1057,9 @@ export type Agent = {
   stateful_code_environment?: StatefulCodeEnvironment;
   /** Operator-configured managed or attached stateful execution environment. */
   code_environment_id?: string | null;
+  /** Additional attached machines new chats may choose; the saved ID remains the default.
+   * This allowlist never grants the user access to a machine. */
+  code_environment_ids?: string[];
   /** Default attached workspace for new chats; empty means no agent default. */
   code_workspace_id?: string;
   repositoryInstructions?: 'prefer' | 'defer' | 'off';
@@ -1099,12 +1126,14 @@ export type AgentCreateParams = {
   | 'stateful_code_sessions'
   | 'stateful_code_environment'
   | 'code_environment_id'
+  | 'code_environment_ids'
   | 'code_workspace_id'
   | 'repositoryInstructions'
   | 'artifacts'
   | 'recursion_limit'
   | 'category'
   | 'support_contact'
+  | 'conversation_starters'
   | 'tool_options'
   | 'skills'
   | 'skills_enabled'
@@ -1134,6 +1163,7 @@ export type AgentUpdateParams = {
   | 'stateful_code_sessions'
   | 'stateful_code_environment'
   | 'code_environment_id'
+  | 'code_environment_ids'
   | 'git_identity'
   | 'code_workspace_id'
   | 'repositoryInstructions'
@@ -1141,6 +1171,7 @@ export type AgentUpdateParams = {
   | 'recursion_limit'
   | 'category'
   | 'support_contact'
+  | 'conversation_starters'
   | 'tool_options'
   | 'skills'
   | 'skills_enabled'
@@ -1150,6 +1181,14 @@ export type AgentUpdateParams = {
   | 'memory_scope'
 >;
 
+/**
+ * Sort modes for the marketplace agent list. `'newest'` is the marketplace's own default and
+ * the client sends it explicitly: a request that names no mode gets the most-recently-edited
+ * order `GET /api/agents` has always served, which the agent selector and the mention menu
+ * rely on and which is not a marketplace mode.
+ */
+export type AgentSortOption = 'newest' | 'oldest' | 'popular' | 'author';
+
 export type AgentListParams = {
   limit?: number;
   requiredPermission: number;
@@ -1157,6 +1196,9 @@ export type AgentListParams = {
   search?: string;
   cursor?: string;
   promoted?: 0 | 1;
+  sort?: AgentSortOption;
+  /** When 1, restrict results to agents authored by the requesting user. */
+  mine?: 0 | 1;
 };
 
 export type AgentListResponse = {

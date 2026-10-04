@@ -111,6 +111,7 @@ function tagApprovalOnPart(
         actionId,
         allowed_decisions: reviewConfig?.allowed_decisions ?? [],
         description: request.description,
+        ...(reviewConfig?.allow_always === true && { allow_always: true }),
       },
     };
     changed = true;

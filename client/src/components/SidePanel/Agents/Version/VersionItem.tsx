@@ -94,7 +94,7 @@ export default function VersionItem({
         {!isLast && (
           <div
             className={cn(
-              'absolute -bottom-3 top-0 w-px',
+              'absolute top-0 -bottom-3 w-px',
               isActive ? 'bg-status-success-strong' : 'bg-border-light',
             )}
           />
@@ -122,7 +122,7 @@ export default function VersionItem({
           'group relative mb-2 ml-2 flex flex-1 flex-col rounded-xl border p-3 transition-colors',
           isActive
             ? 'border-status-success-border bg-status-success-subtle'
-            : 'border-border-light bg-transparent hover:border-border-medium hover:bg-surface-secondary',
+            : 'border-border-light hover:border-border-medium hover:bg-surface-secondary bg-transparent',
         )}
       >
         <div className="flex items-start justify-between gap-2">
@@ -137,22 +137,22 @@ export default function VersionItem({
                 {versionTitle}
               </span>
               {isActive && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-status-success-subtle px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-status-success">
+                <span className="bg-status-success-subtle text-status-success inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase">
                   <span
-                    className="size-1.5 rounded-full bg-status-success-strong"
+                    className="bg-status-success-strong size-1.5 rounded-full"
                     aria-hidden="true"
                   />
                   {localize('com_ui_agent_version_current')}
                 </span>
               )}
               {!isActive && isLatest && (
-                <span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
+                <span className="bg-surface-tertiary text-text-secondary rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase">
                   {localize('com_ui_latest')}
                 </span>
               )}
             </div>
             {versionName && (
-              <span className="mt-0.5 truncate text-xs text-text-secondary" title={versionName}>
+              <span className="text-text-secondary mt-0.5 truncate text-xs" title={versionName}>
                 {versionName}
               </span>
             )}
@@ -168,7 +168,7 @@ export default function VersionItem({
                       variant="ghost"
                       size="icon"
                       aria-label={localize('com_ui_agent_version_restore')}
-                      className="size-7 flex-shrink-0 rounded-lg border border-border-light text-text-secondary opacity-0 transition-all hover:border-border-medium focus:outline-none focus-visible:opacity-100 group-hover:opacity-100"
+                      className="border-border-light text-text-secondary hover:border-border-medium size-7 shrink-0 rounded-lg border opacity-0 transition-all group-hover:opacity-100 focus-visible:opacity-100"
                     >
                       <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
                     </Button>
@@ -180,23 +180,23 @@ export default function VersionItem({
                 className="max-w-[450px]"
                 main={
                   <div className="flex w-full flex-col gap-3 text-sm">
-                    <Label className="text-left font-medium text-text-primary">
+                    <Label className="text-text-primary text-left font-medium">
                       {localize('com_ui_agent_version_restore_description')}
                     </Label>
-                    <div className="rounded-lg border border-border-light bg-surface-secondary px-3 py-2">
+                    <div className="border-border-light bg-surface-secondary rounded-lg border px-3 py-2">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-semibold text-text-primary">
+                        <span className="text-text-primary text-sm font-semibold">
                           {versionTitle}
                         </span>
                         <time
-                          className="text-xs text-text-secondary"
+                          className="text-text-secondary text-xs"
                           dateTime={date?.toISOString()}
                         >
                           {absoluteLabel}
                         </time>
                       </div>
                       {versionName && (
-                        <div className="mt-1 truncate text-xs text-text-secondary">
+                        <div className="text-text-secondary mt-1 truncate text-xs">
                           {versionName}
                         </div>
                       )}
@@ -222,14 +222,14 @@ export default function VersionItem({
               render={
                 <time
                   dateTime={date.toISOString()}
-                  className="cursor-help text-xs text-text-secondary"
+                  className="text-text-secondary cursor-help text-xs"
                 >
                   {relativeLabel}
                 </time>
               }
             />
           ) : (
-            <span className="text-xs text-text-secondary">{relativeLabel}</span>
+            <span className="text-text-secondary text-xs">{relativeLabel}</span>
           )}
           {summaryChips.length > 0 && (
             <>
@@ -243,7 +243,7 @@ export default function VersionItem({
                       ·
                     </span>
                   )}
-                  <span className="text-xs text-text-secondary">{chip.label}</span>
+                  <span className="text-text-secondary text-xs">{chip.label}</span>
                 </span>
               ))}
             </>

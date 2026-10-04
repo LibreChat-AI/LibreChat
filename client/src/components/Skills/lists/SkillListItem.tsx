@@ -156,10 +156,10 @@ function FileTreeNode({
         }
       }}
       className={cn(
-        'flex w-full select-none items-center gap-1.5 rounded-lg text-sm transition-colors',
+        'flex w-full items-center gap-1.5 rounded-lg text-sm select-none',
         isFileActive
-          ? 'bg-surface-active font-medium text-text-primary'
-          : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary',
+          ? 'bg-surface-active text-text-primary font-medium'
+          : 'text-text-secondary hover:bg-surface-active-alt hover:text-text-primary',
       )}
       aria-expanded={isFolder ? isOpen : undefined}
     >
@@ -299,47 +299,46 @@ function SkillListItem({
   return (
     <div className="flex flex-col gap-px">
       {/* Skill row */}
+      {/* The row and its expander are siblings, not one inside the other: a control
+          nested in another control is unreachable for a keyboard and ambiguous for a
+          screen reader, which announces one name for two different actions. */}
       <div
-        role="button"
-        tabIndex={0}
-        onClick={handleSkillClick}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            handleSkillClick();
-          }
-        }}
         className={cn(
-          'flex w-full cursor-pointer select-none items-center gap-3 rounded-lg px-3 py-1.5 text-left text-sm text-text-primary transition-colors',
+          'text-text-primary flex w-full items-center gap-1 rounded-lg pr-1 text-sm select-none',
           isActive && !activeFile && 'bg-surface-active',
-          !isActive && 'hover:bg-surface-hover',
+          !isActive && 'hover:bg-surface-active-alt',
         )}
-        aria-current={isActive ? 'true' : undefined}
-        aria-expanded={hasFiles ? expanded : undefined}
       >
-        <span className="flex size-6 shrink-0 items-center justify-center">
-          <span className="flex size-6 items-center justify-center rounded-md border border-border-light bg-surface-primary shadow-sm">
-            <ScrollText className="size-3.5 text-text-secondary" aria-hidden="true" />
+        <button
+          type="button"
+          onClick={handleSkillClick}
+          className="focus-visible:ring-text-primary flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg py-1.5 pl-3 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-inset"
+          aria-current={isActive ? 'true' : undefined}
+        >
+          <span className="flex size-6 shrink-0 items-center justify-center">
+            <span className="bg-surface-tertiary flex size-6 items-center justify-center rounded-md">
+              <ScrollText className="text-text-secondary size-3.5" aria-hidden="true" />
+            </span>
           </span>
-        </span>
 
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          <span className="truncate">{skill.name}</span>
-          {skill.alwaysApply === true && (
-            <Pin
-              className="size-3 shrink-0 text-status-info"
-              aria-label={localize('com_ui_skills_always_apply_pin_title')}
-            />
-          )}
-        </span>
+          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+            <span className="truncate">{skill.name}</span>
+            {skill.alwaysApply === true && (
+              <Pin
+                className="text-status-info size-3 shrink-0"
+                aria-label={localize('com_ui_skills_always_apply_pin_title')}
+              />
+            )}
+          </span>
+        </button>
 
         {hasFiles && (
           <button
             type="button"
             onClick={handleChevronClick}
-            className="-mr-1 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-text-secondary hover:text-text-primary"
-            aria-label="Toggle files"
-            tabIndex={-1}
+            className="text-text-secondary hover:text-text-primary focus-visible:ring-text-primary inline-flex size-6 shrink-0 items-center justify-center rounded-md outline-hidden focus-visible:ring-2 focus-visible:ring-inset"
+            aria-label={localize('com_ui_skills_toggle_files', { 0: skill.name })}
+            aria-expanded={expanded}
           >
             <ChevronDown
               className={cn(

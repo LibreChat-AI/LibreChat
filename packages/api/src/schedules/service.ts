@@ -1,5 +1,9 @@
 import { logger, runAsSystem, tenantStorage, isRuntimeDisabled } from '@librechat/data-schemas';
 import { getRefillEligibilityDate, Permissions, PermissionTypes } from 'librechat-data-provider';
+import {
+  DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
+  isScheduleMCPAuthorizationFailure,
+} from 'librechat-data-provider';
 import type { ScheduleMethods, AppConfig, IBalance, IChatProject } from '@librechat/data-schemas';
 import type { TCheckpointerConfig } from 'librechat-data-provider';
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
@@ -16,6 +20,7 @@ import type {
 } from './types';
 import type { SerializableJobData } from '../stream/interfaces/IJobStore';
 import type { AgentCheckpointGeneration } from '../agents/checkpointer';
+import type { ScheduleMCPExecution } from './authorization/execution';
 import type { BalanceUpdateFields } from '../types/balance';
 import type { GetAppConfigOptions } from '../app/service';
 import {
@@ -30,8 +35,10 @@ import {
   captureAgentCheckpointGeneration,
   checkpointStorageConfigs,
 } from '../agents/checkpointer';
+import { scheduleMCPFailurePriority } from '~/stream/scheduleFailure';
 import { fireSchedule, BALANCE_SKIP_DISABLE_THRESHOLD } from './fire';
 import { GenerationJobManager } from '../stream/GenerationJobManager';
+import { ScheduledMCPPolicyError } from './authorization/policy';
 import { isStopConfirmed } from '../stream/interfaces/IJobStore';
 import { buildBalanceUpdateFields } from '../middleware/balance';
 import { getAppConfigOptionsFromUser } from '../app/service';
@@ -201,6 +208,8 @@ export interface SchedulesService {
     jobCreatedAt?: number;
     userId?: string;
     serverName: string;
+    /** Trusted mandatory-hook scope; transport receipts retain their existing epoch fence. */
+    identity?: ScheduleMCPExecution['identity'];
   }) => Promise<boolean>;
   /**
    * Stamps a scheduled run's interactive Stop BEFORE the abort is signalled, so the owner
@@ -297,8 +306,9 @@ export async function recordScheduledMCPToolAuthFailure(
   const cause = input.error instanceof Error ? input.error.cause : undefined;
   const missing = input.error instanceof OboTokenResolutionError ? input.error : cause;
   if (
-    !(missing instanceof OboTokenResolutionError) ||
-    missing.reason !== 'missing_upstream_provider' ||
+    (!(input.error instanceof ScheduledMCPPolicyError) &&
+      (!(missing instanceof OboTokenResolutionError) ||
+        missing.reason !== 'missing_upstream_provider')) ||
     !input.streamId ||
     input.jobCreatedAt == null ||
     !input.userId
@@ -311,6 +321,29 @@ export async function recordScheduledMCPToolAuthFailure(
     logger.warn('[schedules] could not persist MCP authorization failure receipt:', error);
     return false;
   }
+}
+
+/** Captures host scope, never model arguments or mutable runnable config. */
+export function createScheduledMCPPolicyRecorder(
+  execution: ScheduleMCPExecution | undefined,
+  job: { streamId?: string | null; jobCreatedAt?: number; userId?: string; tenantId?: string },
+  record: SchedulesService['recordMCPToolAuthFailure'],
+): ((error: ScheduledMCPPolicyError) => Promise<boolean>) | undefined {
+  if (!execution) return;
+  const identity = Object.freeze({ ...execution.identity });
+  const scope = Object.freeze({ ...job });
+  return (error) => {
+    if (scope.userId !== identity.ownerId || (scope.tenantId ?? null) !== identity.tenantId)
+      return Promise.resolve(false);
+    return record({
+      error,
+      identity,
+      streamId: scope.streamId ?? undefined,
+      jobCreatedAt: scope.jobCreatedAt,
+      userId: identity.ownerId,
+      serverName: error.outcomes[0].server,
+    });
+  };
 }
 
 /** Test-only overrides for the service's bounded waits (drains, barriers). */
@@ -326,6 +359,87 @@ export interface ScheduleServiceTimings {
  * own engine singleton and job-store-shared flag, so state never leaks between
  * instances.
  */
+export function createScheduleLimitsResolver(
+  getAppConfig: SchedulesServiceDeps['getAppConfig'],
+): SchedulesService['getLimits'] {
+  /**
+   * Resolves schedule limits, honoring per-principal (role/user) config overrides
+   * when a user is supplied (routes pass req.user, the fire path passes the owner).
+   */
+  return async function getLimits(user?: ScheduleUserContext): Promise<ScheduleLimits> {
+    // The BASE `interface.schedules: false` is a global stop and must win over any
+    // principal override. Without this a tenant/role/user override resolving to
+    // enabled would let the sidebar and CRUD handlers admit schedules that
+    // isGloballyDisabled() correctly refuses to ever fire.
+    // isRuntimeDisabled, NOT `=== false`: the base stop has TWO shapes (`false` and
+    // `{ use: false }`), and deepMerge turns a base `{ use: false, ... }` plus a principal
+    // override of `true` into `{ use: true, ... }`. A literal-false check missed that, so
+    // getLimits reported the feature enabled and Run Now dispatched straight through
+    // fireSchedule — bypassing the operator's object-form emergency stop. Same predicate
+    // the engine gate (isGloballyDisabled) already uses.
+    if (
+      user != null &&
+      isRuntimeDisabled((await getAppConfig({ baseOnly: true }))?.interfaceConfig?.schedules)
+    ) {
+      return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
+    }
+    // NO principal means the DEPLOYMENT's config, so it must be read base-only. A bare
+    // getAppConfig() still resolves principals and picks up the tenant from the ALS
+    // context, and both callers of this form run inside one: fireSchedule clamps the
+    // global capacity allocator from within runInTenantContext(owner), and the engine
+    // tick budgets from within runAsSystem. Either would otherwise resolve a TENANT
+    // override as if it were the deployment-wide value, which is exactly what the
+    // global cap exists to prevent an override from widening.
+    const appConfig = user
+      ? await getAppConfig(getAppConfigOptionsFromUser(user))
+      : await getAppConfig({ baseOnly: true });
+    // The env kill switch is a GLOBAL stop and must be visible everywhere limits are
+    // consulted (write handlers, fire path), not only at the engine tick.
+    if (isEnabled(process.env.SCHEDULES_DISABLED)) {
+      return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
+    }
+    const config = appConfig?.interfaceConfig?.schedules;
+    // EXPERIMENTAL, default-OFF (v1): scheduled chats are disabled unless an admin
+    // explicitly enables them. Absence, null, or `false` all resolve to disabled, so a
+    // deployment that never opts in never runs the scheduler. `true` uses the defaults;
+    // an object opts in unless it sets `use: false`.
+    if (config == null || config === false) {
+      return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
+    }
+    if (config === true) {
+      return DEFAULT_SCHEDULE_LIMITS;
+    }
+    // A pinned project is itself a requirement: leaving `requireProject` to be set
+    // separately would let `projectId` alone resolve to "optional destination that
+    // happens to be forced", and a schedule created before the pin would keep firing
+    // with no project at all rather than being stopped for review.
+    const projectId = config.projectId?.trim() || undefined;
+    return {
+      enabled: config.use !== false,
+      ...(config.mcpConsent && {
+        mcpConsent: {
+          enabled: config.mcpConsent.enabled === true,
+          maxLifetimeHours:
+            config.mcpConsent.maxLifetimeHours ?? DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
+        },
+      }),
+      maxPerUser: config.maxPerUser ?? DEFAULT_SCHEDULE_LIMITS.maxPerUser,
+      minIntervalMinutes: config.minIntervalMinutes ?? DEFAULT_SCHEDULE_LIMITS.minIntervalMinutes,
+      autoDisableAfterFailures:
+        config.autoDisableAfterFailures ?? DEFAULT_SCHEDULE_LIMITS.autoDisableAfterFailures,
+      admissionConcurrency:
+        config.admissionConcurrency ?? DEFAULT_SCHEDULE_LIMITS.admissionConcurrency,
+      fireConcurrency: config.fireConcurrency ?? DEFAULT_SCHEDULE_LIMITS.fireConcurrency,
+      mcpPreflightConcurrency:
+        config.mcpPreflightConcurrency ?? DEFAULT_SCHEDULE_LIMITS.mcpPreflightConcurrency,
+      mcpPreflightTimeoutMs:
+        config.mcpPreflightTimeoutMs ?? DEFAULT_SCHEDULE_LIMITS.mcpPreflightTimeoutMs,
+      requireProject: config.requireProject === true || projectId != null,
+      ...(projectId != null && { projectId }),
+    };
+  };
+}
+
 export function createSchedulesService(
   deps: SchedulesServiceDeps,
   timings?: ScheduleServiceTimings,
@@ -355,75 +469,20 @@ export function createSchedulesService(
     }
   }
 
-  /**
-   * Resolves schedule limits, honoring per-principal (role/user) config overrides
-   * when a user is supplied (routes pass req.user, the fire path passes the owner).
-   */
-  async function getLimits(user?: ScheduleUserContext): Promise<ScheduleLimits> {
-    // The BASE `interface.schedules: false` is a global stop and must win over any
-    // principal override. Without this a tenant/role/user override resolving to
-    // enabled would let the sidebar and CRUD handlers admit schedules that
-    // isGloballyDisabled() correctly refuses to ever fire.
-    // isRuntimeDisabled, NOT `=== false`: the base stop has TWO shapes (`false` and
-    // `{ use: false }`), and deepMerge turns a base `{ use: false, ... }` plus a principal
-    // override of `true` into `{ use: true, ... }`. A literal-false check missed that, so
-    // getLimits reported the feature enabled and Run Now dispatched straight through
-    // fireSchedule — bypassing the operator's object-form emergency stop. Same predicate
-    // the engine gate (isGloballyDisabled) already uses.
-    if (
-      user != null &&
-      isRuntimeDisabled((await deps.getAppConfig({ baseOnly: true }))?.interfaceConfig?.schedules)
-    ) {
-      return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
+  const getLimits = createScheduleLimitsResolver(deps.getAppConfig);
+  // Recovery evidence, not an allow cache. Only an undurable active generation retains an entry.
+  const pendingMCPFailures = new Map<
+    string,
+    {
+      outcome: ScheduleMCPOutcome;
+      identity: ScheduleMCPExecution['identity'];
     }
-    // NO principal means the DEPLOYMENT's config, so it must be read base-only. A bare
-    // getAppConfig() still resolves principals and picks up the tenant from the ALS
-    // context, and both callers of this form run inside one: fireSchedule clamps the
-    // global capacity allocator from within runInTenantContext(owner), and the engine
-    // tick budgets from within runAsSystem. Either would otherwise resolve a TENANT
-    // override as if it were the deployment-wide value, which is exactly what the
-    // global cap exists to prevent an override from widening.
-    const appConfig = user
-      ? await deps.getAppConfig(getAppConfigOptionsFromUser(user))
-      : await deps.getAppConfig({ baseOnly: true });
-    // The env kill switch is a GLOBAL stop and must be visible everywhere limits are
-    // consulted (write handlers, fire path), not only at the engine tick.
-    if (isEnabled(process.env.SCHEDULES_DISABLED)) {
-      return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
-    }
-    const config = appConfig?.interfaceConfig?.schedules;
-    // EXPERIMENTAL, default-OFF (v1): scheduled chats are disabled unless an admin
-    // explicitly enables them. Absence, null, or `false` all resolve to disabled, so a
-    // deployment that never opts in never runs the scheduler. `true` uses the defaults;
-    // an object opts in unless it sets `use: false`.
-    if (config == null || config === false) {
-      return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
-    }
-    if (config === true) {
-      return DEFAULT_SCHEDULE_LIMITS;
-    }
-    // A pinned project is itself a requirement: leaving `requireProject` to be set
-    // separately would let `projectId` alone resolve to "optional destination that
-    // happens to be forced", and a schedule created before the pin would keep firing
-    // with no project at all rather than being stopped for review.
-    const projectId = config.projectId?.trim() || undefined;
-    return {
-      enabled: config.use !== false,
-      maxPerUser: config.maxPerUser ?? DEFAULT_SCHEDULE_LIMITS.maxPerUser,
-      minIntervalMinutes: config.minIntervalMinutes ?? DEFAULT_SCHEDULE_LIMITS.minIntervalMinutes,
-      autoDisableAfterFailures:
-        config.autoDisableAfterFailures ?? DEFAULT_SCHEDULE_LIMITS.autoDisableAfterFailures,
-      admissionConcurrency:
-        config.admissionConcurrency ?? DEFAULT_SCHEDULE_LIMITS.admissionConcurrency,
-      fireConcurrency: config.fireConcurrency ?? DEFAULT_SCHEDULE_LIMITS.fireConcurrency,
-      mcpPreflightConcurrency:
-        config.mcpPreflightConcurrency ?? DEFAULT_SCHEDULE_LIMITS.mcpPreflightConcurrency,
-      mcpPreflightTimeoutMs:
-        config.mcpPreflightTimeoutMs ?? DEFAULT_SCHEDULE_LIMITS.mcpPreflightTimeoutMs,
-      requireProject: config.requireProject === true || projectId != null,
-      ...(projectId != null && { projectId }),
-    };
-  }
+  >();
+  const failureKey = (streamId: string, epoch: number) => JSON.stringify([streamId, epoch]);
+  const preferFailure = (previous: ScheduleMCPOutcome | undefined, next: ScheduleMCPOutcome) =>
+    !previous || scheduleMCPFailurePriority(next) > scheduleMCPFailurePriority(previous)
+      ? next
+      : previous;
 
   const MANUAL_RUN_LEASE_MS = 5 * 60 * 1000;
   // Bounded wait for aborted scheduled runs to settle during account-deletion quiesce,
@@ -594,6 +653,14 @@ export function createSchedulesService(
       if (job == null) {
         return null;
       }
+      const pending = pendingMCPFailures.get(failureKey(conversationId, job.createdAt));
+      const retained =
+        pending &&
+        job.scheduleId === pending.identity.scheduleId &&
+        job.userId === pending.identity.ownerId &&
+        (job.tenantId ?? null) === pending.identity.tenantId
+          ? preferFailure(job.scheduleMCPFailure, pending.outcome)
+          : job.scheduleMCPFailure;
       return {
         status: job.status,
         createdAt: job.createdAt,
@@ -606,6 +673,7 @@ export function createSchedulesService(
         ...(job.scheduleOutcomeError != null && {
           scheduleOutcomeError: job.scheduleOutcomeError,
         }),
+        ...(retained && { scheduleMCPFailure: retained }),
       };
     },
     abortScheduledJob: async (conversationId, identity, options) => {
@@ -847,35 +915,99 @@ export function createSchedulesService(
     jobCreatedAt,
     userId,
     serverName,
+    identity,
   }: Parameters<SchedulesService['recordMCPToolAuthFailure']>[0]): Promise<boolean> {
     const cause = error instanceof Error ? error.cause : undefined;
     const missing = error instanceof OboTokenResolutionError ? error : cause;
     if (
-      !(missing instanceof OboTokenResolutionError) ||
-      missing.reason !== 'missing_upstream_provider' ||
+      (!(error instanceof ScheduledMCPPolicyError) &&
+        (!(missing instanceof OboTokenResolutionError) ||
+          missing.reason !== 'missing_upstream_provider')) ||
       !streamId ||
       jobCreatedAt == null ||
       !userId
     ) {
       return false;
     }
-    const job = await GenerationJobManager.getJobStore()?.getJob(streamId);
+    const key = failureKey(streamId, jobCreatedAt);
+    if (error instanceof ScheduledMCPPolicyError && identity)
+      pendingMCPFailures.set(key, {
+        outcome: preferFailure(pendingMCPFailures.get(key)?.outcome, error.outcomes[0]),
+        identity: Object.freeze({ ...identity }),
+      });
+    const store = GenerationJobManager.getJobStore();
+    const job = await store?.getJob(streamId);
     if (
       job?.createdAt !== jobCreatedAt ||
       job.userId !== userId ||
       !job.scheduleId ||
       !job.scheduledFor ||
-      !job.conversationId
+      !job.conversationId ||
+      (identity != null &&
+        (job.scheduleId !== identity.scheduleId ||
+          job.userId !== identity.ownerId ||
+          (job.tenantId ?? null) !== identity.tenantId ||
+          (job.agent_id != null && job.agent_id !== identity.agentId)))
     ) {
+      pendingMCPFailures.delete(key);
       return false;
     }
-    return methods.recordMCPToolAuthFailure({
+    const input = {
       scheduleId: job.scheduleId,
       scheduledFor: new Date(job.scheduledFor),
       conversationId: job.conversationId,
       ...(job.tenantId ? { tenantId: job.tenantId } : {}),
       server: serverName,
+      ...(error instanceof ScheduledMCPPolicyError && { outcome: error.outcomes[0] }),
+    };
+    if (!(error instanceof ScheduledMCPPolicyError)) return methods.recordMCPToolAuthFailure(input);
+    const outcome = preferFailure(
+      job.scheduleMCPFailure,
+      pendingMCPFailures.get(key)?.outcome ?? error.outcomes[0],
+    );
+    pendingMCPFailures.set(key, {
+      outcome,
+      identity: identity ?? {
+        scheduleId: job.scheduleId,
+        ownerId: userId,
+        tenantId: job.tenantId ?? null,
+        agentId: job.agent_id ?? '',
+        invocationMode: 'delegated',
+      },
     });
+    const writes = await Promise.allSettled([
+      store.updateJob(
+        streamId,
+        {
+          scheduleMCPFailure: outcome,
+          preserveForScheduleReconcile: true,
+          scheduleOutcome: 'error',
+          scheduleOutcomeError: `${outcome.status}: ${JSON.stringify([outcome])}`,
+        },
+        jobCreatedAt,
+      ),
+      methods.recordMCPToolAuthFailure({ ...input, outcome }),
+    ]);
+    let jobRetained = false;
+    if (writes[0].status === 'fulfilled') {
+      const latest = await store.getJob(streamId).catch(() => null);
+      jobRetained =
+        latest?.createdAt === jobCreatedAt &&
+        latest.scheduleId === job.scheduleId &&
+        latest.scheduledFor === job.scheduledFor &&
+        latest.userId === userId &&
+        (latest.tenantId ?? null) === (job.tenantId ?? null) &&
+        scheduleMCPFailurePriority(latest.scheduleMCPFailure) >=
+          scheduleMCPFailurePriority(outcome);
+    }
+    if (jobRetained || (writes[1].status === 'fulfilled' && writes[1].value)) {
+      const pending = pendingMCPFailures.get(key);
+      if (scheduleMCPFailurePriority(pending?.outcome) <= scheduleMCPFailurePriority(outcome))
+        pendingMCPFailures.delete(key);
+      return true;
+    }
+    logger.warn('[schedules] MCP denial evidence awaiting durable recovery');
+    return false;
   }
 
   const OUTCOME_RETRY_ATTEMPTS = 3;
@@ -911,7 +1043,7 @@ export function createSchedulesService(
       ) {
         // Cleared to settle: no Stop owns the run, it acknowledged, or its owner is past
         // the stale cutoff and is presumed dead (the bounded recovery path).
-        return state?.mcp?.filter((item) => item.detail === 'unattended_auth_required') ?? [];
+        return state?.mcp?.filter(isScheduleMCPAuthorizationFailure) ?? [];
       }
       if (Date.now() >= deadline) {
         // Still an UNACKNOWLEDGED, FRESH Stop. The poll budget expiring proves nothing about
@@ -942,6 +1074,47 @@ export function createSchedulesService(
     }
     const terminal = status !== 'requires_action';
     let mcp: ScheduleMCPOutcome[] = [];
+    const key = streamId && jobCreatedAt != null ? failureKey(streamId, jobCreatedAt) : undefined;
+    let retained: ScheduleMCPOutcome | undefined;
+    if (streamId && jobCreatedAt != null) {
+      try {
+        const job = await GenerationJobManager.getJobStore()?.getJob(streamId);
+        const pending = key ? pendingMCPFailures.get(key) : undefined;
+        if (pending?.identity.scheduleId === scheduleId) retained = pending.outcome;
+        if (
+          job?.createdAt === jobCreatedAt &&
+          job.scheduleId === scheduleId &&
+          new Date(job.scheduledFor ?? '').getTime() === new Date(scheduledFor).getTime() &&
+          (!pending ||
+            (job.userId === pending.identity.ownerId &&
+              (job.tenantId ?? null) === pending.identity.tenantId &&
+              (job.agent_id == null || job.agent_id === pending.identity.agentId)))
+        )
+          retained = pending
+            ? preferFailure(job.scheduleMCPFailure, pending.outcome)
+            : job.scheduleMCPFailure;
+        else if (!retained && key) pendingMCPFailures.delete(key);
+      } catch {
+        // A known denial cannot be replaced by success while its evidence is undurable.
+        if (key && pendingMCPFailures.has(key)) return false;
+        logger.warn('[schedules] retained generation evidence is unavailable');
+        return false;
+      }
+    }
+    if (!terminal && retained && streamId && jobCreatedAt != null) {
+      try {
+        await GenerationJobManager.updateMetadata(
+          streamId,
+          {
+            scheduleMCPFailure: retained,
+            preserveForScheduleReconcile: true,
+          },
+          jobCreatedAt,
+        );
+      } catch {
+        return false;
+      }
+    }
     if (terminal) {
       // Honor an in-flight interactive Stop's persistence before terminalizing. A deferral
       // is NOT a failure to record — the run is deliberately left active/preserved — but it
@@ -955,6 +1128,17 @@ export function createSchedulesService(
         return false;
       }
       mcp = observed;
+      if (
+        retained &&
+        !mcp.some(
+          (item) =>
+            item.server === retained.server &&
+            item.agentId === retained.agentId &&
+            item.reason === retained.reason &&
+            item.status === retained.status,
+        )
+      )
+        mcp.push(retained);
     }
     const missingAuth =
       mcp.length > 0 &&
@@ -967,6 +1151,7 @@ export function createSchedulesService(
           streamId,
           {
             preserveForScheduleReconcile: true,
+            ...(retained && { scheduleMCPFailure: retained }),
             scheduleOutcome:
               effectiveStatus === 'success' ||
               effectiveStatus === 'error' ||
@@ -1004,6 +1189,7 @@ export function createSchedulesService(
           autoDisableAfterFailures: limits.autoDisableAfterFailures,
           balanceSkipDisableThreshold: BALANCE_SKIP_DISABLE_THRESHOLD,
         });
+        if (terminal && key) pendingMCPFailures.delete(key);
         // ERASE-ON-SETTLE: whichever process records a run's terminal outcome also
         // attempts the deferred erase of a deleting schedule. This is what makes a
         // delete's `draining` state converge in EVERY topology — the clustered

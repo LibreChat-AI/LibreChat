@@ -90,7 +90,7 @@ const PopoverButton: React.FC<PopoverButtonProps> = ({
                   setActiveSetting(optionLabels[ForkOptions.DEFAULT]);
                 }, 175);
               }}
-              className="mx-0.5 w-14 flex-1 rounded-xl border-2 border-border-medium bg-surface-secondary text-text-secondary transition duration-200 ease-in-out hover:bg-surface-hover hover:text-text-primary"
+              className="border-border-medium bg-surface-secondary text-text-secondary hover:bg-surface-hover hover:text-text-primary mx-0.5 w-14 flex-1 rounded-xl border-2 transition duration-200 ease-in-out"
               aria-label={label}
             >
               {children}
@@ -98,7 +98,7 @@ const PopoverButton: React.FC<PopoverButtonProps> = ({
             </Ariakit.Button>
           }
         />
-        <Ariakit.HovercardDisclosure className="rounded-full text-text-secondary focus:outline-none focus:ring-2 focus:ring-text-primary">
+        <Ariakit.HovercardDisclosure className="text-text-secondary focus:ring-text-primary rounded-full focus:ring-2 focus:outline-hidden">
           <VisuallyHidden>
             {localize('com_ui_fork_more_details_about', { 0: label })}
           </VisuallyHidden>
@@ -111,12 +111,12 @@ const PopoverButton: React.FC<PopoverButtonProps> = ({
             gutter={16}
             shift={40}
             flip={false}
-            className="z-[999] w-80 rounded-2xl border border-border-medium bg-surface-secondary p-4 text-text-primary shadow-md"
+            className="border-border-medium bg-surface-secondary text-text-primary z-[999] w-80 rounded-2xl border p-4 shadow-md"
             portal={true}
             unmountOnHide={true}
           >
             <div className="space-y-2">
-              <p className="flex flex-col gap-2 text-sm text-text-secondary">
+              <p className="text-text-secondary flex flex-col gap-2 text-sm">
                 {hoverInfo && hoverInfo}
                 {hoverTitle && <span className="flex flex-wrap gap-1 font-bold">{hoverTitle}</span>}
                 {hoverDescription && hoverDescription}
@@ -171,14 +171,14 @@ const CheckboxOption: React.FC<CheckboxOptionProps> = ({
               />
               <Label
                 htmlFor={id}
-                className="ml-2 w-auto cursor-pointer select-none break-normal text-sm text-text-secondary hover:text-text-primary"
+                className="text-text-secondary hover:text-text-primary ml-2 w-auto cursor-pointer text-sm break-normal select-none"
               >
                 {localize(labelKey)}
               </Label>
             </div>
           }
         />
-        <Ariakit.HovercardDisclosure className="ml-1 rounded-full text-text-secondary focus:outline-none focus:ring-2 focus:ring-text-primary">
+        <Ariakit.HovercardDisclosure className="text-text-secondary focus:ring-text-primary ml-1 rounded-full focus:ring-2 focus:outline-hidden">
           <VisuallyHidden>{localize(infoKey)}</VisuallyHidden>
           {chevronDown}
         </Ariakit.HovercardDisclosure>
@@ -187,12 +187,12 @@ const CheckboxOption: React.FC<CheckboxOptionProps> = ({
         gutter={14}
         shift={40}
         flip={false}
-        className="z-[999] w-80 rounded-2xl border border-border-medium bg-surface-secondary p-4 text-text-primary shadow-md"
+        className="border-border-medium bg-surface-secondary text-text-primary z-[999] w-80 rounded-2xl border p-4 shadow-md"
         portal={true}
         unmountOnHide={true}
       >
         <div className="space-y-2">
-          <p className="text-sm text-text-secondary">{localize(infoKey)}</p>
+          <p className="text-text-secondary text-sm">{localize(infoKey)}</p>
         </div>
       </Ariakit.Hovercard>
     </Ariakit.HovercardProvider>
@@ -354,7 +354,7 @@ function Fork({
       <Ariakit.Popover
         store={popoverStore}
         gutter={10}
-        className={`popover-animate ${isActive ? 'open' : ''} flex w-60 flex-col gap-3 overflow-hidden rounded-2xl border border-border-medium bg-surface-secondary p-2 px-4 shadow-lg`}
+        className={`popover-animate ${isActive ? 'open' : ''} border-border-medium bg-surface-secondary flex w-60 flex-col gap-3 overflow-hidden rounded-2xl border p-2 px-4 shadow-lg`}
         style={{
           outline: 'none',
           pointerEvents: 'auto',
@@ -363,21 +363,21 @@ function Fork({
         portal={true}
         unmountOnHide={true}
       >
-        <div className="flex h-8 w-full items-center justify-center text-sm text-text-primary">
+        <div className="text-text-primary flex h-8 w-full items-center justify-center text-sm">
           {localize(activeSetting)}
           <Ariakit.HovercardProvider placement="right-start">
             <div className="ml-auto flex h-6 w-6 items-center justify-center gap-1">
               <Ariakit.HovercardAnchor
                 render={
                   <button
-                    className="flex h-5 w-5 cursor-help items-center rounded-full text-text-secondary"
+                    className="text-text-secondary flex h-5 w-5 cursor-help items-center rounded-full"
                     aria-label={localize('com_ui_fork_info_button_label')}
                   >
                     <InfoIcon aria-hidden="true" />
                   </button>
                 }
               />
-              <Ariakit.HovercardDisclosure className="rounded-full text-text-secondary focus:outline-none focus:ring-2 focus:ring-text-primary">
+              <Ariakit.HovercardDisclosure className="text-text-secondary focus:ring-text-primary rounded-full focus:ring-2 focus:outline-hidden">
                 <VisuallyHidden>{localize('com_ui_fork_more_info_options')}</VisuallyHidden>
                 {chevronDown}
               </Ariakit.HovercardDisclosure>
@@ -386,11 +386,11 @@ function Fork({
               gutter={19}
               shift={40}
               flip={false}
-              className="z-[999] w-80 rounded-2xl border border-border-medium bg-surface-secondary p-4 text-text-primary shadow-md"
+              className="border-border-medium bg-surface-secondary text-text-primary z-[999] w-80 rounded-2xl border p-4 shadow-md"
               portal={true}
               unmountOnHide={true}
             >
-              <div className="flex flex-col gap-2 space-y-2 text-sm text-text-secondary">
+              <div className="text-text-secondary flex flex-col gap-2 space-y-2 text-sm">
                 <span>{localize('com_ui_fork_info_1')}</span>
                 <span>{localize('com_ui_fork_info_2')}</span>
                 <span>

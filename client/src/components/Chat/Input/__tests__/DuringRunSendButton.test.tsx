@@ -40,12 +40,14 @@ const steeringStub = ({
   pausedOnApproval = false,
   canSteer = true,
   canControlGeneration = true,
-}: StubOptions) =>
+  steerInterruptsByDefault = false,
+}: StubOptions & { steerInterruptsByDefault?: boolean }) =>
   ({
     effectiveAction: canSteer ? 'steer' : 'queue',
     canSteer,
     canControlGeneration,
     pausedOnApproval,
+    steerInterruptsByDefault,
     interruptSteer: mockInterruptSteer,
     steerFromComposer: mockSteerFromComposer,
     queueFromComposer: mockQueueFromComposer,
@@ -55,9 +57,13 @@ const steeringStub = ({
 function Harness({
   steering,
   isNewConversation,
+  enterToSend,
+  disabled = false,
 }: {
   steering: SteeringControls;
   isNewConversation: boolean;
+  enterToSend: boolean;
+  disabled?: boolean;
 }) {
   const methods = useForm<{ text: string }>({ defaultValues: { text: TEXT } });
   return (
@@ -67,6 +73,8 @@ function Harness({
       isNewConversation={isNewConversation}
       getText={() => TEXT}
       onConsumed={mockOnConsumed}
+      enterToSend={enterToSend}
+      disabled={disabled}
     />
   );
 }
@@ -91,13 +99,15 @@ function openMenu(options: MenuOptions = {}) {
   render(
     <RecoilRoot
       initializeState={({ set }) => {
-        set(store.steerInterruptsByDefault, enterInterrupts);
-        set(store.enterToSend, enterToSend);
         set(store.shortcutsEnabled, shortcutsEnabled);
         set(store.customShortcuts, customShortcuts);
       }}
     >
-      <Harness steering={steeringStub(stub)} isNewConversation={isNewConversation} />
+      <Harness
+        steering={steeringStub({ ...stub, steerInterruptsByDefault: enterInterrupts })}
+        enterToSend={enterToSend}
+        isNewConversation={isNewConversation}
+      />
     </RecoilRoot>,
   );
   expect(
@@ -107,6 +117,43 @@ function openMenu(options: MenuOptions = {}) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+});
+
+describe('DuringRunSendButton — external hold', () => {
+  test('holds every open hovercard action and restores them when the hold lifts', () => {
+    const controls = steeringStub({});
+    const frame = (disabled: boolean) => (
+      <RecoilRoot>
+        <Harness steering={controls} isNewConversation={false} enterToSend disabled={disabled} />
+      </RecoilRoot>
+    );
+    const view = render(frame(false));
+    const labels = [
+      'com_ui_steer',
+      'com_ui_queue',
+      'com_ui_interrupt_steer',
+      'com_ui_interrupt_send',
+    ];
+    view.rerender(frame(true));
+    expect(screen.getByTestId('during-run-send-button')).toBeDisabled();
+    for (const label of labels) {
+      const row = screen.getByText(label).closest('button') as HTMLButtonElement;
+      expect(row).toHaveAttribute('aria-disabled', 'true');
+      expect(row.querySelector('kbd')).toBeNull();
+      fireEvent.click(row);
+    }
+    expect(mockInterruptSteer).not.toHaveBeenCalled();
+    expect(mockSteerFromComposer).not.toHaveBeenCalled();
+    expect(mockQueueFromComposer).not.toHaveBeenCalled();
+    expect(mockInterruptAndSend).not.toHaveBeenCalled();
+    expect(mockOnConsumed).not.toHaveBeenCalled();
+    view.rerender(frame(false));
+    const queue = screen.getByText('com_ui_queue').closest('button') as HTMLButtonElement;
+    expect(queue).toHaveAttribute('aria-disabled', 'false');
+    fireEvent.click(queue);
+    expect(mockQueueFromComposer).toHaveBeenCalledWith(TEXT);
+    expect(mockOnConsumed).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('DuringRunSendButton — Interrupt & steer availability', () => {

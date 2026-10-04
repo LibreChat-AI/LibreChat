@@ -29,7 +29,7 @@ import type {
   TurnFileConsumers,
 } from 'librechat-data-provider';
 import type { GenericTool, LCToolRegistry, ToolMap, LCTool } from '@librechat/agents';
-import type { IMongoFile, FileOwnerScope } from '@librechat/data-schemas';
+import type { AppConfig, IMongoFile, FileOwnerScope } from '@librechat/data-schemas';
 import type { Request, Response as ServerResponse } from 'express';
 import type {
   TFileUpdate,
@@ -58,8 +58,10 @@ import type { LCAvailableTools, RequestScopedMCPConnectionStore } from '../mcp/t
 import type { ContentTraversalLimitError } from '../protection/adapters/nested';
 import type { SkillContentInput } from '../protection/adapters/submissions';
 import type { RepositoryInstructionSource } from '../code/instructions';
+import type { ResolvedChatProjectContext } from '../projects/context';
 import type { TextContentFragment } from '../protection/types';
 import type { CheckAccessParams } from '../middleware/access';
+import type { GetProjectFiles } from '../projects/resources';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { AgentExecutionContext } from './runtime';
 import {
@@ -74,9 +76,16 @@ import {
 import {
   normalizeStatefulCodeEnvironment,
   resolveCodeExecutionContext,
+  resolveCodeExecutionWorkspaceSelections,
   type CodeEnvironmentConfig,
   type CodeExecutionContext,
 } from './execution';
+import {
+  resolveChatProjectFiles,
+  resolveChatProjectPolicyFiles,
+  toCanonicalProjectResource,
+  toRuntimeFile,
+} from '../projects/resources';
 import {
   getContentTraversalFragments,
   isContentTraversalProtected,
@@ -102,24 +111,35 @@ import {
   normalizeAgentToolKeys,
 } from '~/mcp/utils';
 import {
+  resolveAttachedWorkspaceCommandTimeoutMax,
+  resolveAttachedWorkspaceCommandTimeoutDefault,
+} from '~/code/command';
+import {
+  formatChatProjectInstructions,
+  hydrateChatProjectContextResources,
+} from '../projects/context';
+import {
   createStatefulCodeEnvironmentPolicyError,
   isFatalAgentInitializationError,
 } from './errors';
+import { assertChatProjectInstructions, ChatProjectResourcesChangedError } from '../projects/turn';
 import { extractAgentContent, extractSkillContent } from '../protection/adapters/submissions';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
-import { resolveAttachedWorkspaceCommandTimeoutMax } from '~/code/command';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
+import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isImplicitStatefulCodeRouteAvailable } from '../code/config';
+import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
+import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
 import { resolveTurnDeliveryRouting } from './files/delivery';
 import { filterFilesByEndpointRuntimeConfig } from '~/files';
+import { hasActiveFilePolicy } from '../protection/files';
 import { hasActiveFileFieldPolicy } from '~/protection';
-import { PARTIAL_RESOLVED_CONVERSATION } from './guard';
 import { applyBackgroundToolCalls } from './background';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
@@ -267,6 +287,99 @@ function appendAdditionalInstructions(agent: Agent, text?: string | null): void 
   agent.additional_instructions = [agent.additional_instructions ?? '', text]
     .filter(Boolean)
     .join('\n\n');
+}
+
+function appendProjectContextInstructions(
+  agent: Agent,
+  context: ResolvedChatProjectContext | null | undefined,
+): void {
+  const instruction = formatChatProjectInstructions(context);
+  if (instruction === '' || agent.additional_instructions?.includes(instruction)) {
+    return;
+  }
+  appendAdditionalInstructions(agent, instruction);
+}
+function addProjectFilesToFileSearch(
+  resources: AgentToolResources | undefined,
+  files: readonly TFile[] | undefined,
+  effectiveToolNames: readonly string[],
+  appConfig: AppConfig | undefined,
+  fileSearchAvailable?: boolean,
+): AgentToolResources | undefined {
+  if (files == null || files.length === 0) {
+    return resources;
+  }
+  const capabilities = appConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities ?? [];
+  if (!capabilities.includes(AgentCapabilities.file_search)) {
+    return resources;
+  }
+  if (fileSearchAvailable === false) {
+    return resources;
+  }
+  if (!effectiveToolNames.includes(Tools.file_search)) {
+    return resources;
+  }
+  const current = resources?.[EToolResources.file_search] ?? {};
+  const currentFiles = current.files ?? [];
+  const seen = new Set(currentFiles.map((file) => file.file_id));
+  const projectFiles = files.filter((file) => !seen.has(file.file_id));
+  if (projectFiles.length === 0) {
+    return resources;
+  }
+  return {
+    ...(resources ?? {}),
+    [EToolResources.file_search]: {
+      ...current,
+      files: currentFiles.concat(projectFiles),
+    },
+  };
+}
+
+async function resolveRuntimeProjectFiles({
+  context,
+  scope,
+  getProjectFiles,
+  filters,
+}: {
+  context: ResolvedChatProjectContext;
+  scope: FileOwnerScope;
+  getProjectFiles: GetProjectFiles;
+  filters?: AppConfig['filters'];
+}): Promise<TFile[]> {
+  const files = await resolveChatProjectFiles({
+    project: context,
+    resources: context.resources,
+    userId: scope.userId,
+    tenantId: scope.tenantId ?? undefined,
+    getProjectFiles,
+  });
+  if (!hasActiveFilePolicy(filters) || files.length === 0) {
+    return files;
+  }
+  const policyFiles = await resolveChatProjectPolicyFiles({
+    project: { file_ids: files.map((file) => file.file_id) },
+    userId: scope.userId,
+    tenantId: scope.tenantId ?? undefined,
+    getProjectFiles,
+  });
+  const admittedById = new Map(context.resources.map((resource) => [resource.file_id, resource]));
+  if (policyFiles.length !== files.length) {
+    throw new ChatProjectResourcesChangedError();
+  }
+  for (const file of policyFiles) {
+    const admitted = admittedById.get(file.file_id);
+    const current = toCanonicalProjectResource(file);
+    if (
+      admitted?.availability !== 'ready' ||
+      current.availability !== 'ready' ||
+      current.identity !== admitted.identity ||
+      current.version !== admitted.version
+    ) {
+      throw new ChatProjectResourcesChangedError();
+    }
+  }
+  assertModelBoundContent({ filters, files: policyFiles });
+  return policyFiles.map(toRuntimeFile);
 }
 
 /**
@@ -776,7 +889,6 @@ export type InitializedAgent = Agent & {
 };
 
 export const DEFAULT_MAX_CONTEXT_TOKENS = 32000;
-
 /** Returns true when a conversation-level choice disables an attached environment. */
 export function optsOutOfAttachedCodeEnvironment(
   agent: Agent,
@@ -870,6 +982,8 @@ export interface InitializeAgentParams {
   allowedProviders: Set<string>;
   /** Whether this is the initial agent */
   isInitialAgent?: boolean;
+  /** Enables authoritative ChatProject guidance/resources for conversation graph agents. */
+  useChatProjectContext?: boolean;
   /** Accessible skill IDs for this user (pre-computed by the caller via ACL query) */
   accessibleSkillIds?: import('mongoose').Types.ObjectId[];
   /** Whether skill file authoring should be exposed even before a user has viewable skills. */
@@ -951,6 +1065,8 @@ export interface InitializeAgentDbMethods extends EndpointDbMethods {
     fileIds?: string[],
     options?: { user?: string; tenantId?: string | null },
   ) => Promise<unknown[]>;
+  /** Get owner-scoped project files with optional content. */
+  getProjectFiles: GetProjectFiles;
   /** Get files from database */
   getFiles: (filter: unknown, sort: unknown, select: unknown) => Promise<unknown[]>;
   /** Filter files by agent access permissions (ownership or agent attachment) */
@@ -1053,7 +1169,7 @@ export async function initializeAgent(
   db?: InitializeAgentDbMethods,
 ): Promise<InitializedAgent> {
   const {
-    agent,
+    agent: inputAgent,
     loadTools,
     requestFiles = [],
     authorizedRunFiles,
@@ -1063,17 +1179,29 @@ export async function initializeAgent(
     requestBody,
     allowedProviders,
     isInitialAgent = false,
+    useChatProjectContext,
   } = params;
   const runtime =
     params.runtime ?? (params.req ? createRequestAgentExecutionContext(params.req) : null);
   if (runtime == null) {
     throw new Error('initializeAgent requires an explicit execution context');
   }
+  const shouldUseChatProjectContext =
+    useChatProjectContext ?? params.req?.chatProjectContextEnabled === true;
+  const agent = shouldUseChatProjectContext ? { ...inputAgent } : inputAgent;
   const { user, appConfig } = runtime;
   const requestFileOwnerId = user?.id;
   const requestFileOwnerScope: FileOwnerScope | undefined = requestFileOwnerId
     ? { userId: requestFileOwnerId, tenantId: user?.tenantId }
     : undefined;
+
+  if (shouldUseChatProjectContext && runtime.chatProjectContext?.instructions.trim()) {
+    assertChatProjectInstructions({
+      context: runtime.chatProjectContext,
+      filters: appConfig?.filters,
+    });
+    appendProjectContextInstructions(agent, runtime.chatProjectContext);
+  }
 
   if (!db) {
     throw new Error('initializeAgent requires db methods to be passed');
@@ -1276,7 +1404,56 @@ export async function initializeAgent(
   }
 
   let currentFiles: Array<IMongoFile | TFile> | undefined;
+  const baseToolNames = agent.tools ?? [];
+  /**
+   * Pre-resolve manually-invoked + always-apply skill primes so their
+   * `allowed-tools` can be unioned into the agent's effective tool set
+   * BEFORE project resource hydration and `loadTools` run. Project files
+   * must follow this same effective set, otherwise a skill-added
+   * `file_search` tool cannot see its eligible Project files.
+   */
+  if (hasSkillAccess) {
+    /** Skill `allowed-tools` are legacy-heal candidates too: a raw MCP key
+     * declared before the normalized-key convention would neither dedupe
+     * against the healed agent tools nor match the normalized-keyed tool
+     * map, silently dropping the skill-contributed tool. Same lazy audit
+     * and skip-on-unavailable semantics as the agent-key heal. */
+    const combinedPrimes = [...(manualSkillPrimes ?? []), ...(alwaysApplySkillPrimes ?? [])];
+    const primesNeedHeal = combinedPrimes.some((prime) =>
+      prime.allowedTools?.some((name) => name.includes(Constants.mcp_delimiter)),
+    );
+    const primeHealNames = primesNeedHeal ? await resolveHealNames() : null;
+    if (primeHealNames != null) {
+      resolvedAuditNames = primeHealNames;
+    }
+    const primesForUnion =
+      primeHealNames != null
+        ? combinedPrimes.map((prime) =>
+            prime.allowedTools?.length
+              ? {
+                  ...prime,
+                  allowedTools: normalizeAgentToolKeys({
+                    tools: prime.allowedTools,
+                    toolOptions: undefined,
+                    rawServerNames: primeHealNames,
+                  }).tools,
+                }
+              : prime,
+          )
+        : combinedPrimes;
+    if (primesForUnion.length > 0) {
+      const union = unionPrimeAllowedTools({
+        primes: primesForUnion,
+        agentToolNames: baseToolNames,
+      });
+      extraAllowedToolNames = union.extraToolNames;
+      perSkillExtras = union.perSkillExtras;
+    }
+  }
 
+  const effectiveToolNames =
+    extraAllowedToolNames.length > 0 ? [...baseToolNames, ...extraAllowedToolNames] : baseToolNames;
+  const requestedToolNames = effectiveToolNames;
   const _modelOptions = structuredClone(
     Object.assign(
       { model: agent.model },
@@ -1329,9 +1506,10 @@ export async function initializeAgent(
       resolve: params.resolveWebSearchGrant,
       getRoleByName: db.getRoleByName,
     }));
-  if (webSearchDenied && stripWebSearchPlugin(llmConfig) > 0) {
-    logger.debug(
-      `[initializeAgent] Removed the OpenRouter web search plugin; role denies WEB_SEARCH.`,
+  if (webSearchDenied) {
+    stripWebSearchPlugin(llmConfig);
+    logger.warn(
+      '[initializeAgent] Provider-native web search was requested but blocked by WEB_SEARCH.USE. Restore the role grant explicitly; removing interface.webSearch does not reset stored permissions.',
     );
   }
   const tokensModel =
@@ -1409,6 +1587,13 @@ export async function initializeAgent(
     statefulSessions: effectiveStatefulSessions,
     environment: statefulCodeEnvironment,
     environmentId: agent.code_environment_id,
+    environmentIds: agent.code_environment_ids,
+    allowEnvironmentSelection:
+      appConfig?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+    workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+      conversation: runtime.resolvedConversation,
+      request: requestBody,
+    }),
     environments: configuredCodeEnvironments,
     userId: requestFileOwnerId,
     agentId: agent.id,
@@ -1445,11 +1630,6 @@ export async function initializeAgent(
     codeEnvAvailable: params.codeEnvAvailable === true && !attachedEnvironmentOptOut,
     fileSearchAvailable: params.fileSearchAvailable,
   });
-  let runtimeToolResources = agent.tool_resources;
-  if (attachedEnvironmentOptOut && runtimeToolResources != null) {
-    runtimeToolResources = { ...runtimeToolResources };
-    delete runtimeToolResources[EToolResources.execute_code];
-  }
 
   /**
    * Load conversation files for ALL agents, not just the initial agent.
@@ -1748,6 +1928,48 @@ export async function initializeAgent(
     });
   }
 
+  const canUseProjectFileSearch =
+    shouldUseChatProjectContext &&
+    runtime.chatProjectContext != null &&
+    effectiveToolNames.includes(Tools.file_search) &&
+    params.fileSearchAvailable !== false &&
+    (appConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities ?? []).includes(
+      AgentCapabilities.file_search,
+    );
+  let projectRuntimeFiles: TFile[] = [];
+  if (canUseProjectFileSearch && runtime.chatProjectContext != null && requestFileOwnerScope) {
+    runtime.chatProjectContextResourcesPromise ??=
+      params.req?.chatProjectContextResourcesPromise ??
+      hydrateChatProjectContextResources(runtime.chatProjectContext, {
+        userId: requestFileOwnerScope.userId,
+        tenantId: requestFileOwnerScope.tenantId,
+        getProjectFiles: db.getProjectFiles,
+      });
+    if (params.req) {
+      params.req.chatProjectContextResourcesPromise = runtime.chatProjectContextResourcesPromise;
+    }
+    runtime.chatProjectContext = await runtime.chatProjectContextResourcesPromise;
+    if (params.req) {
+      params.req.chatProjectContext = runtime.chatProjectContext;
+    }
+    runtime.chatProjectFilesPromise ??=
+      params.req?.chatProjectFilesPromise ??
+      resolveRuntimeProjectFiles({
+        context: runtime.chatProjectContext,
+        getProjectFiles: db.getProjectFiles,
+        scope: requestFileOwnerScope,
+        filters: appConfig?.filters,
+      });
+    if (params.req) {
+      params.req.chatProjectFilesPromise = runtime.chatProjectFilesPromise;
+    }
+    projectRuntimeFiles = await runtime.chatProjectFilesPromise;
+    runtime.chatProjectFiles = projectRuntimeFiles;
+    if (params.req) {
+      params.req.chatProjectFiles = projectRuntimeFiles;
+    }
+  }
+
   /**
    * Usage accounting is the first file mutation. It runs only after every
    * hydrated file in the exact snapshot above has passed endpoint filtering
@@ -1767,6 +1989,11 @@ export async function initializeAgent(
     });
   }
 
+  let runtimeToolResources = agent.tool_resources;
+  if (attachedEnvironmentOptOut && runtimeToolResources != null) {
+    runtimeToolResources = { ...runtimeToolResources };
+    delete runtimeToolResources[EToolResources.execute_code];
+  }
   const {
     attachments: primedAttachments,
     requestAttachments: primedRequestAttachments,
@@ -1792,6 +2019,8 @@ export async function initializeAgent(
     provisionCandidates: deferredProvisionFiles as unknown as TFile[],
     codeRouteKey: codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
     codeBaseUrl: codeExecutionContext.baseUrl,
+    codeExecutionProfile: codeExecutionContext.executionProfile,
+    codeBridgeWorkerId: codeExecutionContext.bridgeWorkerId,
     screenPersistentFiles: (files) => {
       /* Persistent agent files are read inside primeResources, so they miss both checks
        * the caller already applied to this turn's other files. They face the same
@@ -1827,71 +2056,23 @@ export async function initializeAgent(
       });
     },
   });
-
-  /**
-   * Pre-resolve manually-invoked + always-apply skill primes so their
-   * `allowed-tools` can be unioned into the agent's effective tool set
-   * BEFORE `loadTools` runs. Single load is correctness-critical: a
-   * second `loadTools` pass would compute its own `userMCPAuthMap` /
-   * `toolContextMap` / OAuth flow state that the InitializedAgent never
-   * sees, so an MCP tool added via `allowed-tools` would be visible to
-   * the model but fail at execution time without its per-user auth
-   * context.
-   *
-   * Resolution uses `params.accessibleSkillIds` (not the active-filtered
-   * subset that `injectSkillCatalog` will produce later) — see
-   * `resolveManualSkills` doc for why a skill outside the catalog cap can
-   * still be authorizable for direct manual invocation.
-   *
-   * Manual + always-apply primes feed the same `unionPrimeAllowedTools`
-   * call — the helper is pure / set-based, so concatenating the two
-   * lists gives the right union with no double-counting. Manual primes
-   * go first so their names win on dedup (primes earlier in the list
-   * contribute before the same name gets deduped on a later prime).
-   */
-  if (hasSkillAccess) {
-    /** Skill `allowed-tools` are legacy-heal candidates too: a raw MCP key
-     *  declared before the normalized-key convention would neither dedupe
-     *  against the healed agent tools nor match the normalized-keyed tool
-     *  map, silently dropping the skill-contributed tool. Same lazy audit
-     *  and skip-on-unavailable semantics as the agent-key heal. */
-    const combinedPrimes = [...(manualSkillPrimes ?? []), ...(alwaysApplySkillPrimes ?? [])];
-    const primesNeedHeal = combinedPrimes.some((prime) =>
-      prime.allowedTools?.some((name) => name.includes(Constants.mcp_delimiter)),
-    );
-    const primeHealNames = primesNeedHeal ? await resolveHealNames() : null;
-    if (primeHealNames != null) {
-      resolvedAuditNames = primeHealNames;
+  runtimeToolResources = addProjectFilesToFileSearch(
+    tool_resources,
+    projectRuntimeFiles,
+    effectiveToolNames,
+    appConfig,
+    params.fileSearchAvailable,
+  );
+  const dropFileSearchResources = (): void => {
+    if (runtimeToolResources?.[EToolResources.file_search] == null) {
+      return;
     }
-    const primesForUnion =
-      primeHealNames != null
-        ? combinedPrimes.map((prime) =>
-            prime.allowedTools?.length
-              ? {
-                  ...prime,
-                  allowedTools: normalizeAgentToolKeys({
-                    tools: prime.allowedTools,
-                    toolOptions: undefined,
-                    rawServerNames: primeHealNames,
-                  }).tools,
-                }
-              : prime,
-          )
-        : combinedPrimes;
-    if (primesForUnion.length > 0) {
-      const union = unionPrimeAllowedTools({
-        primes: primesForUnion,
-        agentToolNames: agent.tools ?? [],
-      });
-      extraAllowedToolNames = union.extraToolNames;
-      perSkillExtras = union.perSkillExtras;
-    }
+    const { [EToolResources.file_search]: _fileSearch, ...remaining } = runtimeToolResources;
+    runtimeToolResources = Object.keys(remaining).length > 0 ? remaining : undefined;
+  };
+  if (params.fileSearchAvailable === false || !effectiveToolNames.includes(Tools.file_search)) {
+    dropFileSearchResources();
   }
-
-  const baseToolNames = agent.tools ?? [];
-  const requestedToolNames =
-    extraAllowedToolNames.length > 0 ? [...baseToolNames, ...extraAllowedToolNames] : baseToolNames;
-
   /**
    * `loadTools` failures take two forms:
    *   1. The wrapper throws — rare; only when something around the
@@ -1917,7 +2098,7 @@ export async function initializeAgent(
       tools,
       model: agent.model,
       tool_options: agent.tool_options,
-      tool_resources,
+      tool_resources: runtimeToolResources,
       requestBody,
       codeExecutionContext,
       accessibleMcpServerNames: resolvedAuditNames,
@@ -1942,6 +2123,9 @@ export async function initializeAgent(
         `[allowedTools] loadTools threw with ${extraAllowedToolNames.length} skill-added extra(s); retrying without them`,
         { errorName: err instanceof Error ? err.name : 'UnknownError' },
       );
+      if (!baseToolNames.includes(Tools.file_search)) {
+        dropFileSearchResources();
+      }
       loadToolsResult = await callLoadTools(baseToolNames);
     } else {
       throw err;
@@ -1954,6 +2138,9 @@ export async function initializeAgent(
     logger.warn(
       `[allowedTools] loadTools returned no result with ${extraAllowedToolNames.length} skill-added extra(s); retrying without them.`,
     );
+    if (!baseToolNames.includes(Tools.file_search)) {
+      dropFileSearchResources();
+    }
     loadToolsResult = await callLoadTools(baseToolNames);
   }
 
@@ -2000,6 +2187,19 @@ export async function initializeAgent(
       ? resolveAttachedWorkspaceCommandTimeoutMax(
           trustedCodeExecutionContext.codeEnvironmentConfigSchema,
           trustedCodeExecutionContext.codeWorkspace?.maxCommandTimeoutMs,
+        )
+      : undefined;
+  const attachedWorkspaceCommandTimeoutDefaultMs =
+    trustedCodeExecutionContext.environmentType === 'attached'
+      ? resolveAttachedWorkspaceCommandTimeoutDefault(
+          trustedCodeExecutionContext.codeEnvironmentConfigSchema?.limits?.defaultCommandTimeoutMs,
+          attachedWorkspaceCommandTimeoutMaxMs,
+        )
+      : undefined;
+  const attachedWorkspaceReadFileDefaultLines =
+    trustedCodeExecutionContext.environmentType === 'attached'
+      ? resolveAttachedWorkspaceReadFileLines(
+          trustedCodeExecutionContext.codeEnvironmentConfigSchema,
         )
       : undefined;
   if (
@@ -2085,8 +2285,11 @@ export async function initializeAgent(
       workspaceTools: attachedWorkspaceTools,
       workspaceOperations: attachedWorkspaceOperations,
       workspaceCommandTimeoutMaxMs: attachedWorkspaceCommandTimeoutMaxMs,
+      workspaceCommandTimeoutDefaultMs: attachedWorkspaceCommandTimeoutDefaultMs,
+      workspaceReadFileDefaultLines: attachedWorkspaceReadFileDefaultLines,
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
+      workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
     });
     toolDefinitions = codeExecResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.execute_code, codeExecResult.toolNames);
@@ -2138,6 +2341,8 @@ export async function initializeAgent(
       workspaceTools: attachedWorkspaceTools,
       workspaceOperations: attachedWorkspaceOperations,
       workspaceCommandTimeoutMaxMs: attachedWorkspaceCommandTimeoutMaxMs,
+      workspaceCommandTimeoutDefaultMs: attachedWorkspaceCommandTimeoutDefaultMs,
+      workspaceReadFileDefaultLines: attachedWorkspaceReadFileDefaultLines,
     });
     toolDefinitions = skillReadResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.skills, skillReadResult.toolNames);
@@ -2331,8 +2536,11 @@ export async function initializeAgent(
       workspaceOperations: attachedWorkspaceOperations,
       userId: user?.id,
       workspaceCommandTimeoutMaxMs: attachedWorkspaceCommandTimeoutMaxMs,
+      workspaceCommandTimeoutDefaultMs: attachedWorkspaceCommandTimeoutDefaultMs,
+      workspaceReadFileDefaultLines: attachedWorkspaceReadFileDefaultLines,
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
+      workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
       skillStates: params.skillStates,
       defaultActiveOnShare: params.defaultActiveOnShare,
       maxCatalogSkills: getMaxCatalogSkills(runtime),
@@ -2499,7 +2707,7 @@ export async function initializeAgent(
     toolRegistry,
     mcpAvailableTools,
     requestScopedConnections,
-    tool_resources,
+    tool_resources: runtimeToolResources,
     userMCPAuthMap,
     toolDefinitions,
     hasDeferredTools,
@@ -2547,5 +2755,13 @@ export async function initializeAgent(
     endpointTokenConfig: options.endpointTokenConfig,
   };
 
+  prepareQueuedCodeFileContext(initializedAgent, [initializedAgent], user?.id);
+  const queuedFileContext = initializedAgent.dynamicToolContextMap?.queued_code_files;
+  if (typeof queuedFileContext === 'string') {
+    assertModelBoundContent({
+      filters: appConfig?.filters,
+      files: [{ content: queuedFileContext }],
+    });
+  }
   return initializedAgent;
 }
