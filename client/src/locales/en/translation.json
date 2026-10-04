@@ -2519,6 +2519,7 @@
   "com_ui_send_now": "Send now",
   "com_ui_send_now_paused": "Available after you respond to the pending request",
   "com_ui_sending": "Sending...",
+  "com_ui_url_settings_failed": "Chat settings could not be applied. Review them before sending.",
   "com_ui_set": "Set",
   "com_ui_settings_label_2fa": "Two-factor authentication",
   "com_ui_settings_label_agent_api_keys": "Agent API keys",

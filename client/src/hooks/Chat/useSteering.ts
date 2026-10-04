@@ -546,6 +546,8 @@ export interface UseSteeringParams {
   addedConversation?: TConversation | null;
   isSubmitting: boolean;
   answerModeActive: boolean;
+  /** Host-owned preparation hold; existing queued-message and Stop actions remain independent. */
+  composerDisabled?: boolean;
   /** Composer attachments: consumed into queued items (steering is text-only). */
   files?: Map<string, ExtendedFile>;
   setFiles?: FileSetter;
@@ -581,6 +583,7 @@ export default function useSteering({
   addedConversation,
   isSubmitting,
   answerModeActive,
+  composerDisabled = false,
   files,
   setFiles,
   filesLoading = false,
@@ -588,6 +591,8 @@ export default function useSteering({
   stopGenerating,
 }: UseSteeringParams) {
   const localize = useLocalize();
+  const composerDisabledRef = useRef(composerDisabled);
+  composerDisabledRef.current = composerDisabled;
   const reasoningStore = useStore();
   const { showToast } = useToastContext();
   const jotaiStore = useStore();
@@ -2216,7 +2221,7 @@ export default function useSteering({
   const steerFromComposer = useCallback(
     (text: string, preempt = false): boolean => {
       const trimmed = text.trim();
-      if (trimmed.length === 0 || filesLoading || !canSteer) {
+      if (composerDisabledRef.current || trimmed.length === 0 || filesLoading || !canSteer) {
         return false;
       }
       /** A live steer cannot change the provider request already in flight.
@@ -2255,7 +2260,7 @@ export default function useSteering({
   const queueFromComposer = useCallback(
     (text: string): boolean => {
       const trimmed = text.trim();
-      if (trimmed.length === 0 || filesLoading) {
+      if (composerDisabledRef.current || trimmed.length === 0 || filesLoading) {
         return false;
       }
       enqueue(trimmed, {
@@ -2498,7 +2503,12 @@ export default function useSteering({
   const interruptAndSend = useCallback(
     (text: string): boolean => {
       const trimmed = text.trim();
-      if (trimmed.length === 0 || filesLoading || !canControlGeneration) {
+      if (
+        composerDisabledRef.current ||
+        trimmed.length === 0 ||
+        filesLoading ||
+        !canControlGeneration
+      ) {
         return false;
       }
       enqueue(trimmed, {
@@ -2545,7 +2555,13 @@ export default function useSteering({
   const interruptSteer = useCallback(
     (text: string): boolean => {
       const trimmed = text.trim();
-      if (trimmed.length === 0 || filesLoading || pausedOnApproval || !canControlGeneration) {
+      if (
+        composerDisabledRef.current ||
+        trimmed.length === 0 ||
+        filesLoading ||
+        pausedOnApproval ||
+        !canControlGeneration
+      ) {
         return false;
       }
       /* A staged reasoning choice belongs to a new generation, which a steer
@@ -2585,7 +2601,7 @@ export default function useSteering({
   /** Routes a during-run submit to the effective action. Returns true when consumed. */
   const submitDuringRun = useCallback(
     (text: string): boolean => {
-      if (!duringRunActive) {
+      if (composerDisabledRef.current || !duringRunActive) {
         return false;
       }
       if (effectiveAction === 'steer') {

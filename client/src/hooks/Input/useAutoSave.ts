@@ -65,6 +65,14 @@ export const useAutoSave = ({
   const { data: fileList } = useGetFiles<TFile[]>();
   const filesRef = useRef(files);
   filesRef.current = files;
+  const preservedTextRef = useRef<{ id: string; text: string } | null>(null);
+  const readTextToSave = useCallback(
+    (id: string) =>
+      preservedTextRef.current?.id === id
+        ? preservedTextRef.current.text
+        : (textAreaRef?.current?.value ?? ''),
+    [textAreaRef],
+  );
 
   /** Publishes what this composer holds so cleanup running in another tab can see it. Not gated
    * on `saveDrafts`: with draft saving off nothing is persisted at all, which is exactly when a
@@ -203,14 +211,14 @@ export const useAutoSave = ({
       if (!textAreaRef?.current) {
         return;
       }
-      // Save the draft of the current conversation before switching
-      if (textAreaRef.current.value === '') {
+      const text = readTextToSave(id);
+      if (text === '') {
         clearDraft(id);
       } else {
-        setDraft({ id, value: textAreaRef.current.value });
+        setDraft({ id, value: text });
       }
     },
-    [textAreaRef],
+    [textAreaRef, readTextToSave],
   );
   /** The key this composer reads and writes right now. It is the conversation, except while the
    * switch effect has parked storage on the pending key because the destination is not writable.
@@ -219,6 +227,38 @@ export const useAutoSave = ({
    * which after a send put the just-sent attachment straight back as a chip. */
   const activeStorageId =
     currentConversationId === pendingDraftId ? pendingDraftId : conversationId;
+  /** Snapshot before a URL prompt replaces text; user input resumes normal persistence. */
+  const preserveText = useCallback(() => {
+    if (!saveDrafts || !activeStorageId || !textAreaRef?.current) {
+      return;
+    }
+    if (preservedTextRef.current?.id === activeStorageId) {
+      return;
+    }
+    preservedTextRef.current = { id: activeStorageId, text: textAreaRef.current.value };
+    saveText(activeStorageId);
+  }, [saveDrafts, activeStorageId, textAreaRef, saveText]);
+
+  /** A retained replacement becomes its destination draft, not the departing source draft. */
+  const settleText = useCallback(
+    (text: string, targetConversationId: string | null | undefined = _conversationId) => {
+      let id = targetConversationId;
+      if (targetConversationId === _conversationId) {
+        id = activeStorageId;
+      } else if (targetConversationId === Constants.NEW_CONVO) {
+        id = getNewConversationDraftId(index);
+      }
+      if (!saveDrafts || !id) {
+        return;
+      }
+      if (preservedTextRef.current?.id === id) {
+        preservedTextRef.current = null;
+      }
+      setDraft({ id, value: text });
+    },
+    [saveDrafts, activeStorageId, _conversationId, index],
+  );
+
   /** Only autosave knows whether a foreign tab kept this composer on the
    * pending key. Submission consumes that actual key under its ownership guard. */
   const consumeDraft = useCallback(() => {
@@ -240,7 +280,7 @@ export const useAutoSave = ({
      * clears the composer programmatically, so a write still in flight would
      * otherwise land after the submit and restore the just-sent text. */
     const saveLatest = () =>
-      setDraft({ id: draftStorageId, value: textAreaRef?.current?.value ?? '' });
+      setDraft({ id: draftStorageId, value: readTextToSave(draftStorageId) });
 
     /** Use shorter debounce for saving text (25ms) to capture rapid typing */
     const handleInputFast = debounce(saveLatest, 25);
@@ -251,6 +291,9 @@ export const useAutoSave = ({
     const eventListener = (e: Event) => {
       const target = e.target as HTMLTextAreaElement;
       const value = target.value;
+      if (preservedTextRef.current?.id === draftStorageId) {
+        preservedTextRef.current = null;
+      }
 
       /** Cancel any pending operations to avoid conflicts */
       handleInputFast.cancel();
@@ -284,7 +327,7 @@ export const useAutoSave = ({
       handleInputFast.flush();
       handleInputSlow.flush();
     };
-  }, [activeStorageId, saveDrafts, textAreaRef]);
+  }, [activeStorageId, saveDrafts, textAreaRef, readTextToSave]);
 
   const prevConversationIdRef = useRef<string | null>(null);
   const pendingDestinationRef = useRef<string | null>(null);
@@ -402,6 +445,9 @@ export const useAutoSave = ({
         saveText(currentConversationId);
       }
 
+      if (preservedTextRef.current?.id !== nextConversationId) {
+        preservedTextRef.current = null;
+      }
       if (isFilesDraftOwnedByThisTab(getFilesDraft(filesDraftId))) {
         const pendingPastes = restoreFiles(filesDraftId);
         restoreText(textDraftId, pendingPastes);
@@ -487,5 +533,5 @@ export const useAutoSave = ({
     });
   }, [conversationId, saveDrafts, currentConversationId, fileIds, files]);
 
-  return consumeDraft;
+  return { consumeDraft, preserveText, settleText };
 };

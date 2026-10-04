@@ -107,6 +107,8 @@ interface ChatFormProps {
   index: number;
   placeholder?: string;
   project?: TChatProject;
+  /** The host is reconciling the requested route with its conversation record. */
+  routePending: boolean;
   /** Owned by ChatView: which layout the composer sits in — the welcome screen
    *  floats or bottoms it out, a conversation ends the page with it. */
   isLandingPage: boolean;
@@ -160,6 +162,7 @@ const ChatForm = memo(function ChatForm({
   index,
   placeholder,
   project,
+  routePending,
   isLandingPage,
   enterToSend,
   autoSendText,
@@ -317,7 +320,7 @@ const ChatForm = memo(function ChatForm({
    *  collapsed batch is neither, it hands the composer back to the thread. */
   const composerReserved = answerMode.composerAnswers || answerMode.composerLocked;
 
-  const consumeDraft = useAutoSave({
+  const { consumeDraft, preserveText, settleText } = useAutoSave({
     index,
     files,
     setFiles,
@@ -328,6 +331,17 @@ const ChatForm = memo(function ChatForm({
     // swap to the answer's own key, and the conversation draft is restored
     // when the question resolves.
     draftId: answerMode.draftId,
+  });
+
+  const {
+    isPreparing: isPreparingFromUrl,
+    settingsError: urlSettingsError,
+    clearSettingsError,
+  } = useQueryParams({
+    textAreaRef,
+    routePending,
+    onBeforePrompt: preserveText,
+    onPromptSettled: settleText,
   });
 
   const pastedTextEdit = usePastedTextEdit({ index, files, setFiles, textAreaRef });
@@ -410,6 +424,7 @@ const ChatForm = memo(function ChatForm({
     conversation,
     isSubmitting,
     answerModeActive: composerReserved,
+    composerDisabled: isPreparingFromUrl,
     files,
     setFiles,
     filesLoading,
@@ -462,8 +477,7 @@ const ChatForm = memo(function ChatForm({
     textAreaRef,
     submitButtonRef,
     setIsScrollable,
-    /* Only picks the missing-key placeholder; a batch lock is applied to the
-       textarea itself and keeps its own "answer above" placeholder. */
+    /* Only picks the missing-key placeholder; preparation and answer holds live on the textarea. */
     disabled: disableInputs,
     // The composer IS the free-form answer box while a question pause is live.
     placeholder: composerReserved ? answerPlaceholder : placeholder,
@@ -473,8 +487,6 @@ const ChatForm = memo(function ChatForm({
     answerModeActive: answerMode.composerAnswers,
     enterToSend,
   });
-
-  useQueryParams({ textAreaRef });
 
   /** Attachments stand in for text only on the normal send path. Answer mode
    *  hands the composer text straight to the paused run, which answers with
@@ -535,7 +547,11 @@ const ChatForm = memo(function ChatForm({
   const { submitText: submitAnswerText } = answerMode;
   const dictationAnswerModeActive = answerMode.composerAnswers;
   const speechDisabled =
-    !speechSettingsInitialized || disableInputs || isNotAppendable || answerMode.composerLocked;
+    !speechSettingsInitialized ||
+    disableInputs ||
+    isNotAppendable ||
+    answerMode.composerLocked ||
+    isPreparingFromUrl;
   /** The same gate `onSubmit` applies: while a question pause is live the
    * composer IS the answer box, so a dictated turn has to answer it rather
    * than start a turn the paused run would drop. */
@@ -597,7 +613,7 @@ const ChatForm = memo(function ChatForm({
         stop={handleStopGenerating}
         setShowStopButton={setShowStopButton}
         canStop={canStop}
-        hidden={sendOwnsSlot}
+        hidden={sendOwnsSlot && !isPreparingFromUrl}
       />
     ) : null;
     if (sendOwnsSlot) {
@@ -610,7 +626,7 @@ const ChatForm = memo(function ChatForm({
             isNewConversation={isNewConversation}
             getText={() => methods.getValues('text')}
             onConsumed={consumeComposer}
-            disabled={filesLoading}
+            disabled={filesLoading || isPreparingFromUrl}
             enterToSend={enterToSend}
           />
           {stopButton}
@@ -621,6 +637,7 @@ const ChatForm = memo(function ChatForm({
   }, [
     consumeComposer,
     isNewConversation,
+    isPreparingFromUrl,
     steering,
     textValue,
     methods,
@@ -651,6 +668,7 @@ const ChatForm = memo(function ChatForm({
               fileCount={submittableFileCount}
               disabled={
                 filesLoading ||
+                isPreparingFromUrl ||
                 disableInputs ||
                 !codeWorkspace.canSubmit ||
                 isNotAppendable ||
@@ -661,6 +679,7 @@ const ChatForm = memo(function ChatForm({
           ),
     [
       codeWorkspace.canSubmit,
+      isPreparingFromUrl,
       endpoint,
       duringRunSlot,
       filesLoading,
@@ -727,7 +746,9 @@ const ChatForm = memo(function ChatForm({
   return (
     <form
       onSubmit={methods.handleSubmit((data) => {
-        submitComposerText(data);
+        if (!isPreparingFromUrl && submitComposerText(data) !== false) {
+          clearSettingsError();
+        }
       })}
       className={cn(
         /* `margin-bottom` is animated as well as `max-width`: it is what carries
@@ -883,7 +904,12 @@ const ChatForm = memo(function ChatForm({
                           textAreaRef as React.MutableRefObject<HTMLTextAreaElement | null>
                         ).current = e;
                       }}
-                      disabled={disableInputs || isNotAppendable || answerMode.composerLocked}
+                      disabled={
+                        disableInputs ||
+                        isNotAppendable ||
+                        answerMode.composerLocked ||
+                        isPreparingFromUrl
+                      }
                       onPaste={handlePaste}
                       onKeyDown={(e) => {
                         // Answer mode consumes option-navigation keys from the
@@ -937,6 +963,11 @@ const ChatForm = memo(function ChatForm({
                     </div>
                   </div>
                 </div>
+              )}
+              {(isPreparingFromUrl || urlSettingsError) && (
+                <p role="status" className="text-text-secondary px-5 pb-2 text-sm">
+                  {localize(urlSettingsError ? 'com_ui_url_settings_failed' : 'com_ui_sending')}
+                </p>
               )}
               {(codeWorkspace.state === 'choose' || codeWorkspace.state === 'missing') && (
                 <p
@@ -1038,6 +1069,7 @@ function ChatFormWrapper({
   index = 0,
   placeholder,
   project,
+  routePending = false,
   isLandingPage,
   /** Defaults to the atom's own default (`atomWithLocalStorage('enterToSend',
    *  true)`) so call sites that predate this prop, mainly tests, keep their
@@ -1053,6 +1085,7 @@ function ChatFormWrapper({
   index?: number;
   placeholder?: string;
   project?: TChatProject;
+  routePending?: boolean;
   enterToSend?: boolean;
   autoSendText?: number;
   speechSettingsInitialized?: boolean;
@@ -1137,6 +1170,7 @@ function ChatFormWrapper({
       speechSettingsInitialized={speechSettingsInitialized}
       placeholder={placeholder}
       project={project}
+      routePending={routePending}
       isLandingPage={isLandingPage}
       footerBelow={footerBelow}
       centerFormOnLanding={centerFormOnLanding}
