@@ -25,47 +25,17 @@
     "test:ci": {
       "dependsOn": ["^build"],
       "cache": false,
-      "env": [
-        "CI",
-        "COVERAGE",
-        "RUN_*_LIVE_TESTS",
-        "LIBRECHAT_CODE_TEST_*",
-        "GRAPH_SUBAGENT_*",
-        "ANTHROPIC_USAGE_LIVE_MODEL",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY"
-      ],
-      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
+      "passThroughEnv": ["*"]
     },
     "@librechat/data-schemas#test:ci": {
       "dependsOn": ["^build", "librechat-data-provider#build"],
       "cache": false,
-      "env": [
-        "CI",
-        "COVERAGE",
-        "RUN_*_LIVE_TESTS",
-        "LIBRECHAT_CODE_TEST_*",
-        "GRAPH_SUBAGENT_*",
-        "ANTHROPIC_USAGE_LIVE_MODEL",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY"
-      ],
-      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
+      "passThroughEnv": ["*"]
     },
     "@librechat/api#test:ci": {
       "dependsOn": ["^build", "librechat-data-provider#build", "@librechat/data-schemas#build"],
       "cache": false,
-      "env": [
-        "CI",
-        "COVERAGE",
-        "RUN_*_LIVE_TESTS",
-        "LIBRECHAT_CODE_TEST_*",
-        "GRAPH_SUBAGENT_*",
-        "ANTHROPIC_USAGE_LIVE_MODEL",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY"
-      ],
-      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
+      "passThroughEnv": ["*"]
     },
     "@librechat/data-schemas#build": {
       "dependsOn": ["^build", "librechat-data-provider#build"],

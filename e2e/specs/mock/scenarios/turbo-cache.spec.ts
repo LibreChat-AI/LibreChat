@@ -9,7 +9,7 @@ import { inOneProject, repoRoot } from './lint.helpers';
  * build bakes in has to reach its hash. `npm run test:turbo` runs the unit suites
  * in parallel but never replays a result: a suite here reads fixtures, env files
  * and source from other workspaces, so no input list could make a cached pass
- * trustworthy. These scenarios read Turbo's own dry-run plan for the checkout;
+ * trustworthy. With no cache to key, every caller variable is passed through. These scenarios read Turbo's own dry-run plan for the checkout;
  * nothing runs and nothing is written.
  */
 
@@ -18,25 +18,29 @@ type DryTask = {
   hash: string;
   dependencies: string[];
   inputs: Record<string, string>;
-  resolvedTaskDefinition: { cache: boolean; env: string[] };
+  resolvedTaskDefinition: { cache: boolean };
+  environmentVariables: { passthrough: string[] | null };
 };
 
 const TURBO = resolve(repoRoot, 'node_modules/.bin/turbo');
-const SUITES = [
-  '@librechat/frontend',
-  '@librechat/backend',
-  '@librechat/api',
-  'librechat-data-provider',
-  '@librechat/data-schemas',
-];
+const rootScripts = (
+  JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as {
+    scripts: Record<string, string>;
+  }
+).scripts;
+/** The workspaces `npm run test:turbo` selects, read from the script itself. */
+const SUITES = [...rootScripts['test:turbo'].matchAll(/--filter=(\S+)/g)].map((match) => match[1]);
 
-function plan(task: string, env: Record<string, string> = {}): Map<string, DryTask> {
+function plan(
+  task: string,
+  env: Record<string, string> = {},
+  filters: string[] = SUITES,
+): Map<string, DryTask> {
   const base = { ...process.env };
-  delete base.RUN_USAGE_LIVE_TESTS;
   delete base.VITE_ENABLE_LOGGER;
   const result = spawnSync(
     TURBO,
-    ['run', task, '--dry=json', ...SUITES.map((name) => `--filter=${name}`)],
+    ['run', task, '--dry=json', ...filters.map((name) => `--filter=${name}`)],
     {
       cwd: repoRoot,
       encoding: 'utf8',
@@ -61,6 +65,11 @@ test.describe('the parallel test runner', () => {
   test.beforeEach(() => {
     inOneProject();
     test.setTimeout(120_000);
+  });
+
+  test('the runner covers every workspace with a test suite @scenario:test-turbo-covers-every-workspace-suite', () => {
+    const everySuite = [...plan('test:ci', {}, []).keys()].filter((id) => id.endsWith('#test:ci'));
+    expect(SUITES.map((name) => `${name}#test:ci`).sort()).toEqual(everySuite.sort());
   });
 
   test('every suite runs instead of replaying a cached result @scenario:test-turbo-always-runs-every-suite', () => {
@@ -90,17 +99,19 @@ test.describe('the parallel test runner', () => {
     );
   });
 
-  test('live-suite switches and credentials reach jest @scenario:live-suite-env-reaches-jest', () => {
-    const tasks = plan('test:ci');
-    for (const name of SUITES) {
-      expect(get(tasks, `${name}#test:ci`).resolvedTaskDefinition.env, name).toEqual(
-        expect.arrayContaining([
-          'RUN_*_LIVE_TESTS',
-          'LIBRECHAT_CODE_TEST_*',
-          'ANTHROPIC_API_KEY',
-          'OPENAI_API_KEY',
-        ]),
+  test('every variable the caller sets reaches jest @scenario:live-suite-env-reaches-jest', () => {
+    const names = [
+      'RUN_USAGE_LIVE_TESTS',
+      'OPENWEATHER_API_KEY',
+      'MONGOMS_SYSTEM_BINARY',
+      'TMPDIR',
+    ];
+    const tasks = plan('test:ci', Object.fromEntries(names.map((name) => [name, '/tmp/x'])));
+    for (const suite of SUITES) {
+      const passed = (get(tasks, `${suite}#test:ci`).environmentVariables.passthrough ?? []).map(
+        (entry) => entry.slice(0, entry.indexOf('=')),
       );
+      expect(passed, suite).toEqual(expect.arrayContaining(names));
     }
   });
 });
