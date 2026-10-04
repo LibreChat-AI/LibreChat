@@ -174,6 +174,7 @@ export default function FileAuthoringCall({
     isSubmitting,
     output,
     hasInput: !!filePath || !!preview,
+    panelReady: !!preview,
     onExpand,
     runStepStatus,
   });

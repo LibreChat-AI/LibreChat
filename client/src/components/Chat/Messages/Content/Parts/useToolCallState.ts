@@ -46,6 +46,10 @@ export interface UseToolCallStateInput {
   /** Keep the card's own row even as the only call, for a state its phase does
    *  not carry (a detached task still running after its dispatch step closed). */
   keepRow?: boolean;
+  /** Whether the panel has a body to show. Defaults to `hasContent`; a card
+   *  whose panel needs more than its input (a read file's output) passes its
+   *  own, so a sole call never loses its row to an empty panel. */
+  panelReady?: boolean;
 }
 
 export default function useToolCallState({
@@ -58,6 +62,7 @@ export default function useToolCallState({
   extraError = false,
   extraCancelled = false,
   keepRow = false,
+  panelReady,
 }: UseToolCallStateInput): ToolCallState {
   const hasOutput = output.length > 0;
   const hasContent = hasInput || hasOutput;
@@ -90,7 +95,10 @@ export default function useToolCallState({
    *  runs, or once it failed or was stopped, the row is the only place that
    *  says so, and `keepRow` covers a state the phase cannot express. */
   const bare =
-    useContext(SoleToolContext) === true && hasContent && phase === 'completed' && !keepRow;
+    useContext(SoleToolContext) === true &&
+    (panelReady ?? hasContent) &&
+    phase === 'completed' &&
+    !keepRow;
   const [expanded, setExpansionOverride] = useToolExpansion(hasContent);
   const showCode = bare || expanded;
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showCode);

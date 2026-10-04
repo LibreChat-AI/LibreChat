@@ -73,6 +73,7 @@ export default function BackgroundTaskCall({
     isSubmitting,
     output,
     hasInput: hasParams || (attachments?.length ?? 0) > 0,
+    panelReady: display != null,
     onExpand,
     runStepStatus,
     extraError: outcome === 'failed',

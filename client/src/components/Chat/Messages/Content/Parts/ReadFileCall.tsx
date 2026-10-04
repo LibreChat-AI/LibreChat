@@ -100,6 +100,7 @@ export default function ReadFileCall({
       isSubmitting,
       output,
       hasInput: !!filePath,
+      panelReady: output.length > 0,
       onExpand,
       runStepStatus,
     },

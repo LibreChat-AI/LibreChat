@@ -44,6 +44,7 @@ export default function SkillCall({
       isSubmitting,
       output,
       hasInput: !!parsedSkillName,
+      panelReady: output.length > 0,
       onExpand,
       runStepStatus,
     },

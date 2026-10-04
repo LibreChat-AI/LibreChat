@@ -988,6 +988,29 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toBeInTheDocument();
   });
 
+  it('does not call a stopped lone code call "ran"', () => {
+    const cancelled = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-c',
+        name: 'execute_code',
+        args: '{}',
+        output: '',
+        runStepStatus: 'cancelled',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: cancelled, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it('keeps repeated action counts and failed-call status in the compact summary', () => {
     renderGroup({
       ...baseProps,
