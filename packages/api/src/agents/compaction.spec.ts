@@ -736,6 +736,21 @@ describe('resolveFinalizedCompactionTurn', () => {
     expect(resolveFinalizedCompactionTurn(snapshot, { compact: true })).toEqual({ write: true });
   });
 
+  /** A stopped compaction is written settled by the abort route, and an
+   *  error row is settled by its own write: a late failure leaves both. */
+  it.each([
+    ['a settled error row', [{ type: ContentTypes.ERROR, error: 'Summarization failed' }], true],
+    [
+      'a settled stopped row',
+      [{ type: ContentTypes.SUMMARY, content: [], summarizing: true, initiatedBy: 'user' }],
+      false,
+    ],
+  ])('leaves %s untouched', (_label, content, error) => {
+    const row = { unfinished: false, error, content: content as TMessageContentParts[] };
+
+    expect(resolveFinalizedCompactionTurn(row, { compact: true })).toEqual({ write: false });
+  });
+
   it('leaves an already-settled checkpoint row untouched', () => {
     const row = {
       unfinished: false,

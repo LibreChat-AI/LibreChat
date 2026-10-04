@@ -593,6 +593,11 @@ export function resolveFinalizedCompactionTurn(
   if (requestBody?.compact !== true) {
     return { write: false };
   }
+  /** A settled row belongs to the path that settled it, whatever its
+   *  parts hold: a late failure must not rewrite or re-announce it. */
+  if (partialRow?.unfinished === false) {
+    return { write: false };
+  }
   const content = Array.isArray(partialRow?.content)
     ? (partialRow.content as TMessageContentParts[])
     : [];
