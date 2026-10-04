@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { NEW_CHAT_PATH } from '../helpers';
-import { probeStyle } from './style.helpers';
+import { normalizeColor, probeStyle, themeValue } from './style.helpers';
 
 /**
  * Markdown list markers, the quote bar and the inline code chip, and the composer's send corner,
@@ -74,6 +74,16 @@ function proseStyles(page: Page): Promise<ProseStyles> {
   });
 }
 
+/** A color role as the browser paints it, read off the document's theme variable. */
+const roleColor = async (page: Page, role: string) =>
+  normalizeColor(page, `rgb(${await themeValue(page, `--${role}`)})`);
+
+/** The surface the inline chip read before it had a role, which follows the mode. */
+const previousChipRole = async (page: Page) =>
+  (await page.locator('html').evaluate((node) => node.classList.contains('dark')))
+    ? 'surface-hover-alt'
+    : 'surface-active-alt';
+
 const typeIntoComposer = async (page: Page) => {
   await page.getByTestId('text-input').fill('hello');
   await expect(page.getByTestId('send-button')).toBeEnabled();
@@ -86,12 +96,12 @@ test.describe('prose and shape roles', () => {
     await openNewChat(page, 'clickhouse');
     const prose = await proseStyles(page);
     const border = await probeStyle(page, 'border border-border-medium', 'border-top-color');
-    const chip = await probeStyle(page, 'bg-surface-active-alt', 'background-color');
+    const chip = await roleColor(page, await previousChipRole(page));
 
     expect(prose.bullet).not.toBe(border);
     expect(prose.quoteBar).not.toBe(border);
-    expect(prose.bullet).toBe(await probeStyle(page, 'text-prose-bullet', 'color'));
-    expect(prose.quoteBar).toBe(await probeStyle(page, 'text-prose-quote-bar', 'color'));
+    expect(prose.bullet).toBe(await roleColor(page, 'prose-bullet'));
+    expect(prose.quoteBar).toBe(await roleColor(page, 'prose-quote-bar'));
     expect(prose.chip).not.toBe(chip);
     expect(prose.chipWeight).toBe('500');
   });
@@ -108,7 +118,7 @@ test.describe('prose and shape roles', () => {
     expect(prose.quoteBar).toBe(
       await probeStyle(page, 'border border-border-medium', 'border-top-color'),
     );
-    expect(prose.chip).toBe(await probeStyle(page, 'bg-surface-active-alt', 'background-color'));
+    expect(prose.chip).toBe(await roleColor(page, await previousChipRole(page)));
     expect(prose.chipWeight).toBe('600');
   });
 
