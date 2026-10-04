@@ -22,6 +22,16 @@ function pinPending() {
   });
 }
 
+/** Legacy engines expose only `addListener` on MediaQueryList. */
+function observeMediaQuery(query: MediaQueryList, onChange: () => void): () => void {
+  if (typeof query.addEventListener === 'function') {
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }
+  query.addListener(onChange);
+  return () => query.removeListener(onChange);
+}
+
 function schedulePin(svg: SVGSVGElement) {
   pending.add(svg);
   if (pending.size === 1) {
@@ -68,11 +78,10 @@ export default function Spinner({
     }
     schedulePin(svg);
     const query = window.matchMedia?.(REDUCED_MOTION);
-    const onChange = () => schedulePin(svg);
-    query?.addEventListener('change', onChange);
+    const unobserve = query && observeMediaQuery(query, () => schedulePin(svg));
     return () => {
       pending.delete(svg);
-      query?.removeEventListener('change', onChange);
+      unobserve?.();
     };
   }, [speed]);
 

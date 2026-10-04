@@ -97,6 +97,46 @@ describe('Spinner', () => {
     expect(removeEventListener).toHaveBeenCalledWith('change', expect.any(Function));
   });
 
+  it('renders and cleans up on engines whose MediaQueryList only has addListener', () => {
+    const addListener = jest.fn();
+    const removeListener = jest.fn();
+    window.matchMedia = jest.fn().mockImplementation(() => ({
+      matches: false,
+      addListener,
+      removeListener,
+    }));
+
+    const view = render(<Spinner />);
+    expect(view.container.querySelector('svg')).not.toBeNull();
+    expect(addListener).toHaveBeenCalledWith(expect.any(Function));
+
+    view.unmount();
+    expect(removeListener).toHaveBeenCalledWith(expect.any(Function));
+  });
+
+  it('pins the rotation that starts when a legacy engine reports the preference change', async () => {
+    let listener: (() => void) | undefined;
+    window.matchMedia = jest.fn().mockImplementation(() => ({
+      matches: true,
+      addListener: (cb: () => void) => {
+        listener = cb;
+      },
+      removeListener: jest.fn(),
+    }));
+    let current: FakeAnimation[] = [];
+    mockGetAnimations(() => current);
+
+    render(<Spinner />);
+    await flushMicrotasks();
+
+    const started = rotation(99);
+    current = [started];
+    listener?.();
+    await flushMicrotasks();
+
+    expect(started.startTime).toBe(0);
+  });
+
   it('reads every animation before writing any start time when spinners mount together', async () => {
     const animations = [rotation(1), rotation(2), rotation(3)];
     const writesSeenAtRead: number[] = [];
