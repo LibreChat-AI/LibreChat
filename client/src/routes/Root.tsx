@@ -11,6 +11,7 @@ import {
   useReplyWatcher,
   useSearchEnabled,
   useCatalogWarmup,
+  useMessagesRetention,
   useAssistantsMap,
   useUnseenConversations,
 } from '~/hooks';
@@ -55,6 +56,12 @@ function ReplyNotifications() {
   useReplyWatcher();
   useUnseenBadge(replyState?.unseen.length ?? 0);
   useReplyAlerts(replyState);
+  return null;
+}
+
+/** Isolates the route subscription that keeps the routed conversation's history cached. */
+function MessagesRetention() {
+  useMessagesRetention();
   return null;
 }
 
@@ -233,6 +240,7 @@ function RootLayout() {
               </PromptGroupsProvider>
               <KeyboardShortcutsProvider />
               <ReplyNotifications />
+              <MessagesRetention />
             </AgentsMapContext.Provider>
             {config?.interface?.termsOfService?.modalAcceptance === true && (
               <TermsAndConditionsModal

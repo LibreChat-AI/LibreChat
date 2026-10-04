@@ -24,6 +24,7 @@ import { useSkillsInfiniteQuery, useDeleteAgentAction } from '~/data-provider';
 import { requiresFileManagerRemoval } from './items/capabilities';
 import { useRemoveMCPTool, useVisibleTools } from '~/hooks/MCP';
 import ToolsMarketplaceDialog from './ToolsMarketplaceDialog';
+import { removeOrchestration } from './items/orchestration';
 import { computeToggleAction } from './items/mutations';
 import { useLocalize, useHasAccess } from '~/hooks';
 import { useAgentPanelContext } from '~/Providers';
@@ -124,6 +125,17 @@ export default function ToolsSection({ agentId }: Props) {
       }
       const patch = computeToggleAction(item, { selected: true });
       switch (patch.type) {
+        case 'configure':
+          setDialogItem(item);
+          break;
+        case 'orchestration-remove': {
+          const next = removeOrchestration(getValues('subagents'), getValues('edges'));
+          if (next.subagents) {
+            setValue('subagents', next.subagents, { shouldDirty: true });
+          }
+          setValue('edges', next.edges, { shouldDirty: true });
+          break;
+        }
         case 'builtin':
           setValue(patch.field as keyof AgentForm, patch.value as never, { shouldDirty: true });
           if (patch.field === AgentCapabilities.execute_code && patch.value === false) {

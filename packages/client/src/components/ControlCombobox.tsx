@@ -50,6 +50,8 @@ interface ControlComboboxProps {
    * the popover is not clipped.
    */
   portal?: boolean;
+  /** Keep portaled options inside a modal without clipping its scroll region. */
+  portalElement?: Ariakit.SelectPopoverProps['portalElement'];
   /** Told when the popover opens and closes, for hosts that must behave
    *  differently while it is up — e.g. a focus-trapped panel whose own Escape
    *  handler must not fire while an open popover owns the key. */
@@ -86,6 +88,7 @@ function ControlCombobox({
   variant = 'default',
   gutter = 4,
   portal = true,
+  portalElement,
   onOpenChange,
 }: ControlComboboxProps): JSX.Element {
   const [searchValue, setSearchValue] = useState('');
@@ -235,6 +238,7 @@ function ControlCombobox({
         store={select}
         gutter={gutter}
         portal={portal}
+        portalElement={portalElement}
         className={cn(
           'border-border-light bg-surface-secondary overflow-hidden rounded-xl border shadow-lg',
           popoverMaxHeight != null && 'flex flex-col',
