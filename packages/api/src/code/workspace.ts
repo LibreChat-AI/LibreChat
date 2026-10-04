@@ -1208,11 +1208,14 @@ export async function executeWorkspaceTool({
   linkedWorktrees = false,
   requestId,
   resumeRequestId,
+  synchronousCommandFallback,
 }: {
   baseURL: string;
   /** Fresh idempotency key. Use resumeRequestId for a previously accepted invocation. */
   requestId?: string;
   resumeRequestId?: string;
+  /** Host-selected fallback for omitted command timeouts, applied only on unsupported discovery. */
+  synchronousCommandFallback?: { timeoutMs: number; onSelected: () => void };
   authHeaders: WorkspaceToolAuthHeaders;
   request: WorkspaceToolRequest;
   signal?: AbortSignal;
@@ -1235,6 +1238,12 @@ export async function executeWorkspaceTool({
     (resumeRequestId !== undefined &&
       (requestId !== undefined || parsedPolicy.data.durableRequests !== true)) ||
     !isValidRequest(request) ||
+    (synchronousCommandFallback !== undefined &&
+      (request.operation !== 'execute_command' ||
+        !isPositiveInteger(
+          synchronousCommandFallback.timeoutMs,
+          request.timeoutMs ?? WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
+        ))) ||
     !Number.isSafeInteger(maxQueueWaitMs) ||
     maxQueueWaitMs < 0 ||
     maxQueueWaitMs > WORKSPACE_QUEUE_MAX_WAIT_MS ||
@@ -1255,9 +1264,9 @@ export async function executeWorkspaceTool({
   }
   const policy = parsedPolicy.data;
   const lane = linkedWorktrees === true ? toLinkedWorktreeRequest(request) : undefined;
-  const wireRequest: WorkspaceToolRequest = lane?.request ?? request;
-  const executionBudgetMs = getWorkspaceExecutionBudgetMs(wireRequest);
-  const completionReserveMs = executionBudgetMs + WORKSPACE_COMMAND_TRANSPORT_GRACE_MS;
+  let wireRequest: WorkspaceToolRequest = lane?.request ?? request;
+  let executionBudgetMs = getWorkspaceExecutionBudgetMs(wireRequest);
+  let completionReserveMs = executionBudgetMs + WORKSPACE_COMMAND_TRANSPORT_GRACE_MS;
   const perAttemptTimeoutMs = maxRequestTimeoutMs ?? getWorkspaceToolTimeoutMs(wireRequest);
   const startedAt = Date.now();
   const runTimeoutMs = maxRunTimeoutMs ?? maxRequestTimeoutMs;
@@ -1266,8 +1275,8 @@ export async function executeWorkspaceTool({
     runTimeoutMs == null ? Infinity : startedAt + runTimeoutMs,
   );
   const queueDeadlineAt = startedAt + maxQueueWaitMs;
-  const callerRetryDeadlineAt = callerDeadlineAt - completionReserveMs;
-  const body = JSON.stringify(wireRequest);
+  let callerRetryDeadlineAt = callerDeadlineAt - completionReserveMs;
+  let body = JSON.stringify(wireRequest);
   let lastAdmissionRejection: WorkspaceToolHttpError | undefined;
   let lastRetryDeadlineAt = Infinity;
   let rateLimitWaitedMs = 0;
@@ -1319,22 +1328,46 @@ export async function executeWorkspaceTool({
           policy.queueWaitMs ?? Math.max(maxQueueWaitMs, WORKSPACE_QUEUE_TIMEOUT_MS),
         ),
         pollIntervalMs: policy.pollIntervalMs ?? 500,
+        rateLimitWaitMs: codeApiMaxRetryWaitMs,
         readJson: (response, requestSignal) => readBoundedJson(response, requestSignal, true),
         validateResult: isValidResult,
-        rejected: async (response, requestSignal) => {
+        rejected: async (response, requestSignal, attempt) => {
           const error = await readErrorBody(response, requestSignal);
-          return new WorkspaceToolHttpError(
-            'rejected',
-            response.status,
-            error.body,
-            error.truncated,
-          );
+          return {
+            error: new WorkspaceToolHttpError(
+              'rejected',
+              response.status,
+              error.body,
+              error.truncated,
+            ),
+            ...(attempt !== undefined &&
+            getWorkspaceAdmissionRejection(response.status, error.body, error.truncated) ===
+              'rate_limited'
+              ? {
+                  rateLimitDelayMs: workspaceAdmissionRetryDelay(
+                    response.headers.get('Retry-After'),
+                    error.body,
+                    attempt,
+                    policy,
+                  ),
+                }
+              : {}),
+          };
         },
         terminalFailure: durableWorkspaceFailure,
         insufficient: () => new WorkspaceToolHttpError('insufficient_time'),
         invalid: () => new WorkspaceToolHttpError('invalid'),
         timeout: () => new WorkspaceToolHttpError('timeout'),
         wait: waitForWorkspaceAdmission,
+        onRateLimitRejection: () => {
+          rateLimitRejections++;
+          if (rateLimitRejections === 1)
+            span.addEvent('workspace.admission.rejected', { kind: 'rate_limited' });
+        },
+        onRateLimitWait: (waitMs) => {
+          rateLimitWaitedMs += waitMs;
+          retryWaitMs += waitMs;
+        },
         onRequest: (method) => {
           httpRequests++;
           if (method === 'POST') attempts++;
@@ -1347,6 +1380,15 @@ export async function executeWorkspaceTool({
         return lane ? fromLinkedWorktreeResult(durable.result, lane.worktree) : durable.result;
       }
       transport = 'synchronous';
+      if (synchronousCommandFallback != null && wireRequest.operation === 'execute_command') {
+        wireRequest = { ...wireRequest, timeoutMs: synchronousCommandFallback.timeoutMs };
+        executionBudgetMs = getWorkspaceExecutionBudgetMs(wireRequest);
+        completionReserveMs = executionBudgetMs + WORKSPACE_COMMAND_TRANSPORT_GRACE_MS;
+        callerRetryDeadlineAt = callerDeadlineAt - completionReserveMs;
+        body = JSON.stringify(wireRequest);
+        span.setAttribute('workspace.execution_budget_ms', executionBudgetMs);
+        synchronousCommandFallback.onSelected();
+      }
     }
     while (true) {
       signal?.throwIfAborted();

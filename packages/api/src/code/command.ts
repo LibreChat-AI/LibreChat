@@ -545,6 +545,16 @@ export function createAttachedWorkspaceBashTool({
         (config?.configurable?.[BACKGROUND_TOOL_INVOCATION_CONFIG_KEY] === true
           ? effectiveMaxTimeoutMs
           : effectiveDefaultTimeoutMs);
+      let selectedTimeoutMs = timeoutMs;
+      let selectedMaxTimeoutMs = effectiveMaxTimeoutMs;
+      const fallbackTimeoutMs = Math.min(
+        timeoutMs,
+        fitCommandTimeoutMaxToBudget(
+          effectiveMaxTimeoutMs,
+          Math.min(maxRequestTimeoutMs ?? Infinity, maxRunTimeoutMs ?? Infinity),
+          minCommandAdmissionMs,
+        ),
+      );
       const signal = config?.signal;
       const trace = {
         runId: config?.metadata?.run_id,
@@ -575,6 +585,17 @@ export function createAttachedWorkspaceBashTool({
             timeoutMs,
             maxOutputBytes: DEFAULT_OUTPUT_BYTES,
           },
+          ...(admission?.durableRequests === true && rawInput.timeoutMs == null
+            ? {
+                synchronousCommandFallback: {
+                  timeoutMs: fallbackTimeoutMs,
+                  onSelected: () => {
+                    selectedTimeoutMs = fallbackTimeoutMs;
+                    selectedMaxTimeoutMs = fallbackTimeoutMs;
+                  },
+                },
+              }
+            : {}),
           signal,
           fetchImpl,
           ...(maxQueueWaitMs == null ? {} : { maxQueueWaitMs }),
@@ -587,7 +608,12 @@ export function createAttachedWorkspaceBashTool({
           throw new Error('Attached workspace returned an unexpected command result.');
         }
         logger.debug('[BYOMCommand] transport completed', trace);
-        let content = formatCommandResult(result, timeoutMs, effectiveMaxTimeoutMs, rawInput.cwd);
+        let content = formatCommandResult(
+          result,
+          selectedTimeoutMs,
+          selectedMaxTimeoutMs,
+          rawInput.cwd,
+        );
         if (action === undefined && /^\s*cd(?:\s|$)/.test(rawInput.command!)) {
           content +=
             '\n[directory hint: For future commands scoped to a workspace subdirectory, pass cwd instead of a leading cd.' +
@@ -607,7 +633,11 @@ export function createAttachedWorkspaceBashTool({
     },
     {
       name: BashExecutionToolDefinition.name,
-      description: buildAttachedWorkspaceBashDescription(false, environment, nativeSandbox),
+      description:
+        buildAttachedWorkspaceBashDescription(false, environment, nativeSandbox) +
+        (admission?.durableRequests === true
+          ? '\nOlder servers may lower omitted timeouts to fit their synchronous transport budget. Explicit timeoutMs is never lowered.'
+          : ''),
       schema,
       responseFormat: 'content_and_artifact',
     },

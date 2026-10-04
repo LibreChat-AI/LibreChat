@@ -1360,3 +1360,205 @@ describe('attached command admission configuration', () => {
     ).toBe('60000');
   });
 });
+
+describe('durable Bash capability fallback', () => {
+  test.each([404, 0])(
+    'omitted background timeout remains executable when durability is unsupported (%s)',
+    async (unsupported) => {
+      const fetchImpl = jest
+        .fn()
+        .mockResolvedValueOnce(
+          unsupported === 404
+            ? new Response('{}', { status: 404 })
+            : new Response(JSON.stringify({ durableWorkspaceRequests: 0 })),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              protocolVersion: 1,
+              operation: 'execute_command',
+              workspaceId: 'primary',
+              exitCode: 0,
+              stdout: 'ready',
+              stderr: '',
+              timedOut: false,
+              truncated: false,
+            }),
+          ),
+        );
+      const bash = createAttachedWorkspaceBashTool({
+        baseUrl: 'https://code.example/v1',
+        workspaceId: 'primary',
+        authHeaders: () => ({}),
+        maxTimeoutMs: 70000,
+        maxRequestTimeoutMs: 60000,
+        admission: {
+          durableRequests: true,
+          initialDelayMs: 1000,
+          maxDelayMs: 30000,
+          multiplier: 1,
+          jitterRatio: 0,
+        },
+        fetchImpl,
+      });
+      expect(
+        await bash.invoke(
+          { command: 'echo ready' },
+          { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
+        ),
+      ).toContain('ready');
+      expect(JSON.parse(fetchImpl.mock.calls[1][1].body).timeoutMs).toBe(40000);
+    },
+  );
+});
+
+test('confirmed durable support keeps the larger omitted background budget executable', async () => {
+  let id: string | undefined;
+  const fetchImpl = jest.fn().mockImplementation(async (url, init) => {
+    if (String(url).endsWith('/capabilities'))
+      return new Response(JSON.stringify({ durableWorkspaceRequests: 1 }));
+    id = init.headers['X-LibreChat-Workspace-Request-Id'];
+    return new Response(
+      JSON.stringify({
+        requestId: id,
+        state: 'completed',
+        result: {
+          protocolVersion: 1,
+          operation: 'execute_command',
+          workspaceId: 'primary',
+          exitCode: 0,
+          stdout: 'ready',
+          stderr: '',
+          timedOut: false,
+          truncated: false,
+        },
+      }),
+      { status: 202 },
+    );
+  });
+  const bash = createAttachedWorkspaceBashTool({
+    baseUrl: 'https://code.example/v1',
+    workspaceId: 'primary',
+    authHeaders: () => ({}),
+    maxTimeoutMs: 70000,
+    maxRequestTimeoutMs: 60000,
+    admission: {
+      durableRequests: true,
+      initialDelayMs: 1000,
+      maxDelayMs: 30000,
+      multiplier: 1,
+      jitterRatio: 0,
+    },
+    fetchImpl,
+  });
+  expect(
+    await bash.invoke(
+      { command: 'echo ready' },
+      { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
+    ),
+  ).toContain('ready');
+  expect(JSON.parse(fetchImpl.mock.calls[1][1].body).timeoutMs).toBe(70000);
+});
+
+test('explicit timeouts are never silently lowered after unsupported capability discovery', async () => {
+  const fetchImpl = jest.fn().mockResolvedValueOnce(new Response('{}', { status: 404 }));
+  const bash = createAttachedWorkspaceBashTool({
+    baseUrl: 'https://code.example/v1',
+    workspaceId: 'primary',
+    authHeaders: () => ({}),
+    maxTimeoutMs: 70000,
+    maxRequestTimeoutMs: 60000,
+    admission: {
+      durableRequests: true,
+      initialDelayMs: 1000,
+      maxDelayMs: 30000,
+      multiplier: 1,
+      jitterRatio: 0,
+    },
+    fetchImpl,
+  });
+  await expect(bash.invoke({ command: 'echo ready', timeoutMs: 70000 })).rejects.toThrow(
+    'cannot fit',
+  );
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+});
+
+test('configured foreground defaults also fit synchronous fallback instead of failing before dispatch', async () => {
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ durableWorkspaceRequests: 0 })))
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          operation: 'execute_command',
+          workspaceId: 'primary',
+          exitCode: 0,
+          stdout: 'ready',
+          stderr: '',
+          timedOut: false,
+          truncated: false,
+        }),
+      ),
+    );
+  const bash = createAttachedWorkspaceBashTool({
+    baseUrl: 'https://code.example/v1',
+    workspaceId: 'primary',
+    authHeaders: () => ({}),
+    maxTimeoutMs: 70000,
+    defaultTimeoutMs: 60000,
+    maxRequestTimeoutMs: 60000,
+    admission: {
+      durableRequests: true,
+      initialDelayMs: 1000,
+      maxDelayMs: 30000,
+      multiplier: 1,
+      jitterRatio: 0,
+    },
+    fetchImpl,
+  });
+  expect(await bash.invoke({ command: 'echo ready' })).toContain('ready');
+  expect(JSON.parse(fetchImpl.mock.calls[1][1].body).timeoutMs).toBe(40000);
+});
+
+test('synchronous fallback timeout diagnostics report the budget actually selected', async () => {
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(new Response('{}', { status: 404 }))
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          operation: 'execute_command',
+          workspaceId: 'primary',
+          exitCode: null,
+          stdout: 'partial',
+          stderr: '',
+          timedOut: true,
+          truncated: false,
+        }),
+      ),
+    );
+  const bash = createAttachedWorkspaceBashTool({
+    baseUrl: 'https://code.example/v1',
+    workspaceId: 'primary',
+    authHeaders: () => ({}),
+    maxTimeoutMs: 70000,
+    maxRequestTimeoutMs: 60000,
+    admission: {
+      durableRequests: true,
+      initialDelayMs: 1000,
+      maxDelayMs: 30000,
+      multiplier: 1,
+      jitterRatio: 0,
+    },
+    fetchImpl,
+  });
+  const content = await bash.invoke(
+    { command: 'echo ready' },
+    { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
+  );
+  expect(content).toContain('timeoutMs: 40000');
+  expect(content).toContain('up to 40000 milliseconds');
+  expect(content).not.toContain('up to 70000');
+});

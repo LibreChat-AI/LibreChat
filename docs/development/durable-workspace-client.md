@@ -38,3 +38,15 @@ window. Admission is capped after credential refresh by the remaining run time
 minus execution/delivery reserve. Durable terminal codes use the existing domain
 status mapping; unknown codes and upstream error messages are not disclosed.
 Both transports share the workspace span and one final outcome log.
+
+Successful lookup headers establish acceptance before reading the body. Losing
+that body and later seeing 404 never grants replay authority. Before acceptance,
+only complete typed execution-limiter 429s can retry under `codeApiMaxRetryWaitMs`.
+Server retry hints and cumulative wait/run budgets bound those retries. A never-
+uncertain rejected submission can recalculate admission; uncertain submissions
+retain their full fingerprint.
+
+Confirmed capability support retains the configured command budget. Unsupported
+servers lower only omitted Bash defaults to an executable synchronous budget.
+Explicit timeoutMs is never lowered; an oversized explicit request fails before
+dispatch. Timeout diagnostics reflect the selected fallback budget.

@@ -25,16 +25,26 @@ export interface DurableWorkspaceTransport<TRequest, TResult> {
   completionReserveMs: number;
   transportTimeoutMs: number;
   queueWaitMs: number;
+  rateLimitWaitMs: number;
   pollIntervalMs: number;
   readJson: (response: Response, signal: AbortSignal) => Promise<unknown>;
   validateResult: (request: TRequest, value: unknown) => value is TResult;
-  rejected: (response: Response, signal: AbortSignal) => Promise<Error>;
+  rejected: (
+    response: Response,
+    signal: AbortSignal,
+    attempt?: number,
+  ) => Promise<{
+    error: Error;
+    rateLimitDelayMs?: number;
+  }>;
   terminalFailure: (code?: string) => Error;
   invalid: () => Error;
   insufficient: () => Error;
   timeout: () => Error;
   wait: (ms: number, signal?: AbortSignal) => Promise<void>;
   onRequest?: (method: string) => void;
+  onRateLimitRejection?: () => void;
+  onRateLimitWait?: (waitMs: number) => void;
 }
 
 function status(value: unknown, id: string): RequestStatus | undefined {
@@ -82,6 +92,10 @@ export async function executeDurableWorkspaceRequest<TRequest, TResult>(
   const body = JSON.stringify(options.request);
   let submissionStarted = false;
   let accepted = resuming;
+  let uncertainSubmission = false;
+  let rateLimitWaitedMs = 0;
+  let rateLimitRejections = 0;
+  let activeMethod: string | undefined;
   let terminal = false;
   let submissionQueueWaitMs: number | undefined;
   let current: RequestStatus | undefined;
@@ -112,6 +126,7 @@ export async function executeDurableWorkspaceRequest<TRequest, TResult>(
       }
       submissionStarted = true;
     }
+    activeMethod = method;
     options.onRequest?.(method);
     const response = await options.fetchImpl(endpoint, {
       method,
@@ -138,7 +153,7 @@ export async function executeDurableWorkspaceRequest<TRequest, TResult>(
       if (resuming) throw options.invalid();
       return { supported: false };
     }
-    if (!probe.response.ok) throw await options.rejected(probe.response, probe.signal);
+    if (!probe.response.ok) throw (await options.rejected(probe.response, probe.signal)).error;
     const capability = await options.readJson(probe.response, probe.signal);
     if (capability == null || typeof capability !== 'object') throw options.invalid();
     const version = (capability as Record<string, unknown>).durableWorkspaceRequests;
@@ -163,17 +178,49 @@ export async function executeDurableWorkspaceRequest<TRequest, TResult>(
       try {
         const lookup = accepted || submissionStarted ? (await send(url, 'GET'))! : undefined;
         if (lookup && lookup.response.status !== 404) {
-          if (!lookup.response.ok) throw await options.rejected(lookup.response, lookup.signal);
+          if (!lookup.response.ok)
+            throw (await options.rejected(lookup.response, lookup.signal)).error;
+          // Lookup headers prove the identity existed, even if its body is lost.
+          accepted = true;
           current = status(await options.readJson(lookup.response, lookup.signal), id);
           if (current == null) throw options.invalid();
-          accepted = true;
         } else {
           await lookup?.response.body?.cancel();
           if (accepted) throw options.invalid();
           const submitted = await send(`${root}/workspace-tools/requests`, 'POST');
           if (submitted != null) {
-            if (submitted.response.status !== 202)
-              throw await options.rejected(submitted.response, submitted.signal);
+            if (submitted.response.status !== 202) {
+              const rejection = await options.rejected(
+                submitted.response,
+                submitted.signal,
+                rateLimitRejections + 1,
+              );
+              if (rejection.rateLimitDelayMs === undefined) throw rejection.error;
+              // A typed limiter rejection is definitely pre-admission. Only a fresh,
+              // never-uncertain submission may recompute its admission fingerprint.
+              if (!uncertainSubmission) {
+                submissionStarted = false;
+                submissionQueueWaitMs = undefined;
+              }
+              const delayMs = rejection.rateLimitDelayMs;
+              rateLimitRejections++;
+              options.onRateLimitRejection?.();
+              if (
+                !Number.isFinite(delayMs) ||
+                delayMs <= 0 ||
+                delayMs > options.rateLimitWaitMs - rateLimitWaitedMs ||
+                delayMs >= options.deadlineAtMs - Date.now() - options.completionReserveMs
+              )
+                throw rejection.error;
+              const waitedAt = Date.now();
+              await options.wait(delayMs, options.signal);
+              const waitedMs = Math.max(delayMs, Date.now() - waitedAt);
+              rateLimitWaitedMs += waitedMs;
+              options.onRateLimitWait?.(waitedMs);
+              if (Date.now() >= options.deadlineAtMs - options.completionReserveMs)
+                throw rejection.error;
+              continue;
+            }
             accepted = true;
             current = status(await options.readJson(submitted.response, submitted.signal), id);
             if (current == null) throw options.invalid();
@@ -182,6 +229,7 @@ export async function executeDurableWorkspaceRequest<TRequest, TResult>(
       } catch (error) {
         options.signal?.throwIfAborted();
         if (!transportFailure(error)) throw error;
+        if (activeMethod === 'POST') uncertainSubmission = true;
       }
       if (current?.state === 'queued' || current?.state === 'admitted' || current == null) {
         await options.wait(

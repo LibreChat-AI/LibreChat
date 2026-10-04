@@ -551,3 +551,272 @@ test('an accepted body reset at the transport deadline recovers by lookup, not r
   );
   expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
 });
+
+test('successful lookup headers latch acceptance even when its body is lost before a missing lookup', async () => {
+  const broken = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.error(new TypeError('reset'));
+    },
+  });
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockRejectedValueOnce(new TypeError('lost POST response'))
+    .mockResolvedValueOnce(new Response(broken))
+    .mockResolvedValueOnce(json({}, 404))
+    .mockResolvedValueOnce(status('completed'));
+  await expect(
+    executeWorkspaceTool({
+      ...input,
+      admission: codeEnvironmentAdmissionSchema.parse({
+        durableRequests: true,
+        queueWaitMs: 100,
+        pollIntervalMs: 100,
+      }),
+      fetchImpl,
+    }),
+  ).rejects.toMatchObject({ reason: 'invalid' });
+  expect(fetchImpl.mock.calls.map(([, init]) => init.method)).toEqual([
+    'GET',
+    'POST',
+    'GET',
+    'GET',
+    'DELETE',
+  ]);
+});
+
+test('typed pre-admission rate limits retry one durable identity with refreshed credentials', async () => {
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'rate_limited' }), {
+        status: 429,
+        headers: { 'Retry-After': '1' },
+      }),
+    )
+    .mockResolvedValueOnce(status('completed'));
+  const authHeaders = jest.fn(input.authHeaders);
+  expect(
+    await executeWorkspaceTool({ ...input, authHeaders, codeApiMaxRetryWaitMs: 1000, fetchImpl }),
+  ).toEqual(result);
+  expect(fetchImpl.mock.calls.map(([, init]) => init.method)).toEqual(['GET', 'POST', 'POST']);
+  const posts = fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST');
+  expect(posts[0][1].headers['X-LibreChat-Workspace-Request-Id']).toBe(
+    posts[1][1].headers['X-LibreChat-Workspace-Request-Id'],
+  );
+  expect(authHeaders).toHaveBeenCalledTimes(3);
+});
+
+test.each([0, 999])(
+  'typed throttling exceeding its wait budget fails without submitting work (%s)',
+  async (budget) => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'rate_limited' }), {
+          status: 429,
+          headers: { 'Retry-After': '1' },
+        }),
+      );
+    await expect(
+      executeWorkspaceTool({ ...input, codeApiMaxRetryWaitMs: budget, fetchImpl }),
+    ).rejects.toMatchObject({ upstreamStatus: 429 });
+    expect(fetchImpl.mock.calls.map(([, init]) => init.method)).toEqual(['GET', 'POST']);
+  },
+);
+
+test.each([
+  '{',
+  '{"error":"unknown"}',
+  '{"error":"rate_limited","padding":"' + 'x'.repeat(4096) + '"}',
+])('unknown or incomplete durable 429 bodies are never retried (%s)', async (body) => {
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(new Response(body, { status: 429, headers: { 'Retry-After': '1' } }))
+    .mockResolvedValueOnce(status('cancelled'));
+  await expect(executeWorkspaceTool({ ...input, fetchImpl })).rejects.toMatchObject({
+    upstreamStatus: 429,
+  });
+  expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+});
+
+test('durable rate-limit hints and additive jitter cannot authorize an early POST', async () => {
+  jest.useFakeTimers();
+  const random = jest.spyOn(Math, 'random').mockReturnValue(0.5);
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'rate_limited' }), {
+        status: 429,
+        headers: { 'Retry-After': '1' },
+      }),
+    )
+    .mockResolvedValueOnce(status('completed'));
+  try {
+    const pending = executeWorkspaceTool({
+      ...input,
+      admission: codeEnvironmentAdmissionSchema.parse({ durableRequests: true, jitterRatio: 0.5 }),
+      codeApiMaxRetryWaitMs: 2000,
+      fetchImpl,
+    });
+    await jest.advanceTimersByTimeAsync(1249);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(await pending).toEqual(result);
+    expect(fetchImpl.mock.calls.map(([, init]) => init.method)).toEqual(['GET', 'POST', 'POST']);
+  } finally {
+    random.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+test('repeated typed throttling consumes one cumulative wait allowance', async () => {
+  jest.useFakeTimers();
+  const limited = () =>
+    new Response(JSON.stringify({ error: 'rate_limited', retry_after_seconds: 1 }), {
+      status: 429,
+    });
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockImplementation(limited);
+  try {
+    const pending = executeWorkspaceTool({
+      ...input,
+      codeApiMaxRetryWaitMs: 1000,
+      fetchImpl,
+    }).catch((e) => e);
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(await pending).toMatchObject({ upstreamStatus: 429 });
+    expect(fetchImpl.mock.calls.map(([, init]) => init.method)).toEqual(['GET', 'POST', 'POST']);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test('rate-limit waiting cannot consume the reserved execution budget', async () => {
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'rate_limited' }), {
+        status: 429,
+        headers: { 'Retry-After': '1' },
+      }),
+    );
+  await expect(
+    executeWorkspaceTool({
+      ...input,
+      maxRunTimeoutMs: 36000,
+      codeApiMaxRetryWaitMs: 1000,
+      fetchImpl,
+    }),
+  ).rejects.toMatchObject({ upstreamStatus: 429 });
+  expect(fetchImpl.mock.calls.map(([, init]) => init.method)).toEqual(['GET', 'POST']);
+});
+
+test('a typed rejection after uncertain submission does not recompute its fingerprint', async () => {
+  const limited = () =>
+    new Response(JSON.stringify({ error: 'rate_limited' }), {
+      status: 429,
+      headers: { 'Retry-After': '0' },
+    });
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockRejectedValueOnce(new TypeError('lost'))
+    .mockResolvedValueOnce(json({}, 404))
+    .mockResolvedValueOnce(limited())
+    .mockResolvedValueOnce(status('completed'));
+  const admission = codeEnvironmentAdmissionSchema.parse({
+    durableRequests: true,
+    queueWaitMs: 100,
+    pollIntervalMs: 100,
+  });
+  expect(await executeWorkspaceTool({ ...input, admission, fetchImpl })).toEqual(result);
+  const posts = fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST');
+  expect(posts).toHaveLength(2);
+  expect(posts[0][1].body).toBe(posts[1][1].body);
+  expect(posts[0][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe(
+    posts[1][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms'],
+  );
+});
+
+test('accepted lookup throttling never authorizes a POST', async () => {
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(status('queued'))
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'rate_limited' }), {
+        status: 429,
+        headers: { 'Retry-After': '1' },
+      }),
+    )
+    .mockResolvedValueOnce(status('cancelled'));
+  await expect(executeWorkspaceTool({ ...input, fetchImpl })).rejects.toMatchObject({
+    upstreamStatus: 429,
+  });
+  expect(fetchImpl.mock.calls.map(([, init]) => init.method)).toEqual([
+    'GET',
+    'POST',
+    'GET',
+    'DELETE',
+  ]);
+});
+
+test('Stop during definite pre-admission rate waiting does not submit or cancel nonexistent work', async () => {
+  const controller = new AbortController();
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockImplementationOnce(async () => {
+      setImmediate(() => controller.abort());
+      return new Response(JSON.stringify({ error: 'rate_limited' }), {
+        status: 429,
+        headers: { 'Retry-After': '1' },
+      });
+    });
+  await expect(
+    executeWorkspaceTool({ ...input, signal: controller.signal, fetchImpl }),
+  ).rejects.toMatchObject({ name: 'AbortError' });
+  expect(fetchImpl.mock.calls.map(([, init]) => init.method)).toEqual(['GET', 'POST']);
+});
+
+test('durable throttling contributes to the shared aggregate admission outcome', async () => {
+  jest.useFakeTimers();
+  const log = jest.spyOn(logger, 'debug');
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'rate_limited' }), {
+        status: 429,
+        headers: { 'Retry-After': '1' },
+      }),
+    )
+    .mockResolvedValueOnce(status('completed'));
+  try {
+    const pending = executeWorkspaceTool({ ...input, codeApiMaxRetryWaitMs: 1000, fetchImpl });
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(await pending).toEqual(result);
+    expect(log).toHaveBeenCalledWith(
+      '[WorkspaceAdmission] outcome',
+      expect.objectContaining({
+        attempts: 2,
+        rateLimitRejections: 1,
+        rateLimitWaitedMs: 1000,
+        retryWaitMs: 1000,
+        outcome: 'completed',
+        transport: 'durable',
+      }),
+    );
+  } finally {
+    log.mockRestore();
+    jest.useRealTimers();
+  }
+});
