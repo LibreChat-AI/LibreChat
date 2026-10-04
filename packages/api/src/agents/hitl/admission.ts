@@ -1,4 +1,10 @@
-import { Constants, normalizeServerName, stripServerNamePrefix } from 'librechat-data-provider';
+import {
+  Constants,
+  normalizeServerName,
+  stripServerNamePrefix,
+  splitMCPToolKey,
+  buildServerNameAliases,
+} from 'librechat-data-provider';
 import type { TToolApprovalPolicy } from 'librechat-data-provider';
 import type { AgentToolOptions } from 'librechat-data-provider';
 import type { PluginHookSource } from '~/agents/hooks/source';
@@ -42,10 +48,12 @@ export interface ToolApprovalAdmissionAgent {
 type AdmissionSurface = Pick<
   ToolApprovalAdmissionAgent,
   'tool_options' | 'tools' | 'toolRegistry' | 'toolDefinitions' | 'mcpToolAliases'
->;
+> & { readonly rawMcpServerNames?: readonly string[] };
 const admissionSurfaces = new WeakMap<object, AdmissionSurface>();
 
-function readAdmissionSurface(agent: ToolApprovalAdmissionAgent): ToolApprovalAdmissionAgent {
+function readAdmissionSurface(
+  agent: ToolApprovalAdmissionAgent,
+): ToolApprovalAdmissionAgent & AdmissionSurface {
   const captured = admissionSurfaces.get(agent);
   return captured ? { ...captured, ...agent } : agent;
 }
@@ -86,7 +94,7 @@ export function copyToolApprovalAdmissionMetadata<T extends object>(
         ? undefined
         : [...(selectedTools ?? []), ...skillTools],
     toolOptions: surface.tool_options,
-    rawServerNames: context.rawMcpServerNames ?? [],
+    rawServerNames: context.rawMcpServerNames ?? surface.rawMcpServerNames ?? [],
   });
   admissionSurfaces.set(target, {
     tool_options:
@@ -98,6 +106,7 @@ export function copyToolApprovalAdmissionMetadata<T extends object>(
         ]),
       ),
     tools: normalized.tools,
+    rawMcpServerNames: context.rawMcpServerNames?.slice() ?? surface.rawMcpServerNames,
     toolRegistry: surface.toolRegistry,
     toolDefinitions: surface.toolDefinitions?.map(({ name }) => ({ name })),
     mcpToolAliases: surface.mcpToolAliases?.map((alias) => ({ ...alias })),
@@ -116,30 +125,80 @@ export interface ToolApprovalAdmissionInput {
   readonly toolApprovalAllows?: readonly string[];
 }
 
-/** Catalog-free legacy selection is a possible alias, not a verified identity. */
-function unresolvedLegacySelectionCanAsk(
-  name: string,
+/** Unresolved spellings predict review only; they never establish tool identity. */
+function createUnresolvedReviewMatcher(
   options: AgentToolOptions,
   policy: TToolApprovalPolicy | undefined,
-): boolean {
-  if (options[name] != null || isToolDeniedByApprovalPolicy(policy, name)) return false;
-  let delimiter = name.indexOf(Constants.mcp_delimiter);
-  while (delimiter >= 0) {
-    const upstream = name.slice(0, delimiter);
-    const server = name.slice(delimiter + Constants.mcp_delimiter.length);
-    const normalizedServer = normalizeServerName(server);
-    const stripped = stripServerNamePrefix(upstream, normalizedServer);
-    if (server && stripped !== upstream) {
-      for (const suffix of server === normalizedServer ? [server] : [server, normalizedServer]) {
-        const candidate = `${stripped}${Constants.mcp_delimiter}${suffix}`;
-        const mode = options[candidate]?.approval_mode;
-        if (mode != null && mode !== 'allow' && !isToolDeniedByApprovalPolicy(policy, candidate))
-          return true;
-      }
+  toolNames: ReadonlySet<string>,
+  rawServerNames: readonly string[] = [],
+): (name?: string) => boolean {
+  const wildcardServers: string[] = [];
+  for (const name of toolNames) {
+    if (isMCPAllPlaceholder(name)) {
+      wildcardServers.push(name.slice(`${Constants.mcp_all}${Constants.mcp_delimiter}`.length));
     }
-    delimiter = name.indexOf(Constants.mcp_delimiter, delimiter + Constants.mcp_delimiter.length);
   }
-  return false;
+  const declaredAliases = buildServerNameAliases(rawServerNames);
+  const declaredNames = new Set(rawServerNames);
+  // Do not let a normalized wildcard spelling invent a direct server over its raw owner.
+  const serverNames = [
+    ...rawServerNames,
+    ...wildcardServers.filter(
+      (server) => !declaredNames.has(server) && !declaredAliases.has(server),
+    ),
+  ];
+  const directNames = new Set(serverNames);
+  const serverAliases = buildServerNameAliases(serverNames);
+  const knownNames = [...new Set([...serverNames, ...serverNames.map(normalizeServerName)])];
+  const knownNameSet = new Set(knownNames);
+  const resolveServer = (server: string) =>
+    directNames.has(server) ? server : (serverAliases.get(server) ?? server);
+  const key = (server: string, tool: string) => JSON.stringify([resolveServer(server), tool]);
+  const visitParts = (name: string, visit: (tool: string, server: string) => boolean): boolean => {
+    const [tool, server] = splitMCPToolKey(name, knownNames);
+    if (server && knownNameSet.has(server)) return visit(tool, server);
+    // Without catalog knowledge either half may contain the delimiter. Keep possible boundaries.
+    let delimiter = name.indexOf(Constants.mcp_delimiter);
+    while (delimiter >= 0) {
+      const suffix = name.slice(delimiter + Constants.mcp_delimiter.length);
+      if (suffix && visit(name.slice(0, delimiter), suffix)) return true;
+      delimiter = name.indexOf(Constants.mcp_delimiter, delimiter + Constants.mcp_delimiter.length);
+    }
+    return false;
+  };
+  const originalNames = new Set<string>();
+  const strippedNames = new Set<string>();
+  const reviewServers = new Set<string>();
+  let unknownCanAsk = false;
+  for (const [name, option] of Object.entries(options)) {
+    if (
+      option.approval_mode == null ||
+      option.approval_mode === 'allow' ||
+      isToolDeniedByApprovalPolicy(policy, name)
+    )
+      continue;
+    unknownCanAsk = true;
+    visitParts(name, (tool, server) => {
+      reviewServers.add(resolveServer(server));
+      originalNames.add(key(server, tool));
+      const stripped = stripServerNamePrefix(tool, normalizeServerName(server));
+      if (stripped !== tool) strippedNames.add(key(server, stripped));
+      return false;
+    });
+  }
+  return (name) => {
+    if (name == null) return unknownCanAsk;
+    if (isMCPAllPlaceholder(name)) {
+      const server = name.slice(`${Constants.mcp_all}${Constants.mcp_delimiter}`.length);
+      return reviewServers.has(resolveServer(server));
+    }
+    if (options[name] != null || isToolDeniedByApprovalPolicy(policy, name)) return false;
+    return visitParts(name, (tool, server) => {
+      if (strippedNames.has(key(server, tool))) return true;
+      const stripped = stripServerNamePrefix(tool, normalizeServerName(server));
+      return stripped !== tool && originalNames.has(key(server, stripped));
+    });
+  };
 }
 
 function agentHasTool(agent: ToolApprovalAdmissionAgent, toolName: string): boolean {
@@ -250,27 +309,18 @@ export function canAgentGraphPause({
       if (mode != null && mode !== 'allow') reviewGatedTools.add(name);
     }
     if (
+      !unresolvedModeCanAsk &&
       approvalGraph.lazyAgents.has(agent) &&
       surface.toolRegistry == null &&
       surface.toolDefinitions == null
     ) {
-      unresolvedModeCanAsk ||= [...reachable].some((name) =>
-        unresolvedLegacySelectionCanAsk(name, options, policy),
+      const canAsk = createUnresolvedReviewMatcher(
+        options,
+        policy,
+        reachable,
+        surface.rawMcpServerNames,
       );
-    }
-    // A lazy descriptor without a concrete surface can still resolve review-gated tools.
-    if (
-      approvalGraph.lazyAgents.has(agent) &&
-      surface.toolRegistry == null &&
-      surface.toolDefinitions == null &&
-      (surface.tools == null || [...reachable].some(isMCPAllPlaceholder))
-    ) {
-      unresolvedModeCanAsk ||= Object.entries(options).some(
-        ([name, option]) =>
-          option.approval_mode != null &&
-          option.approval_mode !== 'allow' &&
-          !isToolDeniedByApprovalPolicy(policy, name),
-      );
+      unresolvedModeCanAsk = surface.tools == null ? canAsk() : [...reachable].some(canAsk);
     }
     for (const alias of surface.mcpToolAliases ?? []) {
       aliases.push(alias);

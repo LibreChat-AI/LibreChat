@@ -1527,6 +1527,76 @@ describe('initializeClient — subagent loading', () => {
     },
   );
 
+  it.each([
+    ['query_mcp_db', 'db_query_mcp_db', ['db'], true],
+    ['query_mcp_DB', 'db_query_mcp_DB', ['DB'], true],
+    ['query_mcp_db ops', 'db_ops_query_mcp_db_ops', ['db ops'], true],
+    [`${Constants.mcp_all}${Constants.mcp_delimiter}db`, 'read_mcp_other', ['db', 'other'], false],
+    [
+      `${Constants.mcp_all}${Constants.mcp_delimiter}db`,
+      'read_mcp_other_mcp_db',
+      ['db', 'other_mcp_db'],
+      false,
+    ],
+    [
+      `${Constants.mcp_all}${Constants.mcp_delimiter}db ops`,
+      'read_mcp_db_ops',
+      ['db ops', 'other'],
+      true,
+    ],
+    [
+      `${Constants.mcp_all}${Constants.mcp_delimiter}Finance_mcp_EU`,
+      'get_mcp_version_mcp_Finance_mcp_EU',
+      ['Finance_mcp_EU'],
+      true,
+    ],
+    [
+      `${Constants.mcp_all}${Constants.mcp_delimiter}db_ops`,
+      'read_mcp_db ops',
+      ['db_ops', 'db ops'],
+      false,
+    ],
+  ])(
+    'classifies real lazy spellings and wildcard scope before resolution: %s / %s',
+    async (selected, option, servers, expected) => {
+      const child = await createAgent({
+        id: SUBAGENT_ID,
+        name: 'Scoped review child',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: testUser._id,
+        tools: [selected],
+        tool_options: { [option]: { approval_mode: 'ask' } },
+      });
+      await grantView(child);
+      mockGetAccessibleMcpServerNames.mockResolvedValue(servers);
+      mockInitializeAgent.mockResolvedValue(
+        makePrimaryConfig({
+          subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+        }),
+      );
+      const req = makeSubagentReq();
+      req.config.endpoints.agents.capabilities.push('tools');
+      await initializeClient({
+        req,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      });
+      const descriptor = agentClientArgs.agent.lazySubagentConfigs[0];
+      const { canAgentGraphPause } = jest.requireActual('@librechat/api');
+      expect(
+        canAgentGraphPause({
+          policy: { enabled: true, mode: 'bypass' },
+          agents: [agentClientArgs.agent],
+        }),
+      ).toBe(expected);
+      expect(descriptor).not.toHaveProperty('mcpToolAliases');
+      expect(descriptor).not.toHaveProperty('tool_options');
+      expect(mockInitializeAgent).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('requires durable approval for a real unresolved lazy legacy selection', async () => {
     const child = await createAgent({
       id: SUBAGENT_ID,
