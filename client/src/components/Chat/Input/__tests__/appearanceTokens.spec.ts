@@ -18,6 +18,8 @@ const themedControls = [
   ['chip.ts', ['composerControlClasses()']],
   ['CodeApprovalMenu.tsx', ['chipClasses']],
   ['CodeWorkspaceMenu.tsx', ['chipClasses', 'infoChipClasses']],
+  /** The dictation mic and its send share the submit slot's corner. */
+  ['Composer/Bar.tsx', ['shape="composer"']],
 ] as const;
 
 describe('Composer appearance tokens', () => {

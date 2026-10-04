@@ -524,11 +524,14 @@ html {
 }
 
 /* A root other than the document one that a legacy palette themes (`THEME_SCOPE_ATTRIBUTE` in
-   utils/applyTheme.ts) keeps its avatar backdrop on its own surfaces, following the mode, as the
-   document root's alias above does. The layering roles alias their source the same way, so a
+   utils/applyTheme.ts) keeps its avatar backdrop, code chip, list marker and quote bar on its own surfaces,
+   following the mode, as the document root's aliases above do. The layering roles alias their source the same way, so a
    scoped palette that repaints the source moves them. An explicit role set inline still wins. */
 [data-theme-scope] {
   --avatar-placeholder: var(--surface-secondary);
+  --surface-code-inline: var(--surface-active-alt);
+  --prose-bullet: var(--border-medium);
+  --prose-quote-bar: var(--border-medium);
   --surface-canvas: var(--surface-primary-alt);
   --surface-user-message: var(--surface-tertiary);
   --surface-card: var(--surface-secondary);
@@ -557,4 +560,5 @@ html {
   --border-menu: var(--border-light);
   --surface-composer: var(--surface-chat);
   --surface-search: var(--surface-secondary);
+  --surface-code-inline: var(--surface-hover-alt);
 }

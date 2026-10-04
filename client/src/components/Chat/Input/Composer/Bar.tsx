@@ -97,6 +97,7 @@ function RoundButton({
         <IconButton
           label={label}
           size="md"
+          shape="composer"
           variant={primary ? 'primary' : 'ghost'}
           onClick={onClick}
           disabled={disabled}
