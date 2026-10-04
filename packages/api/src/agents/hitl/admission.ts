@@ -36,6 +36,40 @@ export interface ToolApprovalAdmissionAgent {
   readonly subagentGraphConfigs?: readonly ApprovalSubagentGraph[];
 }
 
+type AdmissionSurface = Pick<
+  ToolApprovalAdmissionAgent,
+  'tool_options' | 'tools' | 'toolRegistry' | 'toolDefinitions' | 'mcpToolAliases'
+>;
+const admissionSurfaces = new WeakMap<object, AdmissionSurface>();
+
+function readAdmissionSurface(agent: ToolApprovalAdmissionAgent): ToolApprovalAdmissionAgent {
+  const captured = admissionSurfaces.get(agent);
+  return captured ? { ...captured, ...agent } : agent;
+}
+
+/** Retain only admission data across server-only lazy projections. */
+export function copyToolApprovalAdmissionMetadata<T extends object>(
+  target: T,
+  source: ToolApprovalAdmissionAgent,
+): T {
+  const surface = readAdmissionSurface(source);
+  admissionSurfaces.set(target, {
+    tool_options:
+      surface.tool_options &&
+      Object.fromEntries(
+        Object.entries(surface.tool_options).map(([name, option]) => [
+          name,
+          { approval_mode: option.approval_mode },
+        ]),
+      ),
+    tools: surface.tools?.map((tool) => (typeof tool === 'string' ? tool : { name: tool.name })),
+    toolRegistry: surface.toolRegistry,
+    toolDefinitions: surface.toolDefinitions?.map(({ name }) => ({ name })),
+    mcpToolAliases: surface.mcpToolAliases?.map((alias) => ({ ...alias })),
+  });
+  return target;
+}
+
 export interface ToolApprovalAdmissionInput {
   readonly policy: TToolApprovalPolicy | undefined;
   readonly agents: readonly (ToolApprovalAdmissionAgent | null | undefined)[];
@@ -82,7 +116,11 @@ function collectApprovalAgents(roots: readonly (ToolApprovalAdmissionAgent | nul
       }
       pending.push(...(agent.lazySubagentConfigs ?? []));
     }
-    pending.push(...(agent.subagentGraphMemberMetadata ?? []));
+    for (const member of agent.subagentGraphMemberMetadata ?? []) {
+      lazyAgentIds.add(member?.id);
+      if (member) lazyAgents.add(member);
+      pending.push(member);
+    }
     for (const graph of agent.subagentGraphConfigs ?? []) {
       pending.push(...(graph.memberConfigs ?? []));
     }
@@ -133,17 +171,18 @@ export function canAgentGraphPause({
   }
 
   for (const agent of approvalGraph.agents) {
+    const surface = readAdmissionSurface(agent);
     const reachable = new Set<string>();
-    for (const tool of agent.tools ?? []) {
+    for (const tool of surface.tools ?? []) {
       const name = typeof tool === 'string' ? tool : tool.name;
       if (name) reachable.add(name);
     }
-    for (const name of agent.toolRegistry?.keys() ?? []) reachable.add(name);
-    for (const definition of agent.toolDefinitions ?? []) {
+    for (const name of surface.toolRegistry?.keys() ?? []) reachable.add(name);
+    for (const definition of surface.toolDefinitions ?? []) {
       if (definition.name) reachable.add(definition.name);
     }
-    const options = { ...agent.tool_options };
-    aliasMCPToolOptions(agent.mcpToolAliases ?? [], options);
+    const options = { ...surface.tool_options };
+    aliasMCPToolOptions(surface.mcpToolAliases ?? [], options);
     for (const name of reachable) {
       addToolName(name, agent.id);
       const mode = options[name]?.approval_mode;
@@ -152,9 +191,9 @@ export function canAgentGraphPause({
     // A lazy descriptor without a concrete surface can still resolve review-gated tools.
     if (
       approvalGraph.lazyAgents.has(agent) &&
-      agent.toolRegistry == null &&
-      agent.toolDefinitions == null &&
-      (agent.tools == null || [...reachable].some(isMCPAllPlaceholder))
+      surface.toolRegistry == null &&
+      surface.toolDefinitions == null &&
+      (surface.tools == null || [...reachable].some(isMCPAllPlaceholder))
     ) {
       unresolvedModeCanAsk ||= Object.entries(options).some(
         ([name, option]) =>
@@ -163,7 +202,7 @@ export function canAgentGraphPause({
           !isToolDeniedByApprovalPolicy(policy, name),
       );
     }
-    for (const alias of agent.mcpToolAliases ?? []) {
+    for (const alias of surface.mcpToolAliases ?? []) {
       aliases.push(alias);
       const names = aliasesByToolName.get(alias.name) ?? [];
       names.push(alias.aliasName);

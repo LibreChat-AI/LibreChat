@@ -2,7 +2,11 @@ import { Constants } from 'librechat-data-provider';
 import type { PluginHookSource } from '~/agents/hooks/source';
 import type { ToolApprovalAdmissionAgent } from './admission';
 import type { ToolApprovalHook } from './hooks';
-import { agentRunUsesCheckpointer, canAgentGraphPause } from './admission';
+import {
+  agentRunUsesCheckpointer,
+  canAgentGraphPause,
+  copyToolApprovalAdmissionMetadata,
+} from './admission';
 
 const askHook: ToolApprovalHook = async () => ({ decision: 'ask' });
 
@@ -330,4 +334,57 @@ test('disabled modes, inherited options, cycles and duplicate agent IDs preserve
       agents: [{ tools: ['read_file'], tool_options: { read_file: { defer_loading: true } } }],
     }),
   ).toBe(false);
+});
+
+for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
+  test(`${placement} preserves private approval metadata across multiple projections`, () => {
+    const source: ToolApprovalAdmissionAgent = {
+      id: 'child',
+      tools: ['query_mcp_db'],
+      tool_options: {
+        query_mcp_db: { approval_mode: 'chat' as const, approval_revision: 'revision' },
+      },
+    };
+    const metadata = copyToolApprovalAdmissionMetadata({ id: source.id, name: 'Child' }, source);
+    const descriptor = copyToolApprovalAdmissionMetadata(
+      { id: source.id, configId: 'private-config' },
+      metadata,
+    );
+    source.tool_options!.query_mcp_db.approval_mode = 'allow';
+    const agents = [{ [placement]: [descriptor] }];
+    const policy = { enabled: true, mode: 'bypass' as const };
+    expect(canAgentGraphPause({ policy, agents })).toBe(true);
+    expect(canAgentGraphPause({ policy: { ...policy, deny: ['query_mcp_db'] }, agents })).toBe(
+      false,
+    );
+    expect(canAgentGraphPause({ policy: { ...policy, enabled: false }, agents })).toBe(false);
+    expect(descriptor).not.toHaveProperty('tool_options');
+    expect(descriptor).not.toHaveProperty('tools');
+    expect(JSON.stringify(descriptor)).not.toContain('approval_');
+    expect(Object.getOwnPropertySymbols(descriptor)).toEqual([]);
+  });
+}
+
+test('private projections retain verified aliases and current-option precedence', () => {
+  const source = {
+    tools: ['query_mcp_db'],
+    mcpToolAliases: [{ name: 'query_mcp_db', aliasName: 'db_query_mcp_db' }],
+    tool_options: { db_query_mcp_db: { approval_mode: 'ask' as const } },
+  };
+  const descriptor = copyToolApprovalAdmissionMetadata({ id: 'child' }, source);
+  const policy = { enabled: true, mode: 'bypass' as const };
+  expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [descriptor] }] })).toBe(
+    true,
+  );
+  const allow = copyToolApprovalAdmissionMetadata(
+    { id: 'child' },
+    {
+      ...source,
+      tool_options: {
+        query_mcp_db: { approval_mode: 'allow' as const },
+        db_query_mcp_db: { approval_mode: 'ask' as const },
+      },
+    },
+  );
+  expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [allow] }] })).toBe(false);
 });

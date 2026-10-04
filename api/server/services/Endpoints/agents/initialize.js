@@ -2,6 +2,7 @@ const { logger } = require('@librechat/data-schemas');
 const { createContentAggregator, GraphNodeKeys } = require('@librechat/agents');
 const {
   resolveSender,
+  copyToolApprovalAdmissionMetadata,
   resolveRunConversation,
   resolveAdmittedCodeEnvironmentDecision,
   createConcurrencyLimiter,
@@ -1179,30 +1180,33 @@ const initializeClientWithProvider = async ({
       codeExecutionAvailable: lazyCodeEnvAvailable,
       memoryAvailable,
     });
-    return {
-      id: agent.id,
-      name: agent.name,
-      description: agent.description,
-      provider: agent.provider,
-      model: agent.model,
-      model_parameters: { model: agent.model_parameters?.model },
-      recursion_limit: agent.recursion_limit,
-      memory_scope: agent.memory_scope,
-      memoryToolsRegistered:
-        memoryAvailable === true && agent.tools?.includes(Tools.memory) === true,
-      subagents: agent.subagents,
-      configId: getLazySubagentConfigId(agent),
-      codeEnvAvailable: lazyCodeEnvAvailable,
-      statefulCodeSessions,
-      statefulCodeEnvironment,
-      codeExecutionContext,
-      codeSessionKey: codeExecutionContext?.codeSessionKey,
-      includeReasoningHistory: getIncludeReasoningHistory(agent),
-      alwaysApplySkillPrimes,
-      historicalToolNames,
-      historicalMcpServerNames,
-      skillAuthoringAvailable: skillAuthoringAvailable === true,
-    };
+    return copyToolApprovalAdmissionMetadata(
+      {
+        id: agent.id,
+        name: agent.name,
+        description: agent.description,
+        provider: agent.provider,
+        model: agent.model,
+        model_parameters: { model: agent.model_parameters?.model },
+        recursion_limit: agent.recursion_limit,
+        memory_scope: agent.memory_scope,
+        memoryToolsRegistered:
+          memoryAvailable === true && agent.tools?.includes(Tools.memory) === true,
+        subagents: agent.subagents,
+        configId: getLazySubagentConfigId(agent),
+        codeEnvAvailable: lazyCodeEnvAvailable,
+        statefulCodeSessions,
+        statefulCodeEnvironment,
+        codeExecutionContext,
+        codeSessionKey: codeExecutionContext?.codeSessionKey,
+        includeReasoningHistory: getIncludeReasoningHistory(agent),
+        alwaysApplySkillPrimes,
+        historicalToolNames,
+        historicalMcpServerNames,
+        skillAuthoringAvailable: skillAuthoringAvailable === true,
+      },
+      agent,
+    );
   };
 
   const loadSubagentMetadata = async (agentId) => {
@@ -1449,44 +1453,47 @@ const initializeClientWithProvider = async ({
         const lazyChildren = childDescriptors.filter((child) => child.configId);
         const eagerChildren = childDescriptors.filter((child) => !child.configId);
         const subagentGraphMemberMetadata = await loadGraphMemberCapabilityMetadata(metadata);
-        return {
-          id: metadata.id,
-          name: metadata.name,
-          description: metadata.description,
-          provider: metadata.provider,
-          model: metadata.model,
-          model_parameters: metadata.model_parameters,
-          recursion_limit: metadata.recursion_limit,
-          memory_scope: metadata.memory_scope,
-          memoryToolsRegistered: metadata.memoryToolsRegistered,
-          subagents: metadata.subagents,
-          configId: metadata.configId,
-          codeEnvAvailable: metadata.codeEnvAvailable,
-          statefulCodeSessions: metadata.statefulCodeSessions,
-          statefulCodeEnvironment: metadata.statefulCodeEnvironment,
-          codeExecutionContext: metadata.codeExecutionContext,
-          codeSessionKey: metadata.codeSessionKey,
-          includeReasoningHistory: metadata.includeReasoningHistory,
-          skillAuthoringAvailable: metadata.skillAuthoringAvailable,
-          alwaysApplySkillPrimes: metadata.alwaysApplySkillPrimes,
-          historicalToolNames: metadata.historicalToolNames,
-          historicalMcpServerNames: metadata.historicalMcpServerNames,
-          lazySubagentConfigs: lazyChildren,
-          subagentAgentConfigs: eagerChildren,
-          subagentGraphMemberMetadata,
-          resolve: async (context) =>
-            initializeLazySubagent({
-              agentId: metadata.id,
-              configId: metadata.configId,
-              context,
-              lazyChildren,
-            }).then(async (config) => {
-              config.subagentAgentConfigs = eagerChildren;
-              graphMemberConfigsById.set(config.id, config);
-              await resolveGraphSubagentsFor(config, context.signal);
-              return config;
-            }),
-        };
+        return copyToolApprovalAdmissionMetadata(
+          {
+            id: metadata.id,
+            name: metadata.name,
+            description: metadata.description,
+            provider: metadata.provider,
+            model: metadata.model,
+            model_parameters: metadata.model_parameters,
+            recursion_limit: metadata.recursion_limit,
+            memory_scope: metadata.memory_scope,
+            memoryToolsRegistered: metadata.memoryToolsRegistered,
+            subagents: metadata.subagents,
+            configId: metadata.configId,
+            codeEnvAvailable: metadata.codeEnvAvailable,
+            statefulCodeSessions: metadata.statefulCodeSessions,
+            statefulCodeEnvironment: metadata.statefulCodeEnvironment,
+            codeExecutionContext: metadata.codeExecutionContext,
+            codeSessionKey: metadata.codeSessionKey,
+            includeReasoningHistory: metadata.includeReasoningHistory,
+            skillAuthoringAvailable: metadata.skillAuthoringAvailable,
+            alwaysApplySkillPrimes: metadata.alwaysApplySkillPrimes,
+            historicalToolNames: metadata.historicalToolNames,
+            historicalMcpServerNames: metadata.historicalMcpServerNames,
+            lazySubagentConfigs: lazyChildren,
+            subagentAgentConfigs: eagerChildren,
+            subagentGraphMemberMetadata,
+            resolve: async (context) =>
+              initializeLazySubagent({
+                agentId: metadata.id,
+                configId: metadata.configId,
+                context,
+                lazyChildren,
+              }).then(async (config) => {
+                config.subagentAgentConfigs = eagerChildren;
+                graphMemberConfigsById.set(config.id, config);
+                await resolveGraphSubagentsFor(config, context.signal);
+                return config;
+              }),
+          },
+          metadata,
+        );
       }),
     );
     return descriptors.filter(Boolean);
