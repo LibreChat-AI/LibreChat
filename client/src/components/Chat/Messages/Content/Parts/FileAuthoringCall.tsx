@@ -174,7 +174,9 @@ export default function FileAuthoringCall({
     isSubmitting,
     output,
     hasInput: !!filePath || !!preview,
-    panelReady: !!preview,
+    /** An overwrite reads "Updated" on the row while the group header keeps the
+     *  `create_file` name, so the row stays the only place that says it. */
+    panelReady: !!preview && !overwrote,
     keepRow: intent != null,
     onExpand,
     runStepStatus,

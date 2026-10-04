@@ -1,6 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { render, screen } from '@testing-library/react';
+import FileAuthoringCall from '../FileAuthoringCall';
 import { SoleToolContext } from '../../disclosure';
 import ReadFileCall from '../ReadFileCall';
 import MemoryCall from '../MemoryCall';
@@ -67,6 +68,34 @@ describe('a sole call keeps its row when its panel would be empty', () => {
       />,
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Check the config');
+  });
+
+  it('FileAuthoringCall: a create that overwrote a file keeps the row naming the update', () => {
+    renderSole(
+      <FileAuthoringCall
+        toolName="create_file"
+        initialProgress={1}
+        isSubmitting={false}
+        args={{ path: 'src/a.ts', content: 'x' }}
+        output="Updated src/a.ts"
+        runStepStatus="completed"
+      />,
+    );
+    expect(screen.getByTestId('progress-text')).toBeInTheDocument();
+  });
+
+  it('FileAuthoringCall: a fresh create drops the row once there is a preview', () => {
+    renderSole(
+      <FileAuthoringCall
+        toolName="create_file"
+        initialProgress={1}
+        isSubmitting={false}
+        args={{ path: 'src/a.ts', content: 'x' }}
+        output="Created src/a.ts"
+        runStepStatus="completed"
+      />,
+    );
+    expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
   });
 
   it('MemoryCall: output with no parseable key or value keeps its row', () => {

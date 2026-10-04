@@ -207,6 +207,15 @@ const makePart = (
     },
   }) as unknown as TMessageContentParts;
 
+const completed = (part: TMessageContentParts): TMessageContentParts =>
+  ({
+    ...part,
+    [ContentTypes.TOOL_CALL]: {
+      ...(part as unknown as Record<string, object>)[ContentTypes.TOOL_CALL],
+      runStepStatus: 'completed',
+    },
+  }) as unknown as TMessageContentParts;
+
 const makeApprovalPart = (id: string, output = ''): TMessageContentParts =>
   ({
     type: ContentTypes.TOOL_CALL,
@@ -944,7 +953,7 @@ describe('ToolCallGroup image hoisting', () => {
   it('names a lone code call by what it did, not by the bare tool name', () => {
     renderGroup({
       ...baseProps,
-      parts: [{ part: makePart('code-1', 'done', 'execute_code'), idx: 0 }],
+      parts: [{ part: completed(makePart('code-1', 'done', 'execute_code')), idx: 0 }],
       lastContentIdx: 0,
     });
 
@@ -969,15 +978,17 @@ describe('ToolCallGroup image hoisting', () => {
       ...baseProps,
       parts: [
         {
-          part: makePart(
-            'code-1',
-            JSON.stringify({
-              background_task_id: 'task-1',
-              tool: 'bash_tool',
-              status: 'running',
-              message: 'Use check_background_task to follow it',
-            }),
-            'bash_tool',
+          part: completed(
+            makePart(
+              'code-1',
+              JSON.stringify({
+                background_task_id: 'task-1',
+                tool: 'bash_tool',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'bash_tool',
+            ),
           ),
           idx: 0,
         },
@@ -1074,6 +1085,29 @@ describe('ToolCallGroup image hoisting', () => {
       ...baseProps,
       isSubmitting: false,
       parts: [{ part: interrupted, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not claim a lone code call ran when a legacy record has output but no progress field', () => {
+    const noProgress = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-no-progress',
+        name: 'execute_code',
+        args: '{}',
+        output: 'done',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: noProgress, idx: 0 }],
       lastContentIdx: 0,
     });
 

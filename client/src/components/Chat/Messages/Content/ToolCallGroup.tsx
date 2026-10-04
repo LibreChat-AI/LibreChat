@@ -497,12 +497,10 @@ export default function ToolCallGroup({
             ? (rawCall[ContentTypes.TOOL_CALL] as { runStepStatus?: unknown; progress?: number })
             : undefined;
         /** The card infers a stop from a legacy record with no step status whose
-         *  progress never reached 1 once the stream is over; the metadata does not. */
+         *  progress never reached 1 once the stream is over, and `Part` supplies
+         *  0.1 when the field is absent; the metadata does not. */
         const interrupted =
-          !isSubmitting &&
-          legacyCall?.runStepStatus == null &&
-          typeof legacyCall?.progress === 'number' &&
-          legacyCall.progress < 1;
+          !isSubmitting && legacyCall?.runStepStatus == null && (legacyCall?.progress ?? 0.1) < 1;
         if (only?.failed) {
           return localize('com_ui_failed_subject', { 0: singleToolLabel });
         }
