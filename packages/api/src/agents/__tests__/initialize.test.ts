@@ -1808,7 +1808,8 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
     );
 
     expect(result.instructions).toBeUndefined();
-    expect(result.additional_instructions).toBe(
+    expect(result.additional_instructions).toBeUndefined();
+    expect(result.dynamicToolContextMap?.agent_temporal_instructions).toBe(
       'Today is 2026-08-31 (Monday). The turn began at 2026-08-31 06:20:00 +00:00 (Monday) (2026-08-31T06:20:00.000Z).',
     );
   });
@@ -1833,9 +1834,54 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
     );
 
     expect(result.instructions).toBeUndefined();
-    expect(result.additional_instructions).toBe(
+    expect(result.additional_instructions).toBeUndefined();
+    expect(result.dynamicToolContextMap?.agent_temporal_instructions).toBe(
       'It is currently 2024-01-15 13:30:00 -05:00 (Monday).',
     );
+  });
+
+  it('keeps artifact guidance before all per-turn context without mutating shared tool context', async () => {
+    const { generateArtifactsPrompt } = jest.requireMock('~/prompts') as {
+      generateArtifactsPrompt: jest.Mock;
+    };
+    generateArtifactsPrompt.mockReturnValue('Artifact guidance');
+
+    const { agent, req, res, loadTools, db } = createMocks();
+    const webContext = { web_search: 'Conversation Date & Time: 2026-08-31T06:20:00.000Z' };
+    loadTools.mockResolvedValueOnce({
+      tools: [],
+      toolContextMap: {},
+      dynamicToolContextMap: webContext,
+      toolDefinitions: [],
+      hasDeferredTools: false,
+    });
+    agent.additional_instructions = 'Stable agent context';
+    agent.instructions = 'Today is {{current_date}}.';
+    agent.artifacts = 'enabled' as never;
+    req.turnStartedAt = new Date('2026-08-31T06:20:00.000Z').getTime();
+    req.body = { timezone: 'UTC' };
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.additional_instructions).toBe('Stable agent context\n\nArtifact guidance');
+    expect(result.dynamicToolContextMap).toEqual({
+      ...webContext,
+      agent_temporal_instructions: 'Today is 2026-08-31 (Monday).',
+    });
+    expect(webContext).toEqual({
+      web_search: 'Conversation Date & Time: 2026-08-31T06:20:00.000Z',
+    });
   });
 
   it('keeps non-temporal special vars in stable instructions', async () => {
