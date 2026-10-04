@@ -160,6 +160,30 @@ describe('LiaEngine', () => {
     expect(progress[progress.length - 1]).toBeLessThan(0.2);
   });
 
+  it('keeps a glance that started before layout went away', () => {
+    const faces: string[] = [];
+    const draw = jest.spyOn(body, 'drawScreen');
+    draw.mockImplementation((_c, _name, _t, _p, fs) => {
+      faces.push(fs.face);
+    });
+    let platform: typeof PLATFORM | null = PLATFORM;
+    const engine = new LiaEngine(
+      document.createElement('canvas'),
+      { platform: () => platform, onBubble: () => undefined },
+      0,
+    );
+    engine.life = false;
+    run(engine, 0, 96);
+    engine.glance('surprised', 400, undefined, engine.clock(96));
+    run(engine, 112, 160);
+    platform = null;
+    run(engine, 176, 3000);
+    platform = PLATFORM;
+    run(engine, 3008, 3008);
+    draw.mockRestore();
+    expect(faces[faces.length - 1]).toBe('surprised');
+  });
+
   it('replaces an action without reporting a gap the host could fill', () => {
     const labels: Array<string | null> = [];
     const engine: LiaEngine = new LiaEngine(

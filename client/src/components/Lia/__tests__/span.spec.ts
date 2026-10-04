@@ -33,4 +33,9 @@ describe('freeSpan', () => {
       ),
     ).toEqual([50, 80]);
   });
+
+  it('ignores empty obstacles and reads reversed ones the right way round', () => {
+    expect(freeSpan(0, 100, [[50, 50]], 20, 60)).toEqual([0, 100]);
+    expect(freeSpan(0, 100, [[60, 40]], 80)).toEqual([60, 100]);
+  });
 });

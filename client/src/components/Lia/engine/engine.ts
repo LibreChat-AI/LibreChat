@@ -145,6 +145,8 @@ export class LiaEngine {
   private nextBlink = 0;
   private lastDraw = 0;
   private lastFrame = 0;
+  /** Wall time spent without a layout; Lia's own clock stands still for it. */
+  private hidden = 0;
   private bubble: Bubble | null = null;
   /** Unset until the user first types, so a fresh engine is never busy. */
   private typingUntil = -Infinity;
@@ -214,7 +216,7 @@ export class LiaEngine {
     return { x: this.gx, y: this.gy };
   }
 
-  attention(now = performance.now()): Attention {
+  attention(now = this.clock()): Attention {
     if (now < this.typingUntil + TYPING_QUIET_MS) {
       return 'busy';
     }
@@ -228,7 +230,7 @@ export class LiaEngine {
    * Something the user did on the page; keeps Lia's bigger routines for when they step away.
    * A `deliberate` action (a click, typing, a drop) also wakes Lia from a nap.
    */
-  noteActivity(deliberate = false, now = performance.now()) {
+  noteActivity(deliberate = false, now = this.clock()) {
     this.lastUser = now;
     if (deliberate && this.run?.def.id === 'nap') {
       /* A nap the host played above reaction priority still wakes. */
@@ -236,7 +238,7 @@ export class LiaEngine {
     }
   }
 
-  noteTyping(now = performance.now()) {
+  noteTyping(now = this.clock()) {
     this.typingUntil = now + 1500;
     /* Typing is deliberate: it wakes a napping Lia rather than cancelling the nap. */
     this.noteActivity(true, now);
@@ -247,7 +249,7 @@ export class LiaEngine {
   }
 
   /** Plays an action unless something more important is running. Higher `prio` wins. */
-  play(id: string, prio = 2, now = performance.now()): boolean {
+  play(id: string, prio = 2, now = this.clock()): boolean {
     const def = ACTION_BY_ID.get(id);
     if (!def || (this.run && this.run.prio > prio)) {
       return false;
@@ -282,12 +284,12 @@ export class LiaEngine {
   }
 
   /** A short change of face (and optionally gaze or arms) that does not interrupt the current action. */
-  glance(face: string, ms: number, look?: Look, now = performance.now()) {
+  glance(face: string, ms: number, look?: Look, now = this.clock()) {
     this.overlay = { f: face, look, start: now, until: now + ms };
   }
 
   /** Clicking Lia: a pet, then dizziness, then a crash for the persistent. */
-  pet(now = performance.now()) {
+  pet(now = this.clock()) {
     if (this.run?.def.id === 'nap') {
       /* A click on a napping Lia wakes her; the wake-up is the whole reaction. */
       this.noteActivity(true, now);
@@ -310,15 +312,22 @@ export class LiaEngine {
     }
   }
 
-  tick(now: number) {
-    const prev = this.lastFrame;
-    const dt = clamp((now - prev) / 1000, 0, 0.05);
-    this.lastFrame = now;
+  /** Lia's time: wall time minus the time she spent without a layout. */
+  clock(wall = performance.now()) {
+    return wall - this.hidden;
+  }
+
+  tick(wall: number) {
+    const elapsed = Math.max(0, wall - this.lastFrame);
+    this.lastFrame = wall;
     const platform = this.host.platform();
     if (!platform) {
-      this.pause(prev, now);
+      /* Her clock stops, so steps, screens, glances and walks resume where they left off. */
+      this.hidden += elapsed;
       return;
     }
+    const now = this.clock(wall);
+    const dt = clamp(elapsed / 1000, 0, 0.05);
     this.place(platform);
     this.updateRun(now);
     this.updateLife(dt, now);
@@ -327,7 +336,7 @@ export class LiaEngine {
   }
 
   /** Picks the next activity Lia does on her own, or null when nothing fits right now. */
-  chooseLife(now = performance.now(), random = Math.random): string | null {
+  chooseLife(now = this.clock(), random = Math.random): string | null {
     const attention = this.attention(now);
     if (attention === 'busy') {
       return null;
@@ -417,27 +426,6 @@ export class LiaEngine {
     run.pending = null;
     if (m) {
       this.startMove(m, run, now);
-    }
-  }
-
-  /**
-   * Holds every clock Lia is drawn from while there is no layout, so a step nobody saw is not
-   * skipped and its screen and face resume where they left off.
-   */
-  private pause(prev: number, now: number) {
-    const run = this.run;
-    const paused = now - Math.max(prev, run?.stepStart ?? prev);
-    if (paused <= 0) {
-      return;
-    }
-    if (run) {
-      run.stepStart += paused;
-      run.poseStart += paused;
-    }
-    this.screen.start += paused;
-    this.expression.start += paused;
-    if (this.move) {
-      this.move.start += paused;
     }
   }
 

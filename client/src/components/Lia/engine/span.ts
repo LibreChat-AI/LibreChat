@@ -11,7 +11,13 @@ export function freeSpan(
   minWidth = 0,
 ): readonly [number, number] | null {
   let spans: Array<[number, number]> = [[x0, x1]];
-  for (const [b0, b1] of blocked) {
+  for (const [a, b] of blocked) {
+    const b0 = Math.min(a, b);
+    const b1 = Math.max(a, b);
+    /* An empty range covers nothing, so it splits nothing. */
+    if (b1 <= b0) {
+      continue;
+    }
     const next: Array<[number, number]> = [];
     for (const [s0, s1] of spans) {
       if (b1 <= s0 || b0 >= s1) {
