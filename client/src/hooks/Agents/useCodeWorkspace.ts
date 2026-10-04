@@ -13,6 +13,7 @@ import {
   CODE_ENVIRONMENT_MOVE_VERSION,
   CODE_ENVIRONMENT_TRANSITION_VERSION,
   CODE_WORKSPACE_RECOVERY_VERSION,
+  CODE_WORKSPACE_INHERITANCE_VERSION,
   PermissionTypes,
   Permissions,
 } from 'librechat-data-provider';
@@ -189,6 +190,10 @@ export default function useCodeWorkspace(
   const supportsWorkspaceRecovery =
     supportsEnvironmentMoves &&
     startupConfig?.codeWorkspaceRecoveryVersion === CODE_WORKSPACE_RECOVERY_VERSION;
+  /** An API that predates inheritance still routes each subagent to its own machine, so only an
+   *  advertising one lets the composer drop that machine's workspace. */
+  const supportsWorkspaceInheritance =
+    startupConfig?.codeWorkspaceInheritanceVersion === CODE_WORKSPACE_INHERITANCE_VERSION;
   const preferences = useWorkspacePreferences(conversation?.agent_id);
   const { agentsConfig, endpointsConfig } = useGetAgentsConfig();
   const canRunCode = useHasAccess({
@@ -238,34 +243,42 @@ export default function useCodeWorkspace(
     const defaults = new Map<string, Set<string>>();
     const preferenceAgentIds = new Map<string, Set<string>>();
     const requiredBy = new Map<string, Array<{ id: string; name?: string | null }>>();
-    const inheritance = resolveReachableCodeWorkspaceInheritance(
-      [primaryAgent, addedAgent],
-      agentsMap,
-      statefulCodeSessions?.environments,
-      statefulCodeSessions?.allowEnvironmentSelection,
-      conversation?.codeWorkspaces,
-      undecided,
-    );
-    /** A decision may still select the machine an inheriting subagent used before it followed its
-     *  parent. Keep that machine in the set so its selection is echoed, validated and never read
-     *  as a foreign choice that needs a transition, but list no agent as requiring it. */
-    const retainInheritedFromSelection = (
-      agent: Agent,
-      environment: TPublicCodeEnvironment | undefined,
-    ) => {
+    const inheritance = supportsWorkspaceInheritance
+      ? resolveReachableCodeWorkspaceInheritance(
+          [primaryAgent, addedAgent],
+          agentsMap,
+          statefulCodeSessions?.environments,
+          statefulCodeSessions?.allowEnvironmentSelection,
+          conversation?.codeWorkspaces,
+          undecided,
+        )
+      : new Map<string, string>();
+    /** A decision may still select the machine an inheriting subagent ran on before it followed
+     *  its parent. No agent runs there now, so that selection is echoed as sealed but neither
+     *  required, nor checked for readiness, nor read as a foreign choice that needs a move. */
+    const formerEnvironmentIds = new Set<string>();
+    const retainInheritedFromSelection = (agent: Agent) => {
       if (!inheritance.has(agent.id)) return;
-      const own = findCodeWorkspaceDiscoveryEnvironment(
-        agent,
-        statefulCodeSessions?.environments,
-        statefulCodeSessions?.allowEnvironmentSelection,
-        conversation?.codeWorkspaces,
-      );
+      const own = resolveCodeEnvironmentSelection({
+        agentId: agent.id,
+        environmentId:
+          agent.code_environment_id ??
+          statefulCodeSessions?.environments?.find(({ default: isDefault }) => isDefault)?.id,
+        environmentIds: agent.code_environment_ids,
+        allowSelection:
+          getCodeEnvironmentChoiceIds(
+            agent,
+            statefulCodeSessions?.environments,
+            statefulCodeSessions?.allowEnvironmentSelection,
+          ) != null,
+        selections: conversation?.codeWorkspaces,
+      });
+      const ownId = own.valid ? own.environmentId : undefined;
       if (
-        own?.type === 'attached' &&
-        own.id !== environment?.id &&
-        conversation?.codeWorkspaces?.some(({ environmentId }) => environmentId === own.id)
+        ownId &&
+        conversation?.codeWorkspaces?.some(({ environmentId }) => environmentId === ownId)
       ) {
-        unique.set(own.id, own);
+        formerEnvironmentIds.add(ownId);
       }
     };
     let complete = true;
@@ -285,7 +298,7 @@ export default function useCodeWorkspace(
       if (environment == null && agent.code_environment_id) {
         complete = false;
       }
-      retainInheritedFromSelection(agent, environment);
+      retainInheritedFromSelection(agent);
       if (environment?.type !== 'attached') continue;
       unique.set(environment.id, environment);
       const owners = requiredBy.get(environment.id) ?? [];
@@ -326,6 +339,7 @@ export default function useCodeWorkspace(
       defaults,
       preferenceAgentIds,
       requiredBy,
+      formerEnvironmentIds: new Set([...formerEnvironmentIds].filter((id) => !unique.has(id))),
       environments: [...unique.values()].sort((a, b) => a.id.localeCompare(b.id)),
     };
   }, [
@@ -338,6 +352,7 @@ export default function useCodeWorkspace(
     reachable.agents,
     statefulCodeSessions?.environments,
     statefulCodeSessions?.allowEnvironmentSelection,
+    supportsWorkspaceInheritance,
     undecided,
   ]);
   const isAgentsConversation =
@@ -366,8 +381,10 @@ export default function useCodeWorkspace(
     () => new Set(attachedEnvironments.map(({ id }) => id)),
     [attachedEnvironments],
   );
+  const { formerEnvironmentIds } = workspaceMetadata;
   const hasForeignStoredSelection = storedSelections?.some(
-    ({ environmentId }) => !attachedEnvironmentIds.has(environmentId),
+    ({ environmentId }) =>
+      !attachedEnvironmentIds.has(environmentId) && !formerEnvironmentIds.has(environmentId),
   );
   const machineChoiceOwners =
     required &&
@@ -479,10 +496,16 @@ export default function useCodeWorkspace(
       }
       /** Never silently discard a machine the user picked. A sealed choice needs a transition;
        * a draft choice not used by the graph must be corrected before it can execute elsewhere. */
-      if (selections?.some(({ environmentId }) => !attachedEnvironmentIds.has(environmentId))) {
+      if (
+        selections?.some(
+          ({ environmentId }) =>
+            !attachedEnvironmentIds.has(environmentId) && !formerEnvironmentIds.has(environmentId),
+        )
+      ) {
         return undefined;
       }
-      const resolved: CodeWorkspaceSelection[] = [];
+      const resolved: CodeWorkspaceSelection[] =
+        selections?.filter(({ environmentId }) => formerEnvironmentIds.has(environmentId)) ?? [];
       for (const result of environmentResults) {
         const requested = selections?.find(
           ({ environmentId }) => environmentId === result.environment.id,
@@ -517,7 +540,7 @@ export default function useCodeWorkspace(
         return undefined;
       }
       const inheritance =
-        statefulCodeSessions?.allowEnvironmentSelection === true
+        supportsWorkspaceInheritance && statefulCodeSessions?.allowEnvironmentSelection === true
           ? resolveReachableCodeWorkspaceInheritance(
               [primaryAgent, addedAgent],
               agentsMap,
@@ -553,11 +576,13 @@ export default function useCodeWorkspace(
       agentsMap,
       attachedEnvironmentIds,
       environmentResults,
+      formerEnvironmentIds,
       primaryAgent,
       required,
       selectionMetadataComplete,
       reachable.agents,
       statefulCodeSessions,
+      supportsWorkspaceInheritance,
     ],
   );
 

@@ -92,8 +92,8 @@ function toSubagentRoutingAgent(
  * initialization and execution-time tool loads agree on one route per subagent.
  *
  * `loadSubagent` must return only agents the principal may view, and should share its results
- * with the run's own subagent loading so the walk adds no reads. It stays within the subagent
- * depth and node limits; graph construction reports a graph that exceeds them.
+ * with the run's own subagent loading. It stays within the subagent depth limit and stops once
+ * more agents are admitted than the node limit allows; graph construction reports either.
  */
 export async function resolveSubagentCodeWorkspaceInheritance({
   selections,
@@ -119,17 +119,22 @@ export async function resolveSubagentCodeWorkspaceInheritance({
     agents.set(root.id, toRootRoutingAgent(root));
   }
   let frontier = [...agents.values()].flatMap(({ subagentIds }) => subagentIds ?? []);
-  let loadedCount = 0;
-  for (let depth = 1; depth <= MAX_SUBAGENT_DEPTH && frontier.length > 0; depth++) {
-    const ids = [...new Set(frontier)]
-      .filter((id) => !agents.has(id))
-      .slice(0, Math.max(0, MAX_SUBAGENT_GRAPH_NODES - loadedCount));
-    loadedCount += ids.length;
+  const attempted = new Set<string>();
+  /** Like graph construction, only admitted agents count toward the node limit. */
+  let admitted = 0;
+  for (
+    let depth = 1;
+    depth <= MAX_SUBAGENT_DEPTH && frontier.length > 0 && admitted <= MAX_SUBAGENT_GRAPH_NODES;
+    depth++
+  ) {
+    const ids = [...new Set(frontier)].filter((id) => !agents.has(id) && !attempted.has(id));
+    ids.forEach((id) => attempted.add(id));
     const loaded = await Promise.all(ids.map((id) => loadSubagent(id).catch(() => null)));
     frontier = [];
     for (let index = 0; index < ids.length; index++) {
       const agent = loaded[index];
       if (agent == null) continue;
+      admitted++;
       const node = toSubagentRoutingAgent(
         { ...agent, id: ids[index] },
         environments,

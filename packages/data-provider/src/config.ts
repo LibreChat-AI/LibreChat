@@ -53,6 +53,7 @@ import {
   CODE_ENVIRONMENT_MOVE_VERSION,
   CODE_ENVIRONMENT_TRANSITION_VERSION,
   CODE_WORKSPACE_RECOVERY_VERSION,
+  CODE_WORKSPACE_INHERITANCE_VERSION,
   MAX_AGENT_CODE_ENVIRONMENT_CHOICES,
 } from './code/workspace';
 import { ComponentTypes, SettingTypes, OptionTypes } from './generate';
@@ -3043,6 +3044,9 @@ export type TStartupConfig = {
   /** Additive recovery support. Clients require this and the move capability before replacing
    * a missing workspace. Keeping it separate preserves exact-version checks in older clients. */
   codeWorkspaceRecoveryVersion?: typeof CODE_WORKSPACE_RECOVERY_VERSION;
+  /** Subagents follow their parent's attached machine. Clients mirror that routing only when this
+   * is advertised. */
+  codeWorkspaceInheritanceVersion?: typeof CODE_WORKSPACE_INHERITANCE_VERSION;
   interface?: TInterfaceConfig;
   turnstile?: TTurnstileConfig;
   balance?: TBalanceConfig;

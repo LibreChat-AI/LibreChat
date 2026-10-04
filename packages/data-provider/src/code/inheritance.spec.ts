@@ -295,12 +295,52 @@ describe('subagent machine inheritance', () => {
     expect(inheritance).toEqual(new Map([['shared', LIA_RAG]]));
   });
 
-  it('keeps subagents that only spawn each other on their own routes', () => {
+  it('ignores a spawn back-edge the run prunes, as the descriptor tree does', () => {
     const parent = agent('lia', { subagentIds: ['left'] });
     const left = agent('left', { subagentIds: ['right'] });
     const right = agent('right', { subagentIds: ['left'] });
     const inheritance = resolveCodeWorkspaceInheritance({
       selections: incident,
+      rootIds: ['lia'],
+      agents: graph(parent, left, right),
+      isAttachedEnvironment,
+    });
+    expect(inheritance).toEqual(
+      new Map([
+        ['left', LIA_RAG],
+        ['right', LIA_RAG],
+      ]),
+    );
+  });
+
+  it("routes subagents that spawn each other with their outside parent's machine", () => {
+    const parent = agent('lia', { subagentIds: ['left', 'right'] });
+    const left = agent('left', { subagentIds: ['right'] });
+    const right = agent('right', { subagentIds: ['left'] });
+    const inheritance = resolveCodeWorkspaceInheritance({
+      selections: incident,
+      rootIds: ['lia'],
+      agents: graph(parent, left, right),
+      isAttachedEnvironment,
+    });
+    expect(inheritance).toEqual(
+      new Map([
+        ['left', LIA_RAG],
+        ['right', LIA_RAG],
+      ]),
+    );
+  });
+
+  it('keeps a mutually spawning group on its own routes when one member is assigned elsewhere', () => {
+    const selections: CodeWorkspaceSelection[] = [
+      { environmentId: SKYNET, workspaceId: 'code-api', agentIds: ['right'] },
+      { environmentId: LIA_RAG, workspaceId: 'agents', agentIds: ['lia'] },
+    ];
+    const parent = agent('lia', { subagentIds: ['left', 'right'] });
+    const left = agent('left', { subagentIds: ['right'] });
+    const right = agent('right', { subagentIds: ['left'] });
+    const inheritance = resolveCodeWorkspaceInheritance({
+      selections,
       rootIds: ['lia'],
       agents: graph(parent, left, right),
       isAttachedEnvironment,

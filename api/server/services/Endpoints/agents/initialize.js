@@ -1585,8 +1585,8 @@ const initializeClientWithProvider = async ({
     if (skippedAgentIds.has(memberId)) return null;
     assertSubagentGraphRoom(memberId);
     subagentGraphIds.add(memberId);
-    const agent = await waitForAbort(loadViewableSubagent(memberId), signal);
-    if (!agent) {
+    const agent = await waitForAbort(db.getAgentWithVersionCount({ id: memberId }), signal);
+    if (!agent || !(await hasSubagentViewAccess(agent, memberId, signal))) {
       skippedAgentIds.add(memberId);
       return null;
     }

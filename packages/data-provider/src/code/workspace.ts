@@ -39,6 +39,11 @@ export const CODE_ENVIRONMENT_MOVE_VERSION = 1 as const;
 export const CODE_ENVIRONMENT_TRANSITION_VERSION = 2 as const;
 /** Additive capability for replacing a missing workspace without disabling moves in V1 clients. */
 export const CODE_WORKSPACE_RECOVERY_VERSION = 1 as const;
+/**
+ * API/client protocol for subagents that follow their parent's machine. A composer mirrors the
+ * routing only when this is advertised, so it never omits a workspace an older API still needs.
+ */
+export const CODE_WORKSPACE_INHERITANCE_VERSION = 1 as const;
 export const CODE_WORKSPACE_OPERATIONS = [
   'read_file',
   'search_text',
@@ -347,7 +352,8 @@ export interface CodeWorkspaceRoutingAgent {
  * resolves one route per saved agent, so a subagent considers every agent that can spawn it, at any
  * depth: it inherits only when they all run on the same machine, and otherwise keeps its own route.
  * A subagent that does not run code passes its parent's machine on to its own subagents. Subagents
- * inside a spawn cycle with no route from outside it keep their own routes.
+ * that spawn each other follow the machine of every parent outside that group only when it routes
+ * each of them there.
  *
  * @returns Saved agent ID to inherited environment ID, for subagents whose route changes.
  */
@@ -419,11 +425,29 @@ export function resolveCodeWorkspaceInheritance({
         resolve(id, candidates.size === 1 ? Array.from(candidates)[0] : undefined);
       }
     } else {
-      /** Every remaining agent waits on another; the members of a cycle keep their own routes. */
+      /** Every remaining agent waits on another, so some of them spawn each other. They follow the
+       *  single machine every outside parent runs on when that routes each of them there too;
+       *  otherwise they keep their own routes. */
       const waiting = new Set(pending);
       const cyclic = pending.filter((candidate) => isInCycle(candidate, waiting, parents));
-      for (const id of cyclic.length > 0 ? cyclic : pending) {
-        resolve(id, undefined);
+      const members = cyclic.length > 0 ? cyclic : pending;
+      const group = new Set(members);
+      const outside = new Set<string | undefined>();
+      let outsideResolved = true;
+      for (const id of members) {
+        parents.get(id)?.forEach((parentId) => {
+          if (group.has(parentId)) return;
+          if (!routes.has(parentId)) outsideResolved = false;
+          outside.add(routes.get(parentId));
+        });
+      }
+      const candidate = outsideResolved && outside.size === 1 ? Array.from(outside)[0] : undefined;
+      members.forEach((id) => resolve(id, candidate));
+      if (candidate != null && members.some((id) => routes.get(id) !== candidate)) {
+        members.forEach((id) => {
+          inherited.delete(id);
+          resolve(id, undefined);
+        });
       }
     }
     pending = pending.filter((id) => !routes.has(id));
@@ -431,28 +455,44 @@ export function resolveCodeWorkspaceInheritance({
   return inherited;
 }
 
-/** Every agent that can spawn each subagent reachable from the roots. */
+/**
+ * Every agent that can spawn each subagent reachable from the roots. A run never spawns an agent
+ * beneath itself, so `parent → child` counts only when some spawn path reaches the parent without
+ * passing through the child.
+ */
 function collectSpawningParents(
   roots: ReadonlySet<string>,
   agents: ReadonlyMap<string, CodeWorkspaceRoutingAgent>,
 ): Map<string, Set<string>> {
   const parents = new Map<string, Set<string>>();
-  const visited = new Set<string>(roots);
-  const queue = Array.from(roots);
-  for (let index = 0; index < queue.length; index++) {
-    const parentId = queue[index];
+  const reachable = reachableFrom(roots, agents);
+  reachable.forEach((parentId) => {
     for (const childId of agents.get(parentId)?.subagentIds ?? []) {
       if (roots.has(childId) || !agents.has(childId)) continue;
+      if (!reachableFrom(roots, agents, childId).has(parentId)) continue;
       const childParents = parents.get(childId) ?? new Set<string>();
       childParents.add(parentId);
       parents.set(childId, childParents);
-      if (!visited.has(childId)) {
-        visited.add(childId);
-        queue.push(childId);
-      }
+    }
+  });
+  return parents;
+}
+
+function reachableFrom(
+  roots: ReadonlySet<string>,
+  agents: ReadonlyMap<string, CodeWorkspaceRoutingAgent>,
+  avoid?: string,
+): Set<string> {
+  const visited = new Set<string>(roots);
+  const queue = Array.from(roots);
+  for (let index = 0; index < queue.length; index++) {
+    for (const childId of agents.get(queue[index])?.subagentIds ?? []) {
+      if (childId === avoid || visited.has(childId) || !agents.has(childId)) continue;
+      visited.add(childId);
+      queue.push(childId);
     }
   }
-  return parents;
+  return visited;
 }
 
 function isInCycle(

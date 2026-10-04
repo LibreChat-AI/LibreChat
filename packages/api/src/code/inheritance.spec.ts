@@ -306,6 +306,25 @@ describe('resolveSubagentCodeWorkspaceInheritance', () => {
     );
   });
 
+  it('counts only admitted subagents toward the node limit', async () => {
+    const verifier = 'agent_finding_verifier';
+    const stale = Array.from({ length: 49 }, (_, index) => `agent_deleted_${index}`);
+    const lia = await seed(LIA, {
+      subagents: { enabled: true, agent_ids: [...stale, REVIEWER] },
+    });
+    await seed(REVIEWER, { subagents: { enabled: true, agent_ids: [verifier] } });
+    await seed(verifier);
+    const inheritance = await resolveSubagentCodeWorkspaceInheritance({
+      selections: incident,
+      roots: [root(lia)],
+      loadSubagent,
+      environments,
+      allowEnvironmentSelection: true,
+      codeExecutionAvailable: true,
+    });
+    expect(inheritance.get(verifier)).toBe(LIA_RAG);
+  });
+
   it('reads nothing when the run cannot use stateful code or holds no selection', async () => {
     const lia = await seed(LIA, { subagents: { enabled: true, agent_ids: [REVIEWER] } });
     for (const [selections, codeExecutionAvailable] of [

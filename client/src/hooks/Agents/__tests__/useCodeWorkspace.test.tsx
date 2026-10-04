@@ -124,6 +124,13 @@ describe('useCodeWorkspace', () => {
       return config;
     }
 
+    function enableInheritance() {
+      mockStartupConfig.mockReturnValue({
+        ...mockStartupConfig(),
+        codeWorkspaceInheritanceVersion: 1,
+      });
+    }
+
     it('names the reviewer whose separate machine still needs a workspace', () => {
       enableChoices();
       mockAgentPermissions().agent.name = 'Lia';
@@ -253,6 +260,7 @@ describe('useCodeWorkspace', () => {
 
     it("routes a reviewer with Lia's chosen machine when an older client sealed only her", () => {
       enableChoices();
+      enableInheritance();
       mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
       mockAgentsMap.mockReturnValue({
         reviewer: {
@@ -289,12 +297,13 @@ describe('useCodeWorkspace', () => {
       expect(result.current.resolveSubmission(sealedChoice)?.codeWorkspaces).toEqual(sealedChoice);
     });
 
-    it("echoes the reviewer's former selection after it follows Lia, without asking for a move", () => {
+    it("echoes the reviewer's former selection after it follows Lia, without gating on it", () => {
       enableChoices();
       mockStartupConfig.mockReturnValue({
         codeEnvironmentDecisionVersion: 1,
         codeEnvironmentMoveVersion: 1,
         codeEnvironmentTransitionVersion: 2,
+        codeWorkspaceInheritanceVersion: 1,
       });
       mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
       mockAgentsMap.mockReturnValue({
@@ -326,10 +335,11 @@ describe('useCodeWorkspace', () => {
       );
       expect(result.current.canSubmit).toBe(true);
       expect(result.current.transition?.kind).not.toBe('move');
-      expect(
-        result.current.environments.find(({ environment }) => environment.id === 'personal-vm')
-          ?.requiredBy,
-      ).toBeUndefined();
+      /** Nothing runs on the former machine, so its readiness is never polled or required. */
+      expect(result.current.environments.map(({ environment }) => environment.id)).toEqual([
+        'runtime-vm',
+      ]);
+      expect(mockStatus).toHaveBeenLastCalledWith(['runtime-vm'], true, expect.anything());
       expect(
         result.current.environments.find(({ environment }) => environment.id === 'runtime-vm')
           ?.requiredBy,
@@ -339,6 +349,7 @@ describe('useCodeWorkspace', () => {
 
     it("lets a new chat's reviewer follow Lia before any workspace is picked", () => {
       enableChoices();
+      enableInheritance();
       mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
       mockAgentsMap.mockReturnValue({
         reviewer: {
@@ -357,6 +368,25 @@ describe('useCodeWorkspace', () => {
       expect(result.current.canSubmit).toBe(true);
       expect(result.current.resolveSubmission()?.codeWorkspaces).toEqual([
         { environmentId: 'personal-vm', workspaceId: 'project-a' },
+      ]);
+    });
+
+    it("still asks for the reviewer's own machine when the API predates inheritance", () => {
+      enableChoices();
+      mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
+      mockAgentsMap.mockReturnValue({
+        reviewer: {
+          id: 'reviewer',
+          stateful_code_sessions: true,
+          tools: [Tools.execute_code],
+          code_environment_id: 'runtime-vm',
+          code_environment_ids: ['personal-vm'],
+        },
+      });
+      const { result } = renderHook(() => useCodeWorkspace(conversation()));
+      expect(result.current.environments.map(({ environment }) => environment.id)).toEqual([
+        'personal-vm',
+        'runtime-vm',
       ]);
     });
 

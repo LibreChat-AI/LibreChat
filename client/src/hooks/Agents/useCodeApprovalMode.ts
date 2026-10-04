@@ -47,39 +47,30 @@ export default function useCodeApprovalMode(
       ]),
     [addedAgent, agentsMap, primaryAgent, conversation?.agent_id, addedConversation?.agent_id],
   );
-  const codeEnvironments = useMemo(() => {
-    const inheritance = resolveReachableCodeWorkspaceInheritance(
-      [primaryAgent, addedAgent],
-      agentsMap,
+  /** Approval modes intersect every machine an agent could run on, including a subagent's own
+   *  default it may no longer use once it follows its parent: offering fewer modes is safe. */
+  const codeEnvironments = useMemo(
+    () =>
+      reachable.agents
+        .filter(
+          (agent) =>
+            agent.stateful_code_sessions === true && agent.tools?.includes(Tools.execute_code),
+        )
+        .map((agent) =>
+          findExecutionEnvironment(
+            agent,
+            environments,
+            statefulCodeSessions?.allowEnvironmentSelection,
+            conversation?.codeWorkspaces,
+          ),
+        ),
+    [
       environments,
+      reachable,
       statefulCodeSessions?.allowEnvironmentSelection,
       conversation?.codeWorkspaces,
-      conversation?.codeEnvironmentMode == null && !conversation?.codeWorkspaces?.length,
-    );
-    return reachable.agents
-      .filter(
-        (agent) =>
-          agent.stateful_code_sessions === true && agent.tools?.includes(Tools.execute_code),
-      )
-      .map((agent) =>
-        findExecutionEnvironment(
-          agent,
-          environments,
-          statefulCodeSessions?.allowEnvironmentSelection,
-          conversation?.codeWorkspaces,
-          inheritance.get(agent.id),
-        ),
-      );
-  }, [
-    addedAgent,
-    agentsMap,
-    environments,
-    primaryAgent,
-    reachable,
-    statefulCodeSessions?.allowEnvironmentSelection,
-    conversation?.codeEnvironmentMode,
-    conversation?.codeWorkspaces,
-  ]);
+    ],
+  );
   const attachedEnvironments = useMemo(
     () =>
       codeEnvironments.filter(
