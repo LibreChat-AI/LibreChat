@@ -65,7 +65,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-surface-code-body': '255 255 255', // #fff (white)
   'rgb-surface-code-inline': '227 227 227', // #e3e3e3 (gray-200)
   'rgb-prose-bullet': '205 205 205', // #cdcdcd (gray-300)
-  'rgb-prose-quote-bar': '227 227 227', // #e3e3e3 (gray-200)
+  'rgb-prose-quote-bar': '205 205 205', // #cdcdcd (gray-300)
   'rgb-surface-qr': '255 255 255', // #fff (white)
   'rgb-surface-inverted': '23 23 23', // #171717 (gray-850)
   'rgb-surface-inverted-hover': '47 47 47', // #2f2f2f (gray-700)

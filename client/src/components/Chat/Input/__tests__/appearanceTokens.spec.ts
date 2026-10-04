@@ -24,7 +24,7 @@ describe('Composer appearance tokens', () => {
   it.each(submitControls)('%s composes the shared submit-slot control', (file) => {
     const contents = source(file);
 
-    ['IconButton', 'variant="submit"', 'size="theme"', 'shape="theme"'].forEach((token) =>
+    ['IconButton', 'variant="submit"', 'size="theme"', 'shape="composer"'].forEach((token) =>
       expect(contents).toContain(token),
     );
   });

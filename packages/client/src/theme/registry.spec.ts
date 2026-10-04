@@ -275,7 +275,7 @@ describe('theme registry', () => {
     const light = resolveTheme(theme, 'light').colors;
     const dark = resolveTheme(theme, 'dark').colors;
 
-    expect([light['rgb-prose-bullet'], light['rgb-prose-quote-bar']]).toEqual(['2 2 2', '1 1 1']);
+    expect([light['rgb-prose-bullet'], light['rgb-prose-quote-bar']]).toEqual(['2 2 2', '2 2 2']);
     expect(light['rgb-surface-code-inline']).toBe('3 3 3');
     expect([dark['rgb-prose-bullet'], dark['rgb-prose-quote-bar']]).toEqual(['2 2 2', '2 2 2']);
     expect(dark['rgb-surface-code-inline']).toBe('4 4 4');

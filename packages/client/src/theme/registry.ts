@@ -675,8 +675,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
    * bar, and `surface-active-alt` in light and `surface-hover-alt` in dark for the chip.
    */
   const proseBulletSource = customColors?.['rgb-border-medium'];
-  const proseQuoteBarSource =
-    mode === 'dark' ? customColors?.['rgb-border-medium'] : customColors?.['rgb-border-light'];
+  const proseQuoteBarSource = customColors?.['rgb-border-medium'];
   const codeInlineSource =
     mode === 'dark'
       ? customColors?.['rgb-surface-hover-alt']

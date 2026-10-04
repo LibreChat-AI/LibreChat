@@ -755,7 +755,7 @@ p > small {
   --tw-prose-bullets: rgb(var(--prose-bullet));
   --tw-prose-hr: rgb(var(--border-medium));
   --tw-prose-quotes: rgb(var(--text-primary));
-  --tw-prose-quote-borders: rgb(var(--prose-quote-bar));
+  --tw-prose-quote-borders: rgb(var(--border-light));
   --tw-prose-captions: rgb(var(--text-tertiary));
   --tw-prose-code: rgb(var(--text-primary));
   --tw-prose-pre-code: rgb(var(--text-primary));
@@ -771,7 +771,7 @@ p > small {
   --tw-prose-invert-bullets: rgb(var(--prose-bullet));
   --tw-prose-invert-hr: rgb(var(--border-medium));
   --tw-prose-invert-quotes: rgb(var(--text-primary));
-  --tw-prose-invert-quote-borders: rgb(var(--prose-quote-bar));
+  --tw-prose-invert-quote-borders: rgb(var(--border-medium));
   --tw-prose-invert-captions: rgb(var(--text-tertiary));
   --tw-prose-invert-code: rgb(var(--text-primary));
   --tw-prose-invert-pre-code: rgb(var(--text-primary));
@@ -1235,7 +1235,7 @@ html[data-drawer-nav] body {
 
 .markdown blockquote {
   --tw-border-opacity: 1;
-  border-color: rgb(var(--border-medium));
+  border-color: rgb(var(--prose-quote-bar));
   border-left-width: 2px;
   line-height: 1rem;
   padding-left: 1rem;
@@ -1401,7 +1401,7 @@ html {
 }
 .markdown blockquote {
   --tw-border-opacity: 1;
-  border-color: rgb(var(--border-medium));
+  border-color: rgb(var(--prose-quote-bar));
   border-left-width: 2px;
   line-height: 1rem;
   padding-left: 1rem;
