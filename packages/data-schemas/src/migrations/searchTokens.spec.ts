@@ -192,6 +192,29 @@ describe('warnOnMissingSearchTokens', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
+  it('warns when every document has tokens but the token indexes were never built', async () => {
+    await users().insertOne({
+      name: 'Fresh User',
+      email: 'fresh@x.io',
+      nameTokens: ['fresh', 'user'],
+      emailTokens: ['fresh@x.io', 'fresh', 'x', 'io'],
+      usernameTokens: [],
+    });
+    await warnOnMissingSearchTokens(mongoose.connection);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Some users'));
+
+    jest.clearAllMocks();
+    await backfillSearchTokens(mongoose.connection);
+    await warnOnMissingSearchTokens(mongoose.connection);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet on a database with no users or groups yet', async () => {
+    await warnOnMissingSearchTokens(mongoose.connection);
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
   it('logs a failed check instead of failing startup', async () => {
     const broken = {
       db: { collection: () => ({ findOne: () => Promise.reject(new Error('down')) }) },

@@ -129,6 +129,10 @@ export async function backfillSearchTokens(
  * `npm run migrate:search-tokens` runs. A best-effort diagnostic: a failed
  * check is logged and never blocks startup.
  *
+ * Also warns when the token indexes are missing: with `MONGO_AUTO_INDEX` off,
+ * a database whose documents all received tokens from the schema middleware
+ * still never builds them until the backfill runs.
+ *
  * Probes for one such document rather than counting them: before the backfill
  * the token indexes may not exist, but a document without tokens is found at
  * once; after it, the backfill has built the indexes and the probe seeks them.
@@ -136,18 +140,35 @@ export async function backfillSearchTokens(
  */
 export async function warnOnMissingSearchTokens(connection: Connection): Promise<void> {
   try {
-    const found = await Promise.all(
-      SEARCH_TOKEN_COLLECTIONS.map(({ name, fields }) =>
-        connection.db!.collection(name).findOne(missingTokens(fields), {
-          projection: { _id: 1 },
-          maxTimeMS: STARTUP_PROBE_MAX_TIME_MS,
-        }),
-      ),
+    const pending = await Promise.all(
+      SEARCH_TOKEN_COLLECTIONS.map(async ({ name, fields }) => {
+        const collection = connection.db!.collection(name);
+        const [indexes, unmigrated] = await Promise.all([
+          collection.indexes().catch((error: { codeName?: string }) => {
+            /** No collection yet: nothing to search, nothing to migrate. */
+            if (error?.codeName === 'NamespaceNotFound') {
+              return null;
+            }
+            throw error;
+          }),
+          collection.findOne(missingTokens(fields), {
+            projection: { _id: 1 },
+            maxTimeMS: STARTUP_PROBE_MAX_TIME_MS,
+          }),
+        ]);
+        const built = new Set(indexes?.map((index) => JSON.stringify(index.key)));
+        const unindexed =
+          indexes != null &&
+          fields.some((field) =>
+            searchTokenIndexes(field).some((index) => !built.has(JSON.stringify(index))),
+          );
+        return unmigrated != null || unindexed ? name : null;
+      }),
     );
-    const pending = SEARCH_TOKEN_COLLECTIONS.filter((_, index) => found[index] != null);
-    if (pending.length > 0) {
+    const names = pending.filter((name): name is string => name != null);
+    if (names.length > 0) {
       logger.warn(
-        `[SearchTokenMigration] Some ${pending.map(({ name }) => name).join(' and ')} lack search tokens; people search scans the collection for them until you run: npm run migrate:search-tokens`,
+        `[SearchTokenMigration] Some ${names.join(' and ')} lack search tokens or their indexes; people search scans the collection until you run: npm run migrate:search-tokens`,
       );
     }
   } catch (error) {
