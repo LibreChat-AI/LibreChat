@@ -196,7 +196,7 @@ const SubagentProgress = memo(function SubagentProgress({
   const tree = useMemo(() => buildDigestTree(digest.nodes), [digest.nodes]);
   const active = digest.active ?? digest.nodes[digest.nodes.length - 1]?.path;
   return (
-    <div className="border-border-light mt-3 border-t pt-2.5" data-testid="subagent-progress">
+    <div className="border-border-inset mt-3 border-t pt-2.5" data-testid="subagent-progress">
       <div className="text-text-secondary mb-1.5 flex items-center gap-2 text-xs font-medium">
         <span>{localize('com_ui_subagent_progress')}</span>
         <span className="text-text-tertiary font-normal tabular-nums">

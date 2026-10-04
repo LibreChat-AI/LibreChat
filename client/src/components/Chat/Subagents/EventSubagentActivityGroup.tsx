@@ -172,7 +172,7 @@ function EventSubagentRows({
       <div
         id={panelId}
         hidden={!expanded}
-        className="divide-border-light border-border-light divide-y border-t"
+        className="divide-border-inset border-border-inset divide-y border-t"
       >
         {eventChildren.map((child) => {
           const agent = child.agentId == null ? undefined : agentsMap?.[child.agentId];
