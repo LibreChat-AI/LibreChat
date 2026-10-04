@@ -709,6 +709,7 @@ export enum AgentCapabilities {
   memory = 'memory',
   ask_user_question = 'ask_user_question',
   tools = 'tools',
+  /** @deprecated Retained for legacy configuration. Chain authoring is retired. */
   chain = 'chain',
   ocr = 'ocr',
   run_in_background = 'run_in_background',
@@ -887,7 +888,6 @@ export const defaultAgentCapabilities = [
   AgentCapabilities.memory,
   AgentCapabilities.ask_user_question,
   AgentCapabilities.tools,
-  AgentCapabilities.chain,
   AgentCapabilities.ocr,
 ];
 

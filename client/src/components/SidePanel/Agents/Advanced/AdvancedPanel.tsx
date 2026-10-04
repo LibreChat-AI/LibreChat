@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { ChevronLeft, Check, Copy } from 'lucide-react';
-import { AgentCapabilities } from 'librechat-data-provider';
 import { Controller, useFormContext } from 'react-hook-form';
 import { Button, TooltipAnchor, labelVariants, useToastContext } from '@librechat/client';
 import type { AgentForm } from '~/common';
@@ -16,9 +15,10 @@ export default function AdvancedPanel() {
   const { showToast } = useToastContext();
   const { watch, control } = useFormContext<AgentForm>();
   const currentAgentId = watch('id');
+  const chainIds = watch('agent_ids');
   const [copied, setCopied] = useState(false);
 
-  const { setActivePanel, agentsConfig } = useAgentPanelContext();
+  const { setActivePanel } = useAgentPanelContext();
 
   const handleCopyAgentId = async () => {
     if (!currentAgentId) return;
@@ -59,7 +59,7 @@ export default function AdvancedPanel() {
           <MaxAgentSteps />
         </section>
 
-        {agentsConfig?.capabilities.includes(AgentCapabilities.chain) && (
+        {(chainIds?.length ?? 0) > 0 && (
           <Controller
             name="agent_ids"
             control={control}
