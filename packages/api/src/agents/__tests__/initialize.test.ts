@@ -49,7 +49,6 @@ import {
   AgentCapabilities,
   configSchema,
 } from 'librechat-data-provider';
-import { logger } from '@librechat/data-schemas';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { Agent, TFile, FiltersConfig, AgentInstructionsPrompt } from 'librechat-data-provider';
 import type { ServerRequest, InitializeResultBase, EndpointTokenConfig } from '~/types';
