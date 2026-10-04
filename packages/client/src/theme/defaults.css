@@ -141,6 +141,9 @@ html {
   --surface-chat: var(--white);
   --surface-code: var(--surface-primary-alt);
   --surface-code-body: var(--surface-chat);
+  --surface-code-inline: var(--surface-active-alt);
+  --prose-bullet: var(--border-medium);
+  --prose-quote-bar: var(--border-light);
   --surface-qr: var(--white);
   --border-light: var(--gray-200);
   --border-light-alpha: 1;
@@ -235,6 +238,10 @@ html {
   --theme-surface-radius: 1rem;
   --theme-large-surface-radius: 1.5rem;
   --theme-menu-radius: 0.7rem;
+  --theme-popover-radius: 1rem;
+  --theme-menu-panel-radius: 0.75rem;
+  --theme-composer-action-radius: 9999px;
+  --theme-inline-code-weight: 600;
   --theme-tooltip-radius: 0.275rem;
   --theme-tooltip-padding-x: 0.5rem;
   --theme-tooltip-padding-y: 0.25rem;
@@ -413,6 +420,9 @@ html {
   --surface-chat: var(--gray-700);
   --surface-code: var(--presentation);
   --surface-code-body: var(--surface-primary-alt);
+  --surface-code-inline: var(--surface-hover-alt);
+  --prose-bullet: var(--border-medium);
+  --prose-quote-bar: var(--border-medium);
   --surface-qr: var(--white);
   /* One step off the page instead of two: in dark the edge only has to separate
      a surface from the one behind it, and a brighter line reads as a seam. */

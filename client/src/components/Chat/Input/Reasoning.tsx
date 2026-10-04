@@ -134,7 +134,7 @@ export function ReasoningControl({
           aria-label={label}
           align="end"
           sideOffset={6}
-          className="border-border-light bg-surface-secondary text-text-primary data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 z-50 w-72 max-w-[calc(100vw-2rem)] origin-[--radix-popover-content-transform-origin] overflow-hidden rounded-2xl border shadow-xl motion-reduce:animate-none"
+          className="border-border-light bg-surface-secondary text-text-primary data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 rounded-theme-popover z-50 w-72 max-w-[calc(100vw-2rem)] origin-[--radix-popover-content-transform-origin] overflow-hidden border shadow-xl motion-reduce:animate-none"
         >
           <div className="flex items-center gap-2 px-4 py-3">
             <BrainCircuit className="text-text-secondary size-4 shrink-0" aria-hidden="true" />

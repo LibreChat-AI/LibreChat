@@ -63,6 +63,9 @@ export const themeColorTokens = Object.freeze([
   'rgb-surface-chat',
   'rgb-surface-code',
   'rgb-surface-code-body',
+  'rgb-surface-code-inline',
+  'rgb-prose-bullet',
+  'rgb-prose-quote-bar',
   'rgb-surface-qr',
   'rgb-surface-inverted',
   'rgb-surface-inverted-hover',
@@ -375,6 +378,10 @@ const appearanceValidators = {
   largeSurfaceRadius: isLength,
   /** A menu panel's, a tooltip's and a tab trigger's corner. */
   menuRadius: isLength,
+  popoverRadius: isLength,
+  menuPanelRadius: isLength,
+  composerActionRadius: isLength,
+  inlineCodeWeight: isFontWeight,
   tooltipRadius: isLength,
   /** A tooltip's padding and text size. */
   tooltipPaddingX: isLength,

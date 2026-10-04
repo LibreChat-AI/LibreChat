@@ -80,6 +80,9 @@
   --color-surface-chat: rgb(var(--surface-chat));
   --color-surface-code: rgb(var(--surface-code));
   --color-surface-code-body: rgb(var(--surface-code-body));
+  --color-surface-code-inline: rgb(var(--surface-code-inline));
+  --color-prose-bullet: rgb(var(--prose-bullet));
+  --color-prose-quote-bar: rgb(var(--prose-quote-bar));
   --color-surface-qr: rgb(var(--surface-qr));
   --color-surface-inverted: rgb(var(--surface-inverted));
   --color-surface-inverted-hover: rgb(var(--surface-inverted-hover));

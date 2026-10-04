@@ -306,6 +306,23 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
     ).toEqual([]);
   });
 
+  it('keeps the list marker and the quote bar at the 3:1 floor on the page', () => {
+    expect(
+      below(
+        theme,
+        WCAG_NON_TEXT,
+        ['rgb-prose-bullet', 'rgb-prose-quote-bar'],
+        ['rgb-surface-chat', 'rgb-surface-primary', 'rgb-presentation'],
+      ),
+    ).toEqual([]);
+  });
+
+  it('keeps primary text at WCAG AA on the inline code chip', () => {
+    expect(below(theme, WCAG_AA_NORMAL, ['rgb-text-primary'], ['rgb-surface-code-inline'])).toEqual(
+      [],
+    );
+  });
+
   it('keeps every series mark at the 3:1 floor on the page and under the status label', () => {
     expect(
       below(theme, WCAG_NON_TEXT, seriesTokens, [
@@ -416,6 +433,16 @@ describe('clickhouse theme definition', () => {
 
   /** Click UI's control height, button padding and gap, `transition.default`, and the two steps of
    *  its `spaces` scale the shared spacing takes. */
+  it('squares the composer actions and brings its popovers onto the menu corner', () => {
+    const { appearance } = resolveTheme(clickHouseTheme, 'light');
+    expect(appearance).toMatchObject({
+      composerActionRadius: '0.25rem',
+      popoverRadius: appearance.menuRadius,
+      menuPanelRadius: appearance.menuRadius,
+      inlineCodeWeight: '500',
+    });
+  });
+
   it('sizes theme controls and the shared spacing from Click UI', () => {
     const { appearance } = resolveTheme(clickHouseTheme, 'light');
     expect(appearance).toMatchObject({

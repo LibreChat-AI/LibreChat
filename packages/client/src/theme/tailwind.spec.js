@@ -158,6 +158,13 @@ describe('LibreChat Tailwind preset', () => {
         defaultAppearance.largeSurfaceRadius,
       ],
       ['rounded-theme-tab', '--theme-tab-radius', defaultAppearance.tabRadius],
+      ['rounded-theme-popover', '--theme-popover-radius', defaultAppearance.popoverRadius],
+      ['rounded-theme-menu-panel', '--theme-menu-panel-radius', defaultAppearance.menuPanelRadius],
+      [
+        'rounded-theme-composer-action',
+        '--theme-composer-action-radius',
+        defaultAppearance.composerActionRadius,
+      ],
       ['min-w-theme-tab', '--theme-tab-min-width', defaultAppearance.tabMinWidth],
       ['min-w-theme-list', '--theme-list-min-width', defaultAppearance.listMinWidth],
       ['max-h-theme-list', '--theme-list-max-height', defaultAppearance.listMaxHeight],

@@ -88,6 +88,9 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-surface-chat': '255 255 255', // #ffffff (background.default)
   'rgb-surface-code': '246 247 250', // #f6f7fa (codeblock.lightMode.color.background.default)
   'rgb-surface-code-body': '246 247 250', // #f6f7fa (codeblock.lightMode.color.background.default)
+  'rgb-surface-code-inline': '230 231 233', // #e6e7e9 (palette.slate.100, one step under the chip it replaced, slate.200 at 1.56:1)
+  'rgb-prose-bullet': '128 134 145', // #808691 (palette.slate.500, 3.5:1 on white; stroke.default is 1.24:1)
+  'rgb-prose-quote-bar': '128 134 145', // #808691 (palette.slate.500, 3.5:1 on white)
   'rgb-surface-qr': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-inverted': '21 21 21', // #151515 (palette.neutral.900)
   'rgb-surface-inverted-hover': '50 50 50', // #323232 (palette.neutral.712)
@@ -269,6 +272,9 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-surface-chat': '31 31 28', // #1f1f1c (background.default)
   'rgb-surface-code': '40 40 40', // #282828 (codeblock.darkMode.color.background.default)
   'rgb-surface-code-body': '40 40 40', // #282828 (codeblock.darkMode.color.background.default)
+  'rgb-surface-code-inline': '50 50 50', // #323232 (palette.neutral.712)
+  'rgb-prose-bullet': '128 128 128', // #808080 (palette.neutral.500, 3.7:1 on the canvas; stroke.default is 1.29:1)
+  'rgb-prose-quote-bar': '128 128 128', // #808080 (palette.neutral.500, 3.7:1 on the canvas)
   'rgb-surface-qr': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-inverted': '250 255 105', // #faff69 (button.basic.color.primary.background.default)
   'rgb-surface-inverted-hover': '252 255 150', // #fcff96 (button.basic.color.primary.background.hover)
@@ -418,6 +424,10 @@ const clickHouseShape = {
   largeSurfaceRadius: '0.75rem',
   roundControlRadius: '9999px',
   menuRadius: '0.25rem', // genericMenu.panel.radii.all
+  popoverRadius: '0.25rem', // genericMenu.panel.radii.all, the panel the composer popovers are
+  menuPanelRadius: '0.25rem', // genericMenu.panel.radii.all
+  composerActionRadius: '0.25rem', // button.basic.radii.all, Click UI draws its icon buttons square
+  inlineCodeWeight: '500', // typography.font.weights.2
   tooltipRadius: '0.25rem', // tooltip.radii.all
   tooltipPaddingX: '0.75rem', // tooltip.space.x
   tooltipPaddingY: '0.5rem', // tooltip.space.y

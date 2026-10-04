@@ -64,6 +64,12 @@ Three primitives keep corners of their own outside that scale: the menu panel (`
 `menuRadius` (0.7rem), the tooltip reads `tooltipRadius` (0.275rem) and the tab trigger reads
 `tabRadius` (0.185rem, through `rounded-theme-tab`). The defaults are the corners they always drew.
 
+The composer's popovers read `popoverRadius` (1rem, `rounded-theme-popover`), the model selector's
+panel `menuPanelRadius` (0.75rem, `rounded-theme-menu-panel`) and the send and stop buttons
+`composerActionRadius` (a full circle, `rounded-theme-composer-action`), so a theme can bring them
+onto `menuRadius` or a square corner without moving the control or surface radii. An inline code
+chip in Markdown takes its weight from `inlineCodeWeight` (600).
+
 Most appearance defaults hold in both modes. `darkAppearanceDefaults` lists the ones that differ in
 dark mode, and `defaultAppearanceFor(mode)` returns the full set for a mode: the menu panel's
 `menuShadow` and the tooltip's `tooltipShadow` are heavier on a dark page, as they always were. A
@@ -300,6 +306,8 @@ function MyComponent() {
 - `bg-surface-chat` - Chat interface background
 - `bg-surface-code` - Code block chrome: toolbar, output and result switcher
 - `bg-surface-code-body` - Code block pane behind the highlighted code
+- `bg-surface-code-inline` - Inline code chip in rendered Markdown
+- `text-prose-bullet`, `text-prose-quote-bar` - The list marker and the blockquote bar in rendered Markdown
 - `fill-illustration-subtle`, `fill-illustration`, `fill-illustration-strong` - The three tones of in-app artwork, such as the file drop zone's illustration
 - `fill-file-document`, `fill-file-sheet`, `fill-file-code`, `fill-file-artifact`, `fill-file-audio`, `fill-file-video`, `fill-file-generic` - File-type tile fills; `stroke-file-ink` and `fill-file-ink` draw the glyph on them
 - `bg-surface-qr` - Backdrop behind a QR code, kept light in every mode so it scans

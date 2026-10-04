@@ -214,6 +214,10 @@ export const themeAppearanceProperties: Readonly<
   surfaceRadius: '--theme-surface-radius',
   largeSurfaceRadius: '--theme-large-surface-radius',
   menuRadius: '--theme-menu-radius',
+  popoverRadius: '--theme-popover-radius',
+  menuPanelRadius: '--theme-menu-panel-radius',
+  composerActionRadius: '--theme-composer-action-radius',
+  inlineCodeWeight: '--theme-inline-code-weight',
   tooltipRadius: '--theme-tooltip-radius',
   tooltipPaddingX: '--theme-tooltip-padding-x',
   tooltipPaddingY: '--theme-tooltip-padding-y',
@@ -308,6 +312,10 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   surfaceRadius: '1rem',
   largeSurfaceRadius: '1.5rem',
   menuRadius: '0.7rem',
+  popoverRadius: '1rem',
+  menuPanelRadius: '0.75rem',
+  composerActionRadius: '9999px',
+  inlineCodeWeight: '600',
   tooltipRadius: '0.275rem',
   tooltipPaddingX: '0.5rem',
   tooltipPaddingY: '0.25rem',
@@ -661,6 +669,30 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ? { 'rgb-link-prose': proseLinkSource }
       : {};
   /**
+   * The list marker, the blockquote bar and the inline code chip read border and surface roles
+   * before they had their own, so a theme that names none of the three keeps what it painted:
+   * `border-medium` for the marker, `border-light` in light and `border-medium` in dark for the
+   * bar, and `surface-active-alt` in light and `surface-hover-alt` in dark for the chip.
+   */
+  const proseBulletSource = customColors?.['rgb-border-medium'];
+  const proseQuoteBarSource =
+    mode === 'dark' ? customColors?.['rgb-border-medium'] : customColors?.['rgb-border-light'];
+  const codeInlineSource =
+    mode === 'dark'
+      ? customColors?.['rgb-surface-hover-alt']
+      : customColors?.['rgb-surface-active-alt'];
+  const proseFallback: IThemeRGB = {
+    ...(customColors?.['rgb-prose-bullet'] === undefined && proseBulletSource !== undefined
+      ? { 'rgb-prose-bullet': proseBulletSource }
+      : {}),
+    ...(customColors?.['rgb-prose-quote-bar'] === undefined && proseQuoteBarSource !== undefined
+      ? { 'rgb-prose-quote-bar': proseQuoteBarSource }
+      : {}),
+    ...(customColors?.['rgb-surface-code-inline'] === undefined && codeInlineSource !== undefined
+      ? { 'rgb-surface-code-inline': codeInlineSource }
+      : {}),
+  };
+  /**
    * Agent and assistant avatars sat on `surface-secondary` in light and `surface-tertiary` in dark
    * before they had a role, so a theme that repaints the one its mode used keeps that backdrop.
    */
@@ -796,6 +828,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...shimmerBaseFallback,
       ...textMutedFallback,
       ...proseLinkFallback,
+      ...proseFallback,
       ...avatarPlaceholderFallback,
       ...drawerEdgeFallback,
       ...chartWidgetSurfaceFallback,

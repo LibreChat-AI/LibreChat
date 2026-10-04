@@ -260,6 +260,27 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-link-prose']).toBe('4 5 6');
   });
 
+  it('keeps the prose marker, quote bar and code chip on the roles they read before', () => {
+    const colors = {
+      'rgb-border-light': '1 1 1',
+      'rgb-border-medium': '2 2 2',
+      'rgb-surface-active-alt': '3 3 3',
+      'rgb-surface-hover-alt': '4 4 4',
+    };
+    const theme: ThemeDefinition = {
+      version: 1,
+      name: 'prose-roles-reference',
+      modes: { light: { colors }, dark: { colors } },
+    };
+    const light = resolveTheme(theme, 'light').colors;
+    const dark = resolveTheme(theme, 'dark').colors;
+
+    expect([light['rgb-prose-bullet'], light['rgb-prose-quote-bar']]).toEqual(['2 2 2', '1 1 1']);
+    expect(light['rgb-surface-code-inline']).toBe('3 3 3');
+    expect([dark['rgb-prose-bullet'], dark['rgb-prose-quote-bar']]).toEqual(['2 2 2', '2 2 2']);
+    expect(dark['rgb-surface-code-inline']).toBe('4 4 4');
+  });
+
   it('derives omitted chart widget colors from the previous panel roles', () => {
     const resolved = resolveTheme(
       {
