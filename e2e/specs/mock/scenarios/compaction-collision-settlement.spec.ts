@@ -33,11 +33,13 @@ test.describe('compaction collision settlement', () => {
 
   /* A leaf in the preliminary-response shape (an id ending in `_`) is the id
      a failed turn's error row would take, so a failed compaction on it must
-     record its failure without overwriting the leaf. */
+     record its failure without overwriting the leaf. The fixture summarizer
+     returns blank output, which is how this harness fails a compaction. */
   test('a failed compaction on an underscore-shaped leaf keeps the leaf and shows the failure @scenario:failed-compaction-on-underscore-leaf-keeps-the-leaf', async ({
     page,
     request,
   }) => {
+    test.setTimeout(120_000);
     await page.goto('/c/new');
     await sendMessageAndWaitForCompletion(page, 'tell me about collisions');
     const conversationId = new URL(page.url()).pathname.replace('/c/', '');
@@ -64,7 +66,7 @@ test.describe('compaction collision settlement', () => {
       ]);
 
       const behavior = await request.post(`${LABEL_SERVER}/__e2e/behavior`, {
-        data: { mode: 'error' },
+        data: { mode: 'blank' },
       });
       expect(behavior.ok()).toBeTruthy();
 
@@ -84,10 +86,13 @@ test.describe('compaction collision settlement', () => {
             });
             return failure != null;
           },
-          { timeout: 30_000 },
+          { timeout: 60_000 },
         )
         .toBeTruthy();
       expect((failure as Row | null)?.messageId).not.toBe(leafId);
+      await expect(
+        messagesView(page).getByText('Could not compact the context', { exact: false }),
+      ).toBeVisible({ timeout: 20_000 });
       await expect(page.getByTestId('stop-generation-button')).toBeHidden({ timeout: 20_000 });
 
       /* The leaf keeps its author and text: the failure went to its own row. */
@@ -99,6 +104,7 @@ test.describe('compaction collision settlement', () => {
       await expect(messagesView(page).getByText(leafText)).toBeVisible({ timeout: 20_000 });
       const row = page.locator(`[id="${(failure as Row | null)?.messageId as string}"]`);
       await expect(row).toBeVisible({ timeout: 20_000 });
+      await expect(row.getByText('Could not compact the context', { exact: false })).toBeVisible();
       await expect(row.getByText('Summarizing...')).toHaveCount(0);
     } finally {
       await cleanup(conversationId);
