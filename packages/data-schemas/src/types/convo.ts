@@ -250,6 +250,8 @@ export interface ISubagentThreadReservation {
 export interface IConversation extends Document {
   conversationId: string;
   title?: string;
+  titleSetByUser?: boolean;
+  titleRevision?: number;
   user?: string;
   messages?: Types.ObjectId[];
   isTemporary?: boolean;

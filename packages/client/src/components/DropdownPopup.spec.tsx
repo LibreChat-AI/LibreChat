@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { render } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import DropdownPopup from './DropdownPopup';
 
 describe('DropdownPopup', () => {
@@ -10,7 +10,7 @@ describe('DropdownPopup', () => {
     // would inherit `none`, making every item hit-transparent (#14487).
     document.body.style.pointerEvents = 'none';
 
-    render(
+    const { unmount } = render(
       <DropdownPopup
         menuId="portal-click-test-menu"
         isOpen={true}
@@ -30,6 +30,34 @@ describe('DropdownPopup', () => {
     expect(menu).not.toBeNull();
     expect(menu).toHaveClass('pointer-events-auto');
 
+    unmount();
     document.body.style.pointerEvents = '';
+  });
+  it('focuses an externally opened menu', async () => {
+    function Example() {
+      const [open, setOpen] = useState(false);
+      const trigger = useRef<HTMLButtonElement>(null);
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>Open externally</button>
+          <DropdownPopup
+            menuId="external-menu"
+            isOpen={open}
+            setIsOpen={setOpen}
+            autoFocusOnShow={true}
+            unmountOnHide={true}
+            finalFocus={trigger}
+            trigger={<Ariakit.MenuButton ref={trigger}>Options</Ariakit.MenuButton>}
+            items={[{ label: 'Rename', onClick: jest.fn() }]}
+          />
+        </>
+      );
+    }
+    render(<Example />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open externally' }));
+    const menu = await screen.findByRole('menu');
+    await waitFor(() => expect(menu).toHaveFocus());
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
   });
 });

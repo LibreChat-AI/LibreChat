@@ -1593,6 +1593,54 @@ export function findConvoInAllQueries(
   )?.convo;
 }
 
+export type ConvoTitleState = Pick<TConversation, 'title' | 'titleSetByUser' | 'titleRevision'>;
+
+/** Manual revisions are monotonic even when reply snapshots or request order disagree. */
+export function findManualConvoTitleInAllQueries(
+  queryClient: QueryClient,
+  conversationId: string,
+  incoming?: ConvoTitleState,
+): ConvoTitleState | undefined {
+  let newest = incoming?.titleSetByUser ? incoming : undefined;
+  const consider = (candidate: TConversation | undefined | null) => {
+    if (
+      candidate?.conversationId === conversationId &&
+      candidate.titleSetByUser &&
+      (!newest || (candidate.titleRevision ?? 0) > (newest.titleRevision ?? 0))
+    ) {
+      newest = candidate;
+    }
+  };
+  for (const query of queryClient.getQueryCache().getAll()) {
+    const [root, id] = query.queryKey;
+    if (root === QueryKeys.allConversations || root === QueryKeys.archivedConversations) {
+      const data = queryClient.getQueryData<InfiniteData<ConversationCursorData>>(query.queryKey);
+      for (const page of data?.pages ?? []) {
+        for (const convo of page.conversations) {
+          consider(convo);
+        }
+      }
+    } else if (root === QueryKeys.pinnedConversations) {
+      const data = queryClient.getQueryData<PinnedConversationsData>(query.queryKey);
+      for (const convo of data?.conversations ?? []) {
+        consider(convo);
+      }
+    } else if (
+      (root === QueryKeys.conversation || root === QueryKeys.runningConversation) &&
+      id === conversationId
+    ) {
+      consider(queryClient.getQueryData<TConversation | null>(query.queryKey));
+    }
+  }
+  return (
+    newest && {
+      title: newest.title,
+      titleSetByUser: newest.titleSetByUser,
+      titleRevision: newest.titleRevision,
+    }
+  );
+}
+
 type RunningRemovalState = {
   owner?: string;
   all: boolean;

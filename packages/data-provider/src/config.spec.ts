@@ -10,6 +10,7 @@ import {
   DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
   codeEnvironmentUserConfigSchema,
   interfaceSchema,
+  supportsConversationTitleOwnership,
   CODE_ENVIRONMENT_ADMISSION_MAX_MS,
   excludedKeys,
   DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
@@ -2516,6 +2517,29 @@ describe('subagent activity policy', () => {
         endpoints: { agents: { subagentActivity: { retryAttempts: 0 } } },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('conversation title ownership rollout', () => {
+  it('defaults running rename off and accepts only an explicit deployment opt-in', () => {
+    expect(interfaceSchema.parse({}).runningChatRename).toBe(false);
+    expect(interfaceSchema.parse(undefined).runningChatRename).toBe(false);
+    expect(interfaceSchema.parse({ runningChatRename: true }).runningChatRename).toBe(true);
+  });
+  it('fails closed when an old replica omits the version or the operator leaves the fence off', () => {
+    expect(supportsConversationTitleOwnership(undefined)).toBe(false);
+    expect(supportsConversationTitleOwnership({ interface: { runningChatRename: true } })).toBe(
+      false,
+    );
+    expect(supportsConversationTitleOwnership({ conversationTitleOwnershipVersion: 1 })).toBe(
+      false,
+    );
+    expect(
+      supportsConversationTitleOwnership({
+        conversationTitleOwnershipVersion: 1,
+        interface: { runningChatRename: true },
+      }),
+    ).toBe(true);
   });
 });
 

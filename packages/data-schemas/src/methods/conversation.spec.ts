@@ -655,6 +655,143 @@ describe('Conversation Operations', () => {
       expect(result?.conversationId).toBe(mockConversationData.conversationId);
     });
 
+    describe('generated title ownership', () => {
+      const generated = { titleSource: 'generated' as const, appendMessageIds: [] };
+      const manual = { titleSource: 'manual' as const, appendMessageIds: [] };
+
+      it('does not upsert a missing conversation', async () => {
+        const conversationId = uuidv4();
+        expect(
+          await saveConvo(mockCtx, { conversationId, title: 'Generated' }, generated),
+        ).toBeNull();
+        expect(await Conversation.countDocuments({ conversationId })).toBe(0);
+      });
+
+      it.each(['Renamed', 'New Chat', ''])('preserves an explicit rename to %s', async (title) => {
+        const conversationId = uuidv4();
+        await saveConvo(mockCtx, { conversationId });
+        await saveConvo(mockCtx, { conversationId, title }, manual);
+        expect(
+          await saveConvo(mockCtx, { conversationId, title: 'Generated' }, generated),
+        ).toBeNull();
+        expect((await getConvo(mockCtx.userId, conversationId))?.title).toBe(title);
+        await saveConvo(mockCtx, { conversationId, titleSetByUser: false });
+        expect(await saveConvo(mockCtx, { conversationId, title: 'Later' }, generated)).toBeNull();
+      });
+
+      it('projects manual title authority and unread intent while ordering repeated renames', async () => {
+        const conversationId = uuidv4();
+        await saveConvo(mockCtx, { conversationId });
+        await methods.markConvoUnread(mockCtx.userId, conversationId);
+        await Promise.all([
+          saveConvo(mockCtx, { conversationId, title: 'First' }, manual),
+          saveConvo(mockCtx, { conversationId, title: 'New Chat' }, manual),
+        ]);
+        const current = await getConvo(mockCtx.userId, conversationId);
+        expect(current?.titleRevision).toBe(2);
+        expect(await methods.getConvoTitleState(mockCtx.userId, conversationId)).toEqual({
+          title: current?.title,
+          titleSetByUser: true,
+          titleRevision: 2,
+        });
+        expect(await methods.getConvoTitleState('another-owner', conversationId)).toBeNull();
+
+        const page = await getConvosByCursor(mockCtx.userId);
+        expect(page.conversations.find((row) => row.conversationId === conversationId)).toEqual(
+          expect.objectContaining({ titleSetByUser: true, titleRevision: 2, isMarkedUnread: true }),
+        );
+        await saveConvo(
+          mockCtx,
+          { conversationId, titleRevision: 99, titleSetByUser: false },
+          {
+            unsetFields: { titleRevision: 1, titleSetByUser: 1 },
+            appendMessageIds: [],
+          },
+        );
+        expect(await getConvo(mockCtx.userId, conversationId)).toEqual(
+          expect.objectContaining({
+            titleSetByUser: true,
+            titleRevision: 2,
+          }),
+        );
+      });
+
+      it('preserves remembered approvals while claiming manual title ownership', async () => {
+        const conversationId = uuidv4();
+        await saveConvo(mockCtx, { conversationId });
+        await methods.addConvoToolApprovalAllows({
+          user: mockCtx.userId,
+          conversationId,
+          toolNames: ['kept'],
+          max: 64,
+        });
+        const stale = {
+          conversationId,
+          toolApprovalAllows: ['*'],
+          titleSetByUser: false,
+          titleRevision: 99,
+        };
+        const unsetFields = { toolApprovalAllows: 1, titleSetByUser: 1, titleRevision: 1 };
+        const saved = await saveConvo(
+          mockCtx,
+          { ...stale, title: 'Renamed' },
+          { ...manual, unsetFields },
+        );
+        expect(saved).toEqual(
+          expect.objectContaining({
+            title: 'Renamed',
+            titleSetByUser: true,
+            titleRevision: 1,
+            toolApprovalAllows: ['kept'],
+          }),
+        );
+        expect(
+          await saveConvo(mockCtx, { ...stale, title: 'Generated' }, { ...generated, unsetFields }),
+        ).toBeNull();
+        expect(await getConvo(mockCtx.userId, conversationId)).toEqual(
+          expect.objectContaining({
+            title: 'Renamed',
+            titleSetByUser: true,
+            titleRevision: 1,
+            toolApprovalAllows: ['kept'],
+          }),
+        );
+      });
+
+      it('preserves renamed legacy rows without an ownership flag', async () => {
+        await saveConvo(mockCtx, mockConversationData);
+        expect(
+          await saveConvo(mockCtx, { ...mockConversationData, title: 'Generated' }, generated),
+        ).toBeNull();
+      });
+
+      it('atomically preserves a rename that races generation', async () => {
+        const conversationId = uuidv4();
+        await saveConvo(mockCtx, { conversationId });
+        await Promise.all([
+          saveConvo(mockCtx, { conversationId, title: 'Generated' }, generated),
+          saveConvo(mockCtx, { conversationId, title: 'Renamed' }, manual),
+        ]);
+        expect((await getConvo(mockCtx.userId, conversationId))?.title).toBe('Renamed');
+      });
+
+      it('publishes a generated title without moving activity or messages', async () => {
+        const conversationId = uuidv4();
+        const initial = await saveConvo(mockCtx, { conversationId });
+        const saved = await saveConvo(
+          mockCtx,
+          { conversationId, title: 'Generated' },
+          {
+            ...generated,
+            preserveUpdatedAt: true,
+          },
+        );
+        expect(saved?.title).toBe('Generated');
+        expect(saved?.updatedAt).toEqual(initial?.updatedAt);
+        expect(saved?.messages).toEqual(initial?.messages);
+      });
+    });
+
     it('should still upsert by default when noUpsert is not provided', async () => {
       const newId = uuidv4();
       const result = await saveConvo(mockCtx, {
@@ -1821,6 +1958,27 @@ describe('Conversation Operations', () => {
       expect(result?.title).toBe('appended');
       const stored = await Conversation.findOne({ conversationId }).lean();
       expect(stored?.messages?.map(String)).toEqual([...seeded, appended].map(String));
+    });
+
+    it('keeps response references when an explicit rename lands concurrently', async () => {
+      const userMessage = new mongoose.Types.ObjectId();
+      const responseMessage = new mongoose.Types.ObjectId();
+      await saveConvo(ctx, { conversationId }, { appendMessageIds: [userMessage] });
+      await Promise.all([
+        saveConvo(
+          ctx,
+          { conversationId, title: 'Renamed while running' },
+          {
+            titleSource: 'manual',
+            appendMessageIds: [],
+          },
+        ),
+        saveConvo(ctx, { conversationId }, { appendMessageIds: [responseMessage] }),
+      ]);
+      const stored = await getConvo(ctx.userId, conversationId);
+      expect(stored?.messages?.map(String)).toEqual([userMessage, responseMessage].map(String));
+      expect(stored?.title).toBe('Renamed while running');
+      expect(getMessages).not.toHaveBeenCalled();
     });
 
     it('does not duplicate an id that is already recorded', async () => {

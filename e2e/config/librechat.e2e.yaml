@@ -5,6 +5,8 @@ version: 1.3.11
 cache: true
 
 interface:
+  # Isolated test fleet contains only ownership-aware replicas.
+  runningChatRename: true
   # Exercises the cost row in the context usage gauge (off by default).
   # Mock models price at the default rate, so synthetic usage yields a value.
   contextCost: true
@@ -185,6 +187,30 @@ endpoints:
         # Generic fallback inference is intentionally disabled for custom targets.
         paramDefinitions:
           - key: effort
+    - name: 'Mock Titles immediate'
+      apiKey: 'e2e-mock-title-key'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-titles-immediate'
+        fetch: false
+      titleConvo: true
+      titleModel: 'mock-title-model'
+      titleMethod: completion
+      titleTiming: immediate
+      modelDisplayLabel: 'Mock Titles immediate'
+    - name: 'Mock Titles final'
+      apiKey: 'e2e-mock-title-key'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-titles-final'
+        fetch: false
+      titleConvo: true
+      titleModel: 'mock-title-model'
+      titleMethod: completion
+      titleTiming: final
+      modelDisplayLabel: 'Mock Titles final'
     - name: 'Mock Provider B'
       apiKey: 'e2e-mock-key-b'
       baseURL: 'http://127.0.0.1:8889/v1'
@@ -266,6 +292,8 @@ modelSpecs:
   # set) limited to entries that don't collide with the spec labels above.
   addedEndpoints:
     # __E2E_MODEL_RECORD_ADDED_ENDPOINT__
+    - 'Mock Titles immediate'
+    - 'Mock Titles final'
     - 'Mock Provider C'
     - 'Mock Provider D'
     - 'Mock Provider E'

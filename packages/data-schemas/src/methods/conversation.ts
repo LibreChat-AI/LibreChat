@@ -259,6 +259,11 @@ async function refreshChatProjectStatsInBatches(
   }
 }
 
+export type ConversationTitleState = Pick<
+  IConversation,
+  'title' | 'titleSetByUser' | 'titleRevision'
+>;
+
 export interface ConversationMethods {
   getConvoFiles(conversationId: string): Promise<string[]>;
   searchConversation(
@@ -283,6 +288,7 @@ export interface ConversationMethods {
       noUpsert?: boolean;
       createdAtOnInsert?: Date;
       preserveUpdatedAt?: boolean;
+      titleSource?: 'manual' | 'generated';
       /** Same-tenant persisted agent already resolved by the request layer. */
       initialAgentId?: string | null;
       /** `_id`s of messages this save just wrote. When present, they are appended with
@@ -383,6 +389,7 @@ export interface ConversationMethods {
     convoMap: Record<string, unknown>;
   }>;
   getConvo(user: string, conversationId: string): Promise<IConversation | null>;
+  getConvoTitleState(user: string, conversationId: string): Promise<ConversationTitleState | null>;
   getSubagentThreadForParent(input: {
     user: string;
     parentConversationId: string;
@@ -717,6 +724,16 @@ export function createConversationMethods(
       logger.error('[getConvo] Error getting single conversation', error);
       throw new Error('Error getting single conversation');
     }
+  }
+
+  async function getConvoTitleState(
+    user: string,
+    conversationId: string,
+  ): Promise<ConversationTitleState | null> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    return Conversation.findOne({ user, conversationId })
+      .select('title titleSetByUser titleRevision -_id')
+      .lean<ConversationTitleState>();
   }
 
   /** Resolves a child only through its owning parent and includes its private live lease. */
@@ -2399,6 +2416,7 @@ export function createConversationMethods(
       noUpsert?: boolean;
       createdAtOnInsert?: Date;
       preserveUpdatedAt?: boolean;
+      titleSource?: 'manual' | 'generated';
       initialAgentId?: string | null;
       /** Casts plain string ids, so callers outside this package need not name the id type. */
       appendMessageIds?: Array<Types.ObjectId | string>;
@@ -2427,6 +2445,11 @@ export function createConversationMethods(
       delete update.lastResponseAt;
       delete update.lastResponseMessageId;
       delete update.initial_agent_id;
+      delete update.titleSetByUser;
+      delete update.titleRevision;
+      if (metadata?.titleSource === 'manual') {
+        update.titleSetByUser = true;
+      }
       /* Remembered tool approvals are granted only by a validated resume. */
       delete update.toolApprovalAllows;
       /** Ordinary saves may seed a decision, but only an explicit move may replace it. */
@@ -2451,6 +2474,8 @@ export function createConversationMethods(
       delete unsetFields.lastResponseMessageId;
       delete unsetFields.lastResponseAt;
       delete unsetFields.initial_agent_id;
+      delete unsetFields.titleSetByUser;
+      delete unsetFields.titleRevision;
       delete unsetFields.toolApprovalAllows;
       delete unsetFields.codeEnvironmentRevision;
       delete unsetFields.codeEnvironmentMode;
@@ -2560,7 +2585,7 @@ export function createConversationMethods(
         timestampOptions.timestamps = false;
       }
 
-      const canUpsert = metadata?.noUpsert !== true;
+      const canUpsert = metadata?.noUpsert !== true && metadata?.titleSource !== 'generated';
       const initialAgentId =
         canUpsert &&
         typeof metadata?.initialAgentId === 'string' &&
@@ -2570,6 +2595,9 @@ export function createConversationMethods(
 
       const buildOperation = (setFields: Record<string, unknown>) => {
         const operation: Record<string, unknown> = { $set: setFields };
+        if (metadata?.titleSource === 'manual') {
+          operation.$inc = { titleRevision: 1 };
+        }
         if (appendMessageIds != null && appendMessageIds.length > 0) {
           operation.$addToSet = { messages: { $each: appendMessageIds } };
         }
@@ -2606,7 +2634,14 @@ export function createConversationMethods(
         return operation;
       };
 
-      const baseFilter = { conversationId, user: userId };
+      const baseFilter = {
+        conversationId,
+        user: userId,
+        ...(metadata?.titleSource === 'generated' && {
+          titleSetByUser: { $ne: true },
+          title: { $in: [null, '', 'New Chat'] },
+        }),
+      };
       const runUpdate = (
         filter: Record<string, unknown>,
         operation: Record<string, unknown>,
@@ -3532,7 +3567,7 @@ export function createConversationMethods(
            the sidebar lists archived and unarchived chats in the same session, and the
            active list also carries the unarchived pins beside them. */
         .select(
-          'conversationId endpoint title createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual isMarkedUnread lastSeenAt',
+          'conversationId endpoint title titleSetByUser titleRevision createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual isMarkedUnread lastSeenAt',
         )
         .sort(sortObj)
         .limit(pageSize + 1)
@@ -4194,6 +4229,7 @@ export function createConversationMethods(
     getConvosByCursor,
     getConvosQueried,
     getConvo,
+    getConvoTitleState,
     getSubagentThreadForParent,
     listSubagentThreadsForParent,
     getAgentEventBinding,

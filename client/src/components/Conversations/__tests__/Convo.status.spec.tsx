@@ -50,6 +50,7 @@ jest.mock('~/utils', () => ({
   logger: { error: jest.fn() },
   setDocumentTitle: jest.fn(),
   isConversationUnseen: () => mockIsUnseen,
+  hasRealTitle: (title: string) => !!title && title !== 'New Chat',
 }));
 
 jest.mock('../ConvoOptions', () => ({
@@ -103,8 +104,10 @@ describe('Conversation row status', () => {
     expect(rowButton()).toHaveAccessibleName('com_ui_conversation_label, com_ui_generating');
     /* The trailing slot used to hold the spinner in place of the menu, so a running chat
        could not be renamed or archived from the list. */
-    fireEvent.mouseEnter(screen.getByTestId('convo-item'));
+    fireEvent.contextMenu(screen.getByTestId('convo-item'));
     expect(screen.getByTestId('convo-options')).toBeInTheDocument();
+    expect(screen.getAllByTestId('status-ring')).toHaveLength(1);
+    expect(rowButton()).toContainElement(ring);
   });
 
   it('marks an unseen reply on the avatar and in the title weight', () => {

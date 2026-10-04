@@ -1,9 +1,15 @@
-const { isEnabled, sanitizeTitle, getAttachmentTitleText } = require('@librechat/api');
+const {
+  isEnabled,
+  sanitizeTitle,
+  getAttachmentTitleText,
+  publishConversationTitle,
+  publishFallbackConversationTitle,
+} = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
 const getLogStores = require('~/cache/getLogStores');
 const initializeClient = require('./initalize');
-const { saveConvo } = require('~/models');
+const { saveConvo, getConvo } = require('~/models');
 const { resolveConversationTitle } = require('../titlePolicy');
 
 /**
@@ -57,7 +63,6 @@ const addTitle = async (req, { text, responseText, conversationId }) => {
   }
 
   const titleCache = getLogStores(CacheKeys.GEN_TITLE);
-  const key = `${req.user.id}-${conversationId}`;
 
   try {
     const { openai } = await initializeClient({ req });
@@ -66,7 +71,6 @@ const addTitle = async (req, { text, responseText, conversationId }) => {
     if (title == null) {
       return;
     }
-    await titleCache.set(key, title, 120000);
 
     const reqCtx = {
       userId: req?.user?.id,
@@ -74,18 +78,9 @@ const addTitle = async (req, { text, responseText, conversationId }) => {
       expiredAt: req?.resolvedConversation?.expiredAt,
       interfaceConfig: req?.config?.interfaceConfig,
     };
-    await saveConvo(
-      reqCtx,
-      {
-        conversationId,
-        title,
-      },
-      {
-        context: 'api/server/services/Endpoints/assistants/addTitle.js',
-        noUpsert: true,
-        preserveUpdatedAt: true,
-        appendMessageIds: [],
-      },
+    await publishConversationTitle(
+      { saveConvo, getConvo, titleCache },
+      { ctx: reqCtx, conversationId, title },
     );
   } catch (error) {
     logger.error('[addTitle] Error generating title:', error);
@@ -105,23 +100,17 @@ const addTitle = async (req, { text, responseText, conversationId }) => {
     if (fallbackTitle == null) {
       return;
     }
-    await titleCache.set(key, fallbackTitle, 120000);
-    await saveConvo(
+    await publishFallbackConversationTitle(
+      { saveConvo, getConvo, titleCache, logger },
       {
-        userId: req?.user?.id,
-        isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
-        expiredAt: req?.resolvedConversation?.expiredAt,
-        interfaceConfig: req?.config?.interfaceConfig,
-      },
-      {
+        ctx: {
+          userId: req?.user?.id,
+          isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+          expiredAt: req?.resolvedConversation?.expiredAt,
+          interfaceConfig: req?.config?.interfaceConfig,
+        },
         conversationId,
         title: fallbackTitle,
-      },
-      {
-        context: 'api/server/services/Endpoints/assistants/addTitle.js',
-        noUpsert: true,
-        preserveUpdatedAt: true,
-        appendMessageIds: [],
       },
     );
   }

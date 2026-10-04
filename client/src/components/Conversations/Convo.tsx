@@ -3,8 +3,8 @@ import { useDrag } from 'react-dnd';
 import { Link2 } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
 import { useParams } from 'react-router-dom';
-import { Constants } from 'librechat-data-provider';
 import { Spinner, useToastContext, useMediaQuery } from '@librechat/client';
+import { Constants, supportsConversationTitleOwnership } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationDragItem } from './dnd';
 import {
@@ -12,7 +12,7 @@ import {
   usePinConversationMutation,
   useUpdateConversationMutation,
 } from '~/data-provider';
-import { cn, logger, setDocumentTitle, isConversationUnseen } from '~/utils';
+import { cn, logger, setDocumentTitle, isConversationUnseen, hasRealTitle } from '~/utils';
 import { useNavigateToConvo, useLocalize, useShiftKey } from '~/hooks';
 import ConversationEndpointIcon from './ConversationEndpointIcon';
 import { focusableInRow, resolveRowBeside } from './focus';
@@ -73,10 +73,14 @@ function Conversation({
   const isUnseen = isConversationUnseen(conversation);
   const isShiftHeld = useShiftKey();
   const { conversationId, title = '' } = conversation;
+  const canRename =
+    supportsConversationTitleOwnership(startupConfig) ||
+    (!isGenerating && (conversation.titleSetByUser === true || hasRealTitle(title)));
 
   const [titleInput, setTitleInput] = useState(title || '');
   const [renaming, setRenamingState] = useState(false);
   const [isPopoverActive, setIsPopoverActive] = useState(false);
+  const [contextMenuPosition, setContextMenuPosition] = useState<{ x: number; y: number }>();
   const [isHovered, setIsHovered] = useState(false);
   // Lazy-load ConvoOptions to avoid running heavy hooks for all conversations
   const [hasInteracted, setHasInteracted] = useState(false);
@@ -139,13 +143,19 @@ function Conversation({
   }, [currentConvoId, conversationId, activeConversationId]);
 
   const handleRename = () => {
+    if (!canRename) return;
     setIsPopoverActive(false);
+    setContextMenuPosition(undefined);
     setTitleInput(title as string);
     setRenaming(true);
   };
 
   const handleRenameSubmit = async (newTitle: string) => {
-    if (!conversationId || newTitle === title) {
+    if (
+      !canRename ||
+      !conversationId ||
+      (newTitle === title && conversation.titleSetByUser === true)
+    ) {
       setRenaming(false);
       return;
     }
@@ -233,6 +243,9 @@ function Conversation({
 
   const handlePopoverOpenChange = useCallback((open: boolean) => {
     setIsPopoverActive(open);
+    if (!open) {
+      setContextMenuPosition(undefined);
+    }
   }, []);
 
   const handleNavigation = (ctrlOrMetaKey: boolean) => {
@@ -268,13 +281,16 @@ function Conversation({
     isArchived: conversation.isArchived === true,
     retainView,
     renameHandler: handleRename,
+    canRename,
     isActiveConvo,
     isUnseen,
     conversationId,
     chatProjectId: conversation.chatProjectId,
     isPopoverActive,
+    isGenerating,
+    contextMenuPosition,
     onOpenChange: handlePopoverOpenChange,
-    isShiftHeld: isActiveConvo ? isShiftHeld : false,
+    isShiftHeld: isActiveConvo && !isGenerating ? isShiftHeld : false,
   };
 
   /* The slot takes its width from the row's hover, not from its content. The
@@ -288,7 +304,10 @@ function Conversation({
   let actionWidthClassName = isSmallScreen
     ? 'group-focus-within:w-9 group-hover:w-9'
     : 'group-focus-within:w-7 group-hover:w-7';
-  if (isPopoverActive || isActiveConvo || isSmallScreen) {
+  if (isGenerating) {
+    actionVisibilityClassName = 'pointer-events-auto scale-x-100 opacity-100';
+    actionWidthClassName = isSmallScreen ? 'w-9' : 'w-7';
+  } else if (isPopoverActive || isActiveConvo || isSmallScreen) {
     /** Touch has no hover, so a reveal-on-hover menu is unreachable there. */
     actionVisibilityClassName = 'pointer-events-auto scale-x-100 opacity-100';
     /** Shift over the active row swaps the menu for archive and delete. */
@@ -299,9 +318,9 @@ function Conversation({
     }
   }
 
-  const actionContent = renaming ? null : (
+  const actionContent = !renaming ? (
     <ConvoActions {...convoOptionsProps} hasInteracted={hasInteracted} />
-  );
+  ) : null;
 
   return (
     <div
@@ -320,6 +339,20 @@ function Conversation({
       }}
       onPointerLeave={() => setIsHovered(false)}
       onPointerCancel={() => setIsHovered(false)}
+      onContextMenu={(event) => {
+        if (
+          renaming ||
+          !(event.target instanceof Node) ||
+          !event.currentTarget.contains(event.target)
+        ) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        setContextMenuPosition({ x: event.clientX, y: event.clientY });
+        setHasInteracted(true);
+        setIsPopoverActive(true);
+      }}
       onMouseEnter={handleMouseEnter}
       onFocus={handleMouseEnter}
       onClick={(e) => {
@@ -365,7 +398,7 @@ function Conversation({
                 size={34}
                 strokeWidth={1.9}
                 bgOpacity={0.14}
-                className="text-text-primary pointer-events-none absolute -top-[7px] -left-[7px]"
+                className="pointer-events-none absolute -top-[7px] -left-[7px]"
               />
             )}
             {isUnseen && !isGenerating && (
