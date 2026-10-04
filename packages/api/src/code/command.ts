@@ -207,7 +207,15 @@ export function resolveAttachedWorkspaceProgrammaticTimeout(
 ): number {
   const defaultTimeoutMs = configSchema?.limits?.defaultCommandTimeoutMs;
   if (defaultTimeoutMs != null) {
-    return resolveAttachedWorkspaceCommandTimeoutMax(configSchema, upstreamMaxTimeoutMs);
+    // Programmatic execution still uses the synchronous SDK transport.
+    return fitCommandTimeoutMaxToBudget(
+      resolveAttachedWorkspaceCommandTimeoutMax(configSchema, upstreamMaxTimeoutMs),
+      Math.min(
+        resolveAttachedWorkspaceRequestTimeoutMs(configSchema) ?? Infinity,
+        configSchema?.limits?.maxRunTimeoutMs ?? Infinity,
+      ),
+      configSchema?.limits?.minCommandAdmissionMs,
+    );
   }
   const configured = configSchema?.limits?.maxCommandTimeoutMs;
   const requested =
@@ -547,14 +555,6 @@ export function createAttachedWorkspaceBashTool({
           : effectiveDefaultTimeoutMs);
       let selectedTimeoutMs = timeoutMs;
       let selectedMaxTimeoutMs = effectiveMaxTimeoutMs;
-      const fallbackTimeoutMs = Math.min(
-        timeoutMs,
-        fitCommandTimeoutMaxToBudget(
-          effectiveMaxTimeoutMs,
-          Math.min(maxRequestTimeoutMs ?? Infinity, maxRunTimeoutMs ?? Infinity),
-          minCommandAdmissionMs,
-        ),
-      );
       const signal = config?.signal;
       const trace = {
         runId: config?.metadata?.run_id,
@@ -588,8 +588,9 @@ export function createAttachedWorkspaceBashTool({
           ...(admission?.durableRequests === true && rawInput.timeoutMs == null
             ? {
                 synchronousCommandFallback: {
-                  timeoutMs: fallbackTimeoutMs,
-                  onSelected: () => {
+                  timeoutMs,
+                  minAdmissionMs: minCommandAdmissionMs,
+                  onSelected: (fallbackTimeoutMs) => {
                     selectedTimeoutMs = fallbackTimeoutMs;
                     selectedMaxTimeoutMs = fallbackTimeoutMs;
                   },

@@ -1215,7 +1215,11 @@ export async function executeWorkspaceTool({
   requestId?: string;
   resumeRequestId?: string;
   /** Host-selected fallback for omitted command timeouts, applied only on unsupported discovery. */
-  synchronousCommandFallback?: { timeoutMs: number; onSelected: () => void };
+  synchronousCommandFallback?: {
+    timeoutMs: number;
+    minAdmissionMs?: number;
+    onSelected: (timeoutMs: number) => void;
+  };
   authHeaders: WorkspaceToolAuthHeaders;
   request: WorkspaceToolRequest;
   signal?: AbortSignal;
@@ -1243,7 +1247,12 @@ export async function executeWorkspaceTool({
         !isPositiveInteger(
           synchronousCommandFallback.timeoutMs,
           request.timeoutMs ?? WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
-        ))) ||
+        ) ||
+        (synchronousCommandFallback.minAdmissionMs !== undefined &&
+          !isPositiveInteger(
+            synchronousCommandFallback.minAdmissionMs,
+            CODE_ENVIRONMENT_ADMISSION_MAX_MS,
+          )))) ||
     !Number.isSafeInteger(maxQueueWaitMs) ||
     maxQueueWaitMs < 0 ||
     maxQueueWaitMs > WORKSPACE_QUEUE_MAX_WAIT_MS ||
@@ -1277,6 +1286,7 @@ export async function executeWorkspaceTool({
   const queueDeadlineAt = startedAt + maxQueueWaitMs;
   let callerRetryDeadlineAt = callerDeadlineAt - completionReserveMs;
   let body = JSON.stringify(wireRequest);
+  let fallback: typeof synchronousCommandFallback;
   let lastAdmissionRejection: WorkspaceToolHttpError | undefined;
   let lastRetryDeadlineAt = Infinity;
   let rateLimitWaitedMs = 0;
@@ -1380,15 +1390,7 @@ export async function executeWorkspaceTool({
         return lane ? fromLinkedWorktreeResult(durable.result, lane.worktree) : durable.result;
       }
       transport = 'synchronous';
-      if (synchronousCommandFallback != null && wireRequest.operation === 'execute_command') {
-        wireRequest = { ...wireRequest, timeoutMs: synchronousCommandFallback.timeoutMs };
-        executionBudgetMs = getWorkspaceExecutionBudgetMs(wireRequest);
-        completionReserveMs = executionBudgetMs + WORKSPACE_COMMAND_TRANSPORT_GRACE_MS;
-        callerRetryDeadlineAt = callerDeadlineAt - completionReserveMs;
-        body = JSON.stringify(wireRequest);
-        span.setAttribute('workspace.execution_budget_ms', executionBudgetMs);
-        synchronousCommandFallback.onSelected();
-      }
+      fallback = synchronousCommandFallback;
     }
     while (true) {
       signal?.throwIfAborted();
@@ -1396,7 +1398,7 @@ export async function executeWorkspaceTool({
       const attemptTimeoutMs = Math.floor(
         Math.min(perAttemptTimeoutMs, callerDeadlineAt - Date.now()),
       );
-      if (attemptTimeoutMs <= completionReserveMs) {
+      if (fallback == null && attemptTimeoutMs <= completionReserveMs) {
         throw lastAdmissionRejection ?? new WorkspaceToolHttpError('insufficient_time');
       }
       const attemptStartedAt = Date.now();
@@ -1428,6 +1430,25 @@ export async function executeWorkspaceTool({
         attemptTimeoutMs - (Date.now() - attemptStartedAt),
         callerDeadlineAt - Date.now(),
       );
+      if (fallback != null && wireRequest.operation === 'execute_command') {
+        const minAdmissionMs =
+          fallback.minAdmissionMs ?? CODE_ENVIRONMENT_COMMAND_ADMISSION_DEFAULT_MS;
+        const timeoutMs = Math.min(
+          fallback.timeoutMs,
+          wireRequest.timeoutMs ?? WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
+          fitWorkspaceCommandTimeoutToBudget(remainingMs, minAdmissionMs),
+        );
+        executionBudgetMs = getWorkspaceExecutionBudgetMs({ ...wireRequest, timeoutMs });
+        completionReserveMs = executionBudgetMs + WORKSPACE_COMMAND_TRANSPORT_GRACE_MS;
+        if (remainingMs - completionReserveMs < minAdmissionMs) {
+          throw lastAdmissionRejection ?? new WorkspaceToolHttpError('insufficient_time');
+        }
+        wireRequest = { ...wireRequest, timeoutMs };
+        callerRetryDeadlineAt = callerDeadlineAt - completionReserveMs;
+        body = JSON.stringify(wireRequest);
+        span.setAttribute('workspace.execution_budget_ms', executionBudgetMs);
+        fallback.onSelected(timeoutMs);
+      }
       const queueAllowanceMs = Math.min(
         policy.queueWaitMs ?? CODE_ENVIRONMENT_ADMISSION_MAX_MS,
         Math.floor(remainingMs - completionReserveMs),

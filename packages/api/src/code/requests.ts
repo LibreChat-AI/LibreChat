@@ -149,7 +149,7 @@ export async function executeDurableWorkspaceRequest<TRequest, TResult>(
   try {
     const probe = (await send(`${root}/workspace-tools/capabilities`, 'GET'))!;
     if (probe.response.status === 404) {
-      await probe.response.body?.cancel();
+      await probe.response.body?.cancel().catch(() => undefined);
       if (resuming) throw options.invalid();
       return { supported: false };
     }
@@ -185,7 +185,7 @@ export async function executeDurableWorkspaceRequest<TRequest, TResult>(
           current = status(await options.readJson(lookup.response, lookup.signal), id);
           if (current == null) throw options.invalid();
         } else {
-          await lookup?.response.body?.cancel();
+          await lookup?.response.body?.cancel().catch(() => undefined);
           if (accepted) throw options.invalid();
           const submitted = await send(`${root}/workspace-tools/requests`, 'POST');
           if (submitted != null) {

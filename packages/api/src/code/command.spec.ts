@@ -1323,56 +1323,17 @@ describe('attached command admission configuration', () => {
   });
 
   test('passes separate run and retry policies through the actual tool invocation', async () => {
-    const admission = {
-      queueWaitMs: 60_000,
-      initialDelayMs: 1_000,
-      maxDelayMs: 30_000,
-      multiplier: 2,
-      jitterRatio: 0.2,
-    };
-    const fetchImpl = jest.fn<ReturnType<CodeBridgeFetch>, Parameters<CodeBridgeFetch>>(
-      async () =>
-        new Response(
-          JSON.stringify({
-            protocolVersion: 1,
-            operation: 'execute_command',
-            workspaceId: 'primary',
-            exitCode: 0,
-            stdout: 'ready',
-            stderr: '',
-            timedOut: false,
-            truncated: false,
-          }),
-        ),
-    );
-    const bash = createAttachedWorkspaceBashTool({
-      baseUrl: 'https://code.example/v1',
-      authHeaders: () => ({}),
-      workspaceId: 'primary',
-      fetchImpl,
-      maxRequestTimeoutMs: 100_000,
-      maxRunTimeoutMs: 180_000,
-      admission,
-    });
-    await bash.invoke({ command: 'echo ready' });
-    expect(
-      new Headers(fetchImpl.mock.calls[0][1]?.headers).get('X-LibreChat-Workspace-Queue-Wait-Ms'),
-    ).toBe('60000');
-  });
-});
-
-describe('durable Bash capability fallback', () => {
-  test.each([404, 0])(
-    'omitted background timeout remains executable when durability is unsupported (%s)',
-    async (unsupported) => {
-      const fetchImpl = jest
-        .fn()
-        .mockResolvedValueOnce(
-          unsupported === 404
-            ? new Response('{}', { status: 404 })
-            : new Response(JSON.stringify({ durableWorkspaceRequests: 0 })),
-        )
-        .mockResolvedValueOnce(
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now());
+    try {
+      const admission = {
+        queueWaitMs: 60_000,
+        initialDelayMs: 1_000,
+        maxDelayMs: 30_000,
+        multiplier: 2,
+        jitterRatio: 0.2,
+      };
+      const fetchImpl = jest.fn<ReturnType<CodeBridgeFetch>, Parameters<CodeBridgeFetch>>(
+        async () =>
           new Response(
             JSON.stringify({
               protocolVersion: 1,
@@ -1385,29 +1346,78 @@ describe('durable Bash capability fallback', () => {
               truncated: false,
             }),
           ),
-        );
+      );
       const bash = createAttachedWorkspaceBashTool({
         baseUrl: 'https://code.example/v1',
-        workspaceId: 'primary',
         authHeaders: () => ({}),
-        maxTimeoutMs: 70000,
-        maxRequestTimeoutMs: 60000,
-        admission: {
-          durableRequests: true,
-          initialDelayMs: 1000,
-          maxDelayMs: 30000,
-          multiplier: 1,
-          jitterRatio: 0,
-        },
+        workspaceId: 'primary',
         fetchImpl,
+        maxRequestTimeoutMs: 100_000,
+        maxRunTimeoutMs: 180_000,
+        admission,
       });
+      await bash.invoke({ command: 'echo ready' });
       expect(
-        await bash.invoke(
-          { command: 'echo ready' },
-          { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
-        ),
-      ).toContain('ready');
-      expect(JSON.parse(fetchImpl.mock.calls[1][1].body).timeoutMs).toBe(40000);
+        new Headers(fetchImpl.mock.calls[0][1]?.headers).get('X-LibreChat-Workspace-Queue-Wait-Ms'),
+      ).toBe('60000');
+    } finally {
+      clock.mockRestore();
+    }
+  });
+});
+
+describe('durable Bash capability fallback', () => {
+  test.each([404, 0])(
+    'omitted background timeout remains executable when durability is unsupported (%s)',
+    async (unsupported) => {
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now());
+      try {
+        const fetchImpl = jest
+          .fn()
+          .mockResolvedValueOnce(
+            unsupported === 404
+              ? new Response('{}', { status: 404 })
+              : new Response(JSON.stringify({ durableWorkspaceRequests: 0 })),
+          )
+          .mockResolvedValueOnce(
+            new Response(
+              JSON.stringify({
+                protocolVersion: 1,
+                operation: 'execute_command',
+                workspaceId: 'primary',
+                exitCode: 0,
+                stdout: 'ready',
+                stderr: '',
+                timedOut: false,
+                truncated: false,
+              }),
+            ),
+          );
+        const bash = createAttachedWorkspaceBashTool({
+          baseUrl: 'https://code.example/v1',
+          workspaceId: 'primary',
+          authHeaders: () => ({}),
+          maxTimeoutMs: 70000,
+          maxRequestTimeoutMs: 60000,
+          admission: {
+            durableRequests: true,
+            initialDelayMs: 1000,
+            maxDelayMs: 30000,
+            multiplier: 1,
+            jitterRatio: 0,
+          },
+          fetchImpl,
+        });
+        expect(
+          await bash.invoke(
+            { command: 'echo ready' },
+            { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
+          ),
+        ).toContain('ready');
+        expect(JSON.parse(fetchImpl.mock.calls[1][1].body).timeoutMs).toBe(40000);
+      } finally {
+        clock.mockRestore();
+      }
     },
   );
 });
@@ -1484,61 +1494,300 @@ test('explicit timeouts are never silently lowered after unsupported capability 
 });
 
 test('configured foreground defaults also fit synchronous fallback instead of failing before dispatch', async () => {
-  const fetchImpl = jest
-    .fn()
-    .mockResolvedValueOnce(new Response(JSON.stringify({ durableWorkspaceRequests: 0 })))
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          protocolVersion: 1,
-          operation: 'execute_command',
-          workspaceId: 'primary',
-          exitCode: 0,
-          stdout: 'ready',
-          stderr: '',
-          timedOut: false,
-          truncated: false,
-        }),
-      ),
-    );
-  const bash = createAttachedWorkspaceBashTool({
-    baseUrl: 'https://code.example/v1',
-    workspaceId: 'primary',
-    authHeaders: () => ({}),
-    maxTimeoutMs: 70000,
-    defaultTimeoutMs: 60000,
-    maxRequestTimeoutMs: 60000,
-    admission: {
-      durableRequests: true,
-      initialDelayMs: 1000,
-      maxDelayMs: 30000,
-      multiplier: 1,
-      jitterRatio: 0,
-    },
-    fetchImpl,
-  });
-  expect(await bash.invoke({ command: 'echo ready' })).toContain('ready');
-  expect(JSON.parse(fetchImpl.mock.calls[1][1].body).timeoutMs).toBe(40000);
+  const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now());
+  try {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ durableWorkspaceRequests: 0 })))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            protocolVersion: 1,
+            operation: 'execute_command',
+            workspaceId: 'primary',
+            exitCode: 0,
+            stdout: 'ready',
+            stderr: '',
+            timedOut: false,
+            truncated: false,
+          }),
+        ),
+      );
+    const bash = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example/v1',
+      workspaceId: 'primary',
+      authHeaders: () => ({}),
+      maxTimeoutMs: 70000,
+      defaultTimeoutMs: 60000,
+      maxRequestTimeoutMs: 60000,
+      admission: {
+        durableRequests: true,
+        initialDelayMs: 1000,
+        maxDelayMs: 30000,
+        multiplier: 1,
+        jitterRatio: 0,
+      },
+      fetchImpl,
+    });
+    expect(await bash.invoke({ command: 'echo ready' })).toContain('ready');
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).timeoutMs).toBe(40000);
+  } finally {
+    clock.mockRestore();
+  }
 });
 
 test('synchronous fallback timeout diagnostics report the budget actually selected', async () => {
+  const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now());
+  try {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            protocolVersion: 1,
+            operation: 'execute_command',
+            workspaceId: 'primary',
+            exitCode: null,
+            stdout: 'partial',
+            stderr: '',
+            timedOut: true,
+            truncated: false,
+          }),
+        ),
+      );
+    const bash = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example/v1',
+      workspaceId: 'primary',
+      authHeaders: () => ({}),
+      maxTimeoutMs: 70000,
+      maxRequestTimeoutMs: 60000,
+      admission: {
+        durableRequests: true,
+        initialDelayMs: 1000,
+        maxDelayMs: 30000,
+        multiplier: 1,
+        jitterRatio: 0,
+      },
+      fetchImpl,
+    });
+    const content = await bash.invoke(
+      { command: 'echo ready' },
+      { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
+    );
+    expect(content).toContain('timeoutMs: 40000');
+    expect(content).toContain('up to 40000 milliseconds');
+    expect(content).not.toContain('up to 70000');
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test.each([404, 0])(
+  'fallback reserves discovery and refreshed-credential time before selecting an omitted timeout (%s)',
+  async (unsupported) => {
+    let now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    let minted = 0;
+    const authHeaders = jest.fn(async () => {
+      if (++minted === 2) now += 2000;
+      return {};
+    });
+    const fetchImpl = jest
+      .fn()
+      .mockImplementationOnce(async () => {
+        now += 9500;
+        return unsupported === 404
+          ? new Response('{}', { status: 404 })
+          : new Response(JSON.stringify({ durableWorkspaceRequests: 0 }));
+      })
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            protocolVersion: 1,
+            operation: 'execute_command',
+            workspaceId: 'primary',
+            exitCode: 0,
+            stdout: 'ready',
+            stderr: '',
+            timedOut: false,
+            truncated: false,
+          }),
+        ),
+      );
+    const bash = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example/v1',
+      workspaceId: 'primary',
+      authHeaders,
+      maxTimeoutMs: 70000,
+      maxRequestTimeoutMs: 60000,
+      admission: {
+        durableRequests: true,
+        initialDelayMs: 1000,
+        maxDelayMs: 30000,
+        multiplier: 1,
+        jitterRatio: 0,
+      },
+      fetchImpl,
+    });
+    try {
+      expect(
+        await bash.invoke(
+          { command: 'echo ready' },
+          { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
+        ),
+      ).toContain('ready');
+      const post = fetchImpl.mock.calls[1][1];
+      expect(JSON.parse(post.body).timeoutMs).toBe(28500);
+      expect(Number(post.headers['X-LibreChat-Workspace-Queue-Wait-Ms'])).toBe(10000);
+    } finally {
+      clock.mockRestore();
+    }
+  },
+);
+
+test('durable workspace support cannot enlarge synchronous programmatic SDK budgets', () => {
+  const config = {
+    admission: {
+      durableRequests: true,
+      initialDelayMs: 1000,
+      maxDelayMs: 30000,
+      multiplier: 1,
+      jitterRatio: 0,
+    },
+    limits: {
+      defaultCommandTimeoutMs: 30000,
+      maxCommandTimeoutMs: 80000,
+      maxRequestTimeoutMs: 65000,
+    },
+  };
+  expect(resolveAttachedWorkspaceCommandTimeoutMax(config)).toBe(80000);
+  expect(resolveAttachedWorkspaceProgrammaticTimeout(config)).toBe(45000);
+});
+
+test('credential time legitimately reduces synchronous queue allowance below the configured ceiling', async () => {
+  let now = Date.now();
+  const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+  const authHeaders = jest.fn(async () => {
+    now++;
+    return {};
+  });
+  const fetchImpl = jest.fn().mockResolvedValue(commandResponse({ workspaceId: 'primary' }));
+  const bash = createAttachedWorkspaceBashTool({
+    baseUrl: 'https://code.example/v1',
+    workspaceId: 'primary',
+    authHeaders,
+    maxRequestTimeoutMs: 100000,
+    maxRunTimeoutMs: 180000,
+    admission: {
+      queueWaitMs: 60000,
+      initialDelayMs: 1000,
+      maxDelayMs: 30000,
+      multiplier: 2,
+      jitterRatio: 0.2,
+    },
+    fetchImpl,
+  });
+  try {
+    await bash.invoke({ command: 'echo ready' });
+    expect(
+      Number(
+        new Headers(fetchImpl.mock.calls[0][1].headers).get('X-LibreChat-Workspace-Queue-Wait-Ms'),
+      ),
+    ).toBe(59999);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test('fallback refuses dispatch when discovery consumes the minimum execution and admission reserve', async () => {
+  let now = Date.now();
+  const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+  const fetchImpl = jest.fn().mockImplementation(async () => {
+    now += 9500;
+    return new Response('{}', { status: 404 });
+  });
+  const bash = createAttachedWorkspaceBashTool({
+    baseUrl: 'https://code.example/v1',
+    workspaceId: 'primary',
+    authHeaders: () => ({}),
+    maxTimeoutMs: 30000,
+    maxRequestTimeoutMs: 29000,
+    minCommandAdmissionMs: 10000,
+    admission: {
+      durableRequests: true,
+      initialDelayMs: 1000,
+      maxDelayMs: 30000,
+      multiplier: 1,
+      jitterRatio: 0,
+    },
+    fetchImpl,
+  });
+  try {
+    await expect(bash.invoke({ command: 'echo ready' })).rejects.toThrow('cannot fit');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test('custom minimum admission and earlier run ceilings bound fallback selection after discovery', async () => {
+  let now = Date.now();
+  const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+  const fetchImpl = jest
+    .fn()
+    .mockImplementationOnce(async () => {
+      now += 9500;
+      return new Response(JSON.stringify({ durableWorkspaceRequests: 0 }));
+    })
+    .mockResolvedValueOnce(commandResponse({ workspaceId: 'primary' }));
+  const bash = createAttachedWorkspaceBashTool({
+    baseUrl: 'https://code.example/v1',
+    workspaceId: 'primary',
+    authHeaders: () => ({}),
+    maxTimeoutMs: 70000,
+    maxRequestTimeoutMs: 60000,
+    maxRunTimeoutMs: 50000,
+    minCommandAdmissionMs: 5000,
+    admission: {
+      durableRequests: true,
+      initialDelayMs: 1000,
+      maxDelayMs: 30000,
+      multiplier: 1,
+      jitterRatio: 0,
+    },
+    fetchImpl,
+  });
+  try {
+    await bash.invoke(
+      { command: 'echo ready' },
+      { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
+    );
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).timeoutMs).toBe(25500);
+    expect(
+      Number(
+        new Headers(fetchImpl.mock.calls[1][1].headers).get('X-LibreChat-Workspace-Queue-Wait-Ms'),
+      ),
+    ).toBe(5000);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test('retrying synchronous fallback recalculates the executable default without extending the run', async () => {
+  let now = Date.now();
+  const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
   const fetchImpl = jest
     .fn()
     .mockResolvedValueOnce(new Response('{}', { status: 404 }))
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          protocolVersion: 1,
-          operation: 'execute_command',
-          workspaceId: 'primary',
-          exitCode: null,
-          stdout: 'partial',
-          stderr: '',
-          timedOut: true,
-          truncated: false,
-        }),
-      ),
-    );
+    .mockImplementationOnce(async () => {
+      now += 5000;
+      return new Response(JSON.stringify({ code: 'WORKSPACE_QUEUE_TIMEOUT' }), {
+        status: 503,
+        headers: { 'Retry-After': '0' },
+      });
+    })
+    .mockResolvedValueOnce(commandResponse({ workspaceId: 'primary' }));
   const bash = createAttachedWorkspaceBashTool({
     baseUrl: 'https://code.example/v1',
     workspaceId: 'primary',
@@ -1554,11 +1803,49 @@ test('synchronous fallback timeout diagnostics report the budget actually select
     },
     fetchImpl,
   });
-  const content = await bash.invoke(
-    { command: 'echo ready' },
-    { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
-  );
-  expect(content).toContain('timeoutMs: 40000');
-  expect(content).toContain('up to 40000 milliseconds');
-  expect(content).not.toContain('up to 70000');
+  try {
+    await bash.invoke(
+      { command: 'echo ready' },
+      { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
+    );
+    expect(
+      fetchImpl.mock.calls.slice(1).map(([, init]) => JSON.parse(init.body).timeoutMs),
+    ).toEqual([40000, 35000]);
+    expect(
+      fetchImpl.mock.calls
+        .slice(1)
+        .map(([, init]) =>
+          Number(new Headers(init.headers).get('X-LibreChat-Workspace-Queue-Wait-Ms')),
+        ),
+    ).toEqual([10000, 10000]);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test('the programmatic SDK receives the bounded ceiling and default even when workspace durability is enabled', () => {
+  const tool = createContextProgrammaticBashTool(() => ({}), {
+    baseUrl: 'https://code.example/v1',
+    codeSessionKey: 'execute_code:attached',
+    executionProfile: 'stateful',
+    environmentType: 'attached',
+    statefulSessions: true,
+    codeEnvironmentConfigSchema: {
+      admission: {
+        durableRequests: true,
+        initialDelayMs: 1000,
+        maxDelayMs: 30000,
+        multiplier: 1,
+        jitterRatio: 0,
+      },
+      limits: {
+        defaultCommandTimeoutMs: 60000,
+        maxCommandTimeoutMs: 80000,
+        maxRequestTimeoutMs: 65000,
+      },
+    },
+  });
+  const schema = tool.schema as ReturnType<typeof createBashProgrammaticToolCallingSchema>;
+  expect(schema.properties.timeout.default).toBe(45000);
+  expect(schema.properties.timeout.description).toContain('cap: 45000 milliseconds');
 });

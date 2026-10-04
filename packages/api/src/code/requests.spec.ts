@@ -820,3 +820,91 @@ test('durable throttling contributes to the shared aggregate admission outcome',
     jest.useRealTimers();
   }
 });
+
+test('capability 404 still falls back when discarding its failed body rejects', async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.error(new TypeError('connection reset'));
+    },
+  });
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(new Response(body, { status: 404 }))
+    .mockResolvedValueOnce(json(result));
+  expect(await executeWorkspaceTool({ ...input, fetchImpl })).toEqual(result);
+  expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+    'https://code.example/v1/workspace-tools/capabilities',
+    'https://code.example/v1/workspace-tools/execute',
+  ]);
+});
+
+test('a failed 404 lookup body does not block recovery of a fresh uncertain submission', async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.error(new Error('reset'));
+    },
+  });
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockRejectedValueOnce(new TypeError('lost response'))
+    .mockResolvedValueOnce(new Response(body, { status: 404 }))
+    .mockResolvedValueOnce(status('completed'));
+  expect(
+    await executeWorkspaceTool({
+      ...input,
+      admission: codeEnvironmentAdmissionSchema.parse({
+        durableRequests: true,
+        queueWaitMs: 100,
+        pollIntervalMs: 100,
+      }),
+      fetchImpl,
+    }),
+  ).toEqual(result);
+  const posts = fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST');
+  expect(posts).toHaveLength(2);
+  expect(posts[0][1].body).toBe(posts[1][1].body);
+  expect(posts[0][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe(
+    posts[1][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms'],
+  );
+});
+
+test('discard errors never grant POST authority for a missing accepted handle', async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.error(new TypeError('reset'));
+    },
+  });
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(status('queued'))
+    .mockResolvedValueOnce(new Response(body, { status: 404 }))
+    .mockResolvedValueOnce(status('cancelled'));
+  await expect(executeWorkspaceTool({ ...input, fetchImpl })).rejects.toMatchObject({
+    reason: 'invalid',
+  });
+  expect(fetchImpl.mock.calls.map(([, init]) => init.method)).toEqual([
+    'GET',
+    'POST',
+    'GET',
+    'DELETE',
+  ]);
+});
+
+test('resuming against an unsupported server never falls back despite a failed 404 body', async () => {
+  const { requestId: _fresh, ...resumeInput } = input;
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.error(new Error('reset'));
+    },
+  });
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(new Response(body, { status: 404 }))
+    .mockResolvedValueOnce(status('cancelled'));
+  await expect(
+    executeWorkspaceTool({ ...resumeInput, resumeRequestId: requestId, fetchImpl }),
+  ).rejects.toMatchObject({ reason: 'invalid' });
+  expect(fetchImpl.mock.calls.map(([, init]) => init.method)).toEqual(['GET', 'DELETE']);
+});
