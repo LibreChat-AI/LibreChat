@@ -3062,7 +3062,15 @@ describe('ToolService - Action Capability Gating', () => {
             defaultCommandTimeoutMs: 60_000,
             maxQueueWaitMs: 0,
             maxRequestTimeoutMs: 90_000,
+            maxRunTimeoutMs: 180_000,
             minCommandAdmissionMs: 15_000,
+          },
+          admission: {
+            queueWaitMs: 60_000,
+            initialDelayMs: 1_000,
+            maxDelayMs: 30_000,
+            multiplier: 2,
+            jitterRatio: 0.2,
           },
         },
       });
@@ -3095,6 +3103,14 @@ describe('ToolService - Action Capability Gating', () => {
         maxQueueWaitMs: 0,
         codeApiMaxRetryWaitMs: 0,
         maxRequestTimeoutMs: 90_000,
+        maxRunTimeoutMs: 180_000,
+        admission: {
+          queueWaitMs: 60_000,
+          initialDelayMs: 1_000,
+          maxDelayMs: 30_000,
+          multiplier: 2,
+          jitterRatio: 0.2,
+        },
         minCommandAdmissionMs: 15_000,
       });
       expect(mockResolveCodeExecutionWorkspaceContext).toHaveBeenCalledWith(

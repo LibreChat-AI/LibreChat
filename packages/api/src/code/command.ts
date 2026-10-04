@@ -14,7 +14,7 @@ import type {
 import type { createBashProgrammaticToolCallingSchema } from '@librechat/agents';
 import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { LCTool } from '@librechat/agents';
-import type { WorkspaceExecuteCommandResult } from './workspace';
+import type { WorkspaceAdmissionOptions, WorkspaceExecuteCommandResult } from './workspace';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeBridgeFetch } from './bridge';
 import {
@@ -173,7 +173,10 @@ export function resolveAttachedWorkspaceCommandTimeoutMax(
   }
   return fitCommandTimeoutMaxToBudget(
     Math.min(requested, upstream),
-    resolveAttachedWorkspaceRequestTimeoutMs(configSchema),
+    Math.min(
+      resolveAttachedWorkspaceRequestTimeoutMs(configSchema) ?? Infinity,
+      configSchema?.limits?.maxRunTimeoutMs ?? Infinity,
+    ),
     configSchema?.limits?.minCommandAdmissionMs,
   );
 }
@@ -183,7 +186,7 @@ function fitCommandTimeoutMaxToBudget(
   maxRequestTimeoutMs?: number,
   minCommandAdmissionMs?: number,
 ): number {
-  if (maxRequestTimeoutMs == null) return maxTimeoutMs;
+  if (maxRequestTimeoutMs == null || !Number.isFinite(maxRequestTimeoutMs)) return maxTimeoutMs;
   return Math.min(
     maxTimeoutMs,
     fitWorkspaceCommandTimeoutToBudget(maxRequestTimeoutMs, minCommandAdmissionMs),
@@ -450,6 +453,8 @@ export function createAttachedWorkspaceBashTool({
   maxQueueWaitMs,
   codeApiMaxRetryWaitMs,
   maxRequestTimeoutMs,
+  maxRunTimeoutMs,
+  admission,
   minCommandAdmissionMs,
   linkedWorktrees = false,
   nativeSandbox = false,
@@ -477,10 +482,10 @@ export function createAttachedWorkspaceBashTool({
   /** Minimum time for command admission inside an opted-in HTTP budget. */
   minCommandAdmissionMs?: number;
   fetchImpl?: CodeBridgeFetch;
-}): DynamicStructuredTool {
+} & WorkspaceAdmissionOptions): DynamicStructuredTool {
   const effectiveMaxTimeoutMs = fitCommandTimeoutMaxToBudget(
     normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs),
-    maxRequestTimeoutMs,
+    Math.min(maxRequestTimeoutMs ?? Infinity, maxRunTimeoutMs ?? Infinity),
     minCommandAdmissionMs,
   );
   const effectiveDefaultTimeoutMs = resolveAttachedWorkspaceCommandTimeoutDefault(
@@ -570,6 +575,8 @@ export function createAttachedWorkspaceBashTool({
           ...(maxQueueWaitMs == null ? {} : { maxQueueWaitMs }),
           ...(codeApiMaxRetryWaitMs == null ? {} : { codeApiMaxRetryWaitMs }),
           ...(maxRequestTimeoutMs == null ? {} : { maxRequestTimeoutMs }),
+          ...(maxRunTimeoutMs == null ? {} : { maxRunTimeoutMs }),
+          ...(admission == null ? {} : { admission }),
         });
         if (result.operation !== 'execute_command') {
           throw new Error('Attached workspace returned an unexpected command result.');

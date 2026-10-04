@@ -1,3 +1,5 @@
+import { logger } from '@librechat/data-schemas';
+import { codeEnvironmentAdmissionSchema } from 'librechat-data-provider';
 import type { WorkspaceToolRequest } from './workspace';
 import type { CodeBridgeFetch } from './bridge';
 import {
@@ -1137,7 +1139,9 @@ describe('executeWorkspaceTool', () => {
       }),
     ).rejects.toMatchObject({ upstreamStatus: 504 });
     expect(timeout).toHaveBeenCalledWith(60_000);
-    expect(fetchImpl.mock.calls[0][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe('25000');
+    expect(
+      new Headers(fetchImpl.mock.calls[0][1]?.headers).get('X-LibreChat-Workspace-Queue-Wait-Ms'),
+    ).toBe('25000');
   });
 
   test('subtracts credential acquisition from the allowance before dispatching', async () => {
@@ -1230,7 +1234,7 @@ describe('executeWorkspaceTool', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test('keeps Retry-After capped at 30 seconds even when one admission may wait longer', async () => {
+  test('does not shorten a Retry-After hint to fit a shrinking total budget', async () => {
     jest.useFakeTimers();
     try {
       const fetchImpl = jest
@@ -1254,13 +1258,8 @@ describe('executeWorkspaceTool', () => {
         maxRequestTimeoutMs: 125_000,
         fetchImpl,
       }).catch((error: WorkspaceToolHttpError) => error);
-      await jest.advanceTimersByTimeAsync(29_999);
+      await expect(result).resolves.toMatchObject({ upstreamStatus: 503 });
       expect(fetchImpl).toHaveBeenCalledTimes(1);
-      await jest.advanceTimersByTimeAsync(1);
-      await expect(result).resolves.toMatchObject({ upstreamStatus: 504 });
-      expect(fetchImpl.mock.calls[1][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe(
-        '60000',
-      );
     } finally {
       jest.useRealTimers();
     }
@@ -2423,5 +2422,223 @@ describe('linked worktree lanes', () => {
         linkedWorktrees: true,
       }),
     ).rejects.toMatchObject({ reason: 'invalid' });
+  });
+});
+
+describe('workspace admission policy and independent budgets', () => {
+  const command: WorkspaceToolRequest = {
+    protocolVersion: 1,
+    operation: 'execute_command',
+    workspaceId: 'primary',
+    command: 'echo ready',
+    timeoutMs: 30_000,
+  };
+  const success = () =>
+    new Response(
+      JSON.stringify({
+        protocolVersion: 1,
+        operation: 'execute_command',
+        workspaceId: 'primary',
+        exitCode: 0,
+        stdout: 'ready',
+        stderr: '',
+        timedOut: false,
+        truncated: false,
+      }),
+    );
+  const queueTimeout = () =>
+    new Response(JSON.stringify({ code: 'WORKSPACE_QUEUE_TIMEOUT' }), {
+      status: 503,
+      headers: { 'Retry-After': '0' },
+    });
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-10-04T00:00:00.000Z'));
+  });
+  afterEach(() => jest.useRealTimers());
+
+  test('keeps the full 30-second execution budget after 60 seconds waiting', async () => {
+    let attempts = 0;
+    const fetchImpl = jest.fn<ReturnType<CodeBridgeFetch>, Parameters<CodeBridgeFetch>>(
+      async (_url, init) => {
+        if (init == null) throw new Error('Missing request init');
+        attempts++;
+        if (attempts === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 30_000));
+          return queueTimeout();
+        }
+        expect(Number(new Headers(init.headers).get('X-LibreChat-Workspace-Queue-Wait-Ms'))).toBe(
+          60_000,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 59_900));
+        expect(init.signal?.aborted).toBe(false);
+        return success();
+      },
+    );
+    const result = executeWorkspaceTool({
+      baseURL: 'https://code.example/v1',
+      authHeaders: {},
+      fetchImpl,
+      request: command,
+      maxRequestTimeoutMs: 100_000,
+      maxRunTimeoutMs: 180_000,
+      admission: codeEnvironmentAdmissionSchema.parse({ queueWaitMs: 60_000 }),
+    });
+    await jest.advanceTimersByTimeAsync(90_000);
+    await expect(result).resolves.toMatchObject({ stdout: 'ready' });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[1][1].body).toBe(fetchImpl.mock.calls[0][1].body);
+  });
+
+  test('bounds queue allowance by the transport reserve, not the larger run deadline', async () => {
+    const fetchImpl = jest.fn<ReturnType<CodeBridgeFetch>, Parameters<CodeBridgeFetch>>(async () =>
+      success(),
+    );
+    await executeWorkspaceTool({
+      baseURL: 'https://code.example/v1',
+      authHeaders: {},
+      fetchImpl,
+      request: command,
+      maxRequestTimeoutMs: 65_000,
+      maxRunTimeoutMs: 180_000,
+      admission: codeEnvironmentAdmissionSchema.parse({ queueWaitMs: 180_000 }),
+    });
+    expect(
+      new Headers(fetchImpl.mock.calls[0][1]?.headers).get('X-LibreChat-Workspace-Queue-Wait-Ms'),
+    ).toBe('25000');
+  });
+
+  test('honors an earlier caller deadline even when overall and transport budgets are larger', async () => {
+    const fetchImpl = jest.fn<ReturnType<CodeBridgeFetch>, Parameters<CodeBridgeFetch>>(async () =>
+      success(),
+    );
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        request: command,
+        maxRequestTimeoutMs: 100_000,
+        maxRunTimeoutMs: 180_000,
+        deadlineAtMs: Date.now() + 40_000,
+      }),
+    ).rejects.toMatchObject({ reason: 'insufficient_time' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test('adds exponential jitter only to whitelisted rejections and caps local backoff', async () => {
+    jest.spyOn(Math, 'random').mockReturnValue(1 - Number.EPSILON);
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(new Response('{"code":"WORKSPACE_QUEUE_TIMEOUT"}', { status: 503 }))
+      .mockResolvedValueOnce(new Response('{"code":"WORKSPACE_QUEUE_TIMEOUT"}', { status: 503 }))
+      .mockResolvedValueOnce(new Response('{"code":"WORKSPACE_QUEUE_TIMEOUT"}', { status: 503 }))
+      .mockResolvedValueOnce(success());
+    const result = executeWorkspaceTool({
+      baseURL: 'https://code.example/v1',
+      authHeaders: {},
+      fetchImpl,
+      request: command,
+      admission: codeEnvironmentAdmissionSchema.parse({
+        initialDelayMs: 1_000,
+        maxDelayMs: 3_000,
+        multiplier: 2,
+        jitterRatio: 0.5,
+      }),
+    });
+    await jest.advanceTimersByTimeAsync(1_499);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(3_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    await jest.advanceTimersByTimeAsync(3_000);
+    await expect(result).resolves.toMatchObject({ stdout: 'ready' });
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
+  test.each(['60', 'date', 'body'])(
+    'does not retry before a 60-second %s hint with jitter',
+    async (hint) => {
+      jest.spyOn(Math, 'random').mockReturnValue(1 - Number.EPSILON);
+      const fetchImpl = jest
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              error: 'rate_limited',
+              ...(hint === 'body' ? { retry_after_seconds: 60 } : {}),
+            }),
+            {
+              status: 429,
+              headers:
+                hint === 'body'
+                  ? {}
+                  : {
+                      'Retry-After':
+                        hint === 'date' ? new Date(Date.now() + 60_000).toUTCString() : hint,
+                    },
+            },
+          ),
+        )
+        .mockResolvedValueOnce(success());
+      const result = executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        request: command,
+        maxRequestTimeoutMs: 100_000,
+        maxRunTimeoutMs: 180_000,
+        codeApiMaxRetryWaitMs: 180_000,
+        admission: codeEnvironmentAdmissionSchema.parse({ jitterRatio: 0.5 }),
+      });
+      await jest.advanceTimersByTimeAsync(89_999);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toMatchObject({ stdout: 'ready' });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  test('keeps upstream bodies diagnostic-only for every rejection kind', () => {
+    for (const status of [429, 503, 502, 409]) {
+      const body = '{"code":"WORKSPACE_QUEUE_TIMEOUT","error":"private upstream diagnostic"}';
+      const error = new WorkspaceToolHttpError('rejected', status, body);
+      expect(error.message).not.toContain('private upstream diagnostic');
+      expect(error.upstreamBody).toBe(body);
+    }
+  });
+
+  test('emits one aggregate outcome without calling HTTP latency queue wait', async () => {
+    const log = jest.spyOn(logger, 'debug');
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(queueTimeout())
+      .mockResolvedValueOnce(success());
+    const result = executeWorkspaceTool({
+      baseURL: 'https://code.example/v1',
+      authHeaders: {},
+      fetchImpl,
+      request: command,
+    });
+    await jest.advanceTimersByTimeAsync(100);
+    await result;
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(
+      '[WorkspaceAdmission] outcome',
+      expect.objectContaining({
+        attempts: 2,
+        queueRejections: 1,
+        retryWaitMs: 100,
+        outcome: 'completed',
+      }),
+    );
+    expect(log).toHaveBeenCalledWith(
+      '[WorkspaceAdmission] outcome',
+      expect.not.objectContaining({
+        queueWaitMs: expect.any(Number),
+      }),
+    );
   });
 });

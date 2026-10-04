@@ -1278,6 +1278,22 @@ export const CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS =
   CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS +
   CODE_ENVIRONMENT_COMMAND_BUDGET_GRACE_MS;
 
+export const codeEnvironmentAdmissionSchema = z
+  .object({
+    /** Optional per-request queue ceiling, bounded by transport and execution reserves. */
+    queueWaitMs: z.number().int().min(1).max(CODE_ENVIRONMENT_ADMISSION_MAX_MS).optional(),
+    initialDelayMs: z.number().int().min(100).max(30_000).optional().default(1_000),
+    maxDelayMs: z.number().int().min(100).max(300_000).optional().default(30_000),
+    multiplier: z.number().min(1).max(10).optional().default(1),
+    /** Additive jitter never advances a server's Retry-After hint. */
+    jitterRatio: z.number().min(0).max(1).optional().default(0),
+  })
+  .strict()
+  .refine((policy) => policy.maxDelayMs >= policy.initialDelayMs, {
+    path: ['maxDelayMs'],
+    message: 'Maximum retry delay must cover the initial delay',
+  });
+
 /**
  * Typed user-tunable surface for one attached code environment. Omitted fields
  * remain fixed at LibreChat's safe baseline. Isolation, networking, mounts,
@@ -1292,6 +1308,7 @@ export const codeEnvironmentUserConfigSchema = z
       })
       .strict()
       .optional(),
+    admission: codeEnvironmentAdmissionSchema.optional(),
     limits: z
       .object({
         /** Foreground Bash timeout when the call omits timeoutMs. Omission keeps 30 seconds;
@@ -1328,12 +1345,18 @@ export const codeEnvironmentUserConfigSchema = z
           .min(0)
           .max(CODE_ENVIRONMENT_QUEUE_WAIT_DEFAULT_MS)
           .optional(),
-        /** Total HTTP budget for one workspace tool call, including retries,
-         * execution, settlement, and delivery. Only set this after verifying
-         * the shortest timeout on the actual Code API path and updating Code API
-         * to honor per-request queue allowances. Omission keeps the 30-second
-         * per-attempt admission budget. */
+        /** Transport ceiling after verifying the shortest timeout on the Code API path.
+         * Also the overall call budget unless maxRunTimeoutMs is set. Omission keeps
+         * the legacy per-attempt admission and execution budgets. */
         maxRequestTimeoutMs: z
+          .number()
+          .int()
+          .min(1)
+          .max(CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS)
+          .optional(),
+        /** Separate overall call deadline across credentials, backoff, and HTTP attempts.
+         * Omission preserves maxRequestTimeoutMs as the total budget. */
+        maxRunTimeoutMs: z
           .number()
           .int()
           .min(1)

@@ -2518,3 +2518,48 @@ describe('subagent activity policy', () => {
     ).toBe(false);
   });
 });
+
+describe('workspace admission configuration', () => {
+  it('preserves absent defaults and resolves an explicit admission policy', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({})).toEqual({});
+    expect(codeEnvironmentUserConfigSchema.parse({ admission: {} }).admission).toEqual({
+      initialDelayMs: 1_000,
+      maxDelayMs: 30_000,
+      multiplier: 1,
+      jitterRatio: 0,
+    });
+    expect(
+      codeEnvironmentUserConfigSchema.parse({
+        admission: { queueWaitMs: 180_000, multiplier: 2, jitterRatio: 0.2 },
+        limits: { maxRequestTimeoutMs: 220_000, maxRunTimeoutMs: 400_000 },
+      }),
+    ).toMatchObject({
+      admission: { queueWaitMs: 180_000, multiplier: 2, jitterRatio: 0.2 },
+      limits: { maxRequestTimeoutMs: 220_000, maxRunTimeoutMs: 400_000 },
+    });
+  });
+
+  it.each([
+    { queueWaitMs: 0 },
+    { queueWaitMs: 300_001 },
+    { initialDelayMs: 99 },
+    { initialDelayMs: 2_000, maxDelayMs: 1_000 },
+    { multiplier: 0 },
+    { jitterRatio: -0.1 },
+    { jitterRatio: 1.1 },
+    { maxDelayMs: Infinity },
+    { queueWaitMs: 1.5 },
+    { unexpected: true },
+  ])('rejects an invalid policy %j', (admission) => {
+    expect(codeEnvironmentUserConfigSchema.safeParse({ admission }).success).toBe(false);
+  });
+
+  it.each([0, -1, 1.5, 610_001, Infinity])(
+    'rejects an invalid run deadline %s',
+    (maxRunTimeoutMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { maxRunTimeoutMs } }).success,
+      ).toBe(false);
+    },
+  );
+});

@@ -7307,7 +7307,18 @@ describe('createToolExecuteHandler', () => {
               statefulSessions: true,
               environmentType: 'attached',
               codeEnvironmentConfigSchema: {
-                limits: { maxQueueWaitMs: budget, maxRequestTimeoutMs: 125_000 },
+                limits: {
+                  maxQueueWaitMs: budget,
+                  maxRequestTimeoutMs: 125_000,
+                  maxRunTimeoutMs: 180_000,
+                },
+                admission: {
+                  queueWaitMs: 60_000,
+                  initialDelayMs: 1_000,
+                  maxDelayMs: 30_000,
+                  multiplier: 2,
+                  jitterRatio: 0.2,
+                },
               },
               bridgeWorkerId: 'user-worker',
             },
@@ -7330,7 +7341,13 @@ describe('createToolExecuteHandler', () => {
           expect.objectContaining({
             maxQueueWaitMs: budget,
             maxRequestTimeoutMs: 125_000,
-            deadlineAtMs: startedAt + 125_000,
+            maxRunTimeoutMs: 180_000,
+            admission: expect.objectContaining({
+              queueWaitMs: 60_000,
+              multiplier: 2,
+              jitterRatio: 0.2,
+            }),
+            deadlineAtMs: startedAt + 180_000,
           }),
         );
         expect(result.status).toBe('success');
@@ -7339,7 +7356,13 @@ describe('createToolExecuteHandler', () => {
             expected_base_sha256: 'b'.repeat(64),
             maxQueueWaitMs: remaining,
             maxRequestTimeoutMs: 125_000,
-            deadlineAtMs: startedAt + 125_000,
+            maxRunTimeoutMs: 180_000,
+            admission: expect.objectContaining({
+              queueWaitMs: 60_000,
+              multiplier: 2,
+              jitterRatio: 0.2,
+            }),
+            deadlineAtMs: startedAt + 180_000,
           }),
         );
       },
@@ -8965,8 +8988,9 @@ describe('createToolExecuteHandler', () => {
         async (name) => {
           const message = await reject(name, legacyBody);
 
-          expect(message).toContain('Invalid workspace path');
-          expect(message.endsWith('"}"')).toBe(true);
+          expect(message).toContain('INVALID_PATH');
+          expect(message).not.toContain('Invalid workspace path');
+          expect(message).not.toContain('upstreamBody');
         },
       );
     });

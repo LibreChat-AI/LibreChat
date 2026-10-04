@@ -38,6 +38,7 @@ import type { CodeEnvRef, CodeWorkspaceOperation, PtcToolCallEvent } from 'libre
 import type { StructuredToolInterface } from '@librechat/agents/langchain/tools';
 import type { CodeEnvFile, CodeSessionContext } from '@librechat/agents';
 import type {
+  WorkspaceAdmissionOptions,
   WorkspaceEditResult,
   WorkspaceTextEdit,
   WorkspacePreviewEditResult,
@@ -105,6 +106,7 @@ import {
 import {
   resolveAttachedWorkspaceReadFileLines,
   WorkspaceToolHttpError,
+  resolveAttachedWorkspaceAdmissionOptions,
   WORKSPACE_EDIT_MAX_COUNT,
   WORKSPACE_WRITE_MAX_BYTES,
 } from '~/code/workspace';
@@ -602,6 +604,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceReadResult>;
   /** Searches literal text within an attached worker's logical workspace. */
@@ -619,6 +623,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceSearchResult>;
   /** Lists relative file paths within an attached worker's logical workspace. */
@@ -636,6 +642,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceListResult>;
   /** Writes a UTF-8 file within an attached worker's logical workspace. */
@@ -653,6 +661,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceWriteResult>;
   /** Previews exact replacements without mutating an attached worker workspace. */
@@ -671,6 +681,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspacePreviewEditResult>;
   /** Applies exact replacements atomically within an attached worker workspace. */
@@ -690,6 +702,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceEditResult>;
   /** Bounded reads return complete text; omitted maxBytes retains the legacy stdout path. */
@@ -3839,10 +3853,11 @@ function attachedWorkspaceAuthoringPath(
 function attachedWorkspaceRequestLimits(codeExecutionContext: CodeExecutionContext): {
   maxQueueWaitMs: number;
   maxRequestTimeoutMs?: number;
-} {
+} & WorkspaceAdmissionOptions {
   const config = codeExecutionContext.codeEnvironmentConfigSchema;
   const maxRequestTimeoutMs = resolveAttachedWorkspaceRequestTimeoutMs(config);
   return {
+    ...resolveAttachedWorkspaceAdmissionOptions(config),
     maxQueueWaitMs: resolveAttachedWorkspaceQueueWaitMs(config),
     ...(maxRequestTimeoutMs == null ? {} : { maxRequestTimeoutMs }),
   };
@@ -3865,8 +3880,9 @@ function attachedWorkspaceMutationParams(
   maxQueueWaitMs: number;
   maxRequestTimeoutMs?: number;
   deadlineAtMs?: number;
-} {
+} & WorkspaceAdmissionOptions {
   const limits = attachedWorkspaceRequestLimits(codeExecutionContext);
+  const runTimeoutMs = limits.maxRunTimeoutMs ?? limits.maxRequestTimeoutMs;
   return {
     workspace_id: workspaceId,
     ...(codeExecutionContext.codeWorkspace?.workspaceInstanceId
@@ -3875,9 +3891,7 @@ function attachedWorkspaceMutationParams(
     ...(codeExecutionContext.codeWorkspace?.linkedWorktrees ? { linked_worktrees: true } : {}),
     codeApiBaseUrl: codeExecutionContext.baseUrl,
     ...limits,
-    ...(limits.maxRequestTimeoutMs == null
-      ? {}
-      : { deadlineAtMs: Date.now() + limits.maxRequestTimeoutMs }),
+    ...(runTimeoutMs == null ? {} : { deadlineAtMs: Date.now() + runTimeoutMs }),
     executionProfile: codeExecutionContext.executionProfile,
     ...(codeExecutionContext.bridgeWorkerId
       ? { bridgeWorkerId: codeExecutionContext.bridgeWorkerId }
