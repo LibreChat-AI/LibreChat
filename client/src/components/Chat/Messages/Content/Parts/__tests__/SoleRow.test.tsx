@@ -3,6 +3,7 @@ import { RecoilRoot } from 'recoil';
 import { render, screen } from '@testing-library/react';
 import { SoleToolContext } from '../../disclosure';
 import ReadFileCall from '../ReadFileCall';
+import MemoryCall from '../MemoryCall';
 import SkillCall from '../SkillCall';
 
 jest.mock('~/hooks', () => ({
@@ -66,6 +67,20 @@ describe('a sole call keeps its row when its panel would be empty', () => {
       />,
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Check the config');
+  });
+
+  it('MemoryCall: output with no parseable key or value keeps its row', () => {
+    renderSole(
+      <MemoryCall
+        toolName="set_memory"
+        initialProgress={1}
+        isSubmitting={false}
+        args="{}"
+        output="Memory saved"
+        runStepStatus="completed"
+      />,
+    );
+    expect(screen.getByTestId('progress-text')).toBeInTheDocument();
   });
 
   it('SkillCall: a named skill keeps its row so the skill name stays visible', () => {

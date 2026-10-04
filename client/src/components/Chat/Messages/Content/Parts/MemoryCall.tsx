@@ -68,6 +68,7 @@ export default function MemoryCall({
     isSubmitting,
     output,
     hasInput: hasPanel || memoryFailed || runStepStatus === 'failed',
+    panelReady: hasPanel,
     onExpand,
     runStepStatus,
     extraError: memoryFailed,
