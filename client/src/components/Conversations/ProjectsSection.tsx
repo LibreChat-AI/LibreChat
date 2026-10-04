@@ -370,12 +370,14 @@ const ProjectItem = memo(
           </div>
         </div>
         <Collapse open={expanded} className="pl-2">
-          <ProjectChatsInline
-            projectId={project._id}
-            expanded={expanded}
-            toggleNav={toggleNav}
-            onShowAll={openProject}
-          />
+          <div className="pt-1">
+            <ProjectChatsInline
+              projectId={project._id}
+              expanded={expanded}
+              toggleNav={toggleNav}
+              onShowAll={openProject}
+            />
+          </div>
         </Collapse>
         <ProjectEditDialog
           open={isEditOpen}
