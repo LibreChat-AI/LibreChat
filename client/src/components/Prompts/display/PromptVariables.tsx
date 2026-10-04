@@ -138,8 +138,8 @@ const PromptVariables = ({ promptText }: { promptText: string }) => {
   }
 
   return (
-    <div className="border-border-medium overflow-hidden rounded-xl border">
-      <header className="border-border-medium flex items-center justify-between border-b p-3">
+    <div className="border-border-inset-medium overflow-hidden rounded-xl border">
+      <header className="border-border-inset-medium flex items-center justify-between border-b p-3">
         <div className="flex items-center gap-2">
           <Variable className="text-text-secondary size-4" aria-hidden="true" />
           <h4 className="text-text-primary text-sm font-semibold">

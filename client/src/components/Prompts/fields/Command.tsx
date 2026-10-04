@@ -49,7 +49,7 @@ const Command = ({
   }
 
   return (
-    <div className="border-border-medium rounded-xl border">
+    <div className="border-border-inset-medium rounded-xl border">
       <label htmlFor={commandId} className="text-text-secondary block px-4 pt-2 text-sm md:hidden">
         {localize('com_ui_command_placeholder')}
       </label>

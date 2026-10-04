@@ -328,6 +328,26 @@ describe('theme registry', () => {
     ]);
   });
 
+  it('keeps destructive actions solid unless a theme asks for the tint', () => {
+    const soft: ThemeDefinition = {
+      version: 1,
+      name: 'soft-destructive-reference',
+      modes: { light: { appearance: { destructiveStyle: 'soft' } } },
+    };
+    const bogus = {
+      version: 1,
+      name: 'bogus-destructive-reference',
+      modes: { light: { appearance: { destructiveStyle: 'outline' } } },
+    } as unknown as ThemeDefinition;
+
+    expect(defaultAppearance.destructiveStyle).toBe('fill');
+    expect(validateThemeDefinition(soft)).toEqual([]);
+    expect(resolveTheme(soft, 'light').appearance.destructiveStyle).toBe('soft');
+    expect(validateThemeDefinition(bogus)).toEqual([
+      'Invalid appearance value for destructiveStyle: outline',
+    ]);
+  });
+
   it('rings subtle focus in the heavy border for a theme that predates the role', () => {
     const resolved = resolveTheme(
       {

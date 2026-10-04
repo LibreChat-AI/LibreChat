@@ -1288,6 +1288,15 @@ html[data-drawer-nav] body {
   border-bottom-right-radius: 0.375rem;
 }
 
+/* The column rules take the inset share of the compatibility edge, so a theme that draws no inset
+ * border keeps the row rules and the outer frame only. High contrast restates them above. */
+.markdown th,
+.markdown th:last-child,
+.markdown td,
+.markdown td:last-child {
+  border-left-color: rgb(from theme(colors.gray.200) r g b / var(--theme-border-inset-alpha, 1));
+}
+
 .markdown a {
   text-decoration-line: underline;
   text-underline-offset: 2px;

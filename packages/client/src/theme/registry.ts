@@ -299,6 +299,7 @@ export const themeAppearanceProperties: Readonly<
   motionNormal: '--theme-motion-normal',
   chromeBorderAlpha: '--theme-border-chrome-alpha',
   insetBorderAlpha: '--theme-border-inset-alpha',
+  destructiveStyle: '--theme-destructive-style',
 });
 
 export const defaultAppearance: IThemeAppearance = Object.freeze({
@@ -392,6 +393,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   motionNormal: '200ms',
   chromeBorderAlpha: '1',
   insetBorderAlpha: '1',
+  destructiveStyle: 'fill',
 });
 
 /**

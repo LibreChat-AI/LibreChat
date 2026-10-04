@@ -485,6 +485,8 @@ const appearanceValidators = {
    *  stroked surface, keep: 0 draws none and leaves the box where it was. */
   chromeBorderAlpha: isOpacity,
   insetBorderAlpha: isOpacity,
+  /** `fill` paints a destructive action in the solid destructive surface; `soft` in a tint of it. */
+  destructiveStyle: (value: unknown) => value === 'fill' || value === 'soft',
 } satisfies Record<string, (value: unknown) => boolean>;
 
 export type ThemeAppearanceToken = keyof typeof appearanceValidators;

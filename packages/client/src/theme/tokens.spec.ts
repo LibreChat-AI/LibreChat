@@ -133,6 +133,14 @@ describe('theme color tokens', () => {
     );
   });
 
+  it('draws the inset medium border as border-medium at the inset share', async () => {
+    const css = await generate(['border-border-inset-medium']);
+
+    expect(css).toContain(
+      'rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1)))',
+    );
+  });
+
   it.each(['./theme.css', '../../../../client/src/style.css'])(
     '%s preserves closed compatibility palettes without declaring them as semantic tokens',
     async (repositoryEntry) => {

@@ -654,6 +654,12 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     reason:
       '0: Click UI separates a card header from its body by fill; only tables and separators draw an inner stroke',
   },
+  destructiveStyle: {
+    value: 'soft',
+    status: 'match',
+    reason:
+      'soft: Click UI paints a danger button as a 10% tint of danger under text.danger (button.basic.color.danger.*: background rgb(255 35 35 / 0.1), hover 0.2, text #c10000)',
+  },
   fieldFillStyle: {
     value: 'fill',
     status: 'match',

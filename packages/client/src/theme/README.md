@@ -433,6 +433,12 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   and Dialog scrims: `surface-overlay` at the `scrimOpacity`,
   `alertScrimOpacity` and `modalScrimOpacity` appearance roles (80%, 90% and
   65% by default). A bundled scrim dims the page and never lifts it.
+- `theme-destructive-soft:` - A variant for a `destructive` Button's tint: the
+  button paints a 10% tint of the destructive surface under the destructive ink
+  when the theme's `destructiveStyle` is `soft`. The default `fill` keeps the
+  solid destructive surface.
+- `border-border-inset-medium` - `border-medium` at the `insetBorderAlpha`
+  appearance role, for the box edges of a form that sits on a stroked page.
 - `ring-focus-subtle` / `outline-focus-subtle` - The keyboard ring of a row or
   control inside content (tool rows, attachments, summaries, message
   navigation). Defaults to `border-heavy`, so a theme that names neither keeps

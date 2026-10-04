@@ -703,6 +703,12 @@ export interface IThemeAppearance {
    */
   chromeBorderAlpha: string;
   insetBorderAlpha: string;
+  /**
+   * How a `destructive` Button is painted. `fill` is the solid destructive surface with its
+   * on-status ink; `soft` is a tint of that surface under the destructive ink, with the hover
+   * and pressed tints a step stronger.
+   */
+  destructiveStyle: 'fill' | 'soft';
 }
 
 export interface ThemeModeDefinition {

@@ -524,6 +524,8 @@ const clickHouseShape = {
    *  transparent), and it separates a card's inner regions by fill. */
   chromeBorderAlpha: '0', // iconButton.primary.stroke.default
   insetBorderAlpha: '0', // separation by fill, not a nested stroke
+  /** Click UI's danger button: a 10% tint of danger under the danger text (button.*.danger). */
+  destructiveStyle: 'soft' as const,
 };
 
 const elevation = (alpha: number): string =>

@@ -121,6 +121,8 @@
   --color-border-chrome-heavy: rgb(var(--border-heavy) / calc(var(--border-heavy-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
   /* border-medium, at the chrome share: the hover outline of a chrome control. */
   --color-border-chrome-medium: rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  /* border-medium, at the inset share: the box edges of a form that sits on a stroked page. */
+  --color-border-inset-medium: rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1)));
   --color-border-inset: rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-inset-alpha, 1)));
   --color-border-medium-alt: rgb(var(--border-medium-alt));
   --color-border-heavy: rgb(var(--border-heavy) / var(--border-heavy-alpha, 1));
@@ -266,6 +268,17 @@
 @custom-variant theme-disabled-within {
   @container style(--theme-disabled-style: fill) {
     &:is(:root *):has(:disabled) {
+      @slot;
+    }
+  }
+}
+
+/* A theme whose `destructiveStyle` is `soft` paints the `destructive` Button as a tint of the
+ * destructive surface under the destructive ink, as Click UI's danger button does. Read, like the
+ * disabled style, from the `--theme-destructive-style` property the nearest themed root carries. */
+@custom-variant theme-destructive-soft {
+  @container style(--theme-destructive-style: soft) {
+    &:is(:root *) {
       @slot;
     }
   }
