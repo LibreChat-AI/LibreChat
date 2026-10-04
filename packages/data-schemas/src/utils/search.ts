@@ -79,6 +79,47 @@ export function normalizeSearchPhrase(value: string): string {
   return words(normalizeSearchText(value)).join(' ');
 }
 
+/**
+ * Relevance of a matched document for `query`, over the values the filter
+ * searched. Like the filter, it ignores word order: 100 when a value has the
+ * query's words in any order, 80 when a value starts with the query, 50 when a
+ * value contains it or every query word prefixes some word (in one value or
+ * across them), 10 otherwise.
+ */
+export function scoreSearchMatch(
+  values: ReadonlyArray<string | null | undefined>,
+  query: string,
+): number {
+  const phrase = normalizeSearchPhrase(query);
+  if (!phrase) {
+    return 10;
+  }
+  const queryWords = phrase.split(' ');
+  const sortedQuery = [...queryWords].sort().join(' ');
+  const valueWords: string[] = [];
+  let score = 10;
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+    const field = normalizeSearchPhrase(value);
+    const words = field.split(' ');
+    if (field === phrase || [...words].sort().join(' ') === sortedQuery) {
+      return 100;
+    }
+    if (field.startsWith(phrase)) {
+      score = Math.max(score, 80);
+    } else if (field.includes(phrase)) {
+      score = Math.max(score, 50);
+    }
+    valueWords.push(...words);
+  }
+  const everyWord = queryWords.every((queryWord) =>
+    valueWords.some((word) => word.startsWith(queryWord)),
+  );
+  return everyWord ? Math.max(score, 50) : score;
+}
+
 /** Derives the stored token array for one field value. Non-strings yield no tokens. */
 export function computeSearchTokens(kind: SearchTokenKind, value: unknown): string[] {
   if (typeof value !== 'string') {

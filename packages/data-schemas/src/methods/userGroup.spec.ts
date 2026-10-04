@@ -1470,6 +1470,27 @@ describe('userGroup methods', () => {
       expect(score).toBe(100);
     });
 
+    it('scores a reordered full-name query as exact, above a longer prefix match', () => {
+      const exact = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'John Smith', source: 'local' },
+        'smith john',
+      );
+      const prefix = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'Smith Johnson', source: 'local' },
+        'smith john',
+      );
+      expect(exact).toBe(100);
+      expect(prefix).toBe(80);
+    });
+
+    it('scores query words matched across fields like a contains match', () => {
+      const score = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'John Doe', email: 'jd@gmail.com', source: 'local' },
+        'john gmail',
+      );
+      expect(score).toBe(50);
+    });
+
     it('picks the highest score across multiple fields', () => {
       const score = methods.calculateRelevanceScore(
         {

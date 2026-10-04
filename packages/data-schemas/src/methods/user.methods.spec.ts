@@ -1594,6 +1594,23 @@ describe('User Methods - Database Tests', () => {
       expect((results[0] as unknown as t.IUser).name).toBe('Zoë');
     });
 
+    test('should rank a reordered full-name match above a longer prefix match', async () => {
+      await User.create([
+        {
+          name: 'Smith Johnson',
+          email: 'sjohnson@test.com',
+          username: 'sjohnson',
+          provider: 'local',
+        },
+        { name: 'John Smith', email: 'jsmith@test.com', username: 'jsmith', provider: 'local' },
+      ]);
+
+      const results = await methods.searchUsers({ searchPattern: 'smith john', limit: 1 });
+
+      expect(results).toHaveLength(1);
+      expect((results[0] as unknown as t.IUser).name).toBe('John Smith');
+    });
+
     test('should respect limit', async () => {
       const results = await methods.searchUsers({ searchPattern: 'example', limit: 2 });
 
