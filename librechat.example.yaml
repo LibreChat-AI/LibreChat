@@ -161,6 +161,10 @@ interface:
   # rename for running chats and unowned placeholder titles; other actions stay available.
   # Minimum interval between syntax-highlighting passes while streamed code changes (default: 300 ms)
   # codeHighlightThrottleMs: 300
+  # How long a conversation's message history stays cached in the browser after leaving it (default: 60000 ms),
+  # and how many of the most recently left conversations keep that grace (default: 1). Older ones are refetched.
+  # historyCacheTtlMs: 60000
+  # historyCacheRecent: 1
   # Deployment theme applied to every user, in both light and dark mode (default: unset).
   # It is not saved to the browser, outranks REACT_APP_THEME_* colors and stored themes,
   # and yields to the high-contrast modes. Either a bundled theme name (librechat, clickhouse):

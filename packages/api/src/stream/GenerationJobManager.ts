@@ -9,7 +9,7 @@ import {
   ApprovalEvents,
   SteerEvents,
   parseTextParts,
-  hasToolCallErrorPrefix,
+  isFailedToolOutput,
   reconcileContextUsageFromEvent,
 } from 'librechat-data-provider';
 import type {
@@ -129,13 +129,7 @@ function completedToolExecutionStatus(call: Agents.ToolCall): ToolExecutionStatu
   if (call.inputValidationError === true) {
     return 'error';
   }
-  const output = call.output;
-  return typeof output === 'string' &&
-    (hasToolCallErrorPrefix(output) ||
-      /^Error processing tool(?::|$)/i.test(output) ||
-      /^Error:[\s\S]*\n Please fix your mistakes\.$/i.test(output))
-    ? 'error'
-    : 'success';
+  return typeof call.output === 'string' && isFailedToolOutput(call.output) ? 'error' : 'success';
 }
 
 /** Bounded completed-request replay horizon. It exceeds the default 24-hour

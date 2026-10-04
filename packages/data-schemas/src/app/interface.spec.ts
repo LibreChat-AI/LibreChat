@@ -105,6 +105,23 @@ describe('loadDefaultInterface', () => {
     expect(configuredInterface?.composerRecentFiles).toBe(10);
   });
 
+  it('uses and preserves the schema defaults for the client history cache', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults,
+    });
+    expect(defaultInterface?.historyCacheTtlMs).toBe(60_000);
+    expect(defaultInterface?.historyCacheRecent).toBe(1);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { historyCacheTtlMs: 0, historyCacheRecent: 3 } },
+      configDefaults,
+    });
+    expect(configuredInterface?.historyCacheTtlMs).toBe(0);
+    expect(configuredInterface?.historyCacheRecent).toBe(3);
+  });
+
   it('uses and preserves the schema default for steer arm confirmation', async () => {
     const configDefaults = getConfigDefaults();
     const interfaceDefaults = {

@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { Constants, EModelEndpoint } from 'librechat-data-provider';
-import { AIMessage, HumanMessage } from '@librechat/agents/langchain/messages';
+import { AIMessage, HumanMessage, ToolMessage } from '@librechat/agents/langchain/messages';
 import {
   createMethods,
   createModels,
@@ -37,9 +37,11 @@ import {
   SubagentThreadTaskStore,
 } from './subagentThreads';
 import { controlFingerprint, SubagentTaskOwnerUnavailableError } from './subagentTaskRouting';
+import { snapshotActivity, snapshotActivitySummary } from './digest';
 import { SUBAGENT_COMPLETION_DELIVERY } from './subagentDelivery';
 import { createSubagentAttemptKey } from './subagentThreadIds';
 import { SubagentActivityStream } from './subagentActivity';
+import { runCheckBackgroundTask } from './background';
 import { InMemoryEventTransport } from '~/stream';
 import { createSubagentUsageSink } from './usage';
 
@@ -4914,5 +4916,191 @@ describe('SubagentThreadTaskStore', () => {
       status: 'error',
     });
     expect(await methods.getConvo(userId, requireThreadId(started))).toBeNull();
+  });
+});
+
+describe('subagent progress trees', () => {
+  const progress = (phase: SubagentUpdateEvent['phase'], data: unknown): SubagentUpdateEvent => ({
+    runId: 'root-run',
+    parentRunId: 'parent-run',
+    subagentRunId: 'child-run',
+    subagentType: 'researcher-agent',
+    subagentKind: 'agent',
+    subagentAgentId: 'agent-1',
+    parentToolCallId: 'tool-call',
+    phase,
+    data,
+    timestamp: new Date().toISOString(),
+  });
+
+  const reportSteps = (runtime: SubagentTaskRuntime): void => {
+    runtime.reportProgress(
+      progress('run_step', {
+        id: 'step-1',
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [
+            {
+              id: 'call-1',
+              name: 'read_file',
+              args: { intent: 'Reading the notes', path: '/srv/.env' },
+            },
+          ],
+        },
+      }),
+    );
+    runtime.reportProgress(
+      progress('run_step_completed', {
+        result: {
+          type: 'tool_call',
+          tool_call: { id: 'call-1', name: 'read_file', output: 'SECRET=1' },
+        },
+      }),
+    );
+    runtime.reportProgress(
+      progress('run_step', {
+        id: 'step-2',
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [{ id: 'call-2', name: 'bash_tool', args: { intent: 'Running the tests' } }],
+        },
+      }),
+    );
+  };
+
+  it('serves a running child progress to local and routed polls, scoped to its parent', async () => {
+    const userId = 'progress-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const hub = new TestTaskRoutingHub();
+    const ownerStore = new SubagentThreadTaskStore(methods);
+    const requesterStore = new SubagentThreadTaskStore(methods);
+    await ownerStore.configureTaskControlTransport(new TestTaskControlTransport(hub));
+    await requesterStore.configureTaskControlTransport(new TestTaskControlTransport(hub));
+    const config = buildSubagentThreadTaskConfig(ownerStore, { userId, parentConversationId });
+    let finish = (_value: { content: string }): void => undefined;
+    const result = new Promise<{ content: string }>((resolve) => (finish = resolve));
+    let reported = false;
+    const started = ownerStore.start(
+      taskRequest(config.scopeId, {
+        run: async (runtime) => {
+          reportSteps(runtime);
+          reported = true;
+          return result;
+        },
+      }),
+    );
+    const taskId = requireAccepted(started).task.taskId;
+    await waitUntil(() => reported, 'the child to report progress');
+
+    const local = await ownerStore.claimTask(config.scopeId, taskId);
+    const localTree = local.status === 'running' ? snapshotActivity(local.task) : undefined;
+    expect(localTree?.root.turns.map((turn) => turn.children.map((leaf) => leaf.name))).toEqual([
+      ['read_file'],
+      ['bash_tool'],
+    ]);
+    expect(JSON.stringify(localTree)).not.toContain('SECRET');
+    expect(JSON.stringify(localTree)).not.toContain('.env');
+
+    const routed = await requesterStore.claimTask(config.scopeId, taskId);
+    expect(routed.status === 'running' ? snapshotActivity(routed.task) : undefined).toEqual(
+      localTree,
+    );
+    const [listed] = await requesterStore.listTasks(config.scopeId);
+    expect(snapshotActivitySummary(listed)).toMatchObject({
+      turns: 2,
+      tools: 2,
+      active: { path: '2.1', leaf: { name: 'bash_tool', label: 'Running the tests' } },
+    });
+
+    const polled = JSON.parse(
+      await runCheckBackgroundTask({
+        userId,
+        conversationId: parentConversationId,
+        agentId: 'agent_parent',
+        args: { background_task_id: taskId },
+        subagentTasks: buildSubagentThreadTaskConfig(requesterStore, {
+          userId,
+          parentConversationId,
+        }),
+      }),
+    );
+    expect(polled.activity).toMatchObject({ turns: 2, tools: 2, active: '2.1', cursor: '1.1' });
+
+    const otherParent = randomUUID();
+    await saveParent(userId, otherParent);
+    for (const scope of [
+      buildSubagentThreadTaskConfig(requesterStore, { userId: 'intruder', parentConversationId }),
+      buildSubagentThreadTaskConfig(requesterStore, { userId, parentConversationId: otherParent }),
+    ]) {
+      await expect(requesterStore.claimTask(scope.scopeId, taskId)).resolves.toEqual({
+        status: 'not_found',
+      });
+      await expect(requesterStore.listTasks(scope.scopeId)).resolves.toEqual([]);
+    }
+
+    finish({ content: 'Finished research.' });
+    await waitForSettled(ownerStore, config.scopeId, started);
+    const collected = await requesterStore.claimTask(config.scopeId, taskId, 'poll-1');
+    expect(collected).toMatchObject({ status: 'completed', result: 'Finished research.' });
+    const settledTree =
+      collected.status === 'completed' ? snapshotActivity(collected.task) : undefined;
+    expect(settledTree?.root.turns[1].children[0].status).toBe('ok');
+    await Promise.all([
+      ownerStore.destroyTaskControlTransport(),
+      requesterStore.destroyTaskControlTransport(),
+    ]);
+  });
+
+  it('rebuilds a finished child progress from its durable projection once the owner is gone', async () => {
+    const userId = 'durable-progress-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const ownerStore = new SubagentThreadTaskStore(methods);
+    const config = buildSubagentThreadTaskConfig(ownerStore, { userId, parentConversationId });
+    const input = 'Investigate the outage.';
+    const started = ownerStore.start(
+      taskRequest(config.scopeId, {
+        input,
+        run: async (_runtime, initialMessages = []) => ({
+          content: 'Root cause found.',
+          messages: [
+            ...initialMessages,
+            new HumanMessage(input),
+            new AIMessage({
+              content: '',
+              tool_calls: [
+                {
+                  id: 'call-1',
+                  name: 'read_file',
+                  args: { intent: 'Reading the incident log', path: '/var/log/private' },
+                },
+              ],
+            }),
+            new ToolMessage({ tool_call_id: 'call-1', name: 'read_file', content: 'token=abc' }),
+            new AIMessage('Root cause found.'),
+          ],
+        }),
+      }),
+    );
+    const taskId = requireAccepted(started).task.taskId;
+    await waitForSettled(ownerStore, config.scopeId, started);
+
+    const restartedStore = new SubagentThreadTaskStore(methods);
+    const recovered = await restartedStore.claimTask(config.scopeId, taskId, 'poll-1');
+    expect(recovered).toMatchObject({ status: 'completed', result: 'Root cause found.' });
+    const tree = recovered.status === 'completed' ? snapshotActivity(recovered.task) : undefined;
+    expect(tree?.root.turns.map((turn) => turn.children.map((leaf) => leaf.kind))).toEqual([
+      ['tool'],
+      ['text'],
+    ]);
+    expect(tree?.root.turns[0].children[0]).toMatchObject({
+      name: 'read_file',
+      label: 'Reading the incident log',
+      status: 'ok',
+      chars: 9,
+    });
+    expect(JSON.stringify(tree)).not.toContain('token');
+    expect(JSON.stringify(tree)).not.toContain('private');
   });
 });
