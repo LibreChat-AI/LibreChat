@@ -311,10 +311,13 @@ export function useFoldPath(rootRef: RefObject<HTMLElement>, hasBody: boolean) {
       attributeFilter: ['class', 'style', 'hidden', 'open', 'data-fold-panel', 'data-fold-column'],
     });
     const resize = new ResizeObserver(clear);
-    resize.observe(root);
-    const message = root.closest('.message-render');
-    if (message != null && message !== root) {
-      resize.observe(message);
+    /** Earlier messages can move this fold without resizing it. */
+    for (
+      let ancestor: HTMLElement | null = root;
+      ancestor != null;
+      ancestor = ancestor.parentElement
+    ) {
+      resize.observe(ancestor);
     }
     root.addEventListener('pointermove', onMove);
     root.addEventListener('pointerleave', clear);

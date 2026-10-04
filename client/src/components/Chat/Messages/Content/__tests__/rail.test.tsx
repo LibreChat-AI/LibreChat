@@ -272,6 +272,7 @@ describe('litFoldPath', () => {
 describe('useFoldPath', () => {
   let frames: FrameRequestCallback[] = [];
   let resize: ResizeObserverCallback;
+  const observe = jest.fn();
   const disconnect = jest.fn();
   const flushFrames = () => {
     const pending = frames;
@@ -298,7 +299,7 @@ describe('useFoldPath', () => {
     frames = [];
     jest.spyOn(window, 'ResizeObserver').mockImplementation((callback) => {
       resize = callback;
-      return { observe: jest.fn(), unobserve: jest.fn(), disconnect };
+      return { observe, unobserve: jest.fn(), disconnect };
     });
     jest.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
       frames.push(callback);
@@ -430,6 +431,51 @@ describe('useFoldPath', () => {
     window.dispatchEvent(new Event('resize'));
     expect(b.rail.dataset.foldLit).toBeUndefined();
   });
+
+  it.each([false, true])(
+    'clears after a preceding message shifts the fold, with a queued paint=%s',
+    (queued) => {
+      const { root, a, b, rows } = foldFixture();
+      const transcript = document.createElement('div');
+      const previous = document.createElement('div');
+      const message = document.createElement('div');
+      message.className = 'message-render';
+      message.append(root);
+      transcript.append(previous, message);
+      document.body.append(transcript);
+      let offset = 0;
+      root.getBoundingClientRect = message.getBoundingClientRect = () =>
+        ({ top: offset, height: 250 }) as DOMRect;
+      for (const element of [a.rail, b.rail, ...Object.values(rows)]) {
+        const rect = element.getBoundingClientRect();
+        element.getBoundingClientRect = () => ({ ...rect, top: rect.top + offset });
+      }
+      const query = jest.spyOn(b.el, 'querySelectorAll');
+      const { unmount } = renderHook(() => useFoldPath({ current: root }, true));
+      pointer('pointermove', rows.b2, 150);
+      expect(b.rail.dataset.foldLit).toBe('end');
+      if (queued) {
+        pointer('pointermove', rows.b2, 150, 'mouse', false);
+      }
+      offset = 32;
+      if (observe.mock.calls.some(([element]) => element === transcript)) {
+        resize([], {} as ResizeObserver);
+      }
+      flushFrames();
+      expect(root.getBoundingClientRect()).toMatchObject({ top: 32, height: 250 });
+      expect(message.getBoundingClientRect()).toMatchObject({ top: 32, height: 250 });
+      expect(a.rail.dataset.foldLit).toBeUndefined();
+      expect(b.rail.dataset.foldLit).toBeUndefined();
+      expect(a.rail.style.getPropertyValue('--fold-lit')).toBe('');
+      expect(b.rail.style.getPropertyValue('--fold-lit')).toBe('');
+      pointer('pointermove', rows.b1, 150);
+      expect(b.rail.dataset.foldLit).toBe('end');
+      expect(b.rail.style.getPropertyValue('--fold-lit')).toBe('18px');
+      expect(query).toHaveBeenCalledTimes(1);
+      unmount();
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('re-hit-tests one queued paint after scrolling instead of discarding a fresh move', () => {
     const { root, a, b, rows } = foldFixture();
