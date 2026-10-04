@@ -117,6 +117,10 @@ export type ToolCallPartParams = {
   messageId: string;
   partIndex: number;
   toolCallId?: string;
+  /** Host run-step id; provider tool-call ids can repeat within one response. */
+  stepId?: string;
+  /** Agent that produced the part, when parallel agents share a response. */
+  agentId?: string;
 };
 
 export type ToolCallPartResponse = {

@@ -284,6 +284,12 @@ const eventKey = (event: SubagentUpdateEvent): string | undefined => {
   return hashString(`${event.subagentRunId}\u0000${activityEventId}`);
 };
 
+export type SubagentContentPreview = {
+  revision: string;
+  stepId?: string;
+  agentId?: string;
+};
+
 /** One child invocation selected for the shared read-only activity panel. */
 export type ActiveSubagentPanel = {
   host: 'conversation' | 'share';
@@ -298,8 +304,9 @@ export type ActiveSubagentPanel = {
   legacyOutput?: string | null;
   persistedContent?: TMessageContentParts[];
   /** The tool call came from the server as a preview: its transcript, output or arguments are
-   *  shortened or absent, so the panel loads the stored part before rendering activity. */
-  contentPreview?: true;
+   *  shortened or absent, so the panel loads the stored part before rendering activity. Carries
+   *  what identifies the stored part and the preview's revision. */
+  contentPreview?: SubagentContentPreview;
   initialProgress: number;
   isSubmitting: boolean;
   runStepStatus?: PartMetadata['runStepStatus'];

@@ -1510,7 +1510,7 @@ describe('SubagentThreadPanel', () => {
       subagentType: 'researcher',
       prompt: 'Review this change.',
       legacyOutput: 'Shortened final ans…',
-      contentPreview: true,
+      contentPreview: { revision: 'rev-1', stepId: 'step-9', agentId: 'agent-2' },
       initialProgress: 1,
       isSubmitting: false,
     };
@@ -1541,8 +1541,11 @@ describe('SubagentThreadPanel', () => {
           messageId: 'parent-message',
           partIndex: 3,
           toolCallId: 'foreground-call',
+          stepId: 'step-9',
+          agentId: 'agent-2',
         },
         { enabled: true },
+        'rev-1',
       );
       expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-state', 'loading');
       expect(screen.queryByText('Shortened final ans…')).not.toBeInTheDocument();
@@ -1602,9 +1605,11 @@ describe('SubagentThreadPanel', () => {
           <SubagentThreadPanel selection={{ ...previewed, contentPreview: undefined }} />
         </Root>,
       );
-      expect(mockUseToolCallPartQuery).toHaveBeenCalledWith(expect.anything(), {
-        enabled: false,
-      });
+      expect(mockUseToolCallPartQuery).toHaveBeenCalledWith(
+        expect.anything(),
+        { enabled: false },
+        undefined,
+      );
     });
   });
 

@@ -780,15 +780,18 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
 
   /** A previewed call renders nothing until its stored part arrives: the preview's output is a
    *  shortened copy and its transcript is absent, so neither may stand in for the activity. */
-  const awaitsStoredPart = selection.contentPreview === true;
+  const awaitsStoredPart = selection.contentPreview != null;
   const storedPart = useToolCallPartQuery(
     {
       conversationId: selection.parentConversationId,
       messageId: selection.parentMessageId,
       partIndex: selection.partIndex,
       toolCallId: selection.toolCallId || undefined,
+      stepId: selection.contentPreview?.stepId,
+      agentId: selection.contentPreview?.agentId,
     },
     { enabled: awaitsStoredPart },
+    selection.contentPreview?.revision,
   );
   const storedToolCall = awaitsStoredPart ? storedPart.data?.tool_call : undefined;
   const persistedContent = storedToolCall?.subagent_content ?? selection.persistedContent;

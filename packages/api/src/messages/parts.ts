@@ -29,7 +29,13 @@ export interface ToolCallPartDeps {
 export interface ToolCallPartInput extends ToolCallPartFilter {
   partIndex: number;
   toolCallId?: string;
+  /** Host run-step id of the call; provider tool-call ids can repeat within one response. */
+  stepId?: string;
+  /** Agent that produced the part, for responses where parallel agents reuse call ids. */
+  agentId?: string;
 }
+
+type PartIdentity = Pick<ToolCallPartInput, 'toolCallId' | 'stepId' | 'agentId'>;
 
 export type ToolCallPartErrorCode = 'message_not_found' | 'part_not_found';
 
@@ -39,6 +45,7 @@ export type ToolCallPartResult =
 
 interface StoredToolCallPart {
   type?: string;
+  agentId?: string;
   tool_call?: FullToolCall;
 }
 
@@ -62,25 +69,46 @@ function getAgentToolCall(part: unknown): FullToolCall | undefined {
  * longer lines up with storage (a client-only card was inserted or removed). An id that matches
  * a different part than the index points at never wins over the indexed part.
  */
+function matchesIdentity(part: unknown, toolCall: FullToolCall, identity: PartIdentity): boolean {
+  if (identity.toolCallId != null && toolCall.id !== identity.toolCallId) {
+    return false;
+  }
+  if (identity.stepId != null && toolCall.stepId !== identity.stepId) {
+    return false;
+  }
+  return identity.agentId == null || (part as StoredToolCallPart).agentId === identity.agentId;
+}
+
+/**
+ * Finds the part at its index when it carries the requested identity. Otherwise, when the
+ * client's copy no longer lines up with storage (a client-only card was inserted or removed),
+ * scans by identity and accepts only a single match: provider ids can repeat within a response,
+ * so an ambiguous match resolves to not found rather than to another call's content.
+ */
 function locatePart(
   content: unknown[],
   partIndex: number,
-  toolCallId?: string,
+  identity: PartIdentity,
 ): { partIndex: number; toolCall: FullToolCall } | undefined {
   const indexed = getAgentToolCall(content[partIndex]);
-  if (indexed != null && (toolCallId == null || indexed.id === toolCallId)) {
+  if (indexed != null && matchesIdentity(content[partIndex], indexed, identity)) {
     return { partIndex, toolCall: indexed };
   }
-  if (toolCallId == null) {
+  if (identity.toolCallId == null) {
     return undefined;
   }
+  let found: { partIndex: number; toolCall: FullToolCall } | undefined;
   for (let i = 0; i < content.length; i++) {
     const toolCall = getAgentToolCall(content[i]);
-    if (toolCall?.id === toolCallId) {
-      return { partIndex: i, toolCall };
+    if (toolCall == null || !matchesIdentity(content[i], toolCall, identity)) {
+      continue;
     }
+    if (found != null) {
+      return undefined;
+    }
+    found = { partIndex: i, toolCall };
   }
-  return undefined;
+  return found;
 }
 
 /** Reads one stored tool-call part in full, scoped to the requesting user's message. */
@@ -88,7 +116,7 @@ export async function readToolCallPart(
   deps: ToolCallPartDeps,
   input: ToolCallPartInput,
 ): Promise<ToolCallPartResult> {
-  const { user, conversationId, messageId, partIndex, toolCallId } = input;
+  const { user, conversationId, messageId, partIndex, toolCallId, stepId, agentId } = input;
   const messages = await deps.getMessages(
     { user, conversationId, messageId },
     CLIENT_MESSAGE_SELECT,
@@ -97,7 +125,7 @@ export async function readToolCallPart(
   if (!Array.isArray(content)) {
     return { ok: false, error: { code: 'message_not_found' } };
   }
-  const located = locatePart(content, partIndex, toolCallId);
+  const located = locatePart(content, partIndex, { toolCallId, stepId, agentId });
   if (located == null) {
     return { ok: false, error: { code: 'part_not_found' } };
   }
@@ -108,7 +136,7 @@ export type ToolCallPartRequest = Request<
   { conversationId?: string; messageId?: string; partIndex?: string },
   ToolCallPartResponse | { error: string },
   unknown,
-  { toolCallId?: unknown }
+  { toolCallId?: unknown; stepId?: unknown; agentId?: unknown }
 > & { user?: { id?: string; tenantId?: string | null } };
 
 export interface ToolCallPartHandlerDeps extends ToolCallPartDeps {
@@ -132,7 +160,7 @@ function parsePartIndex(value: string | undefined): number | undefined {
 }
 
 /** `undefined` when absent, `null` when present but unusable. */
-function parseToolCallId(value: unknown): string | undefined | null {
+function parseIdentifier(value: unknown): string | undefined | null {
   if (value == null) {
     return undefined;
   }
@@ -156,12 +184,14 @@ export function createToolCallPartHandler(
     const userId = req.user?.id;
     const { conversationId, messageId } = req.params;
     const partIndex = parsePartIndex(req.params.partIndex);
-    const toolCallId = parseToolCallId(req.query.toolCallId);
+    const toolCallId = parseIdentifier(req.query.toolCallId);
+    const stepId = parseIdentifier(req.query.stepId);
+    const agentId = parseIdentifier(req.query.agentId);
     if (!userId || !conversationId || !messageId) {
       res.status(404).json({ error: 'Tool call not found' });
       return;
     }
-    if (partIndex == null || toolCallId === null) {
+    if (partIndex == null || toolCallId === null || stepId === null || agentId === null) {
       res.status(400).json({ error: 'Invalid tool call part' });
       return;
     }
@@ -177,6 +207,8 @@ export function createToolCallPartHandler(
         messageId,
         partIndex,
         toolCallId,
+        stepId,
+        agentId,
       }).then(
         (value) => ({ ok: true, value }),
         (error: unknown) => ({ ok: false, error }),

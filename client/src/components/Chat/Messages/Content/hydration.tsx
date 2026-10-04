@@ -1,6 +1,10 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Spinner } from '@librechat/client';
-import { ContentTypes, hasToolCallPreview } from 'librechat-data-provider';
+import {
+  ContentTypes,
+  hasToolCallPreview,
+  getToolCallPreviewRevision,
+} from 'librechat-data-provider';
 import type { FullToolCall, TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { ToolContentRequestContext } from './disclosure';
@@ -20,17 +24,18 @@ export function isPreviewedToolCallPart(part: TMessageContentParts): part is Too
 }
 
 /**
- * The part with its stored content in place of the preview. Only the content fields come from
- * the server copy, and the preview markers go: everything else (progress, status, client-only
- * state) stays as the conversation cache has it.
+ * The part with its stored content in place of the preview. Only the fields the server shortened
+ * come from the fetched copy, and the preview markers go: everything else (progress, status,
+ * fields the preview already carried in full, client-only state) stays as the conversation cache
+ * has it, so a fetched copy can never roll back a newer cached value.
  */
 export function withFullToolCall(part: ToolCallPart, full: FullToolCall): ToolCallPart {
   const {
-    outputTruncated: _outputTruncated,
+    outputTruncated,
     outputLength: _outputLength,
-    argsTruncated: _argsTruncated,
+    argsTruncated,
     argsLength: _argsLength,
-    subagentContentOmitted: _subagentContentOmitted,
+    subagentContentOmitted,
     subagentContentParts: _subagentContentParts,
     ...toolCall
   } = part.tool_call as FullToolCall;
@@ -38,9 +43,11 @@ export function withFullToolCall(part: ToolCallPart, full: FullToolCall): ToolCa
     ...part,
     tool_call: {
       ...toolCall,
-      args: full.args ?? toolCall.args,
-      output: full.output ?? toolCall.output,
-      ...(full.subagent_content != null ? { subagent_content: full.subagent_content } : {}),
+      ...(argsTruncated === true && full.args != null ? { args: full.args } : {}),
+      ...(outputTruncated === true && full.output != null ? { output: full.output } : {}),
+      ...(subagentContentOmitted === true && full.subagent_content != null
+        ? { subagent_content: full.subagent_content }
+        : {}),
     },
   } as ToolCallPart;
 }
@@ -61,16 +68,19 @@ export function PreviewedToolCallPart({
   const { messageId, conversationId, partIndex } = useMessageContext();
   const [requested, setRequested] = useState(false);
   const request = useCallback(() => setRequested(true), []);
-  const toolCallId = (part.tool_call as FullToolCall).id;
+  const toolCall = part.tool_call as FullToolCall;
   const canFetch = !!conversationId && !!messageId && partIndex != null;
   const query = useToolCallPartQuery(
     {
       conversationId: conversationId ?? '',
       messageId: messageId ?? '',
       partIndex: partIndex ?? 0,
-      toolCallId,
+      toolCallId: toolCall.id,
+      stepId: toolCall.stepId,
+      agentId: part.agentId,
     },
     { enabled: requested && canFetch },
+    getToolCallPreviewRevision(toolCall),
   );
   const full = query.data?.tool_call;
   const effectivePart = useMemo(

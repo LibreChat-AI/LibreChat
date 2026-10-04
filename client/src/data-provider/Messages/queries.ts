@@ -92,15 +92,26 @@ export function fetchConversationMessages(conversationId: string): Promise<t.TMe
 /**
  * The stored content of one tool-call part, for a preview the reader opened. Kept under its own
  * key and never merged into `[messages, id]`, so a refetch of the conversation cannot drop it and
- * the conversation cache keeps only previews.
+ * the conversation cache keeps only previews. `revision` (see `getToolCallPreviewRevision`) is
+ * part of the key, so a stored call that changes after it was fetched is fetched again.
  */
 export const useToolCallPartQuery = (
   params: t.ToolCallPartParams,
   config?: UseQueryOptions<t.ToolCallPartResponse>,
+  revision = '',
 ): QueryObserverResult<t.ToolCallPartResponse> => {
-  const { conversationId, messageId, partIndex, toolCallId } = params;
+  const { conversationId, messageId, partIndex, toolCallId, stepId, agentId } = params;
   return useQuery<t.ToolCallPartResponse>(
-    [QueryKeys.toolCallPart, conversationId, messageId, partIndex, toolCallId ?? ''],
+    [
+      QueryKeys.toolCallPart,
+      conversationId,
+      messageId,
+      partIndex,
+      toolCallId ?? '',
+      stepId ?? '',
+      agentId ?? '',
+      revision,
+    ],
     () => dataService.getToolCallPart(params),
     {
       staleTime: Infinity,

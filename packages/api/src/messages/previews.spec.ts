@@ -23,6 +23,7 @@ type TestToolCall = {
   output?: string;
   executor?: string;
   progress?: number;
+  runStepStatus?: string;
   approval?: unknown;
   subagent_content?: unknown[];
   outputTruncated?: true;
@@ -233,6 +234,20 @@ describe('previewToolCall', () => {
     expect(previewToolCall(toolCall, limits)).toBe(toolCall);
   });
 
+  it('omits the transcript of a subagent that finished without final text', () => {
+    const transcript = [{ type: ContentTypes.TEXT, text: 'searched and found nothing' }];
+    for (const finished of [{ progress: 1 }, { runStepStatus: 'completed' }]) {
+      const toolCall = toolPart({
+        name: 'subagent',
+        subagent_content: transcript,
+        ...finished,
+      }).tool_call;
+      const preview = previewToolCall(toolCall, limits);
+      expect(preview).toMatchObject({ subagentContentOmitted: true, subagentContentParts: 1 });
+      expect(preview).not.toHaveProperty('outputTruncated');
+    }
+  });
+
   it('keeps a subagent transcript while the subagent is still running', () => {
     const transcript = [{ type: ContentTypes.TEXT, text: 'working' }];
     const toolCall = toolPart({ name: 'subagent', subagent_content: transcript }).tool_call;
@@ -275,6 +290,15 @@ describe('previewToolCall', () => {
     expect(previewToolCall(ask, limits)).toBe(ask);
     const legacy = { type: 'function', function: { name: 'x', output: 'a'.repeat(5_000) } };
     expect(previewToolCall(legacy, limits)).toBe(legacy);
+  });
+});
+
+describe('deeply nested JSON output', () => {
+  it('falls back to a bounded text preview instead of exhausting the stack', () => {
+    const output = `${'['.repeat(20_000)}${']'.repeat(20_000)}`;
+    const preview = previewToolCall(toolPart({ output }).tool_call, limits);
+    expect(preview.outputTruncated).toBe(true);
+    expect(preview.output?.length).toBeLessThanOrEqual(limits.outputChars);
   });
 });
 

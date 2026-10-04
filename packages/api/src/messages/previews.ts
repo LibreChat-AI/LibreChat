@@ -24,6 +24,9 @@ const OUTPUT_HEAD_SHARE = 0.5;
 /** Shortest a string inside a JSON preview gets before the structure is abandoned for text. */
 const MIN_JSON_STRING_CHARS = 8;
 
+/** Deepest JSON nesting a structure-preserving preview walks; deeper values fall back to text. */
+const MAX_JSON_DEPTH = 64;
+
 /** Ceiling on a kept exit-status trailer, so a malformed one cannot defeat the bound. */
 const MAX_TRAILER_CHARS = 2_048;
 
@@ -55,6 +58,8 @@ interface StoredToolCall extends ToolCallPreviewMarkers {
   type?: string;
   name?: string;
   executor?: string;
+  progress?: unknown;
+  runStepStatus?: unknown;
   output?: unknown;
   args?: unknown;
   approval?: unknown;
@@ -86,6 +91,22 @@ const isAgentToolCall = (toolCall: StoredToolCall): boolean =>
 
 const hasOutput = (toolCall: StoredToolCall): boolean =>
   typeof toolCall.output === 'string' && toolCall.output.length > 0;
+
+/**
+ * A call whose content no card still acts on: it has output, or its run step closed or reached
+ * full progress, and it is not waiting on an approval. A subagent can finish with no final text,
+ * and its transcript is as large as any other.
+ */
+const isSettled = (toolCall: StoredToolCall): boolean => {
+  if (toolCall.approval != null && !hasOutput(toolCall)) {
+    return false;
+  }
+  return (
+    hasOutput(toolCall) ||
+    toolCall.runStepStatus != null ||
+    (typeof toolCall.progress === 'number' && toolCall.progress >= 1)
+  );
+};
 
 /** An unresolved approval anywhere in the parts, including inside nested subagent runs. */
 function hasPendingApproval(parts: unknown[]): boolean {
@@ -159,21 +180,27 @@ function capJsonStrings(value: JsonValue, maxChars: number): JsonValue {
   return result;
 }
 
-/** Counts string values, stopping once past `limit`. */
+/**
+ * Counts string values, stopping once past `limit`. Nesting deeper than `MAX_JSON_DEPTH` counts
+ * as unfit, since the recursive cap and serialization that follow would exhaust the stack.
+ */
 function countJsonStrings(value: JsonValue, limit: number): number {
   let count = 0;
-  const stack: JsonValue[] = [value];
+  const stack: Array<[JsonValue, number]> = [[value, 0]];
   while (stack.length > 0 && count <= limit) {
-    const current = stack.pop() as JsonValue;
+    const [current, depth] = stack.pop() as [JsonValue, number];
+    if (depth > MAX_JSON_DEPTH) {
+      return Infinity;
+    }
     if (typeof current === 'string') {
       count++;
     } else if (Array.isArray(current)) {
       for (const item of current) {
-        stack.push(item);
+        stack.push([item, depth + 1]);
       }
     } else if (current != null && typeof current === 'object') {
       for (const key in current) {
-        stack.push(current[key]);
+        stack.push([current[key], depth + 1]);
       }
     }
   }
@@ -292,14 +319,14 @@ export function previewToolCall<T extends StoredToolCall>(
   toolCall: T,
   limits: ToolCallPreviewLimits,
 ): T {
-  if (!isAgentToolCall(toolCall) || !hasOutput(toolCall)) {
+  if (!isAgentToolCall(toolCall) || !isSettled(toolCall)) {
     return toolCall;
   }
   if (typeof toolCall.name === 'string' && FULL_CONTENT_TOOLS.has(toolCall.name)) {
     return toolCall;
   }
 
-  const output = toolCall.output as string;
+  const output = typeof toolCall.output === 'string' ? toolCall.output : '';
   const outputPreview = previewToolCallOutput(toolCall, output, limits.outputChars);
   const argsPreview = previewToolCallArgs(toolCall.args, limits.argsChars);
   const subagentContent = toolCall.subagent_content;
@@ -331,6 +358,22 @@ export function previewToolCall<T extends StoredToolCall>(
   return next;
 }
 
+/**
+ * A call that cannot be previewed is sent as stored rather than failing the whole conversation
+ * load; previews are an optimization, and the full value is what the client would otherwise get.
+ */
+function previewToolCallSafely<T extends StoredToolCall>(
+  toolCall: T,
+  limits: ToolCallPreviewLimits,
+): T {
+  try {
+    return previewToolCall(toolCall, limits);
+  } catch (error) {
+    logger.warn('[toolCallPreviews] Sending a tool call in full; its preview failed', error);
+    return toolCall;
+  }
+}
+
 /** Previews every tool-call part of one content array; returns the same array when unchanged. */
 export function previewContentToolCalls(
   content: unknown[],
@@ -342,7 +385,7 @@ export function previewContentToolCalls(
     if (!isToolCallPart(part)) {
       continue;
     }
-    const toolCall = previewToolCall(part.tool_call, limits);
+    const toolCall = previewToolCallSafely(part.tool_call, limits);
     if (toolCall === part.tool_call) {
       continue;
     }

@@ -26,6 +26,22 @@ export type ToolCallPreviewMarkers = Pick<
 /** A tool call as the full-part endpoint returns it, transcript included. */
 export type FullToolCall = Agents.ToolCall & { subagent_content?: TMessageContentParts[] };
 
+/**
+ * Identifies the server's current preview of a call. It changes when the stored call does (a
+ * background result replacing its output, a transcript growing), so a client cache of the full
+ * part keyed on it never outlives the content it was fetched for.
+ */
+export function getToolCallPreviewRevision(toolCall: FullToolCall): string {
+  const output = typeof toolCall.output === 'string' ? toolCall.output : '';
+  return [
+    output.length,
+    toolCall.outputLength ?? '',
+    toolCall.argsLength ?? '',
+    toolCall.subagentContentParts ?? '',
+    output.slice(-48),
+  ].join(':');
+}
+
 /** True when any of the tool call's content is a preview rather than the stored value. */
 export function hasToolCallPreview(toolCall: ToolCallPreviewMarkers | null | undefined): boolean {
   return (

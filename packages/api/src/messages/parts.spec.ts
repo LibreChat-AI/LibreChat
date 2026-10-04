@@ -209,6 +209,39 @@ describe('GET /api/messages/:conversationId/:messageId/parts/:partIndex', () => 
     expect(response.body.tool_call.id).toBe('call_sub');
   });
 
+  it('tells repeated provider ids apart by step and agent, refusing an ambiguous match', async () => {
+    const repeated = (agentId: string, stepId: string, output: string) => ({
+      type: ContentTypes.TOOL_CALL,
+      agentId,
+      tool_call: {
+        id: 'call_dup',
+        type: 'tool_call',
+        name: 'read_file',
+        stepId,
+        output,
+        args: '{}',
+      },
+    });
+    await seed(OWNER, {
+      content: [
+        { type: ContentTypes.TEXT, text: 'two agents' },
+        repeated('agent_a', 'step_a', 'from agent a'),
+        repeated('agent_b', 'step_b', 'from agent b'),
+      ],
+    });
+    const byStep = await request(app).get(`${partUrl(0, 'call_dup')}&stepId=step_b`);
+    expect(byStep.status).toBe(200);
+    expect(byStep.body).toMatchObject({ partIndex: 2, tool_call: { output: 'from agent b' } });
+
+    const byAgent = await request(app).get(`${partUrl(0, 'call_dup')}&agentId=agent_a`);
+    expect(byAgent.body).toMatchObject({ partIndex: 1, tool_call: { output: 'from agent a' } });
+
+    const indexedMismatch = await request(app).get(`${partUrl(1, 'call_dup')}&stepId=step_b`);
+    expect(indexedMismatch.body).toMatchObject({ partIndex: 2 });
+
+    expect((await request(app).get(partUrl(0, 'call_dup'))).status).toBe(404);
+  });
+
   it('answers not found for a missing part, a non-tool part, or an unknown id', async () => {
     await seed();
     expect((await request(app).get(partUrl(9))).status).toBe(404);

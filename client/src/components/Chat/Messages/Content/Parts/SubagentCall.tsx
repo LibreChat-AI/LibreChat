@@ -8,6 +8,7 @@ import type {
   TMessage,
   TMessageContentParts,
 } from 'librechat-data-provider';
+import type { SubagentContentPreview } from '~/components/Chat/Subagents/state';
 import type { SubagentTickerLine } from '~/utils/subagentContent';
 import {
   activeSubagentPanel,
@@ -52,7 +53,7 @@ interface SubagentCallProps {
    *  field; those fall back to the atom (or the raw `output` string). */
   persistedContent?: TMessageContentParts[];
   /** The server sent this call as a preview; the panel loads the stored part when opened. */
-  contentPreview?: boolean;
+  contentPreview?: SubagentContentPreview;
   subagentIdentity?: PartMetadata['subagentIdentity'];
   hideAttachments?: boolean;
 }
@@ -174,7 +175,7 @@ export default function SubagentCall({
   output,
   attachments,
   persistedContent,
-  contentPreview = false,
+  contentPreview,
   subagentIdentity,
   hideAttachments = false,
 }: SubagentCallProps) {
@@ -340,7 +341,7 @@ export default function SubagentCall({
       ...(prompt == null ? {} : { prompt }),
       ...(backgroundHandle == null ? { legacyOutput: output } : {}),
       ...(persistedContent == null ? {} : { persistedContent }),
-      ...(contentPreview ? { contentPreview: true as const } : {}),
+      ...(contentPreview == null ? {} : { contentPreview }),
       initialProgress,
       isSubmitting,
       ...(runStepStatus == null ? {} : { runStepStatus }),

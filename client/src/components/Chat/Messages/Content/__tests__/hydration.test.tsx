@@ -182,7 +182,69 @@ describe('previewed tool-call parts', () => {
   });
 });
 
+describe('previewed tool-call parts after the stored call changes', () => {
+  const getToolCallPart = dataService.getToolCallPart as jest.Mock;
+
+  beforeEach(() => {
+    getToolCallPart.mockReset();
+  });
+
+  it('fetches again when the preview it was fetched for is replaced', async () => {
+    getToolCallPart
+      .mockResolvedValueOnce(stored())
+      .mockResolvedValueOnce(stored({ output: `${fullOutput}\nharvested` }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const disclosures: ToolDisclosures = new Map();
+    const tree = (part: TMessageContentParts) => (
+      <QueryClientProvider client={queryClient}>
+        <RecoilRoot>
+          <MessageContext.Provider
+            value={{
+              messageId: 'msg-1',
+              conversationId: 'convo-1',
+              partIndex: 2,
+              isExpanded: true,
+            }}
+          >
+            <ToolDisclosureContext.Provider value={disclosures}>
+              <ToolDisclosureKeyContext.Provider value="call_1">
+                <SoleToolContext.Provider value={true}>
+                  <PreviewedToolCallPart part={part as never}>
+                    {(rendered) => <Card part={rendered} />}
+                  </PreviewedToolCallPart>
+                </SoleToolContext.Provider>
+              </ToolDisclosureKeyContext.Provider>
+            </ToolDisclosureContext.Provider>
+          </MessageContext.Provider>
+        </RecoilRoot>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree(previewPart()));
+    await waitFor(() => expect(screen.getByTestId('output').textContent).toBe(fullOutput));
+
+    rerender(
+      tree(
+        previewPart({
+          output: 'stdout:\nfull line\n…\nharvested',
+          outputLength: fullOutput.length + 10,
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('output').textContent).toBe(`${fullOutput}\nharvested`),
+    );
+    expect(getToolCallPart).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('withFullToolCall', () => {
+  it('keeps fields the preview carried in full, so a fetched copy cannot roll them back', () => {
+    const part = previewPart({ output: 'current output', outputTruncated: undefined });
+    const merged = withFullToolCall(part as never, { ...stored().tool_call, output: 'stale' });
+    expect((merged.tool_call as { output: string }).output).toBe('current output');
+    expect((merged.tool_call as { args: string }).args).toBe(fullArgs);
+  });
+
   it('replaces only content fields and drops the markers', () => {
     const part = previewPart({ subagentContentOmitted: true, subagentContentParts: 1 });
     const transcript = [{ type: ContentTypes.TEXT, text: 'child' }] as TMessageContentParts[];
