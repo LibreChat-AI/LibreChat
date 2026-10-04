@@ -1,18 +1,21 @@
-import { Constants, QueryKeys } from 'librechat-data-provider';
+import {
+  Constants,
+  QueryKeys,
+  DEFAULT_HISTORY_CACHE_RECENT,
+  DEFAULT_HISTORY_CACHE_TTL_MS,
+} from 'librechat-data-provider';
 import type { Query, QueryClient } from '@tanstack/react-query';
 
-/** Conversations left most recently whose history stays cached for an instant return. */
-export const RECENT_CONVERSATIONS_RETAINED = 1;
-/** How long a left conversation's history outlives its last observer. */
-export const LEFT_HISTORY_TTL_MS = 60_000;
 /** Gives a route change time to mount the next view before anything unobserved is judged. */
 export const RELEASE_SETTLE_MS = 1_000;
 
 export type MessagesRetentionOptions = {
-  /** Conversations whose history must stay regardless of age: the routed conversation, one
-   *  still generating, or one awaiting a decision. Read at release time, so it sees live state. */
+  /** Conversations whose history must stay regardless of age, such as the routed conversation
+   *  or one whose job is still running. Read at release time, so it sees live state. */
   isPinned: (conversationId: string) => boolean;
+  /** How many of the most recently left conversations keep their history for `ttlMs`. */
   recent?: number;
+  /** How long a left conversation's history stays cached. */
   ttlMs?: number;
 };
 
@@ -42,6 +45,9 @@ function historyConversationId(query: Query): string | null {
   return conversationId;
 }
 
+const isUnobservedHistory = (query: Query): boolean =>
+  historyConversationId(query) != null && query.getObserversCount() === 0;
+
 const newestFirst = (a: IdleHistory, b: IdleHistory): number => b.leftAt - a.leftAt;
 
 /**
@@ -49,24 +55,35 @@ const newestFirst = (a: IdleHistory, b: IdleHistory): number => b.leftAt - a.lef
  * not pile up in memory across conversation switches. React Query's own `cacheTime` cannot
  * express this: it is fixed per query (only ever raised), counts down even while a run is still
  * writing into the cache, and does not bound how many histories a burst of switches retains.
+ * While active this module therefore owns their lifetime: per-conversation histories get an
+ * infinite `cacheTime`, so React Query never collects one this policy still retains.
  *
  * A history is released once it has no observers, is not fetching, is not pinned, and is either
  * older than `ttlMs` since it was left or beyond the `recent` most recently left conversations.
  * Releases wait while any mutation is pending, since mutation callbacks write into these caches.
  * Returning to a released conversation mounts a fresh query, which fetches the history again.
  *
- * @returns Cleanup that stops tracking without releasing anything.
+ * @returns Cleanup that stops tracking and restores the messages query defaults; it releases
+ *  nothing (sign-out removes every query anyway).
  */
 export function retainMessages(
   queryClient: QueryClient,
   {
     isPinned,
-    recent = RECENT_CONVERSATIONS_RETAINED,
-    ttlMs = LEFT_HISTORY_TTL_MS,
+    recent = DEFAULT_HISTORY_CACHE_RECENT,
+    ttlMs = DEFAULT_HISTORY_CACHE_TTL_MS,
   }: MessagesRetentionOptions,
 ): () => void {
   const cache = queryClient.getQueryCache();
   const leftAt = new Map<string, number>();
+  const recheckMs = Math.max(ttlMs, RELEASE_SETTLE_MS);
+  const previousDefaults = queryClient.getQueryDefaults([QueryKeys.messages]);
+  queryClient.setQueryDefaults([QueryKeys.messages], { ...previousDefaults, cacheTime: Infinity });
+  cache.findAll([QueryKeys.messages]).forEach((query) => {
+    if (historyConversationId(query) != null) {
+      query.cacheTime = Infinity;
+    }
+  });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let dueAt = Infinity;
 
@@ -108,7 +125,7 @@ export function retainMessages(
       if (entry.query.state.fetchStatus === 'idle' && !isPinned(entry.conversationId)) {
         return true;
       }
-      schedule(ttlMs);
+      schedule(recheckMs);
       return false;
     });
     candidates.sort(newestFirst).forEach((entry, index) => {
@@ -124,6 +141,7 @@ export function retainMessages(
 
   const unsubscribe = cache.subscribe((event) => {
     if (
+      event.type !== 'added' &&
       event.type !== 'observerAdded' &&
       event.type !== 'observerRemoved' &&
       event.type !== 'removed'
@@ -132,6 +150,10 @@ export function retainMessages(
     }
     const conversationId = historyConversationId(event.query);
     if (conversationId == null) {
+      return;
+    }
+    if (event.type === 'added') {
+      schedule(RELEASE_SETTLE_MS);
       return;
     }
     if (event.type !== 'observerRemoved') {
@@ -145,9 +167,14 @@ export function retainMessages(
     schedule(RELEASE_SETTLE_MS);
   });
 
+  if (cache.findAll([QueryKeys.messages]).some(isUnobservedHistory)) {
+    schedule(RELEASE_SETTLE_MS);
+  }
+
   return () => {
     unsubscribe();
     clearTimeout(timer);
     timer = undefined;
+    queryClient.setQueryDefaults([QueryKeys.messages], previousDefaults ?? {});
   };
 }

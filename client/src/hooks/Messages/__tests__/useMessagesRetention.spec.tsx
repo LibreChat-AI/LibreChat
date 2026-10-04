@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { createStore, Provider as JotaiProvider } from 'jotai';
+import { RecoilRoot } from 'recoil';
 import { QueryKeys, dataService } from 'librechat-data-provider';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -11,11 +11,10 @@ import {
   MemoryRouter,
   useSearchParams,
 } from 'react-router-dom';
-import type { Agents, TMessage } from 'librechat-data-provider';
+import type { TMessage, TStartupConfig } from 'librechat-data-provider';
 import type { NavigateFunction } from 'react-router-dom';
-import { RELEASE_SETTLE_MS, LEFT_HISTORY_TTL_MS } from '~/data-provider/Messages/retention';
-import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { useGetMessagesByConvoId } from '~/data-provider/Messages/queries';
+import { RELEASE_SETTLE_MS } from '~/data-provider/Messages/retention';
 import useMessagesRetention from '../useMessagesRetention';
 
 jest.mock('librechat-data-provider', () => {
@@ -25,14 +24,20 @@ jest.mock('librechat-data-provider', () => {
     dataService: {
       ...actual.dataService,
       getMessagesByConvoId: jest.fn(),
+      getStartupConfig: jest.fn(),
     },
   };
 });
 
 const getMessagesByConvoId = jest.mocked(dataService.getMessagesByConvoId);
+const getStartupConfig = jest.mocked(dataService.getStartupConfig);
+
+/** A deployment-configured grace, distinct from the default, to prove the config is applied. */
+const TTL = 20_000;
 
 const history = (conversationId: string): TMessage[] => [
   {
+    ...(conversationId === 'assistant' && { thread_id: 'thread_abc' }),
     messageId: `${conversationId}-1`,
     conversationId,
     parentMessageId: '00000000-0000-0000-0000-000000000000',
@@ -77,7 +82,6 @@ const fetchesOf = (conversationId: string) =>
 
 describe('useMessagesRetention', () => {
   let queryClient: QueryClient;
-  let store: ReturnType<typeof createStore>;
   let navigate: NavigateFunction;
 
   const open = async (conversationId: string) => {
@@ -95,11 +99,13 @@ describe('useMessagesRetention', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     getMessagesByConvoId.mockImplementation(async (id: string) => history(id));
+    getStartupConfig.mockResolvedValue({
+      interface: { historyCacheTtlMs: TTL, historyCacheRecent: 1 },
+    } as TStartupConfig);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    store = createStore();
     render(
       <QueryClientProvider client={queryClient}>
-        <JotaiProvider store={store}>
+        <RecoilRoot>
           <MemoryRouter initialEntries={['/c/idle']}>
             <Shell
               onNavigate={(next) => {
@@ -107,7 +113,7 @@ describe('useMessagesRetention', () => {
               }}
             />
           </MemoryRouter>
-        </JotaiProvider>
+        </RecoilRoot>
       </QueryClientProvider>,
     );
   });
@@ -118,27 +124,25 @@ describe('useMessagesRetention', () => {
     jest.clearAllMocks();
   });
 
-  it('releases a left conversation after the TTL, keeps running and approval-pending ones, and refetches on return', async () => {
+  it('releases a left conversation after the configured grace, keeps running and Assistants ones, and refetches on return', async () => {
     expect(await screen.findByText('transcript of idle')).toBeInTheDocument();
+    await waitFor(() => expect(getStartupConfig).toHaveBeenCalled());
     await open('running');
     queryClient.setQueryData([QueryKeys.activeJobs], { activeJobIds: ['running'] });
-    await open('approval');
-    store.set(pendingApprovalActionFamily('approval'), {
-      actionId: 'action-1',
-    } as Agents.PendingAction);
+    await open('assistant');
     await open('current');
 
     elapse(RELEASE_SETTLE_MS);
     expect(isCached(queryClient, 'idle')).toBe(true);
 
-    elapse(LEFT_HISTORY_TTL_MS * 2);
+    elapse(TTL * 2);
     expect(isCached(queryClient, 'idle')).toBe(false);
     expect(isCached(queryClient, 'running')).toBe(true);
-    expect(isCached(queryClient, 'approval')).toBe(true);
+    expect(isCached(queryClient, 'assistant')).toBe(true);
     expect(isCached(queryClient, 'current')).toBe(true);
 
     queryClient.setQueryData([QueryKeys.activeJobs], { activeJobIds: [] });
-    elapse(LEFT_HISTORY_TTL_MS);
+    elapse(TTL);
     expect(isCached(queryClient, 'running')).toBe(false);
 
     expect(fetchesOf('idle')).toBe(1);
@@ -155,7 +159,7 @@ describe('useMessagesRetention', () => {
     });
     expect(screen.queryByText(/transcript of/)).not.toBeInTheDocument();
 
-    elapse(LEFT_HISTORY_TTL_MS * 2);
+    elapse(TTL * 2);
 
     expect(isCached(queryClient, 'other')).toBe(false);
     expect(isCached(queryClient, 'idle')).toBe(true);

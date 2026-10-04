@@ -2368,6 +2368,10 @@ export const DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS = 60_000;
 export const DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS = 60_000;
 /** How many recently touched files the composer palette offers to reuse. */
 export const DEFAULT_COMPOSER_RECENT_FILES = 5;
+/** Milliseconds a left conversation's message history stays cached in the browser. */
+export const DEFAULT_HISTORY_CACHE_TTL_MS = 60_000;
+/** Most recently left conversations whose message history keeps that grace. */
+export const DEFAULT_HISTORY_CACHE_RECENT = 1;
 
 const mcpServersSchema = z
   .object({
@@ -2772,6 +2776,18 @@ export const interfaceSchema = z
      *  own default maximum (`fileListLimit`) so the palette can never ask for
      *  more than a typical deployment will return. */
     composerRecentFiles: z.number().int().min(0).max(100).default(DEFAULT_COMPOSER_RECENT_FILES),
+    /** Milliseconds a conversation's message history stays cached in the browser after the
+     *  user leaves it, so returning soon renders without refetching. Long agent transcripts
+     *  run to tens of megabytes each, so mobile browsers need this short. */
+    historyCacheTtlMs: z
+      .number()
+      .int()
+      .min(0)
+      .max(60 * 60_000)
+      .default(DEFAULT_HISTORY_CACHE_TTL_MS),
+    /** How many of the most recently left conversations keep that grace; older ones are
+     *  released at the next conversation switch. */
+    historyCacheRecent: z.number().int().min(0).max(20).default(DEFAULT_HISTORY_CACHE_RECENT),
   })
   .default({
     modelSelect: true,
@@ -2856,6 +2872,8 @@ export const interfaceSchema = z
     queuedTurnReconciliationTimeoutMs: DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS,
     queuedSendLockTimeoutMs: DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS,
     composerRecentFiles: DEFAULT_COMPOSER_RECENT_FILES,
+    historyCacheTtlMs: DEFAULT_HISTORY_CACHE_TTL_MS,
+    historyCacheRecent: DEFAULT_HISTORY_CACHE_RECENT,
   });
 
 export type TInterfaceConfig = z.infer<typeof interfaceSchema>;

@@ -1,7 +1,11 @@
-import { Constants, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
+import { Constants, QueryKeys, DEFAULT_HISTORY_CACHE_TTL_MS } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
-import { retainMessages, RELEASE_SETTLE_MS, LEFT_HISTORY_TTL_MS } from '../retention';
+import { retainMessages, RELEASE_SETTLE_MS } from '../retention';
+
+const TTL = DEFAULT_HISTORY_CACHE_TTL_MS;
+/** React Query's own default `cacheTime`, which a retained history must outlive. */
+const NATIVE_CACHE_TIME = 5 * 60_000;
 
 const history = (conversationId: string): TMessage[] => [
   { messageId: `${conversationId}-1`, conversationId, text: conversationId } as TMessage,
@@ -49,7 +53,7 @@ describe('retainMessages', () => {
   it('releases the last conversation left once its history outlives the TTL', () => {
     visit(queryClient, 'a');
 
-    jest.advanceTimersByTime(LEFT_HISTORY_TTL_MS - 1);
+    jest.advanceTimersByTime(TTL - 1);
     expect(isCached(queryClient, 'a')).toBe(true);
 
     jest.advanceTimersByTime(1);
@@ -86,7 +90,7 @@ describe('retainMessages', () => {
     });
     visit(queryClient, 'idle');
 
-    jest.advanceTimersByTime(LEFT_HISTORY_TTL_MS * 2);
+    jest.advanceTimersByTime(TTL * 2);
 
     expect(isCached(queryClient, 'idle')).toBe(false);
     expect(isCached(queryClient, 'on-screen')).toBe(true);
@@ -99,7 +103,7 @@ describe('retainMessages', () => {
 
     unmount();
     pinned.delete('running');
-    jest.advanceTimersByTime(LEFT_HISTORY_TTL_MS);
+    jest.advanceTimersByTime(TTL);
 
     expect(isCached(queryClient, 'running')).toBe(false);
     expect(isCached(queryClient, 'on-screen')).toBe(false);
@@ -107,14 +111,14 @@ describe('retainMessages', () => {
 
   it('restarts the clock when a left conversation is opened again', () => {
     visit(queryClient, 'a');
-    jest.advanceTimersByTime(LEFT_HISTORY_TTL_MS / 2);
+    jest.advanceTimersByTime(TTL / 2);
     const unmount = observe(queryClient, 'a');
 
-    jest.advanceTimersByTime(LEFT_HISTORY_TTL_MS);
+    jest.advanceTimersByTime(TTL);
     expect(isCached(queryClient, 'a')).toBe(true);
 
     unmount();
-    jest.advanceTimersByTime(LEFT_HISTORY_TTL_MS - 1);
+    jest.advanceTimersByTime(TTL - 1);
     expect(isCached(queryClient, 'a')).toBe(true);
     jest.advanceTimersByTime(1);
     expect(isCached(queryClient, 'a')).toBe(false);
@@ -132,7 +136,7 @@ describe('retainMessages', () => {
     visit(queryClient, 'a');
     visit(queryClient, 'b');
 
-    jest.advanceTimersByTime(LEFT_HISTORY_TTL_MS * 2);
+    jest.advanceTimersByTime(TTL * 2);
     expect(isCached(queryClient, 'a')).toBe(true);
     expect(isCached(queryClient, 'b')).toBe(true);
 
@@ -144,12 +148,62 @@ describe('retainMessages', () => {
     expect(isCached(queryClient, 'b')).toBe(false);
   });
 
+  it('owns collection, so a pinned history outlives the native cacheTime', () => {
+    stop();
+    queryClient.clear();
+    seed(queryClient, 'mounted-first');
+    const unmount = observe(queryClient, 'mounted-first');
+    stop = retainMessages(queryClient, { isPinned: (id) => pinned.has(id) });
+    pinned.add('mounted-first').add('running');
+    unmount();
+    visit(queryClient, 'running');
+
+    jest.advanceTimersByTime(NATIVE_CACHE_TIME * 2);
+
+    expect(isCached(queryClient, 'mounted-first')).toBe(true);
+    expect(isCached(queryClient, 'running')).toBe(true);
+  });
+
+  it('releases a history seeded without ever being observed', () => {
+    seed(queryClient, 'forked');
+
+    jest.advanceTimersByTime(TTL);
+    expect(isCached(queryClient, 'forked')).toBe(true);
+    jest.advanceTimersByTime(RELEASE_SETTLE_MS);
+    expect(isCached(queryClient, 'forked')).toBe(false);
+  });
+
+  it('applies the configured grace and recent count', () => {
+    stop();
+    stop = retainMessages(queryClient, { isPinned: () => false, recent: 2, ttlMs: 10_000 });
+    visit(queryClient, 'a');
+    jest.advanceTimersByTime(10);
+    visit(queryClient, 'b');
+    jest.advanceTimersByTime(10);
+    visit(queryClient, 'c');
+
+    jest.advanceTimersByTime(RELEASE_SETTLE_MS);
+    expect(isCached(queryClient, 'a')).toBe(false);
+    expect(isCached(queryClient, 'b')).toBe(true);
+    expect(isCached(queryClient, 'c')).toBe(true);
+
+    jest.advanceTimersByTime(10_000);
+    expect(isCached(queryClient, 'b')).toBe(false);
+    expect(isCached(queryClient, 'c')).toBe(false);
+  });
+
+  it('restores the messages query defaults on cleanup', () => {
+    expect(queryClient.getQueryDefaults([QueryKeys.messages])?.cacheTime).toBe(Infinity);
+    stop();
+    expect(queryClient.getQueryDefaults([QueryKeys.messages])?.cacheTime).toBeUndefined();
+  });
+
   it('releases nothing after cleanup', () => {
     visit(queryClient, 'a');
     visit(queryClient, 'b');
     stop();
 
-    jest.advanceTimersByTime(LEFT_HISTORY_TTL_MS * 2);
+    jest.advanceTimersByTime(TTL * 2);
 
     expect(isCached(queryClient, 'a')).toBe(true);
     expect(isCached(queryClient, 'b')).toBe(true);
