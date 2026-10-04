@@ -1,3 +1,4 @@
+import { Constants } from 'librechat-data-provider';
 import type { TToolApprovalPolicy } from 'librechat-data-provider';
 import type { AgentToolOptions } from 'librechat-data-provider';
 import type { PluginHookSource } from '~/agents/hooks/source';
@@ -79,6 +80,29 @@ export interface ToolApprovalAdmissionInput {
   readonly askUserQuestionAdminDisabled?: boolean;
   /** Tools the conversation remembers; folded in exactly as `createRun` folds them. */
   readonly toolApprovalAllows?: readonly string[];
+}
+
+/** Catalog-free legacy selection is a possible alias, not a verified identity. */
+function unresolvedLegacySelectionCanAsk(
+  name: string,
+  options: AgentToolOptions,
+  policy: TToolApprovalPolicy | undefined,
+): boolean {
+  if (options[name] != null || isToolDeniedByApprovalPolicy(policy, name)) return false;
+  let delimiter = name.indexOf(Constants.mcp_delimiter);
+  while (delimiter >= 0) {
+    const upstream = name.slice(0, delimiter);
+    const server = name.slice(delimiter + Constants.mcp_delimiter.length);
+    const prefix = `${server}_`;
+    if (server && upstream.startsWith(prefix)) {
+      const candidate = `${upstream.slice(prefix.length)}${Constants.mcp_delimiter}${server}`;
+      const mode = options[candidate]?.approval_mode;
+      if (mode != null && mode !== 'allow' && !isToolDeniedByApprovalPolicy(policy, candidate))
+        return true;
+    }
+    delimiter = name.indexOf(Constants.mcp_delimiter, delimiter + Constants.mcp_delimiter.length);
+  }
+  return false;
 }
 
 function agentHasTool(agent: ToolApprovalAdmissionAgent, toolName: string): boolean {
@@ -187,6 +211,15 @@ export function canAgentGraphPause({
       addToolName(name, agent.id);
       const mode = options[name]?.approval_mode;
       if (mode != null && mode !== 'allow') reviewGatedTools.add(name);
+    }
+    if (
+      approvalGraph.lazyAgents.has(agent) &&
+      surface.toolRegistry == null &&
+      surface.toolDefinitions == null
+    ) {
+      unresolvedModeCanAsk ||= [...reachable].some((name) =>
+        unresolvedLegacySelectionCanAsk(name, options, policy),
+      );
     }
     // A lazy descriptor without a concrete surface can still resolve review-gated tools.
     if (

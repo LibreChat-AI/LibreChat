@@ -9,6 +9,7 @@ import { HumanMessage } from '@librechat/agents/langchain/messages';
 import { createModels, createMethods } from '@librechat/data-schemas';
 import type { ToolApprovalGrantStorage, Agents } from 'librechat-data-provider';
 import type { AgentApprovalSource, ReviewedToolApprovals, AgentToolApprovalSession } from './modes';
+import type { ToolApprovalHook } from './hooks';
 import {
   createAgentToolApprovalSession,
   bindRunToolApprovalSession,
@@ -106,6 +107,8 @@ async function build({
   rewrite,
   sessionAgents,
   background = false,
+  reviewHook,
+  beforeExecution,
 }: {
   source: AgentApprovalSource;
   chat: string;
@@ -119,6 +122,8 @@ async function build({
   rewrite?: { text: string; run_in_background?: boolean };
   sessionAgents?: AgentApprovalSource[];
   background?: boolean;
+  reviewHook?: ToolApprovalHook;
+  beforeExecution?: () => Promise<void>;
 }) {
   const session =
     sharedSession ??
@@ -132,7 +137,11 @@ async function build({
     { enabled: true, mode: 'bypass' },
     {},
     [],
-    [{ hook: session.hook }, ...(rewrite ? [{ hook: () => ({ updatedInput: rewrite }) }] : [])],
+    [
+      { hook: session.hook },
+      ...(reviewHook ? [{ hook: reviewHook }] : []),
+      ...(rewrite ? [{ hook: () => ({ updatedInput: rewrite }) }] : []),
+    ],
   )!;
   wiring.hooks.register('PostToolUse', { hooks: [session.rememberHook] });
   wiring.hooks.register('PostToolBatch', { hooks: [session.settleBatchHook] });
@@ -196,7 +205,18 @@ async function build({
       ? { toolCalls: [{ name, args: { text: 'hello' }, id: callId, type: 'tool_call' }] }
       : {}),
   });
-  bindRunToolApprovalSession(run, session);
+  bindRunToolApprovalSession(
+    run,
+    beforeExecution
+      ? {
+          ...session,
+          validateExecution: async (tool, invocation) => {
+            await beforeExecution();
+            return session.validateExecution(tool, invocation);
+          },
+        }
+      : session,
+  );
   return run;
 }
 const config = (chat: string) => ({
@@ -2240,4 +2260,103 @@ for (const mode of ['ask', 'chat', 'always'] as const) {
       },
     );
   }
+}
+
+for (const eventDriven of [false, true]) {
+  test.each(['unchanged', 'before-invocation', 'before-send', 'retry'] as const)(
+    `programmatic review pins OAuth despite allow mode; event-driven=${eventDriven}, change=%s`,
+    async (change) => {
+      const token = await oauthCredential('account-a');
+      const source: AgentApprovalSource = {
+        id: 'agent-a',
+        tool_options: { [name]: { approval_mode: 'allow' } },
+        toolDefinitions: [definition()],
+      };
+      const chat = `allow-reviewed-${eventDriven}-${change}`;
+      const saver = new MemorySaver();
+      const reviewHook: ToolApprovalHook = () => ({ decision: 'ask' });
+      const replace = async () => {
+        await mongoose.models.Token.updateOne(
+          { _id: token._id },
+          { $set: { 'metadata.credential_set_id': 'account-b' } },
+        );
+      };
+      let sends = 0;
+      try {
+        const first = await build({
+          source,
+          chat,
+          saver,
+          eventDriven,
+          reviewHook,
+          callId: 'reviewed-allow',
+        });
+        await first.processStream(
+          { messages: [new HumanMessage('review required by hook')] },
+          config(chat),
+        );
+        expect(first.getInterrupt()?.payload.type).toBe('tool_approval');
+        const bindings = captureRunToolApprovalBindings(
+          first,
+          first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+        )!;
+        const probe = bindToolApprovalIdentity(
+          bindToolApproval(
+            Object.assign(
+              createMCPStructuredTool(
+                async () => {
+                  if (change === 'before-send') await replace();
+                  await assertToolApprovalTransportEpoch(
+                    'fixture',
+                    change === 'before-send' ? 'account-b' : 'account-a',
+                    true,
+                  );
+                  sends++;
+                  if (change === 'retry') {
+                    await replace();
+                    await assertToolApprovalTransportEpoch('fixture', 'account-b', true);
+                    sends++;
+                  }
+                  return formatToolContent(
+                    { content: [{ type: 'text', text: 'reviewed account' }] },
+                    'openai',
+                  );
+                },
+                {
+                  name,
+                  description: 'Reviewed allow probe',
+                  schema: fixtureSchema,
+                  responseFormat: 'content_and_artifact',
+                },
+              ),
+              { schema: fixtureSchema },
+            ),
+            'source-one',
+          ),
+          'echo',
+          { type: 'object' },
+        );
+        const resumed = await build({
+          source,
+          chat,
+          saver,
+          eventDriven,
+          reviewHook,
+          executionTool: probe,
+          beforeExecution: change === 'before-invocation' ? replace : undefined,
+          reviewed: {
+            bindings,
+            decisions: [{ tool_call_id: 'reviewed-allow', decision: 'approve' }],
+          },
+        });
+        await resumed.resume({ 'reviewed-allow': { type: 'approve' } }, config(chat));
+        expect(sends).toBe(change === 'unchanged' || change === 'retry' ? 1 : 0);
+        if (change !== 'unchanged')
+          expect(JSON.stringify(resumed.getRunMessages())).toContain('OAuth authorization changed');
+        expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+      } finally {
+        await mongoose.models.Token.deleteOne({ _id: token._id });
+      }
+    },
+  );
 }

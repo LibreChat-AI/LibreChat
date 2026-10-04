@@ -457,7 +457,11 @@ export function createAgentToolApprovalSession({
           )
         : undefined;
       if (baseline?.decision === 'deny') throw new Error('Administrator policy blocks this tool.');
-      if (options.approval_mode === 'allow' && baseline?.decision !== 'ask') {
+      if (
+        options.approval_mode === 'allow' &&
+        baseline?.decision !== 'ask' &&
+        !reviewedBindings.has(key)
+      ) {
         pinTransport(undefined, true);
         return;
       }

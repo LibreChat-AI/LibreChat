@@ -1527,6 +1527,38 @@ describe('initializeClient — subagent loading', () => {
     },
   );
 
+  it('requires durable approval for a real unresolved lazy legacy selection', async () => {
+    const child = await createAgent({
+      id: SUBAGENT_ID,
+      name: 'Unresolved legacy selection',
+      provider: 'openai',
+      model: 'gpt-4',
+      author: new mongoose.Types.ObjectId(),
+      tools: ['fixture_query_mcp_fixture'],
+      tool_options: { query_mcp_fixture: { approval_mode: 'chat' } },
+    });
+    await grantView(child);
+    mockInitializeAgent.mockResolvedValue(
+      makePrimaryConfig({
+        subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+      }),
+    );
+    await initializeClient({
+      req: makeSubagentReq(),
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+    expect(
+      jest.requireActual('@librechat/api').canAgentGraphPause({
+        policy: { enabled: true, mode: 'bypass' },
+        agents: [agentClientArgs.agent],
+      }),
+    ).toBe(true);
+    expect(mockInitializeAgent).toHaveBeenCalledTimes(1);
+    expect(agentClientArgs.agent.lazySubagentConfigs[0]).not.toHaveProperty('mcpToolAliases');
+  });
+
   it('retains review capability through nested lazy descriptors before delegation', async () => {
     const leafId = 'approval-lazy-leaf';
     await createViewableAgent(SUBAGENT_ID, {

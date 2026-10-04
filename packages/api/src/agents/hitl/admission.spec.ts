@@ -388,3 +388,40 @@ test('private projections retain verified aliases and current-option precedence'
   );
   expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [allow] }] })).toBe(false);
 });
+
+for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
+  test.each(['db', 'finance_mcp_eu'])(
+    `${placement} cannot treat unresolved legacy selection as a closed catalog (%s)`,
+    (server) => {
+      const canonical = `query${Constants.mcp_delimiter}${server}`;
+      const selected = `${server}_query${Constants.mcp_delimiter}${server}`;
+      const source = {
+        id: 'child',
+        tools: [selected],
+        tool_options: { [canonical]: { approval_mode: 'chat' as const } },
+      };
+      const descriptor = copyToolApprovalAdmissionMetadata({ id: 'child' }, source);
+      const policy = { enabled: true, mode: 'bypass' as const };
+      expect(canAgentGraphPause({ policy, agents: [{ [placement]: [descriptor] }] })).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy: { ...policy, deny: [canonical] },
+          agents: [{ [placement]: [descriptor] }],
+        }),
+      ).toBe(false);
+      const collision = copyToolApprovalAdmissionMetadata(
+        { id: 'child' },
+        { ...source, toolDefinitions: [{ name: selected }] },
+      );
+      expect(canAgentGraphPause({ policy, agents: [{ [placement]: [collision] }] })).toBe(false);
+      const explicit = copyToolApprovalAdmissionMetadata(
+        { id: 'child' },
+        {
+          ...source,
+          tool_options: { ...source.tool_options, [selected]: { approval_mode: 'allow' as const } },
+        },
+      );
+      expect(canAgentGraphPause({ policy, agents: [{ [placement]: [explicit] }] })).toBe(false);
+    },
+  );
+}
