@@ -539,6 +539,34 @@ export default function AgentPanel() {
     formState: { dirtyFields },
   } = methods;
   const submittedStartersRef = useRef<SubmittedStarters | null>(null);
+  const submittedInstructionsRef = useRef<{
+    agentId: string;
+    source: AgentForm['instructionsSource'];
+    link: AgentForm['instructionsPrompt'];
+  } | null>(null);
+  const syncSavedInstructions = useCallback(
+    (saved: Agent) => {
+      const submitted = submittedInstructionsRef.current;
+      submittedInstructionsRef.current = null;
+      if (!submitted) {
+        return;
+      }
+      const currentId = getValues('id') ?? '';
+      const sameAgent =
+        currentId === submitted.agentId || (!submitted.agentId && currentId === saved.id);
+      if (
+        !sameAgent ||
+        getValues('instructionsSource') !== submitted.source ||
+        !isEqual(getValues('instructionsPrompt') ?? null, submitted.link ?? null)
+      ) {
+        return;
+      }
+      const link = saved.instructionsPrompt ?? null;
+      resetField('instructionsPrompt', { defaultValue: link });
+      resetField('instructionsSource', { defaultValue: link == null ? 'inline' : 'prompt' });
+    },
+    [getValues, resetField],
+  );
   /** The save may trim or drop starters; show what was stored, not what was typed. */
   const syncSavedStarters = useCallback(
     (saved: Agent) => {
@@ -732,6 +760,7 @@ export default function AgentPanel() {
         showToast({ message: toastMessage, status: noVersionChange ? 'info' : undefined });
       }
 
+      syncSavedInstructions(data);
       syncSavedStarters(data);
 
       const agentOption = getValues('agent');
@@ -781,6 +810,7 @@ export default function AgentPanel() {
 
   const create = useCreateAgentMutation({
     onSuccess: async (data) => {
+      syncSavedInstructions(data);
       syncSavedStarters(data);
       setCurrentAgentId(data.id);
       showToast({
@@ -864,6 +894,10 @@ export default function AgentPanel() {
           }
           return;
         }
+        submittedInstructionsRef.current =
+          'instructionsPrompt' in basePayload
+            ? { agentId: agent_id, source: data.instructionsSource, link: data.instructionsPrompt }
+            : null;
         submittedStartersRef.current = { agentId: agent_id, starters: data.conversation_starters };
         update.mutate({ agent_id, data: { ...basePayload, tools } });
         return;
@@ -894,6 +928,11 @@ export default function AgentPanel() {
         });
       }
 
+      submittedInstructionsRef.current = {
+        agentId: '',
+        source: data.instructionsSource,
+        link: data.instructionsPrompt,
+      };
       submittedStartersRef.current = { agentId: '', starters: data.conversation_starters };
       create.mutate({
         ...basePayload,

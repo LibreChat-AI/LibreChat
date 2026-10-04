@@ -884,6 +884,78 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
         expect(mockUpdateAgent.mock.calls[1][0].data).not.toHaveProperty('instructionsPrompt');
       });
 
+      it('applies a restored prompt after saving a different link in the same session', async () => {
+        const { mockUseGetAgentByIdQuery, mockUpdateAgent } = setupMocks();
+        mockAgentQuery(mockUseGetAgentByIdQuery, { instructionsPrompt: null });
+        mockFormDefaults = { instructionsSource: 'inline', instructionsPrompt: null };
+        mockUpdateAgent.mockResolvedValueOnce(createMockAgent({ instructionsPrompt: link }));
+        const { container, rerender } = render(<AgentPanel />, { wrapper: createWrapper() });
+        act(() => {
+          capturedFormMethods!.register('instructionsSource');
+          capturedFormMethods!.register('instructionsPrompt');
+          capturedFormMethods!.setValue('instructionsSource', 'prompt', { shouldDirty: true });
+          capturedFormMethods!.setValue('instructionsPrompt', link, { shouldDirty: true });
+        });
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+        await waitFor(() => expect(mockShowToast).toHaveBeenCalled());
+        const restored = { ...link, groupId: 'restored-group' };
+        mockAgentQuery(mockUseGetAgentByIdQuery, { instructionsPrompt: restored });
+        act(() => {
+          capturedFormMethods!.reset(
+            { ...capturedFormMethods!.getValues(), instructionsPrompt: restored },
+            { keepDirtyValues: true },
+          );
+        });
+        rerender(<AgentPanel />);
+        expect(capturedFormMethods!.getValues('instructionsPrompt')).toEqual(restored);
+        mockUpdateAgent.mockResolvedValueOnce(createMockAgent({ instructionsPrompt: restored }));
+        act(() => {
+          capturedFormMethods!.setValue('name', 'Renamed', { shouldDirty: true });
+        });
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+        await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(2));
+        expect(mockUpdateAgent.mock.calls[1][0].data).not.toHaveProperty('instructionsPrompt');
+      });
+
+      it('keeps prompt edits made while a save is in flight', async () => {
+        const { mockUseGetAgentByIdQuery, mockUpdateAgent } = setupMocks();
+        mockAgentQuery(mockUseGetAgentByIdQuery, { instructionsPrompt: null });
+        mockFormDefaults = { instructionsSource: 'inline', instructionsPrompt: null };
+        let finish!: (saved: Agent) => void;
+        mockUpdateAgent.mockReturnValueOnce(
+          new Promise<Agent>((resolve) => {
+            finish = resolve;
+          }),
+        );
+        const { container } = render(<AgentPanel />, { wrapper: createWrapper() });
+        act(() => {
+          capturedFormMethods!.register('instructionsSource');
+          capturedFormMethods!.register('instructionsPrompt');
+          capturedFormMethods!.setValue('instructionsSource', 'prompt', { shouldDirty: true });
+          capturedFormMethods!.setValue('instructionsPrompt', link, { shouldDirty: true });
+        });
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+        await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(1));
+        const next = { ...link, groupId: 'newer-edit' };
+        act(() => {
+          capturedFormMethods!.setValue('instructionsPrompt', next, { shouldDirty: true });
+        });
+        await act(async () => {
+          finish(createMockAgent({ instructionsPrompt: link }));
+        });
+        expect(capturedFormMethods!.getValues('instructionsPrompt')).toEqual(next);
+        expect(capturedFormMethods!.getFieldState('instructionsPrompt').isDirty).toBe(true);
+      });
+
       it('sends the link on create after "create new" follows a linked agent picking the same group', async () => {
         /** Regression for the ref that remembers the last-loaded link: it used to update
          *  only while `agentQuery.data` was truthy, so it stayed pinned to agent A's link
