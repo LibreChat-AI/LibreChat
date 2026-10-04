@@ -425,7 +425,7 @@ export const ReasoningCompact = memo(
         >
           <div className="overflow-hidden" ref={expandRef}>
             {shouldRenderBody && (
-              <div className="border-border-light bg-surface-secondary text-text-secondary relative my-2 rounded-2xl border p-4">
+              <div className="border-border-inset bg-surface-secondary text-text-secondary relative my-2 rounded-2xl border p-4">
                 <p className={cn('leading-[26px] whitespace-pre-wrap', fontSize)}>
                   {reasoningText}
                 </p>

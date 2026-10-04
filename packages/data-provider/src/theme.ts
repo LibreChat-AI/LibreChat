@@ -481,6 +481,10 @@ const appearanceValidators = {
   tooltipShadow: isShadow,
   motionFast: isDuration,
   motionNormal: isDuration,
+  /** How much of `border-light` the outlines of controls and chips, and the hairlines inside a
+   *  stroked surface, keep: 0 draws none and leaves the box where it was. */
+  chromeBorderAlpha: isOpacity,
+  insetBorderAlpha: isOpacity,
 } satisfies Record<string, (value: unknown) => boolean>;
 
 export type ThemeAppearanceToken = keyof typeof appearanceValidators;

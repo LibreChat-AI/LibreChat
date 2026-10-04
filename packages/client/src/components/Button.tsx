@@ -135,7 +135,7 @@ const buttonVariantRecipe = cva(
          * lag rather than polish.
          */
         'header-action':
-          'rounded-xl border border-border-light bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
+          'rounded-xl border border-border-chrome bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
         /**
          * Text that turns into its own editor when activated, such as a workspace
          * title or description. It reads as the text it stands for, so the caller
@@ -210,6 +210,12 @@ const buttonVariantRecipe = cva(
       },
     },
     compoundVariants: [
+      /* An outlined icon button is chrome: a theme that draws no chrome outline leaves it ghost-shaped. */
+      {
+        variant: 'outline',
+        size: ['icon', 'icon-sm', 'icon-xs', 'icon-theme'],
+        class: 'border-border-chrome',
+      },
       {
         variant: 'subtle',
         shape: 'unset',

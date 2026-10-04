@@ -144,7 +144,7 @@ const CategoryTabs: React.FC<CategoryTabsProps> = ({
               isSmallScreen ? 'min-w-fit shrink-0' : '',
               activeTab === category.value
                 ? 'border-border-heavy bg-surface-active-alt text-text-primary'
-                : 'border-border-light bg-surface-secondary text-text-secondary hover:bg-surface-hover hover:text-text-primary',
+                : 'border-border-chrome bg-surface-secondary text-text-secondary hover:bg-surface-hover hover:text-text-primary',
             )}
             role="tab"
             aria-selected={activeTab === category.value}

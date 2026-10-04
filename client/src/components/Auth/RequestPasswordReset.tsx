@@ -111,7 +111,7 @@ function RequestPasswordReset() {
               },
             })}
             aria-invalid={!!errors.email}
-            className="webkit-dark-styles peer border-border-light text-text-primary focus:border-accent-primary h-auto w-full rounded-2xl border px-3.5 pt-3 pb-2.5 duration-200"
+            className="webkit-dark-styles peer text-text-primary focus:border-accent-primary h-auto w-full rounded-2xl border px-3.5 pt-3 pb-2.5 duration-200"
             placeholder=" "
           />
           <label

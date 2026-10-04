@@ -88,22 +88,22 @@
   },
   "client/src/components/Auth/LoginForm.tsx": {
     "shadcn/no-restyle": {
-      "count": 37
+      "count": 33
     }
   },
   "client/src/components/Auth/Registration.tsx": {
     "shadcn/no-restyle": {
-      "count": 37
+      "count": 33
     }
   },
   "client/src/components/Auth/RequestPasswordReset.tsx": {
     "shadcn/no-restyle": {
-      "count": 14
+      "count": 13
     }
   },
   "client/src/components/Auth/ResetPassword.tsx": {
     "shadcn/no-restyle": {
-      "count": 52
+      "count": 48
     }
   },
   "client/src/components/Auth/TwoFactorScreen.tsx": {
@@ -134,11 +134,6 @@
   "client/src/components/Bookmarks/EditBookmarkButton.tsx": {
     "shadcn/no-restyle": {
       "count": 1
-    }
-  },
-  "client/src/components/Chat/AddMultiConvo.tsx": {
-    "shadcn/no-restyle": {
-      "count": 9
     }
   },
   "client/src/components/Chat/ChatView.tsx": {

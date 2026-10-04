@@ -209,13 +209,13 @@ export default function BackgroundTaskCall({
                 </p>
               )}
               {(display == null || hasParams) && (
-                <div className={cn(display != null && 'border-border-light border-t')}>
+                <div className={cn(display != null && 'border-border-inset border-t')}>
                   <ToolCallInfo input={input} output={display == null ? output : undefined} />
                 </div>
               )}
               {display != null && (
                 <details
-                  className="border-border-light border-t px-3 py-2"
+                  className="border-border-inset border-t px-3 py-2"
                   onToggle={(event) => setShowRaw(event.currentTarget.open)}
                 >
                   <summary className="text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle cursor-pointer rounded text-xs focus-visible:ring-2 focus-visible:outline-none">

@@ -304,6 +304,30 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-chart-widget-stroke']).toBe('50 51 52');
   });
 
+  it('keeps chrome and inset borders at the full border-light share unless a theme lowers them', () => {
+    const quiet: ThemeDefinition = {
+      version: 1,
+      name: 'quiet-borders-reference',
+      modes: { light: { appearance: { chromeBorderAlpha: '0', insetBorderAlpha: '0.5' } } },
+    };
+    const loud: ThemeDefinition = {
+      version: 1,
+      name: 'loud-borders-reference',
+      modes: { light: { appearance: { chromeBorderAlpha: '2' } } },
+    };
+
+    expect(defaultAppearance.chromeBorderAlpha).toBe('1');
+    expect(defaultAppearance.insetBorderAlpha).toBe('1');
+    expect(validateThemeDefinition(quiet)).toEqual([]);
+    expect(resolveTheme(quiet, 'light').appearance).toMatchObject({
+      chromeBorderAlpha: '0',
+      insetBorderAlpha: '0.5',
+    });
+    expect(validateThemeDefinition(loud)).toEqual([
+      'Invalid appearance value for chromeBorderAlpha: 2',
+    ]);
+  });
+
   it('rings subtle focus in the heavy border for a theme that predates the role', () => {
     const resolved = resolveTheme(
       {

@@ -437,6 +437,12 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   control inside content (tool rows, attachments, summaries, message
   navigation). Defaults to `border-heavy`, so a theme that names neither keeps
   the ring it had.
+- `border-border-chrome` / `border-border-inset` - `border-light` at the
+  `chromeBorderAlpha` and `insetBorderAlpha` appearance roles (both 1 by
+  default, so they draw as `border-light`). Chrome is the outline of an icon
+  button, pill, chip or avatar ring on the shell; inset is a hairline inside a
+  surface that is already stroked. A theme sets 0 to separate them by fill; the
+  1px box stays so layout does not shift.
 - `ring-focus-control` - The keyboard focus ring of the shared primitives
   (`Checkbox`, `Switch`, `Field`, `IconButton` and their siblings). Defaults to
   the primary text ink; a theme that names only `rgb-text-primary` rings its

@@ -103,7 +103,7 @@ function BackgroundTasksButton({
             store={popover}
             aria-label={triggerLabel}
             data-testid="header-background-tasks-button"
-            className="border-border-light bg-presentation text-text-primary hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary relative inline-flex size-9 flex-shrink-0 items-center justify-center rounded-xl border transition-all ease-in-out"
+            className="border-border-chrome bg-presentation text-text-primary hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary relative inline-flex size-9 flex-shrink-0 items-center justify-center rounded-xl border transition-all ease-in-out"
           >
             <ListTodo className="icon-md" aria-hidden="true" />
             {(activeCount > 0 || awaitingCount > 0 || failedCount > 0 || incomplete) && (

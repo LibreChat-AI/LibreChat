@@ -642,6 +642,18 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     reason:
       'none: Click UI Tooltip.module.css draws its tooltip with no shadow; no token carries it',
   },
+  chromeBorderAlpha: {
+    value: '0',
+    status: 'match',
+    reason:
+      '0: Click UI IconButton, tabs.basic and chat chrome draw no stroke (iconButton.*.stroke.default is rgba(0, 0, 0, 0)); hover and selection are a fill',
+  },
+  insetBorderAlpha: {
+    value: '0',
+    status: 'match',
+    reason:
+      '0: Click UI separates a card header from its body by fill; only tables and separators draw an inner stroke',
+  },
   fieldFillStyle: {
     value: 'fill',
     status: 'match',

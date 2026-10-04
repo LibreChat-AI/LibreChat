@@ -503,7 +503,7 @@ export default function RetrievalCall({
                       onOpenPreview={item.fileId ? () => openPreview(i) : undefined}
                     />
                     {item.content && (
-                      <div className="border-border-light border-t px-3 py-3">
+                      <div className="border-border-inset border-t px-3 py-3">
                         <OutputRenderer text={item.content} />
                       </div>
                     )}

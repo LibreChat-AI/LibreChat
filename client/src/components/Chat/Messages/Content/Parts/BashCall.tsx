@@ -259,10 +259,10 @@ export default function BashCall({
             <PtcToolTrace
               toolCallId={toolCallId}
               expanded={showCode}
-              className={cn(command && 'border-border-light border-t')}
+              className={cn(command && 'border-border-inset border-t')}
             />
             {hasOutput && backgroundHandle == null && (
-              <div className={cn('px-3 py-2.5', command && 'border-border-light border-t')}>
+              <div className={cn('px-3 py-2.5', command && 'border-border-inset border-t')}>
                 {outputIsEmpty ? (
                   <p className="text-text-secondary text-xs italic">
                     {localize('com_ui_no_output')}

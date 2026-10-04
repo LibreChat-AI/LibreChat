@@ -202,7 +202,7 @@ export default function ExecuteCode({
             <PtcToolTrace
               toolCallId={toolCallId}
               expanded={showCode}
-              className={cn(code && 'border-border-light border-t')}
+              className={cn(code && 'border-border-inset border-t')}
             />
             {hasOutput && backgroundHandle == null && (
               <div
@@ -210,7 +210,7 @@ export default function ExecuteCode({
                   /* No fill of its own: the output shows the panel's surface-secondary in both
                    * modes, which is the surface-primary-alt it was painted in light. */
                   'p-4 text-xs',
-                  code && 'border-border-light border-t',
+                  code && 'border-border-inset border-t',
                 )}
               >
                 <div className="text-text-secondary mb-1.5 text-[10px] font-medium tracking-wide uppercase">

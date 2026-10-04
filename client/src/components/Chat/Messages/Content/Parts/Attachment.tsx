@@ -355,7 +355,7 @@ const TextAttachment = memo(
         )}
         <div className="bg-surface-secondary overflow-hidden rounded-lg">
           {!showFileChip && (
-            <div className="border-border-light flex items-center justify-between gap-2 border-b px-3 py-2">
+            <div className="border-border-inset flex items-center justify-between gap-2 border-b px-3 py-2">
               <span className="min-w-0 truncate text-sm font-medium" title={visibleFilename}>
                 {visibleFilename}
               </span>

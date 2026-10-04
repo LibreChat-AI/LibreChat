@@ -98,7 +98,7 @@ export default function ToolCallInfo({ input, output }: { input: string; output?
   return (
     <div className="w-full px-3 py-3.5">
       {output && <OutputRenderer text={output} />}
-      {output && hasParams && <div className="border-border-light my-2 border-t" />}
+      {output && hasParams && <div className="border-border-inset my-2 border-t" />}
       {hasParams && (
         <>
           <button

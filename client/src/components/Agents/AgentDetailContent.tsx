@@ -286,7 +286,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
                 {renderAgentAvatar(agent, {
                   size: 'md',
                   showBorder: false,
-                  className: 'rounded-full bg-surface-tertiary ring-1 ring-border-light',
+                  className: 'rounded-full bg-surface-tertiary ring-1 ring-border-chrome',
                 })}
               </motion.div>
               <div className="min-w-0 flex-1 sm:self-center">

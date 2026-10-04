@@ -297,6 +297,8 @@ export const themeAppearanceProperties: Readonly<
   tooltipShadow: '--theme-tooltip-shadow',
   motionFast: '--theme-motion-fast',
   motionNormal: '--theme-motion-normal',
+  chromeBorderAlpha: '--theme-border-chrome-alpha',
+  insetBorderAlpha: '--theme-border-inset-alpha',
 });
 
 export const defaultAppearance: IThemeAppearance = Object.freeze({
@@ -388,6 +390,8 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   tooltipShadow: '0 2px 4px 0 rgb(0 0 0 / 0.25)',
   motionFast: '150ms',
   motionNormal: '200ms',
+  chromeBorderAlpha: '1',
+  insetBorderAlpha: '1',
 });
 
 /**

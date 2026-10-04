@@ -115,6 +115,9 @@
   /* borders */
   --color-border-light: rgb(var(--border-light) / var(--border-light-alpha, 1));
   --color-border-medium: rgb(var(--border-medium) / var(--border-medium-alpha, 1));
+  /* border-light, at the share the theme keeps for chrome outlines and inset hairlines. */
+  --color-border-chrome: rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  --color-border-inset: rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-inset-alpha, 1)));
   --color-border-medium-alt: rgb(var(--border-medium-alt));
   --color-border-heavy: rgb(var(--border-heavy) / var(--border-heavy-alpha, 1));
   --color-border-xheavy: rgb(var(--border-xheavy) / var(--border-xheavy-alpha, 1));

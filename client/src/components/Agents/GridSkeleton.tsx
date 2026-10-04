@@ -27,7 +27,7 @@ const card = (
       <Skeleton className="h-4 w-full" />
       <Skeleton className="h-4 w-5/6" />
     </div>
-    <div className="border-border-light mt-auto flex justify-between gap-3 border-t pt-4">
+    <div className="border-border-inset mt-auto flex justify-between gap-3 border-t pt-4">
       <Skeleton className="h-4 w-24" />
       <Skeleton className="h-4 w-20" />
     </div>

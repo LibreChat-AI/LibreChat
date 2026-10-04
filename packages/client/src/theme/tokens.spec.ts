@@ -106,6 +106,17 @@ describe('theme color tokens', () => {
     expect(css).toContain('color-mix(in oklab, rgb(var(--surface-primary)) 50%');
   });
 
+  it('draws the chrome and inset borders as border-light at the theme share', async () => {
+    const css = await generate(['border-border-chrome', 'border-border-inset']);
+
+    expect(css).toContain(
+      'rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-chrome-alpha, 1)))',
+    );
+    expect(css).toContain(
+      'rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-inset-alpha, 1)))',
+    );
+  });
+
   it.each(['./theme.css', '../../../../client/src/style.css'])(
     '%s preserves closed compatibility palettes without declaring them as semantic tokens',
     async (repositoryEntry) => {

@@ -10,6 +10,16 @@ jest.mock('react-i18next', () => ({
 }));
 
 describe('Button', () => {
+  it('outlines an icon button in the chrome border and a text button in the light one', () => {
+    const icon = cn(buttonVariants({ variant: 'outline', size: 'icon-theme' }));
+    const text = cn(buttonVariants({ variant: 'outline', size: 'dense' }));
+
+    expect(icon).toContain('border-border-chrome');
+    expect(icon).not.toContain('border-border-light');
+    expect(text).toContain('border-border-light');
+    expect(text).not.toContain('border-border-chrome');
+  });
+
   it('owns dense action padding without changing the default-height recipe', () => {
     render(
       <Button variant="outline" size="dense">
@@ -121,7 +131,7 @@ describe('Button', () => {
      *  text through itself while every neighbour sits on `bg-presentation`. */
     expect(screen.getByRole('button', { name: 'Toggle' })).toHaveClass(
       'bg-presentation',
-      'border-border-light',
+      'border-border-chrome',
       'rounded-xl',
       'duration-0',
       'hover:bg-surface-active-alt',

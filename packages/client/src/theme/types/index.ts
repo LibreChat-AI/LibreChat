@@ -695,6 +695,14 @@ export interface IThemeAppearance {
   tooltipShadow: string;
   motionFast: string;
   motionNormal: string;
+  /**
+   * The share of `border-light` that `border-chrome` (the outline of an icon button, pill, chip
+   * or avatar ring that sits on the shell) and `border-inset` (a hairline inside a surface that
+   * is already stroked) paint. 1 keeps them as `border-light`; 0 draws none, with the 1px box
+   * unchanged so layout and focus geometry stay put.
+   */
+  chromeBorderAlpha: string;
+  insetBorderAlpha: string;
 }
 
 export interface ThemeModeDefinition {

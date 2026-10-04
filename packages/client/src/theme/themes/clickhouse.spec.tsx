@@ -403,11 +403,16 @@ describe('clickhouse theme definition', () => {
     ).toEqual([]);
   });
 
-  /** Click UI's keyboard outline is the focus ring, on rows inside content as on controls. */
-  it.each<ThemeMode>(['light', 'dark'])('rings subtle focus in the outline in %s', (mode) => {
-    const { colors } = resolveTheme(clickHouseTheme, mode);
-    expect(colors['rgb-focus-subtle']).toBe(colors['rgb-focus-outline']);
-  });
+  /** Click UI draws no stroke on icon buttons or chat chrome and separates a card's regions by
+   *  fill; its keyboard outline is the focus ring. */
+  it.each<ThemeMode>(['light', 'dark'])(
+    'draws no chrome or inset border and rings subtle focus in the outline in %s',
+    (mode) => {
+      const { appearance, colors } = resolveTheme(clickHouseTheme, mode);
+      expect([appearance.chromeBorderAlpha, appearance.insetBorderAlpha]).toEqual(['0', '0']);
+      expect(colors['rgb-focus-subtle']).toBe(colors['rgb-focus-outline']);
+    },
+  );
 
   /** Click UI's control height, button padding and gap, `transition.default`, and the two steps of
    *  its `spaces` scale the shared spacing takes. */

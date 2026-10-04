@@ -21,7 +21,7 @@ export default function AgentCategoryBadge({ category, className }: AgentCategor
   return (
     <span
       className={cn(
-        'border-border-light bg-surface-tertiary text-text-secondary inline-flex max-w-full items-center rounded-full border px-2.5 py-1 text-xs leading-4 font-medium',
+        'border-border-chrome bg-surface-tertiary text-text-secondary inline-flex max-w-full items-center rounded-full border px-2.5 py-1 text-xs leading-4 font-medium',
         className,
       )}
     >

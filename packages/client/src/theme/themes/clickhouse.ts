@@ -519,6 +519,11 @@ const clickHouseShape = {
   tableRowStroke: '1px', // table.cell.stroke
   motionFast: '100ms', // transition.duration.medium, the step transition.default runs at
   motionNormal: '150ms', // transition.duration.smooth
+  /** Click UI strokes cards, panels, dialogs, fields and tables in stroke.default, but not the
+   *  controls and chat chrome LibreChat outlines (iconButton.*.stroke.default and tabs.basic are
+   *  transparent), and it separates a card's inner regions by fill. */
+  chromeBorderAlpha: '0', // iconButton.primary.stroke.default
+  insetBorderAlpha: '0', // separation by fill, not a nested stroke
 };
 
 const elevation = (alpha: number): string =>

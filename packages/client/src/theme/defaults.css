@@ -330,6 +330,8 @@ html {
   --theme-tooltip-shadow: 0 2px 4px 0 rgb(0 0 0 / 0.25);
   --theme-motion-fast: 150ms;
   --theme-motion-normal: 200ms;
+  --theme-border-chrome-alpha: 1;
+  --theme-border-inset-alpha: 1;
   --switch-unchecked: 148 148 148;
   --switch-thumb: 255 255 255;
   /* Follows the secondary text it was before it had a role, in every mode. */

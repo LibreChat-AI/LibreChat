@@ -203,7 +203,7 @@ function PlaceList({ places, label }: { places: PlaceResult[]; label: string }) 
           /** The same provider place can appear in several grouped searches;
            *  discriminate each occurrence even when its identifier is present. */
           key={`${place.identifier || `${place.name ?? ''}|${place.address ?? ''}`}|${i}`}
-          className={cn(i > 0 && 'border-border-light border-t')}
+          className={cn(i > 0 && 'border-border-inset border-t')}
         >
           <a
             href={mapLink(place)}

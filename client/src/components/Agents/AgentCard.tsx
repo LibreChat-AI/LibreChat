@@ -131,7 +131,7 @@ const AgentCard = memo(
                 size: 'sm',
                 showBorder: false,
                 className:
-                  'rounded-full bg-surface-tertiary ring-1 ring-border-light transition-colors duration-150 group-hover:ring-border-medium',
+                  'rounded-full bg-surface-tertiary ring-1 ring-border-chrome transition-colors duration-150 group-hover:ring-border-medium',
               })}
             </motion.div>
             {agent.category != null && agent.category !== '' && (
@@ -181,7 +181,7 @@ const AgentCard = memo(
             <motion.span
               aria-hidden="true"
               variants={CARD_HANDOFF_VARIANTS}
-              className="bg-border-light absolute inset-x-0 top-0 h-px"
+              className="bg-border-inset absolute inset-x-0 top-0 h-px"
             />
             {contact != null && (
               <motion.div

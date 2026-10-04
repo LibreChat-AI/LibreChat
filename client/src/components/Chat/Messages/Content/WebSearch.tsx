@@ -326,7 +326,7 @@ export default function WebSearch({
                       )}
                     </div>
                     {answerBox && (answerBox.title || answerText) && (
-                      <div className="border-border-light border-t pt-2">
+                      <div className="border-border-inset border-t pt-2">
                         {answerBox.title && (
                           <div className="text-text-primary text-sm font-medium">
                             {answerBox.title}
@@ -367,7 +367,7 @@ export default function WebSearch({
                         className={cn(
                           'hover:bg-surface-hover flex gap-2.5 px-3 py-2 transition-colors',
                           snippet ? 'items-start' : 'items-center',
-                          i > 0 && 'border-border-light border-t',
+                          i > 0 && 'border-border-inset border-t',
                         )}
                       >
                         <FaviconImage
