@@ -293,7 +293,7 @@ function estimateNativeMediaTokens(
   const encoding = isClaude ? 'claude' : 'o200k_base';
   return (
     getTokenCountForMessage(
-      new HumanMessage({ content: [block as MessageContentComplex] }),
+      new HumanMessage({ content: [{ ...block, type: 'media' }] }),
       getTokenCount,
       encoding,
     ) - getTokenCountForMessage(new HumanMessage({ content: [] }), getTokenCount, encoding)

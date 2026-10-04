@@ -3,7 +3,7 @@ import { Providers, StandardGraph, getTokenCountForMessage } from '@librechat/ag
 import { HumanMessage, SystemMessage } from '@librechat/agents/langchain/messages';
 import { ContentTypes, DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
-import type { LCTool, MessageContentComplex } from '@librechat/agents';
+import type { LCTool } from '@librechat/agents';
 import type { FormattedMessageWithContent } from './client';
 import type { EncodingName } from '~/utils/tokenizer';
 import {
@@ -21,7 +21,7 @@ import Tokenizer from '~/utils/tokenizer';
 
 describe('provider-native media token accounting', () => {
   const encodings: EncodingName[] = ['o200k_base', 'claude'];
-  const blocks: MessageContentComplex[] = [
+  const blocks = [
     { type: 'media', mimeType: 'application/pdf', data: 'A'.repeat(150_000) },
     { type: 'media', mimeType: 'application/pdf', fileUri: 'gs://bucket/document.pdf' },
     { type: 'media', mimeType: 'image/png', data: 'AAAA' },
@@ -80,7 +80,7 @@ describe('provider-native media token accounting', () => {
   });
 
   it('rejects an oversized PDF before invoking the model with precomputed counts', async () => {
-    const content: MessageContentComplex[] = [
+    const content = [
       { type: 'text', text: 'Read this PDF.' },
       { type: 'media', mimeType: 'application/pdf', data: 'A'.repeat(10_000_000) },
     ];
