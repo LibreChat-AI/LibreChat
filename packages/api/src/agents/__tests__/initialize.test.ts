@@ -3773,6 +3773,7 @@ describe('initializeAgent — execute_code capability expansion', () => {
       expect(result.codeExecutionContext).toBe(codeExecutionContext);
       expect(result.toolDefinitions?.map(({ name }) => name).sort()).toEqual([
         'bash_tool',
+        'github_compare',
         'list_workspace_files',
         'read_file',
       ]);

@@ -117,7 +117,7 @@ export class GitHubCompareTool extends DynamicStructuredTool {
     super({
       name: GITHUB_COMPARE_NAME,
       description: GITHUB_COMPARE_DEFINITION.description,
-      schema: GITHUB_COMPARE_DEFINITION.parameters as NonNullable<LCTool['parameters']>,
+      schema: structuredClone(GITHUB_COMPARE_DEFINITION.parameters),
       func: async (input: GitHubComparisonInput, _manager, config) => {
         try {
           return JSON.stringify(await compareGitHubCommits(input, fetch, config?.signal));
