@@ -19,8 +19,13 @@ import {
 } from './tree';
 
 interface RunState {
+  runId: string;
   run: ActivityRun;
   depth: number;
+  /** The reply step whose leaf overflowed; its later deltas are not counted again. */
+  overflowTextStep?: string;
+  /** Set once a step announced a call; later sightings then never create leaves. */
+  announced: boolean;
   maxTurns: number;
   toolByCallId: Map<string, ActivityLeaf>;
   textByStepId: Map<string, ActivityLeaf>;
@@ -33,6 +38,8 @@ interface ToolCallShape {
   args?: unknown;
   function?: { name?: unknown; arguments?: unknown };
 }
+
+const ownerKey = (runId: string, callId: string): string => `${runId.length}:${runId}:${callId}`;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value != null && typeof value === 'object' && !Array.isArray(value);
@@ -89,9 +96,6 @@ function collectLeaves(turns: readonly ActivityTurn[], into: Set<ActivityLeaf>):
   }
 }
 
-/** Overflowed identities remembered so a later event for one is not counted again. */
-const MAX_OVERFLOW_IDS = 512;
-
 /**
  * Folds one detached child's update stream into its bounded progress tree on the
  * process that owns the child. It reads only identities, tool names, the
@@ -107,8 +111,12 @@ const MAX_OVERFLOW_IDS = 512;
 export class ActivityRecorder {
   private readonly tree: ActivityTree;
   private readonly runs = new Map<string, RunState>();
-  private readonly callOwners = new Map<string, { leaf: ActivityLeaf; depth: number }>();
-  private readonly overflowIds = new Set<string>();
+  /** Keyed by owning run and call id: provider call ids repeat across runs. */
+  private readonly callOwners = new Map<
+    string,
+    { leaf: ActivityLeaf; depth: number; callId: string }
+  >();
+
   private rootRunId?: string;
   private leaves = 0;
 
@@ -140,7 +148,7 @@ export class ActivityRecorder {
         for (const call of toolCalls(data.toolCalls)) {
           const id = nonEmpty(call.id);
           if (id != null) {
-            this.ensureTool(state, id, call.name, now);
+            this.ensureTool(state, id, call.name, now, false);
           }
         }
         return;
@@ -197,8 +205,7 @@ export class ActivityRecorder {
       this.rootRunId = runId;
       return this.addRun(runId, this.tree.root, 0);
     }
-    const parentCallId = nonEmpty(event.parentToolCallId);
-    const owner = parentCallId == null ? undefined : this.callOwners.get(parentCallId);
+    const owner = this.ownerOf(event);
     if (owner == null || owner.depth + 1 >= ACTIVITY_TREE_LIMITS.depth) {
       return undefined;
     }
@@ -206,8 +213,34 @@ export class ActivityRecorder {
     return this.addRun(runId, owner.leaf.run, owner.depth + 1);
   }
 
+  /**
+   * The recorded call that started a nested run: matched on the spawning run and
+   * call id, or on the call id alone only when exactly one run recorded it.
+   */
+  private ownerOf(event: SubagentUpdateEvent): { leaf: ActivityLeaf; depth: number } | undefined {
+    const callId = nonEmpty(event.parentToolCallId);
+    if (callId == null) {
+      return undefined;
+    }
+    const parentRunId = nonEmpty(event.parentRunId);
+    const exact =
+      parentRunId == null ? undefined : this.callOwners.get(ownerKey(parentRunId, callId));
+    if (exact != null) {
+      return exact;
+    }
+    let match: { leaf: ActivityLeaf; depth: number } | undefined;
+    for (const owner of this.callOwners.values()) {
+      if (owner.callId !== callId) continue;
+      if (match != null) return undefined;
+      match = owner;
+    }
+    return match;
+  }
+
   private addRun(runId: string, run: ActivityRun, depth: number): RunState {
     const state: RunState = {
+      runId,
+      announced: false,
       run,
       depth,
       maxTurns: depth === 0 ? ACTIVITY_TREE_LIMITS.rootTurns : ACTIVITY_TREE_LIMITS.nestedTurns,
@@ -224,7 +257,7 @@ export class ActivityRecorder {
     for (const call of toolCalls(data.toolCalls)) {
       const id = nonEmpty(call.id);
       if (id != null) {
-        this.labelTool(this.ensureTool(state, id, call.name, now), call.args);
+        this.labelTool(this.ensureTool(state, id, call.name, now, false), call.args);
       }
     }
     const details = isRecord(data.stepDetails) ? data.stepDetails : undefined;
@@ -238,7 +271,7 @@ export class ActivityRecorder {
         continue;
       }
       ids.push(id);
-      const leaf = this.ensureTool(state, id, call.name ?? call.function?.name, now);
+      const leaf = this.ensureTool(state, id, call.name ?? call.function?.name, now, true);
       this.labelTool(leaf, call.args ?? call.function?.arguments);
     }
     const stepId = nonEmpty(data.id);
@@ -263,7 +296,7 @@ export class ActivityRecorder {
     if (call == null || id == null) {
       return;
     }
-    const leaf = this.ensureTool(state, id, call.name, now);
+    const leaf = this.ensureTool(state, id, call.name, now, false);
     const output = typeof call.output === 'string' ? call.output : undefined;
     const failed =
       call.inputValidationError === true || (output != null && isFailedToolOutput(output));
@@ -312,14 +345,14 @@ export class ActivityRecorder {
       return;
     }
     const stepId = nonEmpty(data.id) ?? '';
-    if (this.overflowIds.has(`text:${stepId}`)) {
+    if (state.overflowTextStep === stepId) {
       return;
     }
     let leaf = state.textByStepId.get(stepId);
     if (leaf == null || leaf.status !== 'running') {
       leaf = { kind: 'text', status: 'running', startedAt: now, chars: 0 };
-      if (!this.append(state, leaf, now)) {
-        this.rememberOverflow(`text:${stepId}`);
+      if (!this.append(state, leaf, now, true)) {
+        state.overflowTextStep = stepId;
         return;
       }
       state.textByStepId.set(stepId, leaf);
@@ -327,31 +360,48 @@ export class ActivityRecorder {
     leaf.chars = (leaf.chars ?? 0) + chars;
   }
 
-  private ensureTool(state: RunState, id: string, name: unknown, now: number): ActivityLeaf {
+  /**
+   * Finds or records a tool call. Only the step that announces a call may count it
+   * as overflow; its execution request, dispatch, and result are later sightings of
+   * the same call, so an unretained call is counted exactly once with no lookup
+   * state kept for it.
+   */
+  private ensureTool(
+    state: RunState,
+    id: string,
+    name: unknown,
+    now: number,
+    announces: boolean,
+  ): ActivityLeaf {
     const existing = state.toolByCallId.get(id);
     if (existing != null) {
       existing.name ??= sanitizeActivityText(name, ACTIVITY_TREE_LIMITS.nameChars);
       return existing;
     }
+    state.announced ||= announces;
     const leaf: ActivityLeaf = {
       kind: 'tool',
       name: sanitizeActivityText(name, ACTIVITY_TREE_LIMITS.nameChars) ?? 'tool',
       status: 'running',
       startedAt: now,
     };
-    /** An overflowed call is counted once and never retained: later events for it
-     * update a detached leaf that no map holds, so lookups stay bounded. */
-    if (this.overflowIds.has(`tool:${id}`) || !this.append(state, leaf, now)) {
-      this.rememberOverflow(`tool:${id}`);
+    /** Once steps announce calls, an unknown id in a later sighting was overflowed
+     * or evicted; recording it again would count it twice or reopen old history. */
+    if ((state.announced && !announces) || !this.append(state, leaf, now, announces)) {
       return leaf;
     }
     state.toolByCallId.set(id, leaf);
-    this.callOwners.set(id, { leaf, depth: state.depth });
+    this.callOwners.set(ownerKey(state.runId, id), { leaf, depth: state.depth, callId: id });
     return leaf;
   }
 
   /** Returns whether the leaf was retained; a detached nested run retains nothing. */
-  private append(state: RunState, leaf: ActivityLeaf, now: number): boolean {
+  private append(
+    state: RunState,
+    leaf: ActivityLeaf,
+    now: number,
+    countOverflow: boolean,
+  ): boolean {
     const turn = this.turnFor(state, leaf.kind, now);
     while (this.leaves >= ACTIVITY_TREE_LIMITS.leaves && this.tree.root.turns.length > 1) {
       this.evictOldest(this.tree.root);
@@ -363,20 +413,14 @@ export class ActivityRecorder {
       turn.children.length >= ACTIVITY_TREE_LIMITS.turnChildren ||
       this.leaves >= ACTIVITY_TREE_LIMITS.leaves
     ) {
-      turn.overflow = (turn.overflow ?? 0) + 1;
+      if (countOverflow) {
+        turn.overflow = (turn.overflow ?? 0) + 1;
+      }
       return false;
     }
     turn.children.push(leaf);
     this.leaves += 1;
     return true;
-  }
-
-  private rememberOverflow(key: string): void {
-    this.overflowIds.add(key);
-    if (this.overflowIds.size > MAX_OVERFLOW_IDS) {
-      const oldest = this.overflowIds.values().next().value;
-      if (oldest != null) this.overflowIds.delete(oldest);
-    }
   }
 
   private turnFor(state: RunState, kind: ActivityLeaf['kind'], now: number): ActivityTurn {

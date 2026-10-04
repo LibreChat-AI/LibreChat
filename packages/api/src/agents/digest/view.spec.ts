@@ -298,6 +298,8 @@ describe('parseDigestRequest', () => {
       { expand: 'abc' },
       { expand: 4 },
       { since: '1.2.3' },
+      { since: '0' },
+      { since: '7.0' },
       { since: '7', expand: '3' },
       { expand: `${'1.'.repeat(40)}1` },
     ]) {

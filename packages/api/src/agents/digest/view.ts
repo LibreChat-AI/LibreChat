@@ -115,7 +115,9 @@ export function parseDigestRequest(
   }
   if (since != null) {
     const match = typeof since === 'string' ? CURSOR_PATTERN.exec(since) : null;
-    if (typeof since !== 'string' || match == null) {
+    const zero =
+      match != null && (Number(match[1]) === 0 || (match[2] != null && Number(match[2]) === 0));
+    if (typeof since !== 'string' || match == null || zero) {
       return { error: 'since must be an activity.cursor value, such as "7" or "7.3".' };
     }
     return {

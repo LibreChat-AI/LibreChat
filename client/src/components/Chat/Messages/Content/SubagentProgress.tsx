@@ -51,7 +51,11 @@ const MORE_SUFFIX = / \+(\d+) more$/;
  * text +2 more", "1 turn, 2 tools"). Tool names stay as display labels and every
  * other fragment is localized here, so the card never shows the raw prose.
  */
-export function localizeDigestSummary(summary: string, localize: Localize): string {
+export function localizeDigestSummary(
+  summary: string,
+  localize: Localize,
+  serverNames?: readonly string[],
+): string {
   const nested = NESTED_SUMMARY.exec(summary);
   if (nested != null) {
     return localize('com_ui_subagent_progress_nested', { 0: nested[1], 1: nested[2] });
@@ -64,7 +68,7 @@ export function localizeDigestSummary(summary: string, localize: Localize): stri
     const label =
       name === 'text'
         ? localize('com_ui_subagent_progress_reply')
-        : getToolDisplayLabel(name, localize);
+        : getToolDisplayLabel(name, localize, serverNames);
     return counted == null ? label : `${label} ×${counted[2]}`;
   });
   if (more != null) {
@@ -76,13 +80,19 @@ export function localizeDigestSummary(summary: string, localize: Localize): stri
 const isOnPath = (path: string, active?: string): boolean =>
   active != null && (active === path || active.startsWith(`${path}.`));
 
-function NodeRow({ node }: { node: SubagentDigestNode }) {
+function NodeRow({
+  node,
+  serverNames,
+}: {
+  node: SubagentDigestNode;
+  serverNames?: readonly string[];
+}) {
   const localize = useLocalize();
   const { i18n } = useTranslation();
   const status = node.status == null ? undefined : STATUS[node.status];
   let title: string;
   if (node.kind === 'tool') {
-    title = node.label ?? getToolDisplayLabel(node.name ?? '', localize);
+    title = node.label ?? getToolDisplayLabel(node.name ?? '', localize, serverNames);
   } else if (node.kind === 'text') {
     title = localize('com_ui_subagent_progress_reply');
   } else if (node.kind === 'range') {
@@ -111,7 +121,7 @@ function NodeRow({ node }: { node: SubagentDigestNode }) {
       </span>
       {node.summary != null && (
         <span className="text-text-tertiary min-w-0 truncate">
-          {localizeDigestSummary(node.summary, localize)}
+          {localizeDigestSummary(node.summary, localize, serverNames)}
         </span>
       )}
       <span className="ms-auto flex shrink-0 items-center gap-1.5">
@@ -132,11 +142,19 @@ function NodeRow({ node }: { node: SubagentDigestNode }) {
   );
 }
 
-function DigestBranch({ entry, active }: { entry: DigestTreeNode; active?: string }) {
+function DigestBranch({
+  entry,
+  active,
+  serverNames,
+}: {
+  entry: DigestTreeNode;
+  active?: string;
+  serverNames?: readonly string[];
+}) {
   if (entry.children.length === 0) {
     return (
       <li className="flex min-w-0 items-center py-0.5">
-        <NodeRow node={entry.node} />
+        <NodeRow node={entry.node} serverNames={serverNames} />
       </li>
     );
   }
@@ -144,11 +162,16 @@ function DigestBranch({ entry, active }: { entry: DigestTreeNode; active?: strin
     <li className="min-w-0">
       <details open={isOnPath(entry.node.path, active)} className="group">
         <summary className="focus-visible:ring-border-heavy flex min-w-0 cursor-pointer items-center rounded py-0.5 focus-visible:ring-2 focus-visible:outline-none">
-          <NodeRow node={entry.node} />
+          <NodeRow node={entry.node} serverNames={serverNames} />
         </summary>
         <ul className="border-border-light ms-1.5 border-s ps-2">
           {entry.children.map((child) => (
-            <DigestBranch key={child.node.path} entry={child} active={active} />
+            <DigestBranch
+              key={child.node.path}
+              entry={child}
+              active={active}
+              serverNames={serverNames}
+            />
           ))}
         </ul>
       </details>
@@ -161,7 +184,14 @@ function DigestBranch({ entry, active }: { entry: DigestTreeNode; active?: strin
  * branch holding the child's current step opens by default. The full, live
  * transcript stays in the subagent activity panel this card links to.
  */
-const SubagentProgress = memo(function SubagentProgress({ digest }: { digest: SubagentDigest }) {
+const SubagentProgress = memo(function SubagentProgress({
+  digest,
+  serverNames,
+}: {
+  digest: SubagentDigest;
+  /** Configured MCP server names, so `tool_mcp_server` names label correctly. */
+  serverNames?: readonly string[];
+}) {
   const localize = useLocalize();
   const tree = useMemo(() => buildDigestTree(digest.nodes), [digest.nodes]);
   const active = digest.active ?? digest.nodes[digest.nodes.length - 1]?.path;
@@ -185,7 +215,12 @@ const SubagentProgress = memo(function SubagentProgress({ digest }: { digest: Su
       {tree.length > 0 && (
         <ul aria-label={localize('com_ui_subagent_progress')} className="min-w-0">
           {tree.map((entry) => (
-            <DigestBranch key={entry.node.path} entry={entry} active={active} />
+            <DigestBranch
+              key={entry.node.path}
+              entry={entry}
+              active={active}
+              serverNames={serverNames}
+            />
           ))}
         </ul>
       )}

@@ -116,7 +116,9 @@ export default function BackgroundTaskCard({
           {localize(state.label)}
         </span>
       </div>
-      {task.activity != null && <SubagentProgress digest={task.activity} />}
+      {task.activity != null && (
+        <SubagentProgress digest={task.activity} serverNames={mcpServerNames} />
+      )}
       {selection != null && openActivity != null && (
         <div className="mt-2 flex justify-end">
           <Button

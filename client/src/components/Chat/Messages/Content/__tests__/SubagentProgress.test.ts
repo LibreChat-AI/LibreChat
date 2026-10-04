@@ -2,7 +2,8 @@ import { buildDigestTree, localizeDigestSummary } from '../SubagentProgress';
 
 jest.mock('~/utils', () => ({
   cn: (...classes: string[]) => classes.filter(Boolean).join(' '),
-  getToolDisplayLabel: (name: string) => (name === 'bash_tool' ? 'Code' : name),
+  getToolDisplayLabel: (name: string, _localize: unknown, serverNames?: readonly string[]) =>
+    name === 'bash_tool' ? 'Code' : (serverNames?.find((server) => name.endsWith(server)) ?? name),
   getRunStepDurationLabels: jest.fn(),
 }));
 
@@ -16,6 +17,11 @@ describe('localizeDigestSummary', () => {
     expect(localizeDigestSummary('bash_tool ×3, read_file, text ×2 +4 more', localize)).toBe(
       'Code ×3, read_file, com_ui_subagent_progress_reply ×2, com_ui_subagent_progress_more(4)',
     );
+    expect(
+      localizeDigestSummary('search_mcp_Google_mcp_Workspace ×2', localize, [
+        'Google_mcp_Workspace',
+      ]),
+    ).toBe('Google_mcp_Workspace ×2');
     expect(localizeDigestSummary('1 turn, 2 tools', localize)).toBe(
       'com_ui_subagent_progress_nested(1,2)',
     );

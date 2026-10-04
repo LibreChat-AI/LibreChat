@@ -283,6 +283,61 @@ describe('ActivityRecorder', () => {
     expect(findActiveLeaf(recorder.snapshot().root)).toBeUndefined();
   });
 
+  it('attaches a nested run to the call of its own parent run when call ids repeat', () => {
+    const recorder = new ActivityRecorder(0);
+    recorder.record(toolStep('root-step', [{ id: 'call_2', name: 'subagent' }]), 1);
+    const grandchild = {
+      subagentRunId: 'grandchild-run',
+      parentRunId: 'child-run',
+      parentToolCallId: 'call_2',
+    };
+    recorder.record(
+      event(
+        'run_step',
+        {
+          id: 'g-step',
+          stepDetails: { type: 'tool_calls', tool_calls: [{ id: 'call_2', name: 'subagent' }] },
+        },
+        grandchild,
+      ),
+      2,
+    );
+    const greatGrandchild = {
+      subagentRunId: 'great-run',
+      parentRunId: 'grandchild-run',
+      parentToolCallId: 'call_2',
+    };
+    recorder.record(
+      event(
+        'message_delta',
+        { id: 'x', delta: { content: [{ type: 'text', text: 'hi' }] } },
+        greatGrandchild,
+      ),
+      3,
+    );
+    const spawn = recorder.snapshot().root.turns[0].children[0];
+    expect(spawn.run?.turns[0].children).toHaveLength(1);
+    const nestedSpawn = spawn.run?.turns[0].children[0];
+    expect(nestedSpawn?.run?.turns[0].children).toEqual([
+      expect.objectContaining({ kind: 'text', chars: 2 }),
+    ]);
+  });
+
+  it('never double-counts overflow however many calls one turn announces', () => {
+    const recorder = new ActivityRecorder(0);
+    const calls = Array.from({ length: 700 }, (_, index) => ({
+      id: `c${index}`,
+      name: 'read_file',
+    }));
+    recorder.record(toolStep('step', calls), 1);
+    for (const call of calls) {
+      recorder.record(event('run_step', { toolCalls: [call] }), 2);
+      recorder.record(completed(call.id, call.name, 'ok'), 3);
+    }
+    const [turn] = recorder.snapshot().root.turns;
+    expect(turn.children.length + (turn.overflow ?? 0)).toBe(700);
+  });
+
   it('folds evicted turns into counts and keeps the tree within its bounds', () => {
     const recorder = new ActivityRecorder(0);
     const turns = ACTIVITY_TREE_LIMITS.rootTurns + 10;
