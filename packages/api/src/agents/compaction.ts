@@ -343,17 +343,15 @@ export type DisconnectSnapshotMode =
    *  reopen the settled turn. */
   | 'skip';
 
-/** The row flags a promoted terminal snapshot settles with, keyed by the
- *  reconciled claim's status: an aborted run keeps the abort row's shape, a
- *  completed run a finished row, and everything else the error envelope. */
+/** The row flags a promoted compaction snapshot settles with, keyed by the
+ *  reconciled claim's status: a stopped compaction is settled like the abort
+ *  route writes it (nothing continues it), a completed run is a finished row,
+ *  and everything else takes the error envelope. */
 export function resolveReconciledSnapshotEnvelope(status: unknown): {
   unfinished: boolean;
   error: boolean;
 } {
-  if (status === 'aborted') {
-    return { unfinished: true, error: false };
-  }
-  if (status === 'complete') {
+  if (status === 'aborted' || status === 'complete') {
     return { unfinished: false, error: false };
   }
   return { unfinished: false, error: true };
@@ -387,7 +385,10 @@ export async function resolveDisconnectSnapshotMode(
   if (isSettledJobRecord(jobRecord, jobCreatedAt)) {
     return 'skip';
   }
-  if (!isCompaction || !hasDurableReconcileFrame(jobRecord?.finalEvent)) {
+  /** Another epoch's reconciliation frame belongs to a different
+   *  generation and never promotes this one's snapshot. */
+  const sameEpoch = jobCreatedAt == null || jobRecord?.createdAt === jobCreatedAt;
+  if (!isCompaction || !sameEpoch || !hasDurableReconcileFrame(jobRecord?.finalEvent)) {
     return 'live';
   }
   return (await anchorExists()) ? 'terminal' : 'skip';
