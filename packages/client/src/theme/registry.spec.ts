@@ -509,7 +509,6 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-text-tooltip']).toBe('1 2 3');
     expect(resolved.colors['rgb-alert-error-fill']).toBe('4 5 6');
     expect(resolved.colors['rgb-alert-error-border']).toBe('7 8 9');
-    expect(resolved.colors['rgb-surface-artifact-preview']).toBe('255 255 255');
   });
 
   it('preserves an explicit tooltip surface and falls back to the bundled one otherwise', () => {

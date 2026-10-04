@@ -90,7 +90,6 @@ export const darkTheme: IThemeRGB = {
   'rgb-text-tooltip': '236 236 236', // matching text-primary
   'rgb-alert-error-fill': '69 10 10', // matching status-error-subtle
   'rgb-alert-error-border': '153 27 27', // matching status-error-border
-  'rgb-surface-artifact-preview': '255 255 255', // #ffffff (the paper an artifact document assumes, in both modes)
   'rgb-surface-disabled': '47 47 47', // #2f2f2f (gray-700)
   'rgb-text-disabled': '153 150 150', // #999696 (gray-400)
   'rgb-border-disabled': '57 57 57', // #393939 (gray-650)

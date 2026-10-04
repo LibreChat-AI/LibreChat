@@ -162,7 +162,6 @@ html {
   --text-tooltip: var(--text-primary);
   --alert-error-fill: var(--status-error-subtle);
   --alert-error-border: var(--status-error-border);
-  --surface-artifact-preview: 255 255 255;
   --focus-control: var(--gray-800);
   --border-disabled: var(--gray-200);
   --status-success: var(--green-700);
@@ -417,7 +416,6 @@ html {
   --text-tooltip: var(--text-primary);
   --alert-error-fill: var(--status-error-subtle);
   --alert-error-border: var(--status-error-border);
-  --surface-artifact-preview: 255 255 255;
   --focus-control: var(--gray-100);
   --border-disabled: var(--gray-650);
   --status-success: var(--green-300);

@@ -185,7 +185,6 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-table-header-text': 'click.table.header.color.title.default',
     'rgb-table-header-fill': 'click.table.header.color.background.default',
     'rgb-presentation': 'global.color.background.default',
-    'rgb-surface-artifact-preview': 'global.color.background.default',
     'rgb-surface-tooltip': 'click.tooltip.color.background.default',
     'rgb-text-tooltip': 'click.tooltip.color.label.default',
   },
@@ -331,8 +330,6 @@ const AVATAR_EDGE_REASON =
 const MEDIA_SCRIM_DEPARTURE =
   'the dialog scrim is the nearest Click UI job; a lightbox frames the user image in black instead';
 
-const ARTIFACT_PAPER_REASON =
-  'Click UI has no artifact surface; the preview keeps the white page an artifact document is written for';
 const ALERT_ALPHA_REASON =
   'Click UI draws the danger alert as feedback.danger at 10% (light) or 20% (dark) alpha with no edge; a role holds an opaque triplet, so the theme takes the fill blended over the page and the edge equals it';
 
@@ -351,7 +348,6 @@ const unsourcedColors: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>
     'rgb-avatar-edge': AVATAR_EDGE_REASON,
     'rgb-alert-error-fill': ALERT_ALPHA_REASON,
     'rgb-alert-error-border': ALERT_ALPHA_REASON,
-    'rgb-surface-artifact-preview': ARTIFACT_PAPER_REASON,
   },
 };
 
@@ -501,11 +497,6 @@ const departures: Record<ThemeMode, Partial<Record<keyof IThemeRGB, Departure>>>
       counterpart: 'click.alert.color.background.danger',
       status: 'mismatch',
       reason: ALERT_ALPHA_REASON,
-    },
-    'rgb-surface-artifact-preview': {
-      counterpart: 'global.color.background.default',
-      status: 'mismatch',
-      reason: ARTIFACT_PAPER_REASON,
     },
     'rgb-surface-tooltip': {
       counterpart: 'click.tooltip.color.background.default',

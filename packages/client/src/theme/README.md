@@ -387,9 +387,6 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   (0.5rem, 0.25rem and 1rem by default).
 - `bg-alert-error-fill` / `border-alert-error-border` - The error `Alert`'s fill and edge. They
   follow `status-error-subtle` and `status-error-border`, which the badges, tags and diffs keep.
-- `bg-surface-artifact-preview` - The paper an artifact document is drawn on, behind the
-  Sandpack frame. Artifacts are written for a light page and ink in the browser's black when
-  unstyled, so it is white in every mode and does not follow `surface-primary`.
 - `border-border-field-focus` - A form field's edge while it holds focus, under
   `fieldFocusStyle: border`. Follows `focus-control` when a theme names only that.
 - Form fields and labels - `h-theme-field` (`fieldHeight`) sizes `Input`, `Dropdown`

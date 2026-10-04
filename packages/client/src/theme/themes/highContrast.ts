@@ -126,7 +126,6 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-text-tooltip': '0 0 0', // matching text-primary
   'rgb-alert-error-fill': '255 255 255', // matching status-error-subtle
   'rgb-alert-error-border': '161 0 0', // matching status-error-border
-  'rgb-surface-artifact-preview': '255 255 255', // #ffffff (the paper an artifact document assumes, in both modes)
   'rgb-surface-disabled': '255 255 255', // #ffffff
   'rgb-text-disabled': '87 87 87', // #575757
   'rgb-border-disabled': '87 87 87', // #575757
@@ -311,7 +310,6 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-text-tooltip': '255 255 255', // matching text-primary
   'rgb-alert-error-fill': '0 0 0', // matching status-error-subtle
   'rgb-alert-error-border': '255 143 143', // matching status-error-border
-  'rgb-surface-artifact-preview': '255 255 255', // #ffffff (the paper an artifact document assumes, in both modes)
   'rgb-surface-disabled': '0 0 0', // #000000
   'rgb-text-disabled': '184 184 184', // #b8b8b8
   'rgb-border-disabled': '184 184 184', // #b8b8b8

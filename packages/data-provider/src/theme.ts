@@ -88,7 +88,6 @@ export const themeColorTokens = Object.freeze([
   'rgb-text-tooltip',
   'rgb-alert-error-fill',
   'rgb-alert-error-border',
-  'rgb-surface-artifact-preview',
   'rgb-surface-disabled',
   'rgb-text-disabled',
   'rgb-border-disabled',

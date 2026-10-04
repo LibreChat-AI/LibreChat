@@ -119,9 +119,6 @@ export interface IThemeRGB {
    *  `rgb-status-error-border` when a theme omits them. */
   'rgb-alert-error-fill'?: string;
   'rgb-alert-error-border'?: string;
-  /** The paper an artifact document is drawn on. Artifacts are written for a light page, so an
-   *  unstyled one inks in the browser's black; the default is white in both modes. */
-  'rgb-surface-artifact-preview'?: string;
   /** Disabled fill, ink and edge. Painted only under the `fill` disabled style. */
   'rgb-surface-disabled'?: string;
   'rgb-text-disabled'?: string;
@@ -315,7 +312,6 @@ export interface IThemeVariables {
   '--text-tooltip': string;
   '--alert-error-fill': string;
   '--alert-error-border': string;
-  '--surface-artifact-preview': string;
   '--surface-disabled': string;
   '--text-disabled': string;
   '--border-disabled': string;
@@ -459,7 +455,6 @@ export interface IThemeColors {
   'text-tooltip'?: string;
   'alert-error-fill'?: string;
   'alert-error-border'?: string;
-  'surface-artifact-preview'?: string;
   'surface-disabled'?: string;
   'text-disabled'?: string;
   'border-disabled'?: string;

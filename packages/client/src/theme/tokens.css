@@ -130,7 +130,6 @@
   --color-text-tooltip: rgb(var(--text-tooltip, var(--text-primary)));
   --color-alert-error-fill: rgb(var(--alert-error-fill, var(--status-error-subtle)));
   --color-alert-error-border: rgb(var(--alert-error-border, var(--status-error-border)));
-  --color-surface-artifact-preview: rgb(var(--surface-artifact-preview, 255 255 255));
   --color-border-disabled: rgb(var(--border-disabled));
 
   /* status */

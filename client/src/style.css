@@ -1706,7 +1706,7 @@ html {
 
 .dark .webkit-dark-styles,
 .dark .webkit-dark-styles:focus {
-  -webkit-text-fill-color: #fff;
+  -webkit-text-fill-color: rgb(var(--field-text, var(--text-primary)));
   background-clip: content-box;
   -webkit-box-shadow: 0 0 0 50vh rgb(var(--field-fill, var(--surface-primary))) inset;
 }
