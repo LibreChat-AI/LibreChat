@@ -1033,6 +1033,29 @@ describe('ToolCall sole tool disclosure', () => {
     expect(screen.getByTestId('tool-call')).toBeInTheDocument();
   });
 
+  it('keeps the row of an only action call, which names the operation and domain', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value>
+            <ToolCall
+              args='{"query":"weather"}'
+              name="get_weather_action_api---example---com"
+              output="sunny"
+              initialProgress={1}
+              isSubmitting={false}
+            />
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  });
+
   it('drops its own row once the only call has settled, leaving the info panel', () => {
     render(
       <RecoilRoot>

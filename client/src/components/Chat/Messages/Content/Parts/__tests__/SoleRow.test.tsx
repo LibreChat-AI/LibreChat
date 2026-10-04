@@ -55,6 +55,19 @@ describe('a sole call keeps its row when its panel would be empty', () => {
     expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
   });
 
+  it('SkillCall: a named skill keeps its row so the skill name stays visible', () => {
+    renderSole(
+      <SkillCall
+        initialProgress={1}
+        isSubmitting={false}
+        args={{ skillName: 'pdf' }}
+        output="loaded"
+        runStepStatus="completed"
+      />,
+    );
+    expect(screen.getByTestId('progress-text')).toBeInTheDocument();
+  });
+
   it('SkillCall: a named skill with empty output keeps its row', () => {
     renderSole(
       <SkillCall

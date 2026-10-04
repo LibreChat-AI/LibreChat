@@ -488,9 +488,10 @@ export default function ToolCallGroup({
        *  name an action ("Create File"). */
       if (singleToolLabel && singleToolIsCode) {
         /** A detached task's output is its handle, so `groupDone` is true while
-         *  the work is still going; a stopped call did not run to the end. */
+         *  the work is still going; a stopped or failed call did not run to the end. */
+        const only = toolMetadata[0];
         const settled =
-          groupDone && toolMetadata[0]?.background !== 'running' && !toolMetadata[0]?.cancelled;
+          groupDone && only?.background !== 'running' && !only?.cancelled && !only?.failed;
         return localize(
           settled ? 'com_assistants_completed_function' : 'com_assistants_running_var',
           { 0: singleToolLabel },

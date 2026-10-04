@@ -222,9 +222,10 @@ export default function ToolCall({
     soleTool ? hasInfo : (output?.length ?? 0) > 0,
   );
   /** The only call of its group, settled successfully: the group header is the
-   *  row, so the panel stands alone and stays open. An MCP call keeps its row,
-   *  which is the only place its function name appears. */
-  const bare = soleTool && hasInfo && phase === 'completed' && !isMCPToolCall;
+   *  row, so the panel stands alone and stays open. An MCP or action call keeps
+   *  its row, which is the only place its function name and domain appear. */
+  const isActionCall = domain != null && domain !== '';
+  const bare = soleTool && hasInfo && phase === 'completed' && !isMCPToolCall && !isActionCall;
   const showInfo = bare || expandedInfo;
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
