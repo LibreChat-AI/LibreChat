@@ -67,12 +67,17 @@ describe('composeAgentUpdatePayload', () => {
   it('preserves a legacy chain on unrelated saves and sends explicit removal', () => {
     const form = createForm();
     form.agent_ids = ['first', 'second'];
-    expect(composeAgentUpdatePayload(form, 'agent_123').payload.agent_ids).toEqual([
-      'first',
-      'second',
-    ]);
+    expect(
+      composeAgentUpdatePayload(form, 'agent_123', undefined, {
+        instructionsPromptChanged: false,
+      }).payload.agent_ids,
+    ).toEqual(['first', 'second']);
     form.agent_ids = [];
-    expect(composeAgentUpdatePayload(form, 'agent_123').payload.agent_ids).toEqual([]);
+    expect(
+      composeAgentUpdatePayload(form, 'agent_123', undefined, {
+        instructionsPromptChanged: false,
+      }).payload.agent_ids,
+    ).toEqual([]);
   });
   it('omits unchanged unavailable machine choices but submits an explicit removal', () => {
     const form = createForm();
