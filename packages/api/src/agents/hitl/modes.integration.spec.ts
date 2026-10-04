@@ -2365,7 +2365,7 @@ for (const eventDriven of [false, true]) {
 
 for (const eventDriven of [false, true]) {
   for (const mode of ['ask', 'chat', 'always'] as const) {
-    test.each(['unavailable', 'recovered', 'invoke-outage'] as const)(
+    test.each(['unavailable', 'recovered', 'invoke-outage', 'resume-recovered'] as const)(
       `${mode} reviewed non-OAuth SDK execution remains once-only during %s; event-driven=${eventDriven}`,
       async (stage) => {
         const chat = `outage-${mode}-${stage}-${eventDriven}`;
@@ -2387,7 +2387,7 @@ for (const eventDriven of [false, true]) {
           toolDefinitions: [toolDefinition],
         };
         const saver = new MemorySaver();
-        let unavailable = stage !== 'invoke-outage';
+        let unavailable = stage === 'unavailable' || stage === 'recovered';
         const realLookup = storage.getToolApprovalGrants.bind(storage);
         const failedStorage: ToolApprovalGrantStorage = {
           ...storage,
@@ -2419,12 +2419,13 @@ for (const eventDriven of [false, true]) {
         const payload = first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload;
         const bindings = captureRunToolApprovalBindings(first, payload)!;
         expect(bindings['outage-call'].oauthEpoch).toBeNull();
-        if (stage !== 'invoke-outage')
+        if (stage === 'unavailable' || stage === 'recovered')
           expect(bindings['outage-call']).toMatchObject({
             canRemember: false,
             unavailable: 'storage',
           });
         if (stage === 'recovered') unavailable = false;
+        if (stage === 'resume-recovered') unavailable = true;
         const resumed = await build({
           source,
           chat,
@@ -2436,9 +2437,9 @@ for (const eventDriven of [false, true]) {
             decisions: [{ tool_call_id: 'outage-call', decision: 'approve' }],
           }),
           beforeExecution:
-            stage === 'invoke-outage'
+            stage === 'invoke-outage' || stage === 'resume-recovered'
               ? async () => {
-                  unavailable = true;
+                  unavailable = stage === 'invoke-outage';
                 }
               : undefined,
         });

@@ -2309,6 +2309,23 @@ describe('AgentClient - startup telemetry', () => {
       subagentAgentConfigs: undefined,
     },
     {
+      name: 'dontAsk denied attached-code lazy graph member',
+      toolApproval: { enabled: true, mode: 'dontAsk', allow: ['read_file'] },
+      primaryTools: [{ name: 'read_file' }],
+      subagentAgentConfigs: [
+        {
+          id: 'lazy-parent',
+          subagentGraphMemberMetadata: [
+            {
+              id: 'attached-member',
+              codeExecutionContext: { environmentType: 'attached' },
+              skillAuthoringAvailable: true,
+            },
+          ],
+        },
+      ],
+    },
+    {
       name: 'dontAsk fallback-denied ask agent tool',
       toolApproval: { enabled: true, mode: 'dontAsk', allow: ['safe_mcp_db'] },
       primaryTools: [{ name: 'query_mcp_db' }, { name: 'safe_mcp_db' }],

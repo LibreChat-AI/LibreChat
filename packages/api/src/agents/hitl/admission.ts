@@ -380,11 +380,35 @@ export function canAgentGraphPause({
   }
   if (approvalGraph.lazyAgentIds.size > 0) {
     const pluginHookCanAsk = pluginHookSource?.hasToolApprovalHooks?.() === true;
+    const exceptions = [...(effectivePolicy?.ask ?? []), ...(effectivePolicy?.allow ?? [])];
+    const unboundedHookCanAsk =
+      isToolApprovalPauseCapable(effectivePolicy, true) &&
+      (effectivePolicy?.mode !== 'dontAsk' || exceptions.length > 0);
+    const finitePolicyNames =
+      effectivePolicy?.mode === 'dontAsk' && exceptions.every((name) => !name.includes('*'))
+        ? exceptions
+        : undefined;
     const unresolvedHookCanAsk = Array.from(approvalGraph.lazyAgentIds).some(
       (agentId) =>
-        resolvedProgrammaticHooks.some(
-          ({ agentIds }) => agentIds == null || (agentId != null && agentIds.has(agentId)),
-        ) || pluginHookCanAsk,
+        resolvedProgrammaticHooks.some((hook) => {
+          if (hook.agentIds != null && (agentId == null || !hook.agentIds.has(agentId)))
+            return false;
+          const names = hook.toolNames ?? finitePolicyNames;
+          if (names == null) return unboundedHookCanAsk;
+          return names.some(
+            (name) =>
+              !isToolBlockedByApprovalPolicy(effectivePolicy, name) &&
+              resolvedToolApprovalHooksCanMatch([hook], [name], agentId),
+          );
+        }) ||
+        (pluginHookCanAsk &&
+          (finitePolicyNames == null
+            ? unboundedHookCanAsk
+            : finitePolicyNames.some(
+                (name) =>
+                  !isToolBlockedByApprovalPolicy(effectivePolicy, name) &&
+                  pluginHookSource?.hasToolApprovalHooks?.([name]) === true,
+              ))),
     );
     const staticPolicyCanAsk = isToolApprovalPauseCapable(effectivePolicy);
     if (staticPolicyCanAsk || unresolvedHookCanAsk || unresolvedModeCanAsk) {

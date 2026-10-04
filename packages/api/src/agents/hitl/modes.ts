@@ -189,8 +189,11 @@ export function createAgentToolApprovalSession({
   const calls = new Map<string, ToolApprovalGrantBinding | null>();
   const unavailable = new Map<string, ToolApprovalGrantBinding['unavailable']>();
   const reviewedBindings = new Map<string, ToolApprovalGrantBinding>();
+  const learningDisabled = new Set<string>();
   for (const [callId, binding] of Object.entries(reviewed?.bindings ?? {})) {
-    reviewedBindings.set(approvalCallKey(binding.agentId, callId, binding.executionScope), binding);
+    const key = approvalCallKey(binding.agentId, callId, binding.executionScope);
+    reviewedBindings.set(key, binding);
+    if (binding.canRemember !== true) learningDisabled.add(key);
   }
   const approvedDecisions = new Set<string>();
   const permittedDecisions = new Set<string>();
@@ -224,6 +227,13 @@ export function createAgentToolApprovalSession({
     );
   const ready = new Map<string, ToolApprovalGrantBinding>();
   const executed = new Set<string>();
+  // Lost learning eligibility never recovers within the same invocation.
+  const disableLearning = (key: string): void => {
+    learningDisabled.add(key);
+    ready.delete(key);
+    executed.delete(key);
+  };
+
   const policyChecks = new Map<string, { agentId: string; toolName: string }>();
   const dispositions = new Map<string, boolean>();
   const transportWitnesses = new Map<
@@ -247,6 +257,7 @@ export function createAgentToolApprovalSession({
     policyChecks.delete(key);
     dispositions.delete(key);
     reviewedBindings.delete(key);
+    learningDisabled.delete(key);
     approvedDecisions.delete(key);
     permittedDecisions.delete(key);
   };
@@ -473,6 +484,12 @@ export function createAgentToolApprovalSession({
       const consent = calls.get(key);
       const current = consent && (await approved(consent));
       const manual = reviewedBindings.get(key);
+      if (
+        consent?.canRemember !== true ||
+        current?.available === false ||
+        current?.oauthEpoch === undefined
+      )
+        disableLearning(key);
       // Grant-store availability is not one-time authority for verified non-OAuth calls.
       const reviewOnly =
         invocation.background !== true &&
@@ -485,11 +502,7 @@ export function createAgentToolApprovalSession({
         manual.oauthEpoch === null &&
         consent.oauthEpoch === null &&
         permittedDecisions.has(key) &&
-        (manual.unavailable === 'storage' ||
-          manual.unavailable === 'disabled' ||
-          current?.available === false ||
-          current?.oauthEpoch === undefined);
-      if (reviewOnly) ready.delete(key);
+        learningDisabled.has(key);
       if (
         !reviewOnly &&
         (!current ||
@@ -525,7 +538,7 @@ export function createAgentToolApprovalSession({
         if (
           invocation.background !== true &&
           manual.canRemember === true &&
-          !reviewOnly &&
+          !learningDisabled.has(key) &&
           approvedDecisions.has(key)
         )
           executed.add(key);
@@ -572,6 +585,12 @@ export function createAgentToolApprovalSession({
           current.oauthEpoch === undefined ||
           current.oauthEpoch !== consent.oauthEpoch
         ) {
+          const key = approvalCallKey(
+            invocation.agentId,
+            invocation.toolCallId ?? '',
+            invocation.executionScope,
+          );
+          if (proposals.get(key)?.ownership === invocation.ownership) disableLearning(key);
           throw new Error(
             'The approved MCP OAuth authorization changed before transport retry. Request approval again.',
           );
@@ -591,6 +610,7 @@ export function createAgentToolApprovalSession({
       try {
         if (
           grant &&
+          !learningDisabled.has(key) &&
           executed.has(key) &&
           grant.canRemember === true &&
           grant.agentId === input.executingAgentId &&
@@ -661,9 +681,6 @@ export function createAgentToolApprovalSession({
         legacyDecisions.delete(input.toolUseId);
         if (decision === 'approve' || decision === 'edit') permittedDecisions.add(key);
       }
-      if (reviewedBinding && approvedDecisions.has(key) && reviewedBinding.canRemember === true) {
-        ready.set(key, reviewedBinding);
-      }
       policyChecks.set(key, { agentId: agent.id, toolName: input.toolName });
       const candidates = callOwners.get(input.toolUseId) ?? new Set<string>();
       candidates.add(key);
@@ -678,6 +695,7 @@ export function createAgentToolApprovalSession({
       });
       if (!target) {
         calls.set(key, null);
+        disableLearning(key);
         unavailable.set(key, 'connection');
         return { decision: mode === 'allow' ? 'allow' : 'ask' };
       }
@@ -697,6 +715,17 @@ export function createAgentToolApprovalSession({
         target.canRemember = false;
         target.unavailable = 'background';
         ready.delete(key);
+      }
+      if (target.canRemember !== true) disableLearning(key);
+      if (learningDisabled.has(key)) {
+        target.canRemember = false;
+        target.unavailable ??= prior?.unavailable ?? reviewedBinding?.unavailable;
+      } else if (
+        reviewedBinding &&
+        approvedDecisions.has(key) &&
+        reviewedBinding.canRemember === true
+      ) {
+        ready.set(key, reviewedBinding);
       }
       calls.set(key, target);
       if (mode === 'allow') return { decision: 'allow' };

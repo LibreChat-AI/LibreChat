@@ -1189,3 +1189,77 @@ test.each(['approve', 'edit'] as const)(
     expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
   },
 );
+
+for (const mode of ['chat', 'always'] as const) {
+  test.each(['approve', 'edit'] as const)(
+    `${mode} resume-only outage stays ineligible after repeated healthy hooks and %s`,
+    async (decision) => {
+      const source = agent(mode);
+      const definition = source.toolDefinitions![0];
+      bindToolApproval(definition, 'source-a', undefined, undefined, undefined, 'other');
+      const storage = store();
+      const realLookup = storage.getToolApprovalGrants;
+      let unavailable = false;
+      storage.getToolApprovalGrants = jest.fn(async (...args) => {
+        if (unavailable) throw new Error('synthetic resumed outage');
+        return realLookup(...args);
+      });
+      const first = createAgentToolApprovalSession({ agents: [source], scope, storage });
+      await first.hook(input(), new AbortController().signal);
+      const bindings = first.bindingsFor(
+        buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+      );
+      expect(bindings['call-a'].canRemember).toBe(true);
+      const session = createAgentToolApprovalSession({
+        agents: [source],
+        scope,
+        storage,
+        reviewed: { bindings, decisions: [{ tool_call_id: 'call-a', decision }] },
+      });
+      unavailable = true;
+      await session.hook(input(), new AbortController().signal);
+      expect(
+        session.bindingsFor(
+          buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+        )['call-a'],
+      ).toMatchObject({ canRemember: false, unavailable: 'storage' });
+      unavailable = false;
+      await session.hook(input(), new AbortController().signal);
+      await session.hook(input(), new AbortController().signal);
+      const invocation = { agentId: source.id, toolCallId: 'call-a' };
+      await expect(session.validateExecution(definition, invocation)).resolves.toBeUndefined();
+      await expect(
+        session.validateTransport!('db', null, invocation, true),
+      ).resolves.toBeUndefined();
+      await session.rememberHook(
+        { ...input(), hook_event_name: 'PostToolUse', toolOutput: 'success' },
+        new AbortController().signal,
+      );
+      expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+      expect(bindings['call-a'].canRemember).toBe(true);
+      expect(await session.hook(input(), new AbortController().signal)).toMatchObject({
+        decision: 'ask',
+      });
+      const renewed = session.bindingsFor(
+        buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+      );
+      expect(renewed['call-a'].canRemember).toBe(true);
+      const fresh = createAgentToolApprovalSession({
+        agents: [source],
+        scope,
+        storage,
+        reviewed: {
+          bindings: renewed,
+          decisions: [{ tool_call_id: 'call-a', decision: 'approve' }],
+        },
+      });
+      await fresh.hook(input(), new AbortController().signal);
+      await fresh.validateExecution(definition, { agentId: source.id, toolCallId: 'call-a' });
+      await fresh.rememberHook(
+        { ...input(), hook_event_name: 'PostToolUse', toolOutput: 'success' },
+        new AbortController().signal,
+      );
+      expect(storage.rememberToolApprovalGrants).toHaveBeenCalledTimes(1);
+    },
+  );
+}

@@ -965,3 +965,93 @@ test('verified alias and conversation allows are evaluated before fallback-denie
     }),
   ).toBe(false);
 });
+
+test('unbounded lazy hook predictions intersect literal dontAsk exceptions and static denial', () => {
+  const agents = [
+    { id: 'root', tools: ['read_file'], subagentGraphMemberMetadata: [{ id: 'child' }] },
+  ];
+  const hook = {
+    hook: askHook,
+    matcher: '^(?:bash_tool|create_file)$',
+    agentIds: new Set(['child']),
+  };
+  const policy = { enabled: true, mode: 'dontAsk' as const, allow: ['read_file'] };
+  expect(canAgentGraphPause({ policy, agents, resolvedProgrammaticHooks: [hook] })).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['read_file', 'bash_tool'] },
+      agents,
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(true);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['read_file', 'bash_tool'], deny: ['bash_tool'] },
+      agents,
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { enabled: true, mode: 'dontAsk' },
+      agents,
+      resolvedProgrammaticHooks: [{ hook: askHook }],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['write_*'] },
+      agents,
+      resolvedProgrammaticHooks: [{ hook: askHook }],
+    }),
+  ).toBe(true);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['write_*'], deny: ['*'] },
+      agents,
+      resolvedProgrammaticHooks: [{ hook: askHook }],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy,
+      agents,
+      resolvedProgrammaticHooks: [{ ...hook, toolNames: ['bash_tool', 'create_file'] }],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['bash_*'] },
+      agents,
+      resolvedProgrammaticHooks: [{ ...hook, toolNames: ['bash_tool'] }],
+    }),
+  ).toBe(true);
+});
+
+test('lazy plugin prediction uses eligible literal exceptions instead of denied hook presence', () => {
+  const agents = [{ tools: ['read_file'], subagentGraphMemberMetadata: [{ id: 'child' }] }];
+  const source = pluginSource((names) => names == null || names.includes('bash_tool'));
+  const policy = { enabled: true, mode: 'dontAsk' as const, allow: ['read_file'] };
+  expect(canAgentGraphPause({ policy, agents, pluginHookSource: source })).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['read_file', 'bash_tool'] },
+      agents,
+      pluginHookSource: source,
+    }),
+  ).toBe(true);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['read_file', 'bash_tool'], deny: ['bash_tool'] },
+      agents,
+      pluginHookSource: source,
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { enabled: true, mode: 'dontAsk' },
+      agents,
+      pluginHookSource: source,
+    }),
+  ).toBe(false);
+});
