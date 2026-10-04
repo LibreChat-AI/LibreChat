@@ -101,6 +101,19 @@ describe('local storage writes', () => {
     expect(await fs.readdir(dir)).toEqual(['upload.tmp']);
   });
 
+  it('writes and moves to a name near NAME_MAX', async () => {
+    const longName = `${'n'.repeat(250)}.png`;
+    const source = path.join(dir, 'upload.tmp');
+    await fs.writeFile(source, 'moved');
+
+    await writeLocalFile(path.join(dir, 'written'), longName, 'written');
+    await moveLocalFile(source, path.join(dir, 'moved'), longName);
+
+    expect(await fs.readFile(path.join(dir, 'written', longName), 'utf8')).toBe('written');
+    expect(await fs.readFile(path.join(dir, 'moved', longName), 'utf8')).toBe('moved');
+    expect(await fs.readdir(path.join(dir, 'moved'))).toEqual([longName]);
+  });
+
   it('moves a temp upload into a new directory', async () => {
     const source = path.join(dir, 'upload.tmp');
     await fs.writeFile(source, 'content');

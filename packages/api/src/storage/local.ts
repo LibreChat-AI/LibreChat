@@ -9,13 +9,14 @@ export interface LocalStoragePaths {
 
 /**
  * Fills a sibling temp file and renames it into place, so concurrent writers to one path each
- * land whole (last rename wins) and readers never see a partly written file.
+ * land whole (last rename wins) and readers never see a partly written file. The temp name is
+ * fixed length rather than derived from the target, so a target name near NAME_MAX still fits.
  */
 async function replaceAtomically(
   filePath: string,
   fill: (tempPath: string) => Promise<void>,
 ): Promise<void> {
-  const tempPath = `${filePath}.${crypto.randomUUID()}.tmp`;
+  const tempPath = path.join(path.dirname(filePath), `.${crypto.randomUUID()}.tmp`);
   try {
     await fill(tempPath);
     await rename(tempPath, filePath);
