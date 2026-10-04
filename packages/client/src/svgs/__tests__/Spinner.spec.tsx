@@ -2,7 +2,14 @@ import React from 'react';
 import { render } from '@testing-library/react';
 import Spinner from '../Spinner';
 
-type FakeAnimation = { startTime: number | null };
+type FakeAnimation = { startTime: number | null; animationName: string };
+
+const ROTATE = 'librechat-spinner-rotate';
+
+const rotation = (startTime: number | null): FakeAnimation => ({
+  startTime,
+  animationName: ROTATE,
+});
 
 const mockGetAnimations = (impl: () => FakeAnimation[]) => {
   const getAnimations = jest.fn(impl);
@@ -16,12 +23,15 @@ const mockGetAnimations = (impl: () => FakeAnimation[]) => {
 const flushMicrotasks = () => Promise.resolve();
 
 describe('Spinner', () => {
+  const originalMatchMedia = window.matchMedia;
+
   afterEach(() => {
     delete (SVGElement.prototype as Partial<SVGElement>).getAnimations;
+    window.matchMedia = originalMatchMedia;
   });
 
   it('pins its rotation to the document timeline origin so spinners share one phase', async () => {
-    const animation: FakeAnimation = { startTime: 1234 };
+    const animation = rotation(1234);
     mockGetAnimations(() => [animation]);
 
     render(<Spinner />);
@@ -30,8 +40,8 @@ describe('Spinner', () => {
     expect(animation.startTime).toBe(0);
   });
 
-  it('pins every animation on the svg', async () => {
-    const animations: FakeAnimation[] = [{ startTime: 10 }, { startTime: 20 }];
+  it('pins every rotation on the svg', async () => {
+    const animations = [rotation(10), rotation(20)];
     mockGetAnimations(() => animations);
 
     render(<Spinner />);
@@ -40,8 +50,55 @@ describe('Spinner', () => {
     expect(animations.map((a) => a.startTime)).toEqual([0, 0]);
   });
 
+  it('leaves animations the caller added through className alone', async () => {
+    const own = rotation(5);
+    const callerFade: FakeAnimation = { startTime: 7, animationName: 'caller-fade' };
+    mockGetAnimations(() => [own, callerFade]);
+
+    render(<Spinner className="animate-caller-fade" />);
+    await flushMicrotasks();
+
+    expect(callerFade.startTime).toBe(7);
+  });
+
+  it('pins the rotation that starts when reduced motion is switched off', async () => {
+    let listener: (() => void) | undefined;
+    window.matchMedia = jest.fn().mockImplementation(() => ({
+      matches: true,
+      addEventListener: (_type: string, cb: () => void) => {
+        listener = cb;
+      },
+      removeEventListener: jest.fn(),
+    }));
+    let current: FakeAnimation[] = [];
+    mockGetAnimations(() => current);
+
+    render(<Spinner />);
+    await flushMicrotasks();
+
+    const started = rotation(99);
+    current = [started];
+    listener?.();
+    await flushMicrotasks();
+
+    expect(started.startTime).toBe(0);
+  });
+
+  it('stops listening for the reduced motion preference on unmount', () => {
+    const removeEventListener = jest.fn();
+    window.matchMedia = jest.fn().mockImplementation(() => ({
+      matches: false,
+      addEventListener: jest.fn(),
+      removeEventListener,
+    }));
+
+    render(<Spinner />).unmount();
+
+    expect(removeEventListener).toHaveBeenCalledWith('change', expect.any(Function));
+  });
+
   it('reads every animation before writing any start time when spinners mount together', async () => {
-    const animations: FakeAnimation[] = [{ startTime: 1 }, { startTime: 2 }, { startTime: 3 }];
+    const animations = [rotation(1), rotation(2), rotation(3)];
     const writesSeenAtRead: number[] = [];
     let next = 0;
     mockGetAnimations(() => {
@@ -63,7 +120,7 @@ describe('Spinner', () => {
   });
 
   it('does not touch the animations of a spinner that unmounted before the batch ran', async () => {
-    const animation: FakeAnimation = { startTime: 99 };
+    const animation = rotation(99);
     const getAnimations = mockGetAnimations(() => [animation]);
 
     render(<Spinner />).unmount();

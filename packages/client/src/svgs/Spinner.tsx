@@ -3,16 +3,30 @@ import { JSX } from 'react/jsx-runtime';
 import { cn } from '~/utils/';
 import './Spinner.css';
 
+const ROTATION_NAME = 'librechat-spinner-rotate';
+const REDUCED_MOTION = '(prefers-reduced-motion: reduce)';
+
 const pending = new Set<SVGSVGElement>();
+
+/** Only the spinner's own rotation is pinned: `className` can add other animations. */
+const isRotation = (animation: Animation): boolean =>
+  (animation as Partial<CSSAnimation>).animationName === ROTATION_NAME;
 
 /** Reads every pending animation before writing any start time: a write dirties style, so
  *  interleaving them would force one style recalculation per spinner. */
 function pinPending() {
-  const animations = [...pending].flatMap((svg) => svg.getAnimations?.() ?? []);
+  const animations = [...pending].flatMap((svg) => svg.getAnimations?.().filter(isRotation) ?? []);
   pending.clear();
   animations.forEach((animation) => {
     animation.startTime = 0;
   });
+}
+
+function schedulePin(svg: SVGSVGElement) {
+  pending.add(svg);
+  if (pending.size === 1) {
+    queueMicrotask(pinPending);
+  }
 }
 
 interface SpinnerProps {
@@ -44,18 +58,21 @@ export default function Spinner({
   const svgRef = useRef<SVGSVGElement>(null);
 
   /** Every spinner starts its rotation at the document timeline origin, so one that mounts
-   *  while others spin joins them in phase instead of restarting at zero. */
+   *  while others spin joins them in phase instead of restarting at zero. A spinner mounted
+   *  under reduced motion has no rotation yet, so it is pinned again when the preference
+   *  changes and the rotation begins. */
   useLayoutEffect(() => {
     const svg = svgRef.current;
     if (!svg) {
       return;
     }
-    pending.add(svg);
-    if (pending.size === 1) {
-      queueMicrotask(pinPending);
-    }
+    schedulePin(svg);
+    const query = window.matchMedia?.(REDUCED_MOTION);
+    const onChange = () => schedulePin(svg);
+    query?.addEventListener('change', onChange);
     return () => {
       pending.delete(svg);
+      query?.removeEventListener('change', onChange);
     };
   }, [speed]);
 
