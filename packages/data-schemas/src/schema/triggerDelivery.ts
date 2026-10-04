@@ -168,11 +168,30 @@ const triggerDeliverySchema: Schema<IAgentTriggerDeliveryDocument> = new Schema(
                 kind: { type: String, enum: ['wakeup'], required: true },
                 claimId: { type: String, required: true, maxlength: 128 },
                 claimedAt: { type: Date, required: true },
+                appliedAt: { type: Date },
+                batchId: { type: String, maxlength: 128 },
               },
               { _id: false },
             ),
             required: false,
           },
+        },
+        { _id: false },
+      ),
+      select: false,
+    },
+    backgroundToolResultBatch: {
+      type: new Schema(
+        {
+          batchId: { type: String, required: true, maxlength: 128 },
+          dispatchCount: { type: Number, required: true, min: 0 },
+          dispatchId: { type: String, maxlength: 128 },
+          releaseId: { type: String, maxlength: 128 },
+          proofCopiedAt: { type: Date },
+          candidates: { type: [String], required: true },
+          releasing: { type: Boolean },
+          members: { type: [String], default: undefined },
+          appliedAt: { type: Date },
         },
         { _id: false },
       ),
@@ -218,6 +237,7 @@ const triggerDeliverySchema: Schema<IAgentTriggerDeliveryDocument> = new Schema(
     requeueCount: { type: Number, default: 0, min: 0 },
     stagingRecoveryAt: { type: Date },
     laneCleanupPendingAt: { type: Date },
+    wakeRequestedAt: { type: Date },
   },
   { timestamps: true },
 );
@@ -253,6 +273,19 @@ triggerDeliverySchema.index(
   { sparse: true },
 );
 triggerDeliverySchema.index({ status: 1, updatedAt: -1 });
+/** One user's waiting deliveries, read when that user's generation settles. */
+triggerDeliverySchema.index({ user: 1, status: 1, availableAt: 1 });
+/** Bounded background-result polls by owner, conversation, capability and status. */
+triggerDeliverySchema.index({
+  user: 1,
+  'envelope.event.source.type': 1,
+  'envelope.event.source.id': 1,
+  'envelope.target.conversationId': 1,
+  requiredWorkerCapability: 1,
+  status: 1,
+  updatedAt: -1,
+  _id: -1,
+});
 triggerDeliverySchema.index({ 'actorReceipt.resolution': 1 }, { sparse: true });
 triggerDeliverySchema.index({ user: 1, actorActionAdmittedAt: 1 }, { sparse: true });
 triggerDeliverySchema.index({ stagingRecoveryAt: 1 }, { sparse: true });

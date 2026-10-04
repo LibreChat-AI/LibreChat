@@ -27,6 +27,7 @@ describe('browser file session authentication', () => {
       asSystem: (work) => work(),
       findSession,
       getUserById,
+      clearCloudFrontCookies: jest.fn(),
       log,
     });
   const app = () => {

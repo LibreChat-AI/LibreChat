@@ -126,6 +126,7 @@ const ControlCombobox: ForwardRefExoticComponent<
   );
   const openingAction = useRef(false);
   const [buttonWidth, setButtonWidth] = useState<number | null>(null);
+  const popoverWidth = isCollapsed ? '300px' : (buttonWidth ?? '300px');
   const popoverZIndex = usePopoverZIndex();
 
   const getItem = (option: OptionWithIcon) => ({
@@ -176,6 +177,14 @@ const ControlCombobox: ForwardRefExoticComponent<
     select.hide();
     buttonRef.current?.focus();
   };
+
+  const selectOpen = select.useState('open');
+  useEffect(() => {
+    // The select owns the popover; hiding it does not hide the combobox store.
+    if (!selectOpen) {
+      setSearchValue('');
+    }
+  }, [selectOpen]);
 
   const matches = useMemo(() => {
     const filteredItems = matchSorter(items, searchValue, {
@@ -256,11 +265,11 @@ const ControlCombobox: ForwardRefExoticComponent<
         aria-invalid={ariaInvalid || undefined}
         aria-describedby={ariaDescribedBy}
         className={cn(
-          'flex items-center justify-center gap-2 rounded-full bg-surface-secondary',
+          'bg-surface-secondary flex items-center justify-center gap-2 rounded-full',
           'text-text-primary hover:bg-surface-tertiary',
-          'border border-border-light',
+          'border-border-control border',
           isCollapsed ? 'h-9 w-9' : 'h-9 w-full rounded-xl px-3 py-2 text-sm',
-          variant === 'field' && cn(fieldControl, 'justify-start hover:bg-surface-hover'),
+          variant === 'field' && cn(fieldControl, 'hover:bg-surface-hover justify-start'),
           className,
         )}
       >
@@ -270,7 +279,7 @@ const ControlCombobox: ForwardRefExoticComponent<
         {!isCollapsed && (
           <>
             <span
-              className="flex-grow truncate text-left"
+              className="grow truncate text-left"
               title={(displayValue != null ? displayValue : selectedValue) || undefined}
             >
               {displayValue != null
@@ -280,7 +289,7 @@ const ControlCombobox: ForwardRefExoticComponent<
             {SelectIcon != null && iconSide === 'right' && (
               <div className={selectIconClassName}>{SelectIcon}</div>
             )}
-            {showCarat && <ChevronDown className="h-4 w-4 text-text-secondary" />}
+            {showCarat && <ChevronDown className="text-text-secondary h-4 w-4" />}
           </>
         )}
       </Ariakit.Select>
@@ -293,7 +302,7 @@ const ControlCombobox: ForwardRefExoticComponent<
         autoFocusOnHide={() => !openingAction.current}
         onKeyDown={handleEscape}
         className={cn(
-          'overflow-hidden rounded-xl border border-border-light bg-surface-secondary shadow-lg',
+          'border-border-light bg-surface-secondary overflow-hidden rounded-xl border shadow-lg',
           popoverMaxHeight != null && 'flex flex-col',
           popoverClassName ?? 'animate-popover',
         )}
@@ -303,25 +312,23 @@ const ControlCombobox: ForwardRefExoticComponent<
            * placement, so a short viewport shrinks the cap instead of pushing
            * lower options offscreen; the fallback keeps the cap when the
            * variable is absent. */
-          ...(popoverMaxHeight != null
-            ? {
-                maxHeight: `min(${popoverMaxHeight}px, var(--popover-available-height, ${popoverMaxHeight}px))`,
-              }
-            : null),
-          ...(matchTriggerWidth
-            ? { width: isCollapsed ? '300px' : (buttonWidth ?? '300px') }
-            : { minWidth: '16rem' }),
+          maxHeight:
+            popoverMaxHeight != null
+              ? `min(${popoverMaxHeight}px, var(--popover-available-height, ${popoverMaxHeight}px))`
+              : undefined,
+          width: matchTriggerWidth ? popoverWidth : undefined,
+          minWidth: matchTriggerWidth ? undefined : '16rem',
         }}
       >
         <div className="shrink-0 py-1.5">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-primary" />
+            <Search className="text-text-primary absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
             <Ariakit.Combobox
               store={combobox}
               onKeyDown={handleEscape}
               autoSelect
               placeholder={searchPlaceholder}
-              className="w-full rounded-md bg-surface-secondary py-2 pl-9 pr-3 text-sm text-text-primary focus:outline-none"
+              className="bg-surface-secondary text-text-primary w-full rounded-md py-2 pr-3 pl-9 text-sm focus:outline-hidden"
             />
           </div>
         </div>
@@ -360,7 +367,7 @@ const ControlCombobox: ForwardRefExoticComponent<
                   {icon != null && iconSide === 'left' && (
                     <div className={optionIconClassName}>{icon}</div>
                   )}
-                  <span className="flex-grow truncate text-left">{label}</span>
+                  <span className="grow truncate text-left">{label}</span>
                   {icon != null && iconSide === 'right' && (
                     <div className={optionIconClassName}>{icon}</div>
                   )}
@@ -381,7 +388,7 @@ const ControlCombobox: ForwardRefExoticComponent<
             </div>
           )}
           {optionAction && (
-            <div className="absolute right-1 top-0">
+            <div className="absolute top-0 right-1">
               {matches.map((item, index) => {
                 const action = item.value ? optionAction(item.value) : undefined;
                 if (!action) return null;

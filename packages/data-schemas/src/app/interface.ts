@@ -44,9 +44,19 @@ export async function loadDefaultInterface({
     autoSubmitFromUrl: interfaceConfig?.autoSubmitFromUrl ?? defaults.autoSubmitFromUrl,
     buildInfo: interfaceConfig?.buildInfo ?? defaults.buildInfo,
     contextUsage: interfaceConfig?.contextUsage ?? defaults.contextUsage,
+    artifactUndocking: interfaceConfig?.artifactUndocking ?? defaults.artifactUndocking,
     contextCost: interfaceConfig?.contextCost ?? defaults.contextCost,
     feedback: interfaceConfig?.feedback ?? defaults.feedback,
     currency: interfaceConfig?.currency ?? defaults.currency,
+    theme: interfaceConfig?.theme,
+    steerArmConfirmationTimeoutMs:
+      interfaceConfig?.steerArmConfirmationTimeoutMs ?? defaults.steerArmConfirmationTimeoutMs,
+    queuedTurnReconciliationTimeoutMs:
+      interfaceConfig?.queuedTurnReconciliationTimeoutMs ??
+      defaults.queuedTurnReconciliationTimeoutMs,
+    queuedSendLockTimeoutMs:
+      interfaceConfig?.queuedSendLockTimeoutMs ?? defaults.queuedSendLockTimeoutMs,
+    composerRecentFiles: interfaceConfig?.composerRecentFiles ?? defaults.composerRecentFiles,
 
     // Permissions and related settings - only include if explicitly configured
     bookmarks: interfaceConfig?.bookmarks,
@@ -72,6 +82,13 @@ export async function loadDefaultInterface({
     sharedLinks: interfaceConfig?.sharedLinks,
     schedules: interfaceConfig?.schedules,
     media: interfaceConfig?.media,
+
+    /* Merged per field rather than taken whole, so an operator who sets one capability keeps
+       the defaults for the rest instead of silently turning the others off. */
+    replyNotifications: {
+      ...defaults.replyNotifications,
+      ...interfaceConfig?.replyNotifications,
+    },
   });
 
   return loadedInterface;

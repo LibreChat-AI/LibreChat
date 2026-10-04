@@ -1,67 +1,215 @@
-import { act, renderHook, waitFor } from '@testing-library/react';
-import { ContentTypes, QueryKeys } from 'librechat-data-provider';
+import { Provider } from 'jotai';
+import download from 'downloadjs';
+import exportFromJSON from 'export-from-json';
+import { act, renderHook } from '@testing-library/react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Constants, QueryKeys, ContentTypes } from 'librechat-data-provider';
+import type { TConversation, TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import useExportConversation from '../useExportConversation';
 
-const mockBuild = jest.fn().mockResolvedValue([]);
-jest.mock('~/hooks/Messages/useBuildMessageTree', () => ({
-  __esModule: true,
-  default: () => mockBuild,
+const mockGetMessages = jest.fn();
+const mockShowToast = jest.fn();
+const mockCaptureScreenshot = jest.fn();
+const mockScreenshotRef = { current: document.createElement('div') };
+
+jest.mock('librechat-data-provider', () => {
+  const actual = jest.requireActual('librechat-data-provider');
+  return {
+    ...actual,
+    dataService: {
+      ...actual.dataService,
+      getMessagesByConvoId: (...args: unknown[]) => mockGetMessages(...args),
+    },
+  };
+});
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useToastContext: () => ({ showToast: mockShowToast }),
 }));
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
 jest.mock('~/hooks/ScreenshotContext', () => ({
-  useScreenshot: () => ({ captureScreenshot: jest.fn() }),
+  useScreenshot: () => ({
+    captureScreenshot: mockCaptureScreenshot,
+    screenshotTargetRef: mockScreenshotRef,
+  }),
+  ScreenshotLimitError: class ScreenshotLimitError extends Error {},
+  ScreenshotTargetError: class ScreenshotTargetError extends Error {},
 }));
-jest.mock('@librechat/client', () => ({ useToastContext: () => ({ showToast: jest.fn() }) }));
-jest.mock('react-router-dom', () => ({ useParams: () => ({ conversationId: 'conversation' }) }));
 jest.mock('downloadjs', () => jest.fn());
 jest.mock('export-from-json', () =>
   Object.assign(jest.fn(), { types: { csv: 'csv', txt: 'txt' } }),
 );
-jest.mock('librechat-data-provider', () => ({
-  ...jest.requireActual('librechat-data-provider'),
-  buildTree: ({ messages }: { messages: object[] }) => messages,
-}));
 
-test.each(['json', 'text', 'markdown', 'csv'])(
-  'detaches native identity for %s export while preserving image identity and the cached chat',
+const conversationId = '11111111-1111-4111-8111-111111111111';
+const conversation = { conversationId, title: 'Protected chat' } as TConversation;
+const submitted = {
+  conversationId,
+  messageId: 'user-1',
+  parentMessageId: Constants.NO_PARENT,
+  isCreatedByUser: true,
+  clientTimestamp: '2026-09-28T15:00:00',
+  text: 'Email alice@example.com',
+} as TMessage;
+const canonical = {
+  ...submitted,
+  text: 'Email [EMAIL_1_revision]',
+  privacyRevision: 'revision',
+} as TMessage;
+
+function setup(type: string, pending: TMessage[] = [submitted]) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData([QueryKeys.messages, conversationId], pending);
+  const hook = renderHook(
+    () =>
+      useExportConversation({
+        conversation,
+        filename: 'protected',
+        type,
+        includeOptions: false,
+        exportBranches: false,
+        recursive: false,
+      }),
+    {
+      wrapper: function Wrapper({ children }: { children: ReactNode }) {
+        return (
+          <MemoryRouter initialEntries={[`/c/${conversationId}`]}>
+            <QueryClientProvider client={queryClient}>
+              <Provider>
+                <Routes>
+                  <Route path="/c/:conversationId" element={children} />
+                </Routes>
+              </Provider>
+            </QueryClientProvider>
+          </MemoryRouter>
+        );
+      },
+    },
+  );
+  return { ...hook, queryClient };
+}
+
+async function readBlob(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(blob);
+  });
+}
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockScreenshotRef.current.dataset.conversationId = conversationId;
+  document.body.append(mockScreenshotRef.current);
+});
+
+it('exports acknowledged canonical text rather than a pending private cache value', async () => {
+  mockGetMessages.mockResolvedValueOnce([canonical]);
+  const { result } = setup('json');
+  await act(async () => {
+    await result.current.exportConversation();
+  });
+  expect(mockGetMessages).toHaveBeenCalledWith(conversationId);
+  const saved = (download as jest.Mock).mock.calls[0]?.[0] as Blob;
+  expect(saved).toBeInstanceOf(Blob);
+  const fileText = await readBlob(saved);
+  expect(fileText).toContain(canonical.text);
+  expect(fileText).not.toContain('alice@example.com');
+  expect(mockShowToast).not.toHaveBeenCalled();
+});
+
+it.each(['csv', 'markdown', 'text'])(
+  'uses the canonical server response for %s exports',
   async (type) => {
-    mockBuild.mockClear();
-    const client = new QueryClient();
+    mockGetMessages.mockResolvedValueOnce([canonical]);
+    const { result } = setup(type);
+    await act(async () => {
+      await result.current.exportConversation();
+    });
+    expect(mockGetMessages).toHaveBeenCalledWith(conversationId);
+    expect(exportFromJSON).toHaveBeenCalledTimes(1);
+    const payload = JSON.stringify(jest.mocked(exportFromJSON).mock.calls[0][0]);
+    expect(payload).toContain(canonical.text);
+    expect(payload).not.toContain('alice@example.com');
+  },
+);
+
+it('does not fall back to the unfiltered cache when the canonical read fails', async () => {
+  mockGetMessages.mockRejectedValueOnce(new Error('Temporary outage'));
+  const { result } = setup('json');
+  await act(async () => {
+    await result.current.exportConversation();
+  });
+  expect(download).not.toHaveBeenCalled();
+  expect(mockShowToast).toHaveBeenCalledWith(
+    expect.objectContaining({ message: 'com_nav_export_unavailable' }),
+  );
+});
+
+it('does not download a screenshot when a protected row arrives during capture', async () => {
+  const clean = { ...canonical, privacyRevision: undefined, createdAt: '2026-09-28T15:00:01' };
+  let finish!: (result: Blob) => void;
+  mockCaptureScreenshot.mockReturnValueOnce(
+    new Promise<Blob>((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const { result, queryClient } = setup('screenshot', [clean]);
+  const exportAction = result.current.exportConversation();
+  expect(mockCaptureScreenshot).toHaveBeenCalledTimes(1);
+  act(() => queryClient.setQueryData([QueryKeys.messages, conversationId], [canonical]));
+  finish(new Blob(['captured original'], { type: 'image/png' }));
+  await act(async () => {
+    await exportAction;
+  });
+  expect(download).not.toHaveBeenCalled();
+  expect(mockShowToast).toHaveBeenCalledWith(
+    expect.objectContaining({ message: 'com_nav_export_screenshot_private_text' }),
+  );
+});
+
+it.each([
+  { kind: 'unsent', message: submitted },
+  { kind: 'protected', message: canonical },
+])('does not screenshot $kind text', async ({ message }) => {
+  const { result } = setup('screenshot', [message]);
+  await act(async () => {
+    await result.current.exportConversation();
+  });
+  expect(mockCaptureScreenshot).not.toHaveBeenCalled();
+  expect(download).not.toHaveBeenCalled();
+  expect(mockShowToast).toHaveBeenCalledWith(
+    expect.objectContaining({ message: 'com_nav_export_screenshot_private_text' }),
+  );
+});
+
+it.each(['json', 'csv', 'markdown', 'text'])(
+  'detaches native identity from the %s export while keeping the image itself',
+  async (type) => {
     const image = {
       type: ContentTypes.IMAGE_FILE,
-      native_media: { continuationRef: 'private' },
+      native_media: { continuationRef: 'private-continuation' },
       thoughtSignature: 'private-signature',
       image_file: { file_id: 'image', filepath: '/images/owned.png' },
     };
-    client.setQueryData(
-      [QueryKeys.messages, 'conversation'],
-      [{ messageId: 'message', content: [image] }],
-    );
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    );
-    const hook = renderHook(
-      () =>
-        useExportConversation({
-          conversation: null,
-          filename: 'export',
-          type,
-          includeOptions: false,
-          exportBranches: true,
-          recursive: false,
-        }),
-      { wrapper },
-    );
-    act(() => hook.result.current.exportConversation());
-    await waitFor(() => expect(mockBuild).toHaveBeenCalled());
-    expect(mockBuild.mock.calls[0][0].messages[0].content).toEqual([
-      { type: ContentTypes.IMAGE_FILE, image_file: image.image_file },
+    mockGetMessages.mockResolvedValueOnce([
+      { ...canonical, privacyRevision: undefined, content: [image] },
     ]);
-    expect(client.getQueryData([QueryKeys.messages, 'conversation'])).toEqual([
-      { messageId: 'message', content: [image] },
-    ]);
-    client.clear();
+    const { result } = setup(type);
+    await act(async () => {
+      await result.current.exportConversation();
+    });
+    const saved = (download as jest.Mock).mock.calls[0]?.[0] as Blob | undefined;
+    const payload =
+      type === 'json'
+        ? await readBlob(saved as Blob)
+        : JSON.stringify(jest.mocked(exportFromJSON).mock.calls[0][0]);
+    expect(payload).not.toContain('private-continuation');
+    expect(payload).not.toContain('private-signature');
+    if (type === 'json') {
+      expect(payload).toContain('/images/owned.png');
+    }
   },
 );

@@ -63,7 +63,7 @@ const PreviewPlaceholderRow = memo(
         ? localize('com_ui_preview_preparing')
         : localize('com_ui_preview_failed');
     return (
-      <div className={cn(TOOL_ROW_CLASSES, 'text-sm text-text-secondary')}>
+      <div className={cn(TOOL_ROW_CLASSES, 'text-text-secondary text-sm')}>
         <span className={ROW_GLYPH_SLOT} aria-hidden="true">
           {status === 'pending' ? (
             <Loader2 className="size-4 shrink-0 animate-spin" />
@@ -85,7 +85,7 @@ const PreviewPlaceholderRow = memo(
           size="icon"
           onClick={handleDownload}
           aria-label={`${localize('com_ui_download')} ${visibleFilename}`}
-          className="size-5 shrink-0 rounded text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary focus-visible:ring-offset-0"
+          className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary size-5 shrink-0 rounded focus-visible:ring-offset-0"
         >
           <Download className="size-4" aria-hidden="true" />
         </Button>
@@ -237,8 +237,8 @@ const FileAttachmentGroup = memo(({ attachments }: { attachments: TAttachment[] 
         onClick={() => setIsExpanded((prev) => !prev)}
         className={cn(
           'inline-flex w-full max-w-full items-center gap-2 rounded-lg py-1 pr-2 text-sm',
-          'text-text-secondary transition-colors hover:text-text-primary',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy',
+          'text-text-secondary hover:text-text-primary transition-colors',
+          'focus-visible:ring-border-heavy focus-visible:ring-2 focus-visible:outline-hidden',
         )}
       >
         <FilesIcon className="size-4 shrink-0" aria-hidden="true" />
@@ -352,9 +352,9 @@ const TextAttachment = memo(
             buttonClassName="bg-surface-secondary hover:cursor-pointer hover:bg-surface-hover active:bg-surface-secondary focus:bg-surface-hover hover:border-border-heavy active:border-border-heavy"
           />
         )}
-        <div className="overflow-hidden rounded-lg bg-surface-secondary">
+        <div className="bg-surface-secondary overflow-hidden rounded-lg">
           {!showFileChip && (
-            <div className="flex items-center justify-between gap-2 border-b border-border-light px-3 py-2">
+            <div className="border-border-light flex items-center justify-between gap-2 border-b px-3 py-2">
               <span className="min-w-0 truncate text-sm font-medium" title={visibleFilename}>
                 {visibleFilename}
               </span>
@@ -364,7 +364,7 @@ const TextAttachment = memo(
                   onClick={handleDownload}
                   aria-label={`${localize('com_ui_download')} ${visibleFilename}`}
                   title={localize('com_ui_download')}
-                  className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy"
+                  className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy flex size-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
                 >
                   <Download className="size-4" aria-hidden="true" />
                 </button>
@@ -376,7 +376,7 @@ const TextAttachment = memo(
               id={preId}
               ref={preRef}
               className={cn(
-                'whitespace-pre-wrap break-words font-mono text-sm leading-6 text-text-primary',
+                'text-text-primary font-mono text-sm leading-6 break-words whitespace-pre-wrap',
                 isClamped ? 'overflow-hidden' : 'overflow-auto',
               )}
               style={isClamped ? { maxHeight: COLLAPSED_MAX_HEIGHT } : undefined}
@@ -389,7 +389,7 @@ const TextAttachment = memo(
                 onClick={() => setExpanded((prev) => !prev)}
                 aria-expanded={expanded}
                 aria-controls={preId}
-                className="mt-2 text-xs text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy"
+                className="text-text-secondary hover:text-text-primary focus-visible:ring-border-heavy mt-2 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
               >
                 {expanded ? localize('com_ui_collapse') : localize('com_ui_show_all')}
               </button>

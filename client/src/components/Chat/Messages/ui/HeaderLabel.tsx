@@ -65,7 +65,7 @@ export default function HeaderLabel({ label, hoverLabel }: HeaderLabelProps) {
   }
 
   return (
-    <span className="group/label inline-grid min-w-0 max-w-full">
+    <span className="group/label inline-grid max-w-full min-w-0">
       <span
         className={cn(
           labelSlot,
@@ -82,10 +82,10 @@ export default function HeaderLabel({ label, hoverLabel }: HeaderLabelProps) {
         className={cn(
           labelSlot,
           'translate-y-1 opacity-0 blur-[2px]',
-          'group-hover/label:translate-y-0 group-hover/label:opacity-100 group-hover/label:blur-0',
+          'group-hover/label:translate-y-0 group-hover/label:opacity-100 group-hover/label:blur-none',
           'group-focus-visible:translate-y-0 group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:translate-y-0',
           'group-focus-visible:opacity-100 group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:opacity-100',
-          'group-focus-visible:blur-0 group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:blur-0',
+          'group-focus-visible:blur-none group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:blur-none',
         )}
       >
         {hoverLabel}

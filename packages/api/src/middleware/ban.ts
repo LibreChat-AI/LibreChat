@@ -3,7 +3,11 @@ import { removePorts } from '../utils/ports';
 import { isEnabled } from '../utils/common';
 
 type BanData = { expiresAt?: unknown };
-type BanRequest = Request & { user?: { id?: unknown; _id?: unknown }; banned?: boolean };
+type BanRequest = Request & {
+  user?: { id?: unknown; _id?: unknown };
+  banned?: boolean;
+  _isAgentTrigger?: boolean;
+};
 type BanStore = {
   get(key: string): Promise<BanData | undefined>;
   set(key: string, value: BanData, ttl: number): Promise<unknown>;
@@ -24,6 +28,13 @@ export interface BanCheckDependencies {
   };
 }
 
+/** Only the router-verified trigger identity exempts the shared delivery transport from IP bans. */
+export function getBanIp(
+  req: Pick<Request, 'ip'> & { _isAgentTrigger?: boolean },
+): string | undefined {
+  return req._isAgentTrigger === true ? undefined : req.ip;
+}
+
 /** Ban lookups use a normalized address without mutating Express's read-only request.ip. */
 export function createBanCheck(deps: BanCheckDependencies) {
   return async (
@@ -36,7 +47,7 @@ export function createBanCheck(deps: BanCheckDependencies) {
       if (!isEnabled(environment.BAN_VIOLATIONS)) {
         return next();
       }
-      const ip = removePorts(req);
+      const ip = getBanIp({ ip: removePorts(req), _isAgentTrigger: req._isAgentTrigger });
       const rawId = req.user?.id ?? req.user?._id;
       let userId = rawId == null ? undefined : String(rawId);
       if (!userId && req.body?.email) {

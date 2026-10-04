@@ -118,6 +118,8 @@ export namespace Agents {
     };
     /** The tool call was rejected before execution because its input failed schema validation. */
     inputValidationError?: true;
+    /** Server-stamped provenance; see `PartMetadata.executor`. */
+    executor?: 'attached_workspace';
     /** Auth URL */
     auth?: string;
     /** Expiration time */
@@ -137,6 +139,7 @@ export namespace Agents {
   export type ToolEndEvent = {
     /** The Step Id of the Tool Call */
     id: string;
+    completed_at?: number;
     /** The Completed Tool Call */
     tool_call?: ToolCall;
     /** The content index of the tool call */
@@ -258,6 +261,19 @@ export namespace Agents {
    * because the caller aborted — which is the only signal that distinguishes
    * a stopped step from one still in flight.
    */
+  export type ToolPreparationMarker = {
+    id: string;
+    index?: number;
+    toolCallId?: string;
+    observed_at: number;
+  };
+
+  export type ToolCallsDispatchedEvent = {
+    dispatched_at: number;
+    runId?: string;
+    toolCalls: Array<{ id: string; name: string; stepId?: string }>;
+  };
+
   export type RunStepClosedEvent = {
     id: string;
     index: number;
@@ -282,6 +298,8 @@ export namespace Agents {
 
   /** User message metadata for rebuilding submission on reconnect */
   export interface UserMessageMeta {
+    /** Canonical, nonsecret revision used to verify owner-only private text. */
+    privacyRevision?: string;
     messageId: string;
     parentMessageId?: string;
     conversationId?: string;
@@ -361,6 +379,8 @@ export namespace Agents {
      * The delta containing the fields that have changed on the run step.
      */
     delta: ToolCallDelta;
+    /** SDK receipt timestamp before awaited step dispatch, when available. */
+    observed_at?: number;
   }
   export type StepDetails = MessageCreationDetails | ToolCallsDetails;
   export type MessageCreationDetails = {
@@ -543,6 +563,11 @@ export namespace Agents {
      * worker that didn't originate the run.
      */
     threadId?: string;
+    /**
+     * Stable server-only project context identity captured when this action paused.
+     * This is intentionally omitted from all client-facing projections.
+     */
+    projectContextKey?: string;
     /**
      * Fingerprint of the request fields that determine the agent/graph + tool set
      * (endpoint, agent_id, model, spec, ephemeralAgent), captured at pause time. The
@@ -1017,6 +1042,9 @@ export type Agent = {
   stateful_code_environment?: StatefulCodeEnvironment;
   /** Operator-configured managed or attached stateful execution environment. */
   code_environment_id?: string | null;
+  /** Additional attached machines new chats may choose; the saved ID remains the default.
+   * This allowlist never grants the user access to a machine. */
+  code_environment_ids?: string[];
   /** Default attached workspace for new chats; empty means no agent default. */
   code_workspace_id?: string;
   repositoryInstructions?: 'prefer' | 'defer' | 'off';
@@ -1083,12 +1111,14 @@ export type AgentCreateParams = {
   | 'stateful_code_sessions'
   | 'stateful_code_environment'
   | 'code_environment_id'
+  | 'code_environment_ids'
   | 'code_workspace_id'
   | 'repositoryInstructions'
   | 'artifacts'
   | 'recursion_limit'
   | 'category'
   | 'support_contact'
+  | 'conversation_starters'
   | 'tool_options'
   | 'skills'
   | 'skills_enabled'
@@ -1118,6 +1148,7 @@ export type AgentUpdateParams = {
   | 'stateful_code_sessions'
   | 'stateful_code_environment'
   | 'code_environment_id'
+  | 'code_environment_ids'
   | 'git_identity'
   | 'code_workspace_id'
   | 'repositoryInstructions'
@@ -1125,6 +1156,7 @@ export type AgentUpdateParams = {
   | 'recursion_limit'
   | 'category'
   | 'support_contact'
+  | 'conversation_starters'
   | 'tool_options'
   | 'skills'
   | 'skills_enabled'
@@ -1134,6 +1166,14 @@ export type AgentUpdateParams = {
   | 'memory_scope'
 >;
 
+/**
+ * Sort modes for the marketplace agent list. `'newest'` is the marketplace's own default and
+ * the client sends it explicitly: a request that names no mode gets the most-recently-edited
+ * order `GET /api/agents` has always served, which the agent selector and the mention menu
+ * rely on and which is not a marketplace mode.
+ */
+export type AgentSortOption = 'newest' | 'oldest' | 'popular' | 'author';
+
 export type AgentListParams = {
   limit?: number;
   requiredPermission: number;
@@ -1141,6 +1181,9 @@ export type AgentListParams = {
   search?: string;
   cursor?: string;
   promoted?: 0 | 1;
+  sort?: AgentSortOption;
+  /** When 1, restrict results to agents authored by the requesting user. */
+  mine?: 0 | 1;
 };
 
 export type AgentListResponse = {

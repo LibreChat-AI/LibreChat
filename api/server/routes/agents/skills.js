@@ -8,7 +8,7 @@ const { checkPermission } = require('~/server/services/PermissionService');
 const { getSkillsHandlers } = require('~/server/services/Skills/handlers');
 const {
   getSkillDbMethods,
-  getSkillToolDeps,
+  getSkillManagementFileSaver,
 } = require('~/server/services/Endpoints/agents/skillDeps');
 const { getRoleByName } = require('~/models');
 const { requireAgentManagementAuth } = require('./middleware');
@@ -23,7 +23,7 @@ const handlers = createSkillManagementHandlers({
   getRoleByName,
   checkPermission,
   hasCapability,
-  saveFile: getSkillToolDeps().saveSkillFileContent,
+  saveFile: getSkillManagementFileSaver(),
 });
 router.use(requireAgentManagementAuth, checkBan, configMiddleware);
 router.get('/', handlers.list);

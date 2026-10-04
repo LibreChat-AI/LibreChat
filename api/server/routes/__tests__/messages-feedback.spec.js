@@ -9,12 +9,14 @@ jest.mock('@librechat/api', () => ({
   ...jest.requireActual('../../../../packages/api/src/files/public.ts'),
   unescapeLaTeX: jest.fn((value) => value),
   countTokens: jest.fn().mockResolvedValue(10),
+  createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
   createContentFilter: jest.fn(() => (req, res, next) => next()),
   sendFeedbackScore: jest.fn().mockResolvedValue(undefined),
   traceIdForMessage: jest.fn((messageId) => `trace-${messageId}`),
   CHILD_THREAD_READ_ONLY_ERROR: 'Child thread is view-only.',
   isSubagentThreadWriteBlocked: jest.fn().mockResolvedValue(false),
   requireFeedbackEnabled: jest.fn((req, res, next) => next()),
+  applyForcedRetention: jest.fn(),
 }));
 
 jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () => ({}));

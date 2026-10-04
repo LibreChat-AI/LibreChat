@@ -46,6 +46,7 @@ import type {
   AgentSubagentGraph,
   ReasoningResponseKey,
   SummarizationConfig,
+  TurnFileConsumers,
 } from 'librechat-data-provider';
 import type { AppConfig, IAgentFadingTier, IUser } from '@librechat/data-schemas';
 import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
@@ -62,11 +63,13 @@ import type { CodeExecutionContext } from '~/agents/execution';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { NativeMediaFactory } from '~/media/native';
 import type { SubagentUsageEvent } from '~/agents/usage';
+import type { ProvisionState } from '~/agents/resources';
 import type { RunFileSession } from './files/session';
 import type { RunFadingTiers } from './fading';
 import type * as t from '~/types';
 import {
   assertAttachedCodeEnvironmentApprovalSupported,
+  collectNativeEditFileAgentIds,
   collectAttachedCodeEnvironmentAgentIds,
   collectAttachedCodeEnvironmentPolicySettings,
   createAttachedCodeEnvironmentPolicyHook,
@@ -117,6 +120,7 @@ import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
+import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -421,6 +425,8 @@ export function shouldReplayReasoningContent(
 }
 
 type RunAgent = Omit<Agent, 'tools'> & {
+  provisionState?: ProvisionState;
+  fileConsumers?: TurnFileConsumers;
   azureOptions?: t.AzureOptions;
   tools?: GenericTool[];
   maxContextTokens?: number;
@@ -2184,10 +2190,10 @@ export async function createRun({
    * Default agent's latched context-fading tier from the previous run's
    * contextMeta. It seeds the pruner so the provider-only projection of
    * historical tool results keeps the same bytes across runs; graph messages
-   * stay canonical. Ships in `@librechat/agents` after 3.7.13; older SDK
-   * versions ignore it.
+   * stay canonical. Legacy v1 tiers are not passed to the v2 SDK; it derives
+   * them afresh using the current-turn exchange width.
    */
-  fadingTier?: IAgentFadingTier | null;
+  fadingTier?: (IAgentFadingTier & { v: 2 }) | null;
   /**
    * Latched tiers keyed by agent ID from the previous run's contextMeta, so
    * every agent of a multi-agent run restores its own tier. Same SDK
@@ -2253,10 +2259,9 @@ export async function createRun({
   /**
    * Whether the caller implements the HITL pause/resume lifecycle (inspects
    * `run.getInterrupt()`, persists a pending action, exposes a resume route). Gates the
-   * tool-approval wiring: only AgentClient (chat + resume) sets this. The OpenAI-compatible
-   * and Responses controllers leave it false, so an approval-gated tool can't pause on a
-   * route that has no approval surface or resume endpoint (it would otherwise emit a normal
-   * final response / `[DONE]` with the tool call left unresolved).
+   * approval pause and checkpointer: only AgentClient (chat + resume) sets this.
+   * All callers still enforce an enabled tool policy; without this flag the SDK
+   * blocks `ask` decisions rather than pausing a run with no resume surface.
    */
   hitlCapable?: boolean;
   /**
@@ -2324,7 +2329,29 @@ export async function createRun({
   /** Admin kill switch for the ask tool — see {@link isAskUserQuestionAdminDisabled}. */
   const askToolAdminDisabled = isAskUserQuestionAdminDisabled(appConfig);
 
+  // Independently initialized agents must reserve the same live paths before advertising uploads.
+  const codeFileAgents = new Map<string, RunAgent>();
+  const visitedCodeFileAgents = new Set<string>();
+  const pendingCodeFileAgents: Array<RunAgent | null | undefined> = [...agents];
+  for (let index = 0; index < pendingCodeFileAgents.length; index++) {
+    const agent = pendingCodeFileAgents[index];
+    if (!agent?.id || codeFileAgents.has(agent.id)) continue;
+    codeFileAgents.set(agent.id, agent);
+    visitedCodeFileAgents.add(agent.id);
+    enqueueSubagentChildren(agent, pendingCodeFileAgents, visitedCodeFileAgents, false, false);
+  }
+  for (const agent of codeFileAgents.values()) {
+    prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id);
+  }
+
+  const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
   const buildAgentInput = (agent: RunAgent, opts: { isSubagent?: boolean } = {}): AgentInputs => {
+    if (!preparedCodeFileAgents.has(agent)) {
+      if (agent.provisionState) agent.provisionState.codeEnvDestinations = undefined;
+      codeFileAgents.set(agent.id, agent);
+      prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id, true);
+      preparedCodeFileAgents.add(agent);
+    }
     const isSubagent = opts.isSubagent === true;
     if (runFilesActive) {
       for (const { memberConfigs } of agent.subagentGraphConfigs ?? []) {
@@ -2723,12 +2750,10 @@ export async function createRun({
   const enableToolOutputReferences = anyAgentHasCodeEnv(agents);
 
   /**
-   * Human-in-the-loop tool approval — OFF by default. When the agents endpoint
-   * opts in (`toolApproval.enabled`), attach the `PreToolUse` policy hook + the
-   * `humanInTheLoop` switch, and bind a durable checkpointer so a run that pauses
-   * for review can be rebuilt and resumed on any worker (see `agents/checkpointer.ts`
-   * and the resume route). When disabled, nothing attaches and the run is identical
-   * to before this feature shipped.
+   * Endpoint tool approval is off by default. An enabled policy installs the
+   * `PreToolUse` hooks for every run. Only callers with a resume surface also
+   * enable real HITL interrupts and a durable checkpointer; on headless runs
+   * the SDK blocks both `deny` and `ask` before executing the tool.
    */
   // Resolve the effective policy through the single seam so BYOM defaults and
   // future persisted per-agent / per-skill sources do not leak into this call site.
@@ -2736,12 +2761,9 @@ export async function createRun({
     endpoint: agentsEndpointConfig?.toolApproval,
     attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
   });
-  // Gate HITL to callers that actually implement the pause/resume lifecycle. The
-  // OpenAI-compatible + Responses controllers also call createRun/processStream but never
-  // inspect `run.getInterrupt()` or persist a pending action — so an approval-gated tool
-  // would pause with no approval surface or resume endpoint, and the route would emit a
-  // normal final response / `[DONE]` with the tool call dangling. Only AgentClient (chat +
-  // resume) passes `hitlCapable`; without it the run is identical to the no-HITL path.
+  // Every caller needs the policy hooks, including API-key ingresses. Only
+  // AgentClient supports pause/resume; the SDK blocks `ask` without HITL enabled.
+  // Keep the checkpointer and humanInTheLoop switch exclusive to those callers.
   /** Both-direction key-spelling aliases collected from every eagerly known
    *  agent, including explicit and graph subagents. Lazy subagents report
    *  theirs through `registerResolvedMCPToolAliases` below. */
@@ -2754,46 +2776,50 @@ export async function createRun({
       healToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases),
       ASK_USER_QUESTION_TOOL_NAME,
     );
-  const hitl = hitlCapable
-    ? buildHITLRunWiring(
-        // The ask tool is exempt from the approval prompt (unless explicitly
-        // listed by the admin) — approving the right to ask a question is a
-        // pure double-pause; the tool has no side effects to gate. Pattern
-        // lists are healed against the tools' other key spellings first, so
-        // admin globs written for pre-strip upstream names keep applying (a
-        // non-matching deny would fail OPEN), and rules written against
-        // current catalog names reach legacy-named instances.
-        effectiveToolApprovalPolicy(),
-        {
+  const nativeEditFileAgentIds = collectNativeEditFileAgentIds(agents);
+  const approvalWiring = buildHITLRunWiring(
+    // The ask tool is exempt from the approval prompt (unless explicitly
+    // listed by the admin) — approving the right to ask a question is a
+    // pure double-pause; the tool has no side effects to gate. Pattern
+    // lists are healed against the tools' other key spellings first, so
+    // admin globs written for pre-strip upstream names keep applying (a
+    // non-matching deny would fail OPEN), and rules written against
+    // current catalog names reach legacy-named instances.
+    effectiveToolApprovalPolicy(),
+    {
+      userId: user?.id,
+      conversationId: requestBody?.conversationId,
+      tenantId: tenantId ?? user?.tenantId,
+      appConfig,
+    },
+    mcpToolAliases,
+    [
+      ...(resolvedToolApprovalHooks ??
+        buildToolApprovalHooks({
           userId: user?.id,
           conversationId: requestBody?.conversationId,
           tenantId: tenantId ?? user?.tenantId,
           appConfig,
-        },
-        mcpToolAliases,
-        [
-          ...(resolvedToolApprovalHooks ??
-            buildToolApprovalHooks({
-              userId: user?.id,
-              conversationId: requestBody?.conversationId,
-              tenantId: tenantId ?? user?.tenantId,
-              appConfig,
-            })),
-          ...(attachedCodeEnvironmentAgentIds.size > 0
-            ? [
-                {
-                  hook: createAttachedCodeEnvironmentPolicyHook(
-                    attachedCodeEnvironmentAgentIds,
-                    attachedCodeEnvironmentSettings,
-                    codeApprovalMode,
-                  ),
-                },
-              ]
-            : []),
-        ],
-      )
-    : undefined;
+        })),
+      ...(attachedCodeEnvironmentAgentIds.size > 0
+        ? [
+            {
+              hook: createAttachedCodeEnvironmentPolicyHook(
+                attachedCodeEnvironmentAgentIds,
+                attachedCodeEnvironmentSettings,
+                codeApprovalMode,
+              ),
+            },
+          ]
+        : []),
+    ],
+    nativeEditFileAgentIds,
+  );
+  const hitl = hitlCapable ? approvalWiring : undefined;
   registerResolvedMCPToolAliases = (resolvedAgent) => {
+    for (const agentId of collectNativeEditFileAgentIds([resolvedAgent])) {
+      nativeEditFileAgentIds.add(agentId);
+    }
     if (resolvedAgent.codeExecutionContext?.environmentType === 'attached') {
       // The admission hook closes over these collections. A lazily resolved agent
       // therefore receives its own current machine policy before its first tool call;
@@ -2819,7 +2845,7 @@ export async function createRun({
       return;
     }
     mcpToolAliases.push(...discoveredAliases);
-    hitl?.addMCPToolAliases(discoveredAliases, effectiveToolApprovalPolicy());
+    approvalWiring?.addMCPToolAliases(discoveredAliases, effectiveToolApprovalPolicy());
   };
   /**
    * The `ask_user_question` tool pauses via LangGraph `interrupt()` from inside its own
@@ -2839,14 +2865,14 @@ export async function createRun({
   }
 
   /**
-   * The run's hook registry: the HITL policy hooks (when approval is enabled)
+   * The run's hook registry: tool policy hooks (when approval is enabled)
    * plus the steer-drain PostToolBatch hook. Steering registers independently
    * of the approval policy and requires no checkpointer, but is hard-gated on
    * SDK support — draining on an SDK that ignores `injectedMessages` would
    * silently drop the user's words (the steer controller 501s in that case;
    * this guard is defense in depth).
    */
-  let hooks = hitl?.hooks;
+  let hooks = approvalWiring?.hooks;
   if (usesSubagentCompletionWakeups(activeSubagentTasks)) {
     hooks = hooks ?? new HookRegistry();
     hooks.register('PostToolUse', {
@@ -3025,9 +3051,8 @@ export async function createRun({
     ...(enableToolOutputReferences && {
       toolOutputReferences: { enabled: true },
     }),
-    // HITL opt-in: the `humanInTheLoop` switch + the PreToolUse policy hook. Spread
-    // here (not just `compileOptions.checkpointer` above) so an `ask` decision raises
-    // a real interrupt — without these the run would never pause. Absent when disabled.
+    // Only resumable callers enable real approval interrupts. The PreToolUse policy
+    // hook stays in `hooks` for headless callers, where `ask` fails closed.
     // The steer-drain hook rides the same registry but independently of the approval
     // policy: a PostToolBatch-only registry keeps the SDK's eager execution fast paths
     // (it gates on result-altering hooks, not registry presence).

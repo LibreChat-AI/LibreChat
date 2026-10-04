@@ -1,32 +1,61 @@
-import type { AuthIdentitySource } from '~/utils/identity';
-import { resolveAppUserId } from '~/utils/identity';
+import type { TwoFactorAccount } from './twoFactor';
 
-type AuthResponseSource = AuthIdentitySource & {
-  password?: unknown;
-  __v?: unknown;
-  totpSecret?: unknown;
-  backupCodes?: unknown;
-  federatedTokens?: unknown;
-};
+/**
+ * Everything an authentication response may say about a user.
+ *
+ * An allowlist rather than a denylist, because the queries behind these responses do not reliably
+ * project: a `select()` built only from `+field` tokens leaves Mongoose with no projection to send,
+ * so the full stored document comes back, secrets and session records included. Subtracting known
+ * secrets from that would silently leak every field added to the schema afterwards.
+ */
+export const PUBLIC_USER_RESPONSE_FIELDS = [
+  '_id',
+  'id',
+  'name',
+  'username',
+  'email',
+  'emailVerified',
+  'avatar',
+  'provider',
+  'role',
+  'plugins',
+  'twoFactorEnabled',
+  'termsAccepted',
+  'personalization',
+  'favorites',
+  'skillStates',
+  'createdAt',
+  'updatedAt',
+  'tenantId',
+] as const;
 
-/** Keeps the authenticated identity stable between refresh and user responses. */
-export function sanitizeUserForAuthResponse<T extends AuthResponseSource>(
-  user?: (T & { toObject?: () => T }) | null,
-): Omit<
-  Partial<T>,
-  'password' | '__v' | 'totpSecret' | 'backupCodes' | 'federatedTokens' | 'id'
-> & {
-  id: string | undefined;
-} {
-  const source: Partial<T> = (typeof user?.toObject === 'function' ? user.toObject() : user) || {};
-  const {
-    id: _id,
-    password: _pw,
-    __v: _v,
-    totpSecret: _ts,
-    backupCodes: _bc,
-    federatedTokens: _ft,
-    ...safeUser
-  } = source;
-  return { ...safeUser, id: resolveAppUserId(source) };
+type PublicUserField = (typeof PUBLIC_USER_RESPONSE_FIELDS)[number];
+export type PublicUser = Partial<Record<PublicUserField, unknown>>;
+
+interface HydratedUser {
+  toObject?: () => Record<string, unknown>;
+}
+
+/** Reduces a user document, hydrated or lean, to the fields a client is allowed to receive. */
+export function sanitizeUserForResponse(
+  user: TwoFactorAccount | HydratedUser | null | undefined,
+): PublicUser {
+  if (user == null) {
+    return {};
+  }
+
+  const source = (
+    typeof (user as HydratedUser).toObject === 'function'
+      ? (user as HydratedUser).toObject?.()
+      : user
+  ) as Record<string, unknown>;
+
+  const publicUser: PublicUser = {};
+  for (const field of PUBLIC_USER_RESPONSE_FIELDS) {
+    if (source[field] !== undefined) {
+      publicUser[field] = source[field];
+    }
+  }
+
+  return publicUser;
 }

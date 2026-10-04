@@ -46,6 +46,7 @@ const handlers = createAdminUsersHandlers({
   invalidateCodeEnvironmentConfigCache,
   deleteConfig: db.deleteConfig,
   deleteAclEntries: db.deleteAclEntries,
+  deletePasskeysByUser: db.deletePasskeysByUser,
 });
 
 router.use(requireJwtAuth, requireAdminAccess);

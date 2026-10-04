@@ -2,6 +2,7 @@ import { Types } from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import {
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
   logger,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -646,6 +647,8 @@ function createAgentQueuedTurnResolver({
       ...(claim.files != null && { files: claim.files }),
       ...(claim.quotes != null && { quotes: claim.quotes }),
       ...(claim.manualSkills != null && { manualSkills: claim.manualSkills }),
+      ...(claim.codeApprovalMode != null && { codeApprovalMode: claim.codeApprovalMode }),
+      ...(claim.reasoningOverride != null && { reasoningOverride: claim.reasoningOverride }),
       admissionSource: {
         source: AGENT_QUEUED_TURN_SOURCE,
         sourceId: claim.queuedTurnId,
@@ -698,7 +701,20 @@ function createAgentQueuedTurnResolver({
   };
 }
 
-function deliveryEnvelope(turn: AgentQueuedTurnRecord) {
+function deliveryEnvelope(
+  turn: Pick<
+    AgentQueuedTurnRecord,
+    | 'queuedTurnId'
+    | 'createdAt'
+    | 'user'
+    | 'tenantId'
+    | 'text'
+    | 'agentId'
+    | 'conversationId'
+    | 'parentMessageId'
+    | 'codeApprovalMode'
+  >,
+) {
   const occurredAt = turn.createdAt.getTime();
   return createAgentTriggerEnvelope({
     mode: 'continue',
@@ -710,7 +726,7 @@ function deliveryEnvelope(turn: AgentQueuedTurnRecord) {
       ...(turn.tenantId != null && { tenantId: turn.tenantId }),
     },
     event: {
-      id: turn.queuedTurnId,
+      id: turn.codeApprovalMode != null ? `${turn.queuedTurnId}:v2` : turn.queuedTurnId,
       type: AGENT_QUEUED_TURN_EVENT,
       occurredAt,
       source: { id: AGENT_QUEUED_TURN_SOURCE, type: 'internal' },
@@ -723,6 +739,16 @@ function deliveryEnvelope(turn: AgentQueuedTurnRecord) {
       parentMessageId: turn.parentMessageId,
     },
   });
+}
+
+/** Reserve before insertion: an old projection computes the v1 key and cannot
+ * publish this row, even if the producer crashes before scheduling it. */
+export function createQueuedTurnDeliveryReservation(
+  input: Parameters<AgentQueuedTurnMethods['enqueueAgentQueuedTurn']>[0],
+): { queuedTurnId: string; deliveryKey: string } {
+  const queuedTurnId = new Types.ObjectId().toString();
+  const envelope = deliveryEnvelope({ ...input, queuedTurnId, createdAt: new Date() });
+  return { queuedTurnId, deliveryKey: getAgentTriggerIdempotencyKey(envelope) };
 }
 
 /** Repairs the intentional record-first outbox seam by replaying a stable
@@ -759,7 +785,10 @@ function createAgentQueuedTurnScheduler({
        * A lane per durable row prevents a later published delivery from
        * blocking recovery of an earlier record-first outbox row. */
       orderingKey: `agent-queued-turn-delivery:${turn.queuedTurnId}`,
-      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+      requiredWorkerCapability:
+        turn.codeApprovalMode != null
+          ? AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2
+          : AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
     });
     if (receipt.deliveryKey !== deliveryKey) {
       throw new Error('The queued turn delivery identity changed during publication');

@@ -1,7 +1,7 @@
 import { logger } from '@librechat/data-schemas';
 import {
-  CODE_ENVIRONMENT_DECISION_VERSION,
   CODE_ENVIRONMENT_MOVE_VERSION,
+  CODE_ENVIRONMENT_TRANSITION_VERSION,
   CODE_WORKSPACE_RECOVERY_VERSION,
   EModelEndpoint,
 } from 'librechat-data-provider';
@@ -11,6 +11,12 @@ import type {
   AccessibleCodeEnvironmentConfiguration,
   CodeEnvironmentPrincipalContext,
 } from './environments';
+import { resolveCodeEnvironmentDecisionVersion } from './protocol';
+
+export {
+  resolveCodeEnvironmentDecisionVersion,
+  isCodeEnvironmentSelectionEnabled,
+} from './protocol';
 
 type ConfigurationRegistry = {
   listAccessibleConfigurations: (
@@ -24,25 +30,31 @@ type StatefulCodeConfig = NonNullable<
 >['statefulCodeSessions'];
 type CodeEnvironmentConfig = NonNullable<NonNullable<StatefulCodeConfig>['environments']>[number];
 
-/**
- * Resolves the deployment-wide browser protocol gate. The exact version match
- * keeps older and future wire shapes on the legacy-safe path.
- */
-export function resolveCodeEnvironmentDecisionVersion(
-  configuredVersion?: string,
-): typeof CODE_ENVIRONMENT_DECISION_VERSION | undefined {
-  return configuredVersion === String(CODE_ENVIRONMENT_DECISION_VERSION)
-    ? CODE_ENVIRONMENT_DECISION_VERSION
-    : undefined;
+function conversationMovesEnabled(appConfig?: Pick<AppConfig, 'endpoints'> | null): boolean {
+  return (
+    appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.conversationMoves
+      ?.enabled === true
+  );
 }
 
 /** Advertises owner moves of a sealed decision only where the effective policy enables them. */
 export function resolveCodeEnvironmentMoveVersion(
   appConfig?: Pick<AppConfig, 'endpoints'> | null,
 ): typeof CODE_ENVIRONMENT_MOVE_VERSION | undefined {
-  return appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.conversationMoves
-    ?.enabled === true
-    ? CODE_ENVIRONMENT_MOVE_VERSION
+  return conversationMovesEnabled(appConfig) ? CODE_ENVIRONMENT_MOVE_VERSION : undefined;
+}
+
+/**
+ * Advertises attach/detach only after a deployment opts in. Keep the original move capability
+ * separate so older clients and move-only deployments retain their existing recovery path.
+ */
+export function resolveCodeEnvironmentTransitionVersion(
+  appConfig?: Pick<AppConfig, 'endpoints'> | null,
+): typeof CODE_ENVIRONMENT_TRANSITION_VERSION | undefined {
+  return conversationMovesEnabled(appConfig) &&
+    appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.conversationMoves
+      ?.allowAttachDetach === true
+    ? CODE_ENVIRONMENT_TRANSITION_VERSION
     : undefined;
 }
 

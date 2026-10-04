@@ -155,7 +155,7 @@ const RevokeKeysButton = ({
               variant="destructive"
               onClick={onClick}
               disabled={isLoading}
-              className="bg-surface-destructive text-text-on-status transition-all duration-200 hover:bg-surface-destructive-hover"
+              className="bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover transition-all duration-200"
             >
               {isLoading ? <Spinner /> : localize('com_ui_revoke')}
             </Button>
@@ -488,15 +488,15 @@ const SetKeyDialog = ({
         </OGDialogHeader>
         <div className="grid w-full items-center gap-2 py-2">
           {keyConfiguration && (
-            <p className="text-sm text-text-secondary">{localize('com_media_provider_key_help')}</p>
+            <p className="text-text-secondary text-sm">{localize('com_media_provider_key_help')}</p>
           )}
           {isFetching && (
-            <p role="status" className="text-sm text-text-secondary">
+            <p role="status" className="text-text-secondary text-sm">
               {localize('com_ui_loading')}
             </p>
           )}
           {isError && (
-            <div role="alert" className="text-sm text-text-destructive">
+            <div role="alert" className="text-text-destructive text-sm">
               {localize('com_endpoint_config_status_error')}
               <Button variant="link" onClick={() => void refetch()}>
                 {localize('com_ui_retry')}
@@ -504,7 +504,7 @@ const SetKeyDialog = ({
             </div>
           )}
           {saveError && (
-            <p role="alert" className="text-sm text-text-destructive">
+            <p role="alert" className="text-text-destructive text-sm">
               {localize('com_ui_save_key_error')}
             </p>
           )}

@@ -86,11 +86,11 @@ const TwoFactorScreen: React.FC = React.memo(() => {
   return (
     <div className="mt-4">
       <form onSubmit={handleSubmit(onSubmit)}>
-        <Label className="flex justify-center break-keep text-center text-sm text-text-primary">
+        <Label className="text-text-primary flex justify-center text-center text-sm break-keep">
           {localize('com_auth_two_factor')}
         </Label>
         {!useBackup && (
-          <div className="my-4 flex justify-center text-text-primary">
+          <div className="text-text-primary my-4 flex justify-center">
             <Controller
               name="token"
               control={control}
@@ -100,6 +100,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
                   value={value != null ? value : ''}
                   onChange={onChange}
                   pattern={REGEXP_ONLY_DIGITS}
+                  aria-label={localize('com_ui_2fa_verification_required')}
                 >
                   <InputOTPGroup>
                     <InputOTPSlot index={0} />
@@ -116,12 +117,12 @@ const TwoFactorScreen: React.FC = React.memo(() => {
               )}
             />
             {errors.token && (
-              <span className="text-sm text-text-destructive">{errors.token.message}</span>
+              <span className="text-text-destructive text-sm">{errors.token.message}</span>
             )}
           </div>
         )}
         {useBackup && (
-          <div className="my-4 flex justify-center text-text-primary">
+          <div className="text-text-primary my-4 flex justify-center">
             <Controller
               name="backupCode"
               control={control}
@@ -131,6 +132,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
                   value={value != null ? value : ''}
                   onChange={onChange}
                   pattern={REGEXP_ONLY_DIGITS_AND_CHARS}
+                  aria-label={localize('com_ui_backup_code_verification_required')}
                 >
                   <InputOTPGroup>
                     <InputOTPSlot index={0} />
@@ -146,7 +148,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
               )}
             />
             {errors.backupCode && (
-              <span className="text-sm text-text-destructive">{errors.backupCode.message}</span>
+              <span className="text-text-destructive text-sm">{errors.backupCode.message}</span>
             )}
           </div>
         )}
@@ -154,7 +156,6 @@ const TwoFactorScreen: React.FC = React.memo(() => {
           <Button
             type="submit"
             variant="submit"
-            aria-label={localize('com_auth_continue')}
             data-testid="login-button"
             disabled={isLoading}
             className="w-full rounded-2xl px-4 py-3 text-sm font-medium disabled:opacity-80"
@@ -168,7 +169,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
               type="button"
               variant="link"
               onClick={toggleBackupOn}
-              className="inline-flex p-1 text-sm font-medium text-accent-primary transition-colors hover:text-accent-primary-hover"
+              className="text-accent-primary hover:text-accent-primary-hover inline-flex p-1 text-sm font-medium transition-colors"
             >
               {localize('com_ui_use_backup_code')}
             </Button>
@@ -177,7 +178,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
               type="button"
               variant="link"
               onClick={toggleBackupOff}
-              className="inline-flex p-1 text-sm font-medium text-accent-primary transition-colors hover:text-accent-primary-hover"
+              className="text-accent-primary hover:text-accent-primary-hover inline-flex p-1 text-sm font-medium transition-colors"
             >
               {localize('com_ui_use_2fa_code')}
             </Button>

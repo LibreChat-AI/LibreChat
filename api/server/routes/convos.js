@@ -7,6 +7,7 @@ const {
   normalizeLimit,
   normalizeSortDirection,
   normalizeSortField,
+  resolveConversationListFilters,
   CONVERSATION_SORT_FIELDS,
   openCheckpointDeletion,
   waitForGenerationPersistence,
@@ -16,7 +17,13 @@ const {
   isValidSubagentControlRequest,
   exemptAgentTriggerFromIpLimiter,
   createParentSubagentIndexHandler,
+  createBackgroundTaskIndexHandler,
+  createBackgroundTaskCancelHandler,
+  createBackgroundTaskPolicyMiddleware,
+  backgroundTaskRegistry,
   createSubagentThreadViewHandler,
+  createMarkConvoSeenHandler,
+  createMarkConvoUnreadHandler,
   resolveImportMaxFileSize,
   restoreTenantContextFromReq,
   deleteAllSharedLinksWithCleanup,
@@ -46,7 +53,11 @@ const { forkConversation, duplicateConversation } = require('~/server/utils/impo
 const { storage, importFileFilter } = require('~/server/routes/files/multer');
 const requireJwtAuth = require('~/server/middleware/requireJwtAuth');
 const { importConversations } = require('~/server/utils/import');
+const { getAppConfig } = require('~/server/services/Config');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
+const {
+  pendingBackgroundToolCompletions,
+} = require('~/server/services/Endpoints/agents/backgroundCompletion');
 const getLogStores = require('~/cache/getLogStores');
 const db = require('~/models');
 
@@ -144,6 +155,18 @@ const subagentControlHandler = createSubagentControlHandler({
   getSubagentTaskControlReceipt: db.getSubagentTaskControlReceipt,
   store: subagentThreadTaskStore,
 });
+const markConvoSeenHandler = createMarkConvoSeenHandler({ markConvoSeen: db.markConvoSeen });
+const markConvoUnreadHandler = createMarkConvoUnreadHandler({
+  markConvoUnread: db.markConvoUnread,
+});
+const backgroundTaskPolicy = createBackgroundTaskPolicyMiddleware({ getAppConfig });
+const backgroundTaskIndexHandler = createBackgroundTaskIndexHandler({
+  registry: backgroundTaskRegistry,
+  pending: pendingBackgroundToolCompletions,
+});
+const backgroundTaskCancelHandler = createBackgroundTaskCancelHandler({
+  registry: backgroundTaskRegistry,
+});
 router.use(requireJwtAuth);
 
 const isValidProjectFilter = (projectId) =>
@@ -175,6 +198,14 @@ router.get('/', async (req, res) => {
   }
 
   try {
+    const { filters, error: filterError } = await resolveConversationListFilters(
+      req.query,
+      getAppConfig,
+    );
+    if (filterError) {
+      return res.status(400).json({ error: filterError });
+    }
+
     const result = await db.getConvosByCursor(req.user.id, {
       cursor,
       limit,
@@ -185,6 +216,7 @@ router.get('/', async (req, res) => {
       sortBy,
       sortDirection,
       projectId,
+      ...filters,
     });
     res.status(200).json(result);
   } catch (error) {
@@ -207,6 +239,12 @@ router.post(
   subagentControlHandler,
 );
 router.get('/:parentConversationId/subagents', parentSubagentIndexHandler);
+router.get('/:conversationId/background-tasks', backgroundTaskPolicy, backgroundTaskIndexHandler);
+router.post(
+  '/:conversationId/background-tasks/cancel',
+  backgroundTaskPolicy,
+  backgroundTaskCancelHandler,
+);
 router.get('/:parentConversationId/subagents/:threadId', subagentThreadViewHandler);
 
 router.get('/:conversationId', async (req, res) => {
@@ -673,6 +711,10 @@ router.post('/pin', validateConvoAccess, async (req, res) => {
   }
 });
 
+router.post('/seen', validateConvoAccess, markConvoSeenHandler);
+
+router.post('/unread', validateConvoAccess, markConvoUnreadHandler);
+
 /** Maximum allowed length for conversation titles */
 const MAX_CONVO_TITLE_LENGTH = 1024;
 
@@ -810,6 +852,7 @@ router.post('/fork', forkIpLimiter, forkUserLimiter, configMiddleware, async (re
       records: true,
       splitAtTarget,
       option,
+      interfaceConfig: req.config?.interfaceConfig,
       filters: req.config?.filters,
       ...(req.config?.messageFilter?.pii == null
         ? {}
@@ -844,6 +887,7 @@ router.post(
         userId: req.user.id,
         conversationId,
         title,
+        interfaceConfig: req.config?.interfaceConfig,
         filters: req.config?.filters,
         ...(req.config?.messageFilter?.pii == null
           ? {}

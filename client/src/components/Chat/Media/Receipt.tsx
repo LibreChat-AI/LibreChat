@@ -23,7 +23,7 @@ export default function MediaToolReceipt({ output }: { output?: string | null })
   }, [output]);
   if (!receipt) return null;
   return (
-    <div className="my-2 space-y-2 text-sm text-text-secondary">
+    <div className="text-text-secondary my-2 space-y-2 text-sm">
       <p>
         {localize('com_media_tool_reported_status', {
           status: localize(mediaJobPhaseLabels[receipt.phase]),

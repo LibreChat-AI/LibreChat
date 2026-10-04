@@ -18,7 +18,7 @@ export function MediaReferences({ form }: { form: MediaDraftForm }) {
           return (
             <li
               key={`${input.file_id}:${index}`}
-              className={`flex w-full items-center gap-2 rounded-xl border border-border-light p-2 sm:w-72 ${playable ? 'flex-wrap' : ''}`}
+              className={`border-border-light flex w-full items-center gap-2 rounded-xl border p-2 sm:w-72 ${playable ? 'flex-wrap' : ''}`}
             >
               {asset && (
                 <span
@@ -29,7 +29,7 @@ export function MediaReferences({ form }: { form: MediaDraftForm }) {
               )}
               <div className="min-w-0 flex-1">
                 {automaticReference ? (
-                  <p role="status" className="text-sm text-text-secondary">
+                  <p role="status" className="text-text-secondary text-sm">
                     {localize(
                       draft.operation === 'video.generate'
                         ? 'com_media_using_latest_video'

@@ -4,10 +4,21 @@ import { useParams } from 'react-router-dom';
 import exportFromJSON from 'export-from-json';
 import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
-import { buildTree, QueryKeys, detachNativeIdentity } from 'librechat-data-provider';
+import {
+  buildTree,
+  Constants,
+  QueryKeys,
+  dataService,
+  detachNativeIdentity,
+} from 'librechat-data-provider';
 import type { TConversation, TMessage, TPreset } from 'librechat-data-provider';
-import { ScreenshotLimitError, useScreenshot } from '~/hooks/ScreenshotContext';
+import {
+  ScreenshotLimitError,
+  ScreenshotTargetError,
+  useScreenshot,
+} from '~/hooks/ScreenshotContext';
 import useBuildMessageTree from '~/hooks/Messages/useBuildMessageTree';
+import { isUnacknowledgedUserMessage } from '~/utils/messages';
 import { NotificationSeverity } from '~/common';
 import { formatMessageText } from './format';
 import { cleanupPreset } from '~/utils';
@@ -36,16 +47,31 @@ export default function useExportConversation({
 }) {
   const queryClient = useQueryClient();
   const { showToast } = useToastContext();
-  const { captureScreenshot } = useScreenshot();
+  const { captureScreenshot, screenshotTargetRef } = useScreenshot();
   const buildMessageTree = useBuildMessageTree();
   const localize = useLocalize();
 
   const { conversationId: paramId } = useParams();
 
-  const getMessageTree = useCallback(() => {
-    const queryParam =
-      paramId === 'new' ? paramId : (conversation?.conversationId ?? paramId ?? '');
-    const messages = queryClient.getQueryData<TMessage[]>([QueryKeys.messages, queryParam]) ?? [];
+  const screenshotConversationId =
+    paramId === 'new' ? paramId : (conversation?.conversationId ?? paramId ?? '');
+  const getCachedMessages = useCallback(() => {
+    return (
+      queryClient.getQueryData<TMessage[]>([QueryKeys.messages, screenshotConversationId]) ?? []
+    );
+  }, [screenshotConversationId, queryClient]);
+
+  const getMessageTree = useCallback(async () => {
+    const conversationId = conversation?.conversationId;
+    if (
+      !conversationId ||
+      conversationId === Constants.NEW_CONVO ||
+      conversationId === Constants.PENDING_CONVO ||
+      conversationId === Constants.SEARCH
+    ) {
+      throw new Error('Conversation is unavailable for export');
+    }
+    const messages = await dataService.getMessagesByConvoId(conversationId);
     const dataTree = buildTree({
       messages: messages.map((message) => ({
         ...message,
@@ -53,14 +79,50 @@ export default function useExportConversation({
       })),
     });
     return dataTree?.length === 0 ? null : (dataTree ?? null);
-  }, [paramId, conversation?.conversationId, queryClient]);
+  }, [conversation?.conversationId]);
+
+  const screenshotWouldExposePrivateText = () =>
+    getCachedMessages().some(
+      (message) => message.privacyRevision != null || isUnacknowledgedUserMessage(message),
+    );
+
+  const refuseUnsafeScreenshot = () => {
+    if (!screenshotWouldExposePrivateText()) {
+      return false;
+    }
+    showToast({
+      message: localize('com_nav_export_screenshot_private_text'),
+      severity: NotificationSeverity.ERROR,
+      showIcon: true,
+    });
+    return true;
+  };
 
   const exportScreenshot = async () => {
+    if (refuseUnsafeScreenshot()) {
+      return;
+    }
+    const target = screenshotTargetRef?.current;
     let data: Blob;
     try {
-      data = await captureScreenshot();
+      data = await captureScreenshot(
+        (node) =>
+          node === target &&
+          node.dataset.conversationId === screenshotConversationId &&
+          !screenshotWouldExposePrivateText(),
+      );
+      if (
+        !target?.isConnected ||
+        screenshotTargetRef?.current !== target ||
+        target.dataset.conversationId !== screenshotConversationId
+      ) {
+        throw new ScreenshotTargetError();
+      }
     } catch (err) {
-      console.error('Failed to capture screenshot', err);
+      if (refuseUnsafeScreenshot()) {
+        return;
+      }
+      console.error('Failed to capture screenshot');
       showToast({
         message: localize(
           err instanceof ScreenshotLimitError
@@ -72,6 +134,9 @@ export default function useExportConversation({
       });
       return;
     }
+    if (refuseUnsafeScreenshot()) {
+      return;
+    }
     download(data, `${filename}.png`, 'image/png');
   };
 
@@ -81,7 +146,7 @@ export default function useExportConversation({
     const messages = await buildMessageTree({
       messageId: conversation?.conversationId,
       message: null,
-      messages: getMessageTree(),
+      messages: await getMessageTree(),
       branches: Boolean(exportBranches),
       recursive: false,
     });
@@ -159,7 +224,7 @@ export default function useExportConversation({
     const messages = await buildMessageTree({
       messageId: conversation?.conversationId,
       message: null,
-      messages: getMessageTree(),
+      messages: await getMessageTree(),
       branches: false,
       recursive: false,
     });
@@ -215,7 +280,7 @@ export default function useExportConversation({
     const messages = await buildMessageTree({
       messageId: conversation?.conversationId,
       message: null,
-      messages: getMessageTree(),
+      messages: await getMessageTree(),
       branches: false,
       recursive: false,
     });
@@ -267,7 +332,7 @@ export default function useExportConversation({
     const messages = await buildMessageTree({
       messageId: conversation?.conversationId,
       message: null,
-      messages: getMessageTree(),
+      messages: await getMessageTree(),
       branches: Boolean(exportBranches),
       recursive: Boolean(recursive),
     });
@@ -284,17 +349,25 @@ export default function useExportConversation({
     download(blob, `${filename}.json`, 'application/json');
   };
 
-  const exportConversation = () => {
-    if (type === 'json') {
-      exportJSON();
-    } else if (type == 'text') {
-      exportText();
-    } else if (type == 'markdown') {
-      exportMarkdown();
-    } else if (type == 'csv') {
-      exportCSV();
-    } else if (type == 'screenshot') {
-      exportScreenshot();
+  const exportConversation = async () => {
+    try {
+      if (type === 'json') {
+        await exportJSON();
+      } else if (type == 'text') {
+        await exportText();
+      } else if (type == 'markdown') {
+        await exportMarkdown();
+      } else if (type == 'csv') {
+        await exportCSV();
+      } else if (type == 'screenshot') {
+        await exportScreenshot();
+      }
+    } catch {
+      showToast({
+        message: localize('com_nav_export_unavailable'),
+        severity: NotificationSeverity.ERROR,
+        showIcon: true,
+      });
     }
   };
 

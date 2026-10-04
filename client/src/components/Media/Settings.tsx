@@ -277,9 +277,9 @@ export function MediaSettings({
                 description={localize('com_media_compare_remove')}
                 render={
                   <Button
-                    variant="ghost"
+                    variant="section-action"
                     size="icon-xs"
-                    className="-mr-1.5 text-text-secondary hover:text-text-primary"
+                    className="-mr-1.5"
                     aria-label={localize('com_media_compare_remove')}
                     onClick={() => change({ compare: undefined })}
                   >
@@ -289,9 +289,9 @@ export function MediaSettings({
               />
             ) : (
               <Button
-                variant="ghost"
+                variant="section-action"
                 size="xs"
-                className="-mr-2 shrink-0 text-text-secondary"
+                className="-mr-2 shrink-0"
                 disabled={compareCandidates.length === 0}
                 onClick={() => {
                   const next = compareCandidates[0];
@@ -332,7 +332,7 @@ export function MediaSettings({
               />
               <p
                 role={compareInvalid ? 'status' : undefined}
-                className="text-xs leading-5 text-text-secondary"
+                className="text-text-secondary text-xs leading-5"
               >
                 {localize(
                   compareInvalid ? 'com_media_compare_unsupported' : 'com_media_compare_hint',

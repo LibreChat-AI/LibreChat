@@ -75,6 +75,7 @@ describe('private native browser media streaming', () => {
         findSession: async () => (revoked ? null : {}),
         getUserById: async () => ({ role: 'USER' }),
         asSystem: (work) => work(),
+        clearCloudFrontCookies: jest.fn(),
         log,
       }),
     );

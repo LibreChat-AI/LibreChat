@@ -21,7 +21,7 @@ export default function FileDropArea({
   return (
     <div
       ref={dropRef}
-      className={cn('relative', className, dragging && 'ring-2 ring-border-heavy')}
+      className={cn('relative', className, dragging && 'ring-border-heavy ring-2')}
       onDragOver={(event) => {
         if (!onFiles || !event.dataTransfer.types.includes('Files')) return;
         event.preventDefault();

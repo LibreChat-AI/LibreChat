@@ -21,11 +21,11 @@ import { mediaDraftFamily, mediaLibraryFamily } from './state';
 import { MediaBalanceExplanation } from './Balance';
 import useDebounce from '~/hooks/Input/useDebounce';
 import { mediaThreadContext } from './context';
-import { cn, setDocumentTitle } from '~/utils';
 import { seedMediaEditDraft } from './seeding';
 import { useMediaCommands } from './commands';
 import { MediaDeleteDialog } from './Delete';
 import { mediaErrorLabels } from './labels';
+import { setDocumentTitle } from '~/utils';
 import { MediaThreadView } from './Thread';
 import { MediaGallery } from './Gallery';
 import { useLocalize } from '~/hooks';
@@ -166,7 +166,7 @@ export default function MediaWorkspace({
         return (
           <div
             key={command.request.clientRequestId}
-            className="flex flex-wrap items-center gap-3 rounded-xl border border-border-light bg-surface-secondary p-4"
+            className="border-border-light bg-surface-secondary flex flex-wrap items-center gap-3 rounded-xl border p-4"
           >
             {response.data?.phase !== 'rejected' && <Spinner className="size-4" />}
             <p role="status" className="text-sm">
@@ -186,7 +186,7 @@ export default function MediaWorkspace({
             )}
             {unresolved && (
               <>
-                <p className="text-sm text-text-secondary">{localize('com_media_uncertain')}</p>
+                <p className="text-text-secondary text-sm">{localize('com_media_uncertain')}</p>
                 <Button
                   variant="outline"
                   size="sm"
@@ -263,13 +263,13 @@ export default function MediaWorkspace({
   const renderWorkspace = (status?: ReactNode) => (
     <div
       data-testid="media-workspace"
-      className="flex h-full min-h-0 w-full flex-col bg-presentation text-text-primary"
+      className="bg-presentation text-text-primary flex h-full min-h-0 w-full flex-col"
     >
-      <header className="flex min-h-14 shrink-0 items-center justify-between gap-2 border-b border-border-light px-3 py-2 sm:px-5">
+      <header className="border-border-light flex min-h-14 shrink-0 items-center justify-between gap-2 border-b px-3 py-2 sm:px-5">
         <div className="flex min-w-0 items-center gap-2">
           {navigation}
           <Images
-            className="hidden size-5 shrink-0 text-text-secondary sm:block"
+            className="text-text-secondary hidden size-5 shrink-0 sm:block"
             aria-hidden="true"
           />
           <h1 className="truncate text-base font-semibold">{localize('com_media_studio')}</h1>
@@ -282,7 +282,7 @@ export default function MediaWorkspace({
                 <Button
                   size="icon"
                   variant="header-action"
-                  className={cn('size-9', newDraft.temporary && 'bg-surface-active')}
+                  className="size-9"
                   aria-pressed={!!newDraft.temporary}
                   aria-label={localize('com_media_temporary_creation')}
                   onClick={() =>
@@ -362,7 +362,7 @@ export default function MediaWorkspace({
           ref={scroll}
           data-testid="media-transcript"
           className={
-            'scrollbar-gutter-stable min-h-0 overflow-y-auto overscroll-contain ' +
+            'min-h-0 scrollbar-gutter-stable overflow-y-auto overscroll-contain ' +
             (threadId ? 'flex-1' : '')
           }
           onScroll={() => {
@@ -380,14 +380,14 @@ export default function MediaWorkspace({
             {!threadId && (
               <div className="flex flex-1 flex-col items-center justify-center gap-4 py-6 text-center">
                 <Images
-                  className="size-10 text-text-secondary"
+                  className="text-text-secondary size-10"
                   strokeWidth={1.25}
                   aria-hidden="true"
                 />
                 <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
                   {localize('com_media_welcome')}
                 </h2>
-                <p className="max-w-md text-sm leading-6 text-text-secondary">
+                <p className="text-text-secondary max-w-md text-sm leading-6">
                   {localize('com_media_welcome_description')}
                 </p>
               </div>
@@ -411,7 +411,7 @@ export default function MediaWorkspace({
             {conversation}
           </div>
         </div>
-        <div className="shrink-0 bg-presentation px-4 pb-4 pt-2 sm:px-6">
+        <div className="bg-presentation shrink-0 px-4 pt-2 pb-4 sm:px-6">
           <div className="mx-auto w-full max-w-3xl space-y-3 xl:max-w-4xl">
             {status ?? <MediaFormComposer />}
             {commands.error && (
@@ -481,7 +481,7 @@ export default function MediaWorkspace({
   if (!catalog.data || (threadId && !detail.data)) {
     const status =
       catalog.data && detail.isError && !preparing ? (
-        <p className="text-sm text-text-secondary">{localize('com_media_thread_unavailable')}</p>
+        <p className="text-text-secondary text-sm">{localize('com_media_thread_unavailable')}</p>
       ) : (
         catalogStatus
       );

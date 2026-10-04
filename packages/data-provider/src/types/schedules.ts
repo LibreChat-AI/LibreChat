@@ -125,6 +125,7 @@ export type TScheduleLastRun = {
 };
 
 export type TSchedule = {
+  hasMCPConsent?: boolean;
   id: string;
   user: string;
   name: string;
@@ -171,6 +172,7 @@ export type TScheduleRun = {
  *  per-principal `interface.schedules` resolution the write handlers and the fire
  *  path enforce, so the form can never offer a choice the server would refuse. */
 export type TScheduleLimits = {
+  mcpConsent?: boolean;
   maxPerUser: number;
   /** Served with the list so the dialog can refuse a cadence the floor would reject
    *  rather than surfacing it as a 400 after submit. */
@@ -209,6 +211,8 @@ export const scheduleMCPOutcomeSchema = z.object({
   /** Agent whose selected tool requires this server. Used to open the correct
    * recovery chat when the requirement belongs to a handoff or subagent. */
   agentId: z.string().optional(),
+  /** Additional diagnosis; older clients ignore unknown keys and retain the known status. */
+  detail: z.enum(['unattended_auth_required']).optional(),
   status: z.enum([
     'ready',
     'mcp_reauth_required',

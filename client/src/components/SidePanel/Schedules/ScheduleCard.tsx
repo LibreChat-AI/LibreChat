@@ -1,9 +1,9 @@
 import { useId, useRef, useMemo, useState, useCallback } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Trans, useTranslation } from 'react-i18next';
-import { Play, Trash, Folder, Pencil, Ellipsis } from 'lucide-react';
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
+import { Play, Trash, Pencil, Ellipsis, TriangleAlert } from 'lucide-react';
 import {
   Label,
   Chip,
@@ -14,46 +14,39 @@ import {
   OGDialogTemplate,
   useToastContext,
 } from '@librechat/client';
-import type { TSchedule, ScheduleRunStatus, ScheduleDisabledReason } from 'librechat-data-provider';
+import type { TSchedule, ScheduleDisabledReason } from 'librechat-data-provider';
 import type { ImmediateScheduleMCPFailure } from './errors';
 import type { TranslationKeys } from '~/hooks';
+import type { ScheduleRowTone } from './state';
+import {
+  scheduleMCPErrorMessage,
+  scheduleMCPErrorOutcomes,
+  scheduleLastRunKey,
+  scheduleMCPCardOutcomes,
+  scheduleDisabledMCPLabel,
+} from './errors';
 import {
   useGetAgentByIdQuery,
   useDeleteScheduleMutation,
   useUpdateScheduleMutation,
   useRunScheduleNowMutation,
 } from '~/data-provider';
-import {
-  scheduleMCPErrorMessage,
-  scheduleMCPErrorOutcomes,
-  scheduleLastRunKey,
-  scheduleMCPCardOutcomes,
-} from './errors';
 import { useLocalize, useHasAccess, useClockFormat, useWeekStart } from '~/hooks';
+import { cn, getMessageTimestamp, rowActionClasses } from '~/utils';
 import ScheduleMCPRecovery from './ScheduleMCPRecovery';
 import { useAgentsMapContext } from '~/Providers';
-import { getMessageTimestamp } from '~/utils';
 import ScheduleDialog from './ScheduleDialog';
 import { describeCadence } from './cadence';
+import { scheduleRowState } from './state';
+import Consent from './Consent';
 
 interface ScheduleCardProps {
+  consentEnabled?: boolean;
   schedule: TSchedule;
   /** Resolved by the panel, which holds ONE project-name lookup for the whole list —
    *  deriving it per card is O(schedules x projects) on every project-list refresh. */
   projectName?: string | null;
 }
-
-type StatusTone = 'neutral' | 'success' | 'warning' | 'error';
-
-const STATUS_CHIPS: Record<ScheduleRunStatus, { label: TranslationKeys; tone: StatusTone }> = {
-  success: { label: 'com_ui_schedule_last_run', tone: 'success' },
-  error: { label: 'com_ui_schedule_last_run_failed', tone: 'error' },
-  interrupted: { label: 'com_ui_schedule_last_run_failed', tone: 'error' },
-  requires_action: { label: 'com_ui_schedule_needs_approval', tone: 'warning' },
-  started: { label: 'com_ui_schedule_run_started', tone: 'neutral' },
-  skipped_overlap: { label: 'com_ui_schedule_run_skipped', tone: 'neutral' },
-  skipped_balance: { label: 'com_ui_schedule_run_skipped', tone: 'neutral' },
-};
 
 const DISABLED_REASON_LABELS: Record<ScheduleDisabledReason, TranslationKeys> = {
   mcp_reauth_required: 'com_ui_schedule_disabled_mcp_reauth',
@@ -68,13 +61,107 @@ const DISABLED_REASON_LABELS: Record<ScheduleDisabledReason, TranslationKeys> = 
   project_required: 'com_ui_schedule_disabled_project_required',
 };
 
-export default function ScheduleCard({ schedule, projectName }: ScheduleCardProps) {
+const TRAILING_TONE: Record<ScheduleRowTone, string> = {
+  running: 'text-text-secondary',
+  paused: 'text-text-secondary',
+  warning: 'text-status-warning',
+  error: 'text-status-error',
+};
+
+/**
+ * The row's state, in the margin. A dot for the two states the clock owns, filled
+ * while the schedule is running to its cadence and hollow while it is paused, and a
+ * triangle for the two that want their owner: the shape changes with the meaning, so
+ * the marker does not rest on colour alone.
+ */
+function StateMarker({ tone }: { tone: ScheduleRowTone }) {
+  if (tone === 'error' || tone === 'warning') {
+    return (
+      <TriangleAlert
+        aria-hidden="true"
+        className={cn(
+          'mt-0.5 size-3.5 shrink-0',
+          tone === 'error' ? 'text-status-error' : 'text-status-warning',
+        )}
+      />
+    );
+  }
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        'mt-1.5 size-2 shrink-0 rounded-full',
+        tone === 'running' ? 'bg-status-success' : 'border-border-heavy border',
+      )}
+    />
+  );
+}
+
+/**
+ * What the state means, at the end of the title line: when the next run lands, or
+ * the one word that explains why none is coming. When a previous run has a
+ * conversation, keep its navigation available alongside the current state.
+ */
+function TrailingState({
+  label,
+  tone,
+  nextRun,
+  conversationId,
+  onOpenRun,
+  openRunLabel,
+}: {
+  label: string | null;
+  tone: ScheduleRowTone;
+  nextRun: { relative: string; full: string } | null;
+  conversationId?: string;
+  onOpenRun: () => void;
+  openRunLabel: string;
+}) {
+  if (label == null && nextRun == null) {
+    return null;
+  }
+
+  const content =
+    label != null ? (
+      label
+    ) : (
+      <>
+        {/* The bare time is what the eye needs; the sentence is what a screen
+            reader needs, since "Mon 9:00 AM" alone does not say which run. */}
+        <span aria-hidden="true">{nextRun?.relative}</span>
+        <span className="sr-only">{nextRun?.full}</span>
+      </>
+    );
+  const className = cn('shrink-0 text-xs', TRAILING_TONE[tone]);
+
+  if (conversationId == null || conversationId === '') {
+    return <span className={className}>{content}</span>;
+  }
+
+  return (
+    <button
+      type="button"
+      title={openRunLabel}
+      aria-label={label == null ? openRunLabel : `${label}: ${openRunLabel}`}
+      onClick={onOpenRun}
+      className={cn(
+        className,
+        'focus-visible:ring-text-primary rounded-sm hover:underline focus-visible:ring-2 focus-visible:outline-hidden',
+      )}
+    >
+      {content}
+    </button>
+  );
+}
+
+export default function ScheduleCard({ schedule, projectName, consentEnabled }: ScheduleCardProps) {
   const localize = useLocalize();
   const navigate = useNavigate();
   const lastRunKey = scheduleLastRunKey(schedule);
   const [immediateMCPFailure, setImmediateMCPFailure] =
     useState<ImmediateScheduleMCPFailure | null>(null);
   const mcpOutcomes = scheduleMCPCardOutcomes(schedule, immediateMCPFailure);
+  const disabledMCPLabel = scheduleDisabledMCPLabel(schedule.disabledReason, mcpOutcomes);
   const { i18n } = useTranslation();
   const { showToast } = useToastContext();
   const agentsMap = useAgentsMapContext();
@@ -94,6 +181,8 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
 
   const menuId = useId();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [consentOpen, setConsentOpen] = useState(false);
+  const consentButtonRef = useRef<HTMLButtonElement>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const editButtonRef = useRef<HTMLButtonElement>(null);
@@ -175,7 +264,7 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
     weekStartsOn,
   );
 
-  const nextRunText = useMemo(() => {
+  const nextRun = useMemo(() => {
     if (!schedule.enabled || schedule.nextRunAt == null) {
       return null;
     }
@@ -183,128 +272,178 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
     if (!timestamp) {
       return null;
     }
-    return localize('com_ui_schedule_next_run', { time: timestamp.relative });
+    return {
+      relative: timestamp.relative,
+      full: localize('com_ui_schedule_next_run', { time: timestamp.relative }),
+    };
   }, [schedule.enabled, schedule.nextRunAt, i18n.language, hour12, localize]);
+
+  const canInspectConsent = consentEnabled || schedule.hasMCPConsent === true;
 
   const dropdownItems = useMemo(
     () => [
-      {
-        label: localize('com_ui_schedule_run_now'),
-        onClick: handleRunNow,
-        hideOnClick: false,
-        disabled: runSchedule.isLoading,
-        icon: runSchedule.isLoading ? (
-          <Spinner className="size-4" />
-        ) : (
-          <Play className="icon-sm mr-2 text-text-primary" aria-hidden="true" />
-        ),
-      },
-      {
-        label: localize('com_ui_edit'),
-        onClick: () => setEditOpen(true),
-        icon: <Pencil className="icon-sm mr-2 text-text-primary" aria-hidden="true" />,
-        ariaHasPopup: 'dialog' as const,
-        hideOnClick: false,
-        ref: editButtonRef,
-        render: (props) => <button {...props} />,
-      },
-      {
-        label: localize('com_ui_delete'),
-        onClick: () => setDeleteOpen(true),
-        icon: <Trash className="icon-sm mr-2 text-text-primary" aria-hidden="true" />,
-        ariaHasPopup: 'dialog' as const,
-        hideOnClick: false,
-        ref: deleteButtonRef,
-        render: (props) => <button {...props} />,
-      },
+      ...(canInspectConsent
+        ? [
+            {
+              label: localize('com_ui_schedule_consent_title'),
+              onClick: () => setConsentOpen(true),
+              ariaHasPopup: 'dialog' as const,
+              hideOnClick: false,
+              ref: consentButtonRef,
+              render: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+                <button {...props} />
+              ),
+            },
+          ]
+        : []),
+      ...(canWrite
+        ? [
+            {
+              label: localize('com_ui_schedule_run_now'),
+              onClick: handleRunNow,
+              hideOnClick: false,
+              disabled: runSchedule.isLoading,
+              icon: runSchedule.isLoading ? (
+                <Spinner className="size-4" />
+              ) : (
+                <Play className="icon-sm text-text-primary mr-2" aria-hidden="true" />
+              ),
+            },
+            {
+              label: localize('com_ui_edit'),
+              onClick: () => setEditOpen(true),
+              icon: <Pencil className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+              ariaHasPopup: 'dialog' as const,
+              hideOnClick: false,
+              ref: editButtonRef,
+              render: (props) => <button {...props} />,
+            },
+            {
+              label: localize('com_ui_delete'),
+              onClick: () => setDeleteOpen(true),
+              icon: <Trash className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+              ariaHasPopup: 'dialog' as const,
+              hideOnClick: false,
+              ref: deleteButtonRef,
+              render: (props) => <button {...props} />,
+            },
+          ]
+        : []),
     ],
-    [localize, handleRunNow, runSchedule.isLoading],
+    [localize, handleRunNow, runSchedule.isLoading, canInspectConsent, canWrite],
   );
 
-  const statusChip = schedule.lastRun ? STATUS_CHIPS[schedule.lastRun.status] : null;
   const lastRunConvoId = schedule.lastRun?.conversationId;
+
+  /** One state per row, derived once so the marker and the word cannot disagree. */
+  const rowState = useMemo(() => scheduleRowState(schedule, localize), [schedule, localize]);
+
+  /** The agent, the cadence and the project are the row's detail, on one line in the
+   *  order you would say them. The full text stays in `title`, since the line is the
+   *  first thing a narrow panel truncates. */
+  const detailText = [agentName, cadenceText, projectName].filter(Boolean).join(' · ');
 
   return (
     <div
       data-testid="schedule-card"
-      className="rounded-lg border border-border-light bg-transparent px-3 py-2.5 transition-colors duration-theme-fast hover:bg-surface-secondary"
+      className="group hover:bg-surface-active-alt rounded-lg bg-transparent px-3 py-2.5"
     >
-      <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-text-primary">
-          {schedule.name}
-        </span>
-        {canWrite && (
-          <>
-            <Switch
-              checked={schedule.enabled}
-              onCheckedChange={handleToggle}
-              disabled={updateSchedule.isLoading}
-              aria-label={`${localize('com_ui_schedule_enabled')}: ${schedule.name}`}
-              className="shrink-0"
+      <div className="flex items-start gap-2.5">
+        {/* The state, in the margin: a filled dot for a schedule that is running to
+            its cadence, a hollow one for a paused one, and a triangle for the two
+            states that want the owner rather than the clock. */}
+        <StateMarker tone={rowState.tone} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="text-text-primary min-w-0 flex-1 truncate text-sm font-medium">
+              {schedule.name}
+            </span>
+            <TrailingState
+              label={rowState.label}
+              tone={rowState.tone}
+              nextRun={nextRun}
+              conversationId={rowState.tone === 'running' ? undefined : lastRunConvoId}
+              onOpenRun={() => navigate(`/c/${lastRunConvoId}`)}
+              openRunLabel={localize('com_ui_schedule_last_run')}
             />
-            <DropdownPopup
-              portal={true}
-              menuId={menuId}
-              focusLoop={true}
-              className="z-[125]"
-              unmountOnHide={true}
-              isOpen={menuOpen}
-              setIsOpen={setMenuOpen}
-              trigger={
-                <Ariakit.MenuButton
-                  id={`schedule-menu-${schedule.id}`}
-                  aria-label={`${localize('com_ui_schedule_options')}: ${schedule.name}`}
-                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary hover:bg-surface-tertiary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy"
-                >
-                  <Ellipsis className="size-4" aria-hidden={true} />
-                </Ariakit.MenuButton>
-              }
-              items={dropdownItems}
-            />
-          </>
-        )}
-      </div>
-      <p className="mt-0.5 truncate text-xs text-text-secondary" title={agentName}>
-        {agentName}
-      </p>
-      {projectName != null && projectName !== '' && (
-        <p
-          className="mt-0.5 flex items-center gap-1 truncate text-xs text-text-secondary"
-          title={projectName}
-        >
-          <Folder className="size-3 shrink-0" aria-hidden="true" />
-          <span className="truncate">{projectName}</span>
-        </p>
-      )}
-      <p className="mt-1 text-sm text-text-primary">{cadenceText}</p>
-      {nextRunText != null && <p className="mt-0.5 text-xs text-text-secondary">{nextRunText}</p>}
-      {(statusChip != null || schedule.disabledReason != null) && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {statusChip != null &&
-            (lastRunConvoId != null && lastRunConvoId !== '' ? (
-              <button
-                type="button"
-                className="rounded-full hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
-                onClick={() => navigate(`/c/${lastRunConvoId}`)}
+          </div>
+          <div className="mt-0.5 flex items-center gap-2">
+            <p className="text-text-secondary min-w-0 flex-1 truncate text-xs" title={detailText}>
+              {detailText}
+            </p>
+            {rowState.tone === 'running' && lastRunConvoId && (
+              <Link
+                to={`/c/${lastRunConvoId}`}
+                aria-label={`${localize('com_ui_schedule_last_run')}: ${schedule.name}`}
+                className="text-text-secondary focus-visible:ring-text-primary shrink-0 rounded-sm text-xs hover:underline focus-visible:ring-2 focus-visible:outline-hidden"
               >
-                <Chip tone={statusChip.tone}>{localize(statusChip.label)}</Chip>
-              </button>
-            ) : (
-              <Chip tone={statusChip.tone}>{localize(statusChip.label)}</Chip>
-            ))}
+                {localize('com_ui_schedule_last_run')}
+              </Link>
+            )}
+            {(canWrite || canInspectConsent) && (
+              /* Not the collapsible slot other rows use: this panel's rows end at
+                 the sidebar's resize handle, and a slot collapsed to zero width
+                 puts the switch's clickable point outside the panel entirely,
+                 under that handle, where no hover can ever reveal it. The menu
+                 trigger still fades in on row hover by itself. */
+              <div className="flex shrink-0 items-center gap-2">
+                {canWrite && (
+                  <Switch
+                    checked={schedule.enabled}
+                    onCheckedChange={handleToggle}
+                    disabled={updateSchedule.isLoading}
+                    aria-label={`${localize('com_ui_schedule_enabled')}: ${schedule.name}`}
+                    className="shrink-0"
+                  />
+                )}
+                <DropdownPopup
+                  portal={true}
+                  menuId={menuId}
+                  focusLoop={true}
+                  className="z-[125]"
+                  unmountOnHide={true}
+                  isOpen={menuOpen}
+                  setIsOpen={setMenuOpen}
+                  trigger={
+                    <Ariakit.MenuButton
+                      id={`schedule-menu-${schedule.id}`}
+                      aria-label={`${localize('com_ui_schedule_options')}: ${schedule.name}`}
+                      className={rowActionClasses({ open: menuOpen })}
+                    >
+                      <Ellipsis className="size-4" aria-hidden={true} />
+                    </Ariakit.MenuButton>
+                  }
+                  items={dropdownItems}
+                />
+              </div>
+            )}
+          </div>
+          {/* Only what the two lines above cannot say: why the clock stopped, and how
+              to get an MCP server back. A healthy schedule shows neither. */}
           {schedule.disabledReason != null && (
-            <Chip tone="error">{localize(DISABLED_REASON_LABELS[schedule.disabledReason])}</Chip>
+            <div className="mt-1.5">
+              <Chip tone="error">
+                {localize(disabledMCPLabel ?? DISABLED_REASON_LABELS[schedule.disabledReason])}
+              </Chip>
+            </div>
           )}
+          <ScheduleMCPRecovery
+            outcomes={mcpOutcomes}
+            fallbackAgentId={schedule.agent_id}
+            agentNames={agentNames}
+            onOpenAgent={(ownerId) => navigate(`/c/new?agent_id=${encodeURIComponent(ownerId)}`)}
+          />
         </div>
-      )}
-      <div className="mt-1">
-        <ScheduleMCPRecovery
-          outcomes={mcpOutcomes}
-          fallbackAgentId={schedule.agent_id}
-          agentNames={agentNames}
-          onOpenAgent={(ownerId) => navigate(`/c/new?agent_id=${encodeURIComponent(ownerId)}`)}
-        />
       </div>
+      {consentOpen && (
+        <Consent
+          canConfirm={canWrite}
+          id={schedule.id}
+          name={schedule.name}
+          onOpenChange={setConsentOpen}
+          triggerRef={consentButtonRef}
+        />
+      )}
       {editOpen && (
         <ScheduleDialog
           open={editOpen}

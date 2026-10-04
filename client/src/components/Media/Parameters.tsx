@@ -133,7 +133,7 @@ export function MediaParameters({
   };
   return (
     <>
-      <div className="grid grid-cols-2 gap-3 border-t border-border-light pt-4">
+      <div className="border-border-light grid grid-cols-2 gap-3 border-t pt-4">
         {numeric('count', controls.count)}
         {controls.quality?.required && enumeration('quality', controls.quality)}
         {enumeration('aspectRatio', controls.aspectRatio)}
@@ -151,88 +151,93 @@ export function MediaParameters({
           </>
         )}
       </div>
-      <Collapsible
-        open={advanced}
-        onOpenChange={setAdvanced}
-        className="border-t border-border-light pt-3"
-      >
-        <CollapsibleTrigger
-          className={`group/disclosure flex w-full items-center justify-between gap-2 py-1 ${labelVariants({ variant: 'section' })}`}
-        >
-          {localize('com_media_advanced')}
-          <ChevronDown
-            className={`size-4 ${disclosureChevronVariants({ expanded: advanced })}`}
-            aria-hidden="true"
-          />
-        </CollapsibleTrigger>
-        <CollapsibleContent className="mt-3 grid grid-cols-2 gap-3">
-          {numeric('seed', controls.seed)}
-          {numeric('outputCompression', controls.outputCompression)}
-          {numeric('strength', controls.strength)}
-          {numeric('guidance', controls.guidance)}
-          {numeric('creativity', controls.creativity)}
-          {capability.operation === 'video.generate' ? (
-            capability.controls.audio && (
-              <div className="col-span-2 flex items-center gap-2">
-                <Checkbox
-                  id={`${id}-audio`}
-                  aria-label={localize(mediaControlLabels.audio)}
-                  checked={parameters.audio ?? false}
-                  onCheckedChange={(checked) => param('audio', checked === true)}
-                />
-                <Label variant="section" htmlFor={`${id}-audio`}>
-                  {localize(mediaControlLabels.audio)}
-                </Label>
-              </div>
-            )
-          ) : (
-            <>
-              {!capability.controls.quality?.required &&
-                enumeration('quality', capability.controls.quality)}
-              {enumeration('format', capability.controls.format)}
-              {enumeration('background', capability.controls.background)}
-            </>
-          )}
-          {controls.negativePrompt && (
-            <div className="col-span-2 space-y-1.5">
-              <Label variant="section" htmlFor={`${id}-negative-prompt`}>
-                {localize('com_media_negative_prompt')}
-              </Label>
-              <Textarea
-                id={`${id}-negative-prompt`}
-                value={draft.parameters.negativePrompt ?? ''}
-                maxLength={catalog.limits.maxPromptChars}
-                onChange={(event) => param('negativePrompt', event.target.value)}
-                rows={2}
+      <div className="border-border-light border-t pt-3">
+        <Collapsible open={advanced} onOpenChange={setAdvanced}>
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="group/disclosure flex w-full items-center justify-between gap-2 py-1"
+            >
+              <span className={labelVariants({ variant: 'section' })}>
+                {localize('com_media_advanced')}
+              </span>
+              <ChevronDown
+                className={`size-4 ${disclosureChevronVariants({ expanded: advanced })}`}
+                aria-hidden="true"
               />
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-3">
+            <div className="grid grid-cols-2 gap-3">
+              {numeric('seed', controls.seed)}
+              {numeric('outputCompression', controls.outputCompression)}
+              {numeric('strength', controls.strength)}
+              {numeric('guidance', controls.guidance)}
+              {numeric('creativity', controls.creativity)}
+              {capability.operation === 'video.generate' ? (
+                capability.controls.audio && (
+                  <div className="col-span-2 flex items-center gap-2">
+                    <Checkbox
+                      id={`${id}-audio`}
+                      aria-label={localize(mediaControlLabels.audio)}
+                      checked={parameters.audio ?? false}
+                      onCheckedChange={(checked) => param('audio', checked === true)}
+                    />
+                    <Label variant="section" htmlFor={`${id}-audio`}>
+                      {localize(mediaControlLabels.audio)}
+                    </Label>
+                  </div>
+                )
+              ) : (
+                <>
+                  {!capability.controls.quality?.required &&
+                    enumeration('quality', capability.controls.quality)}
+                  {enumeration('format', capability.controls.format)}
+                  {enumeration('background', capability.controls.background)}
+                </>
+              )}
+              {controls.negativePrompt && (
+                <div className="col-span-2 space-y-1.5">
+                  <Label variant="section" htmlFor={`${id}-negative-prompt`}>
+                    {localize('com_media_negative_prompt')}
+                  </Label>
+                  <Textarea
+                    id={`${id}-negative-prompt`}
+                    value={draft.parameters.negativePrompt ?? ''}
+                    maxLength={catalog.limits.maxPromptChars}
+                    onChange={(event) => param('negativePrompt', event.target.value)}
+                    rows={2}
+                  />
+                </div>
+              )}
+              {(controls.providerOptions?.length || providerOptionsText) && (
+                <div className="col-span-2 space-y-1.5">
+                  <Label variant="section" htmlFor={`${id}-provider-options`}>
+                    {localize('com_media_provider_options')}
+                  </Label>
+                  <p
+                    id={`${id}-provider-options-hint`}
+                    className="text-text-secondary text-xs leading-5"
+                  >
+                    {localize('com_media_provider_options_hint', {
+                      names: controls.providerOptions?.join(', ') ?? '',
+                    })}
+                  </p>
+                  <Textarea
+                    id={`${id}-provider-options`}
+                    value={providerOptionsText}
+                    onChange={(event) => change({ providerOptionsText: event.target.value })}
+                    rows={4}
+                    spellCheck={false}
+                    aria-invalid={optionsInvalid || undefined}
+                    aria-describedby={`${id}-provider-options-hint${optionsInvalid ? ` ${id}-provider-options-error` : ''}`}
+                  />
+                </div>
+              )}
             </div>
-          )}
-          {(controls.providerOptions?.length || providerOptionsText) && (
-            <div className="col-span-2 space-y-1.5">
-              <Label variant="section" htmlFor={`${id}-provider-options`}>
-                {localize('com_media_provider_options')}
-              </Label>
-              <p
-                id={`${id}-provider-options-hint`}
-                className="text-xs leading-5 text-text-secondary"
-              >
-                {localize('com_media_provider_options_hint', {
-                  names: controls.providerOptions?.join(', ') ?? '',
-                })}
-              </p>
-              <Textarea
-                id={`${id}-provider-options`}
-                value={providerOptionsText}
-                onChange={(event) => change({ providerOptionsText: event.target.value })}
-                rows={4}
-                spellCheck={false}
-                aria-invalid={optionsInvalid || undefined}
-                aria-describedby={`${id}-provider-options-hint${optionsInvalid ? ` ${id}-provider-options-error` : ''}`}
-              />
-            </div>
-          )}
-        </CollapsibleContent>
-      </Collapsible>
+          </CollapsibleContent>
+        </Collapsible>
+      </div>
     </>
   );
 }

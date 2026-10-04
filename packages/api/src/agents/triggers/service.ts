@@ -1,8 +1,10 @@
 import {
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
   logger,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -26,13 +28,19 @@ import type {
 import type { AgentTriggerEnqueueOptions, PreparedAgentTriggerDelivery } from './delivery';
 import type { BoundAddress } from '../../app/origin';
 import { AgentTriggerDeliveryDeferredError, createAgentTriggerDeliveryEngine } from './engine';
+import { BACKGROUND_TOOL_COMPLETION_SOURCE } from '../backgroundCompletionWakeup';
 import { isShutdownInProgress, registerShutdownTask } from '../../app/shutdown';
+import { SUBAGENT_COMPLETION_SOURCE } from '../subagentCompletionWakeup';
 import { generateAgentTriggerToken } from '../../crypto/jwt';
 import { prepareAgentTriggerDelivery } from './delivery';
 import { selfOriginFromAddress } from '../../app/origin';
 import { createAgentTriggerExecutionHost } from './host';
 import { parseAgentTriggerEnvelope } from './envelope';
 import { createIdleRecoveryLoop } from '../recovery';
+import { WAITING_RETRY_CAP_MS } from './backoff';
+
+/** Internal sources whose deliveries wait on a result or on their parent generation. */
+const COMPLETION_WAKEUP_SOURCES = [BACKGROUND_TOOL_COMPLETION_SOURCE, SUBAGENT_COMPLETION_SOURCE];
 
 export const AGENT_TRIGGER_TOKEN_TTL = '60s';
 const DEFAULT_USER_DRAIN_TIMEOUT_MS = 35_000;
@@ -43,13 +51,20 @@ const DEFAULT_PURGE_RECOVERY_LIMIT = 25;
 
 export interface AgentTriggerServiceOptions {
   completionResultBatchSize?: number;
+  completionReceiptBatching?: boolean;
   address?: BoundAddress | string | null;
   idlePolling?: {
     queuedTurnMaxIntervalMs?: number;
     maintenanceMaxIntervalMs?: number;
     deliveryMaxIntervalMs?: number;
+    completionWaitMaxIntervalMs?: number;
   };
 }
+
+/** A principal's deliveries resuming one conversation, or exact deliveries. */
+export type AgentTriggerCompletionExpedite =
+  | { user: string; conversationId: string; taskIds?: string[] }
+  | { deliveryKeys: string[] };
 
 export interface AgentTriggerServiceDeps {
   fetch?: AgentTriggerExecutionHostDeps['fetch'];
@@ -67,6 +82,16 @@ export interface AgentTriggerServiceDeps {
   reclaimCheckpointDeletions?: (limit: number, activity?: { found: boolean }) => Promise<number>;
   supportsDetachedActionCompletion?: () => boolean;
   settleSourceBeforeDeadLetter?: AgentTriggerDeliveryEngineDeps['settleSourceBeforeDeadLetter'];
+  /** Subscribes to generations reaching a terminal state; returns an unsubscribe. */
+  subscribeGenerationSettled?: (
+    listener: (event: AgentTriggerGenerationSettledEvent) => void,
+  ) => () => void;
+}
+
+/** The part of a settled generation that decides which waiting deliveries it may unblock. */
+export interface AgentTriggerGenerationSettledEvent {
+  userId: string;
+  conversationId: string;
 }
 
 export interface AgentTriggerDeliveryReceipt {
@@ -122,6 +147,7 @@ export interface AgentTriggerDeliveryPersistence {
   retireAgentTriggerDelivery: AgentTriggerDeliveryMethods['retireAgentTriggerDelivery'];
   renewAgentTriggerDeliveryProducerLease: AgentTriggerDeliveryMethods['renewAgentTriggerDeliveryProducerLease'];
   persistAgentBackgroundToolResult?: AgentTriggerDeliveryMethods['persistAgentBackgroundToolResult'];
+  expediteAgentTriggerDeliveries?: AgentTriggerDeliveryMethods['expediteAgentTriggerDeliveries'];
   getAgentBackgroundToolResultClaim?: AgentTriggerDeliveryMethods['getAgentBackgroundToolResultClaim'];
   releaseAgentBackgroundToolResultClaims?: AgentTriggerDeliveryMethods['releaseAgentBackgroundToolResultClaims'];
   retryAgentTriggerDelivery: AgentTriggerDeliveryStore['retry'];
@@ -190,7 +216,7 @@ export interface AgentTriggerService {
     deliveryKey: string,
     sourceId: string,
     reason: string,
-    options?: { onlyIfUnclaimed?: boolean; onlyIfDead?: boolean },
+    options?: { onlyIfUnclaimed?: boolean; onlyIfDead?: boolean; requireTransition?: boolean },
   ) => Promise<boolean>;
   renewProducerLease: (deliveryKey: string, sourceId: string, leaseUntil: Date) => Promise<boolean>;
   persistBackgroundToolResult: (input: {
@@ -206,6 +232,11 @@ export interface AgentTriggerService {
     input: Parameters<AgentTriggerDeliveryMethods['getAgentBackgroundToolResultClaim']>[0],
   ) => ReturnType<AgentTriggerDeliveryMethods['getAgentBackgroundToolResultClaim']>;
   getBackgroundCompletionResultBatchSize: () => number;
+  getBackgroundCompletionReceiptBatching: () => boolean;
+  /** Longest a waiting completion delivery re-checks readiness. */
+  getCompletionWaitMaxIntervalMs: () => number;
+  /** Best effort: moves waiting completion deliveries forward after what they wait on changed. */
+  expediteCompletionWakeups: (input: AgentTriggerCompletionExpedite) => void;
   releaseBackgroundToolResultClaims: AgentTriggerDeliveryMethods['releaseAgentBackgroundToolResultClaims'];
   drainUser: (userId: string) => Promise<void>;
   prepareUserPurge: (userId: string, fenceStartedAt: Date, tenantId?: string) => Promise<void>;
@@ -243,8 +274,10 @@ function createDeliveryStore(
         ...input,
         workerCapabilities: [
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+          AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+          AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
           ...(supportsDetachedActionCompletion()
             ? [AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1]
             : []),
@@ -323,6 +356,8 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
   }
   let boundOrigin: string | undefined;
   let backgroundCompletionResultBatchSize = 8;
+  let backgroundCompletionReceiptBatching = false;
+  let completionWaitMaxIntervalMs = WAITING_RETRY_CAP_MS;
   let deliveryEngine: AgentTriggerDeliveryEngine | undefined;
   let initializePromise: Promise<void> | undefined;
   let purgeRecoveryPromise: Promise<boolean> | undefined;
@@ -380,7 +415,13 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
 
   const dispatchForActivePrincipal = async (
     envelope: unknown,
-    options?: { signal?: AbortSignal; attempt?: number; maxAttempts?: number },
+    options?: {
+      signal?: AbortSignal;
+      attempt?: number;
+      maxAttempts?: number;
+      deliveryClaimToken?: string;
+      requiredWorkerCapability?: string;
+    },
   ): Promise<AgentTriggerExecutionResult> => {
     const parsed = parseAgentTriggerEnvelope(envelope);
     await requireActivePrincipal(parsed.principal.userId);
@@ -534,9 +575,45 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
     void purgeRecoveryLoop?.start();
   };
 
+  /** Moves waiting completion deliveries forward when what they wait on has
+   * changed, and marks held ones so their next deferral re-checks at once. The
+   * claim pass always runs: a matching delivery may already be due here without
+   * having moved. Best effort: a missed expedite only means the delivery
+   * re-checks at its backoff instead of immediately. */
+  const expediteCompletions = (input: AgentTriggerCompletionExpedite): void => {
+    const expedite = deps.methods?.expediteAgentTriggerDeliveries;
+    if (expedite == null || !deliveryReady || stopping) {
+      return;
+    }
+    void runAsSystem(() =>
+      expedite({
+        ...('user' in input
+          ? {
+              user: input.user,
+              conversationId: input.conversationId,
+              ...(input.taskIds != null && { taskIds: input.taskIds }),
+            }
+          : { deliveryKeys: input.deliveryKeys }),
+        sourceIds:
+          'user' in input && input.taskIds != null
+            ? [SUBAGENT_COMPLETION_SOURCE]
+            : COMPLETION_WAKEUP_SOURCES,
+        now: new Date(),
+      }),
+    )
+      .then(() => deliveryEngine?.wake())
+      .catch((error) =>
+        logger.warn('[agent-triggers] failed to expedite waiting completion deliveries:', error),
+      );
+  };
+
+  let unsubscribeGenerationSettled: (() => void) | undefined;
+
   const stop = async (): Promise<void> => {
     stopping = true;
     deliveryReady = false;
+    unsubscribeGenerationSettled?.();
+    unsubscribeGenerationSettled = undefined;
     await purgeRecoveryLoop?.stop();
     await initializePromise?.catch(() => undefined);
     await deliveryEngine?.stop();
@@ -553,6 +630,9 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
   return {
     initialize: (options = {}) => {
       backgroundCompletionResultBatchSize = options.completionResultBatchSize ?? 8;
+      backgroundCompletionReceiptBatching = options.completionReceiptBatching === true;
+      completionWaitMaxIntervalMs =
+        options.idlePolling?.completionWaitMaxIntervalMs ?? WAITING_RETRY_CAP_MS;
       boundOrigin = selfOriginFromAddress(options.address) ?? boundOrigin;
       if (deps.methods == null || deliveryReady) {
         return Promise.resolve();
@@ -604,6 +684,11 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         );
         deliveryReady = true;
         deliveryEngine.start();
+        /** Deliveries waiting on a parent resume that parent's conversation, so a
+         * settled generation wakes only those, not every waiting task of the user. */
+        unsubscribeGenerationSettled ??= deps.subscribeGenerationSettled?.(
+          ({ userId, conversationId }) => expediteCompletions({ user: userId, conversationId }),
+        );
         startPurgeRecovery();
         logger.info('[agent-triggers] durable delivery engine started');
       }).finally(() => {
@@ -699,6 +784,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
                 settledAt: new Date(),
                 ...(options?.onlyIfUnclaimed === true ? { onlyIfUnclaimed: true } : {}),
                 ...(options?.onlyIfDead === true ? { onlyIfDead: true } : {}),
+                ...(options?.requireTransition === true ? { requireTransition: true } : {}),
               },
               recovery,
             ),
@@ -709,9 +795,12 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         }
         return retired;
       }),
+    // A background tool keeps running while the server drains, and its result must
+    // still reach the durable receipt, so producer writes stay available after
+    // admissions and the delivery engine stop.
     renewProducerLease: (deliveryKey, sourceId, leaseUntil) =>
       runAsSystem(async () =>
-        requireMethods().renewAgentTriggerDeliveryProducerLease({
+        requireCleanupMethods().renewAgentTriggerDeliveryProducerLease({
           deliveryKey,
           sourceId,
           leaseUntil,
@@ -719,8 +808,12 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
       ),
     persistBackgroundToolResult: (input) =>
       runAsSystem(async () => {
-        const persist = requireMethods().persistAgentBackgroundToolResult;
-        return persist == null ? false : persist(input);
+        const persist = requireCleanupMethods().persistAgentBackgroundToolResult;
+        const persisted = persist == null ? false : await persist(input);
+        if (persisted) {
+          expediteCompletions({ deliveryKeys: [input.deliveryKey] });
+        }
+        return persisted;
       }),
     getBackgroundToolResultClaim: (input) =>
       runAsSystem(async () => {
@@ -728,6 +821,9 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         return getClaim == null ? null : getClaim(input);
       }),
     getBackgroundCompletionResultBatchSize: () => backgroundCompletionResultBatchSize,
+    getBackgroundCompletionReceiptBatching: () => backgroundCompletionReceiptBatching,
+    getCompletionWaitMaxIntervalMs: () => completionWaitMaxIntervalMs,
+    expediteCompletionWakeups: (input) => expediteCompletions(input),
     releaseBackgroundToolResultClaims: (input) =>
       runAsSystem(async () => {
         const release = requireMethods().releaseAgentBackgroundToolResultClaims;

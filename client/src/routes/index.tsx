@@ -6,14 +6,14 @@ import {
   ResetPassword,
   ApiErrorWatcher,
   TwoFactorScreen,
+  TwoFactorSetupScreen,
   RequestPasswordReset,
 } from '~/components/Auth';
-import { MarketplaceProvider } from '~/components/Agents/MarketplaceContext';
-import AgentMarketplace from '~/components/Agents/Marketplace';
 import { OAuthSuccess, OAuthError } from '~/components/OAuth';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import RouteErrorBoundary from './RouteErrorBoundary';
 import StartupLayout from './Layouts/Startup';
+import MarketplaceRoute from './Marketplace';
 import LoginLayout from './Layouts/Login';
 import dashboardRoutes from './Dashboard';
 import WithRum from '~/lib/rum/WithRum';
@@ -122,6 +122,10 @@ export const router = createBrowserRouter(
               path: 'login/2fa',
               element: <TwoFactorScreen />,
             },
+            {
+              path: 'login/2fa/setup',
+              element: <TwoFactorSetupScreen />,
+            },
           ],
         },
         dashboardRoutes,
@@ -192,19 +196,11 @@ export const router = createBrowserRouter(
             },
             {
               path: 'agents',
-              element: (
-                <MarketplaceProvider>
-                  <AgentMarketplace />
-                </MarketplaceProvider>
-              ),
+              element: <MarketplaceRoute />,
             },
             {
               path: 'agents/:category',
-              element: (
-                <MarketplaceProvider>
-                  <AgentMarketplace />
-                </MarketplaceProvider>
-              ),
+              element: <MarketplaceRoute />,
             },
           ],
         },

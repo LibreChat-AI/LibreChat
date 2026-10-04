@@ -279,6 +279,19 @@ export function bootstrapCredentials(): CredentialRuntimeState {
     return existingState;
   }
 
+  // Validate explicit credentials before generating or adopting any missing values.
+  for (const name of ['CREDS_KEY', 'CREDS_IV'] as const) {
+    const value = process.env[name];
+    if (isConfiguredCredential(value) && !isUsableTemporaryCredential(name, value)) {
+      const bytes = name === 'CREDS_KEY' ? 32 : 16;
+      throw new Error(
+        `[credentials] ${name} must be exactly ${bytes * 2} hexadecimal characters (${bytes} bytes). ` +
+          'Refusing startup to prevent weak encryption or late crypto failures. ' +
+          'Restore the original credential if it protects existing data; plan a controlled migration before rotating it.',
+      );
+    }
+  }
+
   const filePath = getCredentialPath();
   const file = readCredentialFile(filePath);
   const sources = {} as Record<CredentialName, CredentialSource>;

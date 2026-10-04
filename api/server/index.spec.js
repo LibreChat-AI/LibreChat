@@ -189,7 +189,9 @@ describe('Startup readiness wiring', () => {
   });
 
   it('configures subagent task routing before the server accepts requests', () => {
-    const routingIndex = source.indexOf('await configureSubagentTaskRouting();');
+    const routingIndex = source.indexOf(
+      'await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);',
+    );
     const listenIndex = source.indexOf('const server = app.listen');
 
     expect(routingIndex).toBeGreaterThan(-1);
@@ -204,6 +206,17 @@ describe('Startup readiness wiring', () => {
 
     expect(shutdownRegistrationIndex).toBeGreaterThan(-1);
     expect(shutdownRegistrationIndex).toBeLessThan(listenIndex);
+  });
+
+  it('registers background task draining with the graceful shutdown coordinator', () => {
+    const registrationIndex = source.indexOf('registerBackgroundTaskShutdown({');
+    const listenIndex = source.indexOf('const server = app.listen');
+
+    expect(registrationIndex).toBeGreaterThan(-1);
+    expect(registrationIndex).toBeLessThan(listenIndex);
+    expect(source).toContain(
+      'interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs',
+    );
   });
 
   it('configures HTTP timeouts before graceful shutdown handling', () => {

@@ -7,14 +7,11 @@ jest.mock('~/components/Auth', () => ({
   ResetPassword: () => null,
   ApiErrorWatcher: () => null,
   TwoFactorScreen: () => null,
+  TwoFactorSetupScreen: () => null,
   RequestPasswordReset: () => null,
 }));
 
-jest.mock('~/components/Agents/MarketplaceContext', () => ({
-  MarketplaceProvider: ({ children }: { children: React.ReactNode }) => children,
-}));
-
-jest.mock('~/components/Agents/Marketplace', () => () => null);
+jest.mock('../Marketplace', () => () => null);
 jest.mock('~/components/OAuth', () => ({
   OAuthSuccess: () => null,
   OAuthError: () => null,

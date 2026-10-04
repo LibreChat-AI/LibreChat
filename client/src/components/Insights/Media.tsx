@@ -30,18 +30,18 @@ export default function MediaInsights({
       <h2 id="media-insights-title" className="text-base font-semibold">
         {localize('com_insights_media_title')}
       </h2>
-      <p className="mt-1 text-sm text-text-secondary">{localize('com_insights_media_scope')}</p>
+      <p className="text-text-secondary mt-1 text-sm">{localize('com_insights_media_scope')}</p>
       <dl className="my-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         {totals.map(([key, value]) => (
           <div key={key}>
-            <dt className="text-sm text-text-secondary">{localize(key)}</dt>
+            <dt className="text-text-secondary text-sm">{localize(key)}</dt>
             <dd className="text-xl font-semibold tabular-nums">
               {formatExactValue(value, locale)}
             </dd>
           </div>
         ))}
       </dl>
-      <p className="mb-3 text-sm text-text-secondary">
+      <p className="text-text-secondary mb-3 text-sm">
         {localize('com_insights_media_cost_summary', {
           provider: formatMoney(data.summary.providerCostUSD, locale),
           tokens: formatMoney(data.summary.tokenCostUSD, locale),
@@ -52,14 +52,14 @@ export default function MediaInsights({
         })}
       </p>
       {data.summary.balanceCostJobs > 0 && (
-        <p className="mb-3 text-sm text-text-secondary">
+        <p className="text-text-secondary mb-3 text-sm">
           {localize('com_insights_media_credits_summary', {
             credits: formatExactValue(data.summary.creditsCharged, locale),
           })}
         </p>
       )}
       {data.summary.unbilledJobs > 0 && (
-        <p className="mb-3 text-sm text-text-secondary">
+        <p className="text-text-secondary mb-3 text-sm">
           {localize('com_insights_media_unbilled', { count: data.summary.unbilledJobs })}
         </p>
       )}
@@ -70,7 +70,7 @@ export default function MediaInsights({
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <caption className="sr-only">{localize('com_insights_media_title')}</caption>
-              <thead className="border-b border-border-medium text-text-secondary">
+              <thead className="border-border-medium text-text-secondary border-b">
                 <tr>
                   {(
                     [
@@ -95,19 +95,19 @@ export default function MediaInsights({
                     <th
                       scope="col"
                       key={key}
-                      className={`whitespace-nowrap px-2 py-2 font-medium ${['com_insights_media_provider', 'com_insights_media_model', 'com_insights_media_operation'].includes(key) ? '' : 'text-right'}`}
+                      className={`px-2 py-2 font-medium whitespace-nowrap ${['com_insights_media_provider', 'com_insights_media_model', 'com_insights_media_operation'].includes(key) ? '' : 'text-right'}`}
                     >
                       {localize(key)}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border-light">
+              <tbody className="divide-border-light divide-y">
                 {data.offerings.map((row) => (
                   <tr key={JSON.stringify([row.provider, row.model, row.operation])}>
                     <td className="px-2 py-3">{row.provider}</td>
                     <td className="px-2 py-3">{row.model}</td>
-                    <td className="whitespace-nowrap px-2 py-3">
+                    <td className="px-2 py-3 whitespace-nowrap">
                       {localize(mediaOperationLabels[row.operation])}
                     </td>
                     {[

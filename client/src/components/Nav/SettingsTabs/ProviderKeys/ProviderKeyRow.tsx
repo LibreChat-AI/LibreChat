@@ -66,8 +66,8 @@ export default function ProviderKeyRow({
             />
           </div>
           <div className="min-w-0">
-            <div className="truncate font-medium text-text-primary">{label}</div>
-            <div className="text-xs text-text-secondary" role={isError ? 'alert' : undefined}>
+            <div className="text-text-primary truncate font-medium">{label}</div>
+            <div className="text-text-secondary text-xs" role={isError ? 'alert' : undefined}>
               {expiryLabel}
             </div>
           </div>

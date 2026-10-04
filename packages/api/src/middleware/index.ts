@@ -32,3 +32,4 @@ export * from './moderation';
 export * from './admission';
 export * from './limiters';
 export * from './uploads';
+export * from './twoFactor';

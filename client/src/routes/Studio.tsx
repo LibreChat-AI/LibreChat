@@ -59,7 +59,7 @@ export default function Studio() {
   };
   if (loading)
     return (
-      <main aria-busy="true" className="space-y-5 p-6 text-text-primary">
+      <main aria-busy="true" className="text-text-primary space-y-5 p-6">
         <h1 className="text-2xl font-semibold">{localize('com_media_studio')}</h1>
         <p role="status" className="sr-only">
           {localize('com_media_loading')}
@@ -80,12 +80,12 @@ export default function Studio() {
     );
   if (!host || !media?.studio)
     return (
-      <main className="p-6 text-text-primary">
+      <main className="text-text-primary p-6">
         <p role="status">{localize('com_media_unavailable')}</p>
       </main>
     );
   return (
-    <main className="flex h-full min-h-0 w-full flex-col bg-presentation">
+    <main className="bg-presentation flex h-full min-h-0 w-full flex-col">
       <MediaHostProvider value={host}>
         <MediaWorkspace
           threadId={threadId}

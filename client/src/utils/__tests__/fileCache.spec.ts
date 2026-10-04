@@ -42,11 +42,12 @@ test('still loads the full list after a file was cached before the first load', 
   expect(client.getQueryData([QueryKeys.files])).toEqual([file, listed]);
 });
 
-test('does not refetch a loaded list when a file is added', () => {
+test('does not refetch a loaded list when a file is added, but refreshes the recent files', () => {
   client.setQueryData([QueryKeys.files], [file]);
-  const invalidate = jest.spyOn(client, 'invalidateQueries');
+  client.setQueryData([QueryKeys.files, 'recent'], [file]);
   addFileToCache(client, { ...file, file_id: 'two' });
-  expect(invalidate).not.toHaveBeenCalled();
+  expect(client.getQueryState([QueryKeys.files])?.isInvalidated).toBe(false);
+  expect(client.getQueryState([QueryKeys.files, 'recent'])?.isInvalidated).toBe(true);
 });
 
 test('keeps new files first and preserves each distinct streamed file', () => {

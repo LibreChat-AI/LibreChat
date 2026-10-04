@@ -4,9 +4,12 @@ const {
   matchModelName,
   findMatchingPattern,
   isDeploymentSkillId,
+  createMessageBudgetReader,
   createMediaConsumerConfigProvider,
 } = require('@librechat/api');
 const getLogStores = require('~/cache/getLogStores');
+
+const messageBudget = createMessageBudgetReader();
 
 const methods = createMethods(mongoose, {
   matchModelName,
@@ -14,6 +17,7 @@ const methods = createMethods(mongoose, {
   isExternalSkillId: isDeploymentSkillId,
   getCache: getLogStores,
   getMediaConsumerConfig: createMediaConsumerConfigProvider(getLogStores),
+  getMCPAppMessageBudget: messageBudget.getBudget,
 });
 
 const seedDatabase = async () => {
@@ -25,5 +29,6 @@ const seedDatabase = async () => {
 
 module.exports = {
   ...methods,
+  initializeMessageBudget: messageBudget.initialize,
   seedDatabase,
 };

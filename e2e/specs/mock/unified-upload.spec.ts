@@ -15,12 +15,12 @@ import {
  * Unified file upload — per-mime-type delivery routing (PR #12626).
  *
  * Runs against Mock Provider B, configured for unified mode in
- * e2e/config/librechat.e2e.yaml (Mock Provider A stays on the legacy dropdown
+ * e2e/config/librechat.e2e.yaml (Mock Provider A retains legacy routing
  * for chat.spec.ts's upload-to-provider test).
  *
  * What this proves end-to-end (real backend + DB), and what it deliberately can't:
- * - Unified upload works through the direct button and the source menu that
- *   offers local upload alongside media creation.
+ * - The composer opens one palette entry point in unified mode, with no separate
+ *   legacy upload menu.
  * - A `none`-routed upload (csv) persists `llmDeliveryPath: 'none'` and is kept
  *   out of LLM delivery — reachable only by tools.
  * - A `provider`-routed upload (markdown) is STILL delivered to the model AND
@@ -52,9 +52,10 @@ test.describe('unified file upload', () => {
     // Default model needs a real key; Mock Provider B is the unified-mode endpoint.
     await selectMockEndpoint(page, MOCK_ENDPOINTS[1]);
 
-    // Without another source, unified upload opens the file chooser directly.
-    await expect(page.locator('#attach-file-button')).toBeVisible({ timeout: 15000 });
-    await expect(page.locator('#attach-file-menu-button')).toHaveCount(0);
+    // Unified mode: the palette entry point is visible.
+    await expect(page.getByRole('button', { name: 'Attach and tools', exact: true })).toBeVisible({
+      timeout: 15000,
+    });
 
     // Upload-time routing: the configured override (csv -> none) must persist, so
     // the file is kept out of LLM delivery and left for tools (code interpreter).
@@ -85,8 +86,10 @@ test.describe('unified file upload', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[1]);
 
-    await expect(page.locator('#attach-file-menu-button')).toBeVisible({ timeout: 15000 });
-    await expect(page.locator('#attach-file-button')).toHaveCount(0);
+    // Same palette entry point — no separate legacy upload menu.
+    await expect(page.getByRole('button', { name: 'Attach and tools', exact: true })).toBeVisible({
+      timeout: 15000,
+    });
 
     // markdown is overridden to `provider` for Mock Provider B: it should be
     // delivered to the model (unlike `none`) while still attaching to the chat.
@@ -130,7 +133,9 @@ test.describe('unified file upload', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[1]);
 
-    await expect(page.locator('#attach-file-menu-button')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('button', { name: 'Attach and tools', exact: true })).toBeVisible({
+      timeout: 15000,
+    });
 
     // application/json is neither overridden nor image/pdf, so it falls through to the
     // system fallback ('text'): extracted and delivered as text context, not a provider file.
@@ -149,20 +154,22 @@ test.describe('unified file upload', () => {
     expect(persisted?.llmDeliveryPath).toBe('text');
   });
 
-  test('legacy endpoint offers provider-specific upload choices', async ({ page }) => {
+  test('legacy endpoint uses the palette provider source', async ({ page }) => {
     test.setTimeout(120000);
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-    // Mock Provider A opts into legacyFileUploadUX.
+    // Mock Provider A retains legacy destination routing behind the shared palette.
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
-    // Legacy: the menu-button trigger is present; the unified single button is not.
-    await expect(page.locator('#attach-file-menu-button')).toBeVisible({ timeout: 15000 });
-    await expect(page.locator('#attach-file-button')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Attach and tools', exact: true })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole('menu')).toHaveCount(0);
 
-    // Opening it reveals the classic multi-option menu (its always-present entry is
-    // the provider upload; the code/file_search options are gated on those ephemeral
-    // capabilities being enabled first).
-    await page.locator('#attach-file-menu-button').click();
-    await expect(page.getByText('Upload to Provider')).toBeVisible();
+    // Opening the palette exposes the provider source row.
+    await page.getByRole('button', { name: 'Attach and tools', exact: true }).click();
+    const palette = page.getByRole('dialog', { name: 'Attach and tools', exact: true });
+    await expect(
+      palette.getByRole('button', { name: 'Upload to Provider', exact: true }),
+    ).toBeVisible();
   });
 });

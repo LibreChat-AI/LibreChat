@@ -51,7 +51,7 @@ export default function StackedMCPIcons({
     return (
       <MCPIcon
         aria-hidden="true"
-        className={cn('flex-shrink-0 text-text-primary', sizeConfig.md.icon)}
+        className={cn('text-text-primary shrink-0', sizeConfig.md.icon)}
       />
     );
   }
@@ -78,7 +78,7 @@ export default function StackedMCPIcons({
             <CustomIcon
               src={icon.iconPath}
               alt={icon.displayName}
-              className={cn('rounded-full object-cover text-text-primary', sizes.icon)}
+              className={cn('text-text-primary rounded-full object-cover', sizes.icon)}
             />
           ) : (
             <MCPIcon className={cn('text-text-primary', sizes.icon)} />
@@ -88,7 +88,7 @@ export default function StackedMCPIcons({
       {overflowCount > 0 && (
         <div
           className={cn(
-            'relative flex items-center justify-center rounded-full border border-surface-primary bg-surface-tertiary text-xs font-medium text-text-secondary',
+            'border-surface-primary bg-surface-tertiary text-text-secondary relative flex items-center justify-center rounded-full border text-xs font-medium',
             sizes.container,
             sizes.overlap,
           )}

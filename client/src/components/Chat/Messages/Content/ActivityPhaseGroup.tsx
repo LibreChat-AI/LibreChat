@@ -1,19 +1,11 @@
-import {
-  memo,
-  useId,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useLayoutEffect,
-} from 'react';
+import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
-import { Button } from '@librechat/client';
+import { useTranslation } from 'react-i18next';
 import { ContentTypes } from 'librechat-data-provider';
 import { Check, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import type { CSSProperties, ReactNode, RefObject } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
+import type { RailHover } from './rail';
 import {
   useLocalize,
   useExpandCollapse,
@@ -21,20 +13,32 @@ import {
   scheduleMessageContentLayoutReconcile,
   EXPAND_TRANSITION,
 } from '~/hooks';
-import { getLiveActivity, getSpanIconNames, LIVE_ACTIVITY_THROTTLE_MS } from './live';
+import {
+  getFailedLines,
+  getLiveActivity,
+  getSpanIconNames,
+  LIVE_ACTIVITY_THROTTLE_MS,
+  LIVE_REASONING_HOLD_MS,
+} from './live';
+import { FoldRail, RailGlyph, FoldHeaderContext, revealFoldHeader, useRailHover } from './rail';
+import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
+import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import useThrottledValue from '~/hooks/Messages/useThrottledValue';
+import { AttachmentGroup, StreamingThoughtPeek } from './Parts';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { getActivityLabelText } from '~/utils/activityLabels';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
-import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
+import { MCPAppViews } from '~/components/MCPUIResource';
 import { sandboxStartingByToolCallId } from '~/store';
+import { MessageSurfaceContext } from '../ui/surface';
+import useClockFormat from '~/hooks/useClockFormat';
+import { cn, getMessageTimestamp } from '~/utils';
 import { StackedToolIcons } from './ToolOutput';
+import useTimeTick from '~/hooks/useTimeTick';
 import { getSourceDomains } from './sources';
 import { mapAttachments } from '~/utils/map';
 import SearchVerticals from './verticals';
-import { AttachmentGroup } from './Parts';
-import { cn } from '~/utils';
 
 /** Matches `EXPAND_TRANSITION` so the panel and the label ticker resolve on
  *  the same curve — two properties animating on two different easings is what
@@ -109,12 +113,8 @@ function PhaseGlyph({ failed }: { failed: boolean }) {
  * from adding descender space, which made a live row 2px taller than the
  * settled row it becomes.
  */
-function LiveLine({ text, previewRef }: { text: string; previewRef?: RefObject<HTMLSpanElement> }) {
-  return (
-    <span ref={previewRef} className="shimmer max-w-full truncate align-top">
-      {text}
-    </span>
-  );
+function LiveLine({ text }: { text: string }) {
+  return <span className="shimmer max-w-full truncate align-top">{text}</span>;
 }
 
 const PhaseLabel = memo(function PhaseLabel({
@@ -125,7 +125,6 @@ const PhaseLabel = memo(function PhaseLabel({
   live = false,
   grow = true,
   lineId,
-  previewRef,
 }: {
   text: string;
   animate: boolean;
@@ -141,7 +140,6 @@ const PhaseLabel = memo(function PhaseLabel({
   grow?: boolean;
   /** Id for the current line, so a live disclosure can be named by it alone. */
   lineId?: string;
-  previewRef?: RefObject<HTMLSpanElement>;
 }) {
   const [lines, setLines] = useState<{
     current: string;
@@ -210,7 +208,7 @@ const PhaseLabel = memo(function PhaseLabel({
           failed && 'text-text-warning',
         )}
       >
-        {live ? <LiveLine text={lines.current} previewRef={previewRef} /> : lines.current}
+        {live ? <LiveLine text={lines.current} /> : lines.current}
       </span>
     </span>
   );
@@ -265,33 +263,39 @@ function SpanGlyph({
  *
  * Its own component so only a live card pays for it — the localization and MCP
  * lookups, and the throttle. `liveParts` is rebuilt on every streamed delta;
- * full reasoning lines and tool activity repaint at most twice a second.
- * Short reasoning sentences stream freely until they fill the available row.
+ * tool activity repaints at most twice a second and a finished reasoning
+ * sentence holds the line for at least a second.
  */
 function LivePhaseHeader({
   parts,
   animate,
+  expanded,
   lineId,
   comboId,
   detailId,
   attachments,
   onAnnounce,
+  railHover,
 }: {
   parts: ReadonlyArray<TMessageContentParts | undefined>;
   animate: boolean;
+  /** The rows are on screen: title the span by its newest label rather than
+   *  repeat a line the reader can see below. */
+  expanded: boolean;
   lineId: string;
   comboId: string;
   detailId: string;
   attachments?: TAttachment[];
   onAnnounce: (text: string) => void;
+  railHover: RailHover;
 }) {
   const localize = useLocalize();
   const mcpIconMap = useMCPIconMap();
   const mcpServerNames = useMCPServerNames();
   const attachmentsById = useMemo(() => mapAttachments(attachments ?? []), [attachments]);
   const activity = useMemo(
-    () => getLiveActivity(parts, localize, mcpServerNames, attachmentsById),
-    [parts, localize, mcpServerNames, attachmentsById],
+    () => getLiveActivity(parts, localize, mcpServerNames, attachmentsById, expanded),
+    [parts, localize, mcpServerNames, attachmentsById, expanded],
   );
   /** A code card names its sandbox startup from events outside the content
    *  array. The row reads the same signal for its newest call, so the span
@@ -305,37 +309,16 @@ function LivePhaseHeader({
    *  and suppressed count together so neither can paint with the old value. */
   const comboCount = showSandboxStartup ? 1 : activity.comboCount;
   const { source } = activity;
-  const line = useMemo(() => ({ text, source, comboCount }), [text, source, comboCount]);
-  const previewRef = useRef<HTMLSpanElement>(null);
-  /** The full width the line may occupy, which is the flex track rather than
-   *  the label box: the box shrinks to its text whenever the multiplier rides
-   *  beside it, and measuring that would call every line full. */
-  const lineRowRef = useRef<HTMLSpanElement>(null);
-  const [isPreviewFull, setIsPreviewFull] = useState(false);
+  const line = useMemo(
+    () => ({ text, source, comboCount, isBackgroundTaskCheck: activity.isBackgroundTaskCheck }),
+    [text, source, comboCount, activity.isBackgroundTaskCheck],
+  );
+  /** A thought's line is a finished sentence and holds for a beat; everything
+   *  else repaints at the ordinary cadence. */
   const painted = useThrottledValue(
     line,
-    source.startsWith('think:') && !isPreviewFull ? 0 : LIVE_ACTIVITY_THROTTLE_MS,
+    source.startsWith('think:') ? LIVE_REASONING_HOLD_MS : LIVE_ACTIVITY_THROTTLE_MS,
   );
-  const measurePreview = useCallback(() => {
-    const preview = previewRef.current;
-    const width = lineRowRef.current?.clientWidth ?? 0;
-    setIsPreviewFull(width > 0 && (preview?.scrollWidth ?? 0) >= width);
-  }, []);
-
-  /** Measure the painted sentence, not the accumulated reasoning or the next
-   *  queued line: a newly displayed short sentence must fill before it waits. */
-  useLayoutEffect(measurePreview, [measurePreview, painted.text, painted.source]);
-  useLayoutEffect(() => {
-    const preview = previewRef.current;
-    const row = lineRowRef.current;
-    if (!preview || !row || typeof ResizeObserver === 'undefined') {
-      return;
-    }
-    const observer = new ResizeObserver(measurePreview);
-    observer.observe(row);
-    observer.observe(preview);
-    return () => observer.disconnect();
-  }, [measurePreview, painted.source]);
   const iconKey = activity.iconNames.join('|');
   const iconNames = useMemo(() => (iconKey ? iconKey.split('|') : []), [iconKey]);
   const sourceDomains = useMemo(() => getSourceDomains(attachments, SPAN_SITES), [attachments]);
@@ -344,25 +327,24 @@ function LivePhaseHeader({
    *  fail while a later one runs, and the line alone would never say so. The
    *  hidden group header carries the same counts in the same words. */
   const { failed, cancelled } = activity.outcome;
-  const combo = painted.comboCount > 1 ? `×${painted.comboCount}` : '';
-  const detail = useMemo(() => {
-    const notes: string[] = [];
-    if (failed > 0) {
-      notes.push(
-        localize(failed === 1 ? 'com_ui_one_action_failed' : 'com_ui_n_actions_failed', {
-          0: String(failed),
-        }),
-      );
-    }
-    if (cancelled > 0) {
-      notes.push(
-        localize(cancelled === 1 ? 'com_ui_one_action_cancelled' : 'com_ui_n_actions_cancelled', {
+  const total = activity.total;
+  let combo = '';
+  if (painted.comboCount > 1) {
+    combo = painted.isBackgroundTaskCheck
+      ? `· ${localize('com_ui_background_tasks_n_checks', { 0: String(painted.comboCount) })}`
+      : `×${painted.comboCount}`;
+  }
+  const failedNote =
+    failed > 0
+      ? localize('com_ui_n_of_n_actions_failed', { 0: String(failed), 1: String(total) })
+      : '';
+  const cancelledNote =
+    cancelled > 0
+      ? localize(cancelled === 1 ? 'com_ui_one_action_cancelled' : 'com_ui_n_actions_cancelled', {
           0: String(cancelled),
-        }),
-      );
-    }
-    return notes.join(' · ');
-  }, [failed, cancelled, localize]);
+        })
+      : '';
+  const detail = [failedNote, cancelledNote].filter(Boolean).join(' · ');
 
   /** Announcements have their own identity, apart from the ticker's. A line
    *  is spoken once, when it is left and therefore complete; an outcome is
@@ -381,28 +363,30 @@ function LivePhaseHeader({
 
   return (
     <>
-      {iconNames.length === 0 ? (
-        /** A span that is only reasoning so far has no tool to show; it takes
-         *  the glyph the reasoning row itself uses. */
-        <span
-          className={cn(ROW_GLYPH_SLOT, 'animate-pulse text-text-primary')}
-          aria-hidden="true"
-          data-testid="live-phase-thinking"
-        >
-          <Lightbulb size={14} />
-        </span>
-      ) : (
-        <span className={ROW_GLYPH_SLOT} aria-hidden="true">
-          <StackedToolIcons
-            toolNames={iconNames}
-            mcpIconMap={mcpIconMap}
-            maxIcons={SPAN_ICONS}
-            sourceDomains={sourceDomains}
-            status={getOutcomeStatus(activity.outcome)}
-            isAnimating
-          />
-        </span>
-      )}
+      <RailGlyph hover={railHover}>
+        {iconNames.length === 0 ? (
+          /** A span that is only reasoning so far has no tool to show; it takes
+           *  the glyph the reasoning row itself uses. */
+          <span
+            className={cn(ROW_GLYPH_SLOT, 'text-text-primary animate-pulse')}
+            aria-hidden="true"
+            data-testid="live-phase-thinking"
+          >
+            <Lightbulb size={14} />
+          </span>
+        ) : (
+          <span className={ROW_GLYPH_SLOT} aria-hidden="true">
+            <StackedToolIcons
+              toolNames={iconNames}
+              mcpIconMap={mcpIconMap}
+              maxIcons={SPAN_ICONS}
+              sourceDomains={sourceDomains}
+              status={getOutcomeStatus(activity.outcome)}
+              isAnimating
+            />
+          </span>
+        )}
+      </RailGlyph>
       {/** The multiplier counts the line it is printed next to, so it travels
        *  with that line instead of sitting out at the row's right edge beside
        *  the chevron, where it read as a property of the row. `Create File ×2`
@@ -410,7 +394,7 @@ function LivePhaseHeader({
        *  separate element rather than part of the line's text so the
        *  disclosure's name keeps a space before it and the ticker still
        *  animates one sentence at a time. */}
-      <span className="flex min-w-0 flex-1 items-center gap-1.5" ref={lineRowRef}>
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
         <PhaseLabel
           text={painted.text}
           source={painted.source}
@@ -419,12 +403,11 @@ function LivePhaseHeader({
           live
           grow={combo === ''}
           lineId={lineId}
-          previewRef={previewRef}
         />
         {combo !== '' && (
           <span
             id={comboId}
-            className="shrink-0 text-xs font-normal text-text-secondary"
+            className="text-text-secondary shrink-0 text-xs font-normal"
             data-testid="live-phase-combo"
           >
             {combo}
@@ -434,16 +417,108 @@ function LivePhaseHeader({
       {detail !== '' && (
         <span
           id={detailId}
-          className="shrink-0 text-xs font-normal text-text-warning"
+          className="text-text-warning shrink-0 text-xs font-normal"
           data-testid="live-phase-outcome"
         >
-          {/** The verdict is the span's, not the newest line's, so it keeps its
+          {/** The failure count is spoken here, as part of the header's name,
+           *  and SHOWN by the pill beside the header, which is also the way to
+           *  the failed rows. Only a stop count has no pill and stays visible.
+           *  The verdict is the span's, not the newest line's, so it keeps its
            *  own separator from whatever the row happens to be saying. */}
-          <span className="mr-1 text-text-secondary">·</span>
-          <span>{detail}</span>
+          {failedNote !== '' && <span className="sr-only">· {failedNote}</span>}
+          {cancelledNote !== '' && (
+            <>
+              <span className="text-text-secondary mr-1">·</span>
+              <span>{cancelledNote}</span>
+            </>
+          )}
         </span>
       )}
     </>
+  );
+}
+
+/**
+ * The first failed call of a collapsed card, on a row of its own beneath the
+ * header, the way the cursor row peeks while streaming: the failure is
+ * readable, and one click away, without unfolding. Its own component so only
+ * a collapsed card with a failure pays for the line's lookups.
+ */
+function FailedPeekTime({ failedAt }: { failedAt: number | Date }) {
+  useTimeTick();
+  const { i18n } = useTranslation();
+  const hour12 = useClockFormat();
+  const date = new Date(failedAt);
+  if (!Number.isFinite(date.getTime()) || date.getTime() > Date.now()) {
+    return null;
+  }
+  const timestamp = getMessageTimestamp(date.toISOString(), i18n.language, hour12);
+  if (timestamp == null) {
+    return null;
+  }
+  return (
+    <time
+      dateTime={timestamp.iso}
+      title={timestamp.absolute}
+      className="text-text-secondary min-w-0 shrink truncate text-xs"
+      data-testid="activity-phase-failed-time"
+    >
+      {timestamp.relative}
+    </time>
+  );
+}
+
+function FailedPeek({
+  parts,
+  attachmentsById,
+  count,
+  onReveal,
+}: {
+  parts: ReadonlyArray<TMessageContentParts | undefined>;
+  attachmentsById: Record<string, TAttachment[] | undefined>;
+  count: number;
+  onReveal: () => void;
+}) {
+  const localize = useLocalize();
+  const mcpServerNames = useMCPServerNames();
+  const first = useMemo(
+    () => getFailedLines(parts, localize, mcpServerNames, attachmentsById)[0],
+    [parts, localize, mcpServerNames, attachmentsById],
+  );
+  if (first == null) {
+    return null;
+  }
+  return (
+    <button
+      type="button"
+      className={cn(
+        TOOL_ROW_CLASSES,
+        'text-text-secondary hover:text-text-primary focus-visible:ring-border-heavy w-full pl-6 text-left focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-inset',
+      )}
+      onClick={onReveal}
+      data-testid="activity-phase-failed-peek"
+    >
+      <span className={cn(ROW_GLYPH_SLOT, 'text-status-error')} aria-hidden="true">
+        <TriangleAlert size={14} />
+      </span>
+      <span className="tool-status-text flex min-w-0 items-center gap-2">
+        <span className="text-status-error max-w-full min-w-0 shrink-0 truncate font-medium">
+          {first.text}
+        </span>
+        {first.detail !== '' && (
+          <span className="min-w-0 shrink truncate font-normal">{first.detail}</span>
+        )}
+      </span>
+      {first.failedAt != null && <FailedPeekTime failedAt={first.failedAt} />}
+      {count > 1 && (
+        <span className="shrink-0 text-xs font-normal">
+          {localize('com_ui_plus_n_more', { 0: String(count - 1) })}
+        </span>
+      )}
+      <span className="ml-auto shrink-0 text-xs font-medium underline underline-offset-2">
+        {localize('com_ui_show_error')}
+      </span>
+    </button>
   );
 }
 
@@ -480,9 +555,21 @@ export default function ActivityPhaseGroup({
   spanParts?: ReadonlyArray<TMessageContentParts | undefined>;
   onExpansionChange?: (expanded: boolean) => void;
 }) {
+  const messageSurface = useContext(MessageSurfaceContext);
   const isLive = liveParts != null;
   const label = getActivityLabelText(labelPart);
   const hasFailure = labelPart.status === 'failed' || labelPart.status === 'partial';
+  const outcomeParts = spanParts ?? liveParts;
+  const attachmentsById = useMemo(() => mapAttachments(attachments ?? []), [attachments]);
+  /** The span's failed calls, for the peek under a collapsed header and the
+   *  pill beside it. Read from the same parts the header's glyph and live
+   *  line read, so the three can never disagree about the count. */
+  const { failed: failedCount, total: toolCount } = useMemo(
+    () =>
+      outcomeParts == null ? { failed: 0, total: 0 } : summarizeSpan(outcomeParts, attachmentsById),
+    [outcomeParts, attachmentsById],
+  );
+
   /** Already `smoothStreaming && !reducedMotion` — it owns the media query, so
    *  a second subscription here would install one `matchMedia` listener per
    *  phase card without changing the answer. */
@@ -505,6 +592,9 @@ export default function ActivityPhaseGroup({
   const [isExpanded, setIsExpanded] = useState(foldsIn);
   const [isSettled, setIsSettled] = useState(!foldsIn);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  const railHover = useRailHover();
+  const railScope = useMemo(() => ({ header: headerRef, expanded: isExpanded }), [isExpanded]);
   const panelId = useId();
   const lineId = useId();
   const comboId = useId();
@@ -534,6 +624,9 @@ export default function ActivityPhaseGroup({
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(
     isExpanded,
     hasPendingApproval,
+  );
+  const { value: revealValue, requestReveal } = useFailedRevealTrigger(
+    isExpanded && shouldRenderBody,
   );
 
   useEffect(() => {
@@ -580,6 +673,46 @@ export default function ActivityPhaseGroup({
     setIsExpanded(!isExpanded);
   }, [mountBody, isExpanded, onExpansionChange]);
 
+  /** The rail stays drawn while the panel animates shut, so a second click on
+   *  it must not reopen what the first one closed. */
+  const handleRailCollapse = useCallback(() => {
+    if (!isExpanded) {
+      return;
+    }
+    revealFoldHeader(rootRef.current, headerRef.current);
+    handleToggle();
+  }, [isExpanded, handleToggle]);
+
+  /** One click to the error from a closed card: open the card the way a
+   *  toggle would, then ask every failed row below to open its own panel. */
+  const handleRevealFailed = useCallback(() => {
+    userOverrideRef.current = true;
+    cancelEntranceRef.current?.();
+    cancelEntranceRef.current = null;
+    mountBody();
+    setIsSettled(true);
+    if (!isExpanded) {
+      onExpansionChange?.(true);
+      setIsExpanded(true);
+    }
+    requestReveal();
+  }, [mountBody, isExpanded, onExpansionChange, requestReveal]);
+
+  /** An open card is titled by its stable label: the rows themselves carry
+   *  the live line now, and a header that kept tickering above them would
+   *  swap its text under a reader who is looking at the list. A live span
+   *  with no label yet keeps the live line, which is all it has. */
+  const showLiveHeader = isLive && (!isExpanded || label.length === 0);
+  const peek =
+    hasContent && !isExpanded && failedCount > 0 && outcomeParts != null ? (
+      <FailedPeek
+        parts={outcomeParts}
+        attachmentsById={attachmentsById}
+        count={failedCount}
+        onReveal={handleRevealFailed}
+      />
+    ) : null;
+
   /** Only the folding entrance drives the header off its natural height.
    *  History and reduced-motion render the plain, unstyled row. */
   const headerStyle = useMemo<CSSProperties | undefined>(() => {
@@ -606,13 +739,32 @@ export default function ActivityPhaseGroup({
    *  right for the streaming-markdown cursor, wrong here — so `after:!static`
    *  puts that one pseudo-element back in flow for the slot to center; the
    *  `!` is what outranks the dot rule's three-class selector. */
-  const cursor = showCursor ? (
-    <div className={TOOL_ROW_CLASSES} data-testid="activity-phase-cursor">
-      <span className={cn(ROW_GLYPH_SLOT, 'submitting')} aria-hidden="true">
-        <span className="result-thinking block after:!static" />
-      </span>
-    </div>
-  ) : null;
+  /** The thought streaming at the tail of a collapsed live card, shown the
+   *  way an unfolded thought shows it: the trailing sentences in a short
+   *  fading window under the header (#14546). The fold had swallowed that
+   *  peek with the rows, leaving one throttled sentence on the header to
+   *  stand for a paragraph of live reasoning. It takes the cursor's place:
+   *  moving text is its own sign the run is alive. */
+  const streamingThought = useMemo(() => {
+    if (!isLive || isExpanded || liveParts == null) {
+      return '';
+    }
+    const tail = liveParts[liveParts.length - 1];
+    if (tail?.type !== ContentTypes.THINK) {
+      return '';
+    }
+    return typeof tail.think === 'string' ? tail.think : (tail.think?.value ?? '');
+  }, [isLive, isExpanded, liveParts]);
+  const thoughtPeek =
+    streamingThought.trim() !== '' ? <StreamingThoughtPeek text={streamingThought} /> : null;
+  const cursor =
+    showCursor && thoughtPeek == null ? (
+      <div className={TOOL_ROW_CLASSES} data-testid="activity-phase-cursor">
+        <span className={cn(ROW_GLYPH_SLOT, 'submitting')} aria-hidden="true">
+          <span className="result-thinking block after:!static" />
+        </span>
+      </div>
+    ) : null;
   /** `AttachmentGroup` drops `web_search` attachments, and the nested segment
    *  renders with `hideAttachments` so its own `WebSearch` row stands down
    *  for this hoist — so without `SearchVerticals` here a phase containing a
@@ -623,6 +775,7 @@ export default function ActivityPhaseGroup({
       <>
         <SearchVerticals attachments={attachments} />
         <AttachmentGroup attachments={attachments} />
+        <MCPAppViews attachments={attachments} />
       </>
     ) : null;
   if (!label && !isLive) {
@@ -636,7 +789,7 @@ export default function ActivityPhaseGroup({
   const group = !hasContent ? (
     <div
       className={cn(
-        'mb-2 mt-1 flex min-h-7 w-full items-center gap-2 py-1 text-text-secondary',
+        'text-text-secondary mt-1 mb-2 flex min-h-7 w-full items-center gap-2 py-1',
         shouldAnimateEntrance && `animate-in fade-in-0 motion-reduce:animate-none ${FOLD_EASING}`,
       )}
       data-testid="activity-phase-card"
@@ -658,14 +811,20 @@ export default function ActivityPhaseGroup({
      *  groups it stands for, so it carries the same geometry: 16px glyph, 8px
      *  gap, no inset. Boxing it was what put its text on a third left edge and
      *  forced every folded row 13px sideways as the box materialized. */
-    <div className="mb-2 mt-1 w-full" ref={rootRef} data-testid="activity-phase-card">
+    <div className="mt-1 mb-2 w-full" ref={rootRef} data-testid="activity-phase-card">
       <span className="sr-only" role="status" data-testid="activity-phase-announcer">
         {announcement}
       </span>
-      <div style={headerStyle}>
-        <div className="overflow-hidden">
-          <Button
-            variant="ghost"
+      <div
+        ref={headerRef}
+        style={headerStyle}
+        /** Pinned while open, so a run long enough to scroll keeps its name
+         *  at the top of the viewport. The containing block is this card, so
+         *  the header stops pinning where its own rows end. */
+        className={cn(isExpanded && 'sticky top-0 z-[1]', isExpanded && messageSurface)}
+      >
+        <div className="flex items-center gap-2 overflow-hidden">
+          <button
             type="button"
             /** `ring-inset` is not decoration: the clip above is permanent (the
              *  grid rows need it), so an outset ring would be drawn entirely
@@ -673,7 +832,12 @@ export default function ActivityPhaseGroup({
              *  keyboard users with no focus indicator. The ghost variant
              *  supplies it today; stating it here keeps the requirement with
              *  the element that depends on it. */
-            className="flex h-auto min-h-7 w-full items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-left font-medium text-text-secondary hover:bg-transparent hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-border-heavy focus-visible:ring-offset-0"
+            className={cn(
+              'text-text-secondary hover:text-text-primary focus-visible:ring-border-heavy flex h-auto min-h-7 min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-left font-medium hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none focus-visible:ring-inset',
+              /** The open card's title: the one semibold, primary-colour line
+               *  in the fold, so the rows under it read as its contents. */
+              isExpanded && 'text-text-primary font-semibold',
+            )}
             onClick={handleToggle}
             aria-expanded={isExpanded}
             aria-controls={panelId}
@@ -682,28 +846,32 @@ export default function ActivityPhaseGroup({
              *  is named by that line ALONE: the polite region beside it holds
              *  the previous line, and `sr-only` text still counts toward a
              *  button's computed name. */
-            aria-label={isLive ? undefined : label}
+            aria-label={showLiveHeader ? undefined : label}
             /** Unresolved ids are skipped, so one list covers a row with no
              *  multiplier and no outcome note as well as a row with both. */
-            aria-labelledby={isLive ? `${lineId} ${comboId} ${detailId}` : undefined}
+            aria-labelledby={showLiveHeader ? `${lineId} ${comboId} ${detailId}` : undefined}
           >
-            {isLive ? (
+            {showLiveHeader ? (
               <LivePhaseHeader
                 parts={liveParts}
                 animate={smoothStreaming}
+                expanded={isExpanded}
                 lineId={lineId}
                 comboId={comboId}
                 detailId={detailId}
                 attachments={attachments}
                 onAnnounce={setAnnouncement}
+                railHover={railHover}
               />
             ) : (
               <>
-                {spanParts != null && !hasFailure ? (
-                  <SpanGlyph parts={spanParts} attachments={attachments} />
-                ) : (
-                  <PhaseGlyph failed={hasFailure} />
-                )}
+                <RailGlyph hover={railHover}>
+                  {outcomeParts != null && !hasFailure ? (
+                    <SpanGlyph parts={outcomeParts} attachments={attachments} />
+                  ) : (
+                    <PhaseGlyph failed={hasFailure} />
+                  )}
+                </RailGlyph>
                 <PhaseLabel text={label} failed={hasFailure} animate={smoothStreaming} />
               </>
             )}
@@ -714,9 +882,11 @@ export default function ActivityPhaseGroup({
               )}
               aria-hidden="true"
             />
-          </Button>
+          </button>
+          <FailedRevealPill count={failedCount} total={toolCount} onReveal={handleRevealFailed} />
         </div>
       </div>
+      {peek}
       <div
         id={panelId}
         style={expandStyle}
@@ -725,8 +895,13 @@ export default function ActivityPhaseGroup({
         data-testid="activity-phase-panel"
       >
         {shouldRenderBody && (
-          <div className="overflow-hidden" ref={expandRef}>
-            {children}
+          <div className={cn('overflow-hidden', FOLD_RAIL_CLASSES)} ref={expandRef}>
+            <FoldRail hover={railHover} expanded={isExpanded} onCollapse={handleRailCollapse} />
+            <FoldHeaderContext.Provider value={railScope}>
+              <FailedRevealContext.Provider value={revealValue}>
+                {children}
+              </FailedRevealContext.Provider>
+            </FoldHeaderContext.Provider>
           </div>
         )}
       </div>
@@ -735,6 +910,7 @@ export default function ActivityPhaseGroup({
   return (
     <>
       {group}
+      {thoughtPeek}
       {media}
       {cursor}
     </>

@@ -76,7 +76,7 @@ function Outputs({
             return (
               <p
                 key={output.outputId}
-                className="col-span-full whitespace-pre-wrap text-sm leading-6 text-text-secondary"
+                className="text-text-secondary col-span-full text-sm leading-6 whitespace-pre-wrap"
               >
                 {output.text}
               </p>
@@ -162,12 +162,12 @@ function Job({
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2.5">
-          <Images className="size-5 shrink-0 text-text-secondary" aria-hidden="true" />
+          <Images className="text-text-secondary size-5 shrink-0" aria-hidden="true" />
           <div className="min-w-0">
-            <h3 className="break-words text-sm font-semibold">
+            <h3 className="text-sm font-semibold break-words">
               {offering?.modelName ?? job.selection.modelId}
             </h3>
-            <p className="mt-1 text-xs text-text-secondary">
+            <p className="text-text-secondary mt-1 text-xs">
               {offering?.connectionName ?? job.selection.connectionId}
               {job.selection.providerTag &&
                 ` · ${offering?.routes?.find((route) => route.providerTag === job.selection.providerTag)?.providerName ?? job.selection.providerTag}`}
@@ -179,7 +179,7 @@ function Job({
         </span>
       </div>
       {job.retryOfJobId && (
-        <p className="text-sm text-text-secondary">{localize('com_media_retry_attempt')}</p>
+        <p className="text-text-secondary text-sm">{localize('com_media_retry_attempt')}</p>
       )}
       {job.error && <MediaJobError job={job} />}
       {active && imageJob && (
@@ -193,20 +193,20 @@ function Job({
       {active && !imageJob && outputs.size === 0 && (
         <div
           role="status"
-          className="flex min-h-52 flex-col items-center justify-center gap-3 rounded-xl bg-surface-secondary p-6 text-center"
+          className="bg-surface-secondary flex min-h-52 flex-col items-center justify-center gap-3 rounded-xl p-6 text-center"
         >
           <Spinner className="size-6" />
           <p className="font-medium">{localize(mediaJobPhaseLabels[job.phase])}</p>
-          <p className="max-w-sm text-sm leading-6 text-text-secondary">
+          <p className="text-text-secondary max-w-sm text-sm leading-6">
             {localize('com_media_generation_hint')}
           </p>
         </div>
       )}
       {job.phase === 'cancelled' && outputs.size === 0 && (
-        <p className="text-sm text-text-secondary">{localize('com_media_cancelled_hint')}</p>
+        <p className="text-text-secondary text-sm">{localize('com_media_cancelled_hint')}</p>
       )}
       {job.cancellation && job.phase !== 'cancelled' && (
-        <p role="status" className="text-sm text-text-secondary">
+        <p role="status" className="text-text-secondary text-sm">
           {localize(
             job.cancellation === 'confirmed'
               ? 'com_media_cancellation_confirmed'
@@ -288,7 +288,7 @@ function Job({
         </Button>
       </div>
       {job.allowedActions.retry && missingConnection && (
-        <p id={retryUnavailableId} className="text-sm text-text-secondary">
+        <p id={retryUnavailableId} className="text-text-secondary text-sm">
           {localize('com_media_selection_unavailable')}
         </p>
       )}
@@ -303,12 +303,12 @@ function TurnPrompt({ turn }: { turn: MediaTurn }) {
   return (
     <div className="flex justify-end" role="group" aria-label={localize('com_media_request')}>
       <div className="max-w-[90%] space-y-2 sm:max-w-[85%]">
-        <p className="whitespace-pre-wrap break-words rounded-theme-surface rounded-br-theme-control bg-surface-tertiary px-theme-normal py-2.5 text-sm leading-6 text-text-primary">
+        <p className="rounded-theme-surface rounded-br-theme-control bg-surface-tertiary px-theme-normal text-text-primary py-2.5 text-sm leading-6 break-words whitespace-pre-wrap">
           {turn.prompt || localize('com_media_imported')}
         </p>
         {when && (
           <time
-            className="flex items-center justify-end gap-1.5 text-xs text-text-secondary"
+            className="text-text-secondary flex items-center justify-end gap-1.5 text-xs"
             dateTime={when.iso}
             title={when.absolute}
           >
@@ -554,7 +554,7 @@ export function MediaThreadView({
   const menuItems: MenuItemProps[] = [
     {
       label: localize('com_media_rename'),
-      icon: <Pen className="icon-sm mr-2 text-text-primary" aria-hidden="true" />,
+      icon: <Pen className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
       disabled: busy,
       onClick: () => {
         setTitle(detail.thread.title);
@@ -565,17 +565,17 @@ export function MediaThreadView({
     { separate: true },
     {
       label: localize('com_ui_delete'),
-      icon: <Trash className="icon-sm mr-2 text-text-primary" aria-hidden="true" />,
+      icon: <Trash className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
       disabled: busy,
       onClick: () => setDeleteOpen(true),
     },
   ];
   return (
     <section className="space-y-8" aria-label={localize('com_media_history')}>
-      <div className="flex items-start justify-between gap-3 border-b border-border-light pb-4">
+      <div className="border-border-light flex items-start justify-between gap-3 border-b pb-4">
         <div className="min-w-0">
-          <h2 className="line-clamp-2 break-words text-lg font-semibold">{detail.thread.title}</h2>
-          <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-text-secondary">
+          <h2 className="line-clamp-2 text-lg font-semibold break-words">{detail.thread.title}</h2>
+          <p className="text-text-secondary mt-1 flex flex-wrap items-center gap-2 text-xs">
             <span>{localize('com_media_revision_count', { count: detail.thread.turnCount })}</span>
             {(detail.thread.temporary ?? !!detail.thread.expiresAt) && expires && (
               <Chip

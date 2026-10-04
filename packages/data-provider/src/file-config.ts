@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { EndpointFileConfig, FileConfig, RegexLike } from './types/files';
 import type { ResponsesApiRouting } from './types';
 import { EModelEndpoint, isAgentsEndpoint, isDocumentSupportedProvider } from './schemas';
+import { gpt6Tier, gptPointReleaseFamily } from './families';
 import { normalizeEndpointName } from './utils';
 
 /** Parallel storage deletions during rollback of a failed skill archive import. */
@@ -239,7 +240,7 @@ export const resolveUseResponsesApi = (
  * this shared with client upload routing so documents follow the API that the
  * backend will actually invoke. Explicit false remains an opt-out. */
 export const prefersResponsesApiByModel = (model?: string | null): boolean =>
-  typeof model === 'string' && /^gpt-6-(?:astra|sol|luna)(?:-|$)/i.test(model);
+  gpt6Tier(model) != null;
 
 /** The server has transport and administrator settings the browser cannot see.
  * Missing policy never enables model-based uploads (including during upgrades). */
@@ -260,9 +261,17 @@ export const resolveEffectiveUseResponsesApi = ({
     return value ?? undefined;
   }
   let policy = model ? routing?.[model] : undefined;
-  if (!policy && model && prefersResponsesApiByModel(model)) {
-    const family = /^gpt-6-(?:astra|sol|luna)(?=-|$)/i.exec(model)?.[0].toLowerCase();
-    policy = family ? routing?.[`${family}-*`] : undefined;
+  /** A native point release follows its family until the server lists it. Azure
+   * routing is keyed by configured deployments, so a family's policy there says
+   * nothing about a release that is not deployed. */
+  const releaseFamily =
+    endpoint === EModelEndpoint.openAI && model ? gptPointReleaseFamily(model) : undefined;
+  if (!policy && releaseFamily) {
+    policy = routing?.[releaseFamily];
+  }
+  const tier = gpt6Tier(model);
+  if (!policy && tier) {
+    policy = routing?.[`gpt-6-${tier}-*`];
   }
   policy ??= routing?.['*'];
   if (!policy) return value ?? undefined;

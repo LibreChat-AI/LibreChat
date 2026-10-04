@@ -503,6 +503,16 @@ describe('getMultiplier', () => {
     expect(premiumCache.read).toBeCloseTo(standardCache.read * 2);
   });
 
+  it('should price a GPT point release at its family rate until it has its own entry', () => {
+    for (const model of ['gpt-6.1-sol', 'gpt-6.1-sol-2026-10-01', 'openai/gpt-6.1-sol']) {
+      expect(getValueKey(model)).toBe('gpt-6-sol');
+      expect(getMultiplier({ model, tokenType: 'prompt' })).toBe(tokenValues['gpt-6-sol'].prompt);
+      expect(getMultiplier({ model, tokenType: 'completion' })).toBe(
+        tokenValues['gpt-6-sol'].completion,
+      );
+    }
+  });
+
   it('should resolve gpt-6-astra to its own key rather than a gpt-6 prefix', () => {
     for (const model of [
       'gpt-6-astra',
@@ -3217,6 +3227,30 @@ describe('Opus 5.5 pricing', () => {
     }
     expect(tokenValues[key].prompt).toBeLessThan(tokenValues['claude-opus-5'].prompt);
     expect(cacheTokenValues[key].read).toBeLessThan(cacheTokenValues['claude-opus-5'].read);
+  });
+});
+
+describe('Sonnet 5.5 pricing', () => {
+  it.each([
+    'claude-sonnet-5-5',
+    'claude-sonnet-5.5',
+    'anthropic/claude-sonnet-5-5',
+    'global.anthropic.claude-sonnet-5-5',
+  ])('prices %s at the Sonnet 5 rate, without a long-context surcharge', (model) => {
+    for (const inputTokenCount of [1000, 200000, 1000000]) {
+      expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(
+        tokenValues['claude-sonnet-5'].prompt,
+      );
+      expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(
+        tokenValues['claude-sonnet-5'].completion,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(
+        cacheTokenValues['claude-sonnet-5'].write,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(
+        cacheTokenValues['claude-sonnet-5'].read,
+      );
+    }
   });
 });
 

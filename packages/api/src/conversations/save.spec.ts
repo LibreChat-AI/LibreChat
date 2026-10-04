@@ -182,6 +182,39 @@ describe('seedTurnConversation', () => {
   });
 });
 
+describe('saveTurnConversation reply stamp', () => {
+  const saveReply = async (reply: { content?: unknown; text?: string }) => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const conversationId = randomUUID();
+    const req = createRequest(userId);
+    const ctx = getConversationWriteContext(req);
+    const messageId = randomUUID();
+    await saveTurnConversation(store, {
+      ...seedFields(req, conversationId),
+      context: 'save.spec reply',
+      ctx,
+      reply: { messageId, ...reply },
+    });
+    return { row: await store.getConvo(userId, conversationId), messageId };
+  };
+
+  it('stamps a reply a reader can open', async () => {
+    const { row, messageId } = await saveReply({ content: [{ type: 'text', text: 'Done.' }] });
+
+    expect(row?.lastResponseAt).toBeInstanceOf(Date);
+    expect(row?.lastResponseMessageId).toBe(messageId);
+  });
+
+  /* Acknowledgement requires the stamped reply to be on screen, so a row that renders nothing
+     would leave a dot that opening the conversation could never clear. */
+  it('does not stamp a reply that persisted nothing to read', async () => {
+    const { row } = await saveReply({ content: [], text: '  ' });
+
+    expect(row?.lastResponseAt).toBeUndefined();
+    expect(row?.lastResponseMessageId).toBeUndefined();
+  });
+});
+
 describe('recoverTurnMessageReference', () => {
   /** The whole failure path, in order: the user-message write fails and is swallowed, the
    *  response's write creates the row referencing only itself, the terminal retries the user

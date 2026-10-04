@@ -240,7 +240,7 @@ export default function MediaRecovery({
                 void recover();
               }}
             >
-              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 break-all text-sm">
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm break-all">
                 <dt>{localize('com_media_recovery_owner')}</dt>
                 <dd>{selected.ownerId}</dd>
                 <dt>{localize('com_media_recovery_job')}</dt>
@@ -272,7 +272,7 @@ export default function MediaRecovery({
               </dl>
               {saved && <Alert variant="warning">{localize('com_media_recovery_uncertain')}</Alert>}
               {!canManage && (
-                <p className="text-sm text-text-secondary">
+                <p className="text-text-secondary text-sm">
                   {localize('com_media_recovery_read_only')}
                 </p>
               )}
@@ -297,7 +297,7 @@ export default function MediaRecovery({
                     label: localize(actionLabels[value]),
                   }))}
                 />
-                <p className="text-sm text-text-secondary">{localize(actionHints[action])}</p>
+                <p className="text-text-secondary text-sm">{localize(actionHints[action])}</p>
                 <Label htmlFor={`${id}-evidence`}>{localize('com_media_recovery_evidence')}</Label>
                 <Textarea
                   id={`${id}-evidence`}
@@ -345,7 +345,7 @@ export default function MediaRecovery({
                       <Label
                         id={`${id}-confirm-label`}
                         htmlFor={`${id}-confirm`}
-                        className="min-w-0 flex-1 break-normal leading-snug"
+                        className="min-w-0 flex-1 leading-snug break-normal"
                       >
                         {validCost
                           ? localize('com_media_recovery_financial_confirm', {
@@ -384,7 +384,7 @@ export default function MediaRecovery({
               )}
               {items.size > 0 && (
                 <ul
-                  className="divide-y divide-border-light"
+                  className="divide-border-light divide-y"
                   aria-label={localize('com_media_recovery_admin')}
                 >
                   {[...items.values()].map((job) => (
@@ -394,7 +394,7 @@ export default function MediaRecovery({
                     >
                       <div className="min-w-0 break-all">
                         <p className="text-sm font-medium">{job.selection.modelId}</p>
-                        <p className="text-xs text-text-secondary">
+                        <p className="text-text-secondary text-xs">
                           {job.ownerId} · {job.jobId}
                         </p>
                         <p className="text-sm">{localize(mediaJobPhaseLabels[job.phase])}</p>

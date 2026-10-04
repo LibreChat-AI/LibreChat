@@ -26,7 +26,7 @@ function ProviderKeyRows({
 }) {
   const localize = useLocalize();
   return (
-    <div className="divide-y divide-border-light">
+    <div className="divide-border-light divide-y">
       {entries.map((entry) => (
         <ProviderKeyRow
           key={entry.keyName}
@@ -38,7 +38,7 @@ function ProviderKeyRows({
         />
       ))}
       {entries.length === 0 && (
-        <p className="py-4 text-sm text-text-secondary">
+        <p className="text-text-secondary py-4 text-sm">
           {localize('com_ui_provider_api_keys_empty')}
         </p>
       )}
@@ -71,10 +71,11 @@ export default function ProviderKeys() {
           </Button>
         </OGDialogTrigger>
         <OGDialogContent
+          focusOutline="hidden"
           ref={contentRef}
           tabIndex={-1}
           onOpenAutoFocus={handleOpenAutoFocus}
-          className="w-11/12 max-w-2xl bg-surface-dialog text-text-primary shadow-2xl focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary"
+          className="bg-surface-dialog text-text-primary focus-visible:ring-text-primary w-11/12 max-w-2xl shadow-2xl focus-visible:ring-2 focus-visible:ring-inset"
           aria-describedby={undefined}
         >
           <OGDialogHeader className="space-y-0 pr-8 text-left">

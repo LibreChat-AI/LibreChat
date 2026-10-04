@@ -4,14 +4,20 @@ import type { CSSProperties } from 'react';
 
 type Dimensions = { width?: number; height?: number };
 
-/** Match the chat image tool's maximum size while retaining known image proportions. */
-export function mediaImageFrame({ width, height }: Dimensions = {}): CSSProperties {
-  const ratio =
-    width && height && Number.isFinite(width / height) && width > 0 && height > 0
-      ? width / height
-      : 1;
-  return { aspectRatio: ratio, maxWidth: Math.min(512, 512 * ratio), width: '100%' };
+/** Known image proportions as a width-to-height ratio, square when they are unknown. */
+export function mediaImageRatio({ width, height }: Dimensions = {}): number {
+  return width && height && Number.isFinite(width / height) && width > 0 && height > 0
+    ? width / height
+    : 1;
 }
+
+/** Match the chat image tool's maximum size at the given proportions. */
+export function mediaImageWidth(ratio: number): number {
+  return Math.min(512, 512 * ratio);
+}
+
+/** Pairs with `style={{ '--media-ratio': ratio, maxWidth }}` on the same element. */
+export const mediaImageFrameClass = 'aspect-(--media-ratio) w-full';
 
 /** Decorative fill only: neither elapsed time nor a full card completes a provider job. */
 export function MediaImagePixels({ createdAt }: { createdAt: string }) {
@@ -49,15 +55,20 @@ export function MediaImagePending({
   label: string;
   hint: string;
 }) {
+  const ratio = mediaImageRatio(dimensions);
   return (
     <div role="status" aria-label={label} className="space-y-3" data-testid="media-image-pending">
-      <div className="relative" style={mediaImageFrame(dimensions)} aria-hidden="true">
+      <div
+        className={`relative ${mediaImageFrameClass}`}
+        style={{ '--media-ratio': ratio, maxWidth: mediaImageWidth(ratio) } as CSSProperties}
+        aria-hidden="true"
+      >
         <div className="absolute inset-0">
           <MediaImagePixels createdAt={createdAt} />
         </div>
       </div>
       <p className="font-medium">{label}</p>
-      <p className="max-w-lg text-sm leading-6 text-text-secondary">{hint}</p>
+      <p className="text-text-secondary max-w-lg text-sm leading-6">{hint}</p>
     </div>
   );
 }

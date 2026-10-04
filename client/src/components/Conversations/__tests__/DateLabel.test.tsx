@@ -8,6 +8,8 @@ jest.mock('~/hooks', () => ({
     const translations: Record<string, string> = {
       com_a11y_chats_date_section: `Chats from ${params?.date ?? ''}`,
       com_a11y_chats_alpha_section: `Chats with titles starting with ${params?.letter ?? ''}`,
+      com_a11y_chats_running_section: 'Running chats',
+      com_ui_running_chats: 'Running',
       com_ui_date_today: 'Today',
       com_ui_date_yesterday: 'Yesterday',
       com_ui_date_previous_7_days: 'Previous 7 days',
@@ -20,6 +22,13 @@ describe('DateLabel', () => {
   it('provides accessible heading name via aria-label', () => {
     render(<DateLabel groupName="com_ui_date_today" />);
     expect(screen.getByRole('heading', { level: 2, name: 'Chats from Today' })).toBeInTheDocument();
+  });
+
+  it('announces the running group without describing it as a date', () => {
+    render(<DateLabel groupName="com_ui_running_chats" />);
+    expect(screen.getByRole('heading', { level: 2, name: 'Running chats' })).toHaveTextContent(
+      'Running',
+    );
   });
 
   it('uses the alphabetical accessible name for title groups', () => {
@@ -50,17 +59,20 @@ describe('DateLabel', () => {
     ).toBeInTheDocument();
   });
 
-  it('applies mt-0 for the first date header', () => {
+  /** The first heading opens the list and needs no gap above it; every later one
+   *  separates two groups. The size of that gap is a design decision, so what is
+   *  pinned here is that the two cases differ, not the value. */
+  it('opens the list flush for the first date header', () => {
     const { container } = render(<DateLabel groupName="com_ui_date_today" isFirst={true} />);
     const heading = container.querySelector('h2');
     expect(heading).toHaveClass('mt-0');
-    expect(heading).not.toHaveClass('mt-2');
+    expect(heading).not.toHaveClass('mt-1.5');
   });
 
-  it('applies mt-2 for non-first date headers', () => {
+  it('separates a later date header from the group above it', () => {
     const { container } = render(<DateLabel groupName="com_ui_date_today" isFirst={false} />);
     const heading = container.querySelector('h2');
-    expect(heading).toHaveClass('mt-2');
+    expect(heading).toHaveClass('mt-1.5');
     expect(heading).not.toHaveClass('mt-0');
   });
 });

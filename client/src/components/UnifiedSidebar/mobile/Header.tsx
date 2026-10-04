@@ -1,11 +1,11 @@
 import { memo, lazy, Suspense, useEffect, useRef } from 'react';
 import { Button, Sidebar, Skeleton } from '@librechat/client';
 import type { NavLink } from '~/common';
-import AgentMarketplaceButton from '~/components/Nav/AgentMarketplaceButton';
 import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import { useShortcutAriaKey } from '~/hooks/useKeyboardShortcuts';
 import { useLocalize } from '~/hooks';
 import Switcher from './Switcher';
+import NewChat from './NewChat';
 
 const AccountSettings = lazy(() => import('~/components/Nav/AccountSettings'));
 
@@ -21,12 +21,16 @@ function Header({
   links,
   expanded,
   onClose,
+  onNewChat,
+  switchToHistory,
   onLeaveRoute,
   routeActiveId,
 }: {
   links: NavLink[];
   expanded: boolean;
   onClose: () => void;
+  onNewChat: (afterSlide?: () => void) => void;
+  switchToHistory: boolean;
   onLeaveRoute?: () => void;
   routeActiveId?: string;
 }) {
@@ -45,7 +49,7 @@ function Header({
   }, [expanded]);
 
   return (
-    <div className="flex h-14 flex-shrink-0 items-center gap-2 border-b border-border-light px-2">
+    <div className="border-border-light flex h-14 shrink-0 items-center gap-2 border-b px-2">
       <Button
         ref={closeRef}
         /**
@@ -64,7 +68,7 @@ function Header({
         /** The only close control while open, so its binding must be discoverable here. */
         aria-keyshortcuts={toggleSidebarAriaKey}
         tabIndex={expanded ? 0 : -1}
-        className="flex-shrink-0"
+        className="shrink-0"
         onClick={() => onClose()}
       >
         <Sidebar className="icon-md" aria-hidden="true" />
@@ -75,7 +79,7 @@ function Header({
         onNavigate={onClose}
         routeActiveId={routeActiveId}
       />
-      <AgentMarketplaceButton side="bottom" onNavigate={onClose} />
+      <NewChat onNewChat={onNewChat} switchToHistory={switchToHistory} />
       <Suspense fallback={<Skeleton className="size-9 rounded-lg" />}>
         <AccountSettings collapsed />
       </Suspense>

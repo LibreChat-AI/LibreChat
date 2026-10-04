@@ -1,8 +1,10 @@
 import {
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
   getTenantId,
   SYSTEM_TENANT_ID,
 } from '@librechat/data-schemas';
@@ -184,8 +186,10 @@ describe('durable agent trigger service', () => {
       expect.objectContaining({
         workerCapabilities: [
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+          AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+          AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
           AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
         ],
       }),
@@ -209,6 +213,196 @@ describe('durable agent trigger service', () => {
     await service.stop();
   });
 
+  it('keeps receipt batching disabled until the deployment gate is explicitly enabled', async () => {
+    const service = createAgentTriggerService({ mintToken: () => 'test' });
+    expect(service.getBackgroundCompletionReceiptBatching()).toBe(false);
+    await service.initialize({ address: '127.0.0.1', completionReceiptBatching: true });
+    expect(service.getBackgroundCompletionReceiptBatching()).toBe(true);
+    await service.stop();
+  });
+
+  describe('waiting completion deliveries', () => {
+    const address = { address: '127.0.0.1', family: 'IPv4' as const, port: 3080 };
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    const result = { status: 'completed' as const, output: 'done', settledAt: START };
+
+    it('expedites and claims the delivery whose background result just became durable', async () => {
+      const methods = deliveryMethods({
+        persistAgentBackgroundToolResult: jest.fn(async () => true),
+        expediteAgentTriggerDeliveries: jest.fn(async () => ({ expedited: 1, held: 0 })),
+      });
+      const service = createAgentTriggerService({
+        methods,
+        deliveryOptions: { concurrency: 1, tickMs: 60_000 },
+      });
+      await service.initialize({ address });
+      jest.mocked(methods.claimNextAgentTriggerDelivery).mockClear();
+
+      await expect(
+        service.persistBackgroundToolResult({
+          deliveryKey: 'trigger_background',
+          sourceId: 'background-tool-completion',
+          result,
+        }),
+      ).resolves.toBe(true);
+      await flush();
+
+      expect(methods.expediteAgentTriggerDeliveries).toHaveBeenCalledWith({
+        deliveryKeys: ['trigger_background'],
+        sourceIds: ['background-tool-completion', 'subagent-completion'],
+        now: expect.any(Date),
+      });
+      expect(methods.claimNextAgentTriggerDelivery).toHaveBeenCalled();
+      await service.stop();
+    });
+
+    it('targets only named subagent completions when a child settles', async () => {
+      const methods = deliveryMethods({
+        expediteAgentTriggerDeliveries: jest.fn(async () => ({ expedited: 1, held: 0 })),
+      });
+      const service = createAgentTriggerService({ methods });
+      await service.initialize({ address });
+      service.expediteCompletionWakeups({
+        user: 'user-1',
+        conversationId: 'parent-1',
+        taskIds: ['child-1'],
+      });
+      await flush();
+      expect(methods.expediteAgentTriggerDeliveries).toHaveBeenCalledWith({
+        user: 'user-1',
+        conversationId: 'parent-1',
+        taskIds: ['child-1'],
+        sourceIds: ['subagent-completion'],
+        now: expect.any(Date),
+      });
+      await service.stop();
+    });
+
+    it('does not expedite a result the store refused to persist', async () => {
+      const methods = deliveryMethods({
+        persistAgentBackgroundToolResult: jest.fn(async () => false),
+        expediteAgentTriggerDeliveries: jest.fn(async () => ({ expedited: 1, held: 0 })),
+      });
+      const service = createAgentTriggerService({
+        methods,
+        deliveryOptions: { concurrency: 1, tickMs: 60_000 },
+      });
+      await service.initialize({ address });
+
+      await expect(
+        service.persistBackgroundToolResult({
+          deliveryKey: 'trigger_background',
+          sourceId: 'background-tool-completion',
+          result,
+        }),
+      ).resolves.toBe(false);
+      await flush();
+
+      expect(methods.expediteAgentTriggerDeliveries).not.toHaveBeenCalled();
+      await service.stop();
+    });
+
+    it('keeps background producer writes available after the delivery engine stops for shutdown', async () => {
+      const methods = deliveryMethods({
+        persistAgentBackgroundToolResult: jest.fn(async () => true),
+        renewAgentTriggerDeliveryProducerLease: jest.fn(async () => true),
+        expediteAgentTriggerDeliveries: jest.fn(async () => ({ expedited: 1, held: 0 })),
+      });
+      const service = createAgentTriggerService({ methods });
+      await service.initialize({ address });
+      await service.stop();
+
+      await expect(
+        service.renewProducerLease(
+          'trigger_background',
+          'background-tool-completion',
+          new Date(START.getTime() + 30_000),
+        ),
+      ).resolves.toBe(true);
+      await expect(
+        service.persistBackgroundToolResult({
+          deliveryKey: 'trigger_background',
+          sourceId: 'background-tool-completion',
+          result,
+        }),
+      ).resolves.toBe(true);
+      await flush();
+
+      expect(methods.persistAgentBackgroundToolResult).toHaveBeenCalledTimes(1);
+      expect(methods.expediteAgentTriggerDeliveries).not.toHaveBeenCalled();
+      await expect(service.enqueue(envelope())).rejects.toBeInstanceOf(
+        AgentTriggerServiceUnavailableError,
+      );
+    });
+
+    it("expedites a principal's completion deliveries when one of its generations settles", async () => {
+      const methods = deliveryMethods({
+        expediteAgentTriggerDeliveries: jest.fn(async () => ({ expedited: 2, held: 0 })),
+      });
+      let settled: ((event: { userId: string; conversationId: string }) => void) | undefined;
+      const unsubscribe = jest.fn();
+      const service = createAgentTriggerService({
+        methods,
+        deliveryOptions: { concurrency: 1, tickMs: 60_000 },
+        subscribeGenerationSettled: (listener) => {
+          settled = listener;
+          return unsubscribe;
+        },
+      });
+      await service.initialize({ address });
+      jest.mocked(methods.claimNextAgentTriggerDelivery).mockClear();
+
+      settled?.({ userId: '507f1f77bcf86cd799439011', conversationId: 'conversation-1' });
+      await flush();
+
+      expect(methods.expediteAgentTriggerDeliveries).toHaveBeenCalledWith({
+        user: '507f1f77bcf86cd799439011',
+        conversationId: 'conversation-1',
+        sourceIds: ['background-tool-completion', 'subagent-completion'],
+        now: expect.any(Date),
+      });
+      expect(methods.claimNextAgentTriggerDelivery).toHaveBeenCalled();
+      await service.stop();
+      expect(unsubscribe).toHaveBeenCalledTimes(1);
+    });
+
+    it('runs a claim pass even when nothing moved, since a match may already be due', async () => {
+      const methods = deliveryMethods({
+        expediteAgentTriggerDeliveries: jest.fn(async () => ({ expedited: 0, held: 0 })),
+      });
+      let settled: ((event: { userId: string; conversationId: string }) => void) | undefined;
+      const service = createAgentTriggerService({
+        methods,
+        deliveryOptions: { concurrency: 1, tickMs: 60_000 },
+        subscribeGenerationSettled: (listener) => {
+          settled = listener;
+          return () => undefined;
+        },
+      });
+      await service.initialize({ address });
+      jest.mocked(methods.claimNextAgentTriggerDelivery).mockClear();
+
+      settled?.({ userId: '507f1f77bcf86cd799439011', conversationId: 'conversation-1' });
+      await flush();
+
+      expect(methods.expediteAgentTriggerDeliveries).toHaveBeenCalledTimes(1);
+      expect(methods.claimNextAgentTriggerDelivery).toHaveBeenCalled();
+      await service.stop();
+    });
+  });
+
+  describe('completion wait configuration', () => {
+    const address = { address: '127.0.0.1', family: 'IPv4' as const, port: 3080 };
+
+    it('exposes the configured completion wait cap', async () => {
+      const service = createAgentTriggerService({ methods: deliveryMethods() });
+      expect(service.getCompletionWaitMaxIntervalMs()).toBe(60_000);
+      await service.initialize({ address, idlePolling: { completionWaitMaxIntervalMs: 20_000 } });
+      expect(service.getCompletionWaitMaxIntervalMs()).toBe(20_000);
+      await service.stop();
+    });
+  });
+
   it('advertises ordinary completion but not detached-action capability without durable storage', async () => {
     const methods = deliveryMethods();
     const service = createAgentTriggerService({
@@ -223,8 +417,10 @@ describe('durable agent trigger service', () => {
       expect.objectContaining({
         workerCapabilities: [
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+          AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+          AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
         ],
       }),
     );

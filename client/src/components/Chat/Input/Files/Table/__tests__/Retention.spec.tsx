@@ -10,6 +10,21 @@ jest.mock('~/hooks/Files', () => ({
   useDeleteFilesFromTable: () => ({ deleteFiles: mockDeleteFiles }),
 }));
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
+/* jsdom has no layout, so the virtualized table would measure an empty viewport; render every row. */
+jest.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: ({ count }: { count: number }) => ({
+    getVirtualItems: () =>
+      Array.from({ length: count }, (_, index) => ({
+        index,
+        key: index,
+        start: index * 40,
+        end: (index + 1) * 40,
+        size: 40,
+      })),
+    getTotalSize: () => count * 40,
+    measureElement: () => undefined,
+  }),
+}));
 jest.mock('../ColumnVisibilityDropdown', () => ({ ColumnVisibilityDropdown: () => null }));
 jest.mock('~/components/Chat/Input/Files/ImagePreview', () => () => null);
 jest.mock('~/components/Chat/Input/Files/FilePreview', () => () => null);

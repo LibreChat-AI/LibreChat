@@ -6,6 +6,7 @@ import { applyRuntimeEnv } from './runtimeEnv';
 import { mediaFixtureConfig } from './media';
 
 type TUser = { email: string; password: string };
+type DatabaseConnection = { connection: { close: () => Promise<void> } };
 
 /**
  * Registers the backend's `~` alias in this process. Playwright's require hook only
@@ -38,13 +39,10 @@ export default async function cleanupUser(user: TUser) {
   const { email } = user;
   let mediaDeletion: MediaAccountDeletion | undefined;
   let userDeleted = false;
-  let disconnect: (() => Promise<void>) | undefined;
+  let db: DatabaseConnection | undefined;
   try {
     console.log('🤖: global teardown has been started');
-    const db = await connectDb();
-    disconnect = async () => {
-      await db.connection.close();
-    };
+    db = await connectDb();
     console.log('🤖:  ✅  Connected to Database');
 
     const foundUser = await findUser({ email });
@@ -127,7 +125,11 @@ export default async function cleanupUser(user: TUser) {
         log: console.error,
       }),
     );
-    await disconnect?.();
+    try {
+      await db?.connection.close();
+    } catch (error) {
+      console.error('Error closing database connection:', error);
+    }
   }
 }
 

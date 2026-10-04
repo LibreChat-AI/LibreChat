@@ -101,7 +101,7 @@ function RatingBadge({ rating, ratingCount }: { rating?: number; ratingCount?: n
     return null;
   }
   return (
-    <span className="flex items-center gap-1 text-[11px] text-text-secondary">
+    <span className="text-text-secondary flex items-center gap-1 text-[11px]">
       <Star className="size-3 fill-current" aria-hidden="true" />
       {rating}
       {ratingCount != null && <span className="text-text-secondary">({ratingCount})</span>}
@@ -128,7 +128,7 @@ function ImageStrip({ images, label }: { images: ImageResult[]; label: string })
               target="_blank"
               rel="noopener noreferrer"
               aria-label={image.title || image.domain || label}
-              className="block h-28 overflow-hidden rounded-xl border border-border-light no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy"
+              className="border-border-light focus-visible:ring-border-heavy block h-28 overflow-hidden rounded-xl border no-underline focus-visible:ring-2 focus-visible:outline-hidden"
               style={{ aspectRatio: ratio }}
             >
               <img
@@ -157,10 +157,10 @@ function ShoppingStrip({ items, label }: { items: ShoppingResult[]; label: strin
             href={safeUrl(item.link)}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex w-full flex-col rounded-xl border border-border-light p-2 no-underline transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy"
+            className="border-border-light hover:bg-surface-hover focus-visible:ring-border-heavy flex w-full flex-col rounded-xl border p-2 no-underline transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
           >
             {safeUrl(item.imageUrl) && (
-              <div className="mb-2 aspect-square w-full shrink-0 overflow-hidden rounded-lg bg-surface-tertiary">
+              <div className="bg-surface-tertiary mb-2 aspect-square w-full shrink-0 overflow-hidden rounded-lg">
                 <img
                   src={safeUrl(item.imageUrl)}
                   alt=""
@@ -169,16 +169,16 @@ function ShoppingStrip({ items, label }: { items: ShoppingResult[]; label: strin
                 />
               </div>
             )}
-            <span className="mt-auto block truncate text-xs font-medium text-text-primary">
+            <span className="text-text-primary mt-auto block truncate text-xs font-medium">
               {item.title}
             </span>
             {(item.price || item.source) && (
-              <span className="mt-0.5 block truncate text-[11px] text-text-secondary">
+              <span className="text-text-secondary mt-0.5 block truncate text-[11px]">
                 {[item.price, item.source].filter(Boolean).join(' · ')}
               </span>
             )}
             {item.delivery && (
-              <span className="block truncate text-[11px] text-text-secondary">
+              <span className="text-text-secondary block truncate text-[11px]">
                 {item.delivery}
               </span>
             )}
@@ -195,7 +195,7 @@ function ShoppingStrip({ items, label }: { items: ShoppingResult[]; label: strin
 function PlaceList({ places, label }: { places: PlaceResult[]; label: string }) {
   return (
     <ul
-      className="list-none overflow-hidden rounded-lg border border-border-light"
+      className="border-border-light list-none overflow-hidden rounded-lg border"
       aria-label={label}
     >
       {places.slice(0, MAX_PLACES).map((place, i) => (
@@ -203,21 +203,21 @@ function PlaceList({ places, label }: { places: PlaceResult[]; label: string }) 
           /** The same provider place can appear in several grouped searches;
            *  discriminate each occurrence even when its identifier is present. */
           key={`${place.identifier || `${place.name ?? ''}|${place.address ?? ''}`}|${i}`}
-          className={cn(i > 0 && 'border-t border-border-light')}
+          className={cn(i > 0 && 'border-border-light border-t')}
         >
           <a
             href={mapLink(place)}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-2.5 px-3 py-2 no-underline transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy"
+            className="hover:bg-surface-hover focus-visible:ring-border-heavy flex items-center gap-2.5 px-3 py-2 no-underline transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
           >
-            <MapPin className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
+            <MapPin className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-medium text-text-primary">
+              <span className="text-text-primary block truncate text-xs font-medium">
                 {place.name}
               </span>
               {(place.category || place.address) && (
-                <span className="block truncate text-[11px] text-text-secondary">
+                <span className="text-text-secondary block truncate text-[11px]">
                   {[place.category, place.address].filter(Boolean).join(' · ')}
                 </span>
               )}

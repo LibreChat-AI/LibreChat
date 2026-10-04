@@ -50,6 +50,7 @@ const {
   requestContextMiddleware,
   registerShutdownTask,
   getRemainingShutdownMs,
+  registerBackgroundTaskShutdown,
   configureServerTimeouts,
   setupGracefulShutdown,
   updateInterfacePermissions,
@@ -89,7 +90,6 @@ const createSpaFallback = require('./utils/fallback');
 const { getAppConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const noIndex = require('./middleware/noIndex');
-const routes = require('./routes');
 const agentEventMethods = require('~/models');
 
 /** Route admin file-config MIME patterns through a linear-time engine (ReDoS-safe) on upload. */
@@ -173,7 +173,6 @@ const SHUTDOWN_TEARDOWN_RESERVE_MS = 10_000;
 
 const startServer = async () => {
   await waitForKeyvRedisClient();
-  await configureSubagentTaskRouting();
   const { metricsMiddleware, metricsRouter, recordMediaEvent } = createMetrics({
     collectMediaBacklogMetrics: () => runAsSystem(agentEventMethods.getMediaBacklogMetrics),
     collectAgentEventActorStorageMetrics: () =>
@@ -235,6 +234,10 @@ const startServer = async () => {
     logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
   });
   const appConfig = await getAppConfig({ baseOnly: true });
+  await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
+  registerBackgroundTaskShutdown({
+    interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
+  });
   configureAgentEventRuntime(appConfig?.endpoints?.agents?.eventDriven);
   warnOnUnreachableDeliveryPaths(appConfig);
   initializeFileStorage(appConfig);
@@ -279,6 +282,10 @@ const startServer = async () => {
     isLeader,
   });
 
+  /* Route modules build their rate limiters as they load, so they load only after the
+   * startup checks have applied `rateLimits` from librechat.yaml. */
+  const routes = require('./routes');
+
   const indexPath = path.join(appConfig.paths.dist, 'index.html');
   let indexHTML = fs.readFileSync(indexPath, 'utf8');
 
@@ -302,7 +309,6 @@ const startServer = async () => {
      caller's and the client prefers it. */
   indexHTML = injectConfiguredFooterBootstrap(indexHTML, {
     customFooter: process.env.CUSTOM_FOOTER,
-    interfaceConfig: appConfig?.interfaceConfig,
   });
 
   const cspPolicy = createCspPolicy();
@@ -515,6 +521,8 @@ const startServer = async () => {
         address: server.address(),
         completionResultBatchSize:
           appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+        completionReceiptBatching:
+          appConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
         idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
       });
       const scheduleEngineArmed = (await initializeScheduleEngine()) != null;

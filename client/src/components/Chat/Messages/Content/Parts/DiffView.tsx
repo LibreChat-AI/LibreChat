@@ -166,7 +166,7 @@ export default function DiffView({ parsed }: { parsed: ParsedDiff }) {
   return (
     <div
       data-testid="diff-view"
-      className="max-h-[300px] overflow-y-auto bg-surface-code py-2 font-mono text-xs leading-5"
+      className="bg-surface-code max-h-[300px] overflow-y-auto py-2 font-mono text-xs leading-5"
     >
       {lines.map((line, index) => {
         if (line.type === 'hunk') {
@@ -174,10 +174,10 @@ export default function DiffView({ parsed }: { parsed: ParsedDiff }) {
             return null;
           }
           if (!line.text) {
-            return <div key={index} className="mx-3 my-1.5 border-t border-border-light" />;
+            return <div key={index} className="border-border-light mx-3 my-1.5 border-t" />;
           }
           return (
-            <div key={index} className="select-none px-3 py-0.5 text-[11px] text-text-tertiary">
+            <div key={index} className="text-text-tertiary px-3 py-0.5 text-[11px] select-none">
               {line.text}
             </div>
           );
@@ -192,13 +192,13 @@ export default function DiffView({ parsed }: { parsed: ParsedDiff }) {
             )}
           >
             {hasLineNumbers && (
-              <span className="w-9 shrink-0 select-none pr-1 text-right text-[11px] text-text-tertiary">
+              <span className="text-text-tertiary w-9 shrink-0 pr-1 text-right text-[11px] select-none">
                 {lineNumber(line) ?? ''}
               </span>
             )}
             <span
               className={cn(
-                'shrink-0 select-none text-center font-semibold',
+                'shrink-0 text-center font-semibold select-none',
                 hasLineNumbers ? 'w-5' : 'w-6',
                 line.type === 'add' && 'text-status-success',
                 line.type === 'del' && 'text-status-error',
@@ -206,7 +206,7 @@ export default function DiffView({ parsed }: { parsed: ParsedDiff }) {
             >
               {LINE_MARKERS[line.type]}
             </span>
-            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pr-3 text-text-primary">
+            <span className="text-text-primary min-w-0 flex-1 pr-3 break-words whitespace-pre-wrap">
               {line.text || ' '}
             </span>
           </div>

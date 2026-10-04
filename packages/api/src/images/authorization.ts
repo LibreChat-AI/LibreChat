@@ -9,19 +9,28 @@ import {
 import type { IAgent, IAssistant, AssistantQuery, SystemCapability } from '@librechat/data-schemas';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { FilterQuery, ProjectionType, Types } from 'mongoose';
-
+import type { TwoFactorAccount } from '~/auth/twoFactor';
 import type { CookieAuthResult } from './cookies';
+import {
+  isTokenRetired,
+  isTwoFactorEnrollmentRequired,
+  TOKEN_RETIREMENT_FIELDS,
+} from '~/auth/twoFactor';
 import { authenticateCookieRequest } from './cookies';
 
 const MAX_URL_LENGTH = 2048;
 const AGENT_AVATAR_PATTERN = /^agent-(.+)-avatar-\d+\.[^/]+$/;
+const IMAGE_USER_PROJECTION = `role tenantId idOnTheSource avatar provider twoFactorEnabled ${TOKEN_RETIREMENT_FIELDS}`;
 
 type Principal = {
   principalType: PrincipalType;
   principalId?: string | Types.ObjectId;
 };
 
-type ImageUser = {
+type ImageUser = Pick<
+  TwoFactorAccount,
+  'provider' | 'twoFactorEnabled' | 'twoFactorEnrolledAt' | 'credentialsChangedAt'
+> & {
   role?: string | null;
   tenantId?: string;
   idOnTheSource?: string | null;
@@ -203,6 +212,7 @@ async function loadPrincipals(
 async function canViewAgentAvatar(
   imagePath: ImagePath,
   viewerId: string | undefined,
+  viewer: ImageUser | null,
   owner: ImageUser,
   deps: ImageAuthorizationDeps,
 ): Promise<boolean> {
@@ -222,7 +232,6 @@ async function canViewAgentAvatar(
     return deps.hasPermission(publicPrincipal, ResourceType.AGENT, agent._id, PermissionBits.VIEW);
   }
 
-  const viewer = await runAsSystem(() => deps.getUserById(viewerId, 'role tenantId idOnTheSource'));
   if (!viewer || viewer.tenantId !== owner.tenantId) {
     return deps.hasPermission(publicPrincipal, ResourceType.AGENT, agent._id, PermissionBits.VIEW);
   }
@@ -247,6 +256,7 @@ async function canViewAgentAvatar(
 async function canViewAssistantAvatar(
   imagePath: ImagePath,
   viewerId: string | undefined,
+  viewer: ImageUser | null,
   owner: ImageUser,
   configs: AssistantConfig[],
   deps: ImageAuthorizationDeps,
@@ -262,7 +272,6 @@ async function canViewAssistantAvatar(
     return false;
   }
 
-  const viewer = await runAsSystem(() => deps.getUserById(viewerId, 'role tenantId idOnTheSource'));
   if (!viewer || viewer.tenantId !== owner.tenantId) {
     return false;
   }
@@ -319,18 +328,6 @@ function isStoredUserAvatar(
   return storedAvatar?.canonicalPath === imagePath.canonicalPath;
 }
 
-async function canViewUserAvatar(
-  viewerId: string | undefined,
-  owner: ImageUser,
-  deps: ImageAuthorizationDeps,
-): Promise<boolean> {
-  if (!viewerId) {
-    return false;
-  }
-  const viewer = await runAsSystem(() => deps.getUserById(viewerId, 'tenantId'));
-  return viewer != null && viewer.tenantId === owner.tenantId;
-}
-
 function denyRequest(res: Response, auth: CookieAuthResult): void {
   if (auth.status === 'missing') {
     res.status(401).send('Unauthorized');
@@ -365,7 +362,7 @@ export function createImageAuthorizationMiddleware(
       }
 
       const owner = await runAsSystem(() =>
-        deps.getUserById(imagePath.ownerId, 'role tenantId idOnTheSource avatar'),
+        deps.getUserById(imagePath.ownerId, IMAGE_USER_PROJECTION),
       );
       if (!owner) {
         if (options.secureImageLinks === false) {
@@ -393,7 +390,19 @@ export function createImageAuthorizationMiddleware(
       }
 
       res.locals.privateImageCache = true;
-      const auth = await authPromise;
+      let auth = await authPromise;
+      let viewer: ImageUser | null = null;
+      if (auth.status === 'authenticated') {
+        const { userId } = auth;
+        viewer =
+          userId === imagePath.ownerId
+            ? owner
+            : await runAsSystem(() => deps.getUserById(userId, IMAGE_USER_PROJECTION));
+        if (!viewer || isTokenRetired(auth, viewer) || isTwoFactorEnrollmentRequired(viewer)) {
+          auth = { status: 'invalid' };
+          viewer = null;
+        }
+      }
       const viewerId = auth.status === 'authenticated' ? auth.userId : undefined;
       if (viewerId === imagePath.ownerId) {
         next();
@@ -402,15 +411,16 @@ export function createImageAuthorizationMiddleware(
 
       const authorizeSpecialAvatar = async (): Promise<boolean> => {
         if (imagePath.agentId) {
-          return canViewAgentAvatar(imagePath, viewerId, owner, deps);
+          return canViewAgentAvatar(imagePath, viewerId, viewer, owner, deps);
         }
         if (isStoredUserAvatar(imagePath, owner, deps)) {
-          return canViewUserAvatar(viewerId, owner, deps);
+          return viewer != null && viewer.tenantId === owner.tenantId;
         }
         if (imageConfig.assistantEndpoints.length > 0) {
           const canViewAssistant = await canViewAssistantAvatar(
             imagePath,
             viewerId,
+            viewer,
             owner,
             imageConfig.assistantEndpoints,
             deps,

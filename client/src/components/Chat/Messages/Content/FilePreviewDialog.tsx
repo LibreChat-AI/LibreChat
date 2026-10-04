@@ -27,7 +27,7 @@ import {
 import { getDownloadFilename, logger, sortPagesByRelevance, triggerDownload } from '~/utils';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useFileMapContext, useShareContext } from '~/Providers';
-import { formatBytes } from '~/utils/files';
+import { formatBytes as formatLocaleBytes } from '~/utils/files';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -44,27 +44,46 @@ interface FilePreviewDialogProps {
   fileSource?: string;
   fileSize?: number;
   deliveryPath?: TFile['llmDeliveryPath'];
+  /** Where focus returns on close when the dialog is opened without a trigger. */
+  triggerRef?: React.RefObject<HTMLElement | null>;
 }
 
-function getDisplayType(fileType?: string, fileName?: string): string {
+/** Formats bytes with unit suffix (differs from ~/utils/formatBytes which returns a raw number). */
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1048576) {
+    return `${(bytes / 1048576).toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${bytes} B`;
+}
+
+/** A file's kind for display: acronyms and extensions as they are, words
+ *  through the locale. */
+export function getDisplayType(
+  localize: ReturnType<typeof useLocalize>,
+  fileType?: string,
+  fileName?: string,
+): string {
   if (fileType) {
     if (fileType.includes('pdf')) {
       return 'PDF';
     }
     if (fileType.includes('word') || fileType.includes('document')) {
-      return 'Document';
+      return localize('com_ui_file_type_document');
     }
     if (fileType.includes('spreadsheet') || fileType.includes('excel')) {
-      return 'Spreadsheet';
+      return localize('com_ui_file_type_spreadsheet');
     }
     if (fileType.includes('presentation') || fileType.includes('powerpoint')) {
-      return 'Presentation';
+      return localize('com_ui_file_type_presentation');
     }
     if (fileType.includes('image')) {
-      return 'Image';
+      return localize('com_ui_file_type_image');
     }
     if (fileType.startsWith('text/')) {
-      return fileType.split('/')[1]?.toUpperCase() || 'Text';
+      return fileType.split('/')[1]?.toUpperCase() || localize('com_ui_file_type_text');
     }
     if (fileType.includes('json')) {
       return 'JSON';
@@ -74,7 +93,7 @@ function getDisplayType(fileType?: string, fileName?: string): string {
     }
   }
   const ext = fileName ? getFileExtension(fileName) : '';
-  return ext ? ext.toUpperCase() : 'File';
+  return ext ? ext.toUpperCase() : localize('com_ui_file');
 }
 
 export default function FilePreviewDialog({
@@ -89,6 +108,7 @@ export default function FilePreviewDialog({
   fileSource,
   fileSize,
   deliveryPath,
+  triggerRef,
 }: FilePreviewDialogProps) {
   const localize = useLocalize();
   const { i18n } = useTranslation();
@@ -223,7 +243,10 @@ export default function FilePreviewDialog({
     setTimeout(() => setIsCopied(false), 3000);
   }, [displayedText]);
 
-  const displayType = useMemo(() => getDisplayType(fileType, fileName), [fileType, fileName]);
+  const displayType = useMemo(
+    () => getDisplayType(localize, fileType, fileName),
+    [localize, fileType, fileName],
+  );
   const sortedPages = useMemo(
     () => (pages && pageRelevance ? sortPagesByRelevance(pages, pageRelevance) : pages),
     [pages, pageRelevance],
@@ -234,19 +257,19 @@ export default function FilePreviewDialog({
     metaParts.push(`${localize('com_ui_relevance')}: ${Math.round(relevance * 100)}%`);
   }
   if (fileSize != null && fileSize > 0) {
-    metaParts.push(formatBytes(fileSize, i18n.language));
+    metaParts.push(formatLocaleBytes(fileSize, i18n.language));
   }
   if (sortedPages && sortedPages.length > 0) {
     metaParts.push(localize('com_file_pages', { pages: sortedPages.join(', ') }));
   }
 
   return (
-    <OGDialog open={open} onOpenChange={onOpenChange}>
+    <OGDialog open={open} onOpenChange={onOpenChange} triggerRef={triggerRef}>
       <OGDialogContent
         className="flex w-full max-w-4xl flex-col !overflow-hidden p-0"
         showCloseButton={true}
       >
-        <div className="shrink-0 px-6 pr-12 pt-6">
+        <div className="shrink-0 px-6 pt-6 pr-12">
           <OGDialogTitle className="truncate text-base">{fileName}</OGDialogTitle>
           <div className="mt-0.5 flex items-center gap-3">
             <OGDialogDescription className="min-w-0 truncate">
@@ -256,7 +279,7 @@ export default function FilePreviewDialog({
               <button
                 type="button"
                 onClick={handleDownload}
-                className="inline-flex shrink-0 items-center gap-1 text-xs text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy"
+                className="text-text-secondary hover:text-text-primary focus-visible:ring-border-heavy inline-flex shrink-0 items-center gap-1 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
                 aria-label={`${localize('com_ui_download')} ${fileName}`}
               >
                 <Download className="size-3" aria-hidden="true" />
@@ -266,17 +289,17 @@ export default function FilePreviewDialog({
           </div>
         </div>
 
-        <div className="relative min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-4">
+        <div className="relative min-h-0 flex-1 overflow-y-auto px-6 pt-4 pb-6">
           {isLoading && (
-            <div className="flex h-60 items-center justify-center rounded-lg bg-surface-secondary">
-              <span className="shimmer text-sm text-text-secondary">
+            <div className="bg-surface-secondary flex h-60 items-center justify-center rounded-lg">
+              <span className="shimmer text-text-secondary text-sm">
                 {localize('com_ui_loading')}
               </span>
             </div>
           )}
           {hasPreviewError && !isLoading && (
-            <div className="flex h-32 flex-col items-center justify-center gap-2 rounded-lg bg-surface-secondary">
-              <span className="text-sm text-text-secondary">
+            <div className="bg-surface-secondary flex h-32 flex-col items-center justify-center gap-2 rounded-lg">
+              <span className="text-text-secondary text-sm">
                 {localize('com_ui_preview_unavailable')}
               </span>
               {showExtractedText && (
@@ -296,7 +319,7 @@ export default function FilePreviewDialog({
             <iframe
               src={fileBlobUrl}
               title={`${localize('com_ui_preview')}: ${fileName}`}
-              className="h-[70vh] w-full rounded-lg border border-border-light"
+              className="border-border-light h-[70vh] w-full rounded-lg border"
             />
           )}
           {displayedText !== null && !isLoading && !hasPreviewError && (
@@ -307,19 +330,19 @@ export default function FilePreviewDialog({
                   onClick={handleCopy}
                   iconOnly
                   label={localize('com_ui_copy')}
-                  className="pointer-events-auto rounded-lg bg-surface-secondary"
+                  className="bg-surface-secondary pointer-events-auto rounded-lg"
                 />
               </div>
-              <div className="-mt-8 rounded-lg bg-surface-secondary p-4">
-                <pre className="whitespace-pre-wrap break-words pr-8 font-mono text-sm leading-6 text-text-primary">
+              <div className="bg-surface-secondary -mt-8 rounded-lg p-4">
+                <pre className="text-text-primary pr-8 font-mono text-sm leading-6 break-words whitespace-pre-wrap">
                   {displayedText}
                 </pre>
               </div>
             </>
           )}
           {!previewKind && !showExtractedText && !isLoading && (
-            <div className="flex h-32 items-center justify-center rounded-lg bg-surface-secondary">
-              <span className="text-sm text-text-secondary">
+            <div className="bg-surface-secondary flex h-32 items-center justify-center rounded-lg">
+              <span className="text-text-secondary text-sm">
                 {localize('com_ui_preview_unavailable')}
               </span>
             </div>

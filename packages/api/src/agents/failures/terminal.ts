@@ -1,8 +1,13 @@
 import { ErrorTypes } from 'librechat-data-provider';
 import type { SafeErrorMetadata } from '../../utils/errors';
 import type { ModelErrorTrackerCallback } from './tracker';
+import {
+  resolveLangChainError,
+  getModelStreamFailure,
+  resolveModelStreamError,
+  getProviderErrorMessage,
+} from '../errors';
 import { getSafeErrorMetadata, isOwnedAbortError } from '../../utils/errors';
-import { getProviderErrorMessage, resolveLangChainError } from '../errors';
 import { traceIdForMessage } from '../../langfuse/trace';
 import { createModelErrorTracker } from './tracker';
 
@@ -41,6 +46,18 @@ export function isAgentRunCancellation(error: unknown, signal?: AbortSignal): bo
   return isOwnedAbortError(error, signal);
 }
 
+/** Preserve rejection status; a successful status can still precede a broken response body. */
+function getUpstreamErrorType(error: unknown, status?: number): string {
+  if (status != null && status >= 400) {
+    return String(status);
+  }
+  const streamFailure = getModelStreamFailure(error);
+  if (streamFailure != null) {
+    return `stream_${streamFailure}`;
+  }
+  return status == null ? UNKNOWN_UPSTREAM_MODEL_ERROR_TYPE : String(status);
+}
+
 export function getUpstreamModelErrorMetadata(
   error: unknown,
   responseMessageId?: string,
@@ -50,8 +67,7 @@ export function getUpstreamModelErrorMetadata(
     ...safeMetadata,
     errorCode: UPSTREAM_MODEL_ERROR_CODE,
     errorOrigin: UPSTREAM_MODEL_ERROR_ORIGIN,
-    errorType:
-      safeMetadata.status != null ? String(safeMetadata.status) : UNKNOWN_UPSTREAM_MODEL_ERROR_TYPE,
+    errorType: getUpstreamErrorType(error, safeMetadata.status),
     ...(typeof responseMessageId === 'string' && responseMessageId !== ''
       ? { traceId: traceIdForMessage(responseMessageId) }
       : {}),
@@ -89,13 +105,17 @@ export function createTerminalRunErrorObserver({
         return fallback();
       }
 
+      const { status } = getSafeErrorMetadata(upstreamModelError);
       const classifiedError =
-        safelyResolveLangChainError(error) ?? safelyResolveLangChainError(upstreamModelError);
+        safelyResolveLangChainError(error) ??
+        safelyResolveLangChainError(upstreamModelError) ??
+        (status == null || status < 400
+          ? (resolveModelStreamError(upstreamModelError) ?? resolveModelStreamError(error))
+          : undefined);
       if (classifiedError != null) {
         return classifiedError;
       }
 
-      const { status } = getSafeErrorMetadata(upstreamModelError);
       /** Unclassified: the provider's own explanation is the only account of what happened, and a
        *  rejection from a gateway or proxy carries it as the whole point of the 400. The status
        *  headlines it either way, so a deployment withholding provider text loses no taxonomy. */

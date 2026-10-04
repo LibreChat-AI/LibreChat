@@ -73,7 +73,7 @@ export function MediaDeleteDialog({
         <OGDialogTitle>{title}</OGDialogTitle>
         <OGDialogDescription>{localize('com_media_delete_description')}</OGDialogDescription>
         {error && (
-          <p role="alert" className="text-sm text-text-secondary">
+          <p role="alert" className="text-text-secondary text-sm">
             {error}
           </p>
         )}

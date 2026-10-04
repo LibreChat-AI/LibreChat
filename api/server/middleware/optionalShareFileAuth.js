@@ -1,6 +1,12 @@
 const cookie = require('cookie');
-const { createOptionalCookieAuth, isEnabled } = require('@librechat/api');
 const { logger, runAsSystem } = require('@librechat/data-schemas');
+const {
+  createOptionalCookieAuth,
+  clearCloudFrontCookies,
+  isTwoFactorEnrollmentRequired,
+  isTokenRetired,
+  isEnabled,
+} = require('@librechat/api');
 const { getUserById, findSession } = require('~/models');
 
 module.exports = createOptionalCookieAuth({
@@ -10,5 +16,8 @@ module.exports = createOptionalCookieAuth({
   findSession,
   getUserById,
   asSystem: runAsSystem,
+  clearCloudFrontCookies,
+  enrollmentRequired: isTwoFactorEnrollmentRequired,
+  tokenRetired: isTokenRetired,
   log: logger.warn.bind(logger),
 });

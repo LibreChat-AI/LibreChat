@@ -1,4 +1,4 @@
-import React, { memo, useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { memo, useId, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useDrag } from 'react-dnd';
 import { Link2 } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
@@ -12,13 +12,14 @@ import {
   usePinConversationMutation,
   useUpdateConversationMutation,
 } from '~/data-provider';
+import { cn, logger, setDocumentTitle, isConversationUnseen } from '~/utils';
 import { useNavigateToConvo, useLocalize, useShiftKey } from '~/hooks';
 import ConversationEndpointIcon from './ConversationEndpointIcon';
 import { focusableInRow, resolveRowBeside } from './focus';
 import { areConversationRenderPropsEqual } from './utils';
-import { cn, logger, setDocumentTitle } from '~/utils';
 import { NotificationSeverity } from '~/common';
 import { CONVERSATION_DRAG_TYPE } from './dnd';
+import ProjectBadge from './ProjectBadge';
 import ConvoActions from './ConvoActions';
 import UnpinButton from './UnpinButton';
 import RenameForm from './RenameForm';
@@ -39,6 +40,8 @@ interface ConversationProps {
   /** Shortcuts an owning list handles for this row, declared on its focusable
    *  element so they are announced rather than left to be discovered. */
   keyShortcuts?: string;
+  /** Names the chat's project on rows listed outside that project. */
+  showProjectBadge?: boolean;
 }
 
 function Conversation({
@@ -49,6 +52,7 @@ function Conversation({
   draggable = false,
   onRenamingChange,
   keyShortcuts,
+  showProjectBadge = false,
 }: ConversationProps) {
   const params = useParams();
   const localize = useLocalize();
@@ -64,6 +68,9 @@ function Conversation({
   const { data: startupConfig } = useGetStartupConfig();
   const sharedLinksEnabled = startupConfig?.sharedLinksEnabled === true;
   const isSharedBadgeVisible = conversation.isShared === true && sharedLinksEnabled;
+  const projectLabelId = useId();
+  const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
+  const isUnseen = isConversationUnseen(conversation);
   const isShiftHeld = useShiftKey();
   const { conversationId, title = '' } = conversation;
 
@@ -263,6 +270,7 @@ function Conversation({
     retainView,
     renameHandler: handleRename,
     isActiveConvo,
+    isUnseen,
     conversationId,
     chatProjectId: conversation.chatProjectId,
     isPopoverActive,
@@ -272,7 +280,7 @@ function Conversation({
 
   const generatingSpinner = (
     <span role="img" aria-label={localize('com_ui_generating')}>
-      <Spinner className="h-5 w-5 flex-shrink-0 text-text-primary" />
+      <Spinner className="text-text-primary h-5 w-5 shrink-0" />
     </span>
   );
 
@@ -312,9 +320,9 @@ function Conversation({
     <div
       ref={containerRef}
       className={cn(
-        'group relative flex h-12 w-full items-center rounded-lg outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary md:h-9',
+        'group focus-visible:ring-text-primary relative flex h-12 w-full items-center rounded-lg outline-hidden focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset md:h-9',
         isActiveConvo || isPopoverActive
-          ? 'bg-surface-active-alt before:absolute before:bottom-1 before:left-0 before:top-1 before:w-0.5 before:rounded-full before:bg-text-primary'
+          ? 'bg-surface-active-alt before:bg-text-primary before:absolute before:top-1 before:bottom-1 before:left-0 before:w-0.5 before:rounded-full'
           : 'hover:bg-surface-active-alt',
       )}
       onPointerEnter={(event) => {
@@ -351,17 +359,27 @@ function Conversation({
           isPopoverActive={isPopoverActive}
           isHovered={isHovered}
           isSharedBadgeVisible={isSharedBadgeVisible}
+          isUnseen={isUnseen}
           title={title}
           onRename={handleRename}
           isSmallScreen={isSmallScreen}
           localize={localize}
           keyShortcuts={keyShortcuts}
+          describedBy={projectBadgeProjectId ? projectLabelId : undefined}
         >
           <ConversationEndpointIcon conversation={conversation} size={20} context="menu-item" />
         </ConvoLink>
       )}
+      {isUnseen && (
+        /* `ConvoLink`'s aria-label carries the text equivalent, so the dot itself stays
+           decorative rather than announcing a second time outside the row's button. */
+        <span className="bg-status-info mr-1 size-2 shrink-0 rounded-full" aria-hidden="true" />
+      )}
       {isSharedBadgeVisible && (
-        <Link2 className="icon-sm mr-1 shrink-0 text-text-secondary" aria-hidden="true" />
+        <Link2 className="icon-sm text-text-secondary mr-1 shrink-0" aria-hidden="true" />
+      )}
+      {projectBadgeProjectId && (
+        <ProjectBadge projectId={projectBadgeProjectId} labelId={projectLabelId} />
       )}
       {conversation.pinned === true && (
         <UnpinButton

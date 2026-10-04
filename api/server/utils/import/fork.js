@@ -1,8 +1,12 @@
 const { v4: uuidv4 } = require('uuid');
 const {
   cloneLineage,
+  saveCopiedMessage,
+  createNativeCopyPreflight,
   withoutTraceRefs,
+  isTemporaryRecord,
   getAllMessagesUpToParent,
+  transferNativeCopyProvenance,
   saveNativeConversationClone,
 } = require('@librechat/api');
 const { logger, tenantStorage } = require('@librechat/data-schemas');
@@ -30,7 +34,7 @@ const BaseClient = require('~/app/clients/BaseClient');
 function cloneMessagesWithTimestamps(
   messagesToClone,
   importBatchBuilder,
-  { detachSubagentRuntime = false } = {},
+  { detachSubagentRuntime = false, nativeCopy = false } = {},
 ) {
   const { entries, idMapping } = cloneLineage(messagesToClone, uuidv4);
   for (const { source, messageId, parentMessageId, createdAt } of entries) {
@@ -40,12 +44,15 @@ function cloneMessagesWithTimestamps(
       parentMessageId,
       createdAt,
     };
+    delete clonedMessage.privateText;
+    delete clonedMessage.privacyRevision;
+    delete clonedMessage.privateTextTokens;
     if (detachSubagentRuntime) {
       delete clonedMessage.subagentTask;
       delete clonedMessage.subagentTranscript;
     }
 
-    importBatchBuilder.saveMessage(clonedMessage);
+    saveCopiedMessage(importBatchBuilder, source, clonedMessage, nativeCopy);
   }
 
   return idMapping;
@@ -62,6 +69,7 @@ function cloneMessagesWithTimestamps(
  * @param {boolean} [params.records=false] - Optional flag for returning actual database records or resulting conversation and messages.
  * @param {boolean} [params.splitAtTarget=false] - Optional flag for splitting the messages at the target message level.
  * @param {string} [params.latestMessageId] - latestMessageId - Required if splitAtTarget is true.
+ * @param {object} [params.interfaceConfig] - Runtime interface config used to apply retention to cloned records.
  * @param {object} [params.filters] - Source-aware content filters applied before cloned records are persisted.
  * @param {object} [params.legacyPii] - Legacy messageFilter.pii applied before cloned records are persisted.
  * @param {(userId: string, interfaceConfig?: object, filters?: object, legacyPii?: object) => ImportBatchBuilder} [params.builderFactory] - Optional factory function for creating an ImportBatchBuilder instance.
@@ -80,13 +88,17 @@ async function forkConversation({
   legacyPii,
   appConfig,
   builderFactory = createImportBatchBuilder,
+  interfaceConfig,
 }) {
   try {
     const originalConvo = await getConvo(requestUserId, originalConvoId);
-    let originalMessages = await getMessages({
-      user: requestUserId,
-      conversationId: originalConvoId,
-    });
+    let originalMessages = await getMessages(
+      {
+        user: requestUserId,
+        conversationId: originalConvoId,
+      },
+      '+privateTextTokens',
+    );
 
     let targetMessageId = targetId;
     if (splitAtTarget && !latestMessageId) {
@@ -98,8 +110,9 @@ async function forkConversation({
 
     const importBatchBuilder =
       legacyPii == null
-        ? builderFactory(requestUserId, undefined, filters)
-        : builderFactory(requestUserId, undefined, filters, legacyPii);
+        ? builderFactory(requestUserId, interfaceConfig, filters)
+        : builderFactory(requestUserId, interfaceConfig, filters, legacyPii);
+    importBatchBuilder.sourceIsTemporary = isTemporaryRecord(originalConvo);
     importBatchBuilder.startConversation(originalConvo.endpoint ?? EModelEndpoint.openAI);
 
     let messagesToClone = [];
@@ -123,6 +136,7 @@ async function forkConversation({
        * durable child executor. Preserve visible history while dropping the
        * task protocol and private serialized model transcript. */
       detachSubagentRuntime: originalConvo.subagentThread != null,
+      nativeCopy: true,
     });
 
     const result = importBatchBuilder.finishConversation(
@@ -152,10 +166,13 @@ async function forkConversation({
     }
 
     const conversation = await getConvo(requestUserId, result.conversation.conversationId);
-    const messages = await getMessages({
-      user: requestUserId,
-      conversationId: conversation.conversationId,
-    });
+    const messages = await getMessages(
+      {
+        user: requestUserId,
+        conversationId: conversation.conversationId,
+      },
+      '-privateTextTokens',
+    );
 
     return {
       conversation,
@@ -360,7 +377,7 @@ async function forkSharedConversation({
   // or share file URLs into the new conversation while file serving is off.
   const share = await getSharedMessages(shareId, shareResourceId, {
     snapshotFiles,
-    preflight: sharedContentPreflight,
+    preflight: createNativeCopyPreflight(sharedContentPreflight),
   });
   if (!share?.messages?.length) {
     return null;
@@ -406,14 +423,18 @@ async function forkSharedConversation({
   }
 
   const messageIds = new Set(sourceMessages.map((message) => message.messageId));
-  const messagesToClone = sourceMessages.map(({ model: _model, ...message }) =>
-    stripSharedFileIds({
-      ...message,
-      parentMessageId:
-        message.parentMessageId != null && messageIds.has(message.parentMessageId)
-          ? message.parentMessageId
-          : Constants.NO_PARENT,
-    }),
+  const messagesToClone = sourceMessages.map((source) =>
+    transferNativeCopyProvenance(
+      source,
+      stripSharedFileIds({
+        ...source,
+        model: undefined,
+        parentMessageId:
+          source.parentMessageId != null && messageIds.has(source.parentMessageId)
+            ? source.parentMessageId
+            : Constants.NO_PARENT,
+      }),
+    ),
   );
 
   /**
@@ -447,7 +468,7 @@ async function forkSharedConversation({
           );
     importBatchBuilder.startConversation(endpoint);
 
-    cloneMessagesWithTimestamps(messagesToClone, importBatchBuilder);
+    cloneMessagesWithTimestamps(messagesToClone, importBatchBuilder, { nativeCopy: true });
 
     const result = importBatchBuilder.finishConversation(share.title, new Date(), {}, model);
     await importBatchBuilder.saveBatch();
@@ -458,10 +479,13 @@ async function forkSharedConversation({
     });
 
     const conversation = await getConvo(requestUserId, result.conversation.conversationId);
-    const messages = await getMessages({
-      user: requestUserId,
-      conversationId: conversation.conversationId,
-    });
+    const messages = await getMessages(
+      {
+        user: requestUserId,
+        conversationId: conversation.conversationId,
+      },
+      '-privateTextTokens',
+    );
 
     return {
       conversation,
@@ -476,6 +500,7 @@ async function forkSharedConversation({
  * @param {string} params.userId - The ID of the user duplicating the conversation.
  * @param {string} params.conversationId - The ID of the conversation to duplicate.
  * @param {string} [params.title] - Optional title override for the duplicate.
+ * @param {object} [params.interfaceConfig] - Runtime interface config used to apply retention to cloned records.
  * @param {object} [params.filters] - Source-aware content filters applied before cloned records are persisted.
  * @param {object} [params.legacyPii] - Legacy messageFilter.pii applied before cloned records are persisted.
  * @param {(userId: string, interfaceConfig?: object, filters?: object, legacyPii?: object) => ImportBatchBuilder} [params.builderFactory] - Optional factory function for creating an ImportBatchBuilder instance.
@@ -485,6 +510,7 @@ async function duplicateConversation({
   userId,
   conversationId,
   title,
+  interfaceConfig,
   filters,
   legacyPii,
   appConfig,
@@ -495,10 +521,13 @@ async function duplicateConversation({
     throw new Error('Conversation not found');
   }
 
-  const originalMessages = await getMessages({
-    user: userId,
-    conversationId,
-  });
+  const originalMessages = await getMessages(
+    {
+      user: userId,
+      conversationId,
+    },
+    '+privateTextTokens',
+  );
 
   const messagesToClone = getMessagesUpToTargetLevel(
     originalMessages,
@@ -507,11 +536,12 @@ async function duplicateConversation({
 
   const importBatchBuilder =
     legacyPii == null
-      ? builderFactory(userId, undefined, filters)
-      : builderFactory(userId, undefined, filters, legacyPii);
+      ? builderFactory(userId, interfaceConfig, filters)
+      : builderFactory(userId, interfaceConfig, filters, legacyPii);
+  importBatchBuilder.sourceIsTemporary = isTemporaryRecord(originalConvo);
   importBatchBuilder.startConversation(originalConvo.endpoint ?? EModelEndpoint.openAI);
 
-  cloneMessagesWithTimestamps(messagesToClone, importBatchBuilder);
+  cloneMessagesWithTimestamps(messagesToClone, importBatchBuilder, { nativeCopy: true });
 
   const duplicateTitle = title || originalConvo.title;
   const result = importBatchBuilder.finishConversation(duplicateTitle, new Date(), originalConvo);
@@ -534,10 +564,13 @@ async function duplicateConversation({
   });
 
   const conversation = await getConvo(userId, result.conversation.conversationId);
-  const messages = await getMessages({
-    user: userId,
-    conversationId: conversation.conversationId,
-  });
+  const messages = await getMessages(
+    {
+      user: userId,
+      conversationId: conversation.conversationId,
+    },
+    '-privateTextTokens',
+  );
 
   return {
     conversation,

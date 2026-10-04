@@ -73,7 +73,7 @@ export default function GroupSidePanel({
                 data-testid="close-prompts-panel-button"
                 aria-label={localize('com_nav_close_sidebar')}
                 aria-expanded={true}
-                className="rounded-full border-none bg-transparent p-2 hover:bg-surface-hover md:rounded-xl"
+                className="hover:bg-surface-hover rounded-full border-none bg-transparent p-2 md:rounded-xl"
                 onClick={onClose}
               >
                 <Sidebar />
@@ -83,13 +83,13 @@ export default function GroupSidePanel({
         </div>
       )}
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {/* Sticky header: filter and toggles stay put while the list scrolls */}
-        <div className="shrink-0 space-y-2 px-3 pb-2 text-text-primary">{children}</div>
+        {/* Sticky header: it brings its own padding via PanelHeader */}
+        <div className="text-text-primary shrink-0">{children}</div>
         <PanelContent
           ref={containerRef}
           isLoading={!!groupsQuery.isLoading}
           skeleton={<PromptGroupSkeleton />}
-          className="scrollbar-gutter-stable flex flex-col gap-2 overflow-x-hidden pb-3 pl-3 pr-1 text-text-primary"
+          className="text-text-primary flex scrollbar-gutter-stable flex-col gap-2 overflow-x-hidden pr-1 pb-3 pl-3"
         >
           <List groups={promptGroups} isChatRoute={isChatRoute} />
           {/* Appending the next page, so the loaded rows stay put */}

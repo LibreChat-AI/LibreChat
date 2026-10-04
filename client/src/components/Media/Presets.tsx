@@ -114,9 +114,9 @@ export function MediaPresets({
         </Label>
         <Button
           ref={trigger}
-          variant="ghost"
+          variant="section-action"
           size="xs"
-          className="-mr-2 shrink-0 text-text-secondary"
+          className="-mr-2 shrink-0"
           aria-haspopup="dialog"
           onClick={() => setOpen(true)}
         >
@@ -149,7 +149,7 @@ export function MediaPresets({
         }}
       />
       {fieldNotice && (
-        <p role="status" className="text-xs text-text-secondary">
+        <p role="status" className="text-text-secondary text-xs">
           {fieldNotice}
         </p>
       )}
@@ -166,7 +166,7 @@ export function MediaPresets({
           {current && host.canCreate && (
             <form
               noValidate
-              className="space-y-3 rounded-xl border border-border-light p-3"
+              className="border-border-light space-y-3 rounded-xl border p-3"
               onSubmit={(event) => {
                 event.preventDefault();
                 void save();
@@ -183,16 +183,16 @@ export function MediaPresets({
                   onChange={(event) => setTitle(event.target.value)}
                 />
               </div>
-              <p className="text-xs text-text-secondary">
+              <p className="text-text-secondary text-xs">
                 {modelName(current)} · {localize(mediaOperationLabels[current.operation])}
               </p>
               {!!current.inputs?.length && (
-                <p className="text-xs text-text-secondary">
+                <p className="text-text-secondary text-xs">
                   {localize('com_media_preset_references', { count: current.inputs.length })}
                 </p>
               )}
               {hasHostedInputs && (
-                <p role="status" className="text-sm text-text-secondary">
+                <p role="status" className="text-text-secondary text-sm">
                   {localize('com_media_preset_hosted_inputs')}
                 </p>
               )}
@@ -216,12 +216,12 @@ export function MediaPresets({
             </form>
           )}
           {notice && (
-            <p role="status" className="text-sm text-text-secondary">
+            <p role="status" className="text-text-secondary text-sm">
               {notice}
             </p>
           )}
           {presets.isLoading && (
-            <p role="status" className="flex items-center gap-2 text-sm text-text-secondary">
+            <p role="status" className="text-text-secondary flex items-center gap-2 text-sm">
               <Spinner className="size-4" />
               {localize('com_media_loading')}
             </p>
@@ -235,10 +235,10 @@ export function MediaPresets({
             </div>
           )}
           {presets.isSuccess && items.length === 0 && (
-            <p className="text-sm text-text-secondary">{localize('com_media_presets_empty')}</p>
+            <p className="text-text-secondary text-sm">{localize('com_media_presets_empty')}</p>
           )}
           {items.length > 0 && (
-            <ul className="divide-y divide-border-light" aria-label={localize('com_media_presets')}>
+            <ul className="divide-border-light divide-y" aria-label={localize('com_media_presets')}>
               {items.map((preset) => (
                 <li key={preset.presetId} className="flex flex-wrap items-center gap-2 py-2">
                   <div className="min-w-0 flex-1">
@@ -246,7 +246,7 @@ export function MediaPresets({
                       <span className="truncate">{preset.title}</span>
                       {preset.isDefault && <Chip>{localize('com_ui_default')}</Chip>}
                     </p>
-                    <p className="truncate text-xs text-text-secondary">{describe(preset)}</p>
+                    <p className="text-text-secondary truncate text-xs">{describe(preset)}</p>
                   </div>
                   {confirming === preset.presetId ? (
                     <span className="flex items-center gap-1">

@@ -32,7 +32,7 @@ const CustomEndpoint = ({
         )}
       />
       {errors.apiKey?.message && (
-        <p role="alert" className="text-sm text-text-destructive">
+        <p role="alert" className="text-text-destructive text-sm">
           {String(errors.apiKey.message)}
         </p>
       )}
@@ -51,7 +51,7 @@ const CustomEndpoint = ({
         />
       )}
       {errors.baseURL?.message && (
-        <p role="alert" className="text-sm text-text-destructive">
+        <p role="alert" className="text-text-destructive text-sm">
           {String(errors.baseURL.message)}
         </p>
       )}

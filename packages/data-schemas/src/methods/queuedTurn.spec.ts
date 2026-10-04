@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { ReasoningEffort } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import type {
   IAgentQueuedTurnDocument,
@@ -95,6 +96,7 @@ describe('agent queued turn methods', () => {
       ],
       quotes: [' quote ', '', 'second'],
       manualSkills: [' skill-a ', 'skill-a'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       expectedPredecessorCreatedAt: 42,
     });
 
@@ -107,6 +109,7 @@ describe('agent queued turn methods', () => {
       files: [{ file_id: 'file-1', filename: 'report.pdf' }],
       quotes: ['quote', 'second'],
       manualSkills: ['skill-a'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
     });
 
     expect(first.replayed).toBe(false);
@@ -120,11 +123,27 @@ describe('agent queued turn methods', () => {
       files: [{ file_id: 'file-1', filename: 'report.pdf', llmDeliveryPath: 'text' }],
       quotes: ['quote', 'second'],
       manualSkills: ['skill-a'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       expectedPredecessorCreatedAt: 42,
     });
     expect(replay).toMatchObject({
       replayed: true,
-      turn: { queuedTurnId: first.turn.queuedTurnId },
+      turn: {
+        queuedTurnId: first.turn.queuedTurnId,
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      },
+    });
+    await expect(methods.listActiveAgentQueuedTurns(input)).resolves.toEqual([
+      expect.objectContaining({
+        queuedTurnId: first.turn.queuedTurnId,
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      }),
+    ]);
+    await expect(
+      methods.claimNextAgentQueuedTurn(claimInput(first.turn.queuedTurnId)),
+    ).resolves.toMatchObject({
+      outcome: 'acquired',
+      claim: { reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high } },
     });
     await expect(
       methods.enqueueAgentQueuedTurn({ ...input, agentId: 'agent-2' }),
@@ -135,7 +154,86 @@ describe('agent queued turn methods', () => {
         parentMessageId: 'different-parent',
       }),
     ).rejects.toBeInstanceOf(AgentQueuedTurnConflictError);
+    await expect(
+      methods.enqueueAgentQueuedTurn({
+        ...input,
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.low },
+      }),
+    ).rejects.toBeInstanceOf(AgentQueuedTurnConflictError);
     expect(await Turn.countDocuments()).toBe(1);
+  });
+
+  it('refuses an unfenced approval snapshot before inserting a row', async () => {
+    await expect(
+      methods.enqueueAgentQueuedTurn(enqueueInput({ codeApprovalMode: 'ask' })),
+    ).rejects.toThrow('versioned delivery reservation');
+    expect(await Turn.countDocuments()).toBe(0);
+  });
+
+  it('keeps the selected approval mode on queued, claimed, and retried turns', async () => {
+    const input = enqueueInput({
+      codeApprovalMode: 'fullAccess',
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      deliveryReservation: { queuedTurnId: '507f191e810c19729de860ea', deliveryKey: 'v2-key' },
+    });
+    const first = await methods.enqueueAgentQueuedTurn(input);
+    expect(first.turn.codeApprovalMode).toBe('fullAccess');
+    expect(first.turn.reasoningOverride).toEqual({
+      key: 'reasoning_effort',
+      value: ReasoningEffort.high,
+    });
+    expect(first.turn).toMatchObject({ deliveryKey: 'v2-key', deliveryState: 'publishing' });
+    const scope = {
+      user,
+      tenantId: 'tenant-1',
+      conversationId: 'conversation-1',
+      queuedTurnId: first.turn.queuedTurnId,
+    };
+    await expect(
+      methods.reserveAgentQueuedTurnDelivery({ ...scope, deliveryKey: 'legacy-v1-key' }),
+    ).resolves.toMatchObject({ outcome: 'conflict' });
+    await expect(
+      methods.reserveAgentQueuedTurnDelivery({ ...scope, deliveryKey: 'v2-key' }),
+    ).resolves.toMatchObject({ outcome: 'already_reserved' });
+
+    expect((await methods.enqueueAgentQueuedTurn(input)).replayed).toBe(true);
+    await expect(
+      methods.enqueueAgentQueuedTurn({ ...input, codeApprovalMode: 'ask' }),
+    ).rejects.toBeInstanceOf(AgentQueuedTurnConflictError);
+    await expect(
+      methods.enqueueAgentQueuedTurn({
+        ...input,
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.low },
+      }),
+    ).rejects.toBeInstanceOf(AgentQueuedTurnConflictError);
+    const claimed = await methods.claimNextAgentQueuedTurn(claimInput(first.turn.queuedTurnId));
+    expect(claimed.outcome).toBe('acquired');
+    if (claimed.outcome === 'acquired') {
+      expect(claimed.claim).toMatchObject({
+        codeApprovalMode: 'fullAccess',
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      });
+    }
+    const listed = await methods.listActiveAgentQueuedTurns({
+      user,
+      tenantId: 'tenant-1',
+      conversationId: 'conversation-1',
+    });
+    expect(listed[0]?.codeApprovalMode).toBe('fullAccess');
+  });
+
+  it('keeps old queued turns without a mode and rejects an upgraded same-id replay', async () => {
+    const input = enqueueInput();
+    const created = await methods.enqueueAgentQueuedTurn(input);
+    expect(created.turn.codeApprovalMode).toBeUndefined();
+    expect((await methods.enqueueAgentQueuedTurn(input)).replayed).toBe(true);
+    await expect(
+      methods.enqueueAgentQueuedTurn({
+        ...input,
+        codeApprovalMode: 'fullAccess',
+        deliveryReservation: { queuedTurnId: '507f191e810c19729de860ea', deliveryKey: 'v2-key' },
+      }),
+    ).rejects.toBeInstanceOf(AgentQueuedTurnConflictError);
   });
 
   it('looks up terminal receipts by owner-scoped request identity', async () => {

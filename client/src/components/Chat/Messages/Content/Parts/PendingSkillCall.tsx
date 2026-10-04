@@ -35,9 +35,9 @@ export default function PendingSkillCall({
 
   return (
     <div className={TOOL_ROW_CLASSES}>
-      <div className="progress-text-wrapper text-token-text-secondary relative -mt-[0.75px] h-5 w-full leading-5">
+      <div className="progress-text-wrapper text-text-secondary relative -mt-[0.75px] h-5 w-full leading-5">
         <div
-          className="progress-text-content absolute left-0 right-0 top-0 max-w-full overflow-visible whitespace-nowrap"
+          className="progress-text-content absolute top-0 right-0 left-0 max-w-full overflow-visible whitespace-nowrap"
           style={{ opacity: 1, transform: 'none' }}
         >
           <div className="inline-flex w-full items-center gap-2">
@@ -45,7 +45,7 @@ export default function PendingSkillCall({
              *   finalizes; sharing its glyph slot keeps that swap still. */}
             <span className={ROW_GLYPH_SLOT} aria-hidden="true">
               <ScrollText
-                className={cn('size-4 shrink-0 text-text-secondary', !loaded && 'animate-pulse')}
+                className={cn('text-text-secondary size-4 shrink-0', !loaded && 'animate-pulse')}
               />
             </span>
             <span className={cn(!loaded && 'shimmer', 'min-w-0 truncate font-medium')}>{text}</span>

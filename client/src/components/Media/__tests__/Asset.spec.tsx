@@ -236,7 +236,9 @@ test('a generated image retains pixels through loading and preview retry without
     'opacity-0',
     'motion-reduce:transition-none',
   );
-  expect(image.parentElement).toHaveStyle({ aspectRatio: '0.75', maxWidth: '384px' });
+  expect(image.parentElement).toHaveClass('aspect-(--media-ratio)', 'w-full');
+  expect(image.parentElement?.style.getPropertyValue('--media-ratio')).toBe('0.75');
+  expect(image.parentElement).toHaveStyle({ maxWidth: '384px' });
   fireEvent.error(image);
   expect(screen.queryByTestId('pixels')).not.toBeInTheDocument();
   expect(screen.getByText('com_media_preview_failed')).toBeInTheDocument();

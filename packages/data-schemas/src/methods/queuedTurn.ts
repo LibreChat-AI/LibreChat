@@ -1,4 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { CODE_APPROVAL_MODES } from 'librechat-data-provider';
+import { reasoningOverrideSchema } from 'librechat-data-provider';
+import type { TReasoningOverride } from 'librechat-data-provider';
+import type { CodeApprovalMode } from 'librechat-data-provider';
 import type { FilterQuery, Model, Types } from 'mongoose';
 import type {
   AgentQueuedTurnActiveRecord,
@@ -108,6 +112,10 @@ export interface EnqueueAgentQueuedTurnInput extends AgentQueuedTurnConversation
   files?: readonly AgentQueuedTurnFileRef[];
   quotes?: readonly string[];
   manualSkills?: readonly string[];
+  codeApprovalMode?: CodeApprovalMode;
+  /** Internal publication fence, committed with approval-bearing rows. */
+  deliveryReservation?: { queuedTurnId: string; deliveryKey: string };
+  reasoningOverride?: TReasoningOverride;
   expectedPredecessorCreatedAt?: number;
   priority?: boolean;
   availableAt?: Date;
@@ -516,6 +524,15 @@ function normalizeText(text: string): string {
   return normalized;
 }
 
+function normalizeReasoningOverride(
+  reasoningOverride: TReasoningOverride | undefined,
+): TReasoningOverride | undefined {
+  if (reasoningOverride == null) {
+    return undefined;
+  }
+  return reasoningOverrideSchema.parse(reasoningOverride);
+}
+
 function normalizePredecessor(value: number | undefined): number | undefined {
   if (value == null) {
     return undefined;
@@ -524,6 +541,13 @@ function normalizePredecessor(value: number | undefined): number | undefined {
     throw new TypeError('Agent queued turn predecessor epoch must be a nonnegative integer');
   }
   return value;
+}
+
+function requireCodeApprovalMode(mode: CodeApprovalMode): CodeApprovalMode {
+  if (!CODE_APPROVAL_MODES.includes(mode)) {
+    throw new TypeError('Agent queued turn coding approval mode is invalid');
+  }
+  return mode;
 }
 
 function normalizeEnqueue(input: EnqueueAgentQueuedTurnInput) {
@@ -535,6 +559,10 @@ function normalizeEnqueue(input: EnqueueAgentQueuedTurnInput) {
     files: normalizeFiles(input.files),
     quotes: normalizeQuotes(input.quotes),
     manualSkills: normalizeManualSkills(input.manualSkills),
+    ...(input.codeApprovalMode != null && {
+      codeApprovalMode: requireCodeApprovalMode(input.codeApprovalMode),
+    }),
+    reasoningOverride: normalizeReasoningOverride(input.reasoningOverride),
     expectedPredecessorCreatedAt: normalizePredecessor(input.expectedPredecessorCreatedAt),
     priority: input.priority === true,
   };
@@ -607,6 +635,8 @@ function toRecord(turn: IAgentQueuedTurn): AgentQueuedTurnRecord {
     ...(turn.files != null && { files: turn.files }),
     ...(turn.quotes != null && { quotes: turn.quotes }),
     ...(turn.manualSkills != null && { manualSkills: turn.manualSkills }),
+    ...(turn.codeApprovalMode != null && { codeApprovalMode: turn.codeApprovalMode }),
+    ...(turn.reasoningOverride != null && { reasoningOverride: turn.reasoningOverride }),
     ...(turn.expectedPredecessorCreatedAt != null && {
       expectedPredecessorCreatedAt: turn.expectedPredecessorCreatedAt,
     }),
@@ -668,6 +698,8 @@ function toActiveRecord(turn: IAgentQueuedTurn): AgentQueuedTurnActiveRecord {
     ...(record.files != null && { files: record.files }),
     ...(record.quotes != null && { quotes: record.quotes }),
     ...(record.manualSkills != null && { manualSkills: record.manualSkills }),
+    ...(record.codeApprovalMode != null && { codeApprovalMode: record.codeApprovalMode }),
+    ...(record.reasoningOverride != null && { reasoningOverride: record.reasoningOverride }),
     ...(record.expectedPredecessorCreatedAt != null && {
       expectedPredecessorCreatedAt: record.expectedPredecessorCreatedAt,
     }),
@@ -1078,6 +1110,9 @@ export function createAgentQueuedTurnMethods(
   ): Promise<{ turn: AgentQueuedTurnRecord; replayed: boolean }> {
     const scope = conversationScope(input);
     const normalized = normalizeEnqueue(input);
+    if (input.codeApprovalMode != null && input.deliveryReservation == null) {
+      throw new TypeError('Approval snapshots require a versioned delivery reservation');
+    }
     const requestFingerprint = fingerprint(normalized);
     const existing = await Turn()
       .findOne({ ...scope, clientRequestId: normalized.clientRequestId })
@@ -1134,7 +1169,11 @@ export function createAgentQueuedTurnMethods(
               status: 'reserving',
               attempts: 0,
               availableAt: input.availableAt ?? new Date(),
-              deliveryState: 'pending',
+              deliveryState: input.deliveryReservation != null ? 'publishing' : 'pending',
+              ...(input.deliveryReservation != null && {
+                _id: requireBoundedString(input.deliveryReservation.queuedTurnId, 128),
+                deliveryKey: requireBoundedString(input.deliveryReservation.deliveryKey, 128),
+              }),
               reservationWriterId: writer.writerId,
             });
             return {

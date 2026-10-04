@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 import { EventEmitter } from 'events';
 import { logger } from '@librechat/data-schemas';
+import { MCP_UI_EXTENSION_ID } from 'librechat-data-provider';
 import { fetch as undiciFetch, Agent, ProxyAgent } from 'undici';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -21,6 +22,9 @@ import type {
   Dispatcher,
 } from 'undici';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { ClientCapabilities } from '@modelcontextprotocol/sdk/types.js';
+import type { TMCPAppOperationLimits } from 'librechat-data-provider';
+import type { MCPClientCapabilityProfile } from './capabilities';
 import type { MCPOAuthTokens } from './oauth/types';
 import type * as t from './types';
 import {
@@ -30,13 +34,21 @@ import {
   MCPTransportAuthenticationError,
   isStandaloneSseConflict,
 } from './errors';
+import {
+  createMCPAppSSEEventGuard,
+  getMCPAppOperationLimits,
+  guardMCPAppSSEEvents,
+} from './apps/budget';
+import { MCP_APPS_CAPABILITY_PROFILE, STANDARD_MCP_CAPABILITY_PROFILE } from './capabilities';
 import { createSSRFSafeUndiciConnect, isSSRFTarget, resolveHostnameSSRF } from '~/auth';
+import { projectMCPAppRuntimeTarget, type MCPAppRuntimeTarget } from './apps/binding';
 import { reserveMCPToolsChangedRevision } from './toolsChanged';
 import { runOutsideTracing } from '~/utils/tracing';
 import { mediaTypeEssence } from '~/utils/headers';
 import { isAddressAllowed } from '~/auth/domain';
 import { withMCPRequestSignal } from './signal';
 import { withTimeout } from '~/utils/promise';
+import { RESOURCE_MIME_TYPE } from './apps';
 import { isOAuthServer } from './utils';
 import { mcpConfig } from './mcpConfig';
 
@@ -290,10 +302,19 @@ function buildBlockedMCPResponseSSE(requestIds: JSONRPCRequestId[], message: str
   return textEncoder.encode(events);
 }
 
-function getMCPStreamableHTTPResponseLimits(): {
+function getMCPStreamableHTTPResponseLimits(
+  appProfile = false,
+  operationLimits?: TMCPAppOperationLimits,
+): {
   maxResponseBytes: number;
   maxLineBytes: number;
 } {
+  if (appProfile) {
+    // Validated App-profile policy owns both bounds. Generic transport env defaults are for
+    // standard sessions and must not silently reject an operator-approved larger App event.
+    const maxBytes = getMCPAppOperationLimits(operationLimits).maxBytes;
+    return { maxResponseBytes: maxBytes, maxLineBytes: maxBytes };
+  }
   return {
     maxResponseBytes: getNonNegativeIntegerEnv(
       'MCP_STREAMABLE_HTTP_MAX_RESPONSE_BYTES',
@@ -313,16 +334,39 @@ async function guardMCPStreamableHTTPResponse(
     method: string;
     url: string;
     requestIds?: JSONRPCRequestId[];
+    appProfile?: boolean;
+    operationLimits?: TMCPAppOperationLimits;
+    onAppSSEOverflow?: () => void;
   },
 ): Promise<UndiciResponse> {
-  if (context.method === 'GET' || !response.body) {
+  const contentType = response.headers.get('content-type') ?? '';
+  const isEventStream = mediaTypeEssence(contentType) === 'text/event-stream';
+  if (context.method === 'GET') {
+    if (!context.appProfile) return response;
+    if (isEventStream && response.ok) {
+      return guardMCPAppSSEEvents(
+        response as unknown as Response,
+        getMCPAppOperationLimits(context.operationLimits).maxBytes,
+        context.onAppSSEOverflow,
+      ) as unknown as UndiciResponse;
+    }
+    // SDK GET error paths may call response.text(); bound those as ordinary HTTP bodies,
+    // including non-2xx responses mislabelled as an event stream.
+  }
+  if (!response.body) {
     return response;
   }
 
-  const contentType = response.headers.get('content-type') ?? '';
-  const isEventStream = mediaTypeEssence(contentType) === 'text/event-stream';
-  const { maxResponseBytes, maxLineBytes } = getMCPStreamableHTTPResponseLimits();
+  const { maxResponseBytes, maxLineBytes } = getMCPStreamableHTTPResponseLimits(
+    context.appProfile,
+    context.operationLimits,
+  );
   const canEmitFallbackSSEError = isEventStream && maxLineBytes > 0;
+  // SSE streams can emit many bounded events; cumulative bytes must not end a healthy App session.
+  const fitsAppEvent =
+    isEventStream && response.ok && context.appProfile
+      ? createMCPAppSSEEventGuard(maxResponseBytes)
+      : undefined;
   if (!isEventStream && maxResponseBytes === 0) {
     return response;
   }
@@ -430,7 +474,10 @@ async function guardMCPStreamableHTTPResponse(
         chunkCount += 1;
         totalBytes += bytes.byteLength;
 
-        if (maxResponseBytes > 0 && totalBytes > maxResponseBytes) {
+        if (
+          maxResponseBytes > 0 &&
+          (fitsAppEvent ? !fitsAppEvent(bytes) : totalBytes > maxResponseBytes)
+        ) {
           blockResponse(controller, 'MCP response exceeded byte limit', {
             chunkBytes: bytes.byteLength,
           });
@@ -997,6 +1044,8 @@ interface MCPConnectionParams {
   ephemeralConnection?: boolean;
   /** The owner will replace this connection after a tools/list authentication rejection. */
   directBearerRecoveryEnabled?: boolean;
+  capabilityProfile?: MCPClientCapabilityProfile;
+  operationLimits?: TMCPAppOperationLimits;
 }
 
 /** Result of an MCP `tools/list` request: one page of tools plus an optional pagination cursor. */
@@ -1022,6 +1071,8 @@ export class MCPConnection extends EventEmitter {
   private connectPromise: Promise<void> | null = null;
   private readonly MAX_RECONNECT_ATTEMPTS = 3;
   public readonly serverName: string;
+  public readonly capabilityProfile: MCPClientCapabilityProfile;
+  private readonly operationLimits?: TMCPAppOperationLimits;
   private shouldStopReconnecting = false;
   private isReconnecting = false;
   private isInitializing = false;
@@ -1071,6 +1122,13 @@ export class MCPConnection extends EventEmitter {
    * Used to detect if connection is stale compared to updated config.
    */
   public readonly createdAt: number;
+
+  /**
+   * Bumped on every tools/list_changed notification. Consumers that cache tool metadata can fold
+   * this into their freshness check to detect tool changes that happen on a live connection, which
+   * createdAt alone (stable until reconnect) cannot.
+   */
+  public toolListVersion = 0;
 
   private static circuitBreakers: Map<string, CircuitBreakerState> = new Map();
 
@@ -1165,6 +1223,11 @@ export class MCPConnection extends EventEmitter {
     this.requestHeaders = normalizedHeaders;
   }
 
+  /** Stable routing identity captured by this connection, without live authorization headers. */
+  getMCPAppRuntimeTarget(): MCPAppRuntimeTarget {
+    return projectMCPAppRuntimeTarget(this.options);
+  }
+
   getRequestHeaders(): Record<string, string> | null | undefined {
     return this.requestHeaders;
   }
@@ -1197,6 +1260,8 @@ export class MCPConnection extends EventEmitter {
     super();
     this.options = params.serverConfig;
     this.serverName = params.serverName;
+    this.capabilityProfile = params.capabilityProfile ?? STANDARD_MCP_CAPABILITY_PROFILE;
+    this.operationLimits = params.operationLimits;
     this.userId = params.userId;
     this.useSSRFProtection = params.useSSRFProtection === true;
     this.allowedAddresses = params.allowedAddresses ?? null;
@@ -1211,14 +1276,16 @@ export class MCPConnection extends EventEmitter {
     if (params.oauthTokens) {
       this.oauthTokens = params.oauthTokens;
     }
+    const capabilities: ClientCapabilities =
+      this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE
+        ? { extensions: { [MCP_UI_EXTENSION_ID]: { mimeTypes: [RESOURCE_MIME_TYPE] } } }
+        : {};
     this.client = new Client(
       {
         name: '@librechat/api-client',
         version: '1.2.3',
       },
-      {
-        capabilities: {},
-      },
+      { capabilities },
     );
 
     this.setupEventListeners();
@@ -1253,6 +1320,8 @@ export class MCPConnection extends EventEmitter {
     const agents = this.agents;
     const logPrefix = this.getLogPrefix();
     const rejectDirectBearerAuthentication = this.directBearerRecoveryEnabled;
+    const thisAppProfile = this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE;
+    const appOperationLimits = this.operationLimits;
     const effectiveTimeout = timeout || DEFAULT_TIMEOUT;
     const requestDispatchers = new Map<string, ManagedDispatcher>();
     const ssrfConnects = new Map<string, ReturnType<typeof createSSRFSafeUndiciConnect>>();
@@ -1381,6 +1450,8 @@ export class MCPConnection extends EventEmitter {
           method: (currentInit?.method ?? 'GET').toUpperCase(),
           url: currentUrlString,
           requestIds: getJSONRPCRequestIds(currentInit?.body),
+          appProfile: thisAppProfile,
+          operationLimits: appOperationLimits,
         };
 
         if (!isMethodPreservingRedirect || redirects >= MAX_REDIRECTS) {
@@ -1501,11 +1572,19 @@ export class MCPConnection extends EventEmitter {
             // https://github.com/modelcontextprotocol/typescript-sdk/issues/216
             env: { ...getDefaultEnvironment(), ...(options.env ?? {}) },
             ...(options.cwd !== undefined && { cwd: options.cwd }),
+            ...(this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE && {
+              maxBufferSize: getMCPAppOperationLimits(this.operationLimits).maxBytes,
+            }),
           });
 
         case 'websocket': {
           if (!isWebSocketOptions(options)) {
             throw new Error('Invalid options for websocket transport.');
+          }
+          if (this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE) {
+            // This SDK WebSocket transport JSON.parse's messages before exposing them and offers
+            // no maxPayload option. Fail closed for Apps rather than claim a post-parse cap is safe.
+            throw new Error('MCP Apps require a transport with a pre-parse response size limit');
           }
           this.url = options.url;
           /**
@@ -1622,12 +1701,31 @@ export class MCPConnection extends EventEmitter {
                     }
                   }
                 }
-                return undiciFetch(urlString, {
+                const response = await undiciFetch(urlString, {
                   ...resolvedInit,
                   redirect: 'manual',
                   dispatcher: getSSEDispatcher(urlString),
                   headers: fetchHeaders,
                 });
+                return this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE
+                  ? guardMCPStreamableHTTPResponse(response, {
+                      logPrefix: this.getLogPrefix(),
+                      method: 'GET',
+                      url: urlString,
+                      appProfile: true,
+                      operationLimits: this.operationLimits,
+                      onAppSSEOverflow: () => {
+                        // Let the SDK observe its stream error and reject an in-flight start before
+                        // closing EventSource. Closing synchronously leaves start() pending forever.
+                        // A short bounded grace also prevents the SDK's automatic retry loop.
+                        const stop = setTimeout(() => {
+                          abortController.abort();
+                          void transport.close().catch(() => undefined);
+                        }, 30);
+                        stop.unref?.();
+                      },
+                    })
+                  : response;
               },
             },
             fetch: this.createFetchFunction(
@@ -1636,6 +1734,7 @@ export class MCPConnection extends EventEmitter {
               undefined,
               sseConfiguredSecretHeaderKeys,
               options.url,
+              this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE,
             ) as unknown as FetchLike,
           });
 
@@ -1846,6 +1945,9 @@ export class MCPConnection extends EventEmitter {
   private subscribeToToolListChanges(): void {
     this.client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
       logger.debug(`${this.getLogPrefix()} Server reported a changed tool list`);
+      // Stamps the MCP Apps per-tool metadata caches (resourceUri, visibility) as stale; createdAt
+      // alone cannot see a list change on a still-live connection.
+      this.toolListVersion += 1;
       await this.refreshToolList();
     });
   }
@@ -2610,6 +2712,7 @@ export class MCPConnection extends EventEmitter {
           serverName: this.serverName,
           serverConfig: this.options,
           userId: this.userId,
+          capabilityProfile: this.capabilityProfile,
         }),
       };
     } catch (error) {

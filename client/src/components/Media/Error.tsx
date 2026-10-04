@@ -43,57 +43,59 @@ export function MediaJobError({
               />
             </Button>
           </CollapsibleTrigger>
-          <CollapsibleContent className="mt-2 space-y-2 text-text-secondary">
-            {query.isFetching && !query.data && (
-              <p role="status">{localize('com_media_diagnostics_loading')}</p>
-            )}
-            {query.isError && (
-              <div className="space-y-2">
-                <p role="status">{localize('com_media_diagnostics_failed')}</p>
-                <Button variant="outline" size="sm" onClick={() => void query.refetch()}>
-                  {localize('com_media_diagnostics_retry')}
-                </Button>
-              </div>
-            )}
-            {query.isSuccess && !hasDetails && (
-              <p role="status">{localize('com_media_diagnostics_unavailable')}</p>
-            )}
-            {diagnostic && hasDetails && (
-              <div className="space-y-2">
-                {diagnostic.message && (
-                  <p className="whitespace-pre-wrap break-words">{diagnostic.message}</p>
-                )}
-                <dl className="space-y-1 text-xs">
-                  {diagnostic.status !== undefined && (
-                    <div>
-                      <dt className="inline font-medium">
-                        {localize('com_media_diagnostics_status')}
-                        {': '}
-                      </dt>
-                      <dd className="inline">{diagnostic.status}</dd>
-                    </div>
+          <CollapsibleContent className="mt-2">
+            <div className="text-text-secondary space-y-2">
+              {query.isFetching && !query.data && (
+                <p role="status">{localize('com_media_diagnostics_loading')}</p>
+              )}
+              {query.isError && (
+                <div className="space-y-2">
+                  <p role="status">{localize('com_media_diagnostics_failed')}</p>
+                  <Button variant="outline" size="sm" onClick={() => void query.refetch()}>
+                    {localize('com_media_diagnostics_retry')}
+                  </Button>
+                </div>
+              )}
+              {query.isSuccess && !hasDetails && (
+                <p role="status">{localize('com_media_diagnostics_unavailable')}</p>
+              )}
+              {diagnostic && hasDetails && (
+                <div className="space-y-2">
+                  {diagnostic.message && (
+                    <p className="break-words whitespace-pre-wrap">{diagnostic.message}</p>
                   )}
-                  {diagnostic.code && (
-                    <div>
-                      <dt className="inline font-medium">
-                        {localize('com_media_diagnostics_code')}
-                        {': '}
-                      </dt>
-                      <dd className="inline break-words">{diagnostic.code}</dd>
-                    </div>
-                  )}
-                  {diagnostic.requestId && (
-                    <div>
-                      <dt className="inline font-medium">
-                        {localize('com_media_recovery_provider_request')}
-                        {': '}
-                      </dt>
-                      <dd className="inline break-words">{diagnostic.requestId}</dd>
-                    </div>
-                  )}
-                </dl>
-              </div>
-            )}
+                  <dl className="space-y-1 text-xs">
+                    {diagnostic.status !== undefined && (
+                      <div>
+                        <dt className="inline font-medium">
+                          {localize('com_media_diagnostics_status')}
+                          {': '}
+                        </dt>
+                        <dd className="inline">{diagnostic.status}</dd>
+                      </div>
+                    )}
+                    {diagnostic.code && (
+                      <div>
+                        <dt className="inline font-medium">
+                          {localize('com_media_diagnostics_code')}
+                          {': '}
+                        </dt>
+                        <dd className="inline break-words">{diagnostic.code}</dd>
+                      </div>
+                    )}
+                    {diagnostic.requestId && (
+                      <div>
+                        <dt className="inline font-medium">
+                          {localize('com_media_recovery_provider_request')}
+                          {': '}
+                        </dt>
+                        <dd className="inline break-words">{diagnostic.requestId}</dd>
+                      </div>
+                    )}
+                  </dl>
+                </div>
+              )}
+            </div>
           </CollapsibleContent>
         </Collapsible>
       )}

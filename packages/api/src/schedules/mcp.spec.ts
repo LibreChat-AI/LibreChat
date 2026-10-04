@@ -152,6 +152,43 @@ it('lazily resolves an upstream token provider for an OBO preflight', async () =
   );
 });
 
+it('reports missing unattended OBO credentials without offering a browser reconnect', async () => {
+  const { check, deps } = setup();
+  deps.getServerConfigs = jest.fn(async () => ({
+    docs: { ...server, obo: { scopes: 'api://mcp/.default' } },
+  }));
+  deps.resolveUpstreamTokenProvider = jest.fn(async () => undefined);
+  deps.connect = jest.fn(async (options) => {
+    const provider = createLazyOboUpstreamTokenProvider(
+      options.upstreamTokenProviderResolver!,
+      options.signal,
+      { mcpServer: options.serverName, scopes: options.serverConfig!.obo!.scopes },
+    );
+    await provider();
+    throw new Error('A missing provider must never connect');
+  });
+
+  await expect(check('agent', principal, { scheduleId: 'schedule' })).rejects.toMatchObject({
+    code: 'mcp_configuration_missing',
+    outcomes: [
+      { server: 'docs', status: 'mcp_configuration_missing', detail: 'unattended_auth_required' },
+    ],
+  });
+  expect(deps.resolveUpstreamTokenProvider).toHaveBeenCalledWith(
+    expect.objectContaining({ id: 'owner' }),
+    {
+      signal: undefined,
+      context: {
+        scheduleId: 'schedule',
+        ownerId: 'owner',
+        agentId: 'agent',
+        invocationMode: 'delegated',
+      },
+      target: { mcpServer: 'docs', scopes: 'api://mcp/.default' },
+    },
+  );
+});
+
 it('does not resolve upstream credentials for non-OBO servers', async () => {
   const { check, deps } = setup();
   deps.resolveUpstreamTokenProvider = jest.fn(async () => {
@@ -268,6 +305,19 @@ it('classifies a transport outage as retryable', async () => {
   await expect(check('agent', principal)).rejects.toMatchObject({
     code: 'mcp_unavailable',
     message: 'mcp_unavailable: [{"server":"docs","status":"mcp_unavailable"}]',
+  });
+});
+
+it('classifies absent OBO provider wiring as a permanent unattended-auth setup failure', async () => {
+  const { check, deps } = setup();
+  deps.connect = async () => {
+    throw new OboTokenResolutionError('missing_upstream_provider', 'Internal provider detail');
+  };
+
+  await expect(check('agent', principal)).rejects.toMatchObject({
+    code: 'mcp_configuration_missing',
+    message:
+      'mcp_configuration_missing: [{"server":"docs","status":"mcp_configuration_missing","detail":"unattended_auth_required"}]',
   });
 });
 

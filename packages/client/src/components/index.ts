@@ -5,12 +5,14 @@ export * from './AlertDialog';
 export * from './Breadcrumb';
 export * from './Button';
 export * from './Chip';
+export * from './SeriesLabel';
 export * from './Checkbox';
 export * from './DisclosureChevron';
 export * from './Dialog';
 export * from './DropdownMenu';
 export * from './HoverCard';
 export * from './Field';
+export * from './Focus';
 export * from './Input';
 export * from './InputNumber';
 export * from './SecretInput';
@@ -71,6 +73,10 @@ export { default as SelectDropDown } from './SelectDropDown';
 export { default as ControlCombobox } from './ControlCombobox';
 export { default as EmptyState } from './EmptyState';
 export type { EmptyStateProps } from './EmptyState';
+export { default as LoadingDots } from './LoadingDots';
+export type { LoadingDotsProps } from './LoadingDots';
+export { default as RetryableError } from './RetryableError';
+export type { RetryableErrorProps, RetryableErrorLabels } from './RetryableError';
 export { default as TimePicker, MinutePicker, TimeColumn } from './TimePicker';
 export type {
   TimePickerProps,

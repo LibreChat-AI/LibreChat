@@ -126,6 +126,11 @@ jest.mock('../Sidebar', () => {
   };
 });
 
+jest.mock('~/components/Nav/AgentMarketplaceButton', () => ({
+  __esModule: true,
+  default: () => null,
+}));
+
 jest.mock('../mobile', () => ({
   MobileHeader: () => null,
   MobileShortcutTargets: () => null,
@@ -138,7 +143,7 @@ function Harness({ path }: { path: string }) {
       <RecoilRoot>
         <mockMediaAccessContext.Provider value={mockMediaVisible}>
           <mockMediaActivityContext.Provider value={mockMediaActivityFetched}>
-            <UnifiedSidebar />
+            <UnifiedSidebar switchToHistory />
           </mockMediaActivityContext.Provider>
         </mockMediaAccessContext.Provider>
       </RecoilRoot>

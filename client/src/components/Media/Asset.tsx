@@ -23,7 +23,12 @@ import {
 } from '@librechat/client';
 import type { MediaAsset, MediaRenditionKind } from 'librechat-data-provider';
 import type { CSSProperties, ReactNode } from 'react';
-import { MediaImagePixels, mediaImageFrame } from './ImagePending';
+import {
+  MediaImagePixels,
+  mediaImageRatio,
+  mediaImageWidth,
+  mediaImageFrameClass,
+} from './ImagePending';
 import { toAbsoluteFilePath } from '~/utils/media';
 import { formatBytes } from '~/utils/files';
 import { useLocalize } from '~/hooks';
@@ -122,14 +127,14 @@ function Preview({
     !expanded &&
     (generatedImage || (!!asset.width && !!asset.height));
   let frame = 'aspect-square max-h-[32rem] rounded-xl border border-border-light';
-  let style: CSSProperties | undefined;
+  let ratio: number | undefined;
   if (video) frame = 'aspect-video rounded-xl border border-border-light';
   if (expanded) frame = 'min-h-40';
   if (compact) frame = 'aspect-square';
   if (audio && interactive) frame = 'min-h-20 rounded-xl px-2';
   if (sizedImage) {
-    frame = 'rounded-xl border border-border-light';
-    style = mediaImageFrame(asset);
+    frame = `rounded-xl border border-border-light ${mediaImageFrameClass}`;
+    ratio = mediaImageRatio(asset);
   }
   let media: ReactNode;
   if (audio) {
@@ -148,7 +153,7 @@ function Preview({
       />
     ) : (
       <AudioLines
-        className="size-6 text-text-secondary"
+        className="text-text-secondary size-6"
         aria-label={localize('com_media_audio_preview')}
       />
     );
@@ -195,8 +200,8 @@ function Preview({
   return (
     <span
       ref={frameRef}
-      className={`relative grid w-full place-items-center overflow-hidden bg-surface-secondary ${frame}`}
-      style={style}
+      className={`bg-surface-secondary relative grid w-full place-items-center overflow-hidden ${frame}`}
+      style={{ '--media-ratio': ratio, maxWidth: ratio && mediaImageWidth(ratio) } as CSSProperties}
     >
       {status !== 'failed' &&
         (onOpen && !video && !audio ? (
@@ -226,7 +231,7 @@ function Preview({
       {status === 'failed' && (
         <span
           role="status"
-          className="flex flex-col items-center gap-3 p-5 text-center text-sm text-text-secondary"
+          className="text-text-secondary flex flex-col items-center gap-3 p-5 text-center text-sm"
         >
           <ImageOff className="size-7" aria-hidden="true" />
           <span>
@@ -290,7 +295,7 @@ export function MediaAssetView({
   return (
     <figure className="min-w-0 space-y-2">
       <MediaPreview asset={asset} onOpen={openPreview} imagePendingSince={imagePendingSince} />
-      <figcaption className="flex flex-wrap items-center gap-x-1.5 text-xs text-text-secondary">
+      <figcaption className="text-text-secondary flex flex-wrap items-center gap-x-1.5 text-xs">
         {details.map((value, index) => (
           <span key={value} className="flex items-center gap-x-1.5">
             {index > 0 && <span aria-hidden="true">·</span>}
@@ -386,12 +391,12 @@ export function MediaAssetView({
         </span>
       </div>
       {host.canUseInChat === false && host.useInChat && (
-        <p id={`media-chat-unavailable-${asset.file_id}`} className="text-xs text-text-secondary">
+        <p id={`media-chat-unavailable-${asset.file_id}`} className="text-text-secondary text-xs">
           {localize('com_media_temporary_chat_unavailable')}
         </p>
       )}
       {error && (
-        <p role="alert" className="text-sm text-text-secondary">
+        <p role="alert" className="text-text-secondary text-sm">
           {localize('com_media_chat_unsupported')}
         </p>
       )}

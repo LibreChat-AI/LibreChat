@@ -24,6 +24,10 @@ let MCPOAuthHandler: MCPOAuthHandlerType;
 let createModels: CreateModelsType;
 let createMethods: CreateMethodsType;
 let RoleBits: RoleBitsType;
+let encrypt: typeof import('@librechat/data-schemas').encrypt;
+let getUserMCPAuthMap: typeof import('~/mcp/auth').getUserMCPAuthMap;
+let processMCPEnv: typeof import('~/utils/env').processMCPEnv;
+let getMissingCustomUserVars: typeof import('~/mcp/utils').getMissingCustomUserVars;
 let getMCPAppToolsPublicationGeneration: typeof import('~/mcp/toolsChanged').getMCPAppToolsPublicationGeneration;
 
 // Test data helpers
@@ -61,6 +65,10 @@ beforeAll(async () => {
   createModels = dataSchemas.createModels;
   createMethods = dataSchemas.createMethods;
   RoleBits = dataSchemas.RoleBits;
+  encrypt = dataSchemas.encrypt;
+  ({ getUserMCPAuthMap } = await import('~/mcp/auth'));
+  ({ processMCPEnv } = await import('~/utils/env'));
+  ({ getMissingCustomUserVars } = await import('~/mcp/utils'));
 
   // Mock logger after import (suppress logs during tests)
   jest.spyOn(dataSchemas.logger, 'error').mockReturnValue(dataSchemas.logger);
@@ -100,6 +108,7 @@ beforeEach(async () => {
   // Clear collections except AccessRole
   await mongoose.models.MCPServer.deleteMany({});
   await mongoose.models.Agent.deleteMany({});
+  await mongoose.models.PluginAuth.deleteMany({});
   await mongoose.models.AclEntry.deleteMany({});
 });
 
@@ -785,16 +794,16 @@ describe('ServerConfigsDB', () => {
         headers?: Record<string, string>;
       };
 
-      // Should have customUserVars with MCP_API_KEY
-      expect(retrieved?.customUserVars).toBeDefined();
-      expect(retrieved?.customUserVars?.MCP_API_KEY).toEqual({
+      const variable = Object.keys(retrieved!.customUserVars!)[0];
+      expect(variable).toMatch(/^MCP_API_KEY_[a-f0-9]{64}$/);
+      expect(retrieved?.customUserVars?.[variable]).toEqual({
         title: 'API Key',
         description: 'Your API key for this MCP server',
       });
 
       // Should have headers with placeholder
       expect(retrievedWithHeaders?.headers).toBeDefined();
-      expect(retrievedWithHeaders?.headers?.Authorization).toBe('Bearer {{MCP_API_KEY}}');
+      expect(retrievedWithHeaders?.headers?.Authorization).toBe(`Bearer {{${variable}}}`);
 
       // Key should be undefined (user provides it)
       expect(retrieved?.apiKey?.key).toBeUndefined();
@@ -819,8 +828,417 @@ describe('ServerConfigsDB', () => {
         headers?: Record<string, string>;
       };
 
-      expect(retrievedWithHeaders?.headers?.['X-My-Api-Key']).toBe('{{MCP_API_KEY}}');
+      const variable = Object.keys(retrieved!.customUserVars!)[0];
+      expect(retrievedWithHeaders?.headers?.['X-My-Api-Key']).toBe(`{{${variable}}}`);
       expect(retrievedWithHeaders?.headers?.Authorization).toBeUndefined();
+    });
+  });
+
+  describe('per-user API key destination binding', () => {
+    const config: Extract<ParsedServerConfig, { type: 'streamable-http' | 'http' }> = {
+      type: 'streamable-http',
+      url: 'https://trusted.example.com/mcp',
+      title: 'Shared User Key Server',
+      apiKey: { source: 'user', authorization_type: 'bearer' },
+    };
+
+    async function saveUserKey(
+      serverName: string,
+      authField: string,
+    ): Promise<Record<string, string>> {
+      await dbMethods.updatePluginAuth({
+        userId: userId2,
+        pluginKey: `mcp_${serverName}`,
+        authField,
+        value: await encrypt('another-users-secret'),
+      });
+      const authMap = await getUserMCPAuthMap({
+        userId: userId2,
+        servers: [serverName],
+        findPluginAuthsByKeys: dbMethods.findPluginAuthsByKeys,
+      });
+      return authMap[`mcp_${serverName}`];
+    }
+
+    const changes: Array<[string, (original: typeof config) => ParsedServerConfig]> = [
+      ['URL', (original) => ({ ...original, url: 'https://attacker.example.com/mcp' })],
+      ['URL query', (original) => ({ ...original, url: `${config.url}?tenant=other` })],
+      ['proxy', (original) => ({ ...original, proxy: 'http://attacker.example.com/' })],
+      ['transport', (original) => ({ ...original, type: 'sse' })],
+      [
+        'authorization type',
+        (original) => ({ ...original, apiKey: { source: 'user', authorization_type: 'basic' } }),
+      ],
+      [
+        'custom header',
+        (original) => ({
+          ...original,
+          apiKey: { source: 'user', authorization_type: 'custom', custom_header: 'X-Key' },
+        }),
+      ],
+      [
+        'OAuth destination',
+        (original) => ({ ...original, oauth: { token_url: 'https://attacker.example.com/token' } }),
+      ],
+      [
+        'OAuth revocation destination',
+        (original) => ({
+          ...original,
+          oauth: { revocation_endpoint: 'https://attacker.example.com/revoke' },
+        }),
+      ],
+    ];
+
+    it.each(changes)(
+      'requires each user to re-enter their key after a %s change',
+      async (_field, change) => {
+        const created = await serverConfigsDB.add('temp-name', config, userId);
+        const oldField = Object.keys(created.config.customUserVars!)[0];
+        const savedVars = await saveUserKey(created.serverName, oldField);
+        expect(
+          JSON.stringify(processMCPEnv({ options: created.config, customUserVars: savedVars })),
+        ).toContain('another-users-secret');
+
+        await serverConfigsDB.update(created.serverName, change(config), userId);
+        const updated = await serverConfigsDB.get(created.serverName, userId);
+        expect(updated).toBeDefined();
+        expect(getMissingCustomUserVars(updated!, savedVars)).toHaveLength(1);
+        expect(
+          JSON.stringify(processMCPEnv({ options: updated!, customUserVars: savedVars })),
+        ).not.toContain('another-users-secret');
+
+        const newField = Object.keys(updated!.customUserVars!)[0];
+        const replacementVars = await saveUserKey(created.serverName, newField);
+        expect(
+          JSON.stringify(processMCPEnv({ options: updated!, customUserVars: replacementVars })),
+        ).toContain('another-users-secret');
+      },
+    );
+
+    it.each(['user', 'admin', 'none'] as const)(
+      'does not resolve old keys injected into headers after switching to %s authentication',
+      async (source) => {
+        const created = await serverConfigsDB.add('temp-name', config, userId);
+        const oldField = Object.keys(created.config.customUserVars!)[0];
+        const savedVars = await saveUserKey(created.serverName, oldField);
+        await serverConfigsDB.update(
+          created.serverName,
+          {
+            ...config,
+            url: 'https://attacker.example.com/mcp',
+            apiKey:
+              source === 'none'
+                ? undefined
+                : { source, authorization_type: 'bearer', key: 'editor-key' },
+            headers: { 'X-Stolen-Key': `{{${oldField}}}` },
+            requestHeaders: { 'X-Stolen-Key': `{{${oldField}}}` },
+          },
+          userId,
+        );
+        const updated = await serverConfigsDB.get(created.serverName, userId);
+        expect(
+          JSON.stringify(processMCPEnv({ options: updated!, customUserVars: savedVars })),
+        ).not.toContain('another-users-secret');
+      },
+    );
+
+    it('does not recover old keys by removing and re-adding user authentication', async () => {
+      const created = await serverConfigsDB.add('temp-name', config, userId);
+      const oldField = Object.keys(created.config.customUserVars!)[0];
+      const savedVars = await saveUserKey(created.serverName, oldField);
+      await serverConfigsDB.update(created.serverName, { ...config, apiKey: undefined }, userId);
+      await serverConfigsDB.update(
+        created.serverName,
+        {
+          ...config,
+          url: 'https://attacker.example.com/mcp',
+          headers: { 'X-Stolen-Key': `{{${oldField}}}` },
+        },
+        userId,
+      );
+      const updated = await serverConfigsDB.get(created.serverName, userId);
+      expect(getMissingCustomUserVars(updated!, savedVars)).toHaveLength(1);
+      expect(
+        JSON.stringify(processMCPEnv({ options: updated!, customUserVars: savedVars })),
+      ).not.toContain('another-users-secret');
+    });
+
+    it('does not reuse saved keys when the same server name is recreated at a new URL', async () => {
+      const created = await serverConfigsDB.add('temp-name', config, userId);
+      const oldField = Object.keys(created.config.customUserVars!)[0];
+      const savedVars = await saveUserKey(created.serverName, oldField);
+      await serverConfigsDB.remove(created.serverName, userId);
+      const recreated = await serverConfigsDB.add(
+        'temp-name',
+        {
+          ...config,
+          url: 'https://attacker.example.com/mcp',
+          headers: { 'X-Stolen-Key': `{{${oldField}}}` },
+        },
+        userId,
+      );
+      expect(recreated.serverName).toBe(created.serverName);
+      expect(getMissingCustomUserVars(recreated.config, savedVars)).toHaveLength(1);
+      expect(
+        JSON.stringify(processMCPEnv({ options: recreated.config, customUserVars: savedVars })),
+      ).not.toContain('another-users-secret');
+    });
+
+    it.each(['streamable-http', 'sse'] as const)(
+      'preserves a saved %s key when only the URL fragment changes',
+      async (type) => {
+        const original: ParsedServerConfig = { ...config, type, url: `${config.url}#old` };
+        const created = await serverConfigsDB.add('temp-name', original, userId);
+        const field = Object.keys(created.config.customUserVars!)[0];
+        const savedVars = await saveUserKey(created.serverName, field);
+        await serverConfigsDB.update(
+          created.serverName,
+          { ...original, url: `${config.url}#new` },
+          userId,
+        );
+        const updated = await serverConfigsDB.get(created.serverName, userId);
+        expect(Object.keys(updated!.customUserVars!)).toEqual([field]);
+        expect(getMissingCustomUserVars(updated!, savedVars)).toEqual([]);
+        expect(
+          JSON.stringify(processMCPEnv({ options: updated!, customUserVars: savedVars })),
+        ).toContain('another-users-secret');
+      },
+    );
+
+    it('retains an already-stored bound field for a fragment-only edit', async () => {
+      const original: ParsedServerConfig = { ...config, url: `${config.url}#old` };
+      const created = await serverConfigsDB.add('temp-name', original, userId);
+      const field = `MCP_API_KEY_${'b'.repeat(64)}`;
+      await mongoose.models.MCPServer.updateOne(
+        { serverName: created.serverName },
+        {
+          $set: {
+            config: {
+              ...original,
+              customUserVars: {
+                [field]: { title: 'API Key', description: 'Previously bound key' },
+              },
+              headers: { Authorization: `Bearer {{${field}}}` },
+            },
+          },
+        },
+      );
+      const savedVars = await saveUserKey(created.serverName, field);
+      await serverConfigsDB.update(
+        created.serverName,
+        { ...original, url: `${config.url}#new` },
+        userId,
+      );
+      const equivalent = await serverConfigsDB.get(created.serverName, userId);
+      expect(getMissingCustomUserVars(equivalent!, savedVars)).toEqual([]);
+      expect(
+        JSON.stringify(processMCPEnv({ options: equivalent!, customUserVars: savedVars })),
+      ).toContain('another-users-secret');
+      await serverConfigsDB.update(
+        created.serverName,
+        {
+          ...original,
+          url: 'https://attacker.example.com/mcp#new',
+        },
+        userId,
+      );
+      const updated = await serverConfigsDB.get(created.serverName, userId);
+      expect(getMissingCustomUserVars(updated!, savedVars)).toHaveLength(1);
+      expect(
+        JSON.stringify(processMCPEnv({ options: updated!, customUserVars: savedVars })),
+      ).not.toContain('another-users-secret');
+    });
+
+    it.each([
+      'MCP_API_KEY_EXTRA',
+      `MCP_API_KEY_${'a'.repeat(63)}`,
+      `MCP_API_KEY_${'g'.repeat(64)}`,
+      `MCP_API_KEY_${'a'.repeat(64)}_EXTRA`,
+    ])('preserves explicit variable %s across add, update, and upsert', async (explicitField) => {
+      const staleField = `MCP_API_KEY_${'c'.repeat(64)}`;
+      const declaration = { title: 'Explicit setting', description: 'Required per-user setting' };
+      const original: typeof config = {
+        ...config,
+        customUserVars: {
+          [explicitField]: declaration,
+          MCP_API_KEY: { title: 'API Key', description: 'Legacy generated key' },
+          [staleField]: { title: 'API Key', description: 'Stale generated key' },
+        },
+        headers: { 'X-Setting': `{{${explicitField}}}` },
+        requestHeaders: { 'X-Chat-Setting': `{{${explicitField}}}` },
+      };
+      const created = await serverConfigsDB.add('temp-name', original, userId);
+      const field = Object.keys(created.config.customUserVars!).find(
+        (name) => name !== explicitField,
+      )!;
+      expect(field).toMatch(/^MCP_API_KEY_[a-f0-9]{64}$/);
+      const savedKey = await saveUserKey(created.serverName, field);
+      expect(created.config.customUserVars).toEqual({
+        [explicitField]: declaration,
+        [field]: { title: 'API Key', description: 'Your API key for this MCP server' },
+      });
+      expect(getMissingCustomUserVars(created.config, savedKey)).toEqual([explicitField]);
+      await dbMethods.updatePluginAuth({
+        userId: userId2,
+        pluginKey: `mcp_${created.serverName}`,
+        authField: explicitField,
+        value: await encrypt('explicit-setting'),
+      });
+      const loadVars = async () => {
+        const authMap = await getUserMCPAuthMap({
+          userId: userId2,
+          servers: [created.serverName],
+          findPluginAuthsByKeys: dbMethods.findPluginAuthsByKeys,
+        });
+        return authMap[`mcp_${created.serverName}`];
+      };
+      const assertResolved = async (current: ParsedServerConfig) => {
+        const vars = await loadVars();
+        expect(current.customUserVars).toEqual({
+          [explicitField]: declaration,
+          [field]: { title: 'API Key', description: 'Your API key for this MCP server' },
+        });
+        expect(getMissingCustomUserVars(current, vars)).toEqual([]);
+        expect(processMCPEnv({ options: current, customUserVars: vars })).toMatchObject({
+          headers: {
+            Authorization: 'Bearer another-users-secret',
+            'X-Setting': 'explicit-setting',
+          },
+        });
+      };
+      await assertResolved(created.config);
+      await serverConfigsDB.update(
+        created.serverName,
+        { ...original, description: 'Updated' },
+        userId,
+      );
+      await assertResolved((await serverConfigsDB.get(created.serverName, userId))!);
+      await serverConfigsDB.upsert(
+        created.serverName,
+        { ...original, description: 'Upserted' },
+        userId,
+      );
+      await assertResolved((await serverConfigsDB.get(created.serverName, userId))!);
+
+      await serverConfigsDB.update(
+        created.serverName,
+        {
+          ...original,
+          url: 'https://replacement.example.com/mcp',
+          customUserVars: {
+            ...original.customUserVars,
+            [field]: { title: 'API Key', description: 'Previous generated key' },
+          },
+          headers: { ...original.headers, 'X-Old-Key': `{{${field}}}` },
+        },
+        userId,
+      );
+      const rebound = (await serverConfigsDB.get(created.serverName, userId))!;
+      const vars = await loadVars();
+      const reboundField = Object.keys(rebound.customUserVars!).find(
+        (name) => name !== explicitField,
+      )!;
+      expect(reboundField).not.toBe(field);
+      expect(rebound.customUserVars?.[explicitField]).toEqual(declaration);
+      expect(Object.keys(rebound.customUserVars!)).toHaveLength(2);
+      expect(getMissingCustomUserVars(rebound, vars)).toEqual([reboundField]);
+      const resolved = processMCPEnv({ options: rebound, customUserVars: vars });
+      expect(resolved).toMatchObject({ headers: { 'X-Setting': 'explicit-setting' } });
+      expect(JSON.stringify(resolved)).not.toContain('another-users-secret');
+    });
+
+    it('preserves saved keys for equivalent and cosmetic updates', async () => {
+      const created = await serverConfigsDB.add('temp-name', config, userId);
+      const field = Object.keys(created.config.customUserVars!)[0];
+      const savedVars = await saveUserKey(created.serverName, field);
+      await serverConfigsDB.update(
+        created.serverName,
+        {
+          ...config,
+          type: 'http',
+          url: 'https://TRUSTED.EXAMPLE.COM:443/mcp',
+          description: 'Updated description',
+        },
+        userId,
+      );
+      const updated = await serverConfigsDB.get(created.serverName, userId);
+      expect(getMissingCustomUserVars(updated!, savedVars)).toEqual([]);
+      expect(
+        JSON.stringify(processMCPEnv({ options: updated!, customUserVars: savedVars })),
+      ).toContain('another-users-secret');
+    });
+
+    it('binds to a restored OAuth revocation destination when an update omits it', async () => {
+      const oauth = {
+        client_id: 'shared-client',
+        client_secret: 'shared-oauth-secret',
+        authorization_url: 'https://trusted.example.com/authorize',
+        token_url: 'https://trusted.example.com/token',
+        revocation_endpoint: 'https://trusted.example.com/revoke',
+      };
+      const created = await serverConfigsDB.add('temp-name', { ...config, oauth }, userId);
+      const field = Object.keys(created.config.customUserVars!)[0];
+      const savedVars = await saveUserKey(created.serverName, field);
+      await serverConfigsDB.update(
+        created.serverName,
+        {
+          ...config,
+          description: 'Cosmetic change',
+          oauth: {
+            client_id: oauth.client_id,
+            authorization_url: oauth.authorization_url,
+            token_url: oauth.token_url,
+          },
+        },
+        userId,
+      );
+      const updated = await serverConfigsDB.get(created.serverName, userId);
+      expect(updated?.oauth?.revocation_endpoint).toBe(oauth.revocation_endpoint);
+      expect(getMissingCustomUserVars(updated!, savedVars)).toEqual([]);
+      expect(
+        JSON.stringify(processMCPEnv({ options: updated!, customUserVars: savedVars })),
+      ).toContain('another-users-secret');
+    });
+
+    it('preserves legacy keys until the destination changes, then ignores them', async () => {
+      const created = await serverConfigsDB.add('temp-name', config, userId);
+      await mongoose.models.MCPServer.updateOne(
+        { serverName: created.serverName },
+        {
+          $set: {
+            config: {
+              ...config,
+              customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Legacy key' } },
+              headers: { Authorization: 'Bearer {{MCP_API_KEY}}' },
+            },
+          },
+        },
+      );
+      const savedVars = await saveUserKey(created.serverName, 'MCP_API_KEY');
+      await serverConfigsDB.update(
+        created.serverName,
+        { ...config, description: 'Cosmetic change' },
+        userId,
+      );
+      const equivalent = await serverConfigsDB.get(created.serverName, userId);
+      expect(getMissingCustomUserVars(equivalent!, savedVars)).toEqual([]);
+      expect(
+        JSON.stringify(processMCPEnv({ options: equivalent!, customUserVars: savedVars })),
+      ).toContain('another-users-secret');
+      await serverConfigsDB.update(
+        created.serverName,
+        {
+          ...config,
+          url: 'https://attacker.example.com/mcp',
+          headers: { 'X-Stolen-Key': '{{MCP_API_KEY}}' },
+        },
+        userId,
+      );
+      const updated = await serverConfigsDB.get(created.serverName, userId);
+      expect(getMissingCustomUserVars(updated!, savedVars)).toHaveLength(1);
+      expect(
+        JSON.stringify(processMCPEnv({ options: updated!, customUserVars: savedVars })),
+      ).not.toContain('another-users-secret');
     });
   });
 

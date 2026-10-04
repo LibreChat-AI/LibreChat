@@ -239,14 +239,14 @@ describe('Agents OpenAPI actual HTTP contract', () => {
       uniqueTempPath: true,
     });
 
-    const { getSkillToolDeps } = require('~/server/services/Endpoints/agents/skillDeps');
+    const { getSkillManagementFileSaver } = require('~/server/services/Endpoints/agents/skillDeps');
     const skillHandlers = createSkillManagementHandlers({
       handlers: {},
       getSkillById: db.getSkillById,
       getRoleByName,
       checkPermission: async () => true,
       hasCapability: async () => true,
-      saveFile: getSkillToolDeps().saveSkillFileContent,
+      saveFile: getSkillManagementFileSaver(),
     });
 
     app = express();

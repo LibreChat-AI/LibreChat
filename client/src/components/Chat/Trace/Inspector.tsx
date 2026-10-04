@@ -28,14 +28,14 @@ function Section({ title, fields }: { title: TranslationKeys; fields: Field[] })
   }
   return (
     <section className="flex flex-col gap-1.5">
-      <h4 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+      <h4 className="text-text-secondary text-xs font-semibold tracking-wide uppercase">
         {localize(title)}
       </h4>
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
         {fields.map((field) => (
           <div key={field.label} className="contents">
             <dt className="text-text-secondary">{localize(field.label)}</dt>
-            <dd className="min-w-0 break-words text-right tabular-nums text-text-primary">
+            <dd className="text-text-primary min-w-0 text-right break-words tabular-nums">
               {field.value}
             </dd>
           </div>
@@ -53,14 +53,14 @@ function ContentBlock({ label, content }: { label: TranslationKeys; content?: TT
   const text = content.truncated ? content.value : formatJSON(content.value);
   return (
     <section className="flex flex-col gap-1">
-      <h4 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+      <h4 className="text-text-secondary text-xs font-semibold tracking-wide uppercase">
         {localize(label)}
       </h4>
-      <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-light bg-surface-primary-alt p-2 font-mono text-xs text-text-primary">
+      <pre className="border-border-light bg-surface-primary-alt text-text-primary max-h-80 overflow-auto rounded-lg border p-2 font-mono text-xs break-words whitespace-pre-wrap">
         {text}
       </pre>
       {content.truncated && (
-        <p className="text-xs text-text-secondary">{localize('com_ui_trace_truncated')}</p>
+        <p className="text-text-secondary text-xs">{localize('com_ui_trace_truncated')}</p>
       )}
     </section>
   );
@@ -96,7 +96,7 @@ function RecordContent({
       <>
         {placeholder}
         <div className="flex justify-center py-4" role="status">
-          <Spinner className="size-4 text-text-secondary" />
+          <Spinner className="text-text-secondary size-4" />
           <span className="sr-only">{localize('com_ui_trace_loading')}</span>
         </div>
       </>
@@ -104,7 +104,7 @@ function RecordContent({
   }
   if (isError || !data) {
     return (
-      <div className="flex flex-col items-start gap-2 text-sm text-text-secondary">
+      <div className="text-text-secondary flex flex-col items-start gap-2 text-sm">
         <p>{localize('com_ui_trace_content_error')}</p>
         <Button size="sm" variant="outline" onClick={() => refetch()}>
           {localize('com_ui_retry')}
@@ -113,10 +113,10 @@ function RecordContent({
     );
   }
   if (!data.contentAvailable) {
-    return <p className="text-sm text-text-secondary">{localize('com_ui_trace_content_hidden')}</p>;
+    return <p className="text-text-secondary text-sm">{localize('com_ui_trace_content_hidden')}</p>;
   }
   if (!data.input && !data.output && !data.metadata) {
-    return <p className="text-sm text-text-secondary">{localize('com_ui_trace_content_empty')}</p>;
+    return <p className="text-text-secondary text-sm">{localize('com_ui_trace_content_empty')}</p>;
   }
   const readable = data.prompt != null || data.reply != null;
   return (
@@ -185,13 +185,13 @@ function AgentCard({ agent, agentId }: { agent: RecordPresentation['agent']; age
   return (
     <section className="flex flex-col gap-3">
       {agent?.description != null && agent.description !== '' && (
-        <p className="text-sm text-text-secondary">{agent.description}</p>
+        <p className="text-text-secondary text-sm">{agent.description}</p>
       )}
       {agent == null && (
-        <p className="text-sm text-text-secondary">{localize('com_ui_trace_agent_unavailable')}</p>
+        <p className="text-text-secondary text-sm">{localize('com_ui_trace_agent_unavailable')}</p>
       )}
-      <div className="flex items-center gap-1 rounded-lg border border-border-light bg-surface-primary-alt py-0.5 pl-2.5 pr-0.5">
-        <span className="min-w-0 flex-1 select-all truncate font-mono text-xs text-text-secondary">
+      <div className="border-border-light bg-surface-primary-alt flex items-center gap-1 rounded-lg border py-0.5 pr-0.5 pl-2.5">
+        <span className="text-text-secondary min-w-0 flex-1 truncate font-mono text-xs select-all">
           {agentId}
         </span>
         <Button
@@ -240,7 +240,7 @@ function ToolCalls({
             <StackedToolIcons toolNames={[call.name]} mcpIconMap={mcpIconMap} />
             <span className="min-w-0 truncate">{call.title}</span>
             {call.caption != null && (
-              <span className="truncate text-xs font-normal text-text-secondary">
+              <span className="text-text-secondary truncate text-xs font-normal">
                 {call.caption}
               </span>
             )}
@@ -250,7 +250,7 @@ function ToolCalls({
         </div>
       ))}
       {fromConversation && (
-        <p className="text-xs text-text-secondary">{localize('com_ui_trace_from_conversation')}</p>
+        <p className="text-text-secondary text-xs">{localize('com_ui_trace_from_conversation')}</p>
       )}
     </section>
   );
@@ -332,7 +332,7 @@ function Inspector({
   }
 
   const preview = presentation.calls == null && presentation.preview != null && (
-    <p className="whitespace-pre-wrap break-words rounded-lg border border-border-light bg-surface-primary-alt p-2 text-sm">
+    <p className="border-border-light bg-surface-primary-alt rounded-lg border p-2 text-sm break-words whitespace-pre-wrap">
       {presentation.preview}
     </p>
   );
@@ -354,21 +354,21 @@ function Inspector({
     <aside
       aria-labelledby={headingId}
       data-testid="trace-inspector"
-      className="flex min-h-0 flex-col border-border-light bg-presentation max-md:absolute max-md:inset-x-0 max-md:bottom-0 max-md:z-20 max-md:max-h-[65%] max-md:rounded-t-2xl max-md:border-t max-md:shadow-lg md:w-[22rem] md:shrink-0 md:border-l"
+      className="border-border-light bg-presentation flex min-h-0 flex-col max-md:absolute max-md:inset-x-0 max-md:bottom-0 max-md:z-20 max-md:max-h-[65%] max-md:rounded-t-2xl max-md:border-t max-md:shadow-lg md:w-[22rem] md:shrink-0 md:border-l"
     >
-      <div className="flex items-center gap-2 border-b border-border-light px-3 py-2">
+      <div className="border-border-light flex items-center gap-2 border-b px-3 py-2">
         {presentation.agent !== undefined &&
           renderAgentAvatar(presentation.agent, { size: 'icon', showBorder: false })}
         {presentation.agent === undefined && presentation.toolNames != null && (
           <StackedToolIcons toolNames={presentation.toolNames} mcpIconMap={mcpIconMap} />
         )}
         {presentation.agent === undefined && presentation.toolNames == null && (
-          <Icon aria-hidden="true" className="size-4 shrink-0 text-text-secondary" />
+          <Icon aria-hidden="true" className="text-text-secondary size-4 shrink-0" />
         )}
         <h3 id={headingId} className="min-w-0 flex-1 truncate text-sm font-semibold">
           {presentation.title}
           {presentation.caption != null && (
-            <span className="ml-1.5 text-xs font-normal text-text-secondary">
+            <span className="text-text-secondary ml-1.5 text-xs font-normal">
               {presentation.caption}
             </span>
           )}
@@ -384,7 +384,7 @@ function Inspector({
       </div>
       <div className="flex min-h-0 flex-col gap-4 overflow-y-auto p-3">
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="rounded-full border border-border-light px-2 py-0.5 text-text-secondary">
+          <span className="border-border-light text-text-secondary rounded-full border px-2 py-0.5">
             {localize(appearance.label)}
           </span>
           <span
@@ -404,7 +404,7 @@ function Inspector({
         {record.statusMessage != null && (
           <p
             className={cn(
-              'whitespace-pre-wrap break-words rounded-lg border p-2 text-xs',
+              'rounded-lg border p-2 text-xs break-words whitespace-pre-wrap',
               record.status === 'error'
                 ? 'border-status-error-border bg-status-error-subtle text-status-error'
                 : 'border-status-warning-border bg-status-warning-subtle text-status-warning',
@@ -446,17 +446,17 @@ function Inspector({
               : []),
             {
               label: 'com_ui_trace_record_id',
-              value: <span className="select-all font-mono text-xs">{record.id}</span>,
+              value: <span className="font-mono text-xs select-all">{record.id}</span>,
             },
             {
               label: 'com_ui_trace_trace_id',
-              value: <span className="select-all font-mono text-xs">{record.traceId}</span>,
+              value: <span className="font-mono text-xs select-all">{record.traceId}</span>,
             },
           ]}
         />
         {showContent && !leadsWithContent && (
           <section className="flex flex-col gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+            <h4 className="text-text-secondary text-xs font-semibold tracking-wide uppercase">
               {localize('com_ui_trace_content')}
             </h4>
             {content}

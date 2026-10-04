@@ -268,6 +268,10 @@ file.index(
 );
 file.index({ mediaLifecycle: 1, expiredAt: 1, deletionRetryAt: 1 });
 file.index({ mediaLifecycle: 1, mediaConsumerReconcileAt: 1, user: 1, tenantId: 1, file_id: 1 });
+file.index(
+  { user: 1, tenantId: 1, context: 1, _id: -1 },
+  { name: 'project_file_picker', partialFilterExpression: { embedded: true } },
+);
 file.index({ createdAt: 1, updatedAt: 1 });
 file.index(
   { filename: 1, conversationId: 1, context: 1, tenantId: 1 },

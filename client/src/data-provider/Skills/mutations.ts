@@ -258,10 +258,7 @@ export const useDeleteSkillMutation = (
   });
 };
 
-/**
- * Upload a file into a skill. Stubbed in phase 1 — the backend responds 501.
- * The hook is wired now so the frontend can call it once the backend is ready.
- */
+/** Upload or replace a file in a skill and refresh its cached contents. */
 export const useUploadSkillFileMutation = (
   options?: UploadSkillFileOptions,
 ): UseMutationResult<TSkillFile, unknown, TUploadSkillFileVariables> => {
@@ -271,17 +268,31 @@ export const useUploadSkillFileMutation = (
     mutationFn: ({ skillId, formData }: TUploadSkillFileVariables) =>
       dataService.uploadSkillFile(skillId, formData),
     ...rest,
-    onSuccess: (skillFile, variables, context) => {
+    onSuccess: async (skillFile, variables, context) => {
+      await Promise.all([
+        queryClient.cancelQueries([QueryKeys.skillFiles, variables.skillId]),
+        queryClient.cancelQueries([
+          QueryKeys.skillFileContent,
+          variables.skillId,
+          skillFile.relativePath,
+        ]),
+      ]);
       queryClient.setQueryData<TListSkillFilesResponse>(
         [QueryKeys.skillFiles, variables.skillId],
         (prev) => {
-          if (!prev) return { files: [skillFile] };
+          if (!prev) return prev;
           const filtered = prev.files.filter((f) => f.relativePath !== skillFile.relativePath);
           return { files: [...filtered, skillFile] };
         },
       );
       queryClient.invalidateQueries([QueryKeys.skill, variables.skillId]);
       if (onSuccess) onSuccess(skillFile, variables, context);
+      queryClient.invalidateQueries([QueryKeys.skillFiles, variables.skillId]);
+      queryClient.invalidateQueries([
+        QueryKeys.skillFileContent,
+        variables.skillId,
+        skillFile.relativePath,
+      ]);
     },
   });
 };

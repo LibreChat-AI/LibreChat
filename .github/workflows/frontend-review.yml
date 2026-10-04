@@ -26,6 +26,8 @@ on:
       - 'package-lock.json'
       - 'patches/*.patch'
       - '.github/workflows/frontend-review.yml'
+  # Promotion requires full CI at the exact dev SHA, including path-filtered commits.
+  workflow_dispatch:
 
 permissions:
   contents: read

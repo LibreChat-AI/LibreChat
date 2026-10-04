@@ -75,12 +75,12 @@ export function MediaGallery({
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold">{localize('com_media_gallery')}</h2>
-          <p className="mt-1 text-sm text-text-secondary">
+          <p className="text-text-secondary mt-1 text-sm">
             {localize('com_media_library_description')}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <span id={`${id}-columns`} className="text-xs text-text-secondary">
+          <span id={`${id}-columns`} className="text-text-secondary text-xs">
             {localize('com_media_columns')}
           </span>
           <Radio
@@ -114,7 +114,7 @@ export function MediaGallery({
         </div>
         <div className="relative w-full min-w-0 sm:w-auto sm:max-w-64 sm:flex-1">
           <Search
-            className="pointer-events-none absolute left-3 top-3 size-4 text-text-secondary"
+            className="text-text-secondary pointer-events-none absolute top-3 left-3 size-4"
             aria-hidden="true"
           />
           <Input
@@ -124,7 +124,7 @@ export function MediaGallery({
             value={search}
             maxLength={catalog?.limits.maxTitleChars}
             onChange={(event) => onSearch(event.target.value)}
-            className="pl-9"
+            variant="leading-icon"
           />
         </div>
       </div>
@@ -198,23 +198,23 @@ export function MediaGallery({
             <li key={tile.threadId} className="relative min-w-0">
               <button
                 type="button"
-                className="group block w-full rounded-xl text-start after:absolute after:inset-0 after:rounded-xl focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-text-primary focus-visible:after:ring-offset-2 focus-visible:after:ring-offset-presentation"
+                className="group focus-visible:after:ring-text-primary focus-visible:after:ring-offset-presentation block w-full rounded-xl text-start after:absolute after:inset-0 after:rounded-xl focus-visible:outline-hidden focus-visible:after:ring-2 focus-visible:after:ring-offset-2"
                 onClick={() => onOpen(tile.threadId)}
                 aria-label={localize('com_media_open_named', { title: tile.title })}
                 aria-describedby={`${id}-${tile.threadId}`}
               >
-                <span className="relative block w-full overflow-hidden rounded-xl border border-border-light bg-surface-secondary shadow-sm transition-shadow duration-theme-fast group-hover:border-border-medium group-hover:shadow-md motion-reduce:transition-none">
+                <span className="border-border-light bg-surface-secondary duration-theme-fast group-hover:border-border-medium relative block w-full overflow-hidden rounded-xl border shadow-xs transition-shadow group-hover:shadow-md motion-reduce:transition-none">
                   {cover ? (
                     <MediaPreview asset={cover} compact />
                   ) : (
-                    <span className="flex aspect-square flex-col items-center justify-center gap-3 p-4 text-center text-text-secondary">
+                    <span className="text-text-secondary flex aspect-square flex-col items-center justify-center gap-3 p-4 text-center">
                       <Icon className="size-8" strokeWidth={1.25} aria-hidden="true" />
                       <span className="text-xs">{emptyLabel}</span>
                     </span>
                   )}
                   {video && cover && (
                     <span className="pointer-events-none absolute inset-0 grid place-items-center">
-                      <span className="grid size-10 place-items-center rounded-full bg-surface-primary/80 text-text-primary shadow-md">
+                      <span className="bg-surface-primary/80 text-text-primary grid size-10 place-items-center rounded-full shadow-md">
                         <Play className="ml-0.5 size-4" aria-hidden="true" />
                       </span>
                     </span>
@@ -223,10 +223,10 @@ export function MediaGallery({
               </button>
               <div className="mt-2 flex items-start gap-2 px-0.5">
                 <span id={`${id}-${tile.threadId}`} className="flex min-w-0 flex-1 flex-col gap-1">
-                  <span className="line-clamp-2 text-sm font-medium leading-5 text-text-primary">
+                  <span className="text-text-primary line-clamp-2 text-sm leading-5 font-medium">
                     {tile.title}
                   </span>
-                  <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-text-secondary">
+                  <span className="text-text-secondary flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
                     {phase && phase !== 'succeeded' ? (
                       <MediaStatus phase={phase} />
                     ) : (
@@ -265,7 +265,7 @@ export function MediaGallery({
       {query.hasNextPage && (
         <div className="flex flex-col items-center gap-2">
           {needle && (
-            <p className="text-xs text-text-secondary">{localize('com_media_search_more')}</p>
+            <p className="text-text-secondary text-xs">{localize('com_media_search_more')}</p>
           )}
           <Button
             variant="outline"

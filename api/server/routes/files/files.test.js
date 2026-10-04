@@ -123,6 +123,7 @@ describe('File Routes - Delete with Agent Access', () => {
           const row = files.find((file) => file.file_id === mediaId);
           expect(row.filepath).toBe(originalPath);
           row.filepath = 'https://private.example/refreshed.png?signature=new-secret';
+          return files;
         });
       }
       const response = await request(app).get('/files').expect(200);

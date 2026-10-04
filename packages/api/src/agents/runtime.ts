@@ -1,4 +1,6 @@
 import type { AppConfig, IConversation, IUser } from '@librechat/data-schemas';
+import type { TFile } from 'librechat-data-provider';
+import type { ResolvedChatProjectContext } from '../projects/context';
 import type { RequestBody, ServerRequest } from '~/types';
 
 /**
@@ -18,6 +20,14 @@ export interface AgentExecutionContext {
   conversationCreatedAt?: string;
   /** Conversation already resolved by ingress. Presence distinguishes "not read" from absent. */
   resolvedConversation?: Partial<IConversation> | null;
+  /** Authoritative per-turn project context; server-only and never request body data. */
+  chatProjectContext?: ResolvedChatProjectContext | null;
+  /** Metadata-only project files hydrated once per request for enabled file search tools. */
+  chatProjectFiles?: TFile[];
+  /** Shares in-flight project-context resource hydration across graph agents. */
+  chatProjectContextResourcesPromise?: Promise<ResolvedChatProjectContext>;
+  /** Shares in-flight hydration across concurrently initialized graph agents. */
+  chatProjectFilesPromise?: Promise<TFile[]>;
 }
 
 /** Creates the transport-free context at the existing HTTP adapter seam. */
@@ -29,6 +39,10 @@ export function createAgentExecutionContext({
   conversationCreatedAt,
   resolvedConversation,
   hasResolvedConversation = false,
+  chatProjectContext,
+  chatProjectFiles,
+  chatProjectContextResourcesPromise,
+  chatProjectFilesPromise,
 }: {
   user?: IUser;
   appConfig?: AppConfig;
@@ -37,6 +51,10 @@ export function createAgentExecutionContext({
   conversationCreatedAt?: string;
   resolvedConversation?: Partial<IConversation> | null;
   hasResolvedConversation?: boolean;
+  chatProjectContext?: ResolvedChatProjectContext | null;
+  chatProjectFiles?: TFile[];
+  chatProjectContextResourcesPromise?: Promise<ResolvedChatProjectContext>;
+  chatProjectFilesPromise?: Promise<TFile[]>;
 }): AgentExecutionContext {
   const context: AgentExecutionContext = {
     user,
@@ -44,6 +62,12 @@ export function createAgentExecutionContext({
     requestBody,
     turnStartedAt,
     conversationCreatedAt,
+    ...(chatProjectContext !== undefined ? { chatProjectContext } : {}),
+    ...(chatProjectContextResourcesPromise !== undefined
+      ? { chatProjectContextResourcesPromise }
+      : {}),
+    ...(chatProjectFiles !== undefined ? { chatProjectFiles } : {}),
+    ...(chatProjectFilesPromise !== undefined ? { chatProjectFilesPromise } : {}),
   };
   if (hasResolvedConversation) {
     context.resolvedConversation = resolvedConversation ?? null;
@@ -66,5 +90,9 @@ export function createRequestAgentExecutionContext(
     conversationCreatedAt: req.conversationCreatedAt,
     resolvedConversation: req.resolvedConversation,
     hasResolvedConversation: Object.prototype.hasOwnProperty.call(req, 'resolvedConversation'),
+    chatProjectContext: req.chatProjectContext,
+    chatProjectFiles: req.chatProjectFiles,
+    chatProjectContextResourcesPromise: req.chatProjectContextResourcesPromise,
+    chatProjectFilesPromise: req.chatProjectFilesPromise,
   });
 }

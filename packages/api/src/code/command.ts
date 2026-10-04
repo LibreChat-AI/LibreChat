@@ -1,5 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import { tool } from '@librechat/agents/langchain/tools';
+import { CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS } from 'librechat-data-provider';
 import {
   BashExecutionToolDefinition,
   BashToolOutputReferencesGuide,
@@ -10,12 +11,14 @@ import type {
   CodeEnvironmentUserConfigSchema,
   CodeWorkspaceDescriptor,
 } from 'librechat-data-provider';
+import type { createBashProgrammaticToolCallingSchema } from '@librechat/agents';
 import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { LCTool } from '@librechat/agents';
 import type { WorkspaceExecuteCommandResult } from './workspace';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeBridgeFetch } from './bridge';
 import {
+  fitWorkspaceCommandTimeoutToBudget,
   executeWorkspaceTool,
   WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
   WORKSPACE_COMMAND_MAX_TIMEOUT_MS,
@@ -25,17 +28,56 @@ import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from '~/agents/invocation';
 
 const DEFAULT_OUTPUT_BYTES = 256 * 1024;
 
-export const ATTACHED_WORKSPACE_BASH_DESCRIPTION = `Runs bash commands inside the selected attached environment and returns stdout/stderr. Its workspace may be an existing project, Git repository, or empty directory.
+export const ATTACHED_WORKSPACE_EXECUTOR = 'attached_workspace';
+
+/** Tools built by `createAttachedWorkspaceBashTool`. Membership is object
+ *  identity, so neither a tool name nor anything a command prints can claim it. */
+const attachedWorkspaceBashTools = new WeakSet<object>();
+
+export function isAttachedWorkspaceBashTool(value: unknown): boolean {
+  return typeof value === 'object' && value != null && attachedWorkspaceBashTools.has(value);
+}
+
+interface ExecutorTarget {
+  executor?: string;
+}
+
+/**
+ * Consumes the run step the execute handler recorded when it resolved the
+ * attached-workspace tool, and stamps the executor on the completion event's
+ * tool call (streamed) and on the aggregated part (persisted). A step that was
+ * not recorded is left untouched, whatever its output says.
+ */
+export function stampCommandExecutor(
+  attachedStepIds: Set<string> | null | undefined,
+  result: { id?: unknown; tool_call?: ExecutorTarget } | null | undefined,
+  part?: ExecutorTarget | null,
+): void {
+  const stepId = result?.id;
+  if (typeof stepId !== 'string' || attachedStepIds?.delete(stepId) !== true) {
+    return;
+  }
+  if (result?.tool_call != null) {
+    result.tool_call.executor = ATTACHED_WORKSPACE_EXECUTOR;
+  }
+  if (part != null) {
+    part.executor = ATTACHED_WORKSPACE_EXECUTOR;
+  }
+}
+
+export const ATTACHED_WORKSPACE_BASH_DESCRIPTION = `Runs bash commands inside the selected attached environment and returns stdout/stderr. The workspace may be a project, Git repo, or empty directory.
 
 Session behavior:
-- This starts a new command, not an existing background task. Inspect a background_task_id with check_background_task when available; never send it to bash_tool.
-- Only registered-workspace files persist between calls. Install project dependencies there.
-- Every call is a fresh process. Shell and exported variables, cwd, /tmp, $TMPDIR, and background processes do not survive.
-- $HOME, global/system packages, and machine services are operator-managed. Do not change or rely on them as session storage.
-- Network access follows the sandbox policy configured on the worker and may be unavailable. File access follows the same worker policy.
-- Input code is already displayed to the user; do not repeat it unless asked.
+- Start a new command, not an existing task. Inspect background_task_id with check_background_task; never pass it here.
+- Only registered-workspace files persist. Install project dependencies there.
+- Every call is a fresh process. Shell state, exports, cwd, /tmp, $TMPDIR, and background processes do not survive.
+- Results show the starting workspace-relative directory, not the final directory. Scripts are not automatically rewritten.
+- Use cwd for directory-scoped commands; keep cd for shell state or root access.
+- $HOME, global/system packages, and services are operator-managed, not session storage.
+- Network access follows the sandbox policy; file access too. Network may be unavailable.
+- Input code is already displayed; do not repeat unless asked.
 - Explicitly print every result the user should see.
-- Never use this tool to execute malicious commands.`;
+- Never execute malicious commands.`;
 
 const bashSchema = BashExecutionToolDefinition.schema as {
   properties?: NonNullable<LCTool['parameters']>['properties'];
@@ -69,8 +111,14 @@ interface BoundedTimeoutSchema {
   description: string;
 }
 
-function buildAttachedTimeoutSchema(maxTimeoutMs: number): BoundedTimeoutSchema {
-  const defaultTimeoutMs = Math.min(WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS, maxTimeoutMs);
+function buildAttachedTimeoutSchema(
+  maxTimeoutMs: number,
+  foregroundTimeoutMs: number,
+): BoundedTimeoutSchema {
+  const defaultTimeoutMs = resolveAttachedWorkspaceCommandTimeoutDefault(
+    foregroundTimeoutMs,
+    maxTimeoutMs,
+  );
   return {
     type: 'integer',
     minimum: 1,
@@ -84,6 +132,17 @@ function normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs: number): numb
     return WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS;
   }
   return Math.min(WORKSPACE_COMMAND_MAX_TIMEOUT_MS, maxTimeoutMs);
+}
+
+/** Foreground defaults never raise the negotiated execution ceiling. */
+export function resolveAttachedWorkspaceCommandTimeoutDefault(
+  defaultTimeoutMs: number = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
+  maxTimeoutMs: number = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
+): number {
+  return Math.min(
+    normalizeAttachedWorkspaceCommandTimeoutMax(defaultTimeoutMs),
+    normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs),
+  );
 }
 
 export function resolveAttachedWorkspaceCommandTimeoutMax(
@@ -101,18 +160,39 @@ export function resolveAttachedWorkspaceCommandTimeoutMax(
   } else if (upstreamMaxTimeoutMs != null) {
     requested = upstream;
   }
-  return Math.min(requested, upstream);
+  return fitCommandTimeoutMaxToBudget(
+    Math.min(requested, upstream),
+    resolveAttachedWorkspaceRequestTimeoutMs(configSchema),
+    configSchema?.limits?.minCommandAdmissionMs,
+  );
+}
+
+function fitCommandTimeoutMaxToBudget(
+  maxTimeoutMs: number,
+  maxRequestTimeoutMs?: number,
+  minCommandAdmissionMs?: number,
+): number {
+  if (maxRequestTimeoutMs == null) return maxTimeoutMs;
+  return Math.min(
+    maxTimeoutMs,
+    fitWorkspaceCommandTimeoutToBudget(maxRequestTimeoutMs, minCommandAdmissionMs),
+  );
 }
 
 /**
  * Programmatic calls do not currently carry the detached-invocation marker.
- * Preserve their historical foreground default while still enforcing both an
- * explicit administrator override and the live upstream ceiling.
+ * The SDK's runTimeoutMs is a ceiling, not an omission-only default. When the
+ * environment configures a foreground default, resolve its ceiling separately;
+ * otherwise retain the legacy maxCommandTimeoutMs behavior on this SDK route.
  */
 export function resolveAttachedWorkspaceProgrammaticTimeout(
   configSchema?: CodeEnvironmentUserConfigSchema,
   upstreamMaxTimeoutMs?: number,
 ): number {
+  const defaultTimeoutMs = configSchema?.limits?.defaultCommandTimeoutMs;
+  if (defaultTimeoutMs != null) {
+    return resolveAttachedWorkspaceCommandTimeoutMax(configSchema, upstreamMaxTimeoutMs);
+  }
   const configured = configSchema?.limits?.maxCommandTimeoutMs;
   const requested =
     configured == null
@@ -140,9 +220,31 @@ export function resolveAttachedWorkspaceQueueWaitMs(
   return Math.min(WORKSPACE_QUEUE_MAX_WAIT_MS, configured);
 }
 
+export function resolveAttachedWorkspaceRequestTimeoutMs(
+  configSchema?: CodeEnvironmentUserConfigSchema,
+): number | undefined {
+  const configured = configSchema?.limits?.maxRequestTimeoutMs;
+  if (
+    configured == null ||
+    !Number.isSafeInteger(configured) ||
+    configured < 1 ||
+    configured > CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS
+  ) {
+    return undefined;
+  }
+  return configured;
+}
+
+const linkedWorktreeWorkingDirectorySchema: BoundedWorkingDirectorySchema = {
+  ...attachedWorkingDirectorySchema,
+  description: `${attachedWorkingDirectorySchema.description} To work in a linked worktree, pass its directory here (for example ".worktrees/fix-auth") instead of running cd inside the command: commands in different .worktrees/<name> directories then run in parallel, while a cd from the workspace root waits for all of them.`,
+};
+
 export function buildAttachedWorkspaceBashSchema(
   maxTimeoutMs: number = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
   environment?: CodeWorkspaceDescriptor['environment'],
+  linkedWorktrees = false,
+  defaultTimeoutMs: number = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
 ): NonNullable<LCTool['parameters']> {
   const effectiveMaxTimeoutMs = normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs);
   return {
@@ -150,8 +252,11 @@ export function buildAttachedWorkspaceBashSchema(
     properties: {
       ...bashSchema.properties,
       command: attachedCommandSchema,
-      cwd: attachedWorkingDirectorySchema,
-      timeoutMs: buildAttachedTimeoutSchema(effectiveMaxTimeoutMs),
+      cwd:
+        linkedWorktrees === true
+          ? linkedWorktreeWorkingDirectorySchema
+          : attachedWorkingDirectorySchema,
+      timeoutMs: buildAttachedTimeoutSchema(effectiveMaxTimeoutMs, defaultTimeoutMs),
       ...(environment?.actions.length
         ? {
             environmentAction: {
@@ -247,7 +352,35 @@ export function createContextProgrammaticBashTool(
         }
       : {}),
   };
-  return createGitIdentityProgrammaticBashTool(options, attached ? identity : undefined);
+  const bashTool = createGitIdentityProgrammaticBashTool(options, attached ? identity : undefined);
+  const configuredDefault = attached
+    ? context.codeEnvironmentConfigSchema?.limits?.defaultCommandTimeoutMs
+    : undefined;
+  if (configuredDefault == null) return bashTool;
+
+  const maxTimeoutMs = options.runTimeoutMs ?? WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS;
+  const schema = structuredClone(bashTool.schema) as ReturnType<
+    typeof createBashProgrammaticToolCallingSchema
+  >;
+  const minimumTimeoutMs = schema.properties.timeout.minimum;
+  if (maxTimeoutMs < minimumTimeoutMs) {
+    throw new Error(
+      `Attached programmatic execution requires a timeout ceiling of at least ${minimumTimeoutMs} milliseconds. Use bash_tool for shorter command budgets.`,
+    );
+  }
+  const defaultTimeoutMs = Math.max(
+    minimumTimeoutMs,
+    resolveAttachedWorkspaceCommandTimeoutDefault(configuredDefault, maxTimeoutMs),
+  );
+  schema.properties.timeout.default = defaultTimeoutMs;
+  schema.properties.timeout.description = `Maximum wall-clock time in milliseconds for one sandbox run or replay iteration, not the total multi-round-trip task budget. Default: ${defaultTimeoutMs} milliseconds when timeout is omitted. Accepted values above the configured cap are clamped before execution. Configured cap: ${maxTimeoutMs} milliseconds.`;
+  bashTool.schema = schema;
+  const execute = bashTool.func.bind(bashTool);
+  bashTool.func = (input, ...args) => {
+    const params = input as { timeout?: number };
+    return execute({ ...params, timeout: params.timeout ?? defaultTimeoutMs }, ...args);
+  };
+  return bashTool;
 }
 
 /** Apply authorship before the SDK prepares the script and its replay requests. */
@@ -265,7 +398,12 @@ export function createGitIdentityProgrammaticBashTool(
   return bashTool;
 }
 
-function formatCommandResult(result: WorkspaceExecuteCommandResult): string {
+function formatCommandResult(
+  result: WorkspaceExecuteCommandResult,
+  timeoutMs: number,
+  maxTimeoutMs: number,
+  cwd?: string,
+): string {
   let output = '';
   if (result.stdout.length > 0) output += `stdout:\n${result.stdout}\n`;
   if (result.stderr.length > 0) output += `stderr:\n${result.stderr}\n`;
@@ -274,7 +412,10 @@ function formatCommandResult(result: WorkspaceExecuteCommandResult): string {
   if (result.signal != null) output += `[terminated by ${result.signal}]`;
   if (result.timedOut) output += '[timed out]';
   if (result.truncated) output += '[output truncated]';
-  return output;
+  if (result.timedOut) {
+    output += `\nCommand reached timeoutMs: ${timeoutMs}. Before retrying, check for partial side effects. Set timeoutMs explicitly up to ${maxTimeoutMs} milliseconds, or use run_in_background: true if available. Background execution uses the same timeout ceiling.`;
+  }
+  return `[starting directory: ${JSON.stringify(`workspace/${cwd ?? ''}`)}]\n${output}`;
 }
 
 export function createAttachedWorkspaceBashTool({
@@ -285,27 +426,54 @@ export function createAttachedWorkspaceBashTool({
   environment,
   gitIdentity,
   maxTimeoutMs = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
+  defaultTimeoutMs = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
   maxQueueWaitMs,
+  codeApiMaxRetryWaitMs,
+  maxRequestTimeoutMs,
+  minCommandAdmissionMs,
+  linkedWorktrees = false,
   fetchImpl,
 }: {
   baseUrl: string;
   authHeaders: () => Promise<Record<string, string>> | Record<string, string>;
   workspaceId: string;
   workspaceInstanceId?: string;
+  /** The worker runs each `.worktrees/<name>` in its own lane; a matching `cwd` is routed there. */
+  linkedWorktrees?: boolean;
   environment?: CodeWorkspaceDescriptor['environment'];
   gitIdentity?: AgentGitIdentity | null;
   /** Effective admin/upstream ceiling already intersected with the protocol hard cap. */
   maxTimeoutMs?: number;
-  /** Deployment admission budget; omitted keeps the built-in default. */
+  /** Foreground timeout when omitted by the model; bounded by the effective ceiling. */
+  defaultTimeoutMs?: number;
+  /** Retry horizon across typed queue expirations, not an admission budget. */
   maxQueueWaitMs?: number;
+  codeApiMaxRetryWaitMs?: number;
+  /** Verified total HTTP budget; omission keeps the legacy per-attempt timeout. */
+  maxRequestTimeoutMs?: number;
+  /** Minimum time for command admission inside an opted-in HTTP budget. */
+  minCommandAdmissionMs?: number;
   fetchImpl?: CodeBridgeFetch;
 }): DynamicStructuredTool {
-  const effectiveMaxTimeoutMs = normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs);
+  const effectiveMaxTimeoutMs = fitCommandTimeoutMaxToBudget(
+    normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs),
+    maxRequestTimeoutMs,
+    minCommandAdmissionMs,
+  );
+  const effectiveDefaultTimeoutMs = resolveAttachedWorkspaceCommandTimeoutDefault(
+    defaultTimeoutMs,
+    effectiveMaxTimeoutMs,
+  );
   const schema = structuredClone(
-    buildAttachedWorkspaceBashSchema(effectiveMaxTimeoutMs, environment),
+    buildAttachedWorkspaceBashSchema(
+      effectiveMaxTimeoutMs,
+      environment,
+      linkedWorktrees,
+      effectiveDefaultTimeoutMs,
+    ),
   );
   const actions = environment?.actions ?? [];
-  return tool(
+  const bashTool = tool(
     async (
       rawInput: {
         command?: string;
@@ -343,7 +511,7 @@ export function createAttachedWorkspaceBashTool({
         rawInput.timeoutMs ??
         (config?.configurable?.[BACKGROUND_TOOL_INVOCATION_CONFIG_KEY] === true
           ? effectiveMaxTimeoutMs
-          : Math.min(WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS, effectiveMaxTimeoutMs));
+          : effectiveDefaultTimeoutMs);
       const signal = config?.signal;
       const trace = {
         runId: config?.metadata?.run_id,
@@ -360,6 +528,7 @@ export function createAttachedWorkspaceBashTool({
           baseURL: baseUrl,
           /** Passed as a supplier: a queued call outlives its minted token. */
           authHeaders,
+          linkedWorktrees,
           request: {
             protocolVersion: 1,
             operation: 'execute_command',
@@ -376,12 +545,23 @@ export function createAttachedWorkspaceBashTool({
           signal,
           fetchImpl,
           ...(maxQueueWaitMs == null ? {} : { maxQueueWaitMs }),
+          ...(codeApiMaxRetryWaitMs == null ? {} : { codeApiMaxRetryWaitMs }),
+          ...(maxRequestTimeoutMs == null ? {} : { maxRequestTimeoutMs }),
         });
         if (result.operation !== 'execute_command') {
           throw new Error('Attached workspace returned an unexpected command result.');
         }
         logger.debug('[BYOMCommand] transport completed', trace);
-        return [formatCommandResult(result), {}];
+        let content = formatCommandResult(result, timeoutMs, effectiveMaxTimeoutMs, rawInput.cwd);
+        if (action === undefined && /^\s*cd(?:\s|$)/.test(rawInput.command!)) {
+          content +=
+            '\n[directory hint: For future commands scoped to a workspace subdirectory, pass cwd instead of a leading cd.' +
+            (linkedWorktrees
+              ? ' A cd inside the script does not select a linked-worktree lane.'
+              : '') +
+            ' Keep cd for scripts that depend on shell state or need root access. This command was not rewritten; do not rerun it just to change cwd.]';
+        }
+        return [content, {}];
       } finally {
         signal?.removeEventListener('abort', onAbort);
         logger.debug('[BYOMCommand] transport settled', {
@@ -397,4 +577,6 @@ export function createAttachedWorkspaceBashTool({
       responseFormat: 'content_and_artifact',
     },
   ) as unknown as DynamicStructuredTool;
+  attachedWorkspaceBashTools.add(bashTool);
+  return bashTool;
 }

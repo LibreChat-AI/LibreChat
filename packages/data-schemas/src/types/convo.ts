@@ -67,7 +67,8 @@ export interface IAgentEventActorSummary {
  * for prefix-based provider prompt caches. Graph messages stay canonical.
  */
 export interface IAgentFadingTier {
-  v: 1;
+  /** Version 1 is readable but must not seed a version 2 SDK run. */
+  v: 1 | 2;
   /** Token budget the caps derive from; never grows within a conversation. */
   budgetTokens: number;
   /** Whether observation masking has activated. */
@@ -281,6 +282,8 @@ export interface IConversation extends Document {
   imageDetail?: string;
   agent_id?: string;
   codeApprovalMode?: CodeApprovalMode;
+  /** Private fence advanced when an admitted generation reads its decision. */
+  codeEnvironmentRevision?: number;
   codeEnvironmentMode?: CodeEnvironmentMode;
   codeWorkspaces?: CodeWorkspaceSelection[];
   /** Immutable primary persisted-agent attribution for Insights. */
@@ -335,4 +338,12 @@ export interface IConversation extends Document {
   createdAt?: Date;
   updatedAt?: Date;
   tenantId?: string;
+  /** Set only when an assistant message is persisted, never by title generation or metadata edits. */
+  lastResponseAt?: Date;
+  /** Durable messageId of the assistant reply named by `lastResponseAt`. */
+  lastResponseMessageId?: string;
+  /** True only while `lastResponseAt` is the synthetic marker from "mark unread". */
+  lastResponseIsManual?: boolean;
+  /** Set when the user has the newest message on screen; compared against `lastResponseAt`. */
+  lastSeenAt?: Date;
 }

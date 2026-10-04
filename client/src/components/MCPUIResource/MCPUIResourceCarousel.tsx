@@ -12,7 +12,6 @@ interface MCPUIResourceCarouselProps {
   };
 }
 
-/** Renders multiple MCP UI resources in a carousel. Works in chat, share, and search views. */
 export function MCPUIResourceCarousel(props: MCPUIResourceCarouselProps) {
   const { conversationId } = useOptionalMessagesConversation();
 

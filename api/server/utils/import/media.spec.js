@@ -10,6 +10,7 @@ jest.mock('~/models', () => ({
   bulkIncrementTagCounts: jest.fn().mockResolvedValue(undefined),
   deleteImportedConversations: jest.fn().mockResolvedValue(undefined),
   deleteImportedMessages: jest.fn().mockResolvedValue(undefined),
+  initializeMessageBudget: jest.fn(),
 }));
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),

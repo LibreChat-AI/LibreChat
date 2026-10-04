@@ -42,6 +42,7 @@ export function makeAuthContext(
     error: undefined,
     login: () => {},
     logout: () => {},
+    completeAuthentication: () => {},
     setError: () => {},
     roles: { [SystemRoles.USER]: makeRole(media) },
     ...overrides,

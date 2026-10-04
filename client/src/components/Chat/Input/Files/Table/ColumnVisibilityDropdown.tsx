@@ -44,7 +44,7 @@ export function ColumnVisibilityDropdown<TData>({
         <Menu.MenuButton
           aria-label={localize('com_files_filter_by')}
           className={cn(
-            'inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border-medium bg-transparent px-3 text-sm font-medium ring-offset-surface-primary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
+            'border-border-medium ring-offset-surface-primary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary inline-flex h-9 items-center justify-center gap-2 rounded-md border bg-transparent px-3 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50',
             isSmallScreen && 'px-2 py-1',
           )}
         >

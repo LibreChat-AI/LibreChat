@@ -45,7 +45,7 @@ export function AutoRefill() {
 
   if (!autoRefillEnabled) {
     return (
-      <div className="text-sm text-text-secondary">
+      <div className="text-text-secondary text-sm">
         {localize('com_nav_balance_auto_refill_disabled')}
       </div>
     );
@@ -53,7 +53,7 @@ export function AutoRefill() {
 
   if (!hasValidRefillSettings) {
     return (
-      <div className="text-sm text-text-destructive">
+      <div className="text-text-destructive text-sm">
         {localize('com_nav_balance_auto_refill_error')}
       </div>
     );

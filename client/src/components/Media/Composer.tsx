@@ -59,7 +59,7 @@ export function MediaComposer({
         aria-label={localize('com_media_create')}
         data-testid="media-composer"
       >
-        <p role="status" className="text-sm text-text-secondary">
+        <p role="status" className="text-text-secondary text-sm">
           {message}
         </p>
         <MediaReferences form={form} />
@@ -148,8 +148,8 @@ export function MediaComposer({
       data-testid="media-composer"
     >
       {draft.parentTurnId && !automaticReference && (
-        <div className="flex items-start gap-2 rounded-xl bg-surface-secondary p-3">
-          <p className="text-xs leading-5 text-text-secondary">
+        <div className="bg-surface-secondary flex items-start gap-2 rounded-xl p-3">
+          <p className="text-text-secondary text-xs leading-5">
             {localize('com_media_pinned_parent')}
           </p>
           <Button
@@ -182,12 +182,12 @@ export function MediaComposer({
         </Alert>
       )}
       {promptInvalid && (
-        <p role="status" className="text-sm text-text-secondary">
+        <p role="status" className="text-text-secondary text-sm">
           {localize('com_media_prompt_limit', { max: maxPromptChars })}
         </p>
       )}
       {!inputsValid && (
-        <p role="status" className="text-xs leading-5 text-text-secondary">
+        <p role="status" className="text-text-secondary text-xs leading-5">
           {localize('com_media_reference_hint', {
             min: capability.inputs.min,
             max: capability.inputs.max,
@@ -197,12 +197,12 @@ export function MediaComposer({
       {draft.inputs.some(
         (input) => hostedRoles.some((role) => role === input.role) && !input.sourceURL,
       ) && (
-        <p role="status" className="text-xs text-text-secondary">
+        <p role="status" className="text-text-secondary text-xs">
           {localize('com_media_reference_needs_url')}
         </p>
       )}
       {!!capability.inputs.requiredRoles?.length && !inputsValid && (
-        <p className="text-xs text-text-secondary">
+        <p className="text-text-secondary text-xs">
           {localize('com_media_required_inputs', {
             roles: capability.inputs.requiredRoles
               .map((role) => localize(mediaInputRoleLabels[role]))
@@ -228,7 +228,7 @@ export function MediaComposer({
         </Alert>
       )}
       {unsupportedContext && (
-        <p role="status" className="text-sm text-text-secondary">
+        <p role="status" className="text-text-secondary text-sm">
           {localize(
             draft.operation === 'video.generate'
               ? 'com_media_video_model_required'
@@ -237,7 +237,7 @@ export function MediaComposer({
         </p>
       )}
       {!threadId && draft.temporary && (
-        <p role="status" className="flex items-center gap-1.5 text-xs text-text-secondary">
+        <p role="status" className="text-text-secondary flex items-center gap-1.5 text-xs">
           <HatGlasses className="size-3.5 shrink-0" aria-hidden="true" />
           {localize('com_media_temporary_hint')}
         </p>
@@ -281,13 +281,13 @@ export function MediaComposer({
             <>
               {referenceActions}
               <span
-                className="min-w-0 max-w-48 truncate px-1 text-xs text-text-secondary"
+                className="text-text-secondary max-w-48 min-w-0 truncate px-1 text-xs"
                 title={offering.modelName}
               >
                 {offering.modelName}
               </span>
               {busy && (
-                <span role="status" className="flex items-center gap-2 text-xs text-text-secondary">
+                <span role="status" className="text-text-secondary flex items-center gap-2 text-xs">
                   <Spinner className="size-4" />
                   {localize('com_media_preparing')}
                 </span>
@@ -297,12 +297,12 @@ export function MediaComposer({
         />
       </div>
       {error && (
-        <p role="alert" className="text-sm text-text-primary">
+        <p role="alert" className="text-text-primary text-sm">
           {error}
         </p>
       )}
       {!host.canCreate && (
-        <p role="status" className="text-sm text-text-secondary">
+        <p role="status" className="text-text-secondary text-sm">
           {localize('com_media_readonly')}
         </p>
       )}

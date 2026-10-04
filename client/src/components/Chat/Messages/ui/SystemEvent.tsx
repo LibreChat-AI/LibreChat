@@ -17,7 +17,7 @@ export function SystemEventIcon({ children }: { children: ReactNode }) {
   return (
     <span
       aria-hidden="true"
-      className="flex size-5 shrink-0 items-center justify-center text-text-secondary"
+      className="text-text-secondary flex size-5 shrink-0 items-center justify-center"
     >
       {children}
     </span>
@@ -51,14 +51,14 @@ export default function SystemEventHeader({
         {label}
       </span>
       {detail != null && detail !== '' && (
-        <span className="min-w-0 max-w-[50%] truncate text-xs font-normal text-text-secondary">
+        <span className="text-text-secondary max-w-[50%] min-w-0 truncate text-xs font-normal">
           · {detail}
         </span>
       )}
       {expanded != null && (
         <ChevronDown
           className={cn(
-            'ml-auto size-4 shrink-0 text-text-secondary transition-transform duration-200 ease-out motion-reduce:transition-none',
+            'text-text-secondary ml-auto size-4 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none',
             expanded && 'rotate-180',
           )}
           aria-hidden="true"
@@ -69,4 +69,4 @@ export default function SystemEventHeader({
 }
 
 export const systemEventHeaderClasses =
-  'inline-flex h-auto w-full items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-sm text-text-secondary hover:bg-transparent hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy focus-visible:ring-offset-0';
+  'inline-flex h-auto w-full items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-sm text-text-secondary hover:bg-transparent hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-heavy focus-visible:ring-offset-0';

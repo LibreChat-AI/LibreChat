@@ -1,16 +1,26 @@
 const {
   createBackgroundToolCompletionWakeupHandler,
+  GenerationJobManager,
   createBackgroundToolDeadClaimRecovery,
+  createPendingBackgroundCompletions,
   createBackgroundToolResultHandler,
   claimBackgroundToolResult: claimResult,
 } = require('@librechat/api');
 const {
+  listPendingAgentBackgroundToolCompletions,
+  getAgentBackgroundToolResultBatch,
+  confirmAgentBackgroundToolResultBatch,
+  listUndeliveredAgentTriggerTaskIds,
+} = require('~/models');
+const {
   enqueueAgentTrigger,
   persistAgentBackgroundToolResult,
   getAgentBackgroundToolResultClaim,
+  getBackgroundCompletionReceiptBatching,
   releaseAgentBackgroundToolResultClaims,
   renewAgentTriggerProducerLease,
   retireAgentTrigger,
+  expediteCompletionWakeups,
 } = require('../../Agents/triggers');
 
 const preregisterBackgroundToolCompletion = createBackgroundToolCompletionWakeupHandler(
@@ -19,7 +29,15 @@ const preregisterBackgroundToolCompletion = createBackgroundToolCompletionWakeup
   renewAgentTriggerProducerLease,
   (deliveryKey, sourceId, result) =>
     persistAgentBackgroundToolResult({ deliveryKey, sourceId, result }),
+  (deliveryKey) => expediteCompletionWakeups({ deliveryKeys: [deliveryKey] }),
+  getBackgroundCompletionReceiptBatching,
 );
+
+const pendingBackgroundToolCompletions = createPendingBackgroundCompletions({
+  list: listPendingAgentBackgroundToolCompletions,
+  listTaskIds: listUndeliveredAgentTriggerTaskIds,
+  retire: retireAgentTrigger,
+});
 
 function createBackgroundToolResultPersistence({ req, updateToolCallResult }) {
   return createBackgroundToolResultHandler({ req, updateToolCallResult });
@@ -39,11 +57,14 @@ function createDeadBackgroundToolClaimRecovery(
     getGenerationJob,
     fenceGenerationClaim,
     releaseAgentBackgroundToolResultClaims,
+    { getAgentBackgroundToolResultBatch, confirmAgentBackgroundToolResultBatch },
+    (...args) => GenerationJobManager.getGenerationAdmissionEvidence(...args),
   );
 }
 
 module.exports = {
   preregisterBackgroundToolCompletion,
+  pendingBackgroundToolCompletions,
   createBackgroundToolResultPersistence,
   claimBackgroundToolResult,
   createDeadBackgroundToolClaimRecovery,

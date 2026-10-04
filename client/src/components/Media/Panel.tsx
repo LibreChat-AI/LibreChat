@@ -91,7 +91,7 @@ export function MediaSettingsContent({ host, threadId }: { host: MediaHost; thre
   else if (detail.isError)
     content = <Alert variant="error">{localize('com_media_thread_unavailable')}</Alert>;
   return (
-    <div className="space-y-4 px-3 pb-6 pt-3">
+    <div className="space-y-4 px-3 pt-3 pb-6">
       <div className="space-y-3">
         <h2 className="text-sm font-semibold">{localize('com_media_settings')}</h2>
         <Button variant="subtle" size="sm" className="w-full" onClick={switchView}>

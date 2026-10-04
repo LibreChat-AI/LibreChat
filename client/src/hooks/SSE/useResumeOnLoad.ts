@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useStore } from 'jotai';
+import { useStore, useAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSetRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
 import {
@@ -7,6 +7,7 @@ import {
   QueryKeys,
   tMessageSchema,
   isAssistantsEndpoint,
+  isForcedTemporaryRetention,
 } from 'librechat-data-provider';
 import type { TMessage, TConversation, TSubmission, Agents } from 'librechat-data-provider';
 import type { GenerationProtocolVersion } from '~/data-provider/SSE/protocol';
@@ -27,6 +28,7 @@ import {
   useStreamStatus,
   useActiveJobs,
   useAgentQueuedTurns,
+  useGetStartupConfig,
   streamStatusQueryKey,
   isQueuedTurnSuccessorOwed,
   extendActiveJobsGrace,
@@ -41,6 +43,7 @@ import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { revealedQueuedTurnFamily } from '~/store/steer';
+import { resumeRequestsAtom } from '~/hooks/Chat/resume';
 import { useFileMapContext } from '~/Providers';
 import store from '~/store';
 
@@ -150,6 +153,7 @@ function buildSubmissionFromResumeState(
   conversationId: string,
   generationCreatedAt?: number,
   generationProtocolVersion: GenerationProtocolVersion = 1,
+  isTemporary = false,
 ): TSubmission {
   const userMessageData = resumeState.userMessage;
   const responseMessageId =
@@ -259,7 +263,7 @@ function buildSubmissionFromResumeState(
     isRegenerate: isRegenerateResume,
     ...(isAnchoredRun && { compact: true }),
     ...(regenerateMessages && { regenerateMessages }),
-    isTemporary: false,
+    isTemporary,
     endpointOption: {},
     // Signal to useResumableSSE to subscribe to existing stream instead of starting new
     resumeStreamId: streamId,
@@ -304,6 +308,8 @@ export default function useResumeOnLoad(
   const endpointType = currentConversation?.endpointType;
   const actualEndpoint = endpointType ?? endpoint;
   const resumableEnabled = !isAssistantsEndpoint(actualEndpoint);
+  const { data: startupConfig, isFetched: startupConfigSettled } = useGetStartupConfig();
+  const isRetentionForced = isForcedTemporaryRetention(startupConfig?.interface?.retentionMode);
   // Track conversations we've already processed (either resumed or skipped)
   const processedConvoRef = useRef<string | null>(null);
   /**
@@ -829,6 +835,7 @@ export default function useResumeOnLoad(
   const shouldCheck =
     resumableEnabled &&
     messagesLoaded && // Wait for messages to load before checking
+    startupConfigSettled && // The forced retention mode decides the rebuilt submission's temporary state
     !hasActiveSubmissionForThisConvo && // Allow if no submission or a confirmed stale submission
     !!conversationId &&
     conversationId !== Constants.NEW_CONVO &&
@@ -863,6 +870,10 @@ export default function useResumeOnLoad(
     // Wait for messages to load to avoid race condition where sync overwrites then DB overwrites
     if (!messagesLoaded) {
       console.log('[ResumeOnLoad] Waiting for messages to load');
+      return;
+    }
+
+    if (!startupConfigSettled) {
       return;
     }
 
@@ -1056,6 +1067,7 @@ export default function useResumeOnLoad(
         conversationId,
         streamStatus.createdAt,
         generationProtocolVersion,
+        streamStatus.isTemporary === true || isRetentionForced,
       );
       setSubmission(submission);
     } else {
@@ -1073,7 +1085,7 @@ export default function useResumeOnLoad(
         } as TMessage,
         conversation: { conversationId, title: 'Resumed Chat' } as TConversation,
         isRegenerate: false,
-        isTemporary: false,
+        isTemporary: streamStatus.isTemporary === true || isRetentionForced,
         endpointOption: {},
         // Signal to useResumableSSE to subscribe to existing stream instead of starting new
         resumeStreamId: streamStatus.streamId,
@@ -1112,6 +1124,8 @@ export default function useResumeOnLoad(
     setActiveGenerationCreatedAt,
     jotaiStore,
     externalRunArm,
+    isRetentionForced,
+    startupConfigSettled,
   ]);
 
   // Reset processedConvoRef when conversation changes to allow re-checking
@@ -1214,6 +1228,53 @@ export default function useResumeOnLoad(
     attachedGenerationCreatedAt,
     activeJobsUpdatedAt,
     receiptSignature,
+    setSubmission,
+    queryClient,
+  ]);
+
+  /**
+   * An explicit `resumeStream` request takes the announcement's path: the
+   * status read decides whether anything is running, and the effect above
+   * builds the resume submission that `useResumableSSE` attaches through the
+   * host transport. The request is consumed either way: one made while this
+   * pane is already attached is answered by that attachment.
+   */
+  const [resumeRequests, setResumeRequests] = useAtom(resumeRequestsAtom);
+  const resumeRequested = !!conversationId && resumeRequests.has(conversationId);
+  /** The route can name a conversation before this pane has loaded it; until then the endpoint
+   *  that decides resumability is the previous conversation's, so the request waits. */
+  const routeConversationLoaded = currentConversation?.conversationId === conversationId;
+  useEffect(() => {
+    if (!resumeRequested || !conversationId || !routeConversationLoaded) {
+      return;
+    }
+    setResumeRequests((pending) => {
+      const next = new Set(pending);
+      next.delete(conversationId);
+      return next;
+    });
+    if (!resumableEnabled || conversationId === Constants.NEW_CONVO) {
+      return;
+    }
+    if (hasLiveSubmissionForThisConvo) {
+      return;
+    }
+    /** A finished submission still installed reads as attached to the check above. */
+    if (hasActiveSubmissionForThisConvo) {
+      setSubmission(null);
+    }
+    queryClient.invalidateQueries({ queryKey: streamStatusQueryKey(conversationId) });
+    queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, conversationId] });
+    processedConvoRef.current = null;
+    setExternalRunArm((arm) => arm + 1);
+  }, [
+    conversationId,
+    resumeRequested,
+    routeConversationLoaded,
+    setResumeRequests,
+    resumableEnabled,
+    hasActiveSubmissionForThisConvo,
+    hasLiveSubmissionForThisConvo,
     setSubmission,
     queryClient,
   ]);

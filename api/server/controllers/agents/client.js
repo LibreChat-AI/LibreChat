@@ -139,6 +139,9 @@ const {
   createAgentMemoryCallback,
   assertAgentAttachmentLimits,
   assertAgentAttachmentTopology,
+  collectHistoricalAttachmentIds,
+  admitSteerAttachmentHistory,
+  rollbackSteerAttachmentHistory,
   isModelBoundAttachmentFile,
   isAgentAttachmentLimitError,
   isAttachmentObjectNotFoundError,
@@ -160,6 +163,12 @@ const {
   reportLocatorTraversalFailure,
   filterFilesByEndpointRuntimeConfig,
   createModelBoundChatModelCallback: createModelBoundContentCallback,
+  getPrivateTextInspectionTokens,
+  getPrivateTextModelHooks,
+  createPrivateTextInitialAdmissionCallback,
+  withPrivateTextAdmissionConfig,
+  requirePrivateTextAdmission,
+  rejectPrivateTextAdmission,
   createInitialModelBoundAdmissionCallback,
   hasModelBoundContentProtection,
   assertResumeRuntimeContentAllowed,
@@ -175,6 +184,7 @@ const {
   restoreCompactionSemanticIndexSnapshot,
   MAX_AGENT_CONTEXT_SKILLS,
   isAgentFadingTier,
+  isCurrentAgentFadingTier,
   isAgentFadingTierEntries,
   resolveRunContextMeta,
   resolveRunFadingTiers,
@@ -185,6 +195,7 @@ const {
   isAgentRunCancellation,
   markCompactionOutcome,
   resolvePersistableCodeEnvironmentDecision,
+  getChatProjectContextKey,
 } = require('@librechat/api');
 const {
   Run,
@@ -298,7 +309,7 @@ function resolveRunSeeds(client) {
   const encodingMatch = prevMeta.encoding === currentEncoding;
   const calibrationRatio =
     encodingMatch && prevMeta.calibrationRatio > 0 ? prevMeta.calibrationRatio : undefined;
-  const fadingTier = isAgentFadingTier(prevMeta.fading) ? prevMeta.fading : undefined;
+  const fadingTier = isCurrentAgentFadingTier(prevMeta.fading) ? prevMeta.fading : undefined;
   const fadingTiers = resolveRunFadingTiers(prevMeta.fadingTiers);
   logger.debug(
     `[AgentClient] contextMeta from parent: ratio=${prevMeta.calibrationRatio}, encoding=${prevMeta.encoding}, current=${currentEncoding}, seeded=${calibrationRatio ?? 'none'}, fading=${fadingTier ? `${fadingTier.budgetTokens}/${fadingTier.masked}` : 'none'}, agents=${fadingTiers ? Object.keys(fadingTiers).length : 0}`,
@@ -404,6 +415,7 @@ class AgentClient extends BaseClient {
     );
     assertAgentAttachmentLimits({
       attachments: modelBoundAttachments,
+      historicalFileIds: this.turnHistoricalAttachmentIds,
       req: this.options.req,
       endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
       endpointType: this.options.endpointType,
@@ -467,10 +479,15 @@ class AgentClient extends BaseClient {
       filters: this.options.req?.config?.filters,
       files: modelBoundFiles,
     });
+    const historicalFileIds = collectHistoricalAttachmentIds(
+      this.turnHistoricalAttachmentIds ?? [],
+      modelBoundFiles,
+    );
     const sharedAttachments = [...(this.turnSharedAttachmentFiles ?? []), ...modelBoundFiles];
     const scopedAttachmentsByAgentId = this.turnScopedAttachmentsByAgentId ?? new Map();
     assertAgentAttachmentTopology({
       sharedAttachments,
+      historicalFileIds,
       scopedAttachmentsByAgentId,
       req: this.options.req,
       endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
@@ -481,6 +498,12 @@ class AgentClient extends BaseClient {
       [...sharedAttachments, ...(this.turnAggregateOnlyAttachmentFiles ?? [])],
       [...scopedAttachmentsByAgentId.values()].flat(),
     );
+    this.turnSteerAttachmentHistory = admitSteerAttachmentHistory({
+      state: this.turnSteerAttachmentHistory,
+      historicalFileIds: this.turnHistoricalAttachmentIds,
+      attachments: modelBoundFiles,
+    });
+    this.turnHistoricalAttachmentIds = this.turnSteerAttachmentHistory.historicalFileIds;
     this.turnSharedAttachmentFiles = sharedAttachments;
     this.attachmentMemoryContext?.attachments?.push(...modelBoundFiles);
     if (steerId && modelBoundFiles.length > 0) {
@@ -494,6 +517,11 @@ class AgentClient extends BaseClient {
       this.getModelBoundAttachmentsForEndpoint(historicalAttachments);
     const compatibleCurrentAttachments =
       this.getModelBoundAttachmentsForEndpoint(currentAttachments);
+    this.turnSteerAttachmentHistory = undefined;
+    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
+      historicalAttachments,
+      currentAttachments,
+    );
     const sharedAttachments = [...compatibleHistoricalAttachments, ...compatibleCurrentAttachments];
     const sharedAttachmentIds = collectFileIds(sharedAttachments);
     const agents = collectReachableAgents([
@@ -518,6 +546,7 @@ class AgentClient extends BaseClient {
     );
     assertAgentAttachmentTopology({
       sharedAttachments,
+      historicalFileIds: this.turnHistoricalAttachmentIds,
       scopedAttachmentsByAgentId: scopedAttachmentMap,
       req: this.options.req,
       endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
@@ -734,6 +763,7 @@ class AgentClient extends BaseClient {
     this.steerOffsetState = { offset: 0 };
     this.appliedSteerParts = new Map();
     this.admittedSteerAttachments = new Map();
+    this.turnSteerAttachmentHistory = undefined;
     /** @type {(messages: BaseMessage[], inspectionMessages?: BaseMessage[]) => Promise<void>} */
     this.processMemory;
   }
@@ -917,6 +947,11 @@ class AgentClient extends BaseClient {
     };
     removeOccurrences(this.turnSharedAttachmentFiles);
     removeOccurrences(this.attachmentMemoryContext?.attachments);
+    this.turnHistoricalAttachmentIds = rollbackSteerAttachmentHistory({
+      state: this.turnSteerAttachmentHistory,
+      historicalFileIds: this.turnHistoricalAttachmentIds,
+      attachments: admitted,
+    });
   }
 
   /**
@@ -1955,7 +1990,7 @@ class AgentClient extends BaseClient {
         {
           spec: this.options.spec,
           iconURL: this.options.iconURL,
-          chatProjectId: this.options.chatProjectId,
+          chatProjectId: this.options.req?.chatProjectContext?.projectId,
           endpoint: this.options.endpoint,
           agent_id: this.options.agent.id,
           modelLabel: this.options.modelLabel,
@@ -2011,6 +2046,7 @@ class AgentClient extends BaseClient {
       onTraversalFailure: reportLocatorTraversalFailure,
       legacyPii,
       storedMessages: this.modelBoundStoredMessages,
+      privateTextTokens: getPrivateTextInspectionTokens(this.modelBoundStoredMessages ?? []),
     });
   }
 
@@ -2020,7 +2056,7 @@ class AgentClient extends BaseClient {
    * at every chat-model call instead. */
   assertBuiltModelBoundContent() {}
 
-  createModelBoundChatModelCallback() {
+  createModelBoundChatModelCallback(initialAdmission) {
     const fileProjection = BaseClient.prototype.getModelBoundFileProjection.call(this);
     const persistence = BaseClient.prototype.getModelBoundUserMessagePersistence.call(this);
     return createModelBoundContentCallback(
@@ -2029,18 +2065,33 @@ class AgentClient extends BaseClient {
         filters: this.options.req?.config?.filters,
         legacyPii: this.options.req?.config?.messageFilter?.pii,
         storedMessages: this.modelBoundStoredMessages,
+        privateTextTokens: getPrivateTextInspectionTokens(this.modelBoundStoredMessages ?? []),
         fileIdsBySourceMessageId: fileProjection.fileIdsBySourceMessageId,
         resolvedFiles: fileProjection.resolvedFiles,
         sourceFileProjectionOverflowed: fileProjection.overflowed,
       },
-      {
-        onContentRejected: persistence?.cancel,
-      },
+      getPrivateTextModelHooks(
+        this.options.req,
+        initialAdmission,
+        persistence?.start,
+        persistence?.cancel,
+        this.privateTextStart,
+      ),
     );
   }
 
   createInitialModelBoundAdmissionCallback(startingAgentIds) {
     const persistence = BaseClient.prototype.getModelBoundUserMessagePersistence.call(this);
+    const protectedAdmission = createPrivateTextInitialAdmissionCallback(this.options.req, {
+      agentIds: startingAgentIds,
+      start: persistence?.start,
+      cancel: persistence?.cancel,
+      onPersisted: this.privateTextStart,
+      signal: this.abortController?.signal,
+    });
+    if (protectedAdmission != null) {
+      return protectedAdmission;
+    }
     if (persistence == null || !persistence.isPending() || startingAgentIds.length === 0) {
       return undefined;
     }
@@ -2208,6 +2259,7 @@ class AgentClient extends BaseClient {
         memory,
         discoveredToolNames,
         checkpointerType: agentsConfig?.checkpointer?.type,
+        projectContextKey: getChatProjectContextKey(this.options.req?.chatProjectContext),
       }),
       skillManifest,
       discoveredToolNames,
@@ -2436,12 +2488,18 @@ class AgentClient extends BaseClient {
       endpointType: this.options.endpointType,
       endpointsByAgentId,
     });
+    this.turnSteerAttachmentHistory = undefined;
+    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
+      this.authorizedHistoricalFiles?.values() ?? sharedAttachmentFiles,
+      requestAttachments,
+    );
     this.turnSharedAttachmentFiles = sharedAttachmentFiles;
     this.turnAggregateOnlyAttachmentFiles = retainedHistoricalFileContexts;
     this.turnScopedAttachmentsByAgentId = scopedAttachmentMap;
     this.turnAttachmentEndpointsByAgentId = endpointsByAgentId;
     assertAgentAttachmentTopology({
       sharedAttachments: sharedAttachmentFiles,
+      historicalFileIds: this.turnHistoricalAttachmentIds,
       scopedAttachmentsByAgentId: scopedAttachmentMap,
       req: this.options.req,
       endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
@@ -2461,6 +2519,7 @@ class AgentClient extends BaseClient {
         attachmentsByAgentId: this.options.agentContextAttachmentsByAgentId,
         sharedRunAttachmentIds,
         sharedAttachments: sharedAttachmentFiles,
+        historicalFileIds: this.turnHistoricalAttachmentIds,
         req: this.options.req,
         endpoint: this.options.agent?.endpoint ?? this.options.endpoint ?? EModelEndpoint.agents,
         endpointType: this.options.endpointType,
@@ -2745,6 +2804,7 @@ class AgentClient extends BaseClient {
         filters: this.options.req.config?.filters,
         legacyPii: this.options.req.config?.messageFilter?.pii,
         submittedMessages: [{ role: 'user', content: latestFormatted.content }],
+        privateTextTokens: getPrivateTextInspectionTokens([latestOrdered]),
       });
       /** Google rejects an unusable video with a generic `INVALID_ARGUMENT` that names no cause,
        *  so `#sendCompletion` can only attribute one by knowing this turn carried a video. */
@@ -3146,6 +3206,7 @@ class AgentClient extends BaseClient {
                 attachmentsByAgentId: lateAttachmentsByAgentId,
                 sharedRunAttachmentIds: liveSharedAttachmentIds,
                 sharedAttachments: liveSharedAttachmentFiles,
+                historicalFileIds: this.turnHistoricalAttachmentIds,
                 req: this.options.req,
                 endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
                 endpointType: this.options.endpointType,
@@ -3322,8 +3383,10 @@ class AgentClient extends BaseClient {
         },
         codeEnvAvailable: memoryCodeEnabled && memoryToolGrants?.runCode === true,
         statefulSessionsAvailable: memoryCapabilities.has(AgentCapabilities.stateful_code_sessions),
+        useChatProjectContext: false,
       },
       {
+        getProjectFiles: db.getProjectFiles,
         getFiles: db.getFiles,
         getUserKey: db.getUserKey,
         getConvoFiles: db.getConvoFiles,
@@ -3491,6 +3554,7 @@ class AgentClient extends BaseClient {
    */
   async runMemory(messages) {
     try {
+      await requirePrivateTextAdmission(this.options.req, this.abortController?.signal);
       if (this.processMemory == null) {
         return;
       }
@@ -3562,7 +3626,12 @@ class AgentClient extends BaseClient {
         });
       }
       const bufferMessage = new HumanMessage(limitedMemoryInput);
-      return await this.processMemory([bufferMessage], filteredMessages);
+      return await this.processMemory(
+        [bufferMessage],
+        filteredMessages,
+        getPrivateTextInspectionTokens(this.modelBoundStoredMessages ?? []),
+        this.abortController?.signal,
+      );
     } catch (error) {
       logger.error('Memory Agent failed to process memory', getSafeErrorMetadata(error));
     }
@@ -4283,7 +4352,10 @@ class AgentClient extends BaseClient {
     // the resolved llmConfig fills gaps and is sanitized — it carries provider secrets
     // (apiKey, credentials) and gateway config — resume re-resolves those server-side.
     // (Saved agents source params from the DB record, so this is belt-and-suspenders.)
-    const resumeContext = pickResumeContext(this.options.req?.body);
+    const resumeContext = pickResumeContext(
+      this.options.req?.body,
+      this.options.req?.reasoningOverrideBase,
+    );
     const resumeModelParameters = captureResumeModelParameters(
       this.options.req?.body,
       this.options.agent?.model_parameters,
@@ -4336,6 +4408,9 @@ class AgentClient extends BaseClient {
       // fall back to it when the SDK doesn't echo threadId on the interrupt.
       threadId: interrupt.threadId ?? this.conversationId,
       ttlMs: getApprovalTtlMs(checkpointerCfg),
+      // Bind the pause to the authoritative project identity/revision. The key is
+      // server-only and is checked before provider/tool startup on resume.
+      projectContextKey: getChatProjectContextKey(this.options.req?.chatProjectContext),
       expiresAt: this.options.req?._agentEventBindingRetention?.expiredAt,
       // Pin the graph-determining request fields so resume can't rebuild this paused
       // run on a different agent/tool set (esp. ephemeral agents, whose agent_id is
@@ -4798,16 +4873,16 @@ class AgentClient extends BaseClient {
         if (this.agentConfigs && this.agentConfigs.size > 0) {
           agents.push(...this.agentConfigs.values());
         }
-        const modelBoundCallback =
-          AgentClient.prototype.createModelBoundChatModelCallback.call(this);
         const initialModelBoundAdmission =
           AgentClient.prototype.createInitialModelBoundAdmissionCallback.call(
             this,
             AgentClient.getStartingAgentIds(agents),
           );
-        if (initialModelBoundAdmission != null) {
-          config.callbacks = [initialModelBoundAdmission];
-        }
+        const modelBoundCallback = AgentClient.prototype.createModelBoundChatModelCallback.call(
+          this,
+          initialModelBoundAdmission,
+        );
+        config = withPrivateTextAdmissionConfig(config, initialModelBoundAdmission);
 
         // TODO: needs to be added as part of AgentContext initialization
         // const noSystemModelRegex = [/\b(o1-preview|o1-mini|amazon\.titan-text)\b/gi];
@@ -5203,6 +5278,7 @@ class AgentClient extends BaseClient {
         });
       }
     } finally {
+      rejectPrivateTextAdmission(this.options.req);
       /** An aborted/erroring run can still have completed compaction before
        * the failure; retain that model-visible state for actor reconciliation. */
       await this.options.runFiles?.close();
@@ -5466,6 +5542,11 @@ class AgentClient extends BaseClient {
           .call(this, requestFiles)
           .filter((file) => !file?.file_id || !checkpointFileIds.has(file.file_id)),
       ];
+      this.turnSteerAttachmentHistory = undefined;
+      this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
+        resumeContentProjection.checkpointFiles,
+        requestFiles,
+      );
       const resumeSharedFileIds = collectFileIds(resumeSharedFiles);
       const resumeEndpointsByAgentId = new Map(
         agents
@@ -5485,6 +5566,7 @@ class AgentClient extends BaseClient {
           attachmentsByAgentId: this.options.agentContextAttachmentsByAgentId,
           sharedRunAttachmentIds: resumeSharedFileIds,
           sharedAttachments: resumeSharedFiles,
+          historicalFileIds: this.turnHistoricalAttachmentIds,
           req: this.options.req,
           endpoint: this.options.agent?.endpoint ?? this.options.endpoint ?? EModelEndpoint.agents,
           endpointType: this.options.endpointType,
@@ -5610,6 +5692,7 @@ class AgentClient extends BaseClient {
                 attachmentsByAgentId: lateAttachmentsByAgentId,
                 sharedRunAttachmentIds: liveResumeSharedFileIds,
                 sharedAttachments: liveResumeSharedFiles,
+                historicalFileIds: this.turnHistoricalAttachmentIds,
                 req: this.options.req,
                 endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
                 endpointType: this.options.endpointType,
@@ -6091,6 +6174,7 @@ class AgentClient extends BaseClient {
     });
 
     try {
+      await requirePrivateTextAdmission(req, abortController.signal);
       const titleResult = await this.run.generateTitle({
         provider,
         clientOptions,

@@ -1,4 +1,5 @@
 export * from './Audio';
+export * from './Auth';
 export * from './Assistants';
 export * from './Agents';
 export * from './Chat';
@@ -54,3 +55,4 @@ export { default as useClockFormat } from './useClockFormat';
 export { default as useWeekStart } from './useWeekStart';
 export { useMediaAccess } from './Media/useMediaAccess';
 export { useMediaShellHost } from './Media/host';
+export { default as useScrollFade } from './useScrollFade';

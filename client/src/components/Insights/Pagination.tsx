@@ -14,7 +14,7 @@ export function PaginationFooter({
 }) {
   const localize = useLocalize();
   return (
-    <div className="mt-3 flex items-center justify-between gap-3 border-t border-border-light pt-3 text-sm text-text-secondary">
+    <div className="border-border-light text-text-secondary mt-3 flex items-center justify-between gap-3 border-t pt-3 text-sm">
       <span>{localize('com_insights_page_of', { page, pages })}</span>
       <div className="flex gap-2">
         <Button

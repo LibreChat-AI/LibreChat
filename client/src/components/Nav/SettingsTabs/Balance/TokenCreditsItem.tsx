@@ -39,7 +39,7 @@ const TokenCreditsItem: React.FC<TokenCreditsItemProps> = ({
         </div>
 
         {/* Right Section: tokenCredits Value */}
-        <span className="text-sm font-medium text-text-primary" role="note">
+        <span className="text-text-primary text-sm font-medium" role="note">
           {tokenCredits !== undefined ? tokenCredits.toFixed(2) : '0.00'}
         </span>
       </div>
@@ -47,7 +47,7 @@ const TokenCreditsItem: React.FC<TokenCreditsItemProps> = ({
         {amounts.map(([key, value]) => (
           <div key={key} className="flex items-center justify-between gap-3">
             <dt className="text-text-secondary">{localize(key)}</dt>
-            <dd className="tabular-nums text-text-primary">{value.toFixed(2)}</dd>
+            <dd className="text-text-primary tabular-nums">{value.toFixed(2)}</dd>
           </div>
         ))}
       </dl>

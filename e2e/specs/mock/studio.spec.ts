@@ -225,8 +225,11 @@ test('sidebar studio queues, restores, refines and hands an original to chat', a
   await expect(page).toHaveURL(/\/c\/new$/);
   await expect(page.getByTestId('text-input')).toBeVisible();
   await expect(page.getByRole('alert').filter({ hasText: 'Oops!' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Attach File Options', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'Create media', exact: true }).click();
+  await page.getByRole('button', { name: 'Attach and tools', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: 'Attach and tools', exact: true })
+    .getByRole('button', { name: 'Create media', exact: true })
+    .click();
   await expect(
     page.getByRole('dialog').getByRole('heading', { name: 'Media Studio' }).first(),
   ).toBeVisible();

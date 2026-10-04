@@ -1,5 +1,4 @@
-import { useMemo, useState, useEffect, useCallback } from 'react';
-import { useRecoilValue } from 'recoil';
+import React, { useMemo, useState, useEffect, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
 import {
   Constants,
@@ -9,20 +8,22 @@ import {
   splitToolCallName,
 } from 'librechat-data-provider';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
+import { toolPanelSpacingClassName, useToolExpansion, SoleToolContext } from './disclosure';
 import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { cn, getToolDisplayLabel, logger, openInNewTab } from '~/utils';
+import { isToolCallPreparing, useToolPreparation } from './preparation';
 import { ToolIcon, getToolIconType, isError } from './ToolOutput';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import MediaToolReceipt from '~/components/Chat/Media/Receipt';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
-import { toolPanelSpacingClassName } from './disclosure';
+import { MCPAppViews } from '~/components/MCPUIResource';
 import { useToolCallIntent } from './Parts/intent';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
 import { TOOL_ROW_CLASSES } from './rows';
 import { ToolAuthWarning } from './auth';
-import store from '~/store';
+import { firstErrorLine } from './live';
 
 export default function ToolCall({
   initialProgress = 0.1,
@@ -38,6 +39,10 @@ export default function ToolCall({
   onExpand,
   runStepStatus,
   runStepDurationMs,
+  toolPreparationStartedAt,
+  toolDispatchedAt,
+  toolPreparationDurationMs,
+  toolExecutionDurationMs,
 }: {
   initialProgress: number;
   isLast?: boolean;
@@ -52,21 +57,14 @@ export default function ToolCall({
   onExpand?: () => void;
   runStepStatus?: PartMetadata['runStepStatus'];
   runStepDurationMs?: PartMetadata['runStepDurationMs'];
+  toolPreparationStartedAt?: PartMetadata['toolPreparationStartedAt'];
+  toolDispatchedAt?: PartMetadata['toolDispatchedAt'];
+  toolPreparationDurationMs?: PartMetadata['toolPreparationDurationMs'];
+  toolExecutionDurationMs?: PartMetadata['toolExecutionDurationMs'];
 }) {
   const localize = useLocalize();
   const [oauthError, setOAuthError] = useState<string | null>(null);
   const [oauthBinding, setOAuthBinding] = useState<'pending' | 'bound' | 'failed'>('pending');
-  const autoExpand = useRecoilValue(store.autoExpandTools);
-  const hasOutput = (output?.length ?? 0) > 0;
-  const [showInfo, setShowInfo] = useState(() => autoExpand && hasOutput);
-  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
-  const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
-
-  useEffect(() => {
-    if (autoExpand && hasOutput) {
-      setShowInfo(true);
-    }
-  }, [autoExpand, hasOutput]);
 
   const parsedAuthUrl = useMemo(() => {
     if (!auth) {
@@ -193,6 +191,12 @@ export default function ToolCall({
     () => (args?.length ?? 0) > 0 || (output?.length ?? 0) > 0,
     [args, output],
   );
+  /** The preference opens a card once it has output; a sole call opens on
+   *  its arguments too, so a call that returned nothing still shows them. */
+  const soleTool = useContext(SoleToolContext) === true;
+  const [showInfo, setShowInfo] = useToolExpansion(soleTool ? hasInfo : (output?.length ?? 0) > 0);
+  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
+  const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
 
   const authDomain = useMemo(() => {
     return parsedAuthUrl?.hostname ?? '';
@@ -289,10 +293,17 @@ export default function ToolCall({
     if (!showInfo) {
       onExpand?.();
     }
-    setShowInfo((prev) => !prev);
-  }, [mountBody, onExpand, showInfo]);
+    setShowInfo(!showInfo);
+  }, [mountBody, onExpand, setShowInfo, showInfo]);
 
+  /** A failed row spends its subtitle on the error's first line: what went
+   *  wrong is the fact the reader needs from that slot, ahead of which server
+   *  the call went through. */
   const subtitle = useMemo(() => {
+    const errorLine = phase === 'failed' ? firstErrorLine(output) : '';
+    if (errorLine.length > 0) {
+      return errorLine;
+    }
     if (isMCPToolCall && mcpServerName) {
       return localize('com_ui_via_server', { 0: mcpServerName });
     }
@@ -300,12 +311,40 @@ export default function ToolCall({
       return localize('com_ui_via_server', { 0: domain });
     }
     return undefined;
-  }, [isMCPToolCall, mcpServerName, domain, localize]);
+  }, [phase, output, isMCPToolCall, mcpServerName, domain, localize]);
 
   /** Model-authored live label, streamed as the first args key (injected by
    *  the `tool_intents` capability); persists as the settled label —
    *  completion is a UI state, not a tense change. */
   const intent = useToolCallIntent(_args);
+  const preparationText = useToolPreparation();
+  const preparing = useMemo(
+    () =>
+      isToolCallPreparing({
+        args: _args,
+        output,
+        progress: initialProgress,
+        toolPreparationStartedAt,
+        toolDispatchedAt,
+        runStepStatus,
+      }),
+    [_args, output, initialProgress, toolPreparationStartedAt, toolDispatchedAt, runStepStatus],
+  );
+  const subject = intent ?? displayFunctionName;
+  let inProgressText =
+    intent ??
+    (displayFunctionName
+      ? localize('com_assistants_running_var', { 0: displayFunctionName })
+      : localize('com_assistants_running_action'));
+  if (toolDispatchedAt != null) {
+    inProgressText = localize('com_ui_tool_calling', { 0: subject });
+  } else if (preparing) {
+    inProgressText =
+      preparationText ??
+      (displayFunctionName
+        ? localize('com_ui_tool_preparing', { 0: displayFunctionName })
+        : localize('com_assistants_preparing_action'));
+  }
 
   const getFinishedText = () => {
     if (phase === 'cancelled') {
@@ -317,8 +356,12 @@ export default function ToolCall({
      * a screen-reader user the opposite of what the card shows.
      */
     if (phase === 'failed') {
-      return function_name
-        ? localize('com_ui_failed_subject', { 0: function_name })
+      /** The subject is the work the call named for itself, as on the live
+       *  header and the collapsed card's peek, so the same failure reads the
+       *  same wherever it is summarized. */
+      const subject = intent ?? displayFunctionName;
+      return subject
+        ? localize('com_ui_failed_subject', { 0: subject })
         : localize('com_ui_failed');
     }
     if (intent != null) {
@@ -346,6 +389,12 @@ export default function ToolCall({
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {(() => {
           if (phase === 'running') {
+            if (toolDispatchedAt != null) {
+              return localize('com_ui_tool_calling', { 0: displayFunctionName });
+            }
+            if (preparing) {
+              return inProgressText;
+            }
             return displayFunctionName
               ? localize('com_assistants_running_var', { 0: displayFunctionName })
               : localize('com_assistants_running_action');
@@ -357,12 +406,7 @@ export default function ToolCall({
         <ProgressText
           phase={phase}
           onClick={handleToggleInfo}
-          inProgressText={
-            intent ??
-            (displayFunctionName
-              ? localize('com_assistants_running_var', { 0: displayFunctionName })
-              : localize('com_assistants_running_action'))
-          }
+          inProgressText={inProgressText}
           authText={
             phase === 'running' && authDomain.length > 0
               ? localize('com_ui_requires_auth')
@@ -371,6 +415,9 @@ export default function ToolCall({
           finishedText={getFinishedText()}
           subtitle={subtitle}
           durationMs={runStepDurationMs}
+          toolPreparationDurationMs={toolPreparationDurationMs}
+          toolExecutionDurationMs={toolExecutionDurationMs}
+          phaseStartAt={toolDispatchedAt ?? toolPreparationStartedAt}
           icon={
             <ToolIcon type={toolIconType} iconUrl={mcpIconUrl} isAnimating={phase === 'running'} />
           }
@@ -388,17 +435,17 @@ export default function ToolCall({
             <div
               className={cn(
                 toolPanelSpacingClassName,
-                'overflow-hidden rounded-lg border border-border-light bg-surface-secondary',
+                'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
               )}
             >
-              <ToolCallInfo input={args ?? ''} output={output} attachments={attachments} />
+              <ToolCallInfo input={args ?? ''} output={output} />
             </div>
           )}
         </div>
       </div>
       {showOAuth && (
         <div className="flex w-full flex-col gap-2.5">
-          <div className="mb-1 mt-2">
+          <div className="mt-2 mb-1">
             <Button
               className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium"
               variant="default"
@@ -411,7 +458,7 @@ export default function ToolCall({
             </Button>
           </div>
           {oauthError && (
-            <p role="alert" className="text-sm text-text-destructive">
+            <p role="alert" className="text-text-destructive text-sm">
               {oauthError}
             </p>
           )}
@@ -419,7 +466,10 @@ export default function ToolCall({
         </div>
       )}
       {!hideAttachments && attachments && attachments.length > 0 && (
-        <AttachmentGroup attachments={attachments} />
+        <>
+          <AttachmentGroup attachments={attachments} />
+          <MCPAppViews attachments={attachments} />
+        </>
       )}
       {(name === 'media_generate' || name === 'media_status') && (
         <MediaToolReceipt output={output} />

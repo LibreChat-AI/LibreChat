@@ -1,13 +1,17 @@
 import { logger } from '@librechat/data-schemas';
-import { ErrorTypes, isCodeWorkspaceSelections } from 'librechat-data-provider';
-import type {
-  CodeWorkspaceSelection,
-  CodeWorkspaceSelectionErrorReason,
+import {
+  isCodeWorkspaceSelections,
+  isLinkedWorktreeRoutingAllowed,
+  canonicalizeCodeWorkspaceSelections,
+  isCodeWorkspaceCheckoutAvailable,
 } from 'librechat-data-provider';
+import type { CodeWorkspaceSelection } from 'librechat-data-provider';
 import type { CodeEnvironmentConfig, CodeExecutionContext } from '~/agents/execution';
 import type { createAppConfigService } from '~/app/service';
 import type { CodeBridgeWorkerStatus } from './bridge';
 export type { CodeWorkspaceSelectionErrorReason } from 'librechat-data-provider';
+export { CodeWorkspaceSelectionError } from './errors';
+import { CodeWorkspaceSelectionError } from './errors';
 import {
   CodeBridgeStatusError,
   createCodeBridgeStatusPoller,
@@ -18,44 +22,10 @@ export type CodeCapabilityConfigLoader = ReturnType<typeof createAppConfigServic
 
 const pollWorkerStatus = createCodeBridgeStatusPoller();
 
-function codeWorkspaceSelectionErrorMessage(reason: CodeWorkspaceSelectionErrorReason): string {
-  switch (reason) {
-    case 'required':
-      return 'Choose an attached workspace before using this agent.';
-    case 'invalid':
-      return 'The selected attached workspace is invalid.';
-    case 'worker_unavailable':
-      return 'The attached code environment is unavailable. Reconnect the machine and try again.';
-    case 'unsupported':
-      return 'The attached code environment does not advertise selectable workspaces. Update the LibreChat Code worker and try again.';
-    case 'missing':
-      return 'The selected workspace is no longer registered on this machine. Restore the previous registration or start a new conversation.';
-    case 'locked':
-      return 'This conversation already has a different code environment decision.';
-  }
-}
-
-export class CodeWorkspaceSelectionError extends Error {
-  readonly code: ErrorTypes.CODE_WORKSPACE_UNAVAILABLE = ErrorTypes.CODE_WORKSPACE_UNAVAILABLE;
-  readonly status: number = 409;
-  readonly statusCode: number = 409;
-
-  constructor(public readonly reason: CodeWorkspaceSelectionErrorReason) {
-    super(codeWorkspaceSelectionErrorMessage(reason));
-    this.name = 'CodeWorkspaceSelectionError';
-  }
-}
-
 function canonicalWorkspaceSelections(
   selections: CodeWorkspaceSelection[],
 ): CodeWorkspaceSelection[] {
-  return [...selections].sort((left, right) => {
-    if (left.environmentId < right.environmentId) return -1;
-    if (left.environmentId > right.environmentId) return 1;
-    if (left.workspaceId < right.workspaceId) return -1;
-    if (left.workspaceId > right.workspaceId) return 1;
-    return 0;
-  });
+  return canonicalizeCodeWorkspaceSelections(selections);
 }
 
 function sameWorkspaceSelections(
@@ -173,18 +143,38 @@ export async function resolveCodeExecutionWorkspaceContext({
   if (!workspace) {
     throw new CodeWorkspaceSelectionError('missing');
   }
+  const supportsIsolation = workspace.workspaceInstances?.includes('git_worktree') === true;
+  if (
+    !isCodeWorkspaceCheckoutAvailable(
+      selection,
+      workspace,
+      context.codeEnvironmentConfigSchema?.workspaces?.allowCheckoutSelection === true,
+    ) ||
+    (selection.checkout === 'isolated' && !context.conversationWorkspaceInstanceId)
+  ) {
+    throw new CodeWorkspaceSelectionError('unsupported');
+  }
+  const usesIsolation =
+    selection.checkout !== 'source' && supportsIsolation && context.conversationWorkspaceInstanceId;
   return {
     ...context,
     codeWorkspace: {
       ...selection,
       operations: [...(workspace.operations ?? status.operations)],
-      ...(context.conversationWorkspaceInstanceId &&
-      workspace.workspaceInstances?.includes('git_worktree')
-        ? { workspaceInstanceId: context.conversationWorkspaceInstanceId }
+      ...(usesIsolation ? { workspaceInstanceId: context.conversationWorkspaceInstanceId } : {}),
+      ...(isLinkedWorktreeRoutingAllowed(
+        context.codeEnvironmentConfigSchema?.workspaces?.linkedWorktrees,
+      ) &&
+      workspace.workspaceScopes?.includes('git_linked_worktree') &&
+      !usesIsolation
+        ? { linkedWorktrees: true }
         : {}),
       ...(status.maxCommandTimeoutMs == null
         ? {}
         : { maxCommandTimeoutMs: status.maxCommandTimeoutMs }),
+      ...(status.editFileFeatures?.length
+        ? { editFileFeatures: [...status.editFileFeatures] }
+        : {}),
       ...(workspace.instructions ? { instructions: workspace.instructions } : {}),
       ...(workspace.environment ? { environment: workspace.environment } : {}),
     },

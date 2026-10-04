@@ -23,6 +23,18 @@ describe('Experimental server configuration', () => {
     expect(source).toMatch(/if \(shuttingDown\) \{[\s\S]*?return;[\s\S]*?Starting a new worker/);
   });
 
+  it("drains background tasks within the primary's cluster shutdown deadline", () => {
+    expect(source).toMatch(
+      /registerBackgroundTaskShutdown\(\{[\s\S]*?getBudgetMs: clusterShutdownBudgetMs,[\s\S]*?\}\);/,
+    );
+    expect(source).toMatch(
+      /const clusterShutdownBudgetMs = \(\) =>\s*getClusterShutdownBudgetMs\(\{\s*deadlineAt: clusterShutdownDeadlineAt,\s*forceExitMs: CLUSTER_FORCE_EXIT_MS,\s*\}\);/,
+    );
+    expect(source).toMatch(
+      /const destroyGenerationJobManager = \(\) => \{\s*const budgetMs = clusterShutdownBudgetMs\(\);/,
+    );
+  });
+
   it('starts approval expiry after installing the scheduled-run callback', () => {
     const handlerIndex = source.indexOf(
       'GenerationJobManager.setApprovalExpiredHandler(recordExpiredScheduleApproval);',
@@ -73,7 +85,9 @@ describe('Experimental server configuration', () => {
 
   it('configures routed subagent controls before a worker accepts requests', () => {
     const redisReadyIndex = source.indexOf('await waitForKeyvRedisClient();');
-    const routingIndex = source.indexOf('await configureSubagentTaskRouting();');
+    const routingIndex = source.indexOf(
+      'await configureSubagentTaskRouting(baseAppConfig?.endpoints?.agents?.subagentActivity);',
+    );
     const listenIndex = source.indexOf('const server = app.listen');
 
     expect(redisReadyIndex).toBeGreaterThan(-1);

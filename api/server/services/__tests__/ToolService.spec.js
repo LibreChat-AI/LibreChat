@@ -517,6 +517,77 @@ describe('ToolService - Action Capability Gating', () => {
       );
     });
 
+    it('submits canonical MCP output and persists its App attachment', async () => {
+      const uiResources = [{ uri: 'ui://app', mimeType: 'text/html;profile=mcp-app' }];
+      mockLoadToolsUtil.mockResolvedValue({
+        loadedTools: [
+          {
+            name: 'safe_tool',
+            mcp: true,
+            _call: jest
+              .fn()
+              .mockResolvedValue(['safe output', { [Tools.ui_resources]: { data: uiResources } }]),
+          },
+        ],
+        toolContextMap: {},
+      });
+      const client = buildClient(buildFilters('output', 'PRIVATE-OUTPUT'));
+      client.responseMessage = {
+        messageId: 'message_1',
+        conversationId: 'conversation_1',
+        attachments: [],
+      };
+      client.res = { write: jest.fn() };
+
+      await expect(processRequiredActions(client, [buildAction()])).resolves.toEqual({
+        tool_outputs: [{ tool_call_id: 'call_1', output: 'safe output' }],
+      });
+
+      expect(client.responseMessage.attachments).toEqual([
+        expect.objectContaining({
+          type: Tools.ui_resources,
+          toolCallId: 'call_1',
+          [Tools.ui_resources]: uiResources,
+        }),
+      ]);
+      expect(client.res.write).toHaveBeenCalledWith(expect.stringContaining('event: attachment\n'));
+    });
+
+    it('omits an MCP App attachment when canonical output is substituted', async () => {
+      const privateOutput = 'PRIVATE-OUTPUT';
+      mockLoadToolsUtil.mockResolvedValue({
+        loadedTools: [
+          {
+            name: 'safe_tool',
+            mcp: true,
+            _call: jest
+              .fn()
+              .mockResolvedValue([
+                privateOutput,
+                { [Tools.ui_resources]: { data: [{ uri: 'ui://app' }] } },
+              ]),
+          },
+        ],
+        toolContextMap: {},
+      });
+      const client = buildClient(buildFilters('output', privateOutput));
+      client.responseMessage = {
+        messageId: 'message_1',
+        conversationId: 'conversation_1',
+        attachments: [],
+      };
+      client.res = { write: jest.fn() };
+
+      const result = await processRequiredActions(client, [buildAction()]);
+
+      expect(JSON.parse(result.tool_outputs[0].output)).toMatchObject({
+        error: 'content_filter_block',
+        field: 'output',
+      });
+      expect(client.responseMessage.attachments).toEqual([]);
+      expect(client.res.write).not.toHaveBeenCalled();
+    });
+
     it('replaces an uninspectable tool output before UI or model submission', async () => {
       const deeplyNestedOutput = { visible: 'safe' };
       let current = deeplyNestedOutput;
@@ -712,6 +783,43 @@ describe('ToolService - Action Capability Gating', () => {
       expect(result.size).toBe(0);
     });
   });
+
+  it.each([true, false])(
+    'passes the Code API retry limit to repository instructions (definitionsOnly=%s)',
+    async (definitionsOnly) => {
+      const capabilities = [
+        AgentCapabilities.tools,
+        AgentCapabilities.execute_code,
+        AgentCapabilities.stateful_code_sessions,
+      ];
+      const req = createMockReq(capabilities);
+      req.config.endpoints[EModelEndpoint.agents].codeApiMaxRetryWaitMs = 0;
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+      mockResolveCodeExecutionContext.mockReturnValueOnce({
+        baseUrl: 'https://attached-code.example.com/v1',
+        codeSessionKey: 'attached-session',
+        executionProfile: 'stateful',
+        statefulSessions: true,
+        environmentType: 'attached',
+        environmentId: 'personal-machine',
+      });
+
+      const result = await loadAgentTools({
+        req,
+        res: {},
+        agent: {
+          id: 'attached-agent',
+          tools: [Tools.execute_code],
+          stateful_code_sessions: true,
+        },
+        definitionsOnly,
+      });
+
+      expect(result.repositoryInstructionSource).toEqual(
+        expect.objectContaining({ codeApiMaxRetryWaitMs: 0 }),
+      );
+    },
+  );
 
   describe('isActionTool — cross-delimiter collision guard', () => {
     it('should identify real action tools', () => {
@@ -990,6 +1098,7 @@ describe('ToolService - Action Capability Gating', () => {
         ...expectedParams,
         codeApiBaseUrl: 'https://api.librechat.ai',
         executionProfile: 'default',
+        codeFileLocation: 'sandbox',
       });
     });
 
@@ -1023,7 +1132,43 @@ describe('ToolService - Action Capability Gating', () => {
         codeApiBaseUrl: 'https://stateful-code.example.com',
         executionProfile: 'stateful',
         bridgeWorkerId: 'worker-abc',
+        codeFileLocation: 'sandbox',
       });
+    });
+
+    it('primes code files for an attached workspace as unavailable to workspace tools', async () => {
+      const capabilities = [AgentCapabilities.tools, AgentCapabilities.execute_code];
+      const req = createMockReq(capabilities);
+      req.body = {
+        codeWorkspaces: [{ environmentId: 'personal-machine', workspaceId: 'project-a' }],
+      };
+      const tool_resources = { execute_code: { file_ids: ['attached-file'] } };
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'attached-agent', tools: [Tools.execute_code] },
+        tool_resources,
+        definitionsOnly: true,
+        codeExecutionContext: {
+          baseUrl: 'http://attached-code.test/v1',
+          codeSessionKey: 'execute_code:stateful:attached',
+          executionProfile: 'stateful',
+          statefulSessions: true,
+          environmentType: 'attached',
+          environmentId: 'personal-machine',
+          bridgeWorkerId: 'worker-abc',
+        },
+      });
+
+      expect(mockPrimeCodeFiles).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tool_resources,
+          bridgeWorkerId: 'worker-abc',
+          codeFileLocation: 'programmatic',
+        }),
+      );
     });
 
     it('propagates a typed CodeAPI resource recovery failure before model invocation', async () => {
@@ -1730,6 +1875,9 @@ describe('ToolService - Action Capability Gating', () => {
         expect(emittedStreamId).toBe(streamId);
         expect(options).toEqual({ expectedCreatedAt: jobCreatedAt });
       }
+      for (const [reinitInput] of reinitMCPServer.mock.calls) {
+        expect(reinitInput).toEqual(expect.objectContaining({ streamId, jobCreatedAt }));
+      }
     });
 
     it('should not expose cached MCP tool definitions when the registry lookup fails', async () => {
@@ -1833,6 +1981,7 @@ describe('ToolService - Action Capability Gating', () => {
         req.user.id,
         serverName,
         expect.objectContaining({ requiresOAuth: true }),
+        'standard',
       );
       expect(reinitMCPServer).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1907,6 +2056,7 @@ describe('ToolService - Action Capability Gating', () => {
         req.user.id,
         serverName,
         expect.objectContaining({ requiresOAuth: true }),
+        'standard',
       );
       expect(reinitMCPServer).toHaveBeenCalledTimes(1);
       expect(reinitMCPServer).toHaveBeenCalledWith(
@@ -2179,6 +2329,7 @@ describe('ToolService - Action Capability Gating', () => {
         expect.objectContaining({
           url: expect.stringContaining('LIBRECHAT_BODY_MESSAGEID'),
         }),
+        'standard',
       );
     });
 
@@ -2270,6 +2421,8 @@ describe('ToolService - Action Capability Gating', () => {
         definitionsOnly: true,
         signal,
         upstreamTokenProvider: scheduledProvider,
+        streamId: 'scheduled-stream',
+        jobCreatedAt: 42,
       });
 
       expect(reinitMCPServer).toHaveBeenCalledWith(
@@ -2277,6 +2430,8 @@ describe('ToolService - Action Capability Gating', () => {
           serverName,
           forceNew: true,
           upstreamTokenProvider: scheduledProvider,
+          streamId: 'scheduled-stream',
+          jobCreatedAt: 42,
         }),
       );
     });
@@ -2370,6 +2525,7 @@ describe('ToolService - Action Capability Gating', () => {
         expect.objectContaining({
           url: expect.stringContaining('LIBRECHAT_BODY_MESSAGEID'),
         }),
+        'standard',
       );
     });
 
@@ -2470,6 +2626,7 @@ describe('ToolService - Action Capability Gating', () => {
         req.user.id,
         serverName,
         expect.objectContaining({ url: 'https://config.example.com/mcp' }),
+        'standard',
       );
     });
   });
@@ -2886,6 +3043,7 @@ describe('ToolService - Action Capability Gating', () => {
         AgentCapabilities.stateful_code_sessions,
       ];
       const req = createMockReq(capabilities);
+      req.config.endpoints[EModelEndpoint.agents].codeApiMaxRetryWaitMs = 0;
       req.body = {
         codeWorkspaces: [{ environmentId: 'personal-machine', workspaceId: 'project-a' }],
       };
@@ -2898,7 +3056,15 @@ describe('ToolService - Action Capability Gating', () => {
         environmentType: 'attached',
         environmentId: 'personal-machine',
         bridgeWorkerId: 'worker-abc',
-        codeEnvironmentConfigSchema: { limits: { maxCommandTimeoutMs: 120000, maxQueueWaitMs: 0 } },
+        codeEnvironmentConfigSchema: {
+          limits: {
+            maxCommandTimeoutMs: 80_000,
+            defaultCommandTimeoutMs: 60_000,
+            maxQueueWaitMs: 0,
+            maxRequestTimeoutMs: 90_000,
+            minCommandAdmissionMs: 15_000,
+          },
+        },
       });
       const toolRegistry = new Map([
         [AgentConstants.BASH_TOOL, { name: AgentConstants.BASH_TOOL }],
@@ -2924,8 +3090,12 @@ describe('ToolService - Action Capability Gating', () => {
         baseUrl: 'http://attached-code.test/v1',
         workspaceId: 'project-a',
         gitIdentity: { name: 'LibreChat Agent', email: 'agent@example.com' },
-        maxTimeoutMs: 120000,
+        maxTimeoutMs: 65_000,
+        defaultTimeoutMs: 60_000,
         maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: 0,
+        maxRequestTimeoutMs: 90_000,
+        minCommandAdmissionMs: 15_000,
       });
       expect(mockResolveCodeExecutionWorkspaceContext).toHaveBeenCalledWith(
         expect.objectContaining({ requestedSelections: req.body.codeWorkspaces }),

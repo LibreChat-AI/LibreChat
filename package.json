@@ -1,6 +1,6 @@
 {
   "name": "LibreChat",
-  "version": "v0.8.8-rc4",
+  "version": "v0.8.8",
   "description": "",
   "packageManager": "npm@11.13.0",
   "scarfSettings": {
@@ -75,6 +75,8 @@
     "e2e:a11y": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.a11y.ts --headed",
     "e2e:ci": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.ts",
     "e2e:mock": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.mock.ts",
+    "e2e:email-change": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.email.ts",
+    "e2e:email-change:disabled": "npm run e2e:prepare && cross-env E2E_ALLOW_EMAIL_CHANGE=false playwright test --config=e2e/playwright.config.email.ts",
     "e2e:mock:redis": "npm run e2e:prepare && cross-env E2E_STREAM_STORE=redis playwright test --config=e2e/playwright.config.mock.ts",
     "e2e:mock:redis:transport": "npm run e2e:prepare && cross-env E2E_STREAM_STORE=redis playwright test --config=e2e/playwright.config.redis.ts",
     "e2e:benchmark:agents": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.benchmark.ts agent-startup.latency.spec.ts",
@@ -112,8 +114,11 @@
     "test:all": "npm run test:client && npm run test:api && npm run test:packages:api && npm run test:packages:data-provider && npm run test:packages:data-schemas",
     "e2e:update": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.local.ts --update-snapshots",
     "e2e:report": "npx playwright show-report e2e/playwright-report",
-    "lint:fix": "eslint . --fix",
-    "lint": "eslint .",
+    "lint:fix": "npm run build:client-package && eslint . --fix --pass-on-unpruned-suppressions",
+    "lint": "npm run build:client-package && eslint . --pass-on-unpruned-suppressions",
+    "lint:design:record": "npm run build:client-package && eslint --no-warn-ignored --suppress-rule shadcn/no-restyle --suppress-rule shadcn/no-raw-colors --suppress-rule shadcn/no-arbitrary-values --suppress-rule shadcn/no-inline-styles --suppress-rule shadcn/require-static-classes --suppress-rule shadcn/no-unknown-classes client/src packages/client/src",
+    "lint:design:suppress": "(npm run --silent lint:design:record || node -e \"\") && npm run lint:design:prune",
+    "lint:design:prune": "npm run build:client-package && eslint --no-warn-ignored --prune-suppressions client/src packages/client/src",
     "sort-imports": "node scripts/sort-imports.mts",
     "sort-imports:check": "node scripts/sort-imports.mts --check",
     "static-checks": "node scripts/static-checks.mts",
@@ -175,6 +180,7 @@
     "@eslint/eslintrc": "^3.3.4",
     "@eslint/js": "^9.20.0",
     "@playwright/test": "^1.62.1",
+    "@shadcn/lint": "^0.1.0",
     "@types/react-virtualized": "^9.22.0",
     "brace-expansion": "^2.1.2",
     "caniuse-lite": "^1.0.30001741",
@@ -220,9 +226,10 @@
     "baseline-browser-mapping": "^2.11.0",
     "browserslist": "^4.28.7",
     "elliptic": "^6.6.1",
-    "fast-uri": "^3.1.6",
+    "fast-uri": "^3.1.7",
     "fflate": "^0.8.3",
     "form-data": "^4.0.6",
+    "ip-address": "^10.5.1",
     "langsmith": "^0.6.0",
     "postcss": "^8.5.18",
     "postcss-selector-parser@6": "^6.1.3",
@@ -253,7 +260,7 @@
     "hono": "^4.13.7",
     "@hono/node-server": "^2.1.1",
     "monaco-editor": {
-      "dompurify": "3.4.14"
+      "dompurify": "3.4.16"
     },
     "test-exclude": "^8.0.0",
     "js-yaml": "^4.3.2",
@@ -261,6 +268,7 @@
     "@opentelemetry/core": "^2.9.0",
     "@opentelemetry/propagator-jaeger": "^2.10.0",
     "protobufjs": "^7.6.5",
+    "@grpc/grpc-js": "^1.14.5",
     "gaxios": {
       "uuid": "^11.1.1"
     }

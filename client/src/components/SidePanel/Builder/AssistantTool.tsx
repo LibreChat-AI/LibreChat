@@ -65,7 +65,7 @@ export default function AssistantTool({
           {currentTool.icon && (
             <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-full">
               <div
-                className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-full bg-center bg-no-repeat dark:bg-white/20"
+                className="bg-surface-tertiary flex h-6 w-6 items-center justify-center overflow-hidden rounded-full bg-center bg-no-repeat"
                 style={{ backgroundImage: `url(${currentTool.icon})`, backgroundSize: 'cover' }}
               />
             </div>
@@ -82,7 +82,7 @@ export default function AssistantTool({
           <OGDialogTrigger asChild>
             <button
               type="button"
-              className="flex h-9 w-9 min-w-9 items-center justify-center rounded-lg transition-colors duration-200 hover:bg-gray-200 dark:hover:bg-gray-700"
+              className="hover:bg-surface-hover flex h-9 w-9 min-w-9 items-center justify-center rounded-lg transition-colors duration-200"
             >
               <TrashIcon />
             </button>

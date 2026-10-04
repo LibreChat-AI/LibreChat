@@ -110,10 +110,9 @@ export function MediaReferenceUpload({
         render={
           <Button
             ref={trigger}
-            variant="ghost"
+            variant="composer"
             size="icon-theme"
             shape="round"
-            className="hover:bg-surface-composer-hover"
             aria-label={localize('com_media_upload')}
             disabled={disabled || uploading || (!localAccept && !hostedRoles.length)}
             onClick={() =>
@@ -189,12 +188,12 @@ export function MediaReferenceUpload({
               />
             </div>
             {error && (
-              <p role="alert" className="text-sm text-text-destructive">
+              <p role="alert" className="text-text-destructive text-sm">
                 {error}
               </p>
             )}
             {uploading && (
-              <p role="status" className="flex items-center gap-2 text-sm text-text-secondary">
+              <p role="status" className="text-text-secondary flex items-center gap-2 text-sm">
                 <Spinner className="size-4" />
                 {localize('com_media_reference_loading')}
               </p>
@@ -210,8 +209,8 @@ export function MediaReferenceUpload({
             </OGDialogFooter>
           </form>
           {localAccept && (
-            <div className="space-y-2 border-t border-border-light pt-4">
-              <p className="text-sm text-text-secondary">
+            <div className="border-border-light space-y-2 border-t pt-4">
+              <p className="text-text-secondary text-sm">
                 {localize('com_media_local_reference_hint')}
               </p>
               <Button
