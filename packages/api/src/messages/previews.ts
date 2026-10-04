@@ -183,9 +183,9 @@ function capJsonStrings(value: JsonValue, maxChars: number): JsonValue {
 
 /**
  * Whether the JSON could fit `maxChars` once its strings are capped: every value serializes to
- * at least two characters with its separator, and every string to at least
- * `MIN_JSON_STRING_CHARS`, so a structure with more values or strings than that allows cannot
- * fit at any cap. The walk is iterative, stops as soon as either bound is passed, and treats
+ * at least two characters with its separator, every string to at least `MIN_JSON_STRING_CHARS`,
+ * and property names are never shortened, so a structure with more values, strings or key
+ * characters than that allows cannot fit at any cap. The walk is iterative, stops as soon as either bound is passed, and treats
  * nesting deeper than `MAX_JSON_DEPTH` as unfit, so the cloning and serialization that follow
  * only ever run on small, shallow values.
  */
@@ -194,6 +194,7 @@ function mayFitJson(value: JsonValue, maxChars: number): boolean {
   const maxStrings = Math.floor(maxChars / MIN_JSON_STRING_CHARS);
   let nodes = 0;
   let strings = 0;
+  let keyChars = 0;
   const stack: Array<[JsonValue, number]> = [[value, 0]];
   while (stack.length > 0) {
     const [current, depth] = stack.pop() as [JsonValue, number];
@@ -212,6 +213,10 @@ function mayFitJson(value: JsonValue, maxChars: number): boolean {
       }
     } else if (current != null && typeof current === 'object') {
       for (const key in current) {
+        keyChars += key.length + 3;
+        if (keyChars > maxChars) {
+          return false;
+        }
         stack.push([current[key], depth + 1]);
       }
     }

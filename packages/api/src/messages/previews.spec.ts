@@ -304,6 +304,16 @@ describe('wide or unusual JSON', () => {
     expect(preview.output?.length).toBeLessThanOrEqual(limits.outputChars);
   });
 
+  it('falls back to text for an oversized property name without cloning it', () => {
+    const output = `{"${'k'.repeat(200_000)}":1}`;
+    const stringify = jest.spyOn(JSON, 'stringify');
+    const preview = previewToolCall(toolPart({ output }).tool_call, limits);
+    expect(stringify).not.toHaveBeenCalled();
+    stringify.mockRestore();
+    expect(preview.outputTruncated).toBe(true);
+    expect(preview.output?.length).toBeLessThanOrEqual(limits.outputChars);
+  });
+
   it('keeps a __proto__ key as ordinary data', () => {
     const args = `{"__proto__":{"mode":"x"},"pad":"${'p'.repeat(4_000)}"}`;
     const preview = previewToolCallArgs(args, 512);
