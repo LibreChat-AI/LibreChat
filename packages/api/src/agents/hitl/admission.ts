@@ -138,6 +138,18 @@ export interface ToolApprovalAdmissionInput {
   readonly toolApprovalAllows?: readonly string[];
 }
 
+/** Exact trusted matchers provide case-preserving candidates; other regexes remain unresolved. */
+function literalHookNames(matcher?: string): string[] | undefined {
+  if (!matcher?.startsWith('^') || !matcher.endsWith('$')) return undefined;
+  let pattern = matcher.slice(1, -1);
+  if (pattern.startsWith('(?:') && pattern.endsWith(')')) pattern = pattern.slice(3, -1);
+  else if (pattern.includes('|')) return undefined;
+  const names = pattern.split('|');
+  if (names.some((name) => !/^[A-Za-z0-9 _-]+$/.test(name.replace(/\\[.-]/g, '_'))))
+    return undefined;
+  return names.map((name) => name.replace(/\\([.-])/g, '$1'));
+}
+
 /** Possible catalog spellings are admission hints, never authorization aliases. */
 function unresolvedHookSpellings(name: string, rawServerNames: readonly string[]): string[] {
   if (isActionTool(name) || isMCPAllPlaceholder(name)) return [name];
@@ -460,11 +472,12 @@ export function canAgentGraphPause({
         if (knownCatalog) return [];
         if (selected == null) return names;
         const concrete = selected.filter((name) => !isMCPAllPlaceholder(name));
-        if (wildcardServers.size === 0) return concrete;
         return [
           ...new Set([
             ...concrete,
             ...names.filter((name) => {
+              // Strip the actual matcher spelling, not a guessed casing of the upstream prefix.
+              if (spellings(name).some((candidate) => concrete.includes(candidate))) return true;
               const [, server] = splitMCPToolKey(name, [
                 ...rawNames,
                 ...rawAliases.keys(),
@@ -480,12 +493,26 @@ export function canAgentGraphPause({
           if (hook.agentIds != null && (agent.id == null || !hook.agentIds.has(agent.id)))
             return false;
           if (knownCatalog) return false;
-          const names = hook.toolNames ?? finitePolicyNames;
+          const literalNames = literalHookNames(hook.matcher);
+          const names = hook.toolNames ?? literalNames ?? finitePolicyNames;
           if (names == null) return unboundedHookCanAsk;
-          return (hook.toolNames ?? candidates(names)).some((name) =>
-            canAskAs(name, (possible) =>
-              resolvedToolApprovalHooksCanMatch([hook], possible, agent.id),
-            ),
+          if (
+            (hook.toolNames ?? candidates(names)).some((name) =>
+              canAskAs(name, (possible) =>
+                resolvedToolApprovalHooksCanMatch([hook], possible, agent.id),
+              ),
+            )
+          )
+            return true;
+          if (hook.toolNames != null || literalNames != null || hook.matcher == null) return false;
+          try {
+            new RegExp(hook.matcher);
+          } catch {
+            return false;
+          }
+          // A catalog-free case-insensitive prefix can match a nonliteral regex in unknown casing.
+          return candidates(finitePolicyNames ?? []).some(
+            (name) => spellings(name).length > 1 && canAskAs(name, () => true),
           );
         }) ||
         (pluginHookCanAsk &&
@@ -495,7 +522,9 @@ export function canAgentGraphPause({
             : candidates(finitePolicyNames).some((name) =>
                 canAskAs(
                   name,
-                  (possible) => pluginHookSource?.hasToolApprovalHooks?.(possible) === true,
+                  (possible) =>
+                    pluginHookSource?.hasToolApprovalHooks?.(possible) === true ||
+                    spellings(name).length > 1,
                 ),
               )))
       );

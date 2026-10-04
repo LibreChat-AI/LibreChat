@@ -2485,57 +2485,62 @@ describe('AgentClient - startup telemetry', () => {
     },
   );
 
-  it('refuses unresolved legacy-hook schedules before provider startup under canonical dontAsk allow', async () => {
-    mockIsHITLEnabled.mockReturnValue(true);
-    const hook = jest.fn(async () => ({ decision: 'ask' }));
-    const unregister = registerToolApprovalHook(() => hook, { matcher: '^db_query_mcp_db$' });
-    const createRunBefore = mockCreateRun.mock.calls.length;
-    const client = new AgentClient({
-      req: {
-        user: { id: 'user-123' },
-        body: {},
-        config: {
-          endpoints: {
-            [EModelEndpoint.agents]: {
-              toolApproval: {
-                enabled: true,
-                mode: 'dontAsk',
-                allow: ['query_mcp_db', 'subagent'],
+  it.each(['db', 'Db', 'dB', 'DB'])(
+    'refuses unresolved %s legacy-hook schedules before provider startup under canonical dontAsk allow',
+    async (prefix) => {
+      mockIsHITLEnabled.mockReturnValue(true);
+      const hook = jest.fn(async () => ({ decision: 'ask' }));
+      const unregister = registerToolApprovalHook(() => hook, {
+        matcher: `^${prefix}_query_mcp_db$`,
+      });
+      const createRunBefore = mockCreateRun.mock.calls.length;
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: {},
+          config: {
+            endpoints: {
+              [EModelEndpoint.agents]: {
+                toolApproval: {
+                  enabled: true,
+                  mode: 'dontAsk',
+                  allow: ['query_mcp_db', 'subagent'],
+                },
               },
             },
           },
+          _isScheduledFire: true,
+          _resumableStreamId: 'scheduled-legacy-hook',
         },
-        _isScheduledFire: true,
-        _resumableStreamId: 'scheduled-legacy-hook',
-      },
-      res: {},
-      agent: {
-        id: 'agent-123',
-        endpoint: EModelEndpoint.openAI,
-        provider: EModelEndpoint.openAI,
-        model_parameters: { model: 'gpt-4' },
-        tools: [{ name: 'subagent' }],
-        lazySubagentConfigs: [{ id: 'lazy-child', tools: ['db_query_mcp_db'] }],
-      },
-      endpointTokenConfig: {},
-      eventHandlers: {},
-      contentParts: [],
-      collectedUsage: [],
-      artifactPromises: [],
-    });
-    client.conversationId = 'scheduled-legacy-hook';
-    client.responseMessageId = 'scheduled-legacy-hook-response';
-    client.parentMessageId = 'scheduled-legacy-hook-parent';
-    try {
-      await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-        code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          model_parameters: { model: 'gpt-4' },
+          tools: [{ name: 'subagent' }],
+          lazySubagentConfigs: [{ id: 'lazy-child', tools: ['query_mcp_db'] }],
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts: [],
+        collectedUsage: [],
+        artifactPromises: [],
       });
-      expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
-      expect(hook).not.toHaveBeenCalled();
-    } finally {
-      unregister();
-    }
-  });
+      client.conversationId = 'scheduled-legacy-hook';
+      client.responseMessageId = 'scheduled-legacy-hook-response';
+      client.parentMessageId = 'scheduled-legacy-hook-parent';
+      try {
+        await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
+          code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
+        });
+        expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+        expect(hook).not.toHaveBeenCalled();
+      } finally {
+        unregister();
+      }
+    },
+  );
 
   it('uses request-scoped hook resolution when deciding whether a scheduled run can pause', async () => {
     mockIsHITLEnabled.mockReturnValue(true);
