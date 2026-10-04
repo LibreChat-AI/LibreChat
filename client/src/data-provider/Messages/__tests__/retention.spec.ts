@@ -212,6 +212,38 @@ describe('retainMessages', () => {
     expect(isCached(queryClient, 'running')).toBe(false);
   });
 
+  it('keeps exempt histories without polling them', () => {
+    stop();
+    stop = retainMessages(queryClient, {
+      isPinned: () => false,
+      isExempt: (id) => id === 'assistant',
+      recent: 0,
+    });
+    visit(queryClient, 'assistant');
+
+    jest.advanceTimersByTime(RELEASE_SETTLE_MS);
+
+    expect(isCached(queryClient, 'assistant')).toBe(true);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('leaves a fetching history alone at startup instead of re-arming it', async () => {
+    stop();
+    queryClient.clear();
+    let signal: AbortSignal | undefined;
+    const pending = queryClient.fetchQuery([QueryKeys.messages, 'sharing'], (context) => {
+      signal = context.signal;
+      return new Promise<TMessage[]>(() => undefined);
+    });
+    stop = retainMessages(queryClient, { isPinned: () => false });
+
+    expect(signal?.aborted).toBe(false);
+    expect(queryClient.getQueryState([QueryKeys.messages, 'sharing'])?.fetchStatus).toBe(
+      'fetching',
+    );
+    void pending.catch(() => undefined);
+  });
+
   it('restores the messages query defaults on cleanup', () => {
     expect(queryClient.getQueryDefaults([QueryKeys.messages])?.cacheTime).toBe(Infinity);
     stop();

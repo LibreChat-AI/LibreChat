@@ -16,6 +16,10 @@ export type MessagesRetentionOptions = {
   /** Conversations whose history must stay regardless of age, such as the routed conversation
    *  or one whose job is still running. Read at release time, so it sees live state. */
   isPinned: (conversationId: string) => boolean;
+  /** Conversations whose history is never released, for a reason that does not lapse on its
+   *  own (such as an Assistants thread id that deletion reads from the cache). Unlike pins,
+   *  these are not polled. */
+  isExempt?: (conversationId: string) => boolean;
   /** How many of the most recently left conversations keep their history for `ttlMs`. */
   recent?: number;
   /** How long a left conversation's history stays cached. */
@@ -48,9 +52,10 @@ function historyConversationId(query: Query): string | null {
   return conversationId;
 }
 
-/** React Query only reschedules a query's collection when its observers change, so a history
- *  already counting down keeps its old timer. A momentary observer re-arms it under the new
- *  `cacheTime`, which for `Infinity` cancels it. */
+/** React Query only reschedules a query's collection when its observers change or a fetch
+ *  settles, so a history already counting down keeps its old timer. A momentary observer
+ *  re-arms it under the new `cacheTime`, which for `Infinity` cancels it. A fetching history is
+ *  left alone: removing its last observer would cancel the request, and settling re-arms it. */
 function rearmCollection(queryClient: QueryClient, query: Query): void {
   const observer = new QueryObserver(queryClient, { queryKey: query.queryKey, enabled: false });
   observer.subscribe(() => undefined)();
@@ -69,8 +74,9 @@ const newestFirst = (a: IdleHistory, b: IdleHistory): number => b.leftAt - a.lef
  * While active this module therefore owns their lifetime: per-conversation histories get an
  * infinite `cacheTime`, so React Query never collects one this policy still retains.
  *
- * A history is released once it has no observers, is not fetching, is not pinned, and is either
- * older than `ttlMs` since it was left or beyond the `recent` most recently left conversations.
+ * A history is released once it has no observers, is not fetching, is neither pinned nor exempt,
+ * and is either older than `ttlMs` since it was left or beyond the `recent` most recently left
+ * conversations.
  * Releases wait while any mutation is pending, since mutation callbacks write into these caches.
  * Returning to a released conversation mounts a fresh query, which fetches the history again.
  *
@@ -81,6 +87,7 @@ export function retainMessages(
   queryClient: QueryClient,
   {
     isPinned,
+    isExempt = () => false,
     recent = DEFAULT_HISTORY_CACHE_RECENT,
     ttlMs = DEFAULT_HISTORY_CACHE_TTL_MS,
   }: MessagesRetentionOptions,
@@ -94,7 +101,7 @@ export function retainMessages(
       return;
     }
     query.cacheTime = Infinity;
-    if (query.getObserversCount() === 0) {
+    if (query.getObserversCount() === 0 && query.state.fetchStatus === 'idle') {
       rearmCollection(queryClient, query);
     }
   });
@@ -136,6 +143,9 @@ export function retainMessages(
     }
     const now = Date.now();
     const candidates = collectIdle(now).filter((entry) => {
+      if (isExempt(entry.conversationId)) {
+        return false;
+      }
       if (entry.query.state.fetchStatus === 'idle' && !isPinned(entry.conversationId)) {
         return true;
       }

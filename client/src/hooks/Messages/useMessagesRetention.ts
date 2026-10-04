@@ -43,8 +43,8 @@ export default function useMessagesRetention(): void {
         recent,
         isPinned: (conversationId) =>
           conversationId === routeConversationIdRef.current ||
-          hasActiveJob(queryClient, conversationId) ||
-          carriesAssistantThread(queryClient, conversationId),
+          hasActiveJob(queryClient, conversationId),
+        isExempt: (conversationId) => carriesAssistantThread(queryClient, conversationId),
       }),
     [queryClient, ttlMs, recent],
   );
