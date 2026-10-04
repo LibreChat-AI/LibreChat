@@ -42,11 +42,13 @@ function createProbe(
   binding: string | null = 'source-one',
   upstreamName = 'echo',
   reviewAuthority?: string,
+  beforeSend?: () => Promise<void>,
 ) {
   const probe = Object.assign(
     createMCPStructuredTool(
       async (input) => {
         const { text } = z.object({ text: z.string() }).parse(input);
+        await beforeSend?.();
         executions++;
         const raw = { content: [{ type: 'text' as const, text }], isError: protocolError };
         return markMCPToolResultError(formatToolContent(raw, 'openai'), raw.isError);
@@ -2359,4 +2361,104 @@ for (const eventDriven of [false, true]) {
       }
     },
   );
+}
+
+for (const eventDriven of [false, true]) {
+  for (const mode of ['ask', 'chat', 'always'] as const) {
+    test.each(['unavailable', 'recovered', 'invoke-outage'] as const)(
+      `${mode} reviewed non-OAuth SDK execution remains once-only during %s; event-driven=${eventDriven}`,
+      async (stage) => {
+        const chat = `outage-${mode}-${stage}-${eventDriven}`;
+        const toolDefinition = definition();
+        bindToolApproval(toolDefinition, 'source-one', undefined, undefined, undefined, 'other');
+        const probe = createProbe('source-one', 'echo', undefined, async () => {
+          await assertToolApprovalTransportEpoch('fixture', null, true);
+          await assertToolApprovalTransportEpoch('fixture', null, true);
+        });
+        bindToolApproval(probe, 'source-one', undefined, undefined, undefined, 'other');
+        const source: AgentApprovalSource = {
+          id: 'agent-a',
+          tool_options: {
+            [name]: {
+              approval_mode: mode,
+              approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+            },
+          },
+          toolDefinitions: [toolDefinition],
+        };
+        const saver = new MemorySaver();
+        let unavailable = stage !== 'invoke-outage';
+        const realLookup = storage.getToolApprovalGrants.bind(storage);
+        const failedStorage: ToolApprovalGrantStorage = {
+          ...storage,
+          getToolApprovalGrants: async (...args) => {
+            if (unavailable) throw new Error('synthetic grant-store outage');
+            return realLookup(...args);
+          },
+        };
+        const session = (reviewed?: ReviewedToolApprovals) =>
+          createAgentToolApprovalSession({
+            agents: [source],
+            scope: { userId: '652000000000000000000001', conversationId: chat },
+            storage: failedStorage,
+            reviewed,
+          });
+        const first = await build({
+          source,
+          chat,
+          saver,
+          eventDriven,
+          executionTool: probe,
+          callId: 'outage-call',
+          sharedSession: session(),
+        });
+        await first.processStream(
+          { messages: [new HumanMessage('review this call')] },
+          config(chat),
+        );
+        const payload = first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload;
+        const bindings = captureRunToolApprovalBindings(first, payload)!;
+        expect(bindings['outage-call'].oauthEpoch).toBeNull();
+        if (stage !== 'invoke-outage')
+          expect(bindings['outage-call']).toMatchObject({
+            canRemember: false,
+            unavailable: 'storage',
+          });
+        if (stage === 'recovered') unavailable = false;
+        const resumed = await build({
+          source,
+          chat,
+          saver,
+          eventDriven,
+          executionTool: probe,
+          sharedSession: session({
+            bindings,
+            decisions: [{ tool_call_id: 'outage-call', decision: 'approve' }],
+          }),
+          beforeExecution:
+            stage === 'invoke-outage'
+              ? async () => {
+                  unavailable = true;
+                }
+              : undefined,
+        });
+        await resumed.resume({ 'outage-call': { type: 'approve' } }, config(chat));
+        expect(executions).toBe(1);
+        expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+        unavailable = false;
+        const next = await build({
+          source,
+          chat,
+          saver: new MemorySaver(),
+          eventDriven,
+          executionTool: probe,
+          callId: 'next-call',
+          sharedSession: session(),
+        });
+        await next.processStream({ messages: [new HumanMessage('new call')] }, config(chat));
+        expect(next.getInterrupt()?.payload.type).toBe('tool_approval');
+        expect(executions).toBe(1);
+      },
+    );
+  }
 }

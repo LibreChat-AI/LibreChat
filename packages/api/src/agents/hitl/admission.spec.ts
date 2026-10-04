@@ -1,4 +1,5 @@
 import { Constants } from 'librechat-data-provider';
+import { createToolPolicyHook } from '@librechat/agents';
 import type { AgentToolOptions } from 'librechat-data-provider';
 import type { PluginHookSource } from '~/agents/hooks/source';
 import type { ToolApprovalAdmissionAgent } from './admission';
@@ -10,6 +11,7 @@ import {
 } from './admission';
 import { loadToolDefinitions } from '~/tools/definitions';
 import { formatMCPServerTools } from '~/mcp/tools';
+import { mapToolApprovalPolicy } from './policy';
 
 const askHook: ToolApprovalHook = async () => ({ decision: 'ask' });
 
@@ -894,6 +896,72 @@ test('MCP capability filtering keeps action-classified keys with MCP text under 
     canAgentGraphPause({
       policy: { ...policy, deny: [action] },
       agents: [{ lazySubagentConfigs: [descriptor] }],
+    }),
+  ).toBe(false);
+});
+
+for (const mode of ['ask', 'chat', 'always'] as const) {
+  test.each(['selected', 'inverse', 'legacy', 'wildcard', 'unknown'] as const)(
+    `${mode} agent modes cannot override dontAsk fallback in %s admission`,
+    async (surface) => {
+      let tools: string[] | undefined = ['query_mcp_db'];
+      let option = 'query_mcp_db';
+      if (surface === 'inverse') option = 'db_query_mcp_db';
+      if (surface === 'legacy') tools = ['db_query_mcp_db'];
+      if (surface === 'wildcard') tools = [`${Constants.mcp_all}${Constants.mcp_delimiter}db`];
+      if (surface === 'unknown') tools = undefined;
+      const descriptor = copyToolApprovalAdmissionMetadata(
+        { id: 'child' },
+        { tools, tool_options: { [option]: { approval_mode: mode } } },
+        { rawMcpServerNames: ['db'] },
+      );
+      const policy = { enabled: true, mode: 'dontAsk' as const, allow: ['safe_mcp_other'] };
+      const agents = [{ tools: ['safe_mcp_other'], lazySubagentConfigs: [descriptor] }];
+      expect(canAgentGraphPause({ policy, agents })).toBe(false);
+      const baseline = await createToolPolicyHook(mapToolApprovalPolicy(policy)!)(
+        {
+          hook_event_name: 'PreToolUse',
+          runId: 'test',
+          toolName: 'query_mcp_db',
+          toolUseId: 'call',
+          toolInput: {},
+        },
+        new AbortController().signal,
+      );
+      expect(baseline.decision).toBe('deny');
+      for (const exception of ['allow', 'ask'] as const) {
+        const allowed = { ...policy, [exception]: ['query*_mcp_db', 'db_query_mcp_db'] };
+        expect(canAgentGraphPause({ policy: allowed, agents })).toBe(true);
+        expect(canAgentGraphPause({ policy: { ...allowed, deny: ['*'] }, agents })).toBe(false);
+      }
+    },
+  );
+}
+
+test('verified alias and conversation allows are evaluated before fallback-denied review modes', () => {
+  const policy = {
+    enabled: true,
+    mode: 'dontAsk' as const,
+    allowAlways: true,
+    allow: ['safe_mcp_db'],
+  };
+  const agent = {
+    tools: ['query_mcp_db', 'safe_mcp_db'],
+    tool_options: { query_mcp_db: { approval_mode: 'chat' as const } },
+    mcpToolAliases: [{ name: 'query_mcp_db', aliasName: 'db_query_mcp_db' }],
+  };
+  expect(canAgentGraphPause({ policy, agents: [agent] })).toBe(false);
+  expect(
+    canAgentGraphPause({ policy: { ...policy, allow: ['db_query_mcp_db'] }, agents: [agent] }),
+  ).toBe(true);
+  expect(
+    canAgentGraphPause({ policy, agents: [agent], toolApprovalAllows: ['query_mcp_db'] }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, deny: ['db_query_mcp_db'] },
+      agents: [agent],
+      toolApprovalAllows: ['query_mcp_db'],
     }),
   ).toBe(false);
 });

@@ -1036,3 +1036,156 @@ test('a fresh inherited call with a reused ID retires only the old detached prop
   await expect(session.validateTransport!('db', null, fresh, false)).resolves.toBeUndefined();
   expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
 });
+
+for (const mode of ['ask', 'chat', 'always'] as const) {
+  test.each(['pause-outage', 'invoke-outage', 'recovered', 'timeout'] as const)(
+    `${mode} explicit non-OAuth foreground consent survives grant-store %s without learning`,
+    async (stage) => {
+      const source = agent(mode);
+      const definition = source.toolDefinitions![0];
+      bindToolApproval(definition, 'source-a', undefined, undefined, undefined, 'other');
+      const storage = store();
+      const healthy = storage.getToolApprovalGrants;
+      let unavailable = stage !== 'invoke-outage';
+      if (stage === 'timeout') jest.useFakeTimers();
+      storage.getToolApprovalGrants = jest.fn(async (...args) => {
+        if (!unavailable) return healthy(...args);
+        if (stage === 'timeout') return new Promise(() => {});
+        throw new Error('synthetic grant-store outage');
+      });
+      const wait = async <T>(promise: T | Promise<T>): Promise<T> => {
+        if (stage === 'timeout') await jest.advanceTimersByTimeAsync(20);
+        return promise;
+      };
+      try {
+        const first = createAgentToolApprovalSession({
+          agents: [source],
+          scope,
+          storage,
+          lookupTimeoutMs: 20,
+        });
+        expect(await wait(first.hook(input(), new AbortController().signal))).toMatchObject({
+          decision: 'ask',
+        });
+        const bindings = first.bindingsFor(
+          buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+        );
+        expect(bindings['call-a'].oauthEpoch).toBeNull();
+        if (stage !== 'invoke-outage')
+          expect(bindings['call-a']).toMatchObject({ canRemember: false, unavailable: 'storage' });
+        if (stage === 'recovered') unavailable = false;
+        const session = createAgentToolApprovalSession({
+          agents: [source],
+          scope,
+          storage,
+          lookupTimeoutMs: 20,
+          reviewed: { bindings, decisions: [{ tool_call_id: 'call-a', decision: 'approve' }] },
+        });
+        expect(await wait(session.hook(input(), new AbortController().signal))).not.toMatchObject({
+          decision: 'deny',
+        });
+        if (stage === 'invoke-outage') unavailable = true;
+        const invocation = { agentId: source.id, toolCallId: 'call-a' };
+        await expect(
+          wait(session.validateExecution(definition, invocation)),
+        ).resolves.toBeUndefined();
+        unavailable = false;
+        await expect(
+          session.validateTransport!('db', null, invocation, true),
+        ).resolves.toBeUndefined();
+        await expect(session.validateTransport!('other', null, invocation, false)).rejects.toThrow(
+          'authorization changed',
+        );
+        await expect(
+          session.validateTransport!('db', 'new-account', invocation, false),
+        ).rejects.toThrow('authorization changed');
+        await session.rememberHook(
+          { ...input(), hook_event_name: 'PostToolUse', toolOutput: 'success' },
+          new AbortController().signal,
+        );
+        expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+        expect(
+          await wait(session.hook(input('agent-a', 'later'), new AbortController().signal)),
+        ).toMatchObject({ decision: 'ask' });
+      } finally {
+        if (stage === 'timeout') jest.useRealTimers();
+      }
+    },
+  );
+}
+
+for (const authKind of ['oauth', undefined] as const) {
+  test(`an outage cannot authorize unknown or OAuth identity (${authKind})`, async () => {
+    const source = agent('chat');
+    bindToolApproval(
+      source.toolDefinitions![0],
+      'source-a',
+      undefined,
+      undefined,
+      undefined,
+      authKind,
+    );
+    const storage = store();
+    storage.getToolApprovalGrants = async () => {
+      throw new Error('synthetic outage');
+    };
+    const first = createAgentToolApprovalSession({ agents: [source], scope, storage });
+    await first.hook(input(), new AbortController().signal);
+    const bindings = first.bindingsFor(
+      buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+    );
+    const session = createAgentToolApprovalSession({
+      agents: [source],
+      scope,
+      storage,
+      reviewed: { bindings, decisions: [{ tool_call_id: 'call-a', decision: 'approve' }] },
+    });
+    await session.hook(input(), new AbortController().signal);
+    await expect(
+      session.validateExecution(source.toolDefinitions![0], {
+        agentId: source.id,
+        toolCallId: 'call-a',
+      }),
+    ).rejects.toThrow('authorization changed');
+  });
+}
+
+test.each(['approve', 'edit'] as const)(
+  'outage fallback is foreground-only for %s and cannot be used without a captured review',
+  async (decision) => {
+    const source = agent('chat');
+    const definition = source.toolDefinitions![0];
+    bindToolApproval(definition, 'source-a', undefined, undefined, undefined, 'other');
+    const storage = store();
+    storage.getToolApprovalGrants = async () => {
+      throw new Error('synthetic outage');
+    };
+    const first = createAgentToolApprovalSession({ agents: [source], scope, storage });
+    await first.hook(input(), new AbortController().signal);
+    await expect(
+      first.validateExecution(definition, { agentId: source.id, toolCallId: 'call-a' }),
+    ).rejects.toThrow('authorization changed');
+    const bindings = first.bindingsFor(
+      buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+    );
+    const session = createAgentToolApprovalSession({
+      agents: [source],
+      scope,
+      storage,
+      reviewed: { bindings, decisions: [{ tool_call_id: 'call-a', decision }] },
+    });
+    await session.hook(input(), new AbortController().signal);
+    await expect(
+      session.validateExecution(definition, {
+        agentId: source.id,
+        toolCallId: 'call-a',
+        background: true,
+      }),
+    ).rejects.toThrow('authorization changed');
+    await session.hook(input(), new AbortController().signal);
+    await expect(
+      session.validateExecution(definition, { agentId: source.id, toolCallId: 'call-a' }),
+    ).resolves.toBeUndefined();
+    expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+  },
+);

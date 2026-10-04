@@ -12,7 +12,13 @@ import type { PluginHookSource } from '~/agents/hooks/source';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { SkillPrimeWithTools } from '~/agents/skills';
 import type { ResolvedToolApprovalHook } from './hooks';
-import { isHITLEnabled, isToolApprovalPauseCapable, isToolDeniedByApprovalPolicy } from './policy';
+import {
+  isHITLEnabled,
+  isToolApprovalPauseCapable,
+  isToolDeniedByApprovalPolicy,
+  isToolBlockedByApprovalPolicy,
+  healToolApprovalPolicy,
+} from './policy';
 import { selectSkillPrimesForTurn, unionPrimeAllowedTools } from '~/agents/skills';
 import { isMCPAllPlaceholder, normalizeAgentToolKeys } from '~/mcp/utils';
 import { ASK_USER_QUESTION_TOOL_NAME } from './askUserQuestionTool';
@@ -173,8 +179,15 @@ function createUnresolvedReviewMatcher(
     }
     return false;
   };
-  const originalNames = new Set<string>();
-  const strippedNames = new Set<string>();
+  const originalNames = new Map<string, string[]>();
+  const strippedNames = new Map<string, string[]>();
+  const index = (names: Map<string, string[]>, key: string, name: string) => {
+    const entries = names.get(key) ?? [];
+    entries.push(name);
+    names.set(key, entries);
+  };
+  const canReview = (name: string, aliasName = name) =>
+    !isToolBlockedByApprovalPolicy(healToolApprovalPolicy(policy, [{ name, aliasName }]), name);
   const reviewServers = new Set<string>();
   let unknownCanAsk = false;
   for (const [name, option] of Object.entries(options)) {
@@ -184,12 +197,16 @@ function createUnresolvedReviewMatcher(
       isToolDeniedByApprovalPolicy(policy, name)
     )
       continue;
-    unknownCanAsk = true;
+    unknownCanAsk ||= canReview(name);
     visitParts(name, (tool, server) => {
-      reviewServers.add(resolveServer(server));
-      originalNames.add(key(server, tool));
+      index(originalNames, key(server, tool), name);
       const stripped = stripServerNamePrefix(tool, normalizeServerName(server));
-      if (stripped !== tool) strippedNames.add(key(server, stripped));
+      const canonical = `${stripped}${Constants.mcp_delimiter}${server}`;
+      if (canReview(name, canonical) || canReview(canonical, name)) {
+        reviewServers.add(resolveServer(server));
+        unknownCanAsk = true;
+      }
+      if (stripped !== tool) index(strippedNames, key(server, stripped), name);
       return false;
     });
   }
@@ -201,9 +218,13 @@ function createUnresolvedReviewMatcher(
     }
     if (options[name] != null || isToolDeniedByApprovalPolicy(policy, name)) return false;
     return visitParts(name, (tool, server) => {
-      if (strippedNames.has(key(server, tool))) return true;
+      if (strippedNames.get(key(server, tool))?.some((alias) => canReview(name, alias)))
+        return true;
       const stripped = stripServerNamePrefix(tool, normalizeServerName(server));
-      return stripped !== tool && originalNames.has(key(server, stripped));
+      return (
+        stripped !== tool &&
+        originalNames.get(key(server, stripped))?.some((alias) => canReview(name, alias)) === true
+      );
     });
   };
 }
@@ -323,7 +344,7 @@ export function canAgentGraphPause({
     ) {
       const canAsk = createUnresolvedReviewMatcher(
         options,
-        policy,
+        buildEffectiveToolApprovalPolicy(policy, surface.mcpToolAliases ?? [], toolApprovalAllows),
         reachable,
         surface.rawMcpServerNames,
       );
@@ -339,8 +360,8 @@ export function canAgentGraphPause({
 
   const effectivePolicy = buildEffectiveToolApprovalPolicy(policy, aliases, toolApprovalAllows);
   const knownToolCanPause = Array.from(toolOwners).some(([toolName, agentIds]) => {
-    if (reviewGatedTools.has(toolName) && !isToolDeniedByApprovalPolicy(effectivePolicy, toolName))
-      return true;
+    if (isToolBlockedByApprovalPolicy(effectivePolicy, toolName)) return false;
+    if (reviewGatedTools.has(toolName)) return true;
     const matcherNames = [toolName, ...(aliasesByToolName.get(toolName) ?? [])];
     const pluginHookCanAsk = pluginHookSource?.hasToolApprovalHooks?.([toolName]) === true;
     return Array.from(agentIds).some((agentId) => {

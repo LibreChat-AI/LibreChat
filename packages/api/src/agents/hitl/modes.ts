@@ -228,7 +228,7 @@ export function createAgentToolApprovalSession({
   const dispositions = new Map<string, boolean>();
   const transportWitnesses = new Map<
     symbol,
-    { consent?: ToolApprovalGrantBinding; automatic: boolean }
+    { consent?: ToolApprovalGrantBinding; automatic: boolean; reviewOnly?: boolean }
   >();
   const retireCall = (key: string, ownership?: symbol, keepTransport = false): void => {
     const proposal = proposals.get(key);
@@ -411,7 +411,11 @@ export function createAgentToolApprovalSession({
         throw new Error('Tool approval invocation ownership changed. Request approval again.');
       }
       invocation.ownership = proposal.ownership;
-      const pinTransport = (consent?: ToolApprovalGrantBinding, automatic = false) => {
+      const pinTransport = (
+        consent?: ToolApprovalGrantBinding,
+        automatic = false,
+        reviewOnly = false,
+      ) => {
         if (proposals.get(key)?.ownership !== invocation.ownership) {
           throw new Error('Tool approval invocation ownership changed. Request approval again.');
         }
@@ -419,6 +423,7 @@ export function createAgentToolApprovalSession({
         transportWitnesses.set(proposal.ownership, {
           consent: consent && { ...consent },
           automatic,
+          reviewOnly,
         });
       };
       policyChecks.delete(key);
@@ -467,11 +472,30 @@ export function createAgentToolApprovalSession({
       }
       const consent = calls.get(key);
       const current = consent && (await approved(consent));
+      const manual = reviewedBindings.get(key);
+      // Grant-store availability is not one-time authority for verified non-OAuth calls.
+      const reviewOnly =
+        invocation.background !== true &&
+        manual?.authKind === 'other' &&
+        consent?.authKind === 'other' &&
+        getToolApprovalAuthKind(tool) === 'other' &&
+        actualIdentity != null &&
+        getToolReviewAuthority(tool) != null &&
+        manual.binding === consent.binding &&
+        manual.oauthEpoch === null &&
+        consent.oauthEpoch === null &&
+        permittedDecisions.has(key) &&
+        (manual.unavailable === 'storage' ||
+          manual.unavailable === 'disabled' ||
+          current?.available === false ||
+          current?.oauthEpoch === undefined);
+      if (reviewOnly) ready.delete(key);
       if (
-        !current ||
-        current.available === false ||
-        current.oauthEpoch === undefined ||
-        current.oauthEpoch !== consent?.oauthEpoch
+        !reviewOnly &&
+        (!current ||
+          current.available === false ||
+          current.oauthEpoch === undefined ||
+          current.oauthEpoch !== consent?.oauthEpoch)
       ) {
         throw new Error('The MCP OAuth authorization changed. Request approval again.');
       }
@@ -486,7 +510,7 @@ export function createAgentToolApprovalSession({
         const reviewTarget = owner && scope && resolveToolReviewBinding(owner, tool.name, scope);
         if (callId && reviewTarget && calls.has(key) && permittedDecisions.has(key)) {
           permittedDecisions.delete(key);
-          pinTransport(consent ?? undefined);
+          pinTransport(consent ?? undefined, false, reviewOnly);
           return;
         }
         throw new Error('Tool approval is required. Run this tool in the foreground for review.');
@@ -496,22 +520,22 @@ export function createAgentToolApprovalSession({
         if (callId) ready.delete(key);
         throw new Error('The approved MCP tool or connection changed. Request approval again.');
       }
-      const manual = reviewedBindings.get(key);
       if (manual && permittedDecisions.has(key) && manual.binding === actual.binding) {
         permittedDecisions.delete(key);
         if (
           invocation.background !== true &&
           manual.canRemember === true &&
+          !reviewOnly &&
           approvedDecisions.has(key)
         )
           executed.add(key);
-        pinTransport(consent ?? undefined);
+        pinTransport(consent ?? undefined, false, reviewOnly);
         return;
       }
       if (expected.scope === 'once' || baseline?.decision === 'ask') {
         throw new Error('Tool approval is required. Run this tool in the foreground for review.');
       }
-      if (!current.approved || !storage) {
+      if (!current?.approved || !storage) {
         ready.delete(key);
         throw new Error('Tool approval is required or was revoked. Request approval again.');
       }
@@ -541,7 +565,7 @@ export function createAgentToolApprovalSession({
           'The approved MCP OAuth authorization changed before transport dispatch. Request approval again.',
         );
       }
-      if (checkStorage) {
+      if (checkStorage && !witness.reviewOnly) {
         const current = await approved(consent);
         if (
           current.available === false ||
@@ -615,7 +639,7 @@ export function createAgentToolApprovalSession({
       const status = target ? await approved(target) : undefined;
       if (target) {
         target.executionScope = executionScope;
-        target.oauthEpoch = status?.oauthEpoch;
+        target.oauthEpoch = target.authKind === 'other' ? null : status?.oauthEpoch;
         target.revocation = status?.revocation;
         target.consentBinding = status?.consentBinding;
       }
