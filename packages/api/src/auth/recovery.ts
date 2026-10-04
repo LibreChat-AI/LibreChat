@@ -2,6 +2,12 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { StoredTwoFactorAccount, TwoFactorBackupCode } from './twoFactor';
 import type { UserDocumentId } from './verification';
 
+interface BackupCodeVerificationParams {
+  user: StoredTwoFactorAccount;
+  backupCode: string;
+  persist?: boolean;
+}
+
 /** 160-bit secrets match the recommended HMAC-SHA1 key size. */
 export function generateTOTPSecret(): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -24,7 +30,10 @@ function digest(code: string, salt = ''): string {
 }
 
 /** High-entropy recovery credentials do not require password-style key stretching. */
-export async function generateBackupCodes(count = 10) {
+export async function generateBackupCodes(count = 10): Promise<{
+  plainCodes: string[];
+  codeObjects: TwoFactorBackupCode[];
+}> {
   const plainCodes: string[] = [];
   const codeObjects: TwoFactorBackupCode[] = [];
   for (let i = 0; i < count; i++) {
@@ -63,16 +72,12 @@ export function createBackupCodeVerifier(
     id: UserDocumentId,
     update: { backupCodes: TwoFactorBackupCode[] },
   ) => Promise<unknown>,
-) {
+): (params: BackupCodeVerificationParams) => Promise<boolean> {
   return async ({
     user,
     backupCode,
     persist = true,
-  }: {
-    user: StoredTwoFactorAccount;
-    backupCode: string;
-    persist?: boolean;
-  }): Promise<boolean> => {
+  }: BackupCodeVerificationParams): Promise<boolean> => {
     if (typeof backupCode !== 'string' || !user || !Array.isArray(user.backupCodes)) {
       return false;
     }
