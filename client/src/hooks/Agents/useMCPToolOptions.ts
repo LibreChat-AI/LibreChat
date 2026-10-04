@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
-import { v4 as uuidv4 } from 'uuid';
 import { useFormContext, useWatch } from 'react-hook-form';
+import { v4 as uuidv4, validate as validateUUID } from 'uuid';
 import type {
   AgentToolOptions,
   AllowedCaller,
@@ -158,7 +158,13 @@ export function withApprovalModes(
 ): AgentToolOptions {
   let updated = options;
   for (const toolId of toolIds) {
-    if (options[toolId]?.approval_mode === mode) continue;
+    const current = options[toolId];
+    const remembered = mode === 'chat' || mode === 'always';
+    if (
+      current?.approval_mode === mode &&
+      (!remembered || validateUUID(current.approval_revision ?? ''))
+    )
+      continue;
     if (updated === options) updated = { ...options };
     const { approval_mode: _mode, approval_revision: _revision, ...rest } = options[toolId] ?? {};
     if (mode != null) {

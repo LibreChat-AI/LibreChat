@@ -523,12 +523,12 @@ export function createUserMethods(
   async function deleteUserById(userId: string): Promise<UserDeleteResult> {
     try {
       const User = mongoose.models.User;
+      await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
       const result = await User.deleteOne({ _id: userId });
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
       }
       await invalidateAuthUserDocCache(userId);
-      await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
       return { deletedCount: result.deletedCount, message: 'User was deleted successfully.' };
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';

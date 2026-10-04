@@ -3,13 +3,7 @@ const { logger, getTenantId } = require('@librechat/data-schemas');
 const { Providers, Constants: AgentConstants } = require('@librechat/agents');
 const {
   sendEvent,
-  buildMCPToolApprovalBinding,
-  getMCPToolApprovalAuthKind,
-  bindToolApproval,
-  bindToolApprovalIdentity,
-  bindToolReviewAuthority,
-  buildMCPToolReviewAuthority,
-  createSafeUser,
+  createMCPToolApprovalMetadata,
   PENDING_STALE_MS,
   MCPOAuthHandler,
   MCPTokenStorage,
@@ -1492,32 +1486,17 @@ function createToolInstance({
   });
   toolInstance.mcp = true;
   toolInstance.mcpRawServerName = serverName;
-  bindToolApproval(
-    toolInstance,
-    buildMCPToolApprovalBinding(serverName, capturedServerConfig),
-    currentToolName != null
-      ? `${currentToolName}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`
-      : normalizedToolKey,
-    undefined,
-    undefined,
-    getMCPToolApprovalAuthKind(capturedServerConfig),
-  );
-  bindToolReviewAuthority(
-    toolInstance,
-    buildMCPToolReviewAuthority({
-      serverName,
-      config: capturedServerConfig,
-      user: createSafeUser(capturedUser),
-      body: capturedRequestBody,
-      customUserVars: capturedCustomUserVars,
-    }),
-  );
-  bindToolApprovalIdentity(
-    toolInstance,
-    serverToolName,
-    normalizeJsonSchema(resolveJsonSchemaRefs(parameters ?? { type: 'object', properties: {} })),
-    description || undefined,
-  );
+  createMCPToolApprovalMetadata().bindInstance(toolInstance, {
+    serverName,
+    config: capturedServerConfig,
+    user: capturedUser,
+    body: capturedRequestBody,
+    customUserVars: capturedCustomUserVars,
+    currentToolName,
+    upstreamName: serverToolName,
+    parameters,
+    description,
+  });
   if (serverToolName !== toolName) {
     /** Upstream identity for stripped keys — lets the options aliasing in
      *  `buildToolClassification` heal legacy `tool_options` spellings. */

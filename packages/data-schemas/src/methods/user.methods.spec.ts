@@ -6,6 +6,7 @@ import {
   AUTH_USER_DOC_CACHE_TTL_MS,
 } from 'librechat-data-provider';
 import type * as t from '~/types';
+import { createToolApprovalGrantModel } from '~/models/toolApprovalGrant';
 import { createUserMethods, USER_DELETION_FENCE_STALE_MS } from './user';
 import balanceSchema from '~/schema/balance';
 import userSchema from '~/schema/user';
@@ -49,6 +50,7 @@ beforeAll(async () => {
 
   /** Initialize methods */
   methods = createUserMethods(mongoose);
+  createToolApprovalGrantModel(mongoose);
 });
 
 afterAll(async () => {
@@ -1994,5 +1996,65 @@ describe('User Methods - Database Tests', () => {
       const users = await methods.findUsers({});
       expect(users).toHaveLength(5);
     });
+  });
+});
+
+describe('personal grant cleanup before account deletion', () => {
+  async function owner() {
+    const user = await User.create({ email: 'delete-grants@example.com', provider: 'local' });
+    const id = user._id.toString();
+    await mongoose.models.ToolApprovalGrant.create({
+      user: id,
+      agentId: 'agent',
+      toolName: 'query_mcp_db',
+      conversationId: 'chat',
+      binding: 'personal-consent',
+    });
+    return { user, id };
+  }
+
+  it('cleanup failure preserves the account and grants so deletion can be retried', async () => {
+    const { user, id } = await owner();
+    const cleanup = jest
+      .spyOn(mongoose.models.ToolApprovalGrant.collection, 'deleteMany')
+      .mockRejectedValueOnce(new Error('synthetic grant-store failure'));
+    const deletion = jest.spyOn(User, 'deleteOne');
+    try {
+      await expect(methods.deleteUserById(id)).rejects.toThrow('synthetic grant-store failure');
+      expect(deletion).not.toHaveBeenCalled();
+      expect(await User.exists({ _id: user._id })).not.toBeNull();
+      expect(await mongoose.models.ToolApprovalGrant.countDocuments({ user: id })).toBe(1);
+      await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 1 });
+      expect(await User.exists({ _id: user._id })).toBeNull();
+      expect(await mongoose.models.ToolApprovalGrant.countDocuments({ user: id })).toBe(0);
+    } finally {
+      cleanup.mockRestore();
+      deletion.mockRestore();
+    }
+  });
+
+  it('successful cleanup precedes account commit and affects only that owner', async () => {
+    const { id } = await owner();
+    await mongoose.models.ToolApprovalGrant.create({
+      user: 'another-user',
+      agentId: 'agent',
+      toolName: 'query_mcp_db',
+      conversationId: 'chat',
+      binding: 'other-consent',
+    });
+    const cleanup = jest.spyOn(mongoose.models.ToolApprovalGrant, 'deleteMany');
+    const deletion = jest.spyOn(User, 'deleteOne');
+    try {
+      await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 1 });
+      expect(cleanup.mock.invocationCallOrder[0]).toBeLessThan(
+        deletion.mock.invocationCallOrder[0],
+      );
+      expect(await mongoose.models.ToolApprovalGrant.countDocuments({ user: 'another-user' })).toBe(
+        1,
+      );
+    } finally {
+      cleanup.mockRestore();
+      deletion.mockRestore();
+    }
   });
 });

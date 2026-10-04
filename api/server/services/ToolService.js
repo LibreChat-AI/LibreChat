@@ -13,11 +13,7 @@ const {
   createAuthIdentityContext,
   selectMCPUpstreamTokenProvider,
   loadToolDefinitions,
-  buildMCPToolApprovalBinding,
-  attachMCPToolApprovalBindings,
-  getMCPToolApprovalAuthKind,
-  buildMCPToolReviewAuthority,
-  createSafeUser,
+  createMCPToolApprovalMetadata,
   GenerationJobManager,
   isActionDomainAllowed,
   buildWebSearchContext,
@@ -1171,9 +1167,7 @@ async function loadToolDefinitionsWrapper({
   /** Name-preserving: the definitions loader resolves normalized-vs-raw
    *  spellings itself (direct identity first, alias fallback), so this
    *  closure must look up EXACTLY the name it is given. */
-  const approvalBindings = new Map();
-  const approvalAuthKinds = new Map();
-  const reviewAuthorities = new Map();
+  const approvalMetadata = createMCPToolApprovalMetadata();
   const getOrFetchMCPServerTools = async (userId, serverName) => {
     const addPendingOAuthServer = async () => {
       const pendingOAuthStart = await getReplayablePendingMCPOAuthStart({
@@ -1211,19 +1205,14 @@ async function loadToolDefinitionsWrapper({
       return null;
     }
 
-    approvalBindings.set(serverName, buildMCPToolApprovalBinding(serverName, serverConfig));
-    approvalAuthKinds.set(serverName, getMCPToolApprovalAuthKind(serverConfig));
     const customUserVars = userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`];
-    reviewAuthorities.set(
+    approvalMetadata.capture({
       serverName,
-      buildMCPToolReviewAuthority({
-        serverName,
-        config: serverConfig,
-        user: createSafeUser(req.user),
-        body: runtimeRequestBody,
-        customUserVars,
-      }),
-    );
+      config: serverConfig,
+      user: req.user,
+      body: runtimeRequestBody,
+      customUserVars,
+    });
     const missingUserVars = getMissingCustomUserVars(serverConfig, customUserVars);
     if (missingUserVars.length > 0) {
       logger.warn('[Tool Definitions] Skipping one MCP server with missing user configuration', {
@@ -1626,12 +1615,7 @@ async function loadToolDefinitionsWrapper({
     }
   }
 
-  attachMCPToolApprovalBindings(
-    toolDefinitions,
-    approvalBindings,
-    reviewAuthorities,
-    approvalAuthKinds,
-  );
+  approvalMetadata.attach(toolDefinitions);
   return {
     toolRegistry,
     mcpAvailableTools,

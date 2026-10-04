@@ -107,7 +107,10 @@ export function encodeHeaderValue(value: string): string {
  * @returns A new object containing only allowed fields plus federatedTokens if present
  */
 export function createSafeUser(
-  user: IUser | null | undefined,
+  user:
+    | (Partial<SafeUser> & Pick<IUser, 'tenantId'> & { federatedTokens?: IUser['federatedTokens'] })
+    | null
+    | undefined,
 ): Partial<SafeUser> & { federatedTokens?: IUser['federatedTokens'] } {
   if (!user) {
     return {};
