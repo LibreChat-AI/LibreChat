@@ -38,6 +38,7 @@ import type { CodeEnvRef, CodeWorkspaceOperation, PtcToolCallEvent } from 'libre
 import type { StructuredToolInterface } from '@librechat/agents/langchain/tools';
 import type { CodeEnvFile, CodeSessionContext } from '@librechat/agents';
 import type {
+  WorkspaceAdmissionOptions,
   WorkspaceEditResult,
   WorkspaceTextEdit,
   WorkspacePreviewEditResult,
@@ -52,6 +53,7 @@ import type {
   BackgroundToolWakeupRegistration,
   PendingBackgroundCompletionControls,
 } from './backgroundCompletion';
+import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
 import type { ArtifactDeliveryFailure } from '~/files/code';
 import type { BackgroundToolResultState } from './harvest';
@@ -105,6 +107,7 @@ import {
 import {
   resolveAttachedWorkspaceReadFileLines,
   WorkspaceToolHttpError,
+  resolveAttachedWorkspaceAdmissionOptions,
   WORKSPACE_EDIT_MAX_COUNT,
   WORKSPACE_WRITE_MAX_BYTES,
 } from '~/code/workspace';
@@ -137,12 +140,13 @@ import {
   stripIntentLabelsFromToolDefinitions,
   INTENT_ARG,
 } from './intent';
+import { editConflictExcerptText, formatEditConflict, parseEditConflict } from '~/code/edits';
 import { buildSkillPrimeMessage, isSkillFilePath, SKILL_FILE_PREFIX } from './skills';
 import { resolveCallerCapabilityProjectionSnapshot } from './callerCapabilities';
-import { formatEditConflict, parseEditConflict } from '~/code/edits';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
 import { toolValidationFeedback } from './validationFeedback';
+import { explainWorkspacePathRejection } from '~/code/paths';
 import { createSkillContentDigest } from './compatibility';
 import { isMissingSandboxPathError } from '~/files/code';
 import { applyHostTextEdits } from './files/processing';
@@ -275,6 +279,8 @@ export function createOwnedToolEndHandler(
 }
 
 export interface ToolExecuteOptions {
+  /** Host-captured authority ceiling, never runnable/model metadata. */
+  scheduledMCPExecution?: Pick<ScheduleMCPExecution, 'enrolled' | 'identity'>;
   /**
    * Host-owned signal for the foreground run. This is authoritative across
    * graph reconstruction (including approval resume); the SDK event signal is
@@ -601,6 +607,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceReadResult>;
   /** Searches literal text within an attached worker's logical workspace. */
@@ -618,6 +626,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceSearchResult>;
   /** Lists relative file paths within an attached worker's logical workspace. */
@@ -635,6 +645,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceListResult>;
   /** Writes a UTF-8 file within an attached worker's logical workspace. */
@@ -652,6 +664,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceWriteResult>;
   /** Previews exact replacements without mutating an attached worker workspace. */
@@ -670,6 +684,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspacePreviewEditResult>;
   /** Applies exact replacements atomically within an attached worker workspace. */
@@ -689,6 +705,8 @@ export interface ToolExecuteOptions {
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
     maxRequestTimeoutMs?: number;
+    maxRunTimeoutMs?: number;
+    admission?: WorkspaceAdmissionOptions['admission'];
     deadlineAtMs?: number;
   }) => Promise<WorkspaceEditResult>;
   /** Bounded reads return complete text; omitted maxBytes retains the legacy stdout path. */
@@ -895,7 +913,11 @@ function getSafeToolError(
   message: string;
   logContext: Record<string, unknown>;
 } {
-  const rawMessage = feedback ?? getThrownValueMessage(error);
+  const thrownMessage = feedback ?? getThrownValueMessage(error);
+  /** File text an attached edit conflict quotes goes to the model only, never to the logs. */
+  const rawMessage =
+    !feedback && error instanceof AttachedEditRejectionError ? error.modelMessage : thrownMessage;
+  const logMessage = truncateMiddle(thrownMessage, MAX_TOOL_ERROR_MESSAGE_CHARS);
   const message = truncateMiddle(rawMessage, MAX_TOOL_ERROR_MESSAGE_CHARS);
   const stack = !feedback && error instanceof Error && error.stack ? error.stack : undefined;
 
@@ -910,7 +932,7 @@ function getSafeToolError(
             upstreamBodyTruncated: error.upstreamBodyTruncated,
           }
         : {}),
-      errorMessage: message,
+      errorMessage: logMessage,
       messageLength: rawMessage.length,
       messageTruncated: message.length !== rawMessage.length,
       stack: stack ? truncateMiddle(stack, MAX_TOOL_ERROR_STACK_CHARS) : undefined,
@@ -2404,7 +2426,9 @@ async function handleWorkspaceFileRead(
       }),
     );
   } catch (error) {
-    if (error instanceof WorkspaceToolHttpError) throw error;
+    if (error instanceof WorkspaceToolHttpError) {
+      throw explainWorkspacePathRejection(error, 'read', `workspace/${filePath}`);
+    }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn(
       '[handleWorkspaceFileRead] Attached workspace read failed',
@@ -2498,7 +2522,13 @@ async function handleWorkspaceSearchCall(
       content: truncated ? `${content}${truncationNotice}` : content,
     };
   } catch (error) {
-    if (error instanceof WorkspaceToolHttpError) throw error;
+    if (error instanceof WorkspaceToolHttpError) {
+      throw explainWorkspacePathRejection(
+        error,
+        'search',
+        `workspace/${typeof args.path === 'string' ? args.path : ''}`,
+      );
+    }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn(
       '[handleWorkspaceSearchCall] Attached workspace search failed',
@@ -2608,7 +2638,13 @@ async function handleWorkspaceListCall(
       content: `${content}${truncationNotice}`,
     };
   } catch (error) {
-    if (error instanceof WorkspaceToolHttpError) throw error;
+    if (error instanceof WorkspaceToolHttpError) {
+      throw explainWorkspacePathRejection(
+        error,
+        'list',
+        `workspace/${typeof args.path === 'string' ? args.path : ''}`,
+      );
+    }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn(
       '[handleWorkspaceListCall] Attached workspace file listing failed',
@@ -3820,10 +3856,11 @@ function attachedWorkspaceAuthoringPath(
 function attachedWorkspaceRequestLimits(codeExecutionContext: CodeExecutionContext): {
   maxQueueWaitMs: number;
   maxRequestTimeoutMs?: number;
-} {
+} & WorkspaceAdmissionOptions {
   const config = codeExecutionContext.codeEnvironmentConfigSchema;
   const maxRequestTimeoutMs = resolveAttachedWorkspaceRequestTimeoutMs(config);
   return {
+    ...resolveAttachedWorkspaceAdmissionOptions(config),
     maxQueueWaitMs: resolveAttachedWorkspaceQueueWaitMs(config),
     ...(maxRequestTimeoutMs == null ? {} : { maxRequestTimeoutMs }),
   };
@@ -3846,8 +3883,9 @@ function attachedWorkspaceMutationParams(
   maxQueueWaitMs: number;
   maxRequestTimeoutMs?: number;
   deadlineAtMs?: number;
-} {
+} & WorkspaceAdmissionOptions {
   const limits = attachedWorkspaceRequestLimits(codeExecutionContext);
+  const runTimeoutMs = limits.maxRunTimeoutMs ?? limits.maxRequestTimeoutMs;
   return {
     workspace_id: workspaceId,
     ...(codeExecutionContext.codeWorkspace?.workspaceInstanceId
@@ -3856,9 +3894,7 @@ function attachedWorkspaceMutationParams(
     ...(codeExecutionContext.codeWorkspace?.linkedWorktrees ? { linked_worktrees: true } : {}),
     codeApiBaseUrl: codeExecutionContext.baseUrl,
     ...limits,
-    ...(limits.maxRequestTimeoutMs == null
-      ? {}
-      : { deadlineAtMs: Date.now() + limits.maxRequestTimeoutMs }),
+    ...(runTimeoutMs == null ? {} : { deadlineAtMs: Date.now() + runTimeoutMs }),
     executionProfile: codeExecutionContext.executionProfile,
     ...(codeExecutionContext.bridgeWorkerId
       ? { bridgeWorkerId: codeExecutionContext.bridgeWorkerId }
@@ -3919,7 +3955,7 @@ async function handleAttachedWorkspaceCreateFileCall({
       if (error.upstreamStatus === 409 && !overwrite) {
         error.message += '. File already exists. Pass overwrite: true to replace.';
       }
-      throw error;
+      throw explainWorkspacePathRejection(error, 'write', `workspace/${path.filePath}`);
     }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn('[file_authoring] Attached workspace write failed', getSafeErrorMetadata(error));
@@ -3944,33 +3980,75 @@ function describeAttachedEdit(filePath: string, result: WorkspaceEditResult): st
 }
 
 /**
- * A worker is outside LibreChat's trust boundary, so its conflict text is never forwarded: only the
- * facts a strict parse recovers from it (which edits failed, how, and on which lines) reach the
- * model, in LibreChat's own words. Anything else gets the generic retry guidance.
+ * A rejected attached edit that keeps its status and code but none of its body, so logs never
+ * retain upstream text. `message` is what logs keep; `modelMessage` may add the current file text
+ * a worker quoted, which the model sees just as it would see a read_file result.
  */
-function describeAttachedEditConflict(filePath: string, error: WorkspaceToolHttpError): string {
-  const conflict = error.editConflict;
-  if (conflict?.startsWith('Workspace file changed')) {
-    return `"workspace/${filePath}" changed while this edit was being applied, so nothing was written. Re-read the file and retry.`;
+class AttachedEditRejectionError extends WorkspaceToolHttpError {
+  constructor(
+    reason: WorkspaceToolHttpError['reason'],
+    message: string,
+    public readonly modelMessage: string,
+    code = 'EDIT_CONFLICT',
+  ) {
+    super(reason, 409, JSON.stringify({ code }));
+    this.message = message;
   }
-  const report = conflict == null ? undefined : parseEditConflict(conflict);
-  if (report) {
-    return formatEditConflict(`workspace/${filePath}`, report);
-  }
-  return `The edit to "workspace/${filePath}" did not apply, so nothing was written. The requested text did not match exactly once; re-read the file and retry.`;
 }
 
-/** The only body a sanitized conflict carries, so logs never retain worker-supplied text. */
-const SANITIZED_EDIT_CONFLICT_BODY = JSON.stringify({ code: 'EDIT_CONFLICT' });
-
-/** A copy of a worker conflict that keeps its status but none of its body or message. */
-function sanitizedEditConflict(
+/**
+ * Any other 409, such as a quarantined workspace, is not a text mismatch the model can fix by
+ * re-reading. Only its validated code is kept, in host words.
+ */
+function attachedEditRejection(
+  filePath: string,
   error: WorkspaceToolHttpError,
-  message: string,
-): WorkspaceToolHttpError {
-  const sanitized = new WorkspaceToolHttpError(error.reason, 409, SANITIZED_EDIT_CONFLICT_BODY);
-  sanitized.message = message;
-  return sanitized;
+  code: string,
+): AttachedEditRejectionError {
+  const guidance =
+    code === 'WORKSPACE_QUARANTINED'
+      ? ' The workspace is quarantined after an earlier operation did not finish; it must be reset on its machine before edits can apply, so retrying will not help.'
+      : '';
+  const message = `The edit to "workspace/${filePath}" was rejected by the code environment (${code}), so nothing was written.${guidance}`;
+  return new AttachedEditRejectionError(error.reason, message, message, code);
+}
+
+/**
+ * A worker is outside LibreChat's trust boundary, so its conflict text is never forwarded: only the
+ * facts a strict parse recovers from it (which edits failed, how, and on which lines) reach the
+ * model, in LibreChat's own words. The one exception is a well-formed excerpt of the edited file's
+ * current text, which is file content like any read_file result: it is quoted only when the selected
+ * workspace allows read_file, and only after it passes the same file-content policy. Anything else
+ * gets the generic retry guidance.
+ */
+function attachedEditConflict(
+  tc: ToolCallRequest,
+  req: ServerRequest | undefined,
+  filePath: string,
+  error: WorkspaceToolHttpError,
+  canRead: boolean,
+): AttachedEditRejectionError {
+  const conflict = error.editConflict;
+  const settle = (message: string, modelMessage = message) =>
+    new AttachedEditRejectionError(error.reason, message, modelMessage);
+  if (conflict?.startsWith('Workspace file changed')) {
+    return settle(
+      `"workspace/${filePath}" changed while this edit was being applied, so nothing was written. Re-read the file and retry.`,
+    );
+  }
+  const report = conflict == null ? undefined : parseEditConflict(conflict);
+  if (!report) {
+    return settle(
+      `The edit to "workspace/${filePath}" did not apply, so nothing was written. The requested text did not match exactly once; re-read the file and retry.`,
+    );
+  }
+  const path = `workspace/${filePath}`;
+  const message = formatEditConflict(path, report);
+  const excerpts = editConflictExcerptText(report);
+  if (!canRead || !excerpts || filteredFileResult(tc, req, filePath, excerpts) != null) {
+    return settle(message);
+  }
+  return settle(message, formatEditConflict(path, report, true));
 }
 
 async function handleAttachedWorkspaceEditFileCall({
@@ -4097,10 +4175,19 @@ async function handleAttachedWorkspaceEditFileCall({
     });
   } catch (error) {
     if (error instanceof WorkspaceToolHttpError) {
-      if (error.upstreamStatus === 409) {
-        throw sanitizedEditConflict(error, describeAttachedEditConflict(path.filePath, error));
+      if (error.upstreamStatus !== 409) {
+        throw explainWorkspacePathRejection(error, 'edit', `workspace/${path.filePath}`);
       }
-      throw error;
+      const code = error.upstreamCode;
+      throw code == null || code === 'EDIT_CONFLICT'
+        ? attachedEditConflict(
+            tc,
+            req,
+            path.filePath,
+            error,
+            selectedWorkspaceId(codeExecutionContext, 'read_file') != null,
+          )
+        : attachedEditRejection(path.filePath, error, code);
     }
     if (signal?.aborted === true && isAbortError(error)) throw error;
     logger.warn('[file_authoring] Attached workspace edit failed', getSafeErrorMetadata(error));
@@ -5533,6 +5620,7 @@ function createSkillFilesHandoff(
 
 export function createToolExecuteHandler(options: ToolExecuteOptions): EventHandler {
   const {
+    scheduledMCPExecution,
     runSignal: hostRunSignal,
     foregroundRunId,
     loadTools,
@@ -5978,6 +6066,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                 ) {
                   try {
                     const admission = await backgroundToolCompletion.preregister({
+                      scheduleMCPIdentity: scheduledMCPExecution?.identity ?? null,
                       taskId: task.id,
                       toolCallId: tc.id,
                       toolName: tc.name,
@@ -7088,6 +7177,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                 }
 
                 if (
+                  scheduledMCPExecution?.enrolled !== true &&
                   backgroundToolSet.has(tc.name) &&
                   isBackgroundRequested(tc.args) &&
                   !toolRequiresEphemeralConnection(toolMap.get(tc.name)) &&

@@ -32,7 +32,13 @@ import {
   useEffectiveProjectId,
   useUnpinDroppedConversation,
 } from './dnd';
-import { unlistedRunningIds, RUNNING_CHATS_GROUP, groupConversationsWithRunning } from './running';
+import {
+  isStatusGroup,
+  unlistedRunningIds,
+  RUNNING_CHATS_GROUP,
+  FINISHED_CHATS_GROUP,
+  groupConversationsByStatus,
+} from './running';
 import { useLocalize, TranslationKeys, useElementSize, useOuterScrollWindow } from '~/hooks';
 import { useActiveJobs, useRunningConversationsQuery } from '~/data-provider';
 import { facetFilterCountAtom, resetFacetsAtom } from './facets';
@@ -167,26 +173,42 @@ const ChatsHeader: FC<ChatsHeaderProps> = memo(({ isExpanded, onToggle, trailing
 
 ChatsHeader.displayName = 'ChatsHeader';
 
-const DateLabel: FC<{ groupName: string; isFirst?: boolean; isAlphabetical?: boolean }> = memo(
-  ({ groupName, isFirst, isAlphabetical = false }) => {
+type DateLabelProps = {
+  groupName: string;
+  isFirst?: boolean;
+  isAlphabetical?: boolean;
+  /** Status groups show how many chats they hold; date groups leave this out. */
+  count?: number;
+};
+
+const statusSectionLabels: Record<string, TranslationKeys> = {
+  [RUNNING_CHATS_GROUP]: 'com_a11y_chats_running_section',
+  [FINISHED_CHATS_GROUP]: 'com_a11y_chats_finished_section',
+};
+
+const DateLabel: FC<DateLabelProps> = memo(
+  ({ groupName, isFirst, isAlphabetical = false, count }) => {
     const localize = useLocalize();
     const displayName = localize(groupName as TranslationKeys) || groupName;
+    const statusLabel = statusSectionLabels[groupName] as TranslationKeys | undefined;
+    let ariaLabel: string;
+    if (statusLabel) {
+      ariaLabel = localize(statusLabel, { count: count ?? 0 });
+    } else if (isAlphabetical) {
+      ariaLabel = localize('com_a11y_chats_alpha_section', { letter: displayName });
+    } else {
+      ariaLabel = localize('com_a11y_chats_date_section', { date: displayName });
+    }
     return (
       <h2
-        aria-label={
-          groupName === RUNNING_CHATS_GROUP
-            ? localize('com_a11y_chats_running_section')
-            : localize(
-                isAlphabetical ? 'com_a11y_chats_alpha_section' : 'com_a11y_chats_date_section',
-                isAlphabetical ? { letter: displayName } : { date: displayName },
-              )
-        }
+        aria-label={ariaLabel}
         className={cn(
           'text-text-secondary pt-0.5 pl-1 text-xs',
           isFirst === true ? 'mt-0' : 'mt-1.5',
         )}
       >
         {displayName}
+        {count != null && <span className="text-text-tertiary"> · {count}</span>}
       </h2>
     );
   },
@@ -195,8 +217,8 @@ const DateLabel: FC<{ groupName: string; isFirst?: boolean; isAlphabetical?: boo
 DateLabel.displayName = 'DateLabel';
 
 type FlattenedItem =
-  | { type: 'header'; groupName: string }
-  | { type: 'convo'; convo: TConversation; inRunningGroup: boolean }
+  | { type: 'header'; groupName: string; count?: number }
+  | { type: 'convo'; convo: TConversation }
   | { type: 'loading' };
 
 const Conversations: FC<ConversationsProps> = ({
@@ -341,7 +363,7 @@ const Conversations: FC<ConversationsProps> = ({
   /** The archive keeps its server order, while search still promotes active matches. */
   const groupedConversations = useMemo(
     () =>
-      groupConversationsWithRunning(
+      groupConversationsByStatus(
         datedConversations,
         activeJobIds,
         {
@@ -402,9 +424,12 @@ const Conversations: FC<ConversationsProps> = ({
     const items: FlattenedItem[] = [];
     if (isChatsExpanded) {
       groupedConversations.forEach(([groupName, convos]) => {
-        const inRunningGroup = groupName === RUNNING_CHATS_GROUP;
-        items.push({ type: 'header', groupName });
-        items.push(...convos.map((convo) => ({ type: 'convo' as const, convo, inRunningGroup })));
+        items.push({
+          type: 'header',
+          groupName,
+          count: isStatusGroup(groupName) ? convos.length : undefined,
+        });
+        items.push(...convos.map((convo) => ({ type: 'convo' as const, convo })));
       });
 
       if (isLoading) {
@@ -503,6 +528,7 @@ const Conversations: FC<ConversationsProps> = ({
               groupName={item.groupName}
               isFirst={index === 0}
               isAlphabetical={isAlphabeticalSort(sort.field)}
+              count={item.count}
             />
           </MeasuredRow>
         );
@@ -517,7 +543,7 @@ const Conversations: FC<ConversationsProps> = ({
               retainView={moveToTop}
               toggleNav={toggleNav}
               isGenerating={isGenerating}
-              showProjectBadge={item.inRunningGroup}
+              showProjectBadge
               draggable
             />
           </MeasuredRow>

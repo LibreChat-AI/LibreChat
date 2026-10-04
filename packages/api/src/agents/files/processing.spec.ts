@@ -177,6 +177,35 @@ describe('worker lifecycle', () => {
     }
   });
 
+  it.each([false, true])(
+    'keeps timers running while a worker reply is pending, warm=%s',
+    async (warm) => {
+      const processor = createHostEditProcessor(fixture);
+      const controller = new AbortController();
+      try {
+        if (warm) await processor.apply('ready', [edit]);
+        let settled = false;
+        const pending = processor.apply('wait', [edit], undefined, controller.signal).then(
+          () => {
+            settled = true;
+            return 'completed';
+          },
+          (error: Error) => {
+            settled = true;
+            return error.name;
+          },
+        );
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        expect(settled).toBe(false);
+        controller.abort();
+        await expect(pending).resolves.toBe('AbortError');
+      } finally {
+        controller.abort();
+        await processor.close();
+      }
+    },
+  );
+
   it('has no queue and releases capacity only after cancellation terminates the worker', async () => {
     const processor = createHostEditProcessor(fixture);
     const controller = new AbortController();

@@ -221,6 +221,8 @@ html {
   --theme-tooltip-radius: 0.275rem;
   --theme-tab-radius: 0.185rem;
   --theme-tab-min-width: 100px;
+  --theme-list-min-width: 8rem;
+  --theme-list-max-height: 24rem;
   --theme-radius-sm: calc(0.5rem - 4px);
   --theme-radius-md: calc(0.5rem - 2px);
   --theme-radius-lg: 0.5rem;

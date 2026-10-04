@@ -1,4 +1,4 @@
-import { createContext, lazy, Suspense, useContext } from 'react';
+import { createContext, Suspense, useContext } from 'react';
 import { QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
@@ -7,11 +7,15 @@ import {
   getOwnerQueryClient,
   useOwnerMessageTexts,
 } from '~/data-provider/Messages/private';
+import { importWithRecovery, lazyWithRecovery } from '~/lib/assets/lazy';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { useLocalize } from '~/hooks';
-const DisplayMessage = lazy(async () => ({
-  default: (await import('./Content/MessageContent')).DisplayMessage,
-}));
+
+const DisplayMessage = lazyWithRecovery(() =>
+  importWithRecovery(() => import('./Content/MessageContent')).then((m) => ({
+    default: m.DisplayMessage,
+  })),
+);
 
 interface Original {
   canonicalText: string;

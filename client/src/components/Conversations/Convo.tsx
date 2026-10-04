@@ -3,8 +3,8 @@ import { useDrag } from 'react-dnd';
 import { Link2 } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
 import { useParams } from 'react-router-dom';
-import { Constants } from 'librechat-data-provider';
 import { Spinner, useToastContext, useMediaQuery } from '@librechat/client';
+import { Constants, supportsConversationTitleOwnership } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationDragItem } from './dnd';
 import {
@@ -12,7 +12,7 @@ import {
   usePinConversationMutation,
   useUpdateConversationMutation,
 } from '~/data-provider';
-import { cn, logger, setDocumentTitle, isConversationUnseen } from '~/utils';
+import { cn, logger, setDocumentTitle, isConversationUnseen, hasRealTitle } from '~/utils';
 import { useNavigateToConvo, useLocalize, useShiftKey } from '~/hooks';
 import ConversationEndpointIcon from './ConversationEndpointIcon';
 import { focusableInRow, resolveRowBeside } from './focus';
@@ -61,7 +61,7 @@ function Conversation({
   const currentConvoId = useMemo(() => params.conversationId, [params.conversationId]);
   const updateConvoMutation = useUpdateConversationMutation(currentConvoId ?? '');
   const unpinMutation = usePinConversationMutation();
-  const activeConvos = useRecoilValue(store.allConversationsSelector);
+  const activeConversationId = useRecoilValue(store.conversationIdByIndex(0));
   const isSmallScreen = useMediaQuery('(max-width: 768px)');
   /* A deployment with shared links off leaves existing links in the database but stops
      serving them, so the row must not advertise one that no longer resolves. */
@@ -73,10 +73,14 @@ function Conversation({
   const isUnseen = isConversationUnseen(conversation);
   const isShiftHeld = useShiftKey();
   const { conversationId, title = '' } = conversation;
+  const canRename =
+    supportsConversationTitleOwnership(startupConfig) ||
+    (!isGenerating && (conversation.titleSetByUser === true || hasRealTitle(title)));
 
   const [titleInput, setTitleInput] = useState(title || '');
   const [renaming, setRenamingState] = useState(false);
   const [isPopoverActive, setIsPopoverActive] = useState(false);
+  const [contextMenuPosition, setContextMenuPosition] = useState<{ x: number; y: number }>();
   const [isHovered, setIsHovered] = useState(false);
   // Lazy-load ConvoOptions to avoid running heavy hooks for all conversations
   const [hasInteracted, setHasInteracted] = useState(false);
@@ -134,19 +138,24 @@ function Conversation({
     if (currentConvoId !== Constants.NEW_CONVO) {
       return currentConvoId === conversationId;
     } else {
-      const latestConvo = activeConvos?.[0];
-      return latestConvo === conversationId;
+      return activeConversationId === conversationId;
     }
-  }, [currentConvoId, conversationId, activeConvos]);
+  }, [currentConvoId, conversationId, activeConversationId]);
 
   const handleRename = () => {
+    if (!canRename) return;
     setIsPopoverActive(false);
+    setContextMenuPosition(undefined);
     setTitleInput(title as string);
     setRenaming(true);
   };
 
   const handleRenameSubmit = async (newTitle: string) => {
-    if (!conversationId || newTitle === title) {
+    if (
+      !canRename ||
+      !conversationId ||
+      (newTitle === title && conversation.titleSetByUser === true)
+    ) {
       setRenaming(false);
       return;
     }
@@ -234,6 +243,9 @@ function Conversation({
 
   const handlePopoverOpenChange = useCallback((open: boolean) => {
     setIsPopoverActive(open);
+    if (!open) {
+      setContextMenuPosition(undefined);
+    }
   }, []);
 
   const handleNavigation = (ctrlOrMetaKey: boolean) => {
@@ -269,20 +281,17 @@ function Conversation({
     isArchived: conversation.isArchived === true,
     retainView,
     renameHandler: handleRename,
+    canRename,
     isActiveConvo,
     isUnseen,
     conversationId,
     chatProjectId: conversation.chatProjectId,
     isPopoverActive,
+    isGenerating,
+    contextMenuPosition,
     onOpenChange: handlePopoverOpenChange,
-    isShiftHeld: isActiveConvo ? isShiftHeld : false,
+    isShiftHeld: isActiveConvo && !isGenerating ? isShiftHeld : false,
   };
-
-  const generatingSpinner = (
-    <span role="img" aria-label={localize('com_ui_generating')}>
-      <Spinner className="text-text-primary h-5 w-5 shrink-0" />
-    </span>
-  );
 
   /* The slot takes its width from the row's hover, not from its content. The
    * overflow menu mounts a tick after the pointer arrives (see `ConvoActions`),
@@ -296,8 +305,8 @@ function Conversation({
     ? 'group-focus-within:w-9 group-hover:w-9'
     : 'group-focus-within:w-7 group-hover:w-7';
   if (isGenerating) {
-    actionVisibilityClassName = 'pointer-events-none w-5 scale-x-100 opacity-100';
-    actionWidthClassName = '';
+    actionVisibilityClassName = 'pointer-events-auto scale-x-100 opacity-100';
+    actionWidthClassName = isSmallScreen ? 'w-9' : 'w-7';
   } else if (isPopoverActive || isActiveConvo || isSmallScreen) {
     /** Touch has no hover, so a reveal-on-hover menu is unreachable there. */
     actionVisibilityClassName = 'pointer-events-auto scale-x-100 opacity-100';
@@ -309,16 +318,14 @@ function Conversation({
     }
   }
 
-  let actionContent: React.ReactNode = null;
-  if (isGenerating) {
-    actionContent = generatingSpinner;
-  } else if (!renaming) {
-    actionContent = <ConvoActions {...convoOptionsProps} hasInteracted={hasInteracted} />;
-  }
+  const actionContent = !renaming ? (
+    <ConvoActions {...convoOptionsProps} hasInteracted={hasInteracted} />
+  ) : null;
 
   return (
     <div
       ref={containerRef}
+      data-conversation-id={conversationId}
       className={cn(
         'group focus-visible:ring-text-primary relative flex h-12 w-full items-center rounded-lg outline-hidden focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset md:h-9',
         isActiveConvo || isPopoverActive
@@ -332,6 +339,20 @@ function Conversation({
       }}
       onPointerLeave={() => setIsHovered(false)}
       onPointerCancel={() => setIsHovered(false)}
+      onContextMenu={(event) => {
+        if (
+          renaming ||
+          !(event.target instanceof Node) ||
+          !event.currentTarget.contains(event.target)
+        ) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        setContextMenuPosition({ x: event.clientX, y: event.clientY });
+        setHasInteracted(true);
+        setIsPopoverActive(true);
+      }}
       onMouseEnter={handleMouseEnter}
       onFocus={handleMouseEnter}
       onClick={(e) => {
@@ -360,6 +381,7 @@ function Conversation({
           isHovered={isHovered}
           isSharedBadgeVisible={isSharedBadgeVisible}
           isUnseen={isUnseen}
+          isGenerating={isGenerating}
           title={title}
           onRename={handleRename}
           isSmallScreen={isSmallScreen}
@@ -367,13 +389,32 @@ function Conversation({
           keyShortcuts={keyShortcuts}
           describedBy={projectBadgeProjectId ? projectLabelId : undefined}
         >
-          <ConversationEndpointIcon conversation={conversation} size={20} context="menu-item" />
+          {/* Status sits on the avatar so the row's trailing edge stays free for its badges
+              and menu. The ring is 34px around the 20px icon: offset by half the difference. */}
+          <span className="relative flex size-5 shrink-0 items-center justify-center">
+            <ConversationEndpointIcon conversation={conversation} size={20} context="menu-item" />
+            {isGenerating && (
+              <Spinner
+                size={34}
+                strokeWidth={1.9}
+                bgOpacity={0.14}
+                className="pointer-events-none absolute -top-[7px] -left-[7px]"
+              />
+            )}
+            {isUnseen && !isGenerating && (
+              /* `ConvoLink`'s aria-label carries the text equivalent of the ring and the dot. */
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'bg-status-info pointer-events-none absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2',
+                  isActiveConvo || isPopoverActive
+                    ? 'ring-surface-active-alt'
+                    : 'ring-surface-primary-alt group-hover:ring-surface-active-alt',
+                )}
+              />
+            )}
+          </span>
         </ConvoLink>
-      )}
-      {isUnseen && (
-        /* `ConvoLink`'s aria-label carries the text equivalent, so the dot itself stays
-           decorative rather than announcing a second time outside the row's button. */
-        <span className="bg-status-info mr-1 size-2 shrink-0 rounded-full" aria-hidden="true" />
       )}
       {isSharedBadgeVisible && (
         <Link2 className="icon-sm text-text-secondary mr-1 shrink-0" aria-hidden="true" />

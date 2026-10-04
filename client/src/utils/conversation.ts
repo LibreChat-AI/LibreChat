@@ -28,6 +28,7 @@ const sidebarFields = [
   'lastResponseAt',
   'lastResponseMessageId',
   'lastResponseIsManual',
+  'isMarkedUnread',
   'lastSeenAt',
   'isTemporary',
   'expiredAt',

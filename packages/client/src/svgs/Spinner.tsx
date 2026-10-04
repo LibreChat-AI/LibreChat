@@ -8,6 +8,8 @@ interface SpinnerProps {
   color?: string;
   bgOpacity?: number;
   speed?: number;
+  /** Stroke width in viewBox units (the box is 40 wide); thinner reads as a quieter ring. */
+  strokeWidth?: number;
 }
 
 /**
@@ -24,6 +26,7 @@ export default function Spinner({
   color = 'currentColor',
   bgOpacity = 0.1,
   speed = 0.75,
+  strokeWidth = 5,
 }: SpinnerProps): JSX.Element {
   const cssVars = {
     '--spinner-speed': `${speed}s`,
@@ -46,7 +49,7 @@ export default function Spinner({
         cy="20"
         r="14.5"
         pathLength="100"
-        strokeWidth="5"
+        strokeWidth={strokeWidth}
         fill="none"
         stroke={color}
         strokeOpacity={bgOpacity}
@@ -56,7 +59,7 @@ export default function Spinner({
         cy="20"
         r="14.5"
         pathLength="100"
-        strokeWidth="5"
+        strokeWidth={strokeWidth}
         fill="none"
         stroke={color}
         strokeDasharray="25 75"

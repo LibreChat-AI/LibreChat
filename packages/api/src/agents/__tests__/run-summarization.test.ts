@@ -17,6 +17,7 @@ import type { OpenAI } from 'openai';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
 import type { OpenAIConfiguration, AzureOptions } from '~/types';
 import { clearToolApprovalHooks, registerToolApprovalHook } from '~/agents/hitl/hooks';
+import { executionFixture } from '~/schedules/authorization/execution.helper';
 import { createRun, isAskUserQuestionAdminDisabled } from '~/agents/run';
 import { initializeOpenAI } from '~/endpoints/openai/initialize';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
@@ -101,8 +102,10 @@ import {
   Providers,
   HookRegistry,
   ToolNode,
+  Constants,
   buildChildInputs,
   InMemorySubagentTaskStore,
+  buildSubagentToolParams,
   executeHooks,
 } from '@librechat/agents';
 
@@ -4520,6 +4523,196 @@ describe('HITL wiring is gated on hitlCapable', () => {
       expect(JSON.stringify(result)).toContain('Blocked:');
     },
   );
+
+  it.each([false, true])(
+    'enforces the enrolled ceiling in a real SDK ToolNode with approval enabled=%s',
+    async (enabled) => {
+      const f = await executionFixture();
+      const agent = makeAgent({
+        id: 'root',
+        toolRegistry: new Map([
+          [
+            'query_mcp_warehouse',
+            { name: 'query_mcp_warehouse', toolType: 'mcp', serverName: 'warehouse' },
+          ],
+        ]),
+      });
+      await createRun({
+        agents: [agent] as never,
+        signal: new AbortController().signal,
+        scheduledMCPExecution: f.execution,
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: {
+            agents: { toolApproval: { enabled, mode: 'bypass', deny: ['query_mcp_warehouse'] } },
+          },
+        } as unknown as AppConfig,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0];
+      expect(config).not.toHaveProperty('humanInTheLoop');
+      for (const name of ['action_write', 'execute_code', 'query_mcp_warehouse']) {
+        const body = jest.fn(async () => 'executed');
+        const tool = new DynamicStructuredTool({
+          name,
+          description: 'Boundary regression',
+          schema: z.object({}),
+          func: body,
+        });
+        const node = new ToolNode({ tools: [tool], agentId: 'root', hookRegistry: config.hooks });
+        const result = await node.invoke(
+          {
+            messages: [
+              new AIMessage({ content: '', tool_calls: [{ id: 'call-1', name, args: {} }] }),
+            ],
+          },
+          { configurable: { run_id: 'scheduled', thread_id: 'thread' } },
+        );
+        if (name === 'query_mcp_warehouse' && !enabled) expect(body).toHaveBeenCalledTimes(1);
+        else {
+          expect(body).not.toHaveBeenCalled();
+          expect(JSON.stringify(result)).toContain('Blocked:');
+        }
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'withholds detached task/wakeup capabilities only for enrolled=%s',
+    async (enrolled) => {
+      const f = await executionFixture();
+      if (!enrolled) f.snapshot.enrollment = null;
+      const execution = (await f.factory.resolve(f.identity, 'invoke'))!;
+      const tasks = {
+        store: new InMemorySubagentTaskStore(),
+        scopeId: 'scheduled-tasks',
+        completionDelivery: 'wakeup' as const,
+      };
+      const root = makeAgent({
+        id: 'root',
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+        subagentAgentConfigs: [makeAgent({ id: 'child' })],
+      });
+      await createRun({
+        agents: [root] as never,
+        signal: new AbortController().signal,
+        scheduledMCPExecution: execution,
+        subagentTasks: tasks,
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: { agents: { toolApproval: { enabled: false } } },
+        } as unknown as AppConfig,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0];
+      expect(config.subagentTasks).toBe(enrolled ? undefined : tasks);
+      const params = buildSubagentToolParams(config.graphConfig.agents[0].subagentConfigs, {
+        background: config.subagentTasks != null,
+        threadContinuation: true,
+      });
+      expect(
+        Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'run_in_background'),
+      ).toBe(!enrolled);
+      expect(
+        Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'subagent_thread_id'),
+      ).toBe(!enrolled);
+      const agent = config.graphConfig.agents[0];
+      expect(agent.subagentConfigs).toEqual([
+        expect.objectContaining({ type: 'child', allowNested: true }),
+      ]);
+      const names = (agent.toolDefinitions ?? []).map((tool: { name: string }) => tool.name);
+      expect(names.includes('check_background_task')).toBe(!enrolled);
+    },
+  );
+
+  it.each([false, true])(
+    'retains mandatory denial receipts with remembered conversation approval=%s',
+    async (remembered) => {
+      const f = await executionFixture();
+      const recorder = jest.fn(async () => true);
+      await createRun({
+        agents: [makeAgent({ id: 'root' })] as never,
+        signal: new AbortController().signal,
+        scheduledMCPExecution: f.execution,
+        recordScheduledMCPDenial: recorder,
+        toolApprovalAllows: remembered ? ['write_action_api'] : undefined,
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: {
+            agents: {
+              toolApproval: { enabled: remembered, mode: 'default', allowAlways: remembered },
+            },
+          },
+        } as unknown as AppConfig,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0];
+      const body = jest.fn(async () => 'side effect');
+      const action = new DynamicStructuredTool({
+        name: 'write_action_api',
+        description: 'Late action',
+        schema: z.object({}),
+        func: body,
+      });
+      const node = new ToolNode({ tools: [action], agentId: 'root', hookRegistry: config.hooks });
+      await node.invoke(
+        {
+          messages: [
+            new AIMessage({
+              content: '',
+              tool_calls: [{ id: 'call', name: action.name, args: {} }],
+            }),
+          ],
+        },
+        { configurable: { run_id: 'scheduled', thread_id: 'thread' } },
+      );
+      expect(body).not.toHaveBeenCalled();
+      expect(recorder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          failure: {
+            reason: 'tool_policy_denied',
+            status: 'mcp_permission_denied',
+            recovery: 'configure',
+            automaticReplay: false,
+          },
+        }),
+      );
+    },
+  );
+
+  it('passes only admitted root graph handoffs into the mandatory scheduled hook', async () => {
+    const f = await executionFixture();
+    const agents = [
+      makeAgent({ id: 'root', edges: [{ from: 'root', to: 'child', edgeType: 'handoff' }] }),
+      makeAgent({ id: 'child' }),
+      makeAgent({ id: 'peer' }),
+    ];
+    await createRun({
+      agents: agents as never,
+      signal: new AbortController().signal,
+      scheduledMCPExecution: f.execution,
+      appConfig: {
+        ...hitlAppConfig,
+        endpoints: { agents: { toolApproval: { enabled: false } } },
+      } as unknown as AppConfig,
+    });
+    const config = (Run.create as jest.Mock).mock.calls[0][0];
+    for (const [toolName, expected] of [
+      [`${Constants.LC_TRANSFER_TO_}child`, undefined],
+      [`${Constants.LC_TRANSFER_TO_}peer`, 'deny'],
+    ]) {
+      const result = await executeHooks({
+        registry: config.hooks,
+        input: {
+          hook_event_name: 'PreToolUse',
+          runId: 'run',
+          toolName: toolName!,
+          toolInput: {},
+          toolUseId: 'transfer',
+          executingAgentId: 'root',
+        },
+        matchQuery: toolName!,
+      });
+      expect(result.decision).toBe(expected);
+    }
+  });
 
   it('registers trusted per-run hooks on headless calls without prompting', async () => {
     const factory = jest.fn(() => async () => ({ decision: 'deny' as const }));

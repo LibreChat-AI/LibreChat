@@ -393,6 +393,8 @@ export interface PendingActionContext {
   resumeContext?: Record<string, unknown>;
   /** Opaque server-only binding to the stateful code targets selected at pause time. */
   codeExecutionBinding?: Agents.CodeExecutionApprovalBinding;
+  /** Server-only alias pairs of the offered "Always allow" tools; see `collectAllowAlwaysAliases`. */
+  toolApprovalAliases?: Agents.PendingAction['toolApprovalAliases'];
 }
 
 /** Request fields that decide which agent/graph + tool set a turn runs. */
@@ -928,12 +930,13 @@ export function buildPendingAction(
     requestFingerprintV2: ctx.requestFingerprintV2,
     resumeContext: ctx.resumeContext,
     codeExecutionBinding: ctx.codeExecutionBinding,
+    toolApprovalAliases: ctx.toolApprovalAliases,
   };
 }
 
 /**
  * Client-facing projection of a pending action. `projectContextKey`, `requestFingerprint`,
- * `resumeContext`, and `codeExecutionBinding` are server-only replay state. `resumeContext`
+ * `resumeContext`, `codeExecutionBinding`, and `toolApprovalAliases` are server-only replay state. `resumeContext`
  * carries resolved model parameters, so every copy that leaves the server (SSE, status,
  * resume state) must go through this. The full record stays in the job store for resume.
  */
@@ -949,6 +952,7 @@ export function toClientPendingAction(
     requestFingerprintV2: _requestFingerprintV2,
     resumeContext: _resumeContext,
     codeExecutionBinding: _codeExecutionBinding,
+    toolApprovalAliases: _toolApprovalAliases,
     ...clientSafe
   } = pendingAction;
   return clientSafe;

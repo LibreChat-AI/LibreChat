@@ -57,6 +57,7 @@ import {
 } from 'node:fs';
 
 import type { Dirent } from 'node:fs';
+import { isTranslationReferenced } from './i18n.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -109,6 +110,8 @@ const FILTERS = {
   ],
   config: ['api/**', 'config/**', 'packages/**', '.github/workflows/static-checks.yml', '!**.md'],
   i18n: [
+    'scripts/i18n*.mts',
+    'scripts/static-checks.mts',
     'api/**',
     'client/src/**',
     'packages/client/**',
@@ -1799,7 +1802,7 @@ async function findUnusedI18nKeys(): Promise<CheckOutcome> {
     ) {
       return false;
     }
-    return !isReferenced(key);
+    return !isTranslationReferenced(key, isReferenced);
   });
 
   if (unused.length === 0) return { ok: true };

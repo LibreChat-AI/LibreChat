@@ -1,3 +1,4 @@
+import { AGENT_BACKGROUND_COMPLETION_RECEIPT_BATCHING_DEFAULT } from 'librechat-data-provider';
 import {
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
@@ -356,7 +357,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
   }
   let boundOrigin: string | undefined;
   let backgroundCompletionResultBatchSize = 8;
-  let backgroundCompletionReceiptBatching = false;
+  let backgroundCompletionReceiptBatching = AGENT_BACKGROUND_COMPLETION_RECEIPT_BATCHING_DEFAULT;
   let completionWaitMaxIntervalMs = WAITING_RETRY_CAP_MS;
   let deliveryEngine: AgentTriggerDeliveryEngine | undefined;
   let initializePromise: Promise<void> | undefined;
@@ -630,7 +631,8 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
   return {
     initialize: (options = {}) => {
       backgroundCompletionResultBatchSize = options.completionResultBatchSize ?? 8;
-      backgroundCompletionReceiptBatching = options.completionReceiptBatching === true;
+      backgroundCompletionReceiptBatching =
+        options.completionReceiptBatching ?? AGENT_BACKGROUND_COMPLETION_RECEIPT_BATCHING_DEFAULT;
       completionWaitMaxIntervalMs =
         options.idlePolling?.completionWaitMaxIntervalMs ?? WAITING_RETRY_CAP_MS;
       boundOrigin = selfOriginFromAddress(options.address) ?? boundOrigin;

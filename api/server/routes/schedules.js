@@ -5,8 +5,6 @@ const {
   SCHEDULE_FILE_HOLD,
   generateCheckAccess,
   createSchedulesHandlers,
-  createScheduleMCPConsentHost,
-  createScheduleMCPEnrollmentResolver,
 } = require('@librechat/api');
 const { requireJwtAuth, configMiddleware, messageIpLimiter } = require('~/server/middleware');
 const {
@@ -88,29 +86,7 @@ const handlers = createSchedulesHandlers({
   isUserDeleting,
 });
 
-const consentHost = createScheduleMCPConsentHost({
-  resolveEnrollment: createScheduleMCPEnrollmentResolver({
-    canUseRoot: async (agentId, user) => (await resolveAgentFireAccess(agentId, user)) === 'ok',
-    findUser: (id) => methods.findUser({ _id: id }),
-    getAppConfig: require('~/server/services/Config/app').getAppConfig,
-    resolveGraphAccess: (user) =>
-      methods.resolveAgentGraphAccess({
-        userId: user.id,
-        role: user.role,
-        idOnTheSource: user.idOnTheSource,
-      }),
-    getNodes: methods.getAgentGraphNodes,
-    getModelsConfig: (user) =>
-      require('~/server/controllers/ModelController').getModelsConfig({ user }),
-    getServers: (user, config) =>
-      require('~/config').getMCPServersRegistry().getAllServerConfigs(user.id, config, user.role),
-  }),
-  methods,
-  getLimits,
-  findUser: (id) => methods.findUser({ _id: id }),
-  getRoleByName,
-  canViewAgent: async (agentId, user) => (await resolveAgentFireAccess(agentId, user)) === 'ok',
-});
+const consentHost = require('~/server/services/Schedules/consent').consent;
 
 router.get('/:id/mcp-consent', consentHost.handlers.get);
 router.post('/:id/mcp-consent', checkSchedulesCreate, consentHost.handlers.confirm);

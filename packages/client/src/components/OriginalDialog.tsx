@@ -13,6 +13,15 @@ const DialogDepthContext = React.createContext(0);
 export const useDialogDepth = (): number => React.useContext(DialogDepthContext);
 
 /**
+ * Counts a dialog that is not an OGDialog, such as a Headless UI panel, as one dialog level, so
+ * the popovers portaled out of it layer above it the way they do inside an OGDialog.
+ */
+export const DialogLayer = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
+  const depth = React.useContext(DialogDepthContext);
+  return <DialogDepthContext.Provider value={depth + 1}>{children}</DialogDepthContext.Provider>;
+};
+
+/**
  * z-index for a portaled popover so it renders above the dialog it lives in.
  * Outside any dialog (depth 0) it falls back to a low default (50).
  */

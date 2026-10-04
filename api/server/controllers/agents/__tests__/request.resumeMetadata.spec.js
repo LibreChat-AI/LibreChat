@@ -4470,6 +4470,58 @@ describe('ResumableAgentController resume metadata', () => {
     },
   );
 
+  it('never copies a preparation dependency diagnostic into the stream or scheduled outcome', async () => {
+    const { initializeWithScheduleMCPExecution } = jest.requireActual('@librechat/api');
+    const privateError = new Error('PRIVATE schedule database query');
+    const provider = jest.fn();
+    const req = {
+      _isScheduledFire: true,
+      _isAgentTrigger: true,
+      user: { id: 'user-123' },
+      body: {
+        text: 'Read',
+        messageId: 'read',
+        conversationId: 'conversation-123',
+        scheduleId: 'schedule',
+        scheduledFor: '2026-10-03T00:00:00.000Z',
+        endpointOption: { endpoint: 'agents', agent_id: 'root' },
+      },
+      config: {},
+    };
+    const initializeClient = ({ signal }) =>
+      initializeWithScheduleMCPExecution(
+        { req, signal },
+        () => ({
+          prepare: async () => {
+            throw privateError;
+          },
+        }),
+        provider,
+      );
+    const res = createResumableResponse();
+    await AgentController(req, res, jest.fn(), initializeClient, null);
+    expect(provider).not.toHaveBeenCalled();
+    expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
+      'conversation-123',
+      expect.stringContaining('dependency_unavailable'),
+      1000,
+      expect.anything(),
+    );
+    expect(mockRecordScheduleOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'error',
+        error: expect.stringContaining('dependency_unavailable'),
+      }),
+    );
+    expect(
+      JSON.stringify([
+        mockGenerationJobManager.completeJob.mock.calls,
+        mockRecordScheduleOutcome.mock.calls,
+        res.json.mock.calls,
+      ]),
+    ).not.toContain('PRIVATE');
+  });
+
   it('finalizes the failed job before releasing the idempotency claim', async () => {
     mockGenerationJobManager.claimGeneration.mockResolvedValue(wonGenerationClaim());
     const initializeClient = jest.fn().mockRejectedValue(new Error('init boom after res.json'));

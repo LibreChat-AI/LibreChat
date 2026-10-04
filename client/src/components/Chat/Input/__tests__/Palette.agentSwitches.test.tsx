@@ -103,7 +103,6 @@ function Harness() {
         <ChatForm
           index={0}
           isLandingPage={false}
-          showComposerTips={false}
           speechSettingsInitialized
           footerBelow={false}
           centerFormOnLanding={false}
