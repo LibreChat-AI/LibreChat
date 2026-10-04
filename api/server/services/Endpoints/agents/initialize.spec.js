@@ -2360,10 +2360,22 @@ describe('initializeClient — subagent loading', () => {
         const defaultsWithoutAttached =
           source === 'other-owner' || (source === 'resolved-null' && !movesEnabled);
         if ((!registered && !defaultsWithoutAttached) || source === 'inaccessible-choice') {
-          await expect(initialization).rejects.toMatchObject({
-            code: ErrorTypes.CODE_WORKSPACE_UNAVAILABLE,
-          });
-          expect(agentClientArgs).toBeUndefined();
+          /** The parent's turn proceeds; the subagent is advertised as unable to run instead. */
+          await initialization;
+          const descriptor = agentClientArgs.agent.lazySubagentConfigs[0];
+          const reason = source === 'inaccessible-choice' ? 'invalid' : 'missing';
+          expect(descriptor).toEqual(
+            expect.objectContaining({
+              codeEnvAvailable: false,
+              statefulCodeSessions: false,
+              codeExecutionContext: undefined,
+              description: expect.stringContaining('Unavailable in this conversation'),
+            }),
+          );
+          await expect(
+            descriptor.resolve({ signal: new AbortController().signal }),
+          ).rejects.toMatchObject({ code: ErrorTypes.CODE_WORKSPACE_UNAVAILABLE, reason });
+          expect(mockInitializeAgent).toHaveBeenCalledTimes(1);
           return;
         }
         await initialization;
@@ -2426,6 +2438,199 @@ describe('initializeClient — subagent loading', () => {
       );
     },
   );
+
+  describe('subagent machine inheritance', () => {
+    const SKYNET = 'code-skynet';
+    const LIA_RAG = 'code-lia-rag';
+    const bridgeEnvironment = (id) => ({
+      id,
+      name: id,
+      type: 'attached',
+      owner: 'deployment',
+      pairing: { workerId: `${id}-worker`, tokenEnv: 'TEST_INHERIT_WORKSPACE_TOKEN' },
+      baseURL: 'https://bridge.example.com/v1/',
+    });
+    /** Both machines are registered; each advertises the checkout it holds on demo. */
+    const mockWorkerStatus = () =>
+      jest.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        const workerId = decodeURIComponent(String(url).match(/workers\/([^/]+)\/status/)[1]);
+        return new Response(
+          JSON.stringify({
+            protocolVersion: 1,
+            workerId,
+            online: true,
+            ready: true,
+            leaseExpiresInMs: 45000,
+            capabilities: {
+              statefulWorkspace: true,
+              sandboxProfile: 'native-srt',
+              runtimes: ['bash'],
+              workspaceTools: {
+                protocolVersion: 1,
+                operations: ['read_file'],
+                workspaces: [{ id: workerId.startsWith(SKYNET) ? 'code-api' : 'agents' }],
+              },
+            },
+          }),
+        );
+      });
+
+    const setup = async ({ reviewer = {}, environments = [SKYNET, LIA_RAG] } = {}) => {
+      const subAgent = await createAgent({
+        id: SUBAGENT_ID,
+        name: 'PR Reviewer',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: new mongoose.Types.ObjectId(),
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        stateful_code_environment: 'user',
+        code_environment_id: SKYNET,
+        code_environment_ids: [LIA_RAG],
+        code_workspace_id: '',
+        ...reviewer,
+      });
+      await grantView(subAgent);
+      mockInitializeAgent.mockResolvedValue({
+        ...makePrimaryConfig({
+          subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+        }),
+        statefulCodeSessions: true,
+        codeExecutionContext: { environmentId: LIA_RAG, environmentType: 'attached' },
+      });
+      const req = makeSubagentReq();
+      req.config.endpoints.agents.capabilities.push('execute_code', 'stateful_code_sessions');
+      req.config.endpoints.agents.statefulCodeSessions = {
+        allowedEnvironments: ['user'],
+        environments: environments.map(bridgeEnvironment),
+      };
+      /** An older client: Lia owns her machine, the reviewer is named nowhere. */
+      req.body.codeEnvironmentMode = 'attached';
+      req.body.codeWorkspaces = [
+        { environmentId: LIA_RAG, workspaceId: 'agents', agentIds: [PRIMARY_ID] },
+        ...(environments.includes(SKYNET)
+          ? [{ environmentId: SKYNET, workspaceId: 'code-api' }]
+          : []),
+      ];
+      mockGetAppConfig.mockResolvedValue(req.config);
+      process.env.TEST_INHERIT_WORKSPACE_TOKEN = 'test-token';
+      return req;
+    };
+
+    afterEach(() => {
+      delete process.env.TEST_INHERIT_WORKSPACE_TOKEN;
+    });
+
+    it("routes the reviewer to its parent's machine and workspace, not its own default", async () => {
+      const req = await setup();
+      const fetchSpy = mockWorkerStatus();
+      try {
+        await initializeClient({
+          req,
+          res: {},
+          signal: new AbortController().signal,
+          endpointOption: makeEndpointOption(),
+        });
+      } finally {
+        fetchSpy.mockRestore();
+      }
+
+      expect(req.codeWorkspaceInheritance).toEqual(new Map([[SUBAGENT_ID, LIA_RAG]]));
+      expect(req.body.codeWorkspaces).toEqual([
+        { environmentId: LIA_RAG, workspaceId: 'agents', agentIds: [PRIMARY_ID] },
+        { environmentId: SKYNET, workspaceId: 'code-api' },
+      ]);
+      expect(agentClientArgs.agent.lazySubagentConfigs[0].codeExecutionContext).toEqual(
+        expect.objectContaining({
+          environmentId: LIA_RAG,
+          codeWorkspace: expect.objectContaining({ environmentId: LIA_RAG, workspaceId: 'agents' }),
+        }),
+      );
+
+      mockInitializeAgent.mockImplementationOnce(async (params) => {
+        expect(params.req.codeWorkspaceInheritance).toBe(req.codeWorkspaceInheritance);
+        return makeSubagentConfig(SUBAGENT_ID);
+      });
+      await agentClientArgs.agent.lazySubagentConfigs[0].resolve({
+        signal: new AbortController().signal,
+      });
+    });
+
+    it('keeps a reviewer that may not use the parent machine on its own default', async () => {
+      const req = await setup({ reviewer: { code_environment_ids: [] } });
+      const fetchSpy = mockWorkerStatus();
+      try {
+        await initializeClient({
+          req,
+          res: {},
+          signal: new AbortController().signal,
+          endpointOption: makeEndpointOption(),
+        });
+      } finally {
+        fetchSpy.mockRestore();
+      }
+
+      expect(req.codeWorkspaceInheritance.size).toBe(0);
+      expect(agentClientArgs.agent.lazySubagentConfigs[0].codeExecutionContext).toEqual(
+        expect.objectContaining({
+          environmentId: SKYNET,
+          codeWorkspace: expect.objectContaining({ workspaceId: 'code-api' }),
+        }),
+      );
+    });
+
+    it("never inherits a machine outside the principal's environments", async () => {
+      const req = await setup({ environments: [SKYNET] });
+      req.body.codeWorkspaces = [{ environmentId: SKYNET, workspaceId: 'code-api' }];
+      mockInitializeAgent.mockResolvedValue({
+        ...makePrimaryConfig({
+          subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+        }),
+        statefulCodeSessions: true,
+        codeExecutionContext: { environmentId: LIA_RAG, environmentType: 'attached' },
+      });
+      const fetchSpy = mockWorkerStatus();
+      try {
+        await initializeClient({
+          req,
+          res: {},
+          signal: new AbortController().signal,
+          endpointOption: makeEndpointOption(),
+        });
+      } finally {
+        fetchSpy.mockRestore();
+      }
+
+      expect(req.codeWorkspaceInheritance.size).toBe(0);
+      expect(agentClientArgs.agent.lazySubagentConfigs[0].codeExecutionContext.environmentId).toBe(
+        SKYNET,
+      );
+    });
+
+    it("keeps the parent's turn when a reviewer has no selection it may use", async () => {
+      const req = await setup({ reviewer: { code_environment_ids: [] } });
+      req.body.codeWorkspaces = [req.body.codeWorkspaces[0]];
+      const fetchSpy = mockWorkerStatus();
+      try {
+        await initializeClient({
+          req,
+          res: {},
+          signal: new AbortController().signal,
+          endpointOption: makeEndpointOption(),
+        });
+      } finally {
+        fetchSpy.mockRestore();
+      }
+
+      const descriptor = agentClientArgs.agent.lazySubagentConfigs[0];
+      expect(descriptor.codeExecutionContext).toBeUndefined();
+      expect(descriptor.description).toContain('Unavailable in this conversation');
+      await expect(
+        descriptor.resolve({ signal: new AbortController().signal }),
+      ).rejects.toMatchObject({ code: ErrorTypes.CODE_WORKSPACE_UNAVAILABLE, reason: 'required' });
+      expect(mockInitializeAgent).toHaveBeenCalledTimes(1);
+    });
+  });
 
   it('omits a descriptor when its metadata lookup fails without aborting the primary run', async () => {
     const primaryConfig = makePrimaryConfig({

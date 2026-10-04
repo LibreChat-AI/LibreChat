@@ -29,6 +29,10 @@ const {
   optsOutOfAttachedCodeEnvironment,
   isImplicitStatefulCodeRouteAvailable,
   resolveCodeExecutionWorkspaceContext,
+  resolveSubagentCodeWorkspaceInheritance,
+  CodeWorkspaceSelectionError,
+  getSubagentCodeWorkspaceUnavailableReason,
+  describeCodeWorkspaceUnavailableSubagent,
   createStatefulCodeEnvironmentPolicyError,
   buildSubagentThreadTaskConfig,
   backgroundCompletionWakeupsEnabled,
@@ -1143,33 +1147,50 @@ const initializeClientWithProvider = async ({
     ) {
       throw createStatefulCodeEnvironmentPolicyError(statefulCodeEnvironment);
     }
-    const baseCodeExecutionContext = lazyCodeEnvAvailable
-      ? resolveCodeExecutionContext({
-          statefulSessions: statefulCodeSessions,
-          environment: statefulCodeEnvironment,
-          environmentId: agent.code_environment_id,
-          environmentIds: agent.code_environment_ids,
-          allowEnvironmentSelection:
-            appConfig.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-          workspaceSelections: resolveCodeExecutionWorkspaceSelections({
-            conversation: admittedConversation,
-            request: runtimeRequestBody,
-          }),
-          environments: configuredCodeEnvironments,
-          userId,
+    let codeExecutionContext;
+    let codeWorkspaceUnavailable;
+    try {
+      const baseCodeExecutionContext = lazyCodeEnvAvailable
+        ? resolveCodeExecutionContext({
+            statefulSessions: statefulCodeSessions,
+            environment: statefulCodeEnvironment,
+            environmentId: agent.code_environment_id,
+            environmentIds: agent.code_environment_ids,
+            allowEnvironmentSelection:
+              appConfig.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+            workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+              conversation: admittedConversation,
+              request: runtimeRequestBody,
+            }),
+            inheritedEnvironments: req.codeWorkspaceInheritance,
+            environments: configuredCodeEnvironments,
+            userId,
+            agentId: agent.id,
+            conversationId,
+          })
+        : undefined;
+      codeExecutionContext = baseCodeExecutionContext
+        ? await resolveCodeExecutionWorkspaceContext({
+            context: baseCodeExecutionContext,
+            requestedSelections: runtimeRequestBody?.codeWorkspaces,
+            persistedSelections: admittedConversation?.codeWorkspaces,
+            environments: configuredCodeEnvironments,
+            getAppConfig,
+          })
+        : undefined;
+    } catch (error) {
+      codeWorkspaceUnavailable = getSubagentCodeWorkspaceUnavailableReason(error);
+      if (!codeWorkspaceUnavailable) {
+        throw error;
+      }
+      logger.warn(
+        '[initializeClient] Subagent code workspace unavailable; advertising it as such',
+        {
           agentId: agent.id,
-          conversationId,
-        })
-      : undefined;
-    const codeExecutionContext = baseCodeExecutionContext
-      ? await resolveCodeExecutionWorkspaceContext({
-          context: baseCodeExecutionContext,
-          requestedSelections: runtimeRequestBody?.codeWorkspaces,
-          persistedSelections: admittedConversation?.codeWorkspaces,
-          environments: configuredCodeEnvironments,
-          getAppConfig,
-        })
-      : undefined;
+          reason: codeWorkspaceUnavailable,
+        },
+      );
+    }
     const {
       alwaysApplySkillPrimes,
       historicalToolNames,
@@ -1194,10 +1215,11 @@ const initializeClientWithProvider = async ({
           memoryAvailable === true && agent.tools?.includes(Tools.memory) === true,
         subagents: agent.subagents,
         configId: getLazySubagentConfigId(agent),
-        codeEnvAvailable: lazyCodeEnvAvailable,
-        statefulCodeSessions,
+        codeEnvAvailable: lazyCodeEnvAvailable && !codeWorkspaceUnavailable,
+        statefulCodeSessions: statefulCodeSessions && !codeWorkspaceUnavailable,
         statefulCodeEnvironment,
         codeExecutionContext,
+        codeWorkspaceUnavailable,
         codeSessionKey: codeExecutionContext?.codeSessionKey,
         includeReasoningHistory: getIncludeReasoningHistory(agent),
         alwaysApplySkillPrimes,
@@ -1214,6 +1236,21 @@ const initializeClientWithProvider = async ({
     );
   };
 
+  /** One read and VIEW check per subagent, shared by machine inheritance and metadata loading. */
+  const viewableSubagentLoads = new Map();
+  const loadViewableSubagent = (agentId) => {
+    let loading = viewableSubagentLoads.get(agentId);
+    if (!loading) {
+      loading = db
+        .getAgentWithVersionCount({ id: agentId })
+        .then(async (agent) =>
+          agent && (await hasSubagentViewAccess(agent, agentId)) ? agent : null,
+        );
+      viewableSubagentLoads.set(agentId, loading);
+    }
+    return loading;
+  };
+
   const loadSubagentMetadata = async (agentId) => {
     if (skippedAgentIds.has(agentId)) return null;
     const cached = lazyMetadataByAgentId.get(agentId);
@@ -1221,8 +1258,8 @@ const initializeClientWithProvider = async ({
     let loading = lazyMetadataLoadsByAgentId.get(agentId);
     if (!loading) {
       loading = resolveLazyMetadata(async () => {
-        const agent = await db.getAgentWithVersionCount({ id: agentId });
-        if (!agent || !(await hasSubagentViewAccess(agent, agentId))) {
+        const agent = await loadViewableSubagent(agentId);
+        if (!agent) {
           skippedAgentIds.add(agentId);
           return null;
         }
@@ -1484,18 +1521,27 @@ const initializeClientWithProvider = async ({
             lazySubagentConfigs: lazyChildren,
             subagentAgentConfigs: eagerChildren,
             subagentGraphMemberMetadata,
-            resolve: async (context) =>
-              initializeLazySubagent({
+            ...(metadata.codeWorkspaceUnavailable && {
+              description: describeCodeWorkspaceUnavailableSubagent(
+                metadata.description,
+                metadata.codeWorkspaceUnavailable,
+              ),
+            }),
+            resolve: async (context) => {
+              if (metadata.codeWorkspaceUnavailable) {
+                throw new CodeWorkspaceSelectionError(metadata.codeWorkspaceUnavailable);
+              }
+              const config = await initializeLazySubagent({
                 agentId: metadata.id,
                 configId: metadata.configId,
                 context,
                 lazyChildren,
-              }).then(async (config) => {
-                config.subagentAgentConfigs = eagerChildren;
-                graphMemberConfigsById.set(config.id, config);
-                await resolveGraphSubagentsFor(config, context.signal);
-                return config;
-              }),
+              });
+              config.subagentAgentConfigs = eagerChildren;
+              graphMemberConfigsById.set(config.id, config);
+              await resolveGraphSubagentsFor(config, context.signal);
+              return config;
+            },
           },
           metadata,
         );
@@ -1519,6 +1565,21 @@ const initializeClientWithProvider = async ({
   };
 
   const rootSubagentConfigs = [primaryConfig, ...agentConfigs.values()];
+  const statefulCodeSessionsConfig =
+    appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions;
+  req.codeWorkspaceInheritance = subagentsAvailableForRun
+    ? await resolveSubagentCodeWorkspaceInheritance({
+        selections: resolveCodeExecutionWorkspaceSelections({
+          conversation: admittedConversation,
+          request: runtimeRequestBody,
+        }),
+        roots: rootSubagentConfigs.filter((config) => config?.id),
+        loadSubagent: loadViewableSubagent,
+        environments: statefulCodeSessionsConfig?.environments,
+        allowEnvironmentSelection: statefulCodeSessionsConfig?.allowEnvironmentSelection,
+        codeExecutionAvailable: codeEnvAvailable === true && statefulSessionsAvailable === true,
+      })
+    : undefined;
   await resolveSubagentTrees(rootSubagentConfigs);
 
   const graphMemberConfigsById = new Map(

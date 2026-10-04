@@ -27,17 +27,18 @@ import type {
 } from 'librechat-data-provider';
 import type { CodeEnvironmentReconciliation } from '~/store/codeEnvironmentReconciliation';
 import {
+  collectReachableAgents,
+  findExecutionEnvironment,
+  getCodeEnvironmentChoiceIds,
+  findCodeWorkspaceDiscoveryEnvironment,
+  resolveReachableCodeWorkspaceInheritance,
+} from './useCodeApprovalMode';
+import {
   useCodeEnvironmentStatusQueries,
   useGetStartupConfig,
   useIsReplacingConversationCodeEnvironment,
   useConversationCodeEnvironmentRecovery,
 } from '~/data-provider';
-import {
-  collectReachableAgents,
-  findExecutionEnvironment,
-  getCodeEnvironmentChoiceIds,
-  findCodeWorkspaceDiscoveryEnvironment,
-} from './useCodeApprovalMode';
 import { useWorkspacePreferences } from './workspacePreferences';
 import useAgentToolPermissions from './useAgentToolPermissions';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
@@ -216,6 +217,13 @@ export default function useCodeWorkspace(
     const defaults = new Map<string, Set<string>>();
     const preferenceAgentIds = new Map<string, Set<string>>();
     const requiredBy = new Map<string, Array<{ id: string; name?: string | null }>>();
+    const inheritance = resolveReachableCodeWorkspaceInheritance(
+      [primaryAgent, addedAgent],
+      agentsMap,
+      statefulCodeSessions?.environments,
+      statefulCodeSessions?.allowEnvironmentSelection,
+      conversation?.codeWorkspaces,
+    );
     let complete = true;
     for (const agent of reachable.agents) {
       if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code)) {
@@ -226,6 +234,7 @@ export default function useCodeWorkspace(
         statefulCodeSessions?.environments,
         statefulCodeSessions?.allowEnvironmentSelection,
         conversation?.codeWorkspaces,
+        inheritance.get(agent.id),
       );
       /** Discovery must remain available while a graph draft is partial or its sealed
        * route needs recovery. Only final submission resolves the entire graph strictly. */
@@ -259,6 +268,7 @@ export default function useCodeWorkspace(
           statefulCodeSessions?.environments,
           statefulCodeSessions?.allowEnvironmentSelection,
           conversation?.codeWorkspaces,
+          inheritance.get(agent.id),
         );
         if (environment?.type !== 'attached') continue;
         const owners = preferenceAgentIds.get(environment.id) ?? new Set<string>();
@@ -480,6 +490,16 @@ export default function useCodeWorkspace(
         }
         return undefined;
       }
+      const inheritance =
+        statefulCodeSessions?.allowEnvironmentSelection === true
+          ? resolveReachableCodeWorkspaceInheritance(
+              [primaryAgent, addedAgent],
+              agentsMap,
+              statefulCodeSessions.environments,
+              true,
+              resolved,
+            )
+          : undefined;
       if (
         statefulCodeSessions?.allowEnvironmentSelection === true &&
         reachable.agents.some(
@@ -495,6 +515,7 @@ export default function useCodeWorkspace(
               environmentIds: agent.code_environment_ids,
               allowSelection: true,
               selections: resolved,
+              inheritedEnvironmentId: inheritance?.get(agent.id),
             }).valid,
         )
       )
@@ -502,8 +523,11 @@ export default function useCodeWorkspace(
       return resolved.sort((a, b) => a.environmentId.localeCompare(b.environmentId));
     },
     [
+      addedAgent,
+      agentsMap,
       attachedEnvironmentIds,
       environmentResults,
+      primaryAgent,
       required,
       selectionMetadataComplete,
       reachable.agents,

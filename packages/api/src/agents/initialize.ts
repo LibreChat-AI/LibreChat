@@ -1594,6 +1594,7 @@ export async function initializeAgent(
       conversation: runtime.resolvedConversation,
       request: requestBody,
     }),
+    inheritedEnvironments: runtime.codeWorkspaceInheritance,
     environments: configuredCodeEnvironments,
     userId: requestFileOwnerId,
     agentId: agent.id,

@@ -238,20 +238,42 @@ export function canonicalizeCodeWorkspaceSelections(
     .sort((left, right) => left.environmentId.localeCompare(right.environmentId));
 }
 
+/** Whether an agent may run on `candidate`: its own default, or a machine its author allowlisted
+ * where per-chat machine choice applies to it. */
+function isAllowedCodeEnvironment(
+  candidate: string,
+  environmentId: string | null | undefined,
+  environmentIds: readonly string[] | undefined,
+  allowSelection: boolean | undefined,
+): boolean {
+  return (
+    candidate === environmentId ||
+    (allowSelection === true && environmentIds?.includes(candidate) === true)
+  );
+}
+
 /** Resolves an agent's default or its chat-owned machine choice. Callers still authorize the
- * resolved ID against their principal-scoped environment list and verify live capabilities. */
+ * resolved ID against their principal-scoped environment list and verify live capabilities.
+ *
+ * Precedence: an explicit owner of a selection, then the machine inherited from the parent that
+ * spawned this subagent (see `resolveCodeWorkspaceInheritance`), then the agent's own default,
+ * then a single legacy selection. Inheritance is a separate input rather than an added owner: an
+ * owner on a legacy selection would stop it serving as every other agent's fallback. */
 export function resolveCodeEnvironmentSelection({
   environmentId,
   environmentIds,
   agentId,
   allowSelection,
   selections,
+  inheritedEnvironmentId,
 }: {
   environmentId?: string | null;
   environmentIds?: readonly string[];
   agentId?: string | null;
   allowSelection?: boolean;
   selections?: unknown;
+  /** The parent's machine; applies only when the conversation selected it and this agent may use it. */
+  inheritedEnvironmentId?: string | null;
 }): { valid: true; environmentId?: string | null } | { valid: false } {
   if (selections == null) return { valid: true, environmentId };
   if (!isCodeWorkspaceSelections(selections)) return { valid: false };
@@ -269,6 +291,18 @@ export function resolveCodeEnvironmentSelection({
       ? { valid: true, environmentId: owned.environmentId }
       : { valid: false };
   }
+  if (
+    inheritedEnvironmentId != null &&
+    isAllowedCodeEnvironment(
+      inheritedEnvironmentId,
+      environmentId,
+      environmentIds,
+      allowSelection,
+    ) &&
+    selections.some((selection) => selection.environmentId === inheritedEnvironmentId)
+  ) {
+    return { valid: true, environmentId: inheritedEnvironmentId };
+  }
   if (!allowSelection) return { valid: true, environmentId };
   const allowed = new Set(environmentIds ?? []);
   if (environmentId) allowed.add(environmentId);
@@ -280,4 +314,132 @@ export function resolveCodeEnvironmentSelection({
   const legacy = matches.filter((selection) => selection.agentIds == null);
   if (legacy.length !== 1) return { valid: false };
   return { valid: true, environmentId: legacy[0].environmentId };
+}
+
+/** One agent of a run's graph, reduced to the fields machine routing reads. */
+export interface CodeWorkspaceRoutingAgent {
+  /** Saved agent ID, the key conversation ownership is recorded under. */
+  id: string;
+  /** Runs code on a stateful machine. An agent that does not passes its parent's machine on. */
+  routesCode: boolean;
+  /** Effective default machine: the agent's own, or the deployment default. */
+  environmentId?: string | null;
+  environmentIds?: readonly string[];
+  /** Both the deployment ceiling and this agent's allowlist admit a per-chat machine choice. */
+  allowSelection: boolean;
+  /** Explicit subagents this agent may spawn. */
+  subagentIds?: readonly string[];
+  /** Machine already resolved for this agent, such as an initialized root; `null` for none. */
+  resolvedEnvironmentId?: string | null;
+}
+
+/**
+ * Subagents default to the attached machine, and so the workspace, their parent runs on. A
+ * subagent inherits only when every one of these holds:
+ * - no selection names it as an explicit owner, so a choice made for it still wins;
+ * - the parent's machine is its own default or on its author's allowlist where per-chat choice
+ *   applies to it;
+ * - `isAttachedEnvironment` admits that machine, which callers scope to the principal;
+ * - the conversation's decision already selected a workspace on that machine.
+ *
+ * Inheritance is derived from the sealed decision and the agents' current configuration, the same
+ * inputs every other route reads, so the same decision and graph always route the same way. Agents
+ * are visited breadth-first from the roots; a subagent first reached at one depth considers every
+ * parent at the depth above, and parents that disagree leave it on its own route. A subagent that
+ * does not run code passes its parent's machine on to its own subagents.
+ *
+ * @returns Saved agent ID to inherited environment ID, for subagents whose route changes.
+ */
+export function resolveCodeWorkspaceInheritance({
+  selections,
+  rootIds,
+  agents,
+  isAttachedEnvironment,
+}: {
+  selections: unknown;
+  rootIds: readonly string[];
+  agents: ReadonlyMap<string, CodeWorkspaceRoutingAgent>;
+  isAttachedEnvironment: (environmentId: string) => boolean;
+}): Map<string, string> {
+  const inherited = new Map<string, string>();
+  if (!isCodeWorkspaceSelections(selections) || selections.length === 0) return inherited;
+  const selected = new Set(selections.map(({ environmentId }) => environmentId));
+  const owned = new Set(selections.flatMap(({ agentIds }) => agentIds ?? []));
+  const routes = new Map<string, string | undefined>();
+
+  const routeOf = (
+    agent: CodeWorkspaceRoutingAgent,
+    parentRoute: string | undefined,
+  ): string | undefined => {
+    if (!agent.routesCode) return parentRoute;
+    const resolved =
+      agent.resolvedEnvironmentId !== undefined
+        ? agent.resolvedEnvironmentId
+        : resolveRoutedEnvironmentId(agent, selections, inherited.get(agent.id));
+    return resolved != null && isAttachedEnvironment(resolved) ? resolved : undefined;
+  };
+  const inherits = (agent: CodeWorkspaceRoutingAgent, candidate: string): boolean =>
+    agent.routesCode &&
+    agent.resolvedEnvironmentId === undefined &&
+    candidate !== agent.environmentId &&
+    !owned.has(agent.id) &&
+    selected.has(candidate) &&
+    isAllowedCodeEnvironment(
+      candidate,
+      agent.environmentId,
+      agent.environmentIds,
+      agent.allowSelection,
+    ) &&
+    isAttachedEnvironment(candidate);
+
+  const visited = new Set<string>();
+  let level: CodeWorkspaceRoutingAgent[] = [];
+  for (const id of rootIds) {
+    const agent = agents.get(id);
+    if (agent == null || visited.has(id)) continue;
+    visited.add(id);
+    routes.set(id, routeOf(agent, undefined));
+    level.push(agent);
+  }
+  while (level.length > 0) {
+    const parentRoutes = new Map<string, Set<string | undefined>>();
+    for (const parent of level) {
+      for (const childId of parent.subagentIds ?? []) {
+        if (visited.has(childId)) continue;
+        const candidates = parentRoutes.get(childId) ?? new Set<string | undefined>();
+        candidates.add(routes.get(parent.id));
+        parentRoutes.set(childId, candidates);
+      }
+    }
+    const next: CodeWorkspaceRoutingAgent[] = [];
+    parentRoutes.forEach((candidates, childId) => {
+      visited.add(childId);
+      const child = agents.get(childId);
+      if (child == null) return;
+      const candidate = candidates.size === 1 ? Array.from(candidates)[0] : undefined;
+      if (candidate != null && inherits(child, candidate)) {
+        inherited.set(childId, candidate);
+      }
+      routes.set(childId, routeOf(child, candidate));
+      next.push(child);
+    });
+    level = next;
+  }
+  return inherited;
+}
+
+function resolveRoutedEnvironmentId(
+  agent: CodeWorkspaceRoutingAgent,
+  selections: CodeWorkspaceSelection[],
+  inheritedEnvironmentId: string | undefined,
+): string | null | undefined {
+  const resolution = resolveCodeEnvironmentSelection({
+    agentId: agent.id,
+    environmentId: agent.environmentId,
+    environmentIds: agent.environmentIds,
+    allowSelection: agent.allowSelection,
+    selections,
+    inheritedEnvironmentId,
+  });
+  return resolution.valid ? resolution.environmentId : undefined;
 }
