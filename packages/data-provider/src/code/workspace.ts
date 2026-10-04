@@ -412,6 +412,26 @@ export function resolveCodeWorkspaceInheritance({
     routes.set(id, routeOf(agent, candidate));
   };
 
+  /** A group follows the single machine every outside parent runs on when that routes each member
+   *  there too; otherwise its members keep their own routes. */
+  const resolveGroup = (members: string[]): void => {
+    const group = new Set(members);
+    const outside = new Set<string | undefined>();
+    for (const id of members) {
+      parents.get(id)?.forEach((parentId) => {
+        if (!group.has(parentId)) outside.add(routes.get(parentId));
+      });
+    }
+    const candidate = outside.size === 1 ? Array.from(outside)[0] : undefined;
+    members.forEach((id) => resolve(id, candidate));
+    if (candidate != null && members.some((id) => routes.get(id) !== candidate)) {
+      members.forEach((id) => {
+        inherited.delete(id);
+        resolve(id, undefined);
+      });
+    }
+  };
+
   let pending = Array.from(parents.keys());
   while (pending.length > 0) {
     const ready = pending.filter((id) =>
@@ -425,29 +445,11 @@ export function resolveCodeWorkspaceInheritance({
         resolve(id, candidates.size === 1 ? Array.from(candidates)[0] : undefined);
       }
     } else {
-      /** Every remaining agent waits on another, so some of them spawn each other. They follow the
-       *  single machine every outside parent runs on when that routes each of them there too;
-       *  otherwise they keep their own routes. */
-      const waiting = new Set(pending);
-      const cyclic = pending.filter((candidate) => isInCycle(candidate, waiting, parents));
-      const members = cyclic.length > 0 ? cyclic : pending;
-      const group = new Set(members);
-      const outside = new Set<string | undefined>();
-      let outsideResolved = true;
-      for (const id of members) {
-        parents.get(id)?.forEach((parentId) => {
-          if (group.has(parentId)) return;
-          if (!routes.has(parentId)) outsideResolved = false;
-          outside.add(routes.get(parentId));
-        });
-      }
-      const candidate = outsideResolved && outside.size === 1 ? Array.from(outside)[0] : undefined;
-      members.forEach((id) => resolve(id, candidate));
-      if (candidate != null && members.some((id) => routes.get(id) !== candidate)) {
-        members.forEach((id) => {
-          inherited.delete(id);
-          resolve(id, undefined);
-        });
+      /** Every remaining agent waits on another, so some of them spawn each other. Each group of
+       *  mutually spawning agents whose outside parents are all resolved settles on its own. */
+      const groups = findSettledSpawnGroups(pending, parents, routes);
+      for (const members of groups.length > 0 ? groups : [pending]) {
+        resolveGroup(members);
       }
     }
     pending = pending.filter((id) => !routes.has(id));
@@ -495,21 +497,54 @@ function reachableFrom(
   return visited;
 }
 
-function isInCycle(
+/**
+ * Groups of agents that spawn each other (strongly connected among the waiting agents) whose every
+ * parent outside the group already has a route.
+ */
+function findSettledSpawnGroups(
+  pending: readonly string[],
+  parents: ReadonlyMap<string, ReadonlySet<string>>,
+  routes: ReadonlyMap<string, string | undefined>,
+): string[][] {
+  const waiting = new Set(pending);
+  const ancestors = new Map(pending.map((id) => [id, waitingAncestors(id, waiting, parents)]));
+  const grouped = new Set<string>();
+  const groups: string[][] = [];
+  for (const id of pending) {
+    if (grouped.has(id)) continue;
+    const members = pending.filter(
+      (other) =>
+        other === id ||
+        (ancestors.get(id)?.has(other) === true && ancestors.get(other)?.has(id) === true),
+    );
+    members.forEach((member) => grouped.add(member));
+    const group = new Set(members);
+    const settled = members.every((member) =>
+      Array.from(parents.get(member) ?? []).every(
+        (parentId) => group.has(parentId) || routes.has(parentId),
+      ),
+    );
+    if (settled && (members.length > 1 || ancestors.get(id)?.has(id) === true)) {
+      groups.push(members);
+    }
+  }
+  return groups;
+}
+
+function waitingAncestors(
   id: string,
   waiting: ReadonlySet<string>,
   parents: ReadonlyMap<string, ReadonlySet<string>>,
-): boolean {
+): Set<string> {
   const seen = new Set<string>();
   const stack = Array.from(parents.get(id) ?? []);
   while (stack.length > 0) {
     const current = stack.pop() as string;
-    if (current === id) return true;
     if (!waiting.has(current) || seen.has(current)) continue;
     seen.add(current);
     stack.push(...Array.from(parents.get(current) ?? []));
   }
-  return false;
+  return seen;
 }
 
 function resolveRoutedEnvironmentId(

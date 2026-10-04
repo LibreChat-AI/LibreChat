@@ -331,6 +331,39 @@ describe('subagent machine inheritance', () => {
     );
   });
 
+  it('settles independent mutually spawning groups separately', () => {
+    const selections: CodeWorkspaceSelection[] = [
+      { environmentId: SKYNET, workspaceId: 'code-api' },
+      { environmentId: LIA_RAG, workspaceId: 'agents', agentIds: ['lia'] },
+      { environmentId: SPARE, workspaceId: 'spare', agentIds: ['other'] },
+    ];
+    const lia = agent('lia', { subagentIds: ['a1', 'a2'] });
+    const other = agent('other', { environmentIds: [SPARE], subagentIds: ['b1', 'b2'] });
+    const pair = (id: string, peer: string) =>
+      agent(id, { environmentIds: [LIA_RAG, SPARE], subagentIds: [peer] });
+    const inheritance = resolveCodeWorkspaceInheritance({
+      selections,
+      rootIds: ['lia', 'other'],
+      agents: graph(
+        lia,
+        other,
+        pair('a1', 'a2'),
+        pair('a2', 'a1'),
+        pair('b1', 'b2'),
+        pair('b2', 'b1'),
+      ),
+      isAttachedEnvironment,
+    });
+    expect(inheritance).toEqual(
+      new Map([
+        ['a1', LIA_RAG],
+        ['a2', LIA_RAG],
+        ['b1', SPARE],
+        ['b2', SPARE],
+      ]),
+    );
+  });
+
   it('keeps a mutually spawning group on its own routes when one member is assigned elsewhere', () => {
     const selections: CodeWorkspaceSelection[] = [
       { environmentId: SKYNET, workspaceId: 'code-api', agentIds: ['right'] },
@@ -375,7 +408,7 @@ describe('subagent machine inheritance', () => {
       agents: graph(second, reviewer, agent('lia', { subagentIds: ['verifier', 'reviewer'] })),
       isAttachedEnvironment,
     });
-    expect([...forward].sort()).toEqual([...reversed].sort());
+    expect(Array.from(forward).sort()).toEqual(Array.from(reversed).sort());
     expect(forward).toEqual(new Map([['reviewer', LIA_RAG]]));
   });
 
