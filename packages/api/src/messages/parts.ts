@@ -49,9 +49,8 @@ interface StoredToolCallPart {
   tool_call?: FullToolCall;
 }
 
-const MAX_PART_INDEX = 100_000;
 const MAX_TOOL_CALL_ID_LENGTH = 512;
-const PART_INDEX_PATTERN = /^\d{1,6}$/;
+const PART_INDEX_PATTERN = /^\d+$/;
 
 function getAgentToolCall(part: unknown): FullToolCall | undefined {
   if (part == null || typeof part !== 'object') {
@@ -156,7 +155,7 @@ function parsePartIndex(value: string | undefined): number | undefined {
     return undefined;
   }
   const index = Number(value);
-  return index <= MAX_PART_INDEX ? index : undefined;
+  return Number.isSafeInteger(index) ? index : undefined;
 }
 
 /** `undefined` when absent, `null` when present but unusable. */

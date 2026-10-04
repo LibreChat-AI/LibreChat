@@ -173,7 +173,8 @@ function capJsonStrings(value: JsonValue, maxChars: number): JsonValue {
   if (value == null || typeof value !== 'object') {
     return value;
   }
-  const result: { [key: string]: JsonValue } = {};
+  /** Null-prototype, so a `__proto__` key stays an ordinary data key. */
+  const result: { [key: string]: JsonValue } = Object.create(null);
   for (const key in value) {
     result[key] = capJsonStrings(value[key], maxChars);
   }
@@ -181,19 +182,30 @@ function capJsonStrings(value: JsonValue, maxChars: number): JsonValue {
 }
 
 /**
- * Counts string values, stopping once past `limit`. Nesting deeper than `MAX_JSON_DEPTH` counts
- * as unfit, since the recursive cap and serialization that follow would exhaust the stack.
+ * Whether the JSON could fit `maxChars` once its strings are capped: every value serializes to
+ * at least two characters with its separator, and every string to at least
+ * `MIN_JSON_STRING_CHARS`, so a structure with more values or strings than that allows cannot
+ * fit at any cap. The walk is iterative, stops as soon as either bound is passed, and treats
+ * nesting deeper than `MAX_JSON_DEPTH` as unfit, so the cloning and serialization that follow
+ * only ever run on small, shallow values.
  */
-function countJsonStrings(value: JsonValue, limit: number): number {
-  let count = 0;
+function mayFitJson(value: JsonValue, maxChars: number): boolean {
+  const maxNodes = Math.floor(maxChars / 2);
+  const maxStrings = Math.floor(maxChars / MIN_JSON_STRING_CHARS);
+  let nodes = 0;
+  let strings = 0;
   const stack: Array<[JsonValue, number]> = [[value, 0]];
-  while (stack.length > 0 && count <= limit) {
+  while (stack.length > 0) {
     const [current, depth] = stack.pop() as [JsonValue, number];
-    if (depth > MAX_JSON_DEPTH) {
-      return Infinity;
+    nodes++;
+    if (nodes > maxNodes || depth > MAX_JSON_DEPTH) {
+      return false;
     }
     if (typeof current === 'string') {
-      count++;
+      strings++;
+      if (strings > maxStrings) {
+        return false;
+      }
     } else if (Array.isArray(current)) {
       for (const item of current) {
         stack.push([item, depth + 1]);
@@ -204,7 +216,7 @@ function countJsonStrings(value: JsonValue, limit: number): number {
       }
     }
   }
-  return count;
+  return true;
 }
 
 function parseJsonContainer(text: string): JsonValue | undefined {
@@ -227,8 +239,7 @@ function parseJsonContainer(text: string): JsonValue | undefined {
  * shortest cap cannot fit, and the caller falls back to text.
  */
 export function shrinkJsonToFit(value: JsonValue, maxChars: number): string | undefined {
-  const stringLimit = Math.floor(maxChars / MIN_JSON_STRING_CHARS);
-  if (countJsonStrings(value, stringLimit) > stringLimit) {
+  if (!mayFitJson(value, maxChars)) {
     return undefined;
   }
   const capped = capJsonStrings(value, maxChars);

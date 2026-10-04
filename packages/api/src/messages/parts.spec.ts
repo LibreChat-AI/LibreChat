@@ -245,6 +245,7 @@ describe('GET /api/messages/:conversationId/:messageId/parts/:partIndex', () => 
   it('answers not found for a missing part, a non-tool part, or an unknown id', async () => {
     await seed();
     expect((await request(app).get(partUrl(9))).status).toBe(404);
+    expect((await request(app).get(partUrl(250_000))).status).toBe(404);
     expect((await request(app).get(partUrl(0))).status).toBe(404);
     expect((await request(app).get(partUrl(1, 'call_missing'))).status).toBe(404);
   });
@@ -275,7 +276,7 @@ describe('GET /api/messages/:conversationId/:messageId/parts/:partIndex', () => 
     const strict = mount(handler(getMessages));
     expect((await request(strict).get(partUrl('-1'))).status).toBe(400);
     expect((await request(strict).get(partUrl('1.5'))).status).toBe(400);
-    expect((await request(strict).get(partUrl('9999999'))).status).toBe(400);
+    expect((await request(strict).get(partUrl('99999999999999999999'))).status).toBe(400);
     expect((await request(strict).get(partUrl(1, 'x'.repeat(600)))).status).toBe(400);
     expect(getMessages).not.toHaveBeenCalled();
   });

@@ -293,6 +293,27 @@ describe('previewToolCall', () => {
   });
 });
 
+describe('wide or unusual JSON', () => {
+  it('falls back to text for a wide array without cloning it', () => {
+    const output = JSON.stringify(Array.from({ length: 200_000 }, (_, i) => i));
+    const stringify = jest.spyOn(JSON, 'stringify');
+    const preview = previewToolCall(toolPart({ output }).tool_call, limits);
+    expect(stringify).not.toHaveBeenCalled();
+    stringify.mockRestore();
+    expect(preview.outputTruncated).toBe(true);
+    expect(preview.output?.length).toBeLessThanOrEqual(limits.outputChars);
+  });
+
+  it('keeps a __proto__ key as ordinary data', () => {
+    const args = `{"__proto__":{"mode":"x"},"pad":"${'p'.repeat(4_000)}"}`;
+    const preview = previewToolCallArgs(args, 512);
+    const parsed = JSON.parse(preview?.args as string);
+    expect(Object.prototype.hasOwnProperty.call(parsed, '__proto__')).toBe(true);
+    expect(parsed.__proto__).toEqual({ mode: 'x' });
+    expect(Object.prototype.hasOwnProperty.call(parsed, 'mode')).toBe(false);
+  });
+});
+
 describe('deeply nested JSON output', () => {
   it('falls back to a bounded text preview instead of exhausting the stack', () => {
     const output = `${'['.repeat(20_000)}${']'.repeat(20_000)}`;
