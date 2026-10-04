@@ -17,8 +17,8 @@ import {
   OGDialogDescription,
 } from '@librechat/client';
 import { useGetLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
+import { useGetStartupConfig, fetchConversationMessages } from '~/data-provider';
 import SharedLinkCopyButton from './SharedLinkCopyButton';
-import { useGetStartupConfig } from '~/data-provider';
 import SharedLinkButton from './SharedLinkButton';
 import { buildShareLinkUrl } from '~/utils';
 import { useLocalize } from '~/hooks';
@@ -65,7 +65,7 @@ export default function ShareButton({
     if (!selectedMessageId) {
       await queryClient.fetchQuery(
         [QueryKeys.messages, conversationId],
-        () => dataService.getMessagesByConvoId(conversationId),
+        () => fetchConversationMessages(conversationId),
         { staleTime: 0 },
       );
       selectedMessageId = getActiveLatestMessage()?.messageId ?? null;

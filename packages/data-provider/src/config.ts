@@ -3693,6 +3693,24 @@ export const conversationListConfigSchema = z.object({
 
 export type TConversationListConfig = z.infer<typeof conversationListConfigSchema>;
 
+/**
+ * Bounded previews of settled tool calls on conversation loads. A client that asks for them
+ * receives the start and end of each long output and argument string, without subagent
+ * transcripts, and fetches a part in full only when the reader opens it. `enabled: false` sends
+ * every load in full, as before previews existed.
+ */
+export const toolCallPreviewsConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Characters of `output` kept per tool call, half from the start and half from the end.
+   *  JSON output stays valid JSON, and an exit-status trailer is always kept whole. */
+  outputChars: z.number().int().min(256).max(1_000_000).default(512),
+  /** Characters of serialized `args` kept per tool call. JSON arguments stay valid JSON with
+   *  every field present; only the longest strings are shortened. */
+  argsChars: z.number().int().min(256).max(1_000_000).default(512),
+});
+
+export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchema>;
+
 export const configSchema = z.object({
   version: z.string(),
   permissions: z.object({ maxWriteAttempts: permissionWriteAttemptsSchema }).optional(),
@@ -3708,6 +3726,9 @@ export const configSchema = z.object({
   imageOutputType: z.nativeEnum(EImageOutputType).default(EImageOutputType.PNG),
   conversationList: conversationListConfigSchema.default(() =>
     conversationListConfigSchema.parse({}),
+  ),
+  toolCallPreviews: toolCallPreviewsConfigSchema.default(() =>
+    toolCallPreviewsConfigSchema.parse({}),
   ),
   includedTools: z.array(z.string()).optional(),
   filteredTools: z.array(z.string()).optional(),

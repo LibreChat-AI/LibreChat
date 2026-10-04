@@ -15,6 +15,7 @@ import type {
   TAnthropicEndpoint,
   SummarizationConfig,
   TConversationListConfig,
+  TToolCallPreviewsConfig,
   SkillSyncConfig,
   FiltersConfig,
 } from 'librechat-data-provider';
@@ -118,6 +119,8 @@ export interface AppConfig {
   secureImageLinks?: TCustomConfig['secureImageLinks'];
   /** Validation limits for the conversation list's filter facets */
   conversationList?: TConversationListConfig;
+  /** Bounds for the tool-call previews sent on conversation loads */
+  toolCallPreviews?: TToolCallPreviewsConfig;
   /** Processed model specifications */
   modelSpecs?: TCustomConfig['modelSpecs'];
   /** Available tools */

@@ -4,6 +4,7 @@ import {
   chatProjectsConfigSchema,
   filtersConfigSchema,
   conversationListConfigSchema,
+  toolCallPreviewsConfigSchema,
   hasActiveFiltersConfig,
   getConfigDefaults,
   langfuseConfigSchema,
@@ -104,6 +105,18 @@ export function loadConversationListConfig(
   }
   logger.warn('[AppService] Invalid conversationList config', parsed.error.flatten());
   return conversationListConfigSchema.parse({});
+}
+
+/** Resolves the tool-call preview bounds; an invalid block keeps the defaults. */
+export function loadToolCallPreviewsConfig(
+  config: DeepPartial<TCustomConfig>,
+): NonNullable<AppConfig['toolCallPreviews']> {
+  const parsed = toolCallPreviewsConfigSchema.safeParse(config.toolCallPreviews ?? {});
+  if (parsed.success) {
+    return parsed.data;
+  }
+  logger.warn('[AppService] Invalid toolCallPreviews config', parsed.error.flatten());
+  return toolCallPreviewsConfigSchema.parse({});
 }
 
 export function loadFiltersConfig(config: DeepPartial<TCustomConfig>): AppConfig['filters'] {
@@ -221,6 +234,7 @@ export const AppService = async (params?: {
     cloudfront: config.cloudfront as AppConfig['cloudfront'],
     secureImageLinks: config.secureImageLinks !== false,
     conversationList: loadConversationListConfig(config),
+    toolCallPreviews: loadToolCallPreviewsConfig(config),
   };
 
   const agentsDefaults = agentsConfigSetup(config);

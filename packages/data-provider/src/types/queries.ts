@@ -1,5 +1,6 @@
 import type { InfiniteData } from '@tanstack/react-query';
 import type { RerankerTypes, SearchProviders, ScraperProviders } from '../config';
+import type { FullToolCall } from '../previews';
 import type * as p from '../accessPermissions';
 import type * as a from '../types/agents';
 import type * as s from '../schemas';
@@ -108,6 +109,22 @@ export type MessagesListParams = {
 export type MessagesListResponse = {
   messages: s.TMessage[];
   nextCursor: string | null;
+};
+
+/** Locates one tool-call part. `toolCallId` disambiguates when the part moved. */
+export type ToolCallPartParams = {
+  conversationId: string;
+  messageId: string;
+  partIndex: number;
+  toolCallId?: string;
+};
+
+export type ToolCallPartResponse = {
+  conversationId: string;
+  messageId: string;
+  /** Index of the part in the stored message, which may differ from the requested one. */
+  partIndex: number;
+  tool_call: FullToolCall;
 };
 
 /* Shared Links */

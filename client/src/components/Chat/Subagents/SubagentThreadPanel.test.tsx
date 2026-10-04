@@ -16,6 +16,12 @@ import SubagentThreadPanel from './SubagentThreadPanel';
 import { getDraft } from '~/utils';
 
 const mockUseSubagentThreadQuery = jest.fn();
+const mockUseToolCallPartQuery = jest.fn(
+  (..._args: unknown[]): { data?: unknown; isError: boolean } => ({
+    data: undefined,
+    isError: false,
+  }),
+);
 const mockUseSubagentActivityStream = jest.fn();
 const mockForkMutate = jest.fn();
 const mockControlMutate = jest.fn();
@@ -74,6 +80,7 @@ jest.mock('~/data-provider', () => ({
    *  (`useConfiguredFooter`), so the panel now reads the startup config. */
   useGetStartupConfig: () => ({ data: undefined }),
   useSubagentThreadQuery: (...args: unknown[]) => mockUseSubagentThreadQuery(...args),
+  useToolCallPartQuery: (...args: unknown[]) => mockUseToolCallPartQuery(...args),
   subagentThreadHasTaskEvidence: (view: SubagentThreadView | undefined, taskId: string): boolean =>
     view?.messages.some(
       (message) =>
@@ -1489,6 +1496,106 @@ describe('SubagentThreadPanel', () => {
     expect(
       screen.queryByRole('button', { name: 'com_ui_subagent_continue_new_chat' }),
     ).not.toBeInTheDocument();
+  });
+
+  describe('a foreground call the server sent as a preview', () => {
+    const previewed: ActiveSubagentPanel = {
+      host: 'conversation',
+      parentConversationId: 'parent-conversation',
+      parentMessageId: 'parent-message',
+      toolCallId: 'foreground-call',
+      partIndex: 3,
+      subagentType: 'researcher',
+      prompt: 'Review this change.',
+      legacyOutput: 'Shortened final ans…',
+      contentPreview: true,
+      initialProgress: 1,
+      isSubmitting: false,
+    };
+
+    beforeEach(() => {
+      mockUseSubagentThreadQuery.mockReturnValue({
+        data: undefined,
+        isLoading: false,
+        isError: false,
+        isReadinessPending: false,
+      });
+    });
+
+    afterEach(() => {
+      mockUseToolCallPartQuery.mockImplementation(() => ({ data: undefined, isError: false }));
+    });
+
+    it('loads the stored part and never shows the shortened output as the activity', () => {
+      render(
+        <Root>
+          <SubagentThreadPanel selection={previewed} />
+        </Root>,
+      );
+
+      expect(mockUseToolCallPartQuery).toHaveBeenCalledWith(
+        {
+          conversationId: 'parent-conversation',
+          messageId: 'parent-message',
+          partIndex: 3,
+          toolCallId: 'foreground-call',
+        },
+        { enabled: true },
+      );
+      expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-state', 'loading');
+      expect(screen.queryByText('Shortened final ans…')).not.toBeInTheDocument();
+    });
+
+    it('renders the stored transcript once it arrives', () => {
+      mockUseToolCallPartQuery.mockImplementation(() => ({
+        data: {
+          conversationId: 'parent-conversation',
+          messageId: 'parent-message',
+          partIndex: 3,
+          tool_call: {
+            id: 'foreground-call',
+            name: 'subagent',
+            args: '{"prompt":"Review this change."}',
+            output: 'Full final answer.',
+            subagent_content: [{ type: 'text', text: 'Stored review transcript.' }],
+          },
+        },
+        isError: false,
+      }));
+
+      render(
+        <Root>
+          <SubagentThreadPanel selection={previewed} />
+        </Root>,
+      );
+
+      expect(screen.getByText('Stored review transcript.')).toBeInTheDocument();
+      expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-state', 'ready');
+    });
+
+    it('reports a failed load instead of rendering the preview', () => {
+      mockUseToolCallPartQuery.mockImplementation(() => ({ data: undefined, isError: true }));
+
+      render(
+        <Root>
+          <SubagentThreadPanel selection={previewed} />
+        </Root>,
+      );
+
+      expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-state', 'error');
+      expect(screen.queryByText('Shortened final ans…')).not.toBeInTheDocument();
+    });
+
+    it('reads nothing for a call that arrived in full', () => {
+      render(
+        <Root>
+          <SubagentThreadPanel selection={{ ...previewed, contentPreview: undefined }} />
+        </Root>,
+      );
+      expect(mockUseToolCallPartQuery).toHaveBeenCalledWith(expect.anything(), {
+        enabled: false,
+      });
+    });
   });
 
   it('continues a completed durable agent task as an ordinary conversation snapshot', () => {

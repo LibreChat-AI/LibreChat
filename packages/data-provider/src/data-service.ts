@@ -11,6 +11,7 @@ import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
+import { TOOL_CALL_PREVIEWS_PARAM, TOOL_CALL_PREVIEWS_VERSION } from './previews';
 import * as permissions from './accessPermissions';
 import * as endpoints from './api-endpoints';
 import { uploadEventStream } from './upload';
@@ -1162,14 +1163,29 @@ export function getOwnerMessageTexts(
   return request.post(`${endpoints.messages({ conversationId })}/owner-text`, { messageIds });
 }
 
-export function getMessagesByConvoId(conversationId: string): Promise<s.TMessage[]> {
+/**
+ * Loads a conversation's messages. `toolPreviews` asks for bounded previews of settled tool
+ * calls; a caller that needs every byte (export, share, trace) leaves it off.
+ */
+export function getMessagesByConvoId(
+  conversationId: string,
+  options?: { toolPreviews?: boolean },
+): Promise<s.TMessage[]> {
   if (
     conversationId === config.Constants.NEW_CONVO ||
     conversationId === config.Constants.PENDING_CONVO
   ) {
     return Promise.resolve([]);
   }
-  return request.get(endpoints.messages({ conversationId }));
+  const url = endpoints.messages({ conversationId });
+  if (options?.toolPreviews !== true) {
+    return request.get(url);
+  }
+  return request.get(`${url}?${TOOL_CALL_PREVIEWS_PARAM}=${TOOL_CALL_PREVIEWS_VERSION}`);
+}
+
+export function getToolCallPart(params: q.ToolCallPartParams): Promise<q.ToolCallPartResponse> {
+  return request.get(endpoints.messageToolCallPart(params));
 }
 
 export function getMessageById(conversationId: string, messageId: string): Promise<s.TMessage[]> {

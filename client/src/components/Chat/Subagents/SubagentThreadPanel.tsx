@@ -23,19 +23,20 @@ import type { ActiveSubagentPanel, SubagentControlUiState } from './state';
 import type { ComposerKeyAction } from '~/utils/shortcuts';
 import type { OptionWithIcon } from '~/common';
 import {
+  ACTIVE_THREAD_REFRESH_MS,
+  subagentThreadHasTaskEvidence,
+  useForkConvoMutation,
+  useToolCallPartQuery,
+  useSubagentControlMutation,
+  useSubagentThreadQuery,
+} from '~/data-provider';
+import {
   adaptDurableThreadActivity,
   adaptDurableThreadConversation,
   adaptLivePersistedActivity,
   mergeChildConversationTurns,
   retainBoundedMovingWindowTurns,
 } from './adapters';
-import {
-  ACTIVE_THREAD_REFRESH_MS,
-  subagentThreadHasTaskEvidence,
-  useForkConvoMutation,
-  useSubagentControlMutation,
-  useSubagentThreadQuery,
-} from '~/data-provider';
 import {
   activeSubagentPanel,
   subagentControlStateByTask,
@@ -777,22 +778,41 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     };
   }, [isMobile]);
 
+  /** A previewed call renders nothing until its stored part arrives: the preview's output is a
+   *  shortened copy and its transcript is absent, so neither may stand in for the activity. */
+  const awaitsStoredPart = selection.contentPreview === true;
+  const storedPart = useToolCallPartQuery(
+    {
+      conversationId: selection.parentConversationId,
+      messageId: selection.parentMessageId,
+      partIndex: selection.partIndex,
+      toolCallId: selection.toolCallId || undefined,
+    },
+    { enabled: awaitsStoredPart },
+  );
+  const storedToolCall = awaitsStoredPart ? storedPart.data?.tool_call : undefined;
+  const persistedContent = storedToolCall?.subagent_content ?? selection.persistedContent;
+  let legacyOutput = selection.legacyOutput;
+  if (awaitsStoredPart && legacyOutput != null) {
+    legacyOutput = storedToolCall?.output;
+  }
+
   const liveActivity = useMemo(
     () =>
       adaptLivePersistedActivity({
         title: foregroundTitle,
         prompt: selection.prompt,
         progress,
-        persistedContent: selection.persistedContent,
+        persistedContent,
         isDetached: selection.durable != null,
-        legacyOutput: selection.legacyOutput,
+        legacyOutput,
         // A detached parent tool step closes as soon as dispatch succeeds;
         // its terminal status does not describe the still-running child.
         initialProgress: selection.durable == null ? selection.initialProgress : 0,
         isSubmitting: selection.durable == null ? selection.isSubmitting : detachedLiveSubmitting,
         runStepStatus: selection.durable == null ? selection.runStepStatus : undefined,
       }),
-    [detachedLiveSubmitting, foregroundTitle, progress, selection],
+    [detachedLiveSubmitting, foregroundTitle, legacyOutput, persistedContent, progress, selection],
   );
   const activity = useMemo(() => {
     if (selection.durable == null) return liveActivity;
@@ -1230,7 +1250,9 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     ],
   );
   let panelState: 'ready' | 'loading' | 'error' = 'ready';
-  if (
+  if (awaitsStoredPart && selection.durable == null && storedToolCall == null) {
+    panelState = storedPart.isError ? 'error' : 'loading';
+  } else if (
     selection.durable != null &&
     liveActivity.items.length === 0 &&
     (isLoading || isReadinessPending)

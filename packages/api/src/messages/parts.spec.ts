@@ -1,0 +1,243 @@
+import express from 'express';
+import mongoose from 'mongoose';
+import request from 'supertest';
+import { ContentTypes } from 'librechat-data-provider';
+import { MongoMemoryServer } from 'mongodb-memory-server';
+import {
+  logger,
+  createMethods,
+  createModels,
+  tenantStorage,
+  CLIENT_MESSAGE_SELECT,
+} from '@librechat/data-schemas';
+import type { AllMethods, IMessage } from '@librechat/data-schemas';
+import type { NextFunction, Request, Response } from 'express';
+import { previewMessagesToolCalls } from './previews';
+import { createToolCallPartHandler } from './parts';
+
+let mongod: MongoMemoryServer;
+let methods: AllMethods;
+let app: express.Express;
+
+const OWNER = 'owner-user';
+const conversationId = '7f9c2b1e-4a5d-4c3b-9e8f-1a2b3c4d5e6f';
+const otherConversationId = '0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9';
+const messageId = 'msg-parts';
+
+const longOutput = `stdout:\n${'line of build output\n'.repeat(2_000)}[exit code: 0]`;
+const longArgs = JSON.stringify({
+  command: 'npm run build',
+  intent: 'Build',
+  pad: 'p'.repeat(5_000),
+});
+const transcript = [
+  { type: ContentTypes.TEXT, text: 'child text' },
+  {
+    type: ContentTypes.TOOL_CALL,
+    tool_call: {
+      id: 'child_1',
+      name: 'read_file',
+      args: '{"path":"a"}',
+      output: 'x'.repeat(3_000),
+    },
+  },
+];
+
+function content() {
+  return [
+    { type: ContentTypes.TEXT, text: 'Working on it' },
+    {
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id: 'call_bash',
+        type: 'tool_call',
+        name: 'bash_tool',
+        args: longArgs,
+        output: longOutput,
+        progress: 1,
+        backgroundTask: {
+          version: 1,
+          taskId: 'task-1',
+          toolName: 'bash_tool',
+          status: 'completed',
+          settledAt: new Date('2026-10-01T00:00:00Z'),
+          resultClaim: { kind: 'manual', claimId: 'secret-claim', claimedAt: new Date() },
+        },
+      },
+    },
+    {
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id: 'call_sub',
+        type: 'tool_call',
+        name: 'subagent',
+        args: '{"prompt":"look around"}',
+        output: 'child summary',
+        progress: 1,
+        subagent_content: transcript,
+      },
+    },
+  ];
+}
+
+async function seed(user = OWNER, overrides: Partial<IMessage> = {}) {
+  await methods.saveMessage(
+    { userId: user },
+    {
+      messageId,
+      conversationId,
+      parentMessageId: 'parent',
+      isCreatedByUser: false,
+      text: '',
+      content: content(),
+      ...overrides,
+    },
+  );
+}
+
+function withUser(req: Request, _res: Response, next: NextFunction) {
+  (req as Request & { user: { id: string } }).user = {
+    id: (req.headers['x-user'] as string | undefined) ?? OWNER,
+  };
+  const tenantId = req.headers['x-tenant'] as string | undefined;
+  if (tenantId == null) {
+    next();
+    return;
+  }
+  tenantStorage.run({ tenantId }, () => next());
+}
+
+const partUrl = (index: number | string, toolCallId?: string, convo = conversationId) =>
+  `/api/messages/${convo}/${messageId}/parts/${index}${
+    toolCallId == null ? '' : `?toolCallId=${encodeURIComponent(toolCallId)}`
+  }`;
+
+beforeAll(async () => {
+  jest.spyOn(logger, 'error').mockImplementation(() => logger);
+  mongod = await MongoMemoryServer.create();
+  createModels(mongoose);
+  methods = createMethods(mongoose);
+  await mongoose.connect(mongod.getUri());
+  app = express();
+  app.use(withUser);
+  app.get(
+    '/api/messages/:conversationId/:messageId/parts/:partIndex',
+    createToolCallPartHandler({ getMessages: methods.getMessages }),
+  );
+});
+
+afterAll(async () => {
+  await mongoose.disconnect();
+  await mongod.stop();
+});
+
+beforeEach(async () => {
+  await (mongoose.models.Message as mongoose.Model<IMessage>).deleteMany({});
+});
+
+describe('GET /api/messages/:conversationId/:messageId/parts/:partIndex', () => {
+  it('returns the stored tool call in full, exactly as a full conversation load sends it', async () => {
+    await seed();
+    const response = await request(app).get(partUrl(1, 'call_bash'));
+    expect(response.status).toBe(200);
+
+    const [stored] = await methods.getMessages(
+      { conversationId, messageId, user: OWNER },
+      CLIENT_MESSAGE_SELECT,
+    );
+    const fullLoadPart = JSON.parse(JSON.stringify((stored.content as unknown[])[1]));
+    expect(response.body).toEqual({
+      conversationId,
+      messageId,
+      partIndex: 1,
+      tool_call: fullLoadPart.tool_call,
+    });
+    expect(response.body.tool_call.output).toBe(longOutput);
+    expect(response.body.tool_call.args).toBe(longArgs);
+    expect(response.body.tool_call.backgroundTask).toMatchObject({ taskId: 'task-1' });
+    expect(response.body.tool_call.backgroundTask).not.toHaveProperty('resultClaim');
+  });
+
+  it('restores everything a preview left out, subagent transcript included', async () => {
+    await seed();
+    const [stored] = await methods.getMessages(
+      { conversationId, messageId, user: OWNER },
+      CLIENT_MESSAGE_SELECT,
+    );
+    const [previewed] = previewMessagesToolCalls([stored], { outputChars: 512, argsChars: 512 });
+    const previewParts = previewed.content as Array<{ tool_call?: Record<string, unknown> }>;
+    expect(previewParts[1].tool_call).toMatchObject({ outputTruncated: true, argsTruncated: true });
+    expect(previewParts[2].tool_call).toMatchObject({
+      subagentContentOmitted: true,
+      subagentContentParts: 2,
+    });
+
+    const sub = await request(app).get(partUrl(2, 'call_sub'));
+    expect(sub.status).toBe(200);
+    expect(sub.body.tool_call.subagent_content).toEqual(transcript);
+    expect(sub.body.tool_call).not.toHaveProperty('subagentContentOmitted');
+  });
+
+  it('finds the part by tool-call id when the client copy is out of position', async () => {
+    await seed();
+    const response = await request(app).get(partUrl(0, 'call_sub'));
+    expect(response.status).toBe(200);
+    expect(response.body.partIndex).toBe(2);
+    expect(response.body.tool_call.id).toBe('call_sub');
+  });
+
+  it('answers not found for a missing part, a non-tool part, or an unknown id', async () => {
+    await seed();
+    expect((await request(app).get(partUrl(9))).status).toBe(404);
+    expect((await request(app).get(partUrl(0))).status).toBe(404);
+    expect((await request(app).get(partUrl(1, 'call_missing'))).status).toBe(404);
+  });
+
+  it("never returns another user's message", async () => {
+    await seed();
+    const response = await request(app).get(partUrl(1)).set('x-user', 'intruder');
+    expect(response.status).toBe(404);
+    expect(JSON.stringify(response.body)).not.toContain('line of build output');
+  });
+
+  it('never returns a message through a different conversation id', async () => {
+    await seed();
+    const response = await request(app).get(partUrl(1, undefined, otherConversationId));
+    expect(response.status).toBe(404);
+  });
+
+  it('never crosses tenants, even for the same user id', async () => {
+    await tenantStorage.run({ tenantId: 'tenant-a' }, () => seed());
+    const sameTenant = await request(app).get(partUrl(1)).set('x-tenant', 'tenant-a');
+    expect(sameTenant.status).toBe(200);
+    const otherTenant = await request(app).get(partUrl(1)).set('x-tenant', 'tenant-b');
+    expect(otherTenant.status).toBe(404);
+  });
+
+  it('rejects malformed coordinates before reading', async () => {
+    const getMessages = jest.fn();
+    const strict = express();
+    strict.use(withUser);
+    strict.get(
+      '/api/messages/:conversationId/:messageId/parts/:partIndex',
+      createToolCallPartHandler({ getMessages }),
+    );
+    expect((await request(strict).get(partUrl('-1'))).status).toBe(400);
+    expect((await request(strict).get(partUrl('1.5'))).status).toBe(400);
+    expect((await request(strict).get(partUrl('9999999'))).status).toBe(400);
+    expect((await request(strict).get(partUrl(1, 'x'.repeat(600)))).status).toBe(400);
+    expect(getMessages).not.toHaveBeenCalled();
+  });
+
+  it('reports a read failure as a server error without leaking it', async () => {
+    const failing = express();
+    failing.use(withUser);
+    failing.get(
+      '/api/messages/:conversationId/:messageId/parts/:partIndex',
+      createToolCallPartHandler({ getMessages: jest.fn().mockRejectedValue(new Error('db down')) }),
+    );
+    const response = await request(failing).get(partUrl(1));
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({ error: 'Internal server error' });
+  });
+});

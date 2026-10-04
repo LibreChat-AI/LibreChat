@@ -51,6 +51,8 @@ interface SubagentCallProps {
    *  runs recorded before the persistence path landed will not have this
    *  field; those fall back to the atom (or the raw `output` string). */
   persistedContent?: TMessageContentParts[];
+  /** The server sent this call as a preview; the panel loads the stored part when opened. */
+  contentPreview?: boolean;
   subagentIdentity?: PartMetadata['subagentIdentity'];
   hideAttachments?: boolean;
 }
@@ -172,6 +174,7 @@ export default function SubagentCall({
   output,
   attachments,
   persistedContent,
+  contentPreview = false,
   subagentIdentity,
   hideAttachments = false,
 }: SubagentCallProps) {
@@ -337,6 +340,7 @@ export default function SubagentCall({
       ...(prompt == null ? {} : { prompt }),
       ...(backgroundHandle == null ? { legacyOutput: output } : {}),
       ...(persistedContent == null ? {} : { persistedContent }),
+      ...(contentPreview ? { contentPreview: true as const } : {}),
       initialProgress,
       isSubmitting,
       ...(runStepStatus == null ? {} : { runStepStatus }),
@@ -352,6 +356,7 @@ export default function SubagentCall({
     [
       backgroundHandle,
       canOpenDurablePanel,
+      contentPreview,
       initialProgress,
       isSharedConvo,
       isSubmitting,

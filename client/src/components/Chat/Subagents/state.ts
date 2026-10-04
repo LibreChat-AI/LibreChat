@@ -297,6 +297,9 @@ export type ActiveSubagentPanel = {
   prompt?: string;
   legacyOutput?: string | null;
   persistedContent?: TMessageContentParts[];
+  /** The tool call came from the server as a preview: its transcript, output or arguments are
+   *  shortened or absent, so the panel loads the stored part before rendering activity. */
+  contentPreview?: true;
   initialProgress: number;
   isSubmitting: boolean;
   runStepStatus?: PartMetadata['runStepStatus'];

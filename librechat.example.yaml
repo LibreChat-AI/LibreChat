@@ -17,6 +17,18 @@ projects:
   # Characters of the project description shown in the workspace and sidebar (maximum 10000).
   maxDescriptionLength: 1000
 
+# Tool-call previews: a long conversation's tool outputs, arguments and subagent transcripts
+# can run to megabytes, though their cards render collapsed. The web client asks for bounded
+# previews when it loads a conversation (the start and end of each long output, arguments
+# with their long strings shortened, no subagent transcripts) and loads a call in full when
+# the reader opens it. Clients that do not ask, exports and share links get full content.
+# Every field is optional and defaults to the value shown; enabled: false always sends the
+# full payload.
+# toolCallPreviews:
+#   enabled: true
+#   outputChars: 512   # characters of each output kept, half from the start and half from the end
+#   argsChars: 512     # characters of serialized arguments kept; JSON stays valid JSON
+
 # Langfuse connections are managed through Settings > Langfuse when available.
 # That flow verifies the credentials and stores the secret key encrypted; do not
 # place a plaintext langfuse.secretKey in this file. Environment-managed central

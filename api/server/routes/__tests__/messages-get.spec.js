@@ -51,6 +51,9 @@ jest.mock('@librechat/api', () => {
   };
 
   return {
+    prepareToolCallPreviews: jest.fn(() => (messages) => Promise.resolve(messages)),
+    createToolCallPartHandler: jest.fn(() => (_req, res) => res.status(404).end()),
+    rejectToolCallPreviewWrites: (_req, _res, next) => next(),
     /** The real helper, without loading the rest of the package this suite mocks around. */
     withoutTraceRefs: jest.requireActual('../../../../packages/api/src/langfuse/trace.ts')
       .withoutTraceRefs,
@@ -125,6 +128,8 @@ jest.mock('@librechat/api', () => {
     requireFeedbackEnabled: (req, res, next) => next(),
   };
 });
+
+jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
 
 jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () => ({}));
 

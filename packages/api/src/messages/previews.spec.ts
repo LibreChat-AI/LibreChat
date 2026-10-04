@@ -1,0 +1,349 @@
+import { ContentTypes, toolCallPreviewsConfigSchema } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
+import {
+  previewToolCall,
+  previewOutputText,
+  previewToolCallArgs,
+  wantsToolCallPreviews,
+  containsToolCallPreviews,
+  prepareToolCallPreviews,
+  previewMessagesToolCalls,
+  rejectToolCallPreviewWrites,
+  TOOL_CALL_PREVIEW_ELISION,
+} from './previews';
+
+const limits = { outputChars: 1_024, argsChars: 1_024 };
+
+type TestToolCall = {
+  type?: string;
+  id?: string;
+  name?: string;
+  args?: unknown;
+  output?: string;
+  executor?: string;
+  progress?: number;
+  approval?: unknown;
+  subagent_content?: unknown[];
+  outputTruncated?: true;
+  argsTruncated?: true;
+  subagentContentOmitted?: true;
+  function?: unknown;
+};
+
+type TestMessage = { messageId?: string; content?: unknown[] };
+
+const toolPart = (toolCall: TestToolCall) => ({
+  type: ContentTypes.TOOL_CALL,
+  tool_call: { type: 'tool_call', id: 'call_1', name: 'bash_tool', ...toolCall } as TestToolCall,
+});
+
+const longOutput = (head: string, tail: string, fill = 'x'.repeat(20_000)) =>
+  `${head}${fill}${tail}`;
+
+describe('previewOutputText', () => {
+  it('keeps short output untouched', () => {
+    expect(previewOutputText('done', 1_024)).toBe('done');
+  });
+
+  it('keeps the start and the end within the bound', () => {
+    const output = longOutput('stdout:\nhello', '\n[exit code: 2]');
+    const preview = previewOutputText(output, 1_024);
+    expect(preview.length).toBeLessThanOrEqual(1_024);
+    expect(preview.startsWith('stdout:\nhello')).toBe(true);
+    expect(preview.endsWith('\n[exit code: 2]')).toBe(true);
+    expect(preview).toContain(TOOL_CALL_PREVIEW_ELISION);
+  });
+
+  it('never splits a surrogate pair at either cut', () => {
+    const output = '😀'.repeat(5_000);
+    const preview = previewOutputText(output, 1_024);
+    const [head, tail] = preview.split(TOOL_CALL_PREVIEW_ELISION);
+    expect(head).toBe('😀'.repeat(head.length / 2));
+    expect(tail).toBe('😀'.repeat(tail.length / 2));
+  });
+});
+
+describe('previewToolCallArgs', () => {
+  it('returns nothing for arguments within the bound', () => {
+    expect(previewToolCallArgs('{"command":"ls"}', 1_024)).toBeUndefined();
+    expect(previewToolCallArgs({ command: 'ls' }, 1_024)).toBeUndefined();
+  });
+
+  it('keeps JSON string arguments parseable, with every field still present', () => {
+    const args = JSON.stringify({
+      command: 'cat big.log',
+      intent: 'Reading the build log',
+      content: 'y'.repeat(50_000),
+    });
+    const preview = previewToolCallArgs(args, 1_024);
+    expect(preview?.length).toBe(args.length);
+    expect(typeof preview?.args).toBe('string');
+    const parsed = JSON.parse(preview?.args as string);
+    expect(parsed.command).toBe('cat big.log');
+    expect(parsed.intent).toBe('Reading the build log');
+    expect(parsed.content.startsWith('yyy')).toBe(true);
+    expect(parsed.content.endsWith('…')).toBe(true);
+    expect((preview?.args as string).length).toBeLessThanOrEqual(1_024);
+  });
+
+  it('shortens only the longest strings, keeping every short field exact', () => {
+    const args = JSON.stringify({
+      intent: 'Patch the route so the part endpoint reuses the ownership probe',
+      path: 'api/server/routes/messages.js',
+      replace: 'r'.repeat(4_000),
+      search: 's'.repeat(3_000),
+      flags: { dryRun: false, count: 3 },
+      tags: ['a', 'b'],
+    });
+    const parsed = JSON.parse(previewToolCallArgs(args, 512)?.args as string);
+    expect(parsed.intent).toBe('Patch the route so the part endpoint reuses the ownership probe');
+    expect(parsed.path).toBe('api/server/routes/messages.js');
+    expect(parsed.flags).toEqual({ dryRun: false, count: 3 });
+    expect(parsed.tags).toEqual(['a', 'b']);
+    expect(parsed.replace.length).toBe(parsed.search.length);
+  });
+
+  it('keeps object arguments as objects', () => {
+    const args = { path: 'src/index.ts', content: 'z'.repeat(10_000) };
+    const preview = previewToolCallArgs(args, 1_024);
+    expect(preview?.args).toEqual({ path: 'src/index.ts', content: expect.any(String) });
+    expect(preview?.length).toBe(JSON.stringify(args).length);
+  });
+
+  it('falls back to a bounded prefix for text that is not JSON', () => {
+    const args = 'q'.repeat(5_000);
+    const preview = previewToolCallArgs(args, 1_024);
+    expect(preview).toEqual({ args: 'q'.repeat(1_024), length: 5_000 });
+  });
+
+  it('falls back to a bounded prefix when even short strings cannot fit', () => {
+    const args = JSON.stringify(
+      Object.fromEntries(Array.from({ length: 400 }, (_, i) => [`k${i}`, i])),
+    );
+    const preview = previewToolCallArgs(args, 1_024);
+    expect((preview?.args as string).length).toBe(1_024);
+  });
+});
+
+describe('previewToolCall', () => {
+  it('shortens a settled call and records what it shortened', () => {
+    const output = longOutput('Error: failed', '\n Please fix your mistakes.');
+    const args = JSON.stringify({ command: 'run', content: 'a'.repeat(5_000) });
+    const toolCall = toolPart({ output, args, progress: 1 }).tool_call;
+    const preview = previewToolCall(toolCall, limits);
+
+    expect(preview).not.toBe(toolCall);
+    expect(preview).toMatchObject({
+      id: 'call_1',
+      name: 'bash_tool',
+      progress: 1,
+      outputTruncated: true,
+      outputLength: output.length,
+      argsTruncated: true,
+      argsLength: args.length,
+    });
+    expect(preview.output).toMatch(/^Error: failed/);
+    expect(preview.output).toMatch(/\n Please fix your mistakes\.$/);
+    expect(toolCall.output).toBe(output);
+  });
+
+  it('keeps JSON output parseable, so result cards still read their fields', () => {
+    const output = JSON.stringify({
+      status: 'completed',
+      task_id: 'task_1',
+      output: 'line\n'.repeat(5_000),
+    });
+    const preview = previewToolCall(
+      toolPart({ name: 'check_background_task', output }).tool_call,
+      limits,
+    );
+    expect(preview.outputTruncated).toBe(true);
+    const parsed = JSON.parse(preview.output as string);
+    expect(parsed).toMatchObject({ status: 'completed', task_id: 'task_1' });
+    expect((preview.output as string).length).toBeLessThanOrEqual(limits.outputChars);
+  });
+
+  it('keeps an attached-workspace exit trailer whole even past half the bound', () => {
+    const trailer =
+      '\n[exit code: 1][timed out]\nCommand reached timeoutMs: 120000. ' +
+      'r'.repeat(300) +
+      '\n[directory hint: ' +
+      'h'.repeat(300) +
+      ']';
+    const output = `[starting directory: "workspace/"]\nstdout:\n${'o'.repeat(20_000)}\n${trailer}`;
+    const attached = previewToolCall(
+      toolPart({ output, executor: 'attached_workspace' }).tool_call,
+      limits,
+    );
+    expect(attached.output?.endsWith(trailer)).toBe(true);
+    expect(attached.output?.startsWith('[starting directory: "workspace/"]\nstdout:\n')).toBe(true);
+
+    const sandbox = previewToolCall(toolPart({ output }).tool_call, limits);
+    expect(sandbox.output?.length).toBeLessThanOrEqual(limits.outputChars);
+    expect(sandbox.output?.endsWith(trailer)).toBe(false);
+  });
+
+  it('returns the same object when nothing exceeds the bounds', () => {
+    const toolCall = toolPart({ output: 'ok', args: '{}' }).tool_call;
+    expect(previewToolCall(toolCall, limits)).toBe(toolCall);
+  });
+
+  it('leaves calls without output untouched, pending approvals included', () => {
+    const args = JSON.stringify({ command: 'rm -rf build', content: 'a'.repeat(5_000) });
+    const pending = toolPart({
+      args,
+      approval: { actionId: 'a1', allowed_decisions: ['edit'] },
+    }).tool_call;
+    expect(previewToolCall(pending, limits)).toBe(pending);
+    const running = toolPart({ args, output: '' }).tool_call;
+    expect(previewToolCall(running, limits)).toBe(running);
+  });
+
+  it('omits a settled subagent transcript and counts its parts', () => {
+    const transcript = [
+      { type: ContentTypes.TEXT, text: 'child says hi' },
+      toolPart({ id: 'child_call', output: 'done' }),
+    ];
+    const toolCall = toolPart({
+      name: 'subagent',
+      args: '{"prompt":"look"}',
+      output: 'summary',
+      subagent_content: transcript,
+    }).tool_call;
+    const preview = previewToolCall(toolCall, limits);
+    expect(preview).not.toHaveProperty('subagent_content');
+    expect(preview).toMatchObject({ subagentContentOmitted: true, subagentContentParts: 2 });
+    expect(preview.output).toBe('summary');
+  });
+
+  it('keeps a subagent transcript that still holds an unresolved approval', () => {
+    const transcript = [
+      toolPart({
+        id: 'child_call',
+        args: '{}',
+        approval: { actionId: 'a1', allowed_decisions: ['approve'] },
+      }),
+    ];
+    const toolCall = toolPart({
+      name: 'subagent',
+      output: 'partial',
+      subagent_content: transcript,
+    }).tool_call;
+    expect(previewToolCall(toolCall, limits)).toBe(toolCall);
+  });
+
+  it('keeps a subagent transcript while the subagent is still running', () => {
+    const transcript = [{ type: ContentTypes.TEXT, text: 'working' }];
+    const toolCall = toolPart({ name: 'subagent', subagent_content: transcript }).tool_call;
+    expect(previewToolCall(toolCall, limits)).toBe(toolCall);
+  });
+
+  it('leaves the question-and-answer record and legacy Assistants calls whole', () => {
+    const ask = toolPart({ name: 'ask_user_question', output: 'a'.repeat(5_000) }).tool_call;
+    expect(previewToolCall(ask, limits)).toBe(ask);
+    const legacy = { type: 'function', function: { name: 'x', output: 'a'.repeat(5_000) } };
+    expect(previewToolCall(legacy, limits)).toBe(legacy);
+  });
+});
+
+describe('previewMessagesToolCalls', () => {
+  it('copies only the messages and parts that change, keeping content positions', () => {
+    const untouched = { messageId: 'm1', content: [{ type: ContentTypes.TEXT, text: 'hello' }] };
+    const textPart = { type: ContentTypes.TEXT, text: 'before' };
+    const bigPart = toolPart({ output: 'o'.repeat(10_000) });
+    const smallPart = toolPart({ id: 'call_2', output: 'small' });
+    const changed = { messageId: 'm2', content: [textPart, bigPart, smallPart] };
+    const messages: TestMessage[] = [untouched, changed, { messageId: 'm3' }];
+
+    const result = previewMessagesToolCalls(messages, limits);
+    expect(result).not.toBe(messages);
+    expect(result[0]).toBe(untouched);
+    expect(result[2]).toBe(messages[2]);
+    expect(result[1].content).toHaveLength(3);
+    expect(result[1].content?.[0]).toBe(textPart);
+    expect(result[1].content?.[2]).toBe(smallPart);
+    expect(result[1].content?.[1]).toMatchObject({ tool_call: { outputTruncated: true } });
+    expect(bigPart.tool_call.output).toHaveLength(10_000);
+  });
+
+  it('returns the same array when nothing needs shortening', () => {
+    const messages: TestMessage[] = [{ content: [toolPart({ output: 'ok' })] }];
+    expect(previewMessagesToolCalls(messages, limits)).toBe(messages);
+  });
+});
+
+describe('prepareToolCallPreviews', () => {
+  const messages: TestMessage[] = [{ content: [toolPart({ output: 'o'.repeat(10_000) })] }];
+  const config = (toolCallPreviews: Partial<AppConfig['toolCallPreviews']>) =>
+    ({
+      toolCallPreviews: toolCallPreviewsConfigSchema.parse(toolCallPreviews),
+    }) as AppConfig;
+
+  it('sends the full payload to a client that did not ask, without reading config', async () => {
+    const getAppConfig = jest.fn();
+    const preview = prepareToolCallPreviews({ query: {} }, { getAppConfig });
+    await expect(preview(messages)).resolves.toBe(messages);
+    expect(getAppConfig).not.toHaveBeenCalled();
+  });
+
+  it('ignores an unknown preview version', () => {
+    expect(wantsToolCallPreviews({ toolPreviews: '2' })).toBe(false);
+    expect(wantsToolCallPreviews({ toolPreviews: ['1'] })).toBe(false);
+    expect(wantsToolCallPreviews({ toolPreviews: '1' })).toBe(true);
+  });
+
+  it('starts the config read immediately and applies its bounds', async () => {
+    const getAppConfig = jest.fn().mockResolvedValue(config({ outputChars: 512 }));
+    const preview = prepareToolCallPreviews(
+      { query: { toolPreviews: '1' }, user: { id: 'u1', role: 'USER', tenantId: 't1' } },
+      { getAppConfig },
+    );
+    expect(getAppConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'u1', role: 'USER', tenantId: 't1' }),
+    );
+    const [message] = await preview(messages);
+    const part = message.content?.[0] as ReturnType<typeof toolPart>;
+    expect(part.tool_call.output?.length).toBeLessThanOrEqual(512);
+  });
+
+  it('sends in full when the deployment turned previews off', async () => {
+    const getAppConfig = jest.fn().mockResolvedValue(config({ enabled: false }));
+    const preview = prepareToolCallPreviews({ query: { toolPreviews: '1' } }, { getAppConfig });
+    await expect(preview(messages)).resolves.toBe(messages);
+  });
+
+  it('uses the default bounds when config cannot be read', async () => {
+    const getAppConfig = jest.fn().mockRejectedValue(new Error('config down'));
+    const preview = prepareToolCallPreviews({ query: { toolPreviews: '1' } }, { getAppConfig });
+    const [message] = await preview(messages);
+    expect(message.content?.[0]).toMatchObject({ tool_call: { outputTruncated: true } });
+  });
+});
+
+describe('rejectToolCallPreviewWrites', () => {
+  const run = (content: unknown) => {
+    const json = jest.fn();
+    const status = jest.fn(() => ({ json }));
+    const next = jest.fn();
+    rejectToolCallPreviewWrites({ body: { content } }, { status }, next);
+    return { status, json, next };
+  };
+
+  it('refuses content carrying a preview, nested transcripts included', () => {
+    const top = run([toolPart({ output: 'x', outputTruncated: true })]);
+    expect(top.status).toHaveBeenCalledWith(400);
+    expect(top.next).not.toHaveBeenCalled();
+
+    const nested = run([
+      toolPart({ name: 'subagent', subagent_content: [toolPart({ argsTruncated: true })] }),
+    ]);
+    expect(nested.status).toHaveBeenCalledWith(400);
+    expect(containsToolCallPreviews([toolPart({ subagentContentOmitted: true })])).toBe(true);
+  });
+
+  it('passes full content through', () => {
+    const result = run([toolPart({ output: 'x'.repeat(10_000) })]);
+    expect(result.next).toHaveBeenCalled();
+    expect(result.status).not.toHaveBeenCalled();
+  });
+});

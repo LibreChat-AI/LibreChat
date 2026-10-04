@@ -6,6 +6,7 @@ import {
   ToolCallTypes,
   imageGenTools,
   isImageVisionTool,
+  hasToolCallPreview,
 } from 'librechat-data-provider';
 import type { TMessageContentParts, TAttachment, PartMetadata } from 'librechat-data-provider';
 import {
@@ -355,6 +356,7 @@ const Part = memo(function Part({
               runStepStatus={toolCall.runStepStatus}
               attachments={attachments}
               persistedContent={persistedContent}
+              contentPreview={hasToolCallPreview(toolCall)}
               subagentIdentity={toolCall.subagentIdentity}
               hideAttachments={hideAttachments}
             />

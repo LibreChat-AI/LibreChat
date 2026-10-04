@@ -1596,6 +1596,8 @@
   "com_ui_tool_calling": "Calling {{0}}",
   "com_ui_tool_preparation_time": "Preparation",
   "com_ui_tool_call_time": "Tool call",
+  "com_ui_tool_content_error": "Couldn't load the full tool call.",
+  "com_ui_tool_content_loading": "Loading the full tool call…",
   "com_ui_tool_total_time": "Total elapsed",
   "com_ui_during_run_actions": "More send options",
   "com_ui_edit": "Edit",
