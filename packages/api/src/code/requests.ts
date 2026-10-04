@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import type { WorkspaceToolRequest, WorkspaceToolResult } from './workspace';
 import type { CodeBridgeFetch } from './bridge';
 
 interface RequestStatus {
@@ -9,9 +8,9 @@ interface RequestStatus {
   error?: { code: string; message: string };
 }
 
-export interface DurableWorkspaceTransport {
+export interface DurableWorkspaceTransport<TRequest, TResult> {
   baseURL: string;
-  request: WorkspaceToolRequest;
+  request: TRequest;
   requestId?: string;
   authHeaders: (signal: AbortSignal) => Promise<Record<string, string>>;
   fetchImpl: CodeBridgeFetch;
@@ -21,7 +20,7 @@ export interface DurableWorkspaceTransport {
   queueWaitMs: number;
   pollIntervalMs: number;
   readJson: (response: Response, signal: AbortSignal) => Promise<unknown>;
-  validateResult: (request: WorkspaceToolRequest, value: unknown) => value is WorkspaceToolResult;
+  validateResult: (request: TRequest, value: unknown) => value is TResult;
   rejected: (response: Response, signal: AbortSignal) => Promise<Error>;
   invalid: () => Error;
   timeout: () => Error;
@@ -47,9 +46,9 @@ function status(value: unknown, id: string): RequestStatus | undefined {
 }
 
 /** A transport timeout never creates a second logical invocation or falls back after acceptance. */
-export async function executeDurableWorkspaceRequest(
-  options: DurableWorkspaceTransport,
-): Promise<{ supported: false } | { supported: true; result: WorkspaceToolResult }> {
+export async function executeDurableWorkspaceRequest<TRequest, TResult>(
+  options: DurableWorkspaceTransport<TRequest, TResult>,
+): Promise<{ supported: false } | { supported: true; result: TResult }> {
   const root = options.baseURL.trim().replace(/\/+$/, '');
   const id = options.requestId ?? randomUUID();
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(id)) throw options.invalid();
