@@ -59,17 +59,22 @@ async function openChat(page: Page, mode: Mode, definition?: { name: string }) {
   await expect(root).toHaveClass(mode === 'dark' ? /\bdark\b/ : /\blight\b/);
 }
 
+/**
+ * The ring the utility paints on focus. The ring colour is read from the utility's own custom
+ * property, because the dark stylesheet's `.dark :focus-visible` outline rule outranks any outline
+ * utility and would hide the role.
+ */
 function subtleFocus(page: Page): Promise<string> {
   return page.evaluate(() => {
     const node = document.createElement('div');
-    node.className = 'focus:outline-focus-subtle';
+    node.className = 'focus-visible:ring-focus-subtle';
     node.tabIndex = -1;
-    node.style.cssText = 'outline-style: solid; outline-width: 2px';
     document.body.append(node);
     node.focus();
-    const color = getComputedStyle(node).outlineColor;
+    const ring = getComputedStyle(node).getPropertyValue('--tw-ring-color');
     node.remove();
-    return color;
+    const channels = ring.match(/\d+/g) ?? [];
+    return `rgb(${channels.slice(0, 3).join(', ')})`;
   });
 }
 
