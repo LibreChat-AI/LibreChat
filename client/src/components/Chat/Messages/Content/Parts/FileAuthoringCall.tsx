@@ -175,6 +175,7 @@ export default function FileAuthoringCall({
     output,
     hasInput: !!filePath || !!preview,
     panelReady: !!preview,
+    keepRow: intent != null,
     onExpand,
     runStepStatus,
   });

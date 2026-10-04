@@ -55,6 +55,19 @@ describe('a sole call keeps its row when its panel would be empty', () => {
     expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
   });
 
+  it('ReadFileCall: keeps the row that carries the model-authored intent', () => {
+    renderSole(
+      <ReadFileCall
+        initialProgress={1}
+        isSubmitting={false}
+        args={{ intent: 'Check the config', path: 'src/a.ts' }}
+        output="const a = 1;"
+        runStepStatus="completed"
+      />,
+    );
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Check the config');
+  });
+
   it('SkillCall: a named skill keeps its row so the skill name stays visible', () => {
     renderSole(
       <SkillCall

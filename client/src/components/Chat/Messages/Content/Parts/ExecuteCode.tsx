@@ -127,7 +127,7 @@ export default function ExecuteCode({
       runStepStatus,
       extraError: backgroundFailed,
       extraCancelled: cancelledInBackground,
-      keepRow: backgroundHandle != null,
+      keepRow: backgroundHandle != null || intent != null,
     },
   );
 

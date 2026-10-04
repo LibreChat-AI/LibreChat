@@ -74,6 +74,7 @@ export default function BackgroundTaskCall({
     output,
     hasInput: hasParams || (attachments?.length ?? 0) > 0,
     panelReady: display != null,
+    keepRow: intent != null,
     onExpand,
     runStepStatus,
     extraError: outcome === 'failed',

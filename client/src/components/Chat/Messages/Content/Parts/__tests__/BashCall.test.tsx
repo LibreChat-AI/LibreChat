@@ -363,6 +363,23 @@ describe('BashCall sole tool disclosure', () => {
     expect(screen.getByTestId('progress-text')).toBeInTheDocument();
   });
 
+  it('keeps its row when the call carries a model-authored intent', () => {
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value>
+          <BashCall
+            initialProgress={1}
+            isSubmitting={false}
+            args={{ intent: 'Check the build', command: 'echo hi' }}
+            output="hi"
+            runStepStatus="completed"
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Check the build');
+  });
+
   it('keeps its row while the only call is still running', () => {
     render(
       <RecoilRoot>

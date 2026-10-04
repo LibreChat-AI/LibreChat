@@ -120,6 +120,9 @@ export default function BashCall({
       )
     : null;
 
+  /** The model-authored `intent` is the settled label too, and only the row
+   *  renders it, so a call that carries one keeps its row. */
+  const intent = useToolCallIntent(args);
   const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare } = useToolCallState(
     {
       initialProgress,
@@ -130,7 +133,7 @@ export default function BashCall({
       runStepStatus,
       extraError: backgroundFailed || result?.failed === true,
       extraCancelled: cancelledInBackground,
-      keepRow: backgroundHandle != null,
+      keepRow: backgroundHandle != null || intent != null,
     },
   );
 
@@ -156,7 +159,6 @@ export default function BashCall({
    *  live label from the earliest delta — before the command exists and while
    *  it runs. It persists as the settled label too (completion is a UI state,
    *  not a tense change); the generic texts are the no-intent fallback. */
-  const intent = useToolCallIntent(args);
   const inProgressText = (() => {
     if (intent != null) {
       return intent;

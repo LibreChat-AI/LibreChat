@@ -223,9 +223,17 @@ export default function ToolCall({
   );
   /** The only call of its group, settled successfully: the group header is the
    *  row, so the panel stands alone and stays open. An MCP or action call keeps
-   *  its row, which is the only place its function name and domain appear. */
+   *  its row, the only place its function name and domain appear, as does a call
+   *  with a model-authored intent. */
+  const intent = useToolCallIntent(_args);
   const isActionCall = domain != null && domain !== '';
-  const bare = soleTool && hasInfo && phase === 'completed' && !isMCPToolCall && !isActionCall;
+  const bare =
+    soleTool &&
+    hasInfo &&
+    phase === 'completed' &&
+    !isMCPToolCall &&
+    !isActionCall &&
+    intent == null;
   const showInfo = bare || expandedInfo;
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
@@ -323,7 +331,6 @@ export default function ToolCall({
   /** Model-authored live label, streamed as the first args key (injected by
    *  the `tool_intents` capability); persists as the settled label —
    *  completion is a UI state, not a tense change. */
-  const intent = useToolCallIntent(_args);
   const preparationText = useToolPreparation();
   const preparing = useMemo(
     () =>

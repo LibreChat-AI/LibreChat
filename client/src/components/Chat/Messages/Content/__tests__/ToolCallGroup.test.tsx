@@ -1011,6 +1011,53 @@ describe('ToolCallGroup image hoisting', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('does not call a failed lone code call "running"', () => {
+    const failed = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-f2',
+        name: 'execute_code',
+        args: '{}',
+        output: 'boom',
+        runStepStatus: 'failed',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: failed, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_running_var/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not claim a lone code call ran when an interrupted legacy record has no success signal', () => {
+    const interrupted = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-legacy',
+        name: 'execute_code',
+        args: '{}',
+        output: '',
+        progress: 0.5,
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: interrupted, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it('does not call a stopped lone code call "ran"', () => {
     const cancelled = {
       type: ContentTypes.TOOL_CALL,

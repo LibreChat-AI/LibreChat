@@ -101,6 +101,7 @@ export default function ReadFileCall({
       output,
       hasInput: !!filePath,
       panelReady: output.length > 0,
+      keepRow: intent != null,
       onExpand,
       runStepStatus,
     },

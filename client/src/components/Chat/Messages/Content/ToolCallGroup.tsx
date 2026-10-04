@@ -487,15 +487,22 @@ export default function ToolCallGroup({
        *  the code tool says the verb its live row says. Other tools already
        *  name an action ("Create File"). */
       if (singleToolLabel && singleToolIsCode) {
-        /** A detached task's output is its handle, so `groupDone` is true while
-         *  the work is still going; a stopped or failed call did not run to the end. */
+        /** Only a success signal earns "Ran": a detached task's output is its
+         *  handle, a stopped or failed call did not run to the end, and a
+         *  legacy record that was cut off has no output to show for it. */
         const only = toolMetadata[0];
-        const settled =
-          groupDone && only?.background !== 'running' && !only?.cancelled && !only?.failed;
-        return localize(
-          settled ? 'com_assistants_completed_function' : 'com_assistants_running_var',
-          { 0: singleToolLabel },
-        );
+        if (only?.failed) {
+          return localize('com_ui_failed_subject', { 0: singleToolLabel });
+        }
+        if (only?.cancelled) {
+          return localize('com_ui_cancelled');
+        }
+        if (!groupDone || only?.background === 'running') {
+          return localize('com_assistants_running_var', { 0: singleToolLabel });
+        }
+        return only?.hasOutput
+          ? localize('com_assistants_completed_function', { 0: singleToolLabel })
+          : singleToolLabel;
       }
       return singleToolLabel || localize('com_ui_used_one_tool');
     }
