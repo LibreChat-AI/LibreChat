@@ -358,15 +358,16 @@ export function resolveReconciledSnapshotEnvelope(status: unknown): {
 }
 
 /**
- * How the last-subscriber disconnect may persist this turn's snapshot. A
- * turn whose settling path (completion, error, abort) durably owns the final
- * row must not have it reopened as an unfinished snapshot; a pending terminal
- * write or a reconciliation frame is not durable, so it does not count. A
- * compaction whose terminal write settled for a reconciliation frame has no
- * row at all, so its snapshot is promoted to the terminal row, anchored on
- * the persisted leaf the injected reader confirms (the promotion must not
- * recreate the orphan an absent-anchor abort deliberately withheld); an
- * ordinary turn keeps its live snapshot as the fallback row.
+ * How the last-subscriber disconnect may persist this turn's snapshot. An
+ * ordinary turn always keeps its live snapshot as the fallback row: its job
+ * record cannot prove a response row landed. A compaction whose settling path
+ * (completion, error, abort) durably owns the final row withholds the
+ * snapshot, so it cannot reopen the settled turn. A same-epoch compaction
+ * whose terminal claim settled for a reconciliation frame is promoted to the
+ * terminal row, but a reconciliation frame does not prove the row is missing
+ * (an error turn can land before it), so the response row is read first and a
+ * settled one withholds the promotion; the anchor must be persisted too, or
+ * the promotion would recreate the orphan an absent-anchor abort withheld.
  */
 export async function resolveDisconnectSnapshotMode(
   isCompaction: boolean,
@@ -380,18 +381,104 @@ export async function resolveDisconnectSnapshotMode(
     | null
     | undefined,
   jobCreatedAt: number | undefined,
-  { anchorExists = async () => true }: { anchorExists?: () => Promise<boolean> } = {},
+  {
+    anchorExists = async () => true,
+    responseRowSettled = async () => false,
+  }: {
+    anchorExists?: () => Promise<boolean>;
+    /** Whether a finished (not `unfinished`) response row already exists. */
+    responseRowSettled?: () => Promise<boolean>;
+  } = {},
 ): Promise<DisconnectSnapshotMode> {
+  if (!isCompaction) {
+    return 'live';
+  }
   if (isSettledJobRecord(jobRecord, jobCreatedAt)) {
     return 'skip';
   }
   /** Another epoch's reconciliation frame belongs to a different
    *  generation and never promotes this one's snapshot. */
   const sameEpoch = jobCreatedAt == null || jobRecord?.createdAt === jobCreatedAt;
-  if (!isCompaction || !sameEpoch || !hasDurableReconcileFrame(jobRecord?.finalEvent)) {
+  if (!sameEpoch || !hasDurableReconcileFrame(jobRecord?.finalEvent)) {
     return 'live';
   }
+  if (await responseRowSettled()) {
+    return 'skip';
+  }
   return (await anchorExists()) ? 'terminal' : 'skip';
+}
+
+/** What the last-subscriber disconnect writes for this turn, if anything. */
+export type DisconnectSnapshotPlan =
+  | { write: false }
+  | {
+      write: true;
+      content: TMessageContentParts[];
+      unfinished: boolean;
+      error: boolean;
+    };
+
+/**
+ * Plans the last-subscriber disconnect snapshot through the caller's message
+ * reader: the mode, the marked content, and the row envelope. The caller only
+ * builds and writes the row, inside its own tenant context (the reads here
+ * run in it too). A live snapshot with nothing persistable is skipped; a
+ * promoted terminal snapshot synthesizes its outcome even from empty content.
+ */
+export async function planDisconnectSnapshot(
+  isCompaction: boolean,
+  {
+    content,
+    jobRecord,
+    jobCreatedAt,
+    userId,
+    conversationId,
+    anchorMessageId,
+    responseMessageId,
+    getMessages,
+  }: {
+    /** The streamed content, already filtered to persistable parts. */
+    content: TMessageContentParts[];
+    jobRecord: Parameters<typeof resolveDisconnectSnapshotMode>[1];
+    jobCreatedAt: number | undefined;
+    userId: string;
+    conversationId: string;
+    anchorMessageId: string;
+    responseMessageId: string;
+    getMessages: (
+      filter: { user: string; messageId: string; conversationId: string },
+      projection?: string,
+    ) => Promise<ReadableMessageRow[]>;
+  },
+): Promise<DisconnectSnapshotPlan> {
+  const mode = await resolveDisconnectSnapshotMode(isCompaction, jobRecord, jobCreatedAt, {
+    anchorExists: async () =>
+      (await getMessages({ user: userId, messageId: anchorMessageId, conversationId }, '_id'))
+        .length > 0,
+    responseRowSettled: async () => {
+      const [row] = await getMessages(
+        { user: userId, messageId: responseMessageId, conversationId },
+        '_id unfinished',
+      );
+      return row != null && row.unfinished !== true;
+    },
+  });
+  if (mode === 'skip' || (mode === 'live' && content.length === 0)) {
+    return { write: false };
+  }
+  const marked = markAbortedCompactionContent(content, isCompaction, {
+    synthesizeFailure: mode === 'terminal',
+  });
+  if (marked.length === 0) {
+    return { write: false };
+  }
+  return {
+    write: true,
+    content: marked,
+    ...(mode === 'terminal'
+      ? resolveReconciledSnapshotEnvelope(jobRecord?.status)
+      : { unfinished: true, error: false }),
+  };
 }
 
 /** How the abort route persists a stopped turn's prerequisite rows. */

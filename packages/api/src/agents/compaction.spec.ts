@@ -22,6 +22,7 @@ import {
   resolveDisconnectSnapshotMode,
   resolveReconciledSnapshotEnvelope,
   planAbortedTurnPersistence,
+  planDisconnectSnapshot,
   resolveAbortedTurnPersistence,
   resolveAbortedTurnAnchorDecision,
   settleExistingRowsBeforeErrorTurn,
@@ -1428,12 +1429,12 @@ describe('resolveDisconnectSnapshotMode', () => {
     ).resolves.toBe('live');
   });
 
-  /** A durable terminal row settles an ordinary turn too: a late snapshot
-   *  would reopen the completed reply. */
-  it('withholds the snapshot of a settled ordinary turn', async () => {
+  /** An ordinary turn's record cannot prove its response row landed, so its
+   *  snapshot stays the fallback whatever the record says. */
+  it('writes the snapshot of a settled ordinary turn', async () => {
     await expect(
       resolveDisconnectSnapshotMode(false, { createdAt: 1000, status: 'complete' }, 1000),
-    ).resolves.toBe('skip');
+    ).resolves.toBe('live');
   });
 
   /** Only a compaction is promoted: an ordinary turn whose terminal write
@@ -1466,6 +1467,16 @@ describe('resolveDisconnectSnapshotMode', () => {
    *  will ever be persisted for it. */
   it('promotes a reconciled compaction snapshot to the terminal row', async () => {
     await expect(resolveDisconnectSnapshotMode(true, reconciled(), 1000)).resolves.toBe('terminal');
+  });
+
+  /** A reconciliation frame can follow a saved error turn: a settled
+   *  response row withholds the promotion instead of being overwritten. */
+  it('withholds a reconciled snapshot when the response row is settled', async () => {
+    await expect(
+      resolveDisconnectSnapshotMode(true, reconciled(), 1000, {
+        responseRowSettled: async () => true,
+      }),
+    ).resolves.toBe('skip');
   });
 
   it('keeps the live snapshot for another epoch reconciliation frame', async () => {
@@ -1516,5 +1527,88 @@ describe('resolveReconciledSnapshotEnvelope', () => {
       unfinished: false,
       error: true,
     });
+  });
+});
+
+describe('planDisconnectSnapshot', () => {
+  const reconciled = {
+    createdAt: 1000,
+    status: 'error',
+    finalEvent: JSON.stringify({ final: true, reconcile: true }),
+  };
+  const plan = (
+    isCompaction: boolean,
+    jobRecord: Parameters<typeof planDisconnectSnapshot>[1]['jobRecord'],
+    content: TMessageContentParts[],
+    rows: Record<string, Array<{ messageId: string; unfinished?: boolean }>>,
+  ) => {
+    const getMessages = jest.fn(
+      async (filter: { messageId: string }) => rows[filter.messageId] ?? [],
+    );
+    return {
+      getMessages,
+      result: planDisconnectSnapshot(isCompaction, {
+        content,
+        jobRecord,
+        jobCreatedAt: 1000,
+        userId: 'user-1',
+        conversationId: 'convo-1',
+        anchorMessageId: 'anchor',
+        responseMessageId: 'response',
+        getMessages,
+      }),
+    };
+  };
+  const text = { type: ContentTypes.TEXT, text: 'Partial' } as TMessageContentParts;
+
+  it('writes a live snapshot in the live shape without reading any row', async () => {
+    const { result, getMessages } = plan(
+      false,
+      { createdAt: 1000, status: 'complete' },
+      [text],
+      {},
+    );
+
+    await expect(result).resolves.toEqual({
+      write: true,
+      content: [text],
+      unfinished: true,
+      error: false,
+    });
+    expect(getMessages).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing for an empty live snapshot', async () => {
+    const { result } = plan(true, { createdAt: 1000, status: 'running' }, [], {});
+
+    await expect(result).resolves.toEqual({ write: false });
+  });
+
+  it('promotes a reconciled compaction under its anchor with the terminal envelope', async () => {
+    const { result } = plan(true, reconciled, [], { anchor: [{ messageId: 'anchor' }] });
+    const planned = await result;
+
+    expect(planned).toMatchObject({ write: true, unfinished: false, error: true });
+    expect(planned.write && planned.content).toEqual([
+      expect.objectContaining({ type: ContentTypes.ERROR, initiatedBy: 'user' }),
+    ]);
+  });
+
+  it('promotes over an earlier live snapshot of the same turn', async () => {
+    const { result } = plan(true, reconciled, [text], {
+      anchor: [{ messageId: 'anchor' }],
+      response: [{ messageId: 'response', unfinished: true }],
+    });
+
+    await expect(result).resolves.toMatchObject({ write: true, unfinished: false });
+  });
+
+  it('withholds the promotion when a settled response row exists', async () => {
+    const { result } = plan(true, reconciled, [text], {
+      anchor: [{ messageId: 'anchor' }],
+      response: [{ messageId: 'response', unfinished: false }],
+    });
+
+    await expect(result).resolves.toEqual({ write: false });
   });
 });

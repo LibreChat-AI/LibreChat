@@ -64,9 +64,7 @@ const {
   announceReply,
   announceErrorTurn,
   settleExistingRowsBeforeErrorTurn,
-  resolveDisconnectSnapshotMode,
-  resolveReconciledSnapshotEnvelope,
-  markAbortedCompactionContent,
+  planDisconnectSnapshot,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -1936,42 +1934,26 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         return;
       }
 
-      /** How this snapshot may persist is decided in @librechat/api: live
-       *  runs keep the marker-only shape, a failed terminal write (settled
-       *  for a reconciliation frame) promotes the snapshot to the turn's
-       *  terminal row, and a durably settled turn withholds it. */
-      const snapshotMode = await resolveDisconnectSnapshotMode(
-        isCompaction,
-        jobRecord,
-        jobCreatedAt,
-        {
-          anchorExists: async () =>
-            (
-              await getMessages(
-                {
-                  user: userId,
-                  messageId: resumeState.userMessage.messageId,
-                  conversationId,
-                },
-                '_id',
-              )
-            ).length > 0,
-        },
-      );
-      if (snapshotMode === 'skip') {
-        logger.debug('[ResumableAgentController] Skipping partial save for a settled job');
-        return;
-      }
-      if (snapshotMode !== 'terminal' && aggregatedContent.length === 0) {
-        return;
-      }
-      const persistableContent = markAbortedCompactionContent(
-        filterPersistableAbortContent(aggregatedContent),
-        isCompaction,
-        { synthesizeFailure: snapshotMode === 'terminal' },
-      );
-      if (persistableContent.length === 0) {
-        logger.debug('[ResumableAgentController] No persistable content to save partial response');
+      /** Whether and how this snapshot persists is planned in @librechat/api,
+       *  inside the request's tenant context like the write below. */
+      const responseMessageId =
+        resumeState.responseMessageId || `${resumeState.userMessage.messageId}_`;
+      const planSnapshot = () =>
+        planDisconnectSnapshot(isCompaction, {
+          content: filterPersistableAbortContent(aggregatedContent),
+          jobRecord,
+          jobCreatedAt,
+          userId,
+          conversationId,
+          anchorMessageId: resumeState.userMessage.messageId,
+          responseMessageId,
+          getMessages,
+        });
+      const snapshot = tenantId
+        ? await tenantStorage.run({ tenantId, userId }, planSnapshot)
+        : await planSnapshot();
+      if (!snapshot.write) {
+        logger.debug('[ResumableAgentController] No partial response to save on disconnect');
         return;
       }
 
@@ -1987,17 +1969,13 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
       try {
         const partialMessage = {
-          messageId: resumeState.responseMessageId || `${resumeState.userMessage.messageId}_`,
+          messageId: responseMessageId,
           conversationId: responseConversationId,
           parentMessageId: resumeState.userMessage.messageId,
           sender: client?.sender ?? 'AI',
-          content: persistableContent,
-          /** A snapshot promoted to the terminal row settles with the
-           *  envelope its reconciled claim's status dictates; a live-run
-           *  snapshot keeps the live shape. */
-          ...(snapshotMode === 'terminal'
-            ? resolveReconciledSnapshotEnvelope(jobRecord?.status)
-            : { unfinished: true, error: false }),
+          content: snapshot.content,
+          unfinished: snapshot.unfinished,
+          error: snapshot.error,
           isCreatedByUser: false,
           user: userId,
           endpoint: endpointOption.endpoint,
@@ -2036,7 +2014,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         }
 
         logger.debug(
-          `[ResumableAgentController] Saved partial response for ${streamId}, content parts: ${persistableContent.length}`,
+          `[ResumableAgentController] Saved partial response for ${streamId}, content parts: ${snapshot.content.length}`,
         );
       } catch (error) {
         logger.error('[ResumableAgentController] Error saving partial response:', error);

@@ -55,13 +55,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   applyForcedTemporaryRequest: jest.fn(),
   resolveResumableRetention: jest.requireActual('@librechat/api').resolveResumableRetention,
-  markAbortedCompactionContent: (...args) =>
-    jest.requireActual('@librechat/api').markAbortedCompactionContent(...args),
-  isSettledJobRecord: (...args) => jest.requireActual('@librechat/api').isSettledJobRecord(...args),
-  resolveDisconnectSnapshotMode: (...args) =>
-    jest.requireActual('@librechat/api').resolveDisconnectSnapshotMode(...args),
-  resolveReconciledSnapshotEnvelope: (...args) =>
-    jest.requireActual('@librechat/api').resolveReconciledSnapshotEnvelope(...args),
+  planDisconnectSnapshot: (...args) =>
+    jest.requireActual('@librechat/api').planDisconnectSnapshot(...args),
   settleExistingRowsBeforeErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').settleExistingRowsBeforeErrorTurn(...args),
   sendEvent: jest.fn(),
@@ -151,6 +146,12 @@ jest.mock('~/models', () => ({
 const AgentController = require('../request');
 
 describe('ResumableAgentController tenant context', () => {
+  /** The anchor is persisted and no response row exists yet. */
+  const anchorOnly = () =>
+    mockGetMessages.mockImplementation(async (filter) =>
+      filter.messageId === 'response-message' ? [] : [{ _id: 'existing-anchor' }],
+    );
+
   beforeEach(() => {
     jest.clearAllMocks();
     activeTenantContext = undefined;
@@ -365,21 +366,11 @@ describe('ResumableAgentController tenant context', () => {
     expect(mockSaveMessage).not.toHaveBeenCalled();
   });
 
-  /** An ordinary turn's durable terminal row is equally settled: a late
-   *  snapshot would reopen a completed reply as unfinished. */
-  it('skips an ordinary partial save when the job record has settled', async () => {
-    await firePartialDisconnect(
-      { id: 'user-123' },
-      { createdAt: 1000, status: 'complete' },
-      { aggregatedContent: [{ type: 'text', text: 'Partial response' }] },
-    );
-
-    expect(mockSaveMessage).not.toHaveBeenCalled();
-  });
-
-  /** A pending terminal write or a reconciliation frame is not a durable row:
-   *  the ordinary snapshot stays the fallback, in its live shape. */
+  /** An ordinary turn's record cannot prove its response row landed (a
+   *  terminal transition without a write leaves the same record), so its
+   *  snapshot stays the fallback row, in its live shape. */
   it.each([
+    ['a settled record', {}],
     ['a pending terminal write', { terminalPersistencePending: true }],
     ['a reconciliation frame', { finalEvent: JSON.stringify({ final: true, reconcile: true }) }],
   ])('keeps an ordinary partial save as the fallback behind %s', async (_label, record) => {
@@ -397,7 +388,7 @@ describe('ResumableAgentController tenant context', () => {
    *  snapshot is the turn's only row, so it persists with the terminal
    *  outcome (the typed failure for content with no summary) and envelope. */
   it('promotes a reconciled compaction snapshot to the terminal row', async () => {
-    mockGetMessages.mockResolvedValue([{ _id: 'existing-anchor' }]);
+    anchorOnly();
     await firePartialDisconnect(
       { id: 'user-123' },
       {
@@ -419,6 +410,30 @@ describe('ResumableAgentController tenant context', () => {
       expect.objectContaining({ type: 'error', initiatedBy: 'user' }),
     ]);
   });
+  /** A reconciliation frame does not prove the row is missing: an error turn
+   *  saved before it is a settled row the promotion must not overwrite. */
+  it('withholds a reconciled snapshot when a settled response row exists', async () => {
+    mockGetMessages.mockImplementation(async (filter) =>
+      filter.messageId === 'response-message'
+        ? [{ _id: 'error-row', unfinished: false }]
+        : [{ _id: 'existing-anchor' }],
+    );
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      {
+        createdAt: 1000,
+        status: 'error',
+        finalEvent: JSON.stringify({ final: true, reconcile: true }),
+      },
+      {
+        body: { compact: true },
+        aggregatedContent: [{ type: 'text', text: 'Partial response' }],
+      },
+    );
+
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+  });
+
   /** Without a persisted anchor the promotion is withheld: the fallback must
    *  not recreate the orphan the absent-anchor abort suppressed. */
   it('withholds a reconciled snapshot whose anchor was never persisted', async () => {
@@ -441,7 +456,7 @@ describe('ResumableAgentController tenant context', () => {
   /** An empty snapshot on a reconciled compaction still records the turn:
    *  the terminal synthesis appends the typed failure from nothing. */
   it('synthesizes the terminal outcome for an empty reconciled compaction snapshot', async () => {
-    mockGetMessages.mockResolvedValue([{ _id: 'existing-anchor' }]);
+    anchorOnly();
     await firePartialDisconnect(
       { id: 'user-123' },
       {
@@ -463,7 +478,7 @@ describe('ResumableAgentController tenant context', () => {
   /** A completed claim's promoted snapshot settles as a finished row, not an
    *  error. */
   it('settles a completed reconciled snapshot as a finished row', async () => {
-    mockGetMessages.mockResolvedValue([{ _id: 'existing-anchor' }]);
+    anchorOnly();
     await firePartialDisconnect(
       { id: 'user-123' },
       {
