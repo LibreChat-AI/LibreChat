@@ -2,6 +2,7 @@ const { logger } = require('@librechat/data-schemas');
 const { createContentAggregator, GraphNodeKeys } = require('@librechat/agents');
 const {
   resolveSender,
+  copyToolApprovalAdmissionMetadata,
   resolveRunConversation,
   resolveAdmittedCodeEnvironmentDecision,
   createConcurrencyLimiter,
@@ -43,6 +44,10 @@ const {
   encodeAndFormatVideos,
   extractFileContext,
   createScheduleUpstreamTokenProviderResolver,
+  initializeWithScheduleMCPExecution,
+  retainScheduleMCPCompletion,
+  getScheduleMCPExecution,
+  getMCPRequestContext,
 } = require('@librechat/api');
 const {
   ResourceType,
@@ -453,6 +458,7 @@ const initializeClientWithProvider = async ({
 
   const invokedSkillIdentities = new Map();
   const toolExecuteOptions = {
+    scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(req, res)),
     // Keep foreground cancellation owned by this request even when the agents
     // SDK rebuilds a graph for approval resume. The SDK event's breaker signal
     // is composed with this authoritative job signal by the handler.
@@ -1192,30 +1198,38 @@ const initializeClientWithProvider = async ({
       codeExecutionAvailable: lazyCodeEnvAvailable,
       memoryAvailable,
     });
-    return {
-      id: agent.id,
-      name: agent.name,
-      description: agent.description,
-      provider: agent.provider,
-      model: agent.model,
-      model_parameters: { model: agent.model_parameters?.model },
-      recursion_limit: agent.recursion_limit,
-      memory_scope: agent.memory_scope,
-      memoryToolsRegistered:
-        memoryAvailable === true && agent.tools?.includes(Tools.memory) === true,
-      subagents: agent.subagents,
-      configId: getLazySubagentConfigId(agent),
-      codeEnvAvailable: lazyCodeEnvAvailable,
-      statefulCodeSessions,
-      statefulCodeEnvironment,
-      codeExecutionContext,
-      codeSessionKey: codeExecutionContext?.codeSessionKey,
-      includeReasoningHistory: getIncludeReasoningHistory(agent),
-      alwaysApplySkillPrimes,
-      historicalToolNames,
-      historicalMcpServerNames,
-      skillAuthoringAvailable: skillAuthoringAvailable === true,
-    };
+    return copyToolApprovalAdmissionMetadata(
+      {
+        id: agent.id,
+        name: agent.name,
+        description: agent.description,
+        provider: agent.provider,
+        model: agent.model,
+        model_parameters: { model: agent.model_parameters?.model },
+        recursion_limit: agent.recursion_limit,
+        memory_scope: agent.memory_scope,
+        memoryToolsRegistered:
+          memoryAvailable === true && agent.tools?.includes(Tools.memory) === true,
+        subagents: agent.subagents,
+        configId: getLazySubagentConfigId(agent),
+        codeEnvAvailable: lazyCodeEnvAvailable,
+        statefulCodeSessions,
+        statefulCodeEnvironment,
+        codeExecutionContext,
+        codeSessionKey: codeExecutionContext?.codeSessionKey,
+        includeReasoningHistory: getIncludeReasoningHistory(agent),
+        alwaysApplySkillPrimes,
+        historicalToolNames,
+        historicalMcpServerNames,
+        skillAuthoringAvailable: skillAuthoringAvailable === true,
+      },
+      agent,
+      {
+        skillPrimes: alwaysApplySkillPrimes,
+        rawMcpServerNames: historicalMcpServerNames,
+        toolsAvailable: enabledCapabilities.has(AgentCapabilities.tools),
+      },
+    );
   };
 
   const loadSubagentMetadata = async (agentId) => {
@@ -1464,44 +1478,47 @@ const initializeClientWithProvider = async ({
         const lazyChildren = childDescriptors.filter((child) => child.configId);
         const eagerChildren = childDescriptors.filter((child) => !child.configId);
         const subagentGraphMemberMetadata = await loadGraphMemberCapabilityMetadata(metadata);
-        return {
-          id: metadata.id,
-          name: metadata.name,
-          description: metadata.description,
-          provider: metadata.provider,
-          model: metadata.model,
-          model_parameters: metadata.model_parameters,
-          recursion_limit: metadata.recursion_limit,
-          memory_scope: metadata.memory_scope,
-          memoryToolsRegistered: metadata.memoryToolsRegistered,
-          subagents: metadata.subagents,
-          configId: metadata.configId,
-          codeEnvAvailable: metadata.codeEnvAvailable,
-          statefulCodeSessions: metadata.statefulCodeSessions,
-          statefulCodeEnvironment: metadata.statefulCodeEnvironment,
-          codeExecutionContext: metadata.codeExecutionContext,
-          codeSessionKey: metadata.codeSessionKey,
-          includeReasoningHistory: metadata.includeReasoningHistory,
-          skillAuthoringAvailable: metadata.skillAuthoringAvailable,
-          alwaysApplySkillPrimes: metadata.alwaysApplySkillPrimes,
-          historicalToolNames: metadata.historicalToolNames,
-          historicalMcpServerNames: metadata.historicalMcpServerNames,
-          lazySubagentConfigs: lazyChildren,
-          subagentAgentConfigs: eagerChildren,
-          subagentGraphMemberMetadata,
-          resolve: async (context) =>
-            initializeLazySubagent({
-              agentId: metadata.id,
-              configId: metadata.configId,
-              context,
-              lazyChildren,
-            }).then(async (config) => {
-              config.subagentAgentConfigs = eagerChildren;
-              graphMemberConfigsById.set(config.id, config);
-              await resolveGraphSubagentsFor(config, context.signal);
-              return config;
-            }),
-        };
+        return copyToolApprovalAdmissionMetadata(
+          {
+            id: metadata.id,
+            name: metadata.name,
+            description: metadata.description,
+            provider: metadata.provider,
+            model: metadata.model,
+            model_parameters: metadata.model_parameters,
+            recursion_limit: metadata.recursion_limit,
+            memory_scope: metadata.memory_scope,
+            memoryToolsRegistered: metadata.memoryToolsRegistered,
+            subagents: metadata.subagents,
+            configId: metadata.configId,
+            codeEnvAvailable: metadata.codeEnvAvailable,
+            statefulCodeSessions: metadata.statefulCodeSessions,
+            statefulCodeEnvironment: metadata.statefulCodeEnvironment,
+            codeExecutionContext: metadata.codeExecutionContext,
+            codeSessionKey: metadata.codeSessionKey,
+            includeReasoningHistory: metadata.includeReasoningHistory,
+            skillAuthoringAvailable: metadata.skillAuthoringAvailable,
+            alwaysApplySkillPrimes: metadata.alwaysApplySkillPrimes,
+            historicalToolNames: metadata.historicalToolNames,
+            historicalMcpServerNames: metadata.historicalMcpServerNames,
+            lazySubagentConfigs: lazyChildren,
+            subagentAgentConfigs: eagerChildren,
+            subagentGraphMemberMetadata,
+            resolve: async (context) =>
+              initializeLazySubagent({
+                agentId: metadata.id,
+                configId: metadata.configId,
+                context,
+                lazyChildren,
+              }).then(async (config) => {
+                config.subagentAgentConfigs = eagerChildren;
+                graphMemberConfigsById.set(config.id, config);
+                await resolveGraphSubagentsFor(config, context.signal);
+                return config;
+              }),
+          },
+          metadata,
+        );
       }),
     );
     return descriptors.filter(Boolean);
@@ -1663,7 +1680,10 @@ const initializeClientWithProvider = async ({
               ? { tenantId: req.user.tenantId }
               : {}),
           },
-          { completionWakeups: completionWakeupsEnabled },
+          {
+            completionWakeups: completionWakeupsEnabled,
+            scheduleMCPIdentity: getScheduleMCPExecution(getMCPRequestContext(req, res))?.identity,
+          },
         )
       : undefined;
   let hasExistingSubagentTask = false;
@@ -1943,7 +1963,29 @@ function createInitializeClient(dependencies = {}) {
       params.signal,
       params.scheduledTokenContext,
     );
-    return initializeClientWithProvider({ ...params, upstreamTokenProviderResolver });
+    return initializeWithScheduleMCPExecution(
+      {
+        req: params.req,
+        signal: params.signal,
+        context: require('~/server/services/MCPRequestContext').getMCPRequestContext(
+          params.req,
+          params.res,
+        ),
+        restoredContext: params.scheduledTokenContext,
+        restoredJob: params.scheduleJobIdentity,
+      },
+      () => require('~/server/services/Schedules/consent'),
+      () => initializeClientWithProvider({ ...params, upstreamTokenProviderResolver }),
+      (identity) =>
+        retainScheduleMCPCompletion(
+          identity,
+          {
+            streamId: params.req._resumableStreamId,
+            createdAt: params.jobCreatedAt,
+          },
+          GenerationJobManager.getJobStore(),
+        ),
+    );
   };
 }
 

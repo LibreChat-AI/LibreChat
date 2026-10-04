@@ -1214,6 +1214,9 @@ export const tConversationSchema = z.object({
     )
     .optional(),
   title: z.string().nullable().or(z.literal('New Chat')).default('New Chat'),
+  /** Server-owned title authority; ordinary chat saves cannot set or clear it. */
+  titleSetByUser: z.boolean().optional(),
+  titleRevision: z.number().int().nonnegative().optional(),
   user: z.string().optional(),
   messages: z.array(z.string()).optional(),
   tools: z.union([z.array(tPluginSchema), z.array(z.string())]).optional(),
@@ -1255,7 +1258,9 @@ export const tConversationSchema = z.object({
   lastResponseMessageId: z.string().optional(),
   /** True only while `lastResponseAt` is the synthetic marker from "mark unread". */
   lastResponseIsManual: z.boolean().optional(),
-  /** Set when the user has the newest message on screen; compared against `lastResponseAt`. */
+  /** True: manual reminder; false: real reply; absent: legacy/unknown intent. */
+  isMarkedUnread: z.boolean().optional(),
+  /** Read acknowledgement; epoch is the explicit unseen-reply watermark. */
   lastSeenAt: z.string().optional(),
   /* Files */
   resendFiles: z.boolean().optional(),
@@ -1321,11 +1326,14 @@ export const tPresetSchema = tConversationSchema
     createdAt: true,
     updatedAt: true,
     title: true,
+    titleSetByUser: true,
+    titleRevision: true,
     /* Runtime unseen-reply state must not ride into presets: applying one would stamp
        stale timestamps back onto conversations. */
     lastResponseAt: true,
     lastResponseMessageId: true,
     lastResponseIsManual: true,
+    isMarkedUnread: true,
     lastSeenAt: true,
   })
   .merge(

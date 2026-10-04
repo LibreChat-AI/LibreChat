@@ -132,7 +132,7 @@ export function isToolApprovalPauseCapable(
     const matches = (patterns: string[] | undefined, name: string): boolean =>
       patterns?.some((pattern) => globToRegex(pattern).test(name)) === true;
     return names.some((name) => {
-      if (matches(enabledPolicy.deny, name)) {
+      if (isToolBlockedByApprovalPolicy(enabledPolicy, name)) {
         return false;
       }
       if (hasProgrammaticHooks || matches(enabledPolicy.ask, name)) {
@@ -178,6 +178,19 @@ export function isToolDeniedByApprovalPolicy(
     isHITLEnabled(policy) &&
     policy.deny?.some((pattern) => globToRegex(pattern).test(toolName)) === true
   );
+}
+
+/** Static deny, including the unmatched `dontAsk` fallback, cannot be tightened into review. */
+export function isToolBlockedByApprovalPolicy(
+  policy: TToolApprovalPolicy | undefined,
+  toolName: string,
+): boolean {
+  if (!isHITLEnabled(policy)) return false;
+  if (isToolDeniedByApprovalPolicy(policy, toolName)) return true;
+  if (policy.mode !== 'dontAsk') return false;
+  const matches = (patterns?: readonly string[]) =>
+    patterns?.some((pattern) => globToRegex(pattern).test(toolName)) === true;
+  return !matches(policy.ask) && !matches(policy.allow);
 }
 
 /**
@@ -393,6 +406,8 @@ export interface PendingActionContext {
   resumeContext?: Record<string, unknown>;
   /** Opaque server-only binding to the stateful code targets selected at pause time. */
   codeExecutionBinding?: Agents.CodeExecutionApprovalBinding;
+  /** Server-only alias pairs of the offered "Always allow" tools; see `collectAllowAlwaysAliases`. */
+  toolApprovalAliases?: Agents.PendingAction['toolApprovalAliases'];
 }
 
 /** Request fields that decide which agent/graph + tool set a turn runs. */
@@ -928,12 +943,13 @@ export function buildPendingAction(
     requestFingerprintV2: ctx.requestFingerprintV2,
     resumeContext: ctx.resumeContext,
     codeExecutionBinding: ctx.codeExecutionBinding,
+    toolApprovalAliases: ctx.toolApprovalAliases,
   };
 }
 
 /**
  * Client-facing projection of a pending action. `projectContextKey`, `requestFingerprint`,
- * `resumeContext`, and `codeExecutionBinding` are server-only replay state. `resumeContext`
+ * `resumeContext`, `codeExecutionBinding`, and `toolApprovalAliases` are server-only replay state. `resumeContext`
  * carries resolved model parameters, so every copy that leaves the server (SSE, status,
  * resume state) must go through this. The full record stays in the job store for resume.
  */
@@ -949,6 +965,8 @@ export function toClientPendingAction(
     requestFingerprintV2: _requestFingerprintV2,
     resumeContext: _resumeContext,
     codeExecutionBinding: _codeExecutionBinding,
+    toolApprovalBindings: _toolApprovalBindings,
+    toolApprovalAliases: _toolApprovalAliases,
     ...clientSafe
   } = pendingAction;
   return clientSafe;

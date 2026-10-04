@@ -16,6 +16,7 @@ export function hasConfigurableSettings(item: AgentItem): boolean {
         item.id === 'file_search' ||
         item.id === 'context' ||
         item.id === 'memory' ||
+        item.id === 'orchestration' ||
         (item.id === 'web_search' && item.userProvidedAuth === true)
       );
     case 'tool':

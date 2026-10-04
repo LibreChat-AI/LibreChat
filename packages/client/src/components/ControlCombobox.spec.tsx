@@ -372,4 +372,35 @@ describe('ControlCombobox portal placement', () => {
     expect(screen.getByRole('option', { name: 'Option B' })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: 'Option A' })).not.toBeInTheDocument();
   });
+  it('portals into the dialog outside a clipping scroll region', () => {
+    function Harness() {
+      const [container, setContainer] = useState<HTMLDivElement | null>(null);
+      return (
+        <OGDialog open>
+          <OGDialogContent ref={setContainer}>
+            <OGDialogTitle>Change project</OGDialogTitle>
+            <div data-testid="scroller" className="overflow-auto">
+              <ControlCombobox
+                selectedValue="a"
+                items={items}
+                setValue={() => undefined}
+                ariaLabel="Test combobox"
+                searchPlaceholder="Search projects"
+                isCollapsed={false}
+                portalElement={container}
+              />
+            </div>
+          </OGDialogContent>
+        </OGDialog>
+      );
+    }
+    render(<Harness />);
+    openPopover();
+    const search = screen.getByPlaceholderText('Search projects');
+    expect(screen.getByRole('dialog', { name: 'Change project' }).contains(search)).toBe(true);
+    expect(screen.getByTestId('scroller').contains(search)).toBe(false);
+    fireEvent.change(search, { target: { value: 'Option B' } });
+    expect(screen.getByRole('option', { name: 'Option B' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Option A' })).not.toBeInTheDocument();
+  });
 });

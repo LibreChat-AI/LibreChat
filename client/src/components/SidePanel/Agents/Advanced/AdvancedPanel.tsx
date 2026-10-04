@@ -1,23 +1,24 @@
 import { useState } from 'react';
-import { useFormContext } from 'react-hook-form';
 import { ChevronLeft, Check, Copy } from 'lucide-react';
+import { AgentCapabilities } from 'librechat-data-provider';
+import { Controller, useFormContext } from 'react-hook-form';
 import { Button, TooltipAnchor, labelVariants, useToastContext } from '@librechat/client';
 import type { AgentForm } from '~/common';
 import { useAgentPanelContext } from '~/Providers';
-import OrchestrationHub from './OrchestrationHub';
 import MaxAgentSteps from './MaxAgentSteps';
 import { groupHeadingClass } from './ui';
+import AgentChain from './AgentChain';
 import { useLocalize } from '~/hooks';
 import { Panel } from '~/common';
 
 export default function AdvancedPanel() {
   const localize = useLocalize();
   const { showToast } = useToastContext();
-  const { watch } = useFormContext<AgentForm>();
+  const { watch, control } = useFormContext<AgentForm>();
   const currentAgentId = watch('id');
   const [copied, setCopied] = useState(false);
 
-  const { setActivePanel } = useAgentPanelContext();
+  const { setActivePanel, agentsConfig } = useAgentPanelContext();
 
   const handleCopyAgentId = async () => {
     if (!currentAgentId) return;
@@ -58,7 +59,14 @@ export default function AdvancedPanel() {
           <MaxAgentSteps />
         </section>
 
-        <OrchestrationHub currentAgentId={currentAgentId} />
+        {agentsConfig?.capabilities.includes(AgentCapabilities.chain) && (
+          <Controller
+            name="agent_ids"
+            control={control}
+            defaultValue={[]}
+            render={({ field }) => <AgentChain field={field} currentAgentId={currentAgentId} />}
+          />
+        )}
 
         {currentAgentId && (
           <div className="border-border-light flex items-center justify-between gap-2 border-t pt-3">

@@ -119,7 +119,15 @@ function countEndpoints(settings: Action['settings']): number {
 }
 
 export function buildCatalog(inputs: BuildCatalogInputs): AgentItem[] {
-  const items: AgentItem[] = [];
+  const items: AgentItem[] = [
+    {
+      kind: 'builtin',
+      id: 'orchestration',
+      iconKey: 'orchestration',
+      name: 'com_ui_agent_orchestration',
+      description: 'com_ui_agent_orchestration_hint',
+    },
+  ];
 
   const enabled = new Set(inputs.agentsConfig.capabilities);
   for (const def of BUILTIN_DEFINITIONS) {

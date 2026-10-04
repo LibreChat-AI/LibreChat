@@ -1,4 +1,5 @@
-import { useQuery, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { useRef } from 'react';
+import { useQuery, useQueries, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import {
   QueryKeys,
   dataService,
@@ -31,7 +32,12 @@ import type {
 } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
 import type { ConversationCursorData } from '~/utils/convos';
-import { findConversationInInfinite, isNotFoundError } from '~/utils';
+import {
+  acceptRunningConversation,
+  findConversationInInfinite,
+  isNotFoundError,
+  toSidebarConversation,
+} from '~/utils';
 
 export const useGetPresetsQuery = (
   config?: UseQueryOptions<TPreset[]>,
@@ -80,6 +86,92 @@ export const useGetConvoIdQuery = (
       ...config,
     },
   );
+};
+
+const RUNNING_CONVERSATION_REFRESH_MS = 15_000;
+const RUNNING_CONVERSATION_MISSING_RETRY_MS = 2_000;
+const noRunningConversations: t.TConversation[] = [];
+
+/** The list endpoints derive `isShared` from active shared links; the record alone lacks it. */
+async function hasActiveSharedLink(
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<boolean | undefined> {
+  try {
+    const link = await dataService.getSharedLink(conversationId, signal);
+    return link.shareId != null;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Rows for running chats that no loaded sidebar list holds: chats filed in a project,
+ * pinned chats, and chats past the pages fetched so far. Each row refreshes while it is
+ * shown, so a title generated mid-run reaches it. A chat whose record is not written yet
+ * reads as absent and is asked again within seconds, so a short run is not missed.
+ *
+ * The rows live under their own key so a pending or absent result never lands in the
+ * cache the chat view reads; a complete record seeds that cache only where it is empty.
+ */
+export const useRunningConversationsQuery = (
+  conversationIds: readonly string[],
+): t.TConversation[] => {
+  const queryClient = useQueryClient();
+  const results = useQueries({
+    queries: conversationIds.map(
+      (conversationId): UseQueryOptions<t.TConversation | null> => ({
+        queryKey: [QueryKeys.runningConversation, conversationId],
+        queryFn: async ({ signal }): Promise<t.TConversation | null> => {
+          try {
+            const [conversation, isShared] = await Promise.all([
+              dataService.getConversationById(conversationId, signal),
+              hasActiveSharedLink(conversationId, signal),
+            ]);
+            signal?.throwIfAborted();
+            return isShared === undefined ? conversation : { ...conversation, isShared };
+          } catch (error) {
+            if (isNotFoundError(error)) {
+              return null;
+            }
+            throw error;
+          }
+        },
+        onSuccess: (conversation: t.TConversation | null) => {
+          if (
+            !conversation ||
+            !acceptRunningConversation(queryClient, conversationId, conversation)
+          ) {
+            return;
+          }
+          const conversationKey = [QueryKeys.conversation, conversationId];
+          if (queryClient.getQueryData(conversationKey) === undefined) {
+            queryClient.setQueryData(conversationKey, conversation);
+          }
+        },
+        staleTime: RUNNING_CONVERSATION_REFRESH_MS,
+        refetchInterval: (data: t.TConversation | null | undefined) =>
+          data === null ? RUNNING_CONVERSATION_MISSING_RETRY_MS : RUNNING_CONVERSATION_REFRESH_MS,
+        refetchOnWindowFocus: false,
+      }),
+    ),
+  });
+
+  const recordsRef = useRef<t.TConversation[]>(noRunningConversations);
+  const rowsRef = useRef<t.TConversation[]>(noRunningConversations);
+  const records = results
+    .map((result) => result.data)
+    .filter((record): record is t.TConversation => record != null);
+  const previous = recordsRef.current;
+  if (
+    records.length !== previous.length ||
+    records.some((record, index) => record !== previous[index])
+  ) {
+    recordsRef.current = records;
+    rowsRef.current =
+      records.length === 0 ? noRunningConversations : records.map(toSidebarConversation);
+  }
+  return rowsRef.current;
 };
 
 export const useConversationsInfiniteQuery = (

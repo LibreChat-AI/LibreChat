@@ -29,6 +29,7 @@ import { AttachmentGroup } from './Attachment';
 import { useToolCallIntent } from './intent';
 import { useFailedReveal } from '../reveal';
 import { cn, parseToolName } from '~/utils';
+import { FOLD_GLYPH_CLASS } from '../rows';
 import { useLocalize } from '~/hooks';
 
 interface SubagentCallProps {
@@ -414,6 +415,7 @@ export default function SubagentCall({
         <div className="text-text-primary flex items-center gap-2 text-sm font-medium">
           <div
             className={cn(
+              FOLD_GLYPH_CLASS,
               'flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full',
               running && !subagentAgent && 'text-text-primary animate-pulse',
             )}

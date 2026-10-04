@@ -1,8 +1,13 @@
 /* eslint-disable @typescript-eslint/no-namespace */
 import { z } from 'zod';
+import type {
+  FunctionTool,
+  ToolResources,
+  AgentToolOptions,
+  ToolApprovalGrantBinding,
+} from './tools';
 import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
-import type { FunctionTool, ToolResources, AgentToolOptions } from './tools';
 import type { StatefulCodeEnvironment } from '../stateful-code';
 import type { SummaryContentPart } from './content';
 import type { TFile } from './files';
@@ -133,6 +138,10 @@ export namespace Agents {
       actionId: string;
       allowed_decisions: ToolApprovalDecisionType[];
       description?: string;
+      remember_scope?: 'chat' | 'always';
+      remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
+      /** Server-authored: an `approve` may carry `scope: 'session'` for this call. */
+      allow_always?: boolean;
     };
   };
 
@@ -470,9 +479,17 @@ export namespace Agents {
    * by `tool_call_id`. `action_name` is retained for display only.
    */
   export interface ToolReviewConfig {
+    remember_scope?: 'chat' | 'always';
+    remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
     action_name: string;
     tool_call_id: string;
     allowed_decisions: ToolApprovalDecisionType[];
+    /**
+     * Server-authored: the user may approve this call for the rest of the conversation
+     * (`scope: 'session'`). Absent when `toolApproval.allowAlways` is off or the tool is
+     * ineligible (admin `deny`/`ask` match, native code tool, wildcard name).
+     */
+    allow_always?: boolean;
   }
 
   /** Interrupt payload for a tool-approval pause. */
@@ -591,6 +608,13 @@ export namespace Agents {
      * tool execution so an approval cannot migrate to another VM or workspace.
      */
     codeExecutionBinding?: CodeExecutionApprovalBinding;
+    toolApprovalBindings?: Record<string, ToolApprovalGrantBinding>;
+    /**
+     * Server-only MCP key-spelling pairs the paused run knew for the tools it offered
+     * "Always allow", including pairs lazily resolved subagents reported. Resume rechecks
+     * eligibility against them before remembering a tool.
+     */
+    toolApprovalAliases?: Array<{ name: string; aliasName: string }>;
   }
 
   export interface CodeExecutionApprovalTargetBinding {
@@ -606,9 +630,10 @@ export namespace Agents {
   }
 
   /**
-   * Scope of a tool-approval decision — drives the "remember this" persistence
-   * envelope. Storage of session/always decisions is a Slice B+ concern; the
-   * field is on the wire today so route signatures don't break later.
+   * Scope of a tool-approval decision. `once` (the default) applies to this call only.
+   * `session` on an `approve` auto-approves the same tool for the rest of the
+   * conversation, and is accepted only when the call's review config sets
+   * `allow_always`. `always` is reserved and currently rejected.
    */
   export type DecisionScope = 'once' | 'session' | 'always';
 

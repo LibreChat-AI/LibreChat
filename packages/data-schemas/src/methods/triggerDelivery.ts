@@ -4856,10 +4856,15 @@ export function createAgentTriggerDeliveryMethods(
       .lean<IAgentTriggerUserPurge[]>();
     if (activity != null && markers.length > 0) activity.found = true;
     let recovered = 0;
+    const users =
+      markers.length > 0
+        ? await mongoose.models.User.find({ _id: { $in: markers.map((marker) => marker._id) } })
+            .select('agentTriggerDeletionStartedAt')
+            .lean<Array<{ _id: Types.ObjectId; agentTriggerDeletionStartedAt?: Date }>>()
+        : [];
+    const usersById = new Map(users.map((found) => [String(found._id), found]));
     for (const marker of markers) {
-      const user = await mongoose.models.User.findById(marker._id)
-        .select('agentTriggerDeletionStartedAt')
-        .lean<{ agentTriggerDeletionStartedAt?: Date }>();
+      const user = usersById.get(String(marker._id)) ?? null;
       if (user != null) {
         if (user.agentTriggerDeletionStartedAt?.getTime() === marker.fenceStartedAt.getTime()) {
           // Move a still-owned pre-commit marker behind this bounded scan so

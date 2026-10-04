@@ -684,7 +684,7 @@ test.describe('MCP Apps full integration', () => {
       (await readEvents(page)).filter((event) => event.method === 'resources/read:show_link_app'),
     ).toHaveLength(1);
 
-    const legacyGeneration = await sendMessage(page, `E2E_MCP_LEGACY:${label}`);
+    const legacyGeneration = await sendMessageAndWaitForCompletion(page, `E2E_MCP_LEGACY:${label}`);
     expect(legacyGeneration.ok()).toBeTruthy();
     const legacyFrameElement = page.locator(`iframe[title="${LEGACY_FRAME_TITLE}"]`);
     await expect(legacyFrameElement).toHaveCount(1);
@@ -692,6 +692,7 @@ test.describe('MCP Apps full integration', () => {
     await expect(legacyFrame.getByTestId('legacy-status')).toHaveText('legacy-ready');
     await expect(legacyFrameElement).toHaveCSS('height', '120px');
 
+    await expect(page.getByTestId('stop-generation-button')).toHaveCount(0);
     const legacyActionGeneration = page.waitForResponse(
       (response) =>
         response.request().method() === 'POST' &&

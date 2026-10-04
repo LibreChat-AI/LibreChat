@@ -798,12 +798,14 @@ describe('tPresetSchema', () => {
       lastResponseAt: '2026-08-16T10:00:00.000Z',
       lastResponseMessageId: 'reply-1',
       lastResponseIsManual: true,
+      isMarkedUnread: true,
       lastSeenAt: '2026-08-16T09:00:00.000Z',
     });
 
     expect(parsed).not.toHaveProperty('lastResponseAt');
     expect(parsed).not.toHaveProperty('lastResponseMessageId');
     expect(parsed).not.toHaveProperty('lastResponseIsManual');
+    expect(parsed).not.toHaveProperty('isMarkedUnread');
     expect(parsed).not.toHaveProperty('lastSeenAt');
   });
 

@@ -27,6 +27,7 @@ const {
   createSecurityHeaders,
   performStartupChecks,
   handleJsonParseError,
+  excludeRumBodyParser,
   GenerationJobManager,
   QUERY_DEVTOOLS_HEADER,
   createStreamServices,
@@ -338,8 +339,8 @@ const startServer = async () => {
   app.use('/api/agents/chat', agentStartupIngressMiddleware);
   app.use(metricsMiddleware);
   app.use(noIndex);
-  app.use(express.json({ limit: '3mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '3mb' }));
+  app.use(excludeRumBodyParser(express.json({ limit: '3mb' })));
+  app.use(excludeRumBodyParser(express.urlencoded({ extended: true, limit: '3mb' })));
   app.use(handleJsonParseError);
 
   /**

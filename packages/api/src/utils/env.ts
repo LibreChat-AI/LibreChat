@@ -107,7 +107,10 @@ export function encodeHeaderValue(value: string): string {
  * @returns A new object containing only allowed fields plus federatedTokens if present
  */
 export function createSafeUser(
-  user: IUser | null | undefined,
+  user:
+    | (Partial<SafeUser> & Pick<IUser, 'tenantId'> & { federatedTokens?: IUser['federatedTokens'] })
+    | null
+    | undefined,
 ): Partial<SafeUser> & { federatedTokens?: IUser['federatedTokens'] } {
   if (!user) {
     return {};
@@ -300,6 +303,7 @@ function processSingleValue({
   body = undefined,
   isHeader = false,
   dbSourced = false,
+  beforeCredentialResolution,
 }: {
   originalValue: string;
   customUserVars?: Record<string, string>;
@@ -308,6 +312,7 @@ function processSingleValue({
   isHeader?: boolean;
   /** When true, only resolve customUserVars — skip env vars, user/OpenID/body placeholders */
   dbSourced?: boolean;
+  beforeCredentialResolution?: (value: string) => string;
 }): string {
   // Type guard: ensure we're working with a string
   if (typeof originalValue !== 'string') {
@@ -342,6 +347,7 @@ function processSingleValue({
 
   value = processUserPlaceholders(value, user, isHeader);
 
+  value = beforeCredentialResolution?.(value) ?? value;
   const openidTokenInfo = extractOpenIDTokenInfo(user);
   if (openidTokenInfo && isOpenIDTokenValid(openidTokenInfo)) {
     value = processOpenIDPlaceholders(value, openidTokenInfo);
@@ -393,8 +399,10 @@ export function processMCPEnv(params: {
   body?: RequestBody;
   /** When true, only resolve customUserVars — skip env vars, user/OpenID/body placeholders (for DB-stored servers) */
   dbSourced?: boolean;
+  /** Trusted projection hook, after substitutions and before credential resolution. */
+  beforeCredentialResolution?: (value: string) => string;
 }): MCPOptions {
-  const { options, user, body } = params;
+  const { options, user, body, beforeCredentialResolution } = params;
 
   if (options === null || options === undefined) {
     return options;
@@ -446,6 +454,7 @@ export function processMCPEnv(params: {
         user,
         body,
         dbSourced,
+        beforeCredentialResolution,
         originalValue,
         customUserVars,
       });
@@ -457,7 +466,14 @@ export function processMCPEnv(params: {
     const processedArgs: string[] = [];
     for (const originalValue of newObj.args) {
       processedArgs.push(
-        processSingleValue({ originalValue, customUserVars, user, body, dbSourced }),
+        processSingleValue({
+          originalValue,
+          customUserVars,
+          user,
+          body,
+          dbSourced,
+          beforeCredentialResolution,
+        }),
       );
     }
     newObj.args = processedArgs;
@@ -472,6 +488,7 @@ export function processMCPEnv(params: {
         user,
         body,
         dbSourced,
+        beforeCredentialResolution,
         originalValue,
         customUserVars,
         isHeader: true, // Important: Enable header encoding
@@ -488,6 +505,7 @@ export function processMCPEnv(params: {
         user,
         body,
         dbSourced,
+        beforeCredentialResolution,
         originalValue,
         customUserVars,
         isHeader: true,
@@ -502,6 +520,7 @@ export function processMCPEnv(params: {
       user,
       body,
       dbSourced,
+      beforeCredentialResolution,
       customUserVars,
       originalValue: newObj.url,
     });
@@ -523,6 +542,7 @@ export function processMCPEnv(params: {
           user,
           body,
           dbSourced,
+          beforeCredentialResolution,
           originalValue,
           customUserVars,
         });

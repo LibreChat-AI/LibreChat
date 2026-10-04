@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useState, useEffect } from 'react';
 import { Ellipsis } from 'lucide-react';
 import { Button, useMediaQuery } from '@librechat/client';
 import type { MouseEvent } from 'react';
@@ -9,12 +9,15 @@ export type ConvoActionsProps = {
   conversationId: string | null;
   chatProjectId?: string | null;
   title: string | null;
+  canRename?: boolean;
   isPinned?: boolean;
   isArchived?: boolean;
   isUnseen?: boolean;
   isActiveConvo: boolean;
   isShiftHeld?: boolean;
   isPopoverActive: boolean;
+  isGenerating?: boolean;
+  contextMenuPosition?: { x: number; y: number };
   /** True once the pointer or focus has reached the row. */
   hasInteracted: boolean;
   retainView: () => void;
@@ -53,12 +56,19 @@ function ConvoActions({
   hasInteracted,
   isActiveConvo,
   isPopoverActive,
+  isGenerating = false,
   onOpenChange,
   ...options
 }: ConvoActionsProps) {
   const localize = useLocalize();
   const isSmallScreen = useMediaQuery('(max-width: 768px)');
   const [hasOpenedMenu, setHasOpenedMenu] = useState(false);
+
+  useEffect(() => {
+    if (isPopoverActive) {
+      setHasOpenedMenu(true);
+    }
+  }, [isPopoverActive]);
 
   const handleOpenChange = (open: boolean) => {
     if (open) {
@@ -69,12 +79,13 @@ function ConvoActions({
 
   const showMenu = isSmallScreen
     ? isPopoverActive || isActiveConvo || hasOpenedMenu
-    : hasInteracted || isActiveConvo;
+    : isPopoverActive || hasOpenedMenu || hasInteracted || isActiveConvo;
 
   if (showMenu) {
     return (
       <ConvoOptions
         {...options}
+        isGenerating={isGenerating}
         isActiveConvo={isActiveConvo}
         isPopoverActive={isPopoverActive}
         setIsPopoverActive={handleOpenChange}
@@ -82,7 +93,7 @@ function ConvoActions({
     );
   }
 
-  if (!isSmallScreen) {
+  if (!isSmallScreen && !isGenerating) {
     return null;
   }
 
@@ -92,7 +103,7 @@ function ConvoActions({
       variant="ghost"
       aria-label={localize('com_nav_convo_menu_options')}
       data-testid="convo-options-trigger"
-      className="text-text-secondary size-9"
+      className="size-9"
       onClick={(event) => {
         event.stopPropagation();
         handleOpenChange(true);

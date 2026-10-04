@@ -8,6 +8,7 @@ import {
   buildServerNameAliases,
   normalizeMCPToolKey,
   normalizeServerName,
+  stripServerNamePrefix,
 } from 'librechat-data-provider';
 import type {
   IUser,
@@ -22,6 +23,7 @@ import type {
   UpstreamTokenProviderResolver,
   UpstreamTokenTarget,
 } from '../mcp/oauth/obo';
+import type { ScheduleMCPExecution, createScheduleMCPExecution } from './authorization/execution';
 import type { ParsedServerConfig, UserMCPConnectionOptions } from '../mcp/types';
 import type { CheckAccessParams } from '../middleware/access';
 import type { MCPToolsSnapshot } from '../mcp/connection';
@@ -39,6 +41,7 @@ import {
   findShadowedServerNames,
   createDeadlineAbortSignal,
 } from '../mcp/utils';
+import { ScheduledMCPPolicyError, isScheduledMCPCandidate } from './authorization/policy';
 import { MCPConfigInitializationCanceledError } from '../mcp/registry/MCPServersRegistry';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '../mcp/request';
 import { isScheduleFireRequest, readScheduleFireContext } from './trigger';
@@ -184,6 +187,7 @@ interface ScheduleMCPDeps {
   ) => Promise<Record<string, ParsedServerConfig>>;
   findPluginAuthsByKeys: PluginAuthMethods['findPluginAuthsByKeys'];
   resolveUpstreamTokenProvider?: HostUpstreamTokenProviderResolver;
+  execution?: ReturnType<typeof createScheduleMCPExecution>;
   connect: (options: UserMCPConnectionOptions) => Promise<{
     fetchToolsSnapshot: (deadlineMs?: number, signal?: AbortSignal) => Promise<MCPToolsSnapshot>;
   }>;
@@ -194,6 +198,26 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
   const sharedProbeLimit = createConcurrencyLimiter(MAX_SHARED_MCP_PREFLIGHT_CONCURRENCY);
   const runPreflight: ScheduleMCPPreflight = async (agentId, principal, options) => {
     const signal = options.signal;
+    let execution: ScheduleMCPExecution | undefined;
+    try {
+      execution =
+        options.scheduleId && deps.execution
+          ? await deps.execution.resolve(
+              {
+                scheduleId: options.scheduleId,
+                ownerId: principal.id,
+                tenantId: principal.tenantId ?? null,
+                agentId,
+                invocationMode: 'delegated',
+              },
+              options.stage ?? 'invoke',
+              { manual: options.manual === true },
+            )
+          : undefined;
+    } catch (error) {
+      if (error instanceof ScheduledMCPPolicyError) throw new ScheduleMCPError(error.outcomes);
+      throw error;
+    }
     const throwIfAborted = () => {
       if (signal?.aborted) throw signal.reason ?? new Error('MCP preflight aborted');
     };
@@ -210,7 +234,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
       });
       return appConfig;
     };
-    const { tools, serverHints } = await resolveScheduledMCPRequirements(
+    const { tools, serverHints, candidates } = await resolveScheduledMCPRequirements(
       agentId,
       user,
       deps,
@@ -222,6 +246,18 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
         name.includes(Constants.mcp_delimiter) &&
         !name.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`),
     );
+    if (execution?.enrolled) {
+      const denied = candidates.find(({ name }) => !isScheduledMCPCandidate(name));
+      if (denied || selectedTools.length === 0) {
+        throw new ScheduleMCPError(
+          new ScheduledMCPPolicyError(
+            denied ? 'tool_policy_denied' : 'binding_mismatch',
+            '',
+            denied?.agentId ?? agentId,
+          ).outcomes,
+        );
+      }
+    }
     if (selectedTools.length === 0) return [];
 
     const effectiveConfig = await loadAppConfig();
@@ -410,6 +446,27 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                   });
                   const snapshot = await connection.fetchToolsSnapshot(options.deadlineMs, signal);
                   if (snapshot.authenticationError) throw snapshot.authenticationError;
+                  if (execution) {
+                    for (const [toolKey, owners] of toolAgentIds.get(server) ?? []) {
+                      const [selectionName] = splitMCPToolKey(toolKey, authoritativeCandidates);
+                      const definitions = snapshot.tools.filter(
+                        (tool) =>
+                          tool.name === selectionName ||
+                          stripServerNamePrefix(tool.name, normalizeServerName(server)) ===
+                            selectionName,
+                      );
+                      for (const ownerId of owners) {
+                        await execution.bind(ownerId, selectionName).authorize({
+                          user,
+                          serverName: server,
+                          serverConfig,
+                          toolName: definitions.length === 1 ? definitions[0].name : '',
+                          loadTools: async () => snapshot,
+                          signal,
+                        });
+                      }
+                    }
+                  }
                   const available = new Set(
                     Object.keys(formatMCPServerTools(server, snapshot.tools)),
                   );
@@ -445,6 +502,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                     missingOwners.size > 0 ? missingOwners : undefined,
                   );
                 } catch (error) {
+                  if (error instanceof ScheduledMCPPolicyError) return error.outcomes;
                   if (
                     error instanceof OboTokenResolutionError &&
                     error.reason === 'missing_upstream_provider'

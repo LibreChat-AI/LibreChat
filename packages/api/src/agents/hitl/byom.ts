@@ -298,13 +298,19 @@ export function buildAttachedCodeEnvironmentAdmissionHooks(
     if (policy?.skillAuthoringAvailable === true) skillAuthoringAgents.add(agentId);
   }
   if (askFileAgents.size > 0) {
-    hooks.push({ hook, matcher: exactToolMatcher(BYOM_FILE_WRITE_TOOLS), agentIds: askFileAgents });
+    hooks.push({
+      hook,
+      matcher: exactToolMatcher(BYOM_FILE_WRITE_TOOLS),
+      agentIds: askFileAgents,
+      toolNames: [...BYOM_FILE_WRITE_TOOLS],
+    });
   }
   if (askCommandAgents.size > 0) {
     hooks.push({
       hook,
       matcher: exactToolMatcher(BYOM_COMMAND_EXECUTION_TOOLS),
       agentIds: askCommandAgents,
+      toolNames: [...BYOM_COMMAND_EXECUTION_TOOLS],
     });
   }
   if (skillAuthoringAgents.size > 0) {
@@ -312,6 +318,7 @@ export function buildAttachedCodeEnvironmentAdmissionHooks(
       hook,
       matcher: exactToolMatcher(new Set([CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME])),
       agentIds: skillAuthoringAgents,
+      toolNames: [CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME],
     });
   }
   return hooks;
