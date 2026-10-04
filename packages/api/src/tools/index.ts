@@ -6,3 +6,5 @@ export * from './toolkits';
 export * from './definitions';
 export * from './classification';
 export * from './rolePermissions';
+
+export * from './compare';

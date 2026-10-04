@@ -214,6 +214,7 @@ const loadTools = async ({
   imageOutputType,
 }) => {
   const toolConstructors = {
+    github_compare: require('@librechat/api').GitHubCompareTool,
     flux: FluxAPI,
     calculator: Calculator,
     google: GoogleSearchAPI,
