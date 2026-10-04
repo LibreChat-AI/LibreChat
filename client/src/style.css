@@ -2063,8 +2063,8 @@ html[data-input-modality='keyboard']
   border-radius: var(--theme-menu-radius, 0.7rem);
   border-width: 1px;
   border-style: solid;
-  border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
-  background-color: rgb(var(--surface-primary));
+  border-color: rgb(var(--border-menu) / var(--border-menu-alpha, var(--border-light-alpha, 1)));
+  background-color: rgb(var(--surface-popover));
   padding: 0.5rem;
   color: rgb(var(--text-primary));
   /* The `menuShadow` role, whose light default is this literal. */
@@ -2102,7 +2102,7 @@ html[data-input-modality='keyboard']
 }
 
 .popover-ui:where(.dark, .dark *) {
-  background-color: rgb(var(--surface-secondary));
+  background-color: rgb(var(--surface-popover));
   color: rgb(var(--text-secondary));
   box-shadow: var(
     --theme-menu-shadow,

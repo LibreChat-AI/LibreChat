@@ -118,6 +118,37 @@ export function primaryButtonFallbacks(colors: IThemeRGB): IThemeRGB {
   };
 }
 
+/**
+ * Layering roles split out of the surface a component painted before each had a name: the role,
+ * and the surface it followed in light and in dark. A theme that repaints the surface keeps the
+ * layer on it, unless it names the role.
+ */
+export const layerRoleSources: ReadonlyArray<
+  readonly [keyof IThemeRGB, keyof IThemeRGB, keyof IThemeRGB]
+> = [
+  ['rgb-surface-canvas', 'rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
+  ['rgb-surface-user-message', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
+  ['rgb-surface-card', 'rgb-surface-secondary', 'rgb-surface-secondary'],
+  ['rgb-surface-card-hover', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
+  ['rgb-surface-nav-hover', 'rgb-surface-active-alt', 'rgb-surface-active-alt'],
+  ['rgb-surface-nav-selected', 'rgb-surface-active-alt', 'rgb-surface-active-alt'],
+  ['rgb-surface-tab-selected', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
+  ['rgb-surface-menu', 'rgb-presentation', 'rgb-presentation'],
+  ['rgb-surface-popover', 'rgb-surface-primary', 'rgb-surface-secondary'],
+  ['rgb-border-menu', 'rgb-border-light', 'rgb-border-light'],
+  ['rgb-surface-composer', 'rgb-surface-chat', 'rgb-surface-chat'],
+  ['rgb-surface-search', 'rgb-surface-secondary', 'rgb-surface-secondary'],
+];
+
+export function layerRoleFallbacks(colors: IThemeRGB, mode: ThemeMode): IThemeRGB {
+  return Object.fromEntries(
+    layerRoleSources.flatMap(([role, light, dark]) => {
+      const source = colors[mode === 'dark' ? dark : light];
+      return colors[role] === undefined && source !== undefined ? [[role, source]] : [];
+    }),
+  );
+}
+
 /** Inks split out of the primary one: dialog titles, badge labels, the default avatar's glyph and
  *  a field's typed value were all set in it. */
 export const primaryInkRoles: ReadonlyArray<keyof IThemeRGB> = [
@@ -688,6 +719,8 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors != null ? controlBorderFallback(customColors) : undefined;
   const borderControlFallback: IThemeRGB =
     borderControlSource !== undefined ? { 'rgb-border-control': borderControlSource } : {};
+  const layerFallback: IThemeRGB =
+    customColors != null ? layerRoleFallbacks(customColors, mode) : {};
   const focusFallback: IThemeRGB = customColors != null ? focusFallbacks(customColors) : {};
   const pressedFallback: IThemeRGB = customColors != null ? pressedFallbacks(customColors) : {};
   const primaryButtonFallback: IThemeRGB =
@@ -759,6 +792,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...switchThumbFallback,
       ...fieldFillFallback,
       ...overlayFallback,
+      ...layerFallback,
       ...tableHeaderTextFallback,
       ...tableHeaderFillFallback,
       ...borderControlFallback,

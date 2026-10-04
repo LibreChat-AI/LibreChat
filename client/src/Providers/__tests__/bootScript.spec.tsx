@@ -137,7 +137,9 @@ describe('index.html deployment theme boot script', () => {
     localStorage.setItem('color-theme', 'dark');
     const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
     entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
-      name === '--surface-primary-alt' ? [name, '0 0 0;}</style><b>x'] : [name, value],
+      name === '--surface-primary-alt' || name === '--surface-canvas'
+        ? [name, '0 0 0;}</style><b>x']
+        : [name, value],
     );
     writeThemeCache(entry);
     boot();
@@ -145,11 +147,48 @@ describe('index.html deployment theme boot script', () => {
     expect(document.head.textContent).not.toContain('</style>');
   });
 
+  it('paints the cached canvas over the split surface it follows by default', () => {
+    localStorage.setItem('color-theme', 'dark');
+    const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
+    entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
+      name === '--surface-canvas' ? [name, '1 2 3'] : [name, value],
+    );
+    writeThemeCache(entry);
+    boot();
+    expect(document.head.textContent).toContain('background-color: rgb(1, 2, 3)');
+  });
+
+  it('keeps the split surface on routes that do not paint the canvas', () => {
+    localStorage.setItem('color-theme', 'dark');
+    const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
+    entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
+      name === '--surface-canvas' ? [name, '1 2 3'] : [name, value],
+    );
+    writeThemeCache(entry);
+    window.history.pushState({}, '', '/agents');
+    boot();
+    expect(document.head.textContent).toContain('background-color: rgb(8, 10, 24)');
+  });
+
+  it('paints the canvas for the prompt redirect that lands on a new chat', () => {
+    localStorage.setItem('color-theme', 'dark');
+    const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
+    entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
+      name === '--surface-canvas' ? [name, '1 2 3'] : [name, value],
+    );
+    writeThemeCache(entry);
+    window.history.pushState({}, '', '/prompts/new');
+    boot();
+    expect(document.head.textContent).toContain('background-color: rgb(1, 2, 3)');
+  });
+
   it('accepts any whitespace between the cached surface channels', () => {
     localStorage.setItem('color-theme', 'dark');
     const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
     entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
-      name === '--surface-primary-alt' ? [name, ' 8  10\t24 '] : [name, value],
+      name === '--surface-primary-alt' || name === '--surface-canvas'
+        ? [name, ' 8  10\t24 ']
+        : [name, value],
     );
     writeThemeCache(entry);
     boot();

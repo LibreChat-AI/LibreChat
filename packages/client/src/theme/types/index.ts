@@ -119,6 +119,18 @@ export interface IThemeRGB {
    *  `rgb-status-error-border` when a theme omits them. */
   'rgb-alert-error-fill'?: string;
   'rgb-alert-error-border'?: string;
+  'rgb-surface-canvas'?: string;
+  'rgb-surface-user-message'?: string;
+  'rgb-surface-card'?: string;
+  'rgb-surface-card-hover'?: string;
+  'rgb-surface-nav-hover'?: string;
+  'rgb-surface-nav-selected'?: string;
+  'rgb-surface-tab-selected'?: string;
+  'rgb-surface-menu'?: string;
+  'rgb-surface-popover'?: string;
+  'rgb-border-menu'?: string;
+  'rgb-surface-composer'?: string;
+  'rgb-surface-search'?: string;
   /** Disabled fill, ink and edge. Painted only under the `fill` disabled style. */
   'rgb-surface-disabled'?: string;
   'rgb-text-disabled'?: string;
@@ -312,6 +324,18 @@ export interface IThemeVariables {
   '--text-tooltip': string;
   '--alert-error-fill': string;
   '--alert-error-border': string;
+  '--surface-canvas': string;
+  '--surface-user-message': string;
+  '--surface-card': string;
+  '--surface-card-hover': string;
+  '--surface-nav-hover': string;
+  '--surface-nav-selected': string;
+  '--surface-tab-selected': string;
+  '--surface-menu': string;
+  '--surface-popover': string;
+  '--border-menu': string;
+  '--surface-composer': string;
+  '--surface-search': string;
   '--surface-disabled': string;
   '--text-disabled': string;
   '--border-disabled': string;
@@ -455,6 +479,18 @@ export interface IThemeColors {
   'text-tooltip'?: string;
   'alert-error-fill'?: string;
   'alert-error-border'?: string;
+  'surface-canvas'?: string;
+  'surface-user-message'?: string;
+  'surface-card'?: string;
+  'surface-card-hover'?: string;
+  'surface-nav-hover'?: string;
+  'surface-nav-selected'?: string;
+  'surface-tab-selected'?: string;
+  'surface-menu'?: string;
+  'surface-popover'?: string;
+  'border-menu'?: string;
+  'surface-composer'?: string;
+  'surface-search'?: string;
   'surface-disabled'?: string;
   'text-disabled'?: string;
   'border-disabled'?: string;

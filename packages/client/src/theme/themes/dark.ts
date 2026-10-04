@@ -90,6 +90,18 @@ export const darkTheme: IThemeRGB = {
   'rgb-text-tooltip': '236 236 236', // matching text-primary
   'rgb-alert-error-fill': '69 10 10', // matching status-error-subtle
   'rgb-alert-error-border': '153 27 27', // matching status-error-border
+  'rgb-surface-canvas': '23 23 23', // matching surface-primary-alt
+  'rgb-surface-user-message': '47 47 47', // matching surface-tertiary
+  'rgb-surface-card': '33 33 33', // matching surface-secondary
+  'rgb-surface-card-hover': '47 47 47', // matching surface-tertiary
+  'rgb-surface-nav-hover': '47 47 47', // matching surface-active-alt
+  'rgb-surface-nav-selected': '47 47 47', // matching surface-active-alt
+  'rgb-surface-tab-selected': '47 47 47', // matching surface-tertiary
+  'rgb-surface-menu': '33 33 33', // matching presentation
+  'rgb-surface-popover': '33 33 33', // matching surface-secondary
+  'rgb-border-menu': '33 33 33', // matching border-light
+  'rgb-surface-composer': '47 47 47', // matching surface-chat
+  'rgb-surface-search': '33 33 33', // matching surface-secondary
   'rgb-surface-disabled': '47 47 47', // #2f2f2f (gray-700)
   'rgb-text-disabled': '153 150 150', // #999696 (gray-400)
   'rgb-border-disabled': '57 57 57', // #393939 (gray-650)

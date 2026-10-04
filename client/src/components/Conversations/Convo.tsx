@@ -330,8 +330,8 @@ function Conversation({
       className={cn(
         'group focus-visible:ring-text-primary relative flex h-12 w-full items-center rounded-lg outline-hidden focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset md:h-9',
         isActiveConvo || isPopoverActive
-          ? 'bg-surface-active-alt before:bg-text-primary before:absolute before:top-1 before:bottom-1 before:left-0 before:w-0.5 before:rounded-full'
-          : 'hover:bg-surface-active-alt',
+          ? 'bg-surface-nav-selected before:bg-text-primary before:absolute before:top-1 before:bottom-1 before:left-0 before:w-0.5 before:rounded-full'
+          : 'hover:bg-surface-nav-hover',
       )}
       onPointerEnter={(event) => {
         if (event.pointerType === 'mouse') {
@@ -409,8 +409,8 @@ function Conversation({
                 className={cn(
                   'bg-status-info pointer-events-none absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2',
                   isActiveConvo || isPopoverActive
-                    ? 'ring-surface-active-alt'
-                    : 'ring-surface-primary-alt group-hover:ring-surface-active-alt',
+                    ? 'ring-surface-nav-selected'
+                    : 'ring-surface-primary-alt group-hover:ring-surface-nav-hover',
                 )}
               />
             )}

@@ -10,6 +10,7 @@ import {
   fromLegacyTheme,
   libreChatTheme,
   resolveTheme,
+  layerRoleSources,
   themeColorTokens,
   validateThemeDefinition,
 } from './registry';
@@ -997,6 +998,62 @@ describe('theme registry', () => {
       labelSize: '1rem',
       labelLeading: '1.25',
       labelFontWeight: '700',
+    });
+  });
+
+  describe('layering roles', () => {
+    const layerTheme = (modes: ThemeDefinition['modes']): ThemeDefinition => ({
+      version: 1,
+      name: 'layering-reference',
+      modes,
+    });
+
+    it('resolves every layer to the surface it followed before it had a name', () => {
+      for (const mode of ['light', 'dark'] as const) {
+        const { colors } = resolveTheme(layerTheme({}), mode);
+        layerRoleSources.forEach(([role, light, dark]) => {
+          expect([role, colors[role]]).toEqual([role, colors[mode === 'dark' ? dark : light]]);
+        });
+      }
+    });
+
+    it('names the legacy surface of each layer outright', () => {
+      const legacy: Record<string, [string, string]> = {
+        'rgb-surface-canvas': ['rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
+        'rgb-surface-user-message': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
+        'rgb-surface-card': ['rgb-surface-secondary', 'rgb-surface-secondary'],
+        'rgb-surface-card-hover': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
+        'rgb-surface-nav-hover': ['rgb-surface-active-alt', 'rgb-surface-active-alt'],
+        'rgb-surface-nav-selected': ['rgb-surface-active-alt', 'rgb-surface-active-alt'],
+        'rgb-surface-tab-selected': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
+        'rgb-surface-menu': ['rgb-presentation', 'rgb-presentation'],
+        'rgb-surface-popover': ['rgb-surface-primary', 'rgb-surface-secondary'],
+        'rgb-border-menu': ['rgb-border-light', 'rgb-border-light'],
+        'rgb-surface-composer': ['rgb-surface-chat', 'rgb-surface-chat'],
+        'rgb-surface-search': ['rgb-surface-secondary', 'rgb-surface-secondary'],
+      };
+      expect(
+        Object.fromEntries(layerRoleSources.map(([role, light, dark]) => [role, [light, dark]])),
+      ).toEqual(legacy);
+    });
+
+    it('keeps a theme that repaints a surface on that layer, and lets it name the role', () => {
+      const { colors } = resolveTheme(
+        layerTheme({
+          light: {
+            colors: {
+              'rgb-surface-tertiary': '10 20 30',
+              'rgb-surface-primary-alt': '40 50 60',
+              'rgb-surface-card-hover': '1 2 3',
+            },
+          },
+        }),
+        'light',
+      );
+      expect(colors['rgb-surface-user-message']).toBe('10 20 30');
+      expect(colors['rgb-surface-tab-selected']).toBe('10 20 30');
+      expect(colors['rgb-surface-canvas']).toBe('40 50 60');
+      expect(colors['rgb-surface-card-hover']).toBe('1 2 3');
     });
   });
 

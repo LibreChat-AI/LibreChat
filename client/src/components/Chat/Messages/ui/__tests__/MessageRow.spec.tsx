@@ -59,7 +59,7 @@ describe('MessageRow', () => {
     expect(row).toHaveClass('justify-end');
     expect(row.querySelector('.user-turn')).toHaveClass('items-end');
     expect(messageSurface).toHaveClass('border', 'border-border-medium', 'rounded-theme-surface');
-    expect(messageSurface).not.toHaveClass('bg-surface-tertiary');
+    expect(messageSurface).not.toHaveClass('bg-surface-user-message');
     expect(heading).not.toHaveClass('sr-only');
     expect(screen.queryByText('You')).not.toBeInTheDocument();
     expect(screen.getByTestId('message-actions')).toBeInTheDocument();
@@ -104,7 +104,7 @@ describe('MessageRow', () => {
     expect(row).toHaveAttribute('role', 'group');
     expect(row).toHaveClass('justify-end');
     expect(userTurn).toHaveClass('items-end');
-    expect(messageSurface).toHaveClass('bg-surface-tertiary', 'rounded-theme-surface');
+    expect(messageSurface).toHaveClass('bg-surface-user-message', 'rounded-theme-surface');
     expect(screen.queryByTestId('message-icon')).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { hidden: true })).toHaveClass('sr-only');
   });
@@ -189,7 +189,7 @@ describe('MessageRow', () => {
 
     expect(row.querySelector('.user-turn')).toHaveClass('w-full');
     expect(messageSurface).toHaveClass('w-full');
-    expect(messageSurface).not.toHaveClass('bg-surface-tertiary');
+    expect(messageSurface).not.toHaveClass('bg-surface-user-message');
   });
 
   it('expands an edited assistant message to full width', () => {

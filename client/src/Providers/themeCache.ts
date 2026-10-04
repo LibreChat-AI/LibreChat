@@ -10,7 +10,7 @@ type DeploymentThemeValue = TInterfaceConfig['theme'];
  * replays `modes` before the bundle runs, so its key and shape must stay in step.
  */
 export const THEME_CACHE_KEY = 'deployment-theme';
-export const THEME_CACHE_VERSION = 1;
+export const THEME_CACHE_VERSION = 2;
 
 export type ThemeCacheEntry = {
   v: typeof THEME_CACHE_VERSION;

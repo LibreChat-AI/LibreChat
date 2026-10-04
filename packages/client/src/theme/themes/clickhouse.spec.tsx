@@ -30,6 +30,13 @@ const canvasSurfaces: Array<keyof IThemeRGB> = [
   'rgb-surface-code',
   'rgb-surface-code-body',
   'rgb-presentation',
+  'rgb-surface-canvas',
+  'rgb-surface-card',
+  'rgb-surface-card-hover',
+  'rgb-surface-menu',
+  'rgb-surface-popover',
+  'rgb-surface-composer',
+  'rgb-surface-search',
 ];
 
 /** Fills a row or menu item takes on hover or selection, which carry the
@@ -45,6 +52,10 @@ const interactiveFills: Array<keyof IThemeRGB> = [
   'rgb-header-primary',
   'rgb-header-hover',
   'rgb-header-button-hover',
+  'rgb-surface-user-message',
+  'rgb-surface-nav-hover',
+  'rgb-surface-nav-selected',
+  'rgb-surface-tab-selected',
 ];
 
 const neutralTextTokens: Array<keyof IThemeRGB> = [
@@ -172,6 +183,19 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
 
   it('keeps neutral text at WCAG AA on every canvas surface', () => {
     expect(below(theme, WCAG_AA_NORMAL, neutralTextTokens, canvasSurfaces)).toEqual([]);
+  });
+
+  it('steps each layer off the one it sits on, so hover and selection stay apart', () => {
+    const layers: Array<[keyof IThemeRGB, keyof IThemeRGB]> = [
+      ['rgb-surface-user-message', 'rgb-surface-canvas'],
+      ['rgb-surface-card-hover', 'rgb-surface-card'],
+      ['rgb-surface-nav-selected', 'rgb-surface-nav-hover'],
+      ['rgb-surface-nav-hover', 'rgb-surface-primary-alt'],
+      ['rgb-surface-tab-selected', 'rgb-surface-dialog'],
+      ['rgb-surface-search', 'rgb-surface-primary-alt'],
+      ['rgb-border-menu', 'rgb-surface-menu'],
+    ];
+    expect(layers.filter(([layer, ground]) => theme[layer] === theme[ground])).toEqual([]);
   });
 
   it('keeps primary text at WCAG AA on hover, selected and header fills', () => {

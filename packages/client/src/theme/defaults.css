@@ -162,6 +162,18 @@ html {
   --text-tooltip: var(--text-primary);
   --alert-error-fill: var(--status-error-subtle);
   --alert-error-border: var(--status-error-border);
+  --surface-canvas: var(--surface-primary-alt);
+  --surface-user-message: var(--surface-tertiary);
+  --surface-card: var(--surface-secondary);
+  --surface-card-hover: var(--surface-tertiary);
+  --surface-nav-hover: var(--surface-active-alt);
+  --surface-nav-selected: var(--surface-active-alt);
+  --surface-tab-selected: var(--surface-tertiary);
+  --surface-menu: var(--presentation);
+  --surface-popover: var(--surface-primary);
+  --border-menu: var(--border-light);
+  --surface-composer: var(--surface-chat);
+  --surface-search: var(--surface-secondary);
   --focus-control: var(--gray-800);
   --border-disabled: var(--gray-200);
   --status-success: var(--green-700);
@@ -416,6 +428,18 @@ html {
   --text-tooltip: var(--text-primary);
   --alert-error-fill: var(--status-error-subtle);
   --alert-error-border: var(--status-error-border);
+  --surface-canvas: var(--surface-primary-alt);
+  --surface-user-message: var(--surface-tertiary);
+  --surface-card: var(--surface-secondary);
+  --surface-card-hover: var(--surface-tertiary);
+  --surface-nav-hover: var(--surface-active-alt);
+  --surface-nav-selected: var(--surface-active-alt);
+  --surface-tab-selected: var(--surface-tertiary);
+  --surface-menu: var(--presentation);
+  --surface-popover: var(--surface-secondary);
+  --border-menu: var(--border-light);
+  --surface-composer: var(--surface-chat);
+  --surface-search: var(--surface-secondary);
   --focus-control: var(--gray-100);
   --border-disabled: var(--gray-650);
   --status-success: var(--green-300);
@@ -487,11 +511,36 @@ html {
 
 /* A root other than the document one that a legacy palette themes (`THEME_SCOPE_ATTRIBUTE` in
    utils/applyTheme.ts) keeps its avatar backdrop on its own surfaces, following the mode, as the
-   document root's alias above does. An explicit avatar-placeholder set inline still wins. */
+   document root's alias above does. The layering roles alias their source the same way, so a
+   scoped palette that repaints the source moves them. An explicit role set inline still wins. */
 [data-theme-scope] {
   --avatar-placeholder: var(--surface-secondary);
+  --surface-canvas: var(--surface-primary-alt);
+  --surface-user-message: var(--surface-tertiary);
+  --surface-card: var(--surface-secondary);
+  --surface-card-hover: var(--surface-tertiary);
+  --surface-nav-hover: var(--surface-active-alt);
+  --surface-nav-selected: var(--surface-active-alt);
+  --surface-tab-selected: var(--surface-tertiary);
+  --surface-menu: var(--presentation);
+  --surface-popover: var(--surface-primary);
+  --border-menu: var(--border-light);
+  --surface-composer: var(--surface-chat);
+  --surface-search: var(--surface-secondary);
 }
 .dark [data-theme-scope],
 [data-theme-scope].dark {
   --avatar-placeholder: var(--surface-tertiary);
+  --surface-canvas: var(--surface-primary-alt);
+  --surface-user-message: var(--surface-tertiary);
+  --surface-card: var(--surface-secondary);
+  --surface-card-hover: var(--surface-tertiary);
+  --surface-nav-hover: var(--surface-active-alt);
+  --surface-nav-selected: var(--surface-active-alt);
+  --surface-tab-selected: var(--surface-tertiary);
+  --surface-menu: var(--presentation);
+  --surface-popover: var(--surface-secondary);
+  --border-menu: var(--border-light);
+  --surface-composer: var(--surface-chat);
+  --surface-search: var(--surface-secondary);
 }

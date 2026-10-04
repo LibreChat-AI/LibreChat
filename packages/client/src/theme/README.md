@@ -387,6 +387,17 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   (0.5rem, 0.25rem and 1rem by default).
 - `bg-alert-error-fill` / `border-alert-error-border` - The error `Alert`'s fill and edge. They
   follow `status-error-subtle` and `status-error-border`, which the badges, tags and diffs keep.
+- Layering roles - `bg-surface-canvas` (the chat canvas and its header fade),
+  `bg-surface-user-message` (the user turn's bubble), `bg-surface-card` and
+  `bg-surface-card-hover` (marketplace cards), `bg-surface-nav-hover` and
+  `bg-surface-nav-selected` (sidebar, rail and drawer rows), `bg-surface-tab-selected`
+  (the settings tab rail), `bg-surface-menu` and `bg-surface-popover` with `border-border-menu` (menu and popover
+  panels), `bg-surface-composer` (the composer box) and `bg-surface-search` (the sidebar
+  search pill). Each follows the surface it painted before it had a name
+  (`surface-primary-alt`, `surface-tertiary`, `surface-secondary`, `surface-active-alt`,
+  `presentation` for menus, `surface-primary` or `surface-secondary` for popovers, `border-light`, `surface-chat`),
+  so a theme that repaints that surface keeps the layer on it, and a theme steps the layers
+  apart by naming them.
 - `border-border-field-focus` - A form field's edge while it holds focus, under
   `fieldFocusStyle: border`. Follows `focus-control` when a theme names only that.
 - Form fields and labels - `h-theme-field` (`fieldHeight`) sizes `Input`, `Dropdown`

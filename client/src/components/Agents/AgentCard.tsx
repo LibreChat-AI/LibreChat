@@ -84,7 +84,7 @@ const AgentCard = memo(
         className={cn(
           /* The article keeps a plain resting fill so the grid slot still reads as a
              card while the surface layer is away being the dialog. */
-          'group rounded-theme-surface bg-surface-secondary relative flex h-full min-h-[17.5rem] min-w-0 flex-col p-5',
+          'group rounded-theme-surface bg-surface-card relative flex h-full min-h-[17.5rem] min-w-0 flex-col p-5',
           className,
         )}
       >
@@ -97,7 +97,7 @@ const AgentCard = memo(
             borderRadius: surfaceRadius,
             willChange: morphing ? 'transform' : undefined,
           }}
-          className="rounded-theme-surface border-border-light bg-surface-secondary group-hover:border-border-medium group-hover:bg-surface-tertiary pointer-events-none absolute inset-0 z-0 border transition-colors duration-150"
+          className="rounded-theme-surface border-border-light bg-surface-card group-hover:border-border-medium group-hover:bg-surface-card-hover pointer-events-none absolute inset-0 z-0 border transition-colors duration-150"
           {...shared}
         />
 

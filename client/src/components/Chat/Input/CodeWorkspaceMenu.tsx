@@ -52,7 +52,7 @@ const stateLabels: Partial<Record<CodeWorkspaceResult['state'], TranslationKeys>
 const headingClasses = 'px-2.5 pt-2 pb-1 text-xs font-semibold text-text-secondary';
 const menuClasses = cn(
   'z-50 flex max-w-[min(360px,calc(100vw-2rem))] min-w-[260px] flex-col rounded-2xl',
-  'border-border-light bg-presentation max-h-[var(--popover-available-height)] overflow-y-auto border p-1 shadow-lg',
+  'border-border-menu bg-surface-menu max-h-[var(--popover-available-height)] overflow-y-auto border p-1 shadow-lg',
   'origin-bottom opacity-0 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none',
   'data-[enter]:scale-100 data-[enter]:opacity-100',
   'scale-95 data-[leave]:scale-95 data-[leave]:opacity-0',

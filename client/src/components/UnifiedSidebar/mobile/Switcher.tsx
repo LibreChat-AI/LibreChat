@@ -38,7 +38,7 @@ function Switcher({
         id: `nav-panel-${link.id}`,
         label: localize(link.title),
         ariaChecked: link.id === activeId,
-        className: link.id === activeId ? 'bg-surface-active-alt' : undefined,
+        className: link.id === activeId ? 'bg-surface-nav-selected' : undefined,
         icon: <link.icon className="text-text-primary size-5" aria-hidden="true" />,
         onClick: () => {
           if (link.onClick) {

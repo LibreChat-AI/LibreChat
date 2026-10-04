@@ -229,7 +229,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
           initial={morphing ? { opacity: 1 } : false}
           animate={{ opacity: morphing && morph === 'closing' ? 1 : 0 }}
           transition={MORPH_OPEN_TRANSITION}
-          className="border-border-light bg-surface-secondary pointer-events-none absolute inset-0 border"
+          className="border-border-light bg-surface-card pointer-events-none absolute inset-0 border"
         />
 
         {/* Only the category and the close control are pinned above the scroll:

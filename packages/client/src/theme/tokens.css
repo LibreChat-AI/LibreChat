@@ -130,6 +130,20 @@
   --color-text-tooltip: rgb(var(--text-tooltip, var(--text-primary)));
   --color-alert-error-fill: rgb(var(--alert-error-fill, var(--status-error-subtle)));
   --color-alert-error-border: rgb(var(--alert-error-border, var(--status-error-border)));
+  --color-surface-canvas: rgb(var(--surface-canvas));
+  --color-surface-user-message: rgb(var(--surface-user-message));
+  --color-surface-card: rgb(var(--surface-card));
+  --color-surface-card-hover: rgb(var(--surface-card-hover));
+  --color-surface-nav-hover: rgb(var(--surface-nav-hover));
+  --color-surface-nav-selected: rgb(var(--surface-nav-selected));
+  --color-surface-tab-selected: rgb(var(--surface-tab-selected));
+  --color-surface-menu: rgb(var(--surface-menu));
+  --color-surface-popover: rgb(var(--surface-popover));
+  --color-border-menu: rgb(
+    var(--border-menu) / var(--border-menu-alpha, var(--border-light-alpha, 1))
+  );
+  --color-surface-composer: rgb(var(--surface-composer));
+  --color-surface-search: rgb(var(--surface-search));
   --color-border-disabled: rgb(var(--border-disabled));
 
   /* status */

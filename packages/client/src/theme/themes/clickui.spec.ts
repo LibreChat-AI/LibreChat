@@ -125,6 +125,17 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-border-field-focus': 'click.field.color.stroke.active',
     'rgb-field-fill': 'click.field.color.background.default',
     'rgb-field-text': 'click.field.color.text.default',
+    'rgb-surface-canvas': 'global.color.background.default',
+    'rgb-surface-user-message': 'palette.slate.100',
+    'rgb-surface-card': 'click.card.secondary.color.background.default',
+    'rgb-surface-card-hover': 'click.card.secondary.color.background.hover',
+    'rgb-surface-nav-selected': 'click.sidebar.main.navigation.item.color.background.active',
+    'rgb-surface-tab-selected': 'click.sidebar.main.navigation.item.color.background.active',
+    'rgb-surface-menu': 'click.genericMenu.panel.color.background.default',
+    'rgb-surface-popover': 'click.genericMenu.panel.color.background.default',
+    'rgb-border-menu': 'click.genericMenu.panel.color.stroke.default',
+    'rgb-surface-composer': 'global.color.background.default',
+    'rgb-surface-search': 'global.color.background.default',
     'rgb-surface-disabled': 'click.button.basic.color.primary.background.disabled',
     'rgb-text-disabled': 'global.color.text.disabled',
     'rgb-border-disabled': 'click.field.color.stroke.disabled',
@@ -257,6 +268,17 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-border-field-focus': 'click.field.color.stroke.active',
     'rgb-field-fill': 'click.field.color.background.default',
     'rgb-field-text': 'click.field.color.text.default',
+    'rgb-surface-canvas': 'global.color.background.default',
+    'rgb-surface-user-message': 'palette.neutral.712',
+    'rgb-surface-card': 'click.card.secondary.color.background.default',
+    'rgb-surface-card-hover': 'click.card.secondary.color.background.hover',
+    'rgb-surface-nav-hover': 'click.sidebar.main.navigation.item.color.background.hover',
+    'rgb-surface-tab-selected': 'palette.neutral.712',
+    'rgb-surface-menu': 'click.genericMenu.panel.color.background.default',
+    'rgb-surface-popover': 'click.genericMenu.panel.color.background.default',
+    'rgb-border-menu': 'click.genericMenu.panel.color.stroke.default',
+    'rgb-surface-composer': 'click.field.color.background.default',
+    'rgb-surface-search': 'click.field.color.background.default',
     'rgb-surface-disabled': 'click.button.basic.color.primary.background.disabled',
     'rgb-text-disabled': 'global.color.text.disabled',
     'rgb-border-disabled': 'click.field.color.stroke.disabled',
@@ -336,12 +358,16 @@ const ALERT_ALPHA_REASON =
 /** Values the theme sets on purpose without a Click UI source, and why. */
 const unsourcedColors: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> = {
   light: {
+    'rgb-surface-nav-hover':
+      'Click UI sidebar item hover is a 0.6 alpha lch; the theme paints its composite on background.split',
     'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON,
     'rgb-avatar-edge': AVATAR_EDGE_REASON,
     'rgb-alert-error-fill': ALERT_ALPHA_REASON,
     'rgb-alert-error-border': ALERT_ALPHA_REASON,
   },
   dark: {
+    'rgb-surface-nav-selected':
+      'Click UI sidebar item active is a 0.6 alpha lch; the theme paints its composite on background.split',
     'rgb-surface-overlay':
       'Click UI dark dialog.color.opaqueBackground is a gray that leaves the dialog under 3:1',
     'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON,
@@ -380,6 +406,12 @@ const departures: Record<ThemeMode, Partial<Record<keyof IThemeRGB, Departure>>>
       counterpart: 'click.alert.color.background.danger',
       status: 'mismatch',
       reason: ALERT_ALPHA_REASON,
+    },
+    'rgb-surface-nav-hover': {
+      counterpart: 'click.sidebar.main.navigation.item.color.background.hover',
+      status: 'near',
+      reason:
+        'the token is lch(91.609 1.1023 265.86) at 0.6 alpha; the theme value is its composite on background.split',
     },
     'rgb-avatar-edge': {
       counterpart: 'global.color.stroke.default',
@@ -463,6 +495,12 @@ const departures: Record<ThemeMode, Partial<Record<keyof IThemeRGB, Departure>>>
     },
   },
   dark: {
+    'rgb-surface-nav-selected': {
+      counterpart: 'click.sidebar.main.navigation.item.color.background.active',
+      status: 'near',
+      reason:
+        'the token is lch(27.535 0 none) at 0.6 alpha; the theme value is its composite on background.split',
+    },
     'rgb-border-xheavy': {
       counterpart: 'global.color.stroke.intense',
       status: 'mismatch',
