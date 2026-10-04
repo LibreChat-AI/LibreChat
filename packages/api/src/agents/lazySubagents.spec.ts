@@ -1,5 +1,5 @@
 import { SkillsScope } from 'librechat-data-provider';
-import { getLazySubagentConfigId } from './lazySubagents';
+import { createViewableSubagentLoader, getLazySubagentConfigId } from './lazySubagents';
 
 const agent = {
   id: 'child-agent',
@@ -89,5 +89,32 @@ describe('getLazySubagentConfigId', () => {
         skills_scope: SkillsScope.all,
       }),
     );
+  });
+});
+
+describe('createViewableSubagentLoader', () => {
+  it('reads and checks VIEW once per subagent, and hides what the principal cannot view', async () => {
+    const getAgent = jest.fn(async (id: string) => (id === 'missing' ? null : { id }));
+    const canView = jest.fn(async (candidate: { id: string }) => candidate.id !== 'hidden');
+    const load = createViewableSubagentLoader({ getAgent, canView });
+
+    await expect(Promise.all([load('child'), load('child')])).resolves.toEqual([
+      { id: 'child' },
+      { id: 'child' },
+    ]);
+    await expect(load('hidden')).resolves.toBeNull();
+    await expect(load('missing')).resolves.toBeNull();
+    expect(getAgent).toHaveBeenCalledTimes(3);
+    expect(canView).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares a failed read with every caller', async () => {
+    const getAgent = jest.fn(async () => {
+      throw new Error('transient read');
+    });
+    const load = createViewableSubagentLoader({ getAgent, canView: async () => true });
+    await expect(load('child')).rejects.toThrow('transient read');
+    await expect(load('child')).rejects.toThrow('transient read');
+    expect(getAgent).toHaveBeenCalledTimes(1);
   });
 });

@@ -263,6 +263,51 @@ describe('subagent machine inheritance', () => {
     expect(inheritance.size).toBe(0);
   });
 
+  it('keeps its own route when a deeper spawning path runs on another machine', () => {
+    const selections: CodeWorkspaceSelection[] = [
+      { environmentId: SKYNET, workspaceId: 'code-api' },
+      { environmentId: LIA_RAG, workspaceId: 'agents', agentIds: ['lia'] },
+      { environmentId: SPARE, workspaceId: 'spare', agentIds: ['other'] },
+    ];
+    const direct = agent('lia', { subagentIds: ['shared'] });
+    const other = agent('other', { environmentIds: [SPARE], subagentIds: ['planner'] });
+    const planner = agent('planner', { routesCode: false, subagentIds: ['shared'] });
+    const shared = agent('shared', { environmentIds: [LIA_RAG, SPARE] });
+    const inheritance = resolveCodeWorkspaceInheritance({
+      selections,
+      rootIds: ['lia', 'other'],
+      agents: graph(direct, other, planner, shared),
+      isAttachedEnvironment,
+    });
+    expect(inheritance.size).toBe(0);
+  });
+
+  it('inherits when every spawning path, at any depth, runs on the same machine', () => {
+    const parent = agent('lia', { subagentIds: ['shared', 'planner'] });
+    const planner = agent('planner', { routesCode: false, subagentIds: ['shared'] });
+    const shared = agent('shared');
+    const inheritance = resolveCodeWorkspaceInheritance({
+      selections: incident,
+      rootIds: ['lia'],
+      agents: graph(parent, planner, shared),
+      isAttachedEnvironment,
+    });
+    expect(inheritance).toEqual(new Map([['shared', LIA_RAG]]));
+  });
+
+  it('keeps subagents that only spawn each other on their own routes', () => {
+    const parent = agent('lia', { subagentIds: ['left'] });
+    const left = agent('left', { subagentIds: ['right'] });
+    const right = agent('right', { subagentIds: ['left'] });
+    const inheritance = resolveCodeWorkspaceInheritance({
+      selections: incident,
+      rootIds: ['lia'],
+      agents: graph(parent, left, right),
+      isAttachedEnvironment,
+    });
+    expect(inheritance.size).toBe(0);
+  });
+
   it('never re-routes a root, even when another root lists it as a subagent', () => {
     const parent = agent('lia', { subagentIds: ['peer'] });
     const peer = agent('peer');

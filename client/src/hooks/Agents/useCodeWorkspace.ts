@@ -17,6 +17,7 @@ import {
   Permissions,
 } from 'librechat-data-provider';
 import type {
+  Agent,
   CodeEnvironmentMode,
   CodeWorkspaceDescriptor,
   CodeWorkspaceSelection,
@@ -212,6 +213,26 @@ export default function useCodeWorkspace(
       ]),
     [addedAgent, agentsMap, primaryAgent, conversation?.agent_id, addedConversation?.agent_id],
   );
+  const storedSelections = conversation?.codeWorkspaces;
+  const isNewChat =
+    conversation != null &&
+    (conversation.conversationId == null || conversation.conversationId === 'new');
+  /** Only a recorded decision is sealed. A saved chat whose turns never involved a code-capable
+   *  agent stores none, so switching one to a coding agent still gets to choose; treating it as
+   *  sealed leaves the composer showing a decision its owner never made, with no workspace to
+   *  select and no way to submit.
+   *
+   *  Until the deployment advertises the decision protocol, a replica that still reads a
+   *  field-less row as a sealed `without_attached` may serve the next turn and reject an attached
+   *  choice as `locked`, so the legacy lock stays for the whole rollout window. Nothing is lost by
+   *  waiting: the composer only reports that unmade decision once the same flag is on. */
+  const holdsDecision =
+    conversation?.codeEnvironmentMode != null || (storedSelections?.length ?? 0) > 0;
+  const locked =
+    conversation != null && !isNewChat && (holdsDecision || !supportsEnvironmentDecisions);
+  /** A new chat and a saved chat that never decided are both still choosing, so agent defaults, a
+   *  remembered selection, and a sole workspace apply to each. */
+  const undecided = conversation != null && !locked;
   const workspaceMetadata = useMemo(() => {
     const unique = new Map<string, TPublicCodeEnvironment>();
     const defaults = new Map<string, Set<string>>();
@@ -223,7 +244,30 @@ export default function useCodeWorkspace(
       statefulCodeSessions?.environments,
       statefulCodeSessions?.allowEnvironmentSelection,
       conversation?.codeWorkspaces,
+      undecided,
     );
+    /** A decision may still select the machine an inheriting subagent used before it followed its
+     *  parent. Keep that machine in the set so its selection is echoed, validated and never read
+     *  as a foreign choice that needs a transition, but list no agent as requiring it. */
+    const retainInheritedFromSelection = (
+      agent: Agent,
+      environment: TPublicCodeEnvironment | undefined,
+    ) => {
+      if (!inheritance.has(agent.id)) return;
+      const own = findCodeWorkspaceDiscoveryEnvironment(
+        agent,
+        statefulCodeSessions?.environments,
+        statefulCodeSessions?.allowEnvironmentSelection,
+        conversation?.codeWorkspaces,
+      );
+      if (
+        own?.type === 'attached' &&
+        own.id !== environment?.id &&
+        conversation?.codeWorkspaces?.some(({ environmentId }) => environmentId === own.id)
+      ) {
+        unique.set(own.id, own);
+      }
+    };
     let complete = true;
     for (const agent of reachable.agents) {
       if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code)) {
@@ -241,6 +285,7 @@ export default function useCodeWorkspace(
       if (environment == null && agent.code_environment_id) {
         complete = false;
       }
+      retainInheritedFromSelection(agent, environment);
       if (environment?.type !== 'attached') continue;
       unique.set(environment.id, environment);
       const owners = requiredBy.get(environment.id) ?? [];
@@ -293,6 +338,7 @@ export default function useCodeWorkspace(
     reachable.agents,
     statefulCodeSessions?.environments,
     statefulCodeSessions?.allowEnvironmentSelection,
+    undecided,
   ]);
   const isAgentsConversation =
     (conversation?.endpointType ?? conversation?.endpoint) === EModelEndpoint.agents;
@@ -316,7 +362,6 @@ export default function useCodeWorkspace(
     // Poll progress is not workspace state; keep unchanged refreshes off the send path.
     { notifyOnChangeProps: ['data', 'isLoading', 'isError'] },
   );
-  const storedSelections = conversation?.codeWorkspaces;
   const attachedEnvironmentIds = useMemo(
     () => new Set(attachedEnvironments.map(({ id }) => id)),
     [attachedEnvironments],
@@ -324,25 +369,6 @@ export default function useCodeWorkspace(
   const hasForeignStoredSelection = storedSelections?.some(
     ({ environmentId }) => !attachedEnvironmentIds.has(environmentId),
   );
-  const isNewChat =
-    conversation != null &&
-    (conversation.conversationId == null || conversation.conversationId === 'new');
-  /** Only a recorded decision is sealed. A saved chat whose turns never involved a code-capable
-   *  agent stores none, so switching one to a coding agent still gets to choose; treating it as
-   *  sealed leaves the composer showing a decision its owner never made, with no workspace to
-   *  select and no way to submit.
-   *
-   *  Until the deployment advertises the decision protocol, a replica that still reads a
-   *  field-less row as a sealed `without_attached` may serve the next turn and reject an attached
-   *  choice as `locked`, so the legacy lock stays for the whole rollout window. Nothing is lost by
-   *  waiting: the composer only reports that unmade decision once the same flag is on. */
-  const holdsDecision =
-    conversation?.codeEnvironmentMode != null || (storedSelections?.length ?? 0) > 0;
-  const locked =
-    conversation != null && !isNewChat && (holdsDecision || !supportsEnvironmentDecisions);
-  /** A new chat and a saved chat that never decided are both still choosing, so agent defaults, a
-   *  remembered selection, and a sole workspace apply to each. */
-  const undecided = conversation != null && !locked;
   const machineChoiceOwners =
     required &&
     supportsEnvironmentDecisions &&

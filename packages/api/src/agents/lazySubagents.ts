@@ -157,3 +157,28 @@ export function getLazySubagentConfigId(agent: VersionedAgent): string {
     .digest('hex');
   return `${agent.id}:${version}:${fingerprint}`;
 }
+
+/**
+ * Memoizes one read and one VIEW check per subagent for the life of a request, so machine
+ * inheritance, lazy descriptors and graph members share them. A missing or unviewable agent
+ * resolves to `null`; a failed read rejects for every caller, which each handles as before.
+ */
+export function createViewableSubagentLoader<TAgent>({
+  getAgent,
+  canView,
+}: {
+  getAgent: (agentId: string) => Promise<TAgent | null | undefined>;
+  canView: (agent: TAgent, agentId: string) => Promise<boolean>;
+}): (agentId: string) => Promise<TAgent | null> {
+  const loads = new Map<string, Promise<TAgent | null>>();
+  return (agentId) => {
+    let loading = loads.get(agentId);
+    if (loading == null) {
+      loading = getAgent(agentId).then(async (agent) =>
+        agent != null && (await canView(agent, agentId)) ? agent : null,
+      );
+      loads.set(agentId, loading);
+    }
+    return loading;
+  };
+}

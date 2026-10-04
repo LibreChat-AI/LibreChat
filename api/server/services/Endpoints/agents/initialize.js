@@ -24,6 +24,7 @@ const {
   buildAgentContextAttachmentsByAgentId,
   collectCodeExecutionProfileRoutes,
   getLazySubagentConfigId,
+  createViewableSubagentLoader,
   resolveCodeExecutionContext,
   resolveCodeExecutionWorkspaceSelections,
   optsOutOfAttachedCodeEnvironment,
@@ -1236,20 +1237,10 @@ const initializeClientWithProvider = async ({
     );
   };
 
-  /** One read and VIEW check per subagent, shared by machine inheritance and metadata loading. */
-  const viewableSubagentLoads = new Map();
-  const loadViewableSubagent = (agentId) => {
-    let loading = viewableSubagentLoads.get(agentId);
-    if (!loading) {
-      loading = db
-        .getAgentWithVersionCount({ id: agentId })
-        .then(async (agent) =>
-          agent && (await hasSubagentViewAccess(agent, agentId)) ? agent : null,
-        );
-      viewableSubagentLoads.set(agentId, loading);
-    }
-    return loading;
-  };
+  const loadViewableSubagent = createViewableSubagentLoader({
+    getAgent: (agentId) => db.getAgentWithVersionCount({ id: agentId }),
+    canView: (agent, agentId) => hasSubagentViewAccess(agent, agentId),
+  });
 
   const loadSubagentMetadata = async (agentId) => {
     if (skippedAgentIds.has(agentId)) return null;
@@ -1594,8 +1585,8 @@ const initializeClientWithProvider = async ({
     if (skippedAgentIds.has(memberId)) return null;
     assertSubagentGraphRoom(memberId);
     subagentGraphIds.add(memberId);
-    const agent = await waitForAbort(db.getAgentWithVersionCount({ id: memberId }), signal);
-    if (!agent || !(await hasSubagentViewAccess(agent, memberId, signal))) {
+    const agent = await waitForAbort(loadViewableSubagent(memberId), signal);
+    if (!agent) {
       skippedAgentIds.add(memberId);
       return null;
     }

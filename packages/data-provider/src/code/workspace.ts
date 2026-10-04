@@ -327,7 +327,7 @@ export interface CodeWorkspaceRoutingAgent {
   environmentIds?: readonly string[];
   /** Both the deployment ceiling and this agent's allowlist admit a per-chat machine choice. */
   allowSelection: boolean;
-  /** Explicit subagents this agent may spawn. */
+  /** Subagents this agent may spawn: explicit subagents and the members of its subagent graphs. */
   subagentIds?: readonly string[];
   /** Machine already resolved for this agent, such as an initialized root; `null` for none. */
   resolvedEnvironmentId?: string | null;
@@ -343,10 +343,11 @@ export interface CodeWorkspaceRoutingAgent {
  * - the conversation's decision already selected a workspace on that machine.
  *
  * Inheritance is derived from the sealed decision and the agents' current configuration, the same
- * inputs every other route reads, so the same decision and graph always route the same way. Agents
- * are visited breadth-first from the roots; a subagent first reached at one depth considers every
- * parent at the depth above, and parents that disagree leave it on its own route. A subagent that
- * does not run code passes its parent's machine on to its own subagents.
+ * inputs every other route reads, so the same decision and graph always route the same way. A run
+ * resolves one route per saved agent, so a subagent considers every agent that can spawn it, at any
+ * depth: it inherits only when they all run on the same machine, and otherwise keeps its own route.
+ * A subagent that does not run code passes its parent's machine on to its own subagents. Subagents
+ * inside a spawn cycle with no route from outside it keep their own routes.
  *
  * @returns Saved agent ID to inherited environment ID, for subagents whose route changes.
  */
@@ -392,40 +393,83 @@ export function resolveCodeWorkspaceInheritance({
     ) &&
     isAttachedEnvironment(candidate);
 
-  const visited = new Set<string>();
-  let level: CodeWorkspaceRoutingAgent[] = [];
-  for (const id of rootIds) {
-    const agent = agents.get(id);
-    if (agent == null || visited.has(id)) continue;
-    visited.add(id);
-    routes.set(id, routeOf(agent, undefined));
-    level.push(agent);
-  }
-  while (level.length > 0) {
-    const parentRoutes = new Map<string, Set<string | undefined>>();
-    for (const parent of level) {
-      for (const childId of parent.subagentIds ?? []) {
-        if (visited.has(childId)) continue;
-        const candidates = parentRoutes.get(childId) ?? new Set<string | undefined>();
-        candidates.add(routes.get(parent.id));
-        parentRoutes.set(childId, candidates);
+  const roots = new Set(rootIds.filter((id) => agents.has(id)));
+  const parents = collectSpawningParents(roots, agents);
+  roots.forEach((id) =>
+    routes.set(id, routeOf(agents.get(id) as CodeWorkspaceRoutingAgent, undefined)),
+  );
+  const resolve = (id: string, candidate: string | undefined): void => {
+    const agent = agents.get(id) as CodeWorkspaceRoutingAgent;
+    if (candidate != null && inherits(agent, candidate)) {
+      inherited.set(id, candidate);
+    }
+    routes.set(id, routeOf(agent, candidate));
+  };
+
+  let pending = Array.from(parents.keys());
+  while (pending.length > 0) {
+    const ready = pending.filter((id) =>
+      Array.from(parents.get(id) ?? []).every((parentId) => routes.has(parentId)),
+    );
+    if (ready.length > 0) {
+      for (const id of ready) {
+        const candidates = new Set(
+          Array.from(parents.get(id) ?? []).map((parentId) => routes.get(parentId)),
+        );
+        resolve(id, candidates.size === 1 ? Array.from(candidates)[0] : undefined);
+      }
+    } else {
+      /** Every remaining agent waits on another; the members of a cycle keep their own routes. */
+      const waiting = new Set(pending);
+      const cyclic = pending.filter((candidate) => isInCycle(candidate, waiting, parents));
+      for (const id of cyclic.length > 0 ? cyclic : pending) {
+        resolve(id, undefined);
       }
     }
-    const next: CodeWorkspaceRoutingAgent[] = [];
-    parentRoutes.forEach((candidates, childId) => {
-      visited.add(childId);
-      const child = agents.get(childId);
-      if (child == null) return;
-      const candidate = candidates.size === 1 ? Array.from(candidates)[0] : undefined;
-      if (candidate != null && inherits(child, candidate)) {
-        inherited.set(childId, candidate);
-      }
-      routes.set(childId, routeOf(child, candidate));
-      next.push(child);
-    });
-    level = next;
+    pending = pending.filter((id) => !routes.has(id));
   }
   return inherited;
+}
+
+/** Every agent that can spawn each subagent reachable from the roots. */
+function collectSpawningParents(
+  roots: ReadonlySet<string>,
+  agents: ReadonlyMap<string, CodeWorkspaceRoutingAgent>,
+): Map<string, Set<string>> {
+  const parents = new Map<string, Set<string>>();
+  const visited = new Set<string>(roots);
+  const queue = Array.from(roots);
+  for (let index = 0; index < queue.length; index++) {
+    const parentId = queue[index];
+    for (const childId of agents.get(parentId)?.subagentIds ?? []) {
+      if (roots.has(childId) || !agents.has(childId)) continue;
+      const childParents = parents.get(childId) ?? new Set<string>();
+      childParents.add(parentId);
+      parents.set(childId, childParents);
+      if (!visited.has(childId)) {
+        visited.add(childId);
+        queue.push(childId);
+      }
+    }
+  }
+  return parents;
+}
+
+function isInCycle(
+  id: string,
+  waiting: ReadonlySet<string>,
+  parents: ReadonlyMap<string, ReadonlySet<string>>,
+): boolean {
+  const seen = new Set<string>();
+  const stack = Array.from(parents.get(id) ?? []);
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    if (current === id) return true;
+    if (!waiting.has(current) || seen.has(current)) continue;
+    seen.add(current);
+    stack.push(...Array.from(parents.get(current) ?? []));
+  }
+  return false;
 }
 
 function resolveRoutedEnvironmentId(

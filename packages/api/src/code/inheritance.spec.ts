@@ -2,7 +2,8 @@ import mongoose from 'mongoose';
 import { Tools } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { agentSchema, createMethods } from '@librechat/data-schemas';
-import type { Agent, CodeWorkspaceSelection } from 'librechat-data-provider';
+import type { CodeWorkspaceSelection } from 'librechat-data-provider';
+import type { IAgent } from '@librechat/data-schemas';
 import type { CodeWorkspaceInheritanceRoot, SubagentCodeRoutingAgent } from './inheritance';
 import type { CodeEnvironmentConfig } from '~/agents/execution';
 import { resolveSubagentCodeWorkspaceInheritance } from './inheritance';
@@ -44,24 +45,42 @@ describe('resolveSubagentCodeWorkspaceInheritance', () => {
   const author = new mongoose.Types.ObjectId();
   const hidden = new Set<string>();
 
-  const loadSubagent = jest.fn(async (agentId: string) => {
-    if (hidden.has(agentId)) return null;
-    return (await methods.getAgentWithVersionCount({ id: agentId })) as Agent | null;
+  const toRouting = (doc: IAgent): SubagentCodeRoutingAgent => ({
+    id: doc.id,
+    tools: doc.tools,
+    stateful_code_sessions: doc.stateful_code_sessions,
+    code_environment_id: doc.code_environment_id,
+    code_environment_ids: doc.code_environment_ids,
+    subagents: doc.subagents,
   });
 
-  async function seed(id: string, overrides: Partial<Agent> = {}): Promise<Agent> {
-    return (await methods.createAgent({
-      id,
-      name: id,
-      provider: 'openai',
-      model: 'gpt-4.1',
-      author,
-      ...demoCodeSettings,
-      ...overrides,
-    })) as Agent;
+  const loadSubagent = jest.fn(async (agentId: string) => {
+    if (hidden.has(agentId)) return null;
+    const doc = await methods.getAgentWithVersionCount({ id: agentId });
+    return doc == null ? null : toRouting(doc);
+  });
+
+  async function seed(
+    id: string,
+    overrides: Partial<Omit<IAgent, 'id'>> = {},
+  ): Promise<SubagentCodeRoutingAgent> {
+    return toRouting(
+      await methods.createAgent({
+        id,
+        name: id,
+        provider: 'openai',
+        model: 'gpt-4.1',
+        author,
+        ...demoCodeSettings,
+        ...overrides,
+      }),
+    );
   }
 
-  function root(agent: Agent, environmentId = LIA_RAG): CodeWorkspaceInheritanceRoot {
+  function root(
+    agent: SubagentCodeRoutingAgent,
+    environmentId = LIA_RAG,
+  ): CodeWorkspaceInheritanceRoot {
     return {
       id: agent.id,
       subagents: agent.subagents,
@@ -249,6 +268,42 @@ describe('resolveSubagentCodeWorkspaceInheritance', () => {
       codeExecutionAvailable: true,
     });
     expect(disabled.size).toBe(0);
+  });
+
+  it('routes the members of a spawned subagent graph with their parent', async () => {
+    const verifier = 'agent_finding_verifier';
+    const lia = await seed(LIA, {
+      subagents: {
+        enabled: true,
+        graphs: [
+          {
+            type: 'review-team',
+            name: 'Review team',
+            description: 'Reviews and verifies findings',
+            agent_ids: [REVIEWER, verifier],
+            edges: [],
+            entry_agent_id: REVIEWER,
+            result_agent_id: verifier,
+          },
+        ],
+      },
+    });
+    await seed(REVIEWER);
+    await seed(verifier);
+    const inheritance = await resolveSubagentCodeWorkspaceInheritance({
+      selections: incident,
+      roots: [root(lia)],
+      loadSubagent,
+      environments,
+      allowEnvironmentSelection: true,
+      codeExecutionAvailable: true,
+    });
+    expect(inheritance).toEqual(
+      new Map([
+        [REVIEWER, LIA_RAG],
+        [verifier, LIA_RAG],
+      ]),
+    );
   });
 
   it('reads nothing when the run cannot use stateful code or holds no selection', async () => {

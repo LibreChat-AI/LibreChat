@@ -54,6 +54,7 @@ export default function useCodeApprovalMode(
       environments,
       statefulCodeSessions?.allowEnvironmentSelection,
       conversation?.codeWorkspaces,
+      conversation?.codeEnvironmentMode == null && !conversation?.codeWorkspaces?.length,
     );
     return reachable.agents
       .filter(
@@ -76,6 +77,7 @@ export default function useCodeApprovalMode(
     primaryAgent,
     reachable,
     statefulCodeSessions?.allowEnvironmentSelection,
+    conversation?.codeEnvironmentMode,
     conversation?.codeWorkspaces,
   ]);
   const attachedEnvironments = useMemo(
@@ -178,7 +180,12 @@ export function findExecutionEnvironment(
     environmentId: agent.code_environment_id ?? defaultEnvironment?.id,
     environmentIds: agent.code_environment_ids,
     allowSelection,
-    selections,
+    /** A draft's machine for its parent is selected on submission, before the reader picks it. */
+    selections:
+      inheritedEnvironmentId != null &&
+      !selections?.some(({ environmentId }) => environmentId === inheritedEnvironmentId)
+        ? [...(selections ?? []), { environmentId: inheritedEnvironmentId, workspaceId: 'draft' }]
+        : selections,
     inheritedEnvironmentId,
   });
   if (!selection.valid) return undefined;
@@ -276,7 +283,10 @@ function toCodeWorkspaceRoutingAgent(
       getCodeEnvironmentChoiceIds(agent, environments, allowEnvironmentSelection) != null,
     subagentIds:
       agent.subagents?.enabled === true
-        ? agent.subagents.agent_ids?.filter((id) => id !== agent.id)
+        ? [
+            ...(agent.subagents.agent_ids ?? []),
+            ...(agent.subagents.graphs ?? []).flatMap((graph) => graph.agent_ids ?? []),
+          ].filter((id) => id.length > 0 && id !== agent.id)
         : undefined,
   };
 }
@@ -293,8 +303,10 @@ export function resolveReachableCodeWorkspaceInheritance(
   environments: TPublicCodeEnvironment[] | undefined,
   allowEnvironmentSelection: boolean | undefined,
   selections: CodeWorkspaceSelection[] | undefined,
+  /** The chat has not decided yet, so the submission will also select each root's machine. */
+  draft = false,
 ): Map<string, string> {
-  if (!selections?.length) return new Map();
+  if (!draft && !selections?.length) return new Map();
   const lookup = (id: string): Agent | undefined =>
     roots.find((root) => root?.id === id) ?? agentsMap?.[id];
   const agents = new Map<string, CodeWorkspaceRoutingAgent>();
@@ -322,8 +334,24 @@ export function resolveReachableCodeWorkspaceInheritance(
     agents.set(id, node);
     pending.push(...(node.subagentIds ?? []));
   }
+  /** A sendable draft selects a workspace on every machine a root runs on, so a subagent can follow
+   *  its parent there before the reader picks one; requiring its own default would ask for a
+   *  workspace the submitted decision never uses. */
+  const prospective = draft
+    ? rootIds.reduce<CodeWorkspaceSelection[]>((planned, id) => {
+        const root = lookup(id);
+        const environment =
+          root != null && agents.get(id)?.routesCode === true
+            ? findExecutionEnvironment(root, environments, allowEnvironmentSelection, selections)
+            : undefined;
+        return environment?.type === 'attached' &&
+          !planned.some(({ environmentId }) => environmentId === environment.id)
+          ? [...planned, { environmentId: environment.id, workspaceId: 'draft' }]
+          : planned;
+      }, selections ?? [])
+    : selections;
   return resolveCodeWorkspaceInheritance({
-    selections,
+    selections: prospective,
     rootIds,
     agents,
     isAttachedEnvironment: (id) =>

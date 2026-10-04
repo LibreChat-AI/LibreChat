@@ -12,11 +12,17 @@ import {
   resolveAgentCodeEnvironmentRouting,
 } from '~/agents/execution';
 
+type SpawnConfig = Pick<NonNullable<Agent['subagents']>, 'enabled' | 'agent_ids'> & {
+  graphs?: ReadonlyArray<
+    Pick<NonNullable<NonNullable<Agent['subagents']>['graphs']>[number], 'agent_ids'>
+  >;
+};
+
 /** The saved fields of a subagent that decide where it runs code. */
 export type SubagentCodeRoutingAgent = Pick<
   Agent,
   'id' | 'tools' | 'stateful_code_sessions' | 'code_environment_id' | 'code_environment_ids'
-> & { subagents?: Pick<NonNullable<Agent['subagents']>, 'enabled' | 'agent_ids'> | null };
+> & { subagents?: SpawnConfig | null };
 
 /** An initialized root of the run, whose machine is already resolved. */
 export type CodeWorkspaceInheritanceRoot = Pick<SubagentCodeRoutingAgent, 'id' | 'subagents'> & {
@@ -24,18 +30,24 @@ export type CodeWorkspaceInheritanceRoot = Pick<SubagentCodeRoutingAgent, 'id' |
   codeExecutionContext?: Pick<CodeExecutionContext, 'environmentId' | 'environmentType'>;
 };
 
-/** Explicit subagents an agent may spawn; self-spawns already share their parent's route. */
-export function getExplicitSubagentIds(
+/** Saved agents this agent may spawn: explicit subagents and the members of its subagent graphs.
+ *  Self-spawns already share their parent's route. */
+export function getSpawnableSubagentIds(
   agent: Pick<SubagentCodeRoutingAgent, 'id' | 'subagents'>,
 ): string[] {
-  if (agent.subagents?.enabled !== true || !Array.isArray(agent.subagents.agent_ids)) {
+  const subagents = agent.subagents;
+  if (subagents?.enabled !== true) {
     return [];
   }
+  const ids = [
+    ...(Array.isArray(subagents.agent_ids) ? subagents.agent_ids : []),
+    ...(subagents.graphs ?? []).flatMap((graph) =>
+      Array.isArray(graph?.agent_ids) ? graph.agent_ids : [],
+    ),
+  ];
   return [
     ...new Set(
-      agent.subagents.agent_ids.filter(
-        (id): id is string => typeof id === 'string' && id.length > 0 && id !== agent.id,
-      ),
+      ids.filter((id): id is string => typeof id === 'string' && id.length > 0 && id !== agent.id),
     ),
   ];
 }
@@ -46,7 +58,7 @@ function toRootRoutingAgent(root: CodeWorkspaceInheritanceRoot): CodeWorkspaceRo
     id: root.id,
     routesCode: root.statefulCodeSessions === true,
     allowSelection: false,
-    subagentIds: getExplicitSubagentIds(root),
+    subagentIds: getSpawnableSubagentIds(root),
     resolvedEnvironmentId:
       context?.environmentType === 'attached' ? (context.environmentId ?? null) : null,
   };
@@ -70,7 +82,7 @@ function toSubagentRoutingAgent(
     environmentId: agent.code_environment_id ?? defaultEnvironment?.id,
     environmentIds: agent.code_environment_ids,
     allowSelection,
-    subagentIds: getExplicitSubagentIds(agent),
+    subagentIds: getSpawnableSubagentIds(agent),
   };
 }
 

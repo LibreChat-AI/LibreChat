@@ -289,6 +289,77 @@ describe('useCodeWorkspace', () => {
       expect(result.current.resolveSubmission(sealedChoice)?.codeWorkspaces).toEqual(sealedChoice);
     });
 
+    it("echoes the reviewer's former selection after it follows Lia, without asking for a move", () => {
+      enableChoices();
+      mockStartupConfig.mockReturnValue({
+        codeEnvironmentDecisionVersion: 1,
+        codeEnvironmentMoveVersion: 1,
+        codeEnvironmentTransitionVersion: 2,
+      });
+      mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
+      mockAgentsMap.mockReturnValue({
+        reviewer: {
+          id: 'reviewer',
+          name: 'PR Reviewer',
+          stateful_code_sessions: true,
+          tools: [Tools.execute_code],
+          code_environment_id: 'personal-vm',
+          code_environment_ids: ['runtime-vm'],
+        },
+      });
+      mockStatus.mockImplementation((ids: string[]) =>
+        ids.map((id) => ({
+          data: { environmentId: id, status: 'ready', workspaces: [{ id: 'project-a' }] },
+        })),
+      );
+      /** The demo incident's sealed decision: the reviewer's Code API checkout plus Lia's machine. */
+      const incident = [
+        { environmentId: 'personal-vm', workspaceId: 'project-a' },
+        { environmentId: 'runtime-vm', workspaceId: 'project-a', agentIds: ['agent_primary'] },
+      ];
+      const { result } = renderHook(() =>
+        useCodeWorkspace({
+          ...conversation(incident),
+          conversationId: 'saved',
+          codeEnvironmentMode: 'attached',
+        }),
+      );
+      expect(result.current.canSubmit).toBe(true);
+      expect(result.current.transition?.kind).not.toBe('move');
+      expect(
+        result.current.environments.find(({ environment }) => environment.id === 'personal-vm')
+          ?.requiredBy,
+      ).toBeUndefined();
+      expect(
+        result.current.environments.find(({ environment }) => environment.id === 'runtime-vm')
+          ?.requiredBy,
+      ).toEqual(expect.arrayContaining([{ id: 'reviewer', name: 'PR Reviewer' }]));
+      expect(result.current.resolveSubmission(incident)?.codeWorkspaces).toEqual(incident);
+    });
+
+    it("lets a new chat's reviewer follow Lia before any workspace is picked", () => {
+      enableChoices();
+      mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
+      mockAgentsMap.mockReturnValue({
+        reviewer: {
+          id: 'reviewer',
+          name: 'PR Reviewer',
+          stateful_code_sessions: true,
+          tools: [Tools.execute_code],
+          code_environment_id: 'runtime-vm',
+          code_environment_ids: ['personal-vm'],
+        },
+      });
+      const { result } = renderHook(() => useCodeWorkspace(conversation()));
+      expect(result.current.environments.map(({ environment }) => environment.id)).toEqual([
+        'personal-vm',
+      ]);
+      expect(result.current.canSubmit).toBe(true);
+      expect(result.current.resolveSubmission()?.codeWorkspaces).toEqual([
+        { environmentId: 'personal-vm', workspaceId: 'project-a' },
+      ]);
+    });
+
     it("keeps a reviewer that may not use Lia's machine on its own default", () => {
       enableChoices();
       mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
