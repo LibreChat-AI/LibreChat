@@ -1353,6 +1353,7 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
 
     await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toEqual({
       covered: false,
+      errorRowMessageId: 'error-target',
     });
 
     expect(saved).toHaveLength(0);

@@ -498,11 +498,9 @@ async function saveErrorTurn(
     if (settlement.covered) {
       return;
     }
-    /** The anchor-shaped collision redirects the error row to the failed
-     *  run's own response id, so it can never overwrite the anchor. */
-    if (settlement.errorRowMessageId != null) {
-      errorMessageId = settlement.errorRowMessageId;
-    }
+    /** The settlement names the error row's id, so an anchor-shaped
+     *  collision can never overwrite the anchor. */
+    errorMessageId = settlement.errorRowMessageId;
 
     const context = 'api/server/controllers/agents/request.js - failed turn';
     const endpoint = endpointOption?.endpoint;

@@ -477,9 +477,10 @@ export type ReadableMessageRow = {
 export type ErrorTurnSettlement =
   /** An existing row covers the turn; the caller skips the error row. */
   | { covered: true }
-  /** The error row is written, under the live response id when the
-   * anchor-shaped collision makes the error id unusable for it. */
-  | { covered: false; errorRowMessageId?: string };
+  /** The error row is written under `errorRowMessageId`: the error id
+   * itself, or the live response id when the anchor-shaped collision makes
+   * the error id unusable for it. */
+  | { covered: false; errorRowMessageId: string };
 
 /**
  * Settles the rows a failed generation already persisted before its error row
@@ -562,7 +563,10 @@ export async function settleExistingRowsBeforeErrorTurn(
     }
     return { covered: true };
   }
-  return { covered: await settleLiveRow() };
+  if (await settleLiveRow()) {
+    return { covered: true };
+  }
+  return { covered: false, errorRowMessageId: errorMessageId };
 }
 
 /**
