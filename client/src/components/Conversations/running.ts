@@ -1,20 +1,32 @@
+import { UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import type { TConversation, GroupedConversations } from 'librechat-data-provider';
 import type { ConversationGroupOptions } from '~/utils/convos';
 import { isTemporaryConversation } from '~/utils/conversation';
+import { isConversationUnseen } from '~/utils/convos';
 
 export const RUNNING_CHATS_GROUP = 'com_ui_running_chats';
+export const FINISHED_CHATS_GROUP = 'com_ui_finished_chats';
+
+/** Groups that hold chats by what they are doing rather than by date; their headings
+ *  carry a count. */
+export const isStatusGroup = (groupName: string): boolean =>
+  groupName === RUNNING_CHATS_GROUP || groupName === FINISHED_CHATS_GROUP;
 
 const noUnlistedIds: string[] = [];
 
-function showsRunningGroup(
-  activeJobIds: ReadonlySet<string>,
-  options: ConversationGroupOptions,
-): boolean {
+/** Status groups only make sense over the newest-first list: under any other order a
+ *  chat lifted to the top would read as the first by title or by creation. */
+function showsStatusGroups(options: ConversationGroupOptions): boolean {
+  return !options.includePinned && options.field === 'updatedAt' && options.direction === 'desc';
+}
+
+/** Missing intent is legacy/unknown, not evidence of a newly finished reply. */
+function isFinishedUnseen(conversation: TConversation): boolean {
   return (
-    !options.includePinned &&
-    options.field === 'updatedAt' &&
-    options.direction === 'desc' &&
-    activeJobIds.size > 0
+    conversation.isMarkedUnread === false &&
+    conversation.lastSeenAt === UNSEEN_REPLY_WATERMARK &&
+    conversation.lastResponseIsManual !== true &&
+    isConversationUnseen(conversation)
   );
 }
 
@@ -44,20 +56,23 @@ export function unlistedRunningIds(
 
 /**
  * Partition the existing server-ordered groups without re-sorting them on every job update.
- * `unlisted` adds running chats those groups never held, so the Running group lists every
- * running chat; the date groups are still built only from the rows they were given.
+ * Running chats lead; chats whose reply arrived unseen follow as Finished, so a run that
+ * ends while the user is elsewhere stays near the top until it is opened. `unlisted` adds
+ * running chats those groups never held, so the Running group lists every running chat;
+ * the date groups are still built only from the rows they were given.
  */
-export function groupConversationsWithRunning(
+export function groupConversationsByStatus(
   groups: GroupedConversations,
   activeJobIds: ReadonlySet<string>,
   options: ConversationGroupOptions,
   unlisted: readonly TConversation[] = [],
 ): GroupedConversations {
-  if (!showsRunningGroup(activeJobIds, options)) {
+  if (!showsStatusGroups(options)) {
     return groups;
   }
 
   const running: TConversation[] = [];
+  const finished: TConversation[] = [];
   const runningIds = new Set<string>();
   const remaining: GroupedConversations = [];
   for (const [groupName, conversations] of groups) {
@@ -67,6 +82,8 @@ export function groupConversationsWithRunning(
       if (id && activeJobIds.has(id)) {
         running.push(conversation);
         runningIds.add(id);
+      } else if (isFinishedUnseen(conversation)) {
+        finished.push(conversation);
       } else {
         idle.push(conversation);
       }
@@ -76,24 +93,35 @@ export function groupConversationsWithRunning(
     }
   }
 
-  const added = unlisted.filter((conversation) => {
-    const id = conversation.conversationId;
-    if (
-      !id ||
-      conversation.isArchived === true ||
-      isTemporaryConversation(conversation) ||
-      !activeJobIds.has(id) ||
-      runningIds.has(id)
-    ) {
-      return false;
-    }
-    runningIds.add(id);
-    return true;
-  });
+  const added =
+    activeJobIds.size === 0
+      ? []
+      : unlisted.filter((conversation) => {
+          const id = conversation.conversationId;
+          if (
+            !id ||
+            conversation.isArchived === true ||
+            isTemporaryConversation(conversation) ||
+            !activeJobIds.has(id) ||
+            runningIds.has(id)
+          ) {
+            return false;
+          }
+          runningIds.add(id);
+          return true;
+        });
 
-  if (running.length === 0 && added.length === 0) {
+  if (running.length === 0 && finished.length === 0 && added.length === 0) {
     return groups;
   }
-  const runningGroup = added.length === 0 ? running : [...running, ...added].sort(newestFirst);
-  return [[RUNNING_CHATS_GROUP, runningGroup], ...(running.length === 0 ? groups : remaining)];
+  const statusGroups: GroupedConversations = [];
+  if (running.length > 0 || added.length > 0) {
+    const runningGroup = added.length === 0 ? running : [...running, ...added].sort(newestFirst);
+    statusGroups.push([RUNNING_CHATS_GROUP, runningGroup]);
+  }
+  if (finished.length > 0) {
+    statusGroups.push([FINISHED_CHATS_GROUP, finished]);
+  }
+  const pulled = running.length > 0 || finished.length > 0;
+  return [...statusGroups, ...(pulled ? remaining : groups)];
 }

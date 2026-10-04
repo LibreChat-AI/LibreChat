@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import {
+  conversationRow,
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
   messagesView,
@@ -9,8 +10,6 @@ import {
   selectMockEndpoint,
   sendMessageAndWaitForCompletion,
 } from './helpers';
-
-const firstConversation = (page: Page) => page.getByTestId('convo-item').first();
 
 function uniqueLabel(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -58,14 +57,14 @@ test.describe('conversation management', () => {
     const conversationUrl = page.url();
 
     await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/);
-    await expect(firstConversation(page)).toBeVisible();
+    await expect(conversationRow(page)).toBeVisible();
 
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await expect(page).toHaveURL(/\/c\/new$/);
     await expect(messagesView(page).getByText(firstTurn.prompt)).toHaveCount(0);
     await expect(messagesView(page).getByText(secondTurn.prompt)).toHaveCount(0);
 
-    await firstConversation(page).click();
+    await conversationRow(page, conversationUrl).click();
     await expect(page).toHaveURL(conversationUrl);
     await expect(messagesView(page).getByText(firstTurn.prompt)).toBeVisible();
     await expect(messagesView(page).getByText(firstTurn.reply)).toBeVisible();
@@ -81,7 +80,7 @@ test.describe('conversation management', () => {
     await openMockChat(page);
     await sendAndExpectReply(page, label);
 
-    await renameConversation(page, firstConversation(page), renamedTitle);
+    await renameConversation(page, conversationRow(page), renamedTitle);
     await page.reload({ timeout: 10000 });
     await expect(page.getByTestId('convo-item').filter({ hasText: renamedTitle })).toBeVisible();
   });
@@ -97,7 +96,7 @@ test.describe('conversation management', () => {
     const turn = await sendAndExpectReply(page, label);
     const conversationUrl = page.url();
 
-    const conversation = firstConversation(page);
+    const conversation = conversationRow(page);
     await renameConversation(page, conversation, renamedTitle);
     await openConversationMenu(conversation);
     await page.getByRole('menuitem', { name: 'Delete' }).click();

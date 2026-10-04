@@ -1,8 +1,14 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { createMethods, createModels } from '@librechat/data-schemas';
+import {
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
+  createMethods,
+  createModels,
+} from '@librechat/data-schemas';
 import type { AgentTriggerDeliveryPersistence, AgentTriggerService } from './service';
 import type { AgentTriggerFetch } from './host';
+import { createBackgroundToolCompletionWakeupHandler } from '../backgroundCompletionWakeup';
 import { __resetShutdownStateForTests } from '../../app/shutdown';
 import { prepareAgentTriggerDelivery } from './delivery';
 import { createAgentTriggerEnvelope } from './envelope';
@@ -245,4 +251,57 @@ describe('durable trigger delivery integration', () => {
     expect(settled.every((delivery) => delivery.status === 'succeeded')).toBe(true);
     expect(new Set(receipts.map(({ deliveryKey }) => deliveryKey)).size).toBe(4);
   });
+
+  it.each([
+    ['unset', undefined, AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3],
+    ['true', true, AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3],
+    ['false', false, AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2],
+  ])(
+    'admits background completions for receipt batching %s with the matching capability',
+    async (_label, completionReceiptBatching, requiredWorkerCapability) => {
+      const fetcher = jest.fn<ReturnType<AgentTriggerFetch>, Parameters<AgentTriggerFetch>>(
+        async () => new Response('{}', { status: 503 }),
+      );
+      const active = createAgentTriggerService({
+        methods: createMethods(mongoose) as ReturnType<typeof createMethods> &
+          AgentTriggerDeliveryPersistence,
+        fetch: fetcher,
+        mintToken: () => 'trigger-token',
+        deliveryOptions: { concurrency: 1, tickMs: 60_000 },
+      });
+      service = active;
+      await active.initialize({
+        address: { address: '127.0.0.1', family: 'IPv4', port: 3080 },
+        ...(completionReceiptBatching != null && { completionReceiptBatching }),
+      });
+      const preregister = createBackgroundToolCompletionWakeupHandler(
+        active.enqueue,
+        active.retire,
+        active.renewProducerLease,
+        undefined,
+        undefined,
+        active.getBackgroundCompletionReceiptBatching,
+      );
+
+      const admission = await preregister({
+        taskId: 'task-1',
+        toolCallId: 'call-1',
+        toolName: 'slow_tool',
+        userId: new mongoose.Types.ObjectId().toString(),
+        tenantId: 'tenant-1',
+        conversationId: 'conversation-1',
+        parentMessageId: 'response-1',
+        parentAgentId: 'agent_parent_1',
+        createdAt: Date.now(),
+      });
+
+      expect(admission).not.toBe(false);
+      const rows = await mongoose.models.AgentTriggerDelivery.find({
+        'envelope.event.payload.taskId': 'task-1',
+      })
+        .select('requiredWorkerCapability')
+        .lean<{ requiredWorkerCapability?: string }[]>();
+      expect(rows).toEqual([expect.objectContaining({ requiredWorkerCapability })]);
+    },
+  );
 });

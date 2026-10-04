@@ -24,9 +24,11 @@ import type {
   AgentTriggerContinuePreparation,
   AgentTriggerExecutionHostDeps,
 } from './triggers/host';
+import type { ScheduleMCPCompletionLookup } from '~/schedules/authorization/continuation';
 import type { AgentContinueTriggerEnvelope } from './triggers/envelope';
 import type { AgentTriggerDispatchContext } from './triggers/dispatch';
 import type { AgentTriggerEnqueueOptions } from './triggers/delivery';
+import { resolveScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 import { WAITING_RETRY_CAP_MS, waitingRetryAfter } from './triggers/backoff';
 import { BACKGROUND_TOOL_PRODUCER_LEASE_MS } from './backgroundCompletion';
 import { SUBAGENT_COMPLETION_SOURCE } from './subagentCompletionWakeup';
@@ -103,6 +105,7 @@ interface GenerationState {
 }
 
 export interface BackgroundToolCompletionWakeupResolverDeps {
+  getScheduleMCPCompletionState?: ScheduleMCPCompletionLookup;
   methods: WakeupMethods;
   getGenerationJob: (conversationId: string) => Promise<GenerationState | null>;
   getResultBatchSize?: () => number | undefined;
@@ -280,6 +283,7 @@ export function createBackgroundToolCompletionWakeupResolver({
   getGenerationJob,
   getResultBatchSize,
   getWaitMaxIntervalMs,
+  getScheduleMCPCompletionState,
   recoverDeadClaim,
   getGenerationAdmissionEvidence,
 }: BackgroundToolCompletionWakeupResolverDeps): NonNullable<
@@ -333,6 +337,18 @@ export function createBackgroundToolCompletionWakeupResolver({
         status: 404,
       });
     }
+    const payload = envelope.event.payload;
+    const scheduleMCPIdentity = await resolveScheduleMCPCompletion(
+      {
+        ownerId: userId,
+        tenantId: envelope.principal.tenantId ?? null,
+        scheduleMCPIdentity:
+          payload && typeof payload === 'object' && 'scheduleMCPIdentity' in payload
+            ? payload.scheduleMCPIdentity
+            : undefined,
+      },
+      getScheduleMCPCompletionState,
+    );
     const parentMessages = await methods.getMessages(
       { user: userId, conversationId: envelope.target.conversationId },
       MESSAGE_SELECT,
@@ -620,6 +636,7 @@ export function createBackgroundToolCompletionWakeupResolver({
       return {
         status: 'ready',
         parentMessageId,
+        ...(scheduleMCPIdentity && { scheduleMCPIdentity }),
         ...(parent.codeApprovalMode != null && { codeApprovalMode: parent.codeApprovalMode }),
         input: buildWakeupInput(batch.results),
         releaseOnDefiniteFailure: async () => {
@@ -725,6 +742,7 @@ export function createBackgroundToolCompletionWakeupResolver({
       return {
         status: 'ready',
         parentMessageId,
+        ...(scheduleMCPIdentity && { scheduleMCPIdentity }),
         ...(parent.codeApprovalMode != null && { codeApprovalMode: parent.codeApprovalMode }),
         input,
         releaseOnDefiniteFailure: async () => {
@@ -795,6 +813,7 @@ export function createBackgroundToolCompletionWakeupResolver({
       return {
         status: 'ready',
         parentMessageId,
+        ...(scheduleMCPIdentity && { scheduleMCPIdentity }),
         ...(parent.codeApprovalMode != null && { codeApprovalMode: parent.codeApprovalMode }),
         input: buildWakeupInput(receiptClaim.results),
         releaseOnDefiniteFailure: async () => {
@@ -831,6 +850,7 @@ export function createBackgroundToolCompletionWakeupResolver({
       return {
         status: 'ready',
         parentMessageId,
+        ...(scheduleMCPIdentity && { scheduleMCPIdentity }),
         ...(parent.codeApprovalMode != null && { codeApprovalMode: parent.codeApprovalMode }),
         input: buildWakeupInput([
           { ...registration, status: receipt.status, output: receipt.output },
@@ -1001,6 +1021,7 @@ export function createBackgroundToolCompletionWakeupHandler(
         occurredAt: registration.createdAt,
         source: { id: BACKGROUND_TOOL_COMPLETION_SOURCE, type: 'internal' },
         payload: {
+          scheduleMCPIdentity: registration.scheduleMCPIdentity ?? null,
           taskId: registration.taskId,
           toolCallId: registration.toolCallId,
           toolName: registration.toolName,

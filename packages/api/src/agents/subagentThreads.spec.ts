@@ -517,12 +517,65 @@ describe('SubagentThreadTaskStore', () => {
       userId,
       parentConversationId,
       parentMessageId: 'parent-response-1',
+      scheduleMCPIdentity: null,
       parentAgentId: 'agent_parent_1',
       taskId: requireAccepted(started).task.taskId,
       threadId: requireThreadId(started),
       subagentType: 'researcher-agent',
       createdAt: expect.any(Number),
     });
+  });
+
+  it('captures authority from the parent task config, never SDK request fields or a reused conversation', async () => {
+    const userId = 'task-origin-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const prepared = jest.fn(async (_registration: SubagentTaskWakeupRegistration) => {});
+    const store = new SubagentThreadTaskStore(methods, { onTaskPrepared: prepared });
+    const identity = {
+      scheduleId: 'original-schedule',
+      ownerId: userId,
+      tenantId: null,
+      agentId: 'parent-agent',
+      invocationMode: 'delegated' as const,
+    };
+    const scheduled = buildSubagentThreadTaskConfig(
+      store,
+      { userId, parentConversationId },
+      { completionWakeups: true, scheduleMCPIdentity: identity },
+    );
+    identity.agentId = 'mutated-after-construction';
+    const first = scheduled.store.start(
+      taskRequest(scheduled.scopeId, {
+        parentRunId: 'scheduled-response',
+        idempotencyKey: randomUUID(),
+        scheduleMCPIdentity: null,
+      } as never),
+    );
+    await waitForSettled(store, scheduled.scopeId, first);
+    expect(prepared).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        parentMessageId: 'scheduled-response',
+        scheduleMCPIdentity: { ...identity, agentId: 'parent-agent' },
+      }),
+    );
+    const ordinary = buildSubagentThreadTaskConfig(
+      store,
+      { userId, parentConversationId },
+      { completionWakeups: true },
+    );
+    const later = ordinary.store.start(
+      taskRequest(ordinary.scopeId, {
+        parentRunId: 'ordinary-response',
+        idempotencyKey: randomUUID(),
+        scheduleMCPIdentity: identity,
+      } as never),
+    );
+    await waitForSettled(store, ordinary.scopeId, later);
+    expect(prepared).toHaveBeenLastCalledWith(
+      expect.objectContaining({ parentMessageId: 'ordinary-response', scheduleMCPIdentity: null }),
+    );
+    store.destroyActivityStream();
   });
 
   it('announces a settled child only after its terminal message is durable', async () => {

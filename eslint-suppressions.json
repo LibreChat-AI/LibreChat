@@ -2154,11 +2154,6 @@
       "count": 1
     }
   },
-  "packages/client/src/components/DropdownPopup.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "packages/client/src/components/FileUpload.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
@@ -2182,11 +2177,6 @@
   "packages/client/src/components/SegmentedMeter.tsx": {
     "shadcn/no-inline-styles": {
       "count": 2
-    }
-  },
-  "packages/client/src/components/Select.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
     }
   },
   "packages/client/src/components/SplitText.tsx": {

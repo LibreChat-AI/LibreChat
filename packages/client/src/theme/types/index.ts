@@ -520,6 +520,10 @@ export interface IThemeAppearance {
   tabRadius: string;
   /** The narrowest a tab trigger draws; `0` sizes it by its label. */
   tabMinWidth: string;
+  /** The narrowest a Select's list draws; `0` sizes it by its trigger and options. */
+  listMinWidth: string;
+  /** The tallest a Select's list draws before it scrolls, 8 to 40rem. */
+  listMaxHeight: string;
   radiusSm: string;
   radiusMd: string;
   radiusLg: string;

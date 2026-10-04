@@ -253,7 +253,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
     setErrors([]);
   }, [errors, showToast, localize]);
 
-  const debouncedDisplayToast = debounce(displayToast, 250);
+  const debouncedDisplayToast = useMemo(() => debounce(displayToast, 250), [displayToast]);
 
   useEffect(() => {
     if (errors.length > 0) {

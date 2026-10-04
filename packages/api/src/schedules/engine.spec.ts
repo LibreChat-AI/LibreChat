@@ -746,6 +746,60 @@ describe('reconciliation preserves the intended outcome', () => {
    * `success` from it turned a transient outcome-write failure into a reset of the very
    * streaks that drive insufficient_balance and too_many_failures auto-disable.
    */
+  it('does not copy denial evidence from a replacement occurrence at the same stream', async () => {
+    const methods = makeMethods(makeClaimedSchedule());
+    (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);
+    const failure = {
+      server: '',
+      reason: 'tool_policy_denied' as const,
+      status: 'mcp_permission_denied' as const,
+      automaticReplay: false as const,
+    };
+    await tickOnce(
+      makeDeps(methods, {
+        getJobStatus: async () => ({
+          status: 'complete',
+          scheduleId: 'other',
+          scheduledFor: scheduledFor.toISOString(),
+          scheduleMCPFailure: failure,
+        }),
+      }),
+    );
+    expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'interrupted' }),
+    );
+    expect(methods.recordRunOutcome).not.toHaveBeenCalledWith(
+      expect.objectContaining({ mcp: expect.anything() }),
+    );
+  });
+
+  it('passes job-retained MCP denial evidence to crash-recovery settlement', async () => {
+    const methods = makeMethods(makeClaimedSchedule());
+    (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);
+    const failure = {
+      server: '',
+      agentId: 'child',
+      reason: 'tool_policy_denied' as const,
+      status: 'mcp_permission_denied' as const,
+      recovery: 'configure' as const,
+      automaticReplay: false as const,
+    };
+    await tickOnce(
+      makeDeps(methods, {
+        getJobStatus: async () => ({
+          status: 'complete',
+          scheduleId: 'sched-1',
+          scheduledFor: scheduledFor.toISOString(),
+          scheduleMCPFailure: failure,
+        }),
+        clearReconciledJob: async () => undefined,
+      }),
+    );
+    expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ mcp: [failure] }),
+    );
+  });
+
   it('recovers a balance refusal as skipped_balance, not success', async () => {
     const methods = makeMethods(makeClaimedSchedule());
     (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);

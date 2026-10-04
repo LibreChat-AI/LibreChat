@@ -44,6 +44,7 @@ export function areConversationListItemFieldsEqual(
        holds, which means these have to be compared in their own right. */
     prevConversation.lastResponseAt === nextConversation.lastResponseAt &&
     prevConversation.lastResponseIsManual === nextConversation.lastResponseIsManual &&
+    prevConversation.isMarkedUnread === nextConversation.isMarkedUnread &&
     prevConversation.lastSeenAt === nextConversation.lastSeenAt
   );
 }

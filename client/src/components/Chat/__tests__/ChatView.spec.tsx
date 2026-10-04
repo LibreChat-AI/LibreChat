@@ -162,6 +162,11 @@ describe('ChatView composer preferences', () => {
     );
   });
 
+  test.each([true, false])('passes routePending=%p into ChatForm', (routePending) => {
+    render(<ChatView messagesReady routePending={routePending} />);
+    expect(mockChatFormProps).toHaveBeenCalledWith(expect.objectContaining({ routePending }));
+  });
+
   test('falls back to the atom default when nothing is persisted', () => {
     render(<ChatView messagesReady />);
 

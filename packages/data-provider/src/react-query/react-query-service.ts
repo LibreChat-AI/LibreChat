@@ -478,6 +478,10 @@ export const useUpdateResourcePermissionsMutation = (): UseMutationResult<
       queryClient.invalidateQueries({
         queryKey: [QueryKeys.effectivePermissions, variables.resourceType, variables.resourceId],
       });
+
+      queryClient.invalidateQueries({
+        queryKey: [QueryKeys.effectivePermissions, 'all', variables.resourceType],
+      });
     },
   });
 };

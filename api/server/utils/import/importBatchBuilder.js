@@ -177,6 +177,7 @@ class ImportBatchBuilder {
     delete convo.lastResponseAt;
     delete convo.lastResponseMessageId;
     delete convo.lastResponseIsManual;
+    delete convo.isMarkedUnread;
     delete convo.lastSeenAt;
     this.conversations.push(convo);
 

@@ -3,6 +3,10 @@ import type { JSX } from 'react/jsx-runtime';
 import useMediaQuery from '~/hooks/useMediaQuery';
 import { cn } from '~/utils';
 
+/** Last fillStyle written during the current frame. Reset at the start of each frame so a
+ *  pixel only touches canvas state when its color differs from the previous draw. */
+let lastFillStyle = '';
+
 class Pixel {
   width: number;
   height: number;
@@ -61,7 +65,10 @@ class Pixel {
 
   private draw() {
     const offset = this.maxSizeInteger * 0.5 - this.size * 0.5;
-    this.ctx.fillStyle = this.color;
+    if (lastFillStyle !== this.color) {
+      this.ctx.fillStyle = this.color;
+      lastFillStyle = this.color;
+    }
     this.ctx.fillRect(this.x + offset, this.y + offset, this.size, this.size);
   }
 
@@ -253,19 +260,27 @@ export default function PixelCard({
 
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
 
+      lastFillStyle = '';
       let idle = true;
-      for (const p of pixelsRef.current) {
-        if (method === 'appearWithProgress') {
-          if (progressRef.current !== undefined) {
-            p.appearWithProgress(progressRef.current);
+      const pixels = pixelsRef.current;
+      if (method === 'appearWithProgress') {
+        const currentProgress = progressRef.current;
+        for (const p of pixels) {
+          if (currentProgress !== undefined) {
+            p.appearWithProgress(currentProgress);
           } else {
             p.isIdle = true;
           }
-        } else {
-          p[method]();
+          if (!p.isIdle) {
+            idle = false;
+          }
         }
-        if (!p.isIdle) {
-          idle = false;
+      } else {
+        for (const p of pixels) {
+          p[method]();
+          if (!p.isIdle) {
+            idle = false;
+          }
         }
       }
 
@@ -287,6 +302,7 @@ export default function PixelCard({
         const context = canvas?.getContext('2d');
         if (!canvas || !context) return;
         context.clearRect(0, 0, canvas.width, canvas.height);
+        lastFillStyle = '';
         if (m !== 'disappear') for (const pixel of pixelsRef.current) pixel.still();
         canvas.style.opacity =
           progressRef.current !== undefined && progressRef.current >= 1 ? '0' : '1';
@@ -313,6 +329,7 @@ export default function PixelCard({
     const cx = cw / 2;
     const cy = ch / 2;
     const maxDist = Math.hypot(cx, cy);
+    const effectiveSpeed = getEffectiveSpeed(s, reducedMotion);
 
     for (let x = 0; x < cw; x += g) {
       for (let y = 0; y < ch; y += g) {
@@ -323,18 +340,7 @@ export default function PixelCard({
         if (!ctx) {
           continue;
         }
-        px.push(
-          new Pixel(
-            canvasRef.current,
-            ctx,
-            x,
-            y,
-            color,
-            getEffectiveSpeed(s, reducedMotion),
-            delay,
-            threshold,
-          ),
-        );
+        px.push(new Pixel(canvasRef.current, ctx, x, y, color, effectiveSpeed, delay, threshold));
       }
     }
     pixelsRef.current = px;

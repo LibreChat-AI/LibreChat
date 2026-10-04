@@ -1,4 +1,5 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import { DndProvider } from 'react-dnd';
 import { BrowserRouter } from 'react-router-dom';
 import { HTML5Backend } from 'react-dnd-html5-backend';
@@ -180,6 +181,7 @@ jest.mock('~/components/Nav/Favorites/FavoriteItem', () => ({
   default: () => <div data-testid="favorite-item-stub" />,
 }));
 
+import { showProjectChatsAtom } from '~/components/Conversations/chatFilters';
 import ConversationsSection from '../ConversationsSection';
 import store from '~/store';
 
@@ -307,19 +309,33 @@ describe('ConversationsSection project chats', () => {
     mockListParams.mockClear();
   });
 
-  /** A chat that belongs to a project is shown under that project. Listing it in
-   *  Chats as well puts the same conversation in two places in one sidebar. */
-  it('asks only for chats that belong to no project', async () => {
+  afterEach(() => {
+    act(() => getDefaultStore().set(showProjectChatsAtom, true));
+  });
+
+  /** Chats is where recent work is looked for first, so a chat filed in a project is
+   *  listed there too, carrying its folder badge. */
+  it('lists project chats under Chats by default', async () => {
     renderSection();
     await settleRenders();
 
     expect(mockListParams).toHaveBeenCalled();
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({ projectId: undefined });
+  });
+
+  /** Turned off, a project chat is shown only under its project, not twice. */
+  it('asks only for chats that belong to no project once project chats are hidden', async () => {
+    act(() => getDefaultStore().set(showProjectChatsAtom, false));
+    renderSection();
+    await settleRenders();
+
     expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({ projectId: 'unassigned' });
   });
 
   /** Searching is how a chat is found, and Projects is not rendered while a search
    *  is on: excluding project chats there would make them unreachable. */
   it('searches across every chat, project or not', async () => {
+    act(() => getDefaultStore().set(showProjectChatsAtom, false));
     let setSearch: SetterOrUpdater<SearchState>;
 
     function SearchController() {
@@ -363,9 +379,16 @@ describe('ConversationsSection empty Chats wording', () => {
     (mockConversationsRender.mock.calls.at(-1)?.[0] as { accountHasProjects?: boolean })
       .accountHasProjects;
 
+  /** The empty wording only distinguishes an empty account while Chats leaves project
+   *  chats to their projects. */
   beforeEach(() => {
     mockConversationsRender.mockClear();
     mockUseProjectsInfiniteQuery.mockReset();
+    act(() => getDefaultStore().set(showProjectChatsAtom, false));
+  });
+
+  afterEach(() => {
+    act(() => getDefaultStore().set(showProjectChatsAtom, true));
   });
 
   it('calls the account empty only once its projects have loaded and there are none', async () => {
