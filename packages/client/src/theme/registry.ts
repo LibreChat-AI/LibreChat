@@ -552,7 +552,7 @@ function withComposableShadows(appearance: IThemeAppearance): IThemeAppearance {
 /**
  * Roles split out of a broader one, each paired with the role it read before. Headings drew the UI
  * family before the display role existed, theme-sized controls were padded by the shared spacing,
- * and dialog titles were set in the `text-lg` step and the display family, so a theme that names
+ * and dialog titles were set in the `text-lg` step and the display family, the composer's popovers, the model selector and the send button drew `rounded-2xl`, `rounded-xl` and the round control corner, so a theme that names
  * the broader role and not the split one keeps what it drew. Pairs resolve in order, so a role can
  * follow one that is itself inherited.
  */
@@ -563,6 +563,9 @@ const inheritedAppearance: ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAp
   ['labelSize', 'textSm'],
   ['dialogTitleSize', 'textLg'],
   ['dialogTitleFontFamily', 'displayFontFamily'],
+  ['popoverRadius', 'radius2xl'],
+  ['menuPanelRadius', 'radiusXl'],
+  ['composerActionRadius', 'roundControlRadius'],
 ];
 
 /**

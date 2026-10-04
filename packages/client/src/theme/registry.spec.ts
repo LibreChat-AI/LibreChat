@@ -281,6 +281,25 @@ describe('theme registry', () => {
     expect(dark['rgb-surface-code-inline']).toBe('4 4 4');
   });
 
+  it('keeps the popover, selector and send corners on the scale steps a theme names', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'corner-reference',
+        modes: {
+          light: {
+            appearance: { radius2xl: '3px', radiusXl: '5px', roundControlRadius: '7px' },
+          },
+        },
+      },
+      'light',
+    );
+
+    expect(resolved.appearance.popoverRadius).toBe('3px');
+    expect(resolved.appearance.menuPanelRadius).toBe('5px');
+    expect(resolved.appearance.composerActionRadius).toBe('7px');
+  });
+
   it('derives omitted chart widget colors from the previous panel roles', () => {
     const resolved = resolveTheme(
       {

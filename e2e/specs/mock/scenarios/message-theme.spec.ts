@@ -149,7 +149,7 @@ for (const definition of ['stock', 'clickhouse'] as const) {
         expect(
           (await computedStyles(page.locator('.markdown blockquote'), ['borderLeftColor']))
             .borderLeftColor,
-        ).toBe(await probeStyle(page, 'border border-border-medium', 'border-left-color'));
+        ).toBe(await probeStyle(page, 'text-prose-quote-bar', 'color'));
 
         await page.goto(NEW_CHAT_PATH);
         await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
