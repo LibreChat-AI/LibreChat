@@ -1938,13 +1938,14 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
        *  inside the request's tenant context like the write below. */
       const responseMessageId =
         resumeState.responseMessageId || `${resumeState.userMessage.messageId}_`;
+      const responseConversationId = resumeState.conversationId || conversationId;
       const planSnapshot = () =>
         planDisconnectSnapshot(isCompaction, {
           content: filterPersistableAbortContent(aggregatedContent),
           jobRecord,
           jobCreatedAt,
           userId,
-          conversationId,
+          conversationId: responseConversationId,
           anchorMessageId: resumeState.userMessage.messageId,
           responseMessageId,
           getMessages,
@@ -1958,7 +1959,6 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       }
 
       partialResponseSaved = true;
-      const responseConversationId = resumeState.conversationId || conversationId;
       /** The run publishes its calibration and fading tiers onto the job; a
        * partial response saved on disconnect must carry them like the Stop and
        * pause paths do, or a turn continued from it re-derives its provider
