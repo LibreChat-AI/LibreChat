@@ -365,13 +365,27 @@ describe('ResumableAgentController tenant context', () => {
     expect(mockSaveMessage).not.toHaveBeenCalled();
   });
 
-  /** Ordinary turns keep the pre-change behavior exactly: their snapshot is
-   *  the fallback row even when the job record has settled, because the
-   *  terminal row write may still fail. */
-  it('still persists an ordinary partial save when the job record has settled', async () => {
+  /** An ordinary turn's durable terminal row is equally settled: a late
+   *  snapshot would reopen a completed reply as unfinished. */
+  it('skips an ordinary partial save when the job record has settled', async () => {
     await firePartialDisconnect(
       { id: 'user-123' },
-      { createdAt: 1000, status: 'error' },
+      { createdAt: 1000, status: 'complete' },
+      { aggregatedContent: [{ type: 'text', text: 'Partial response' }] },
+    );
+
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+  });
+
+  /** A pending terminal write or a reconciliation frame is not a durable row:
+   *  the ordinary snapshot stays the fallback, in its live shape. */
+  it.each([
+    ['a pending terminal write', { terminalPersistencePending: true }],
+    ['a reconciliation frame', { finalEvent: JSON.stringify({ final: true, reconcile: true }) }],
+  ])('keeps an ordinary partial save as the fallback behind %s', async (_label, record) => {
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      { createdAt: 1000, status: 'complete', ...record },
       { aggregatedContent: [{ type: 'text', text: 'Partial response' }] },
     );
 

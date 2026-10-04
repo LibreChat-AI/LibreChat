@@ -1428,12 +1428,31 @@ describe('resolveDisconnectSnapshotMode', () => {
     ).resolves.toBe('live');
   });
 
-  /** An ordinary turn's snapshot is the fallback row its terminal write may
-   *  still need, so it is written whatever the record says. */
-  it('writes the snapshot of a settled ordinary turn', async () => {
+  /** A durable terminal row settles an ordinary turn too: a late snapshot
+   *  would reopen the completed reply. */
+  it('withholds the snapshot of a settled ordinary turn', async () => {
     await expect(
       resolveDisconnectSnapshotMode(false, { createdAt: 1000, status: 'complete' }, 1000),
+    ).resolves.toBe('skip');
+  });
+
+  /** Only a compaction is promoted: an ordinary turn whose terminal write
+   *  reconciled keeps its live snapshot as the fallback row. */
+  it('keeps a reconciled ordinary turn on its live snapshot', async () => {
+    const anchorExists = jest.fn(async () => true);
+    await expect(
+      resolveDisconnectSnapshotMode(
+        false,
+        {
+          createdAt: 1000,
+          status: 'complete',
+          finalEvent: JSON.stringify({ final: true, reconcile: true }),
+        },
+        1000,
+        { anchorExists },
+      ),
     ).resolves.toBe('live');
+    expect(anchorExists).not.toHaveBeenCalled();
   });
 
   const reconciled = () => ({
