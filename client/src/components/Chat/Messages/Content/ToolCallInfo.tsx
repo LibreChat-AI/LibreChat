@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useLocalize, useExpandCollapse } from '~/hooks';
 import { OutputRenderer } from './ToolOutput';
+import { hasToolParams } from './params';
 import { cn } from '~/utils';
 
 function isSimpleObject(obj: unknown): obj is Record<string, string | number | boolean | null> {
@@ -92,20 +93,7 @@ export default function ToolCallInfo({ input, output }: { input: string; output?
   const [showParams, setShowParams] = useState(false);
   const { style: paramsExpandStyle, ref: paramsExpandRef } = useExpandCollapse(showParams);
 
-  const hasParams = useMemo(() => {
-    if (!input || input.trim().length === 0) {
-      return false;
-    }
-    try {
-      const parsed = JSON.parse(input);
-      if (typeof parsed === 'object' && parsed !== null) {
-        return Object.keys(parsed).length > 0;
-      }
-    } catch {
-      // Not JSON
-    }
-    return input.trim().length > 0;
-  }, [input]);
+  const hasParams = useMemo(() => hasToolParams(input), [input]);
 
   return (
     <div className="w-full px-3 py-3.5">

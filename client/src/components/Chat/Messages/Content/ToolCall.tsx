@@ -26,6 +26,7 @@ import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
 import { TOOL_ROW_CLASSES } from './rows';
+import { hasToolParams } from './params';
 import { ToolAuthWarning } from './auth';
 import { firstErrorLine } from './live';
 
@@ -236,6 +237,7 @@ export default function ToolCall({
   const bare =
     (soleTool || loneGroup) &&
     hasInfo &&
+    (hasToolParams(args) || (output?.length ?? 0) > 0) &&
     phase === 'completed' &&
     !isMCPToolCall &&
     !isActionCall &&

@@ -142,9 +142,15 @@ export default function ToolCallGroup({
   const labelSettled =
     activityLabelText.length > 0 &&
     (labelPart?.part as { pending?: boolean } | undefined)?.pending !== true;
+  /** A detached task's dispatch step closes with a handle as its output, so
+   *  the call reads as done while the work is still going. */
+  const detachedRunning = useMemo(
+    () => toolMetadata.some((m) => m.background === 'running'),
+    [toolMetadata],
+  );
   const allCompleted = useMemo(
-    () => labelSettled || toolMetadata.every((m) => m.hasOutput === true),
-    [toolMetadata, labelSettled],
+    () => !detachedRunning && (labelSettled || toolMetadata.every((m) => m.hasOutput === true)),
+    [toolMetadata, labelSettled, detachedRunning],
   );
   const sourceDomains = useMemo(
     () => getSourceDomains(sourceAttachments ?? groupAttachments, 3),
@@ -288,7 +294,7 @@ export default function ToolCallGroup({
   /** One verdict for the header's tense, its glyph and its icon animation —
    *  they read as a single control, so a group whose label already says
    *  "Asked 1 question" must not keep pulsing beside it. */
-  const isGroupLive = allAskQuestions ? !askQuestionsDone : !groupDone;
+  const isGroupLive = allAskQuestions ? !askQuestionsDone : !groupDone || detachedRunning;
 
   /** For a single-tool group, lead with the tool's own (capitalized) label
    *  instead of the generic "Used 1 tool: name", which reads awkwardly. */
