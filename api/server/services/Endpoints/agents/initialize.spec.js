@@ -1462,8 +1462,10 @@ describe('initializeClient — subagent loading', () => {
           subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
         }),
       );
+      const req = makeSubagentReq();
+      req.config.endpoints.agents.capabilities.push('tools');
       await initializeClient({
-        req: makeSubagentReq(),
+        req,
         res: {},
         signal: new AbortController().signal,
         endpointOption: makeEndpointOption(),
@@ -1511,8 +1513,10 @@ describe('initializeClient — subagent loading', () => {
           subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
         }),
       );
+      const req = makeSubagentReq();
+      req.config.endpoints.agents.capabilities.push('tools');
       await initializeClient({
-        req: makeSubagentReq(),
+        req,
         res: {},
         signal: new AbortController().signal,
         endpointOption: makeEndpointOption(),
@@ -1597,6 +1601,47 @@ describe('initializeClient — subagent loading', () => {
     },
   );
 
+  it.each(['ask', 'chat', 'always'])(
+    'disabled MCP capability excludes real saved lazy selections before delegation: %s',
+    async (mode) => {
+      const child = await createAgent({
+        id: SUBAGENT_ID,
+        name: 'Disabled MCP child',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: testUser._id,
+        tools: ['query_mcp_fixture'],
+        tool_options: { query_mcp_fixture: { approval_mode: mode } },
+      });
+      await grantView(child);
+      mockInitializeAgent.mockResolvedValue(
+        makePrimaryConfig({
+          subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+        }),
+      );
+      const { canAgentGraphPause } = jest.requireActual('@librechat/api');
+      for (const enabled of [false, true]) {
+        const req = makeSubagentReq();
+
+        if (enabled) req.config.endpoints.agents.capabilities.push('tools');
+        await initializeClient({
+          req,
+          res: {},
+          signal: new AbortController().signal,
+          endpointOption: makeEndpointOption(),
+        });
+        expect(
+          canAgentGraphPause({
+            policy: { enabled: true, mode: 'bypass' },
+            agents: [agentClientArgs.agent],
+          }),
+        ).toBe(enabled);
+        expect(agentClientArgs.agent.lazySubagentConfigs[0]).not.toHaveProperty('tool_options');
+      }
+      expect(mockInitializeAgent).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it('requires durable approval for a real unresolved lazy legacy selection', async () => {
     const child = await createAgent({
       id: SUBAGENT_ID,
@@ -1613,8 +1658,10 @@ describe('initializeClient — subagent loading', () => {
         subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
       }),
     );
+    const req = makeSubagentReq();
+    req.config.endpoints.agents.capabilities.push('tools');
     await initializeClient({
-      req: makeSubagentReq(),
+      req,
       res: {},
       signal: new AbortController().signal,
       endpointOption: makeEndpointOption(),
@@ -1651,8 +1698,10 @@ describe('initializeClient — subagent loading', () => {
         subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
       }),
     );
+    const req = makeSubagentReq();
+    req.config.endpoints.agents.capabilities.push('tools');
     await initializeClient({
-      req: makeSubagentReq(),
+      req,
       res: {},
       signal: new AbortController().signal,
       endpointOption: makeEndpointOption(),
@@ -1700,8 +1749,10 @@ describe('initializeClient — subagent loading', () => {
         subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
       }),
     );
+    const req = makeSubagentReq();
+    req.config.endpoints.agents.capabilities.push('tools');
     await initializeClient({
-      req: makeSubagentReq(),
+      req,
       res: {},
       signal: new AbortController().signal,
       endpointOption: makeEndpointOption(),

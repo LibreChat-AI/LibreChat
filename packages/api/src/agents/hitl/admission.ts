@@ -1,5 +1,6 @@
 import {
   Constants,
+  isActionTool,
   normalizeServerName,
   stripServerNamePrefix,
   splitMCPToolKey,
@@ -84,15 +85,17 @@ export function copyToolApprovalAdmissionMetadata<T extends object>(
     primes: alwaysApplySkillPrimes,
     agentToolNames: selectedTools ?? [],
   });
-  const skillTools =
-    context.toolsAvailable === false
-      ? extraToolNames.filter((name) => !name.includes(Constants.mcp_delimiter))
-      : extraToolNames;
+  const effectiveTools =
+    selectedTools == null && extraToolNames.length === 0
+      ? undefined
+      : [...(selectedTools ?? []), ...extraToolNames];
   const normalized = normalizeAgentToolKeys({
     tools:
-      selectedTools == null && skillTools.length === 0
-        ? undefined
-        : [...(selectedTools ?? []), ...skillTools],
+      context.toolsAvailable === false
+        ? effectiveTools?.filter(
+            (name) => isActionTool(name) || !name.includes(Constants.mcp_delimiter),
+          )
+        : effectiveTools,
     toolOptions: surface.tool_options,
     rawServerNames: context.rawMcpServerNames ?? surface.rawMcpServerNames ?? [],
   });
@@ -100,10 +103,14 @@ export function copyToolApprovalAdmissionMetadata<T extends object>(
     tool_options:
       normalized.toolOptions &&
       Object.fromEntries(
-        Object.entries(normalized.toolOptions).map(([name, option]) => [
-          name,
-          { approval_mode: option.approval_mode },
-        ]),
+        Object.entries(normalized.toolOptions)
+          .filter(
+            ([name]) =>
+              context.toolsAvailable !== false ||
+              isActionTool(name) ||
+              !name.includes(Constants.mcp_delimiter),
+          )
+          .map(([name, option]) => [name, { approval_mode: option.approval_mode }]),
       ),
     tools: normalized.tools,
     rawMcpServerNames: context.rawMcpServerNames?.slice() ?? surface.rawMcpServerNames,
