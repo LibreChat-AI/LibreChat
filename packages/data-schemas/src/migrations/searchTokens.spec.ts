@@ -2,6 +2,11 @@ import mongoose from 'mongoose';
 import { Collection } from 'mongodb';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { Document, FindOptions } from 'mongodb';
+import {
+  searchTokenIndexes,
+  USER_SEARCH_TOKEN_FIELDS,
+  GROUP_SEARCH_TOKEN_FIELDS,
+} from '~/utils/search';
 import { backfillSearchTokens, warnOnMissingSearchTokens } from './searchTokens';
 import logger from '~/config/winston';
 
@@ -223,13 +228,20 @@ describe('warnOnMissingSearchTokens', () => {
     expect(logger.error).not.toHaveBeenCalled();
   });
 
-  it('logs a failed check instead of failing startup', async () => {
+  it('logs a failed probe instead of failing startup', async () => {
+    /** Every token index exists, so the check reaches the probe, which then fails. */
+    const indexes = [...USER_SEARCH_TOKEN_FIELDS, ...GROUP_SEARCH_TOKEN_FIELDS]
+      .flatMap(searchTokenIndexes)
+      .map((key) => ({ key }));
+    const findOne = jest.fn(() => Promise.reject(new Error('down')));
     const broken = {
-      db: { collection: () => ({ findOne: () => Promise.reject(new Error('down')) }) },
+      db: { collection: () => ({ indexes: async () => indexes, findOne }) },
     };
     await expect(
       warnOnMissingSearchTokens(broken as unknown as typeof mongoose.connection),
     ).resolves.toBeUndefined();
+    expect(findOne).toHaveBeenCalled();
     expect(logger.error).toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });
