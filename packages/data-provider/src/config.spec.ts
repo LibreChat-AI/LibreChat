@@ -2554,7 +2554,7 @@ describe('workspace admission configuration', () => {
     expect(codeEnvironmentUserConfigSchema.safeParse({ admission }).success).toBe(false);
   });
 
-  it.each([0, -1, 1.5, 610_001, Infinity])(
+  it.each([0, 1, -1, 1.5, 20_000, 610_001, Infinity])(
     'rejects an invalid run deadline %s',
     (maxRunTimeoutMs) => {
       expect(

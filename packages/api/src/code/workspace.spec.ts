@@ -2488,7 +2488,7 @@ describe('workspace admission policy and independent budgets', () => {
     await jest.advanceTimersByTimeAsync(90_000);
     await expect(result).resolves.toMatchObject({ stdout: 'ready' });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(fetchImpl.mock.calls[1][1].body).toBe(fetchImpl.mock.calls[0][1].body);
+    expect(fetchImpl.mock.calls[1][1]?.body).toBe(fetchImpl.mock.calls[0][1]?.body);
   });
 
   test('bounds queue allowance by the transport reserve, not the larger run deadline', async () => {

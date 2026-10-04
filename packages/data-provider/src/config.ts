@@ -1363,7 +1363,7 @@ export const codeEnvironmentUserConfigSchema = z
           .max(CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS)
           .optional(),
         /** Admission allowance before local dispatch overhead for a Bash command inside
-         * maxRequestTimeoutMs. Omission reserves ten seconds; ignored without a total HTTP budget. */
+         * the transport/run budgets. Omission reserves ten seconds. */
         minCommandAdmissionMs: z
           .number()
           .int()
@@ -1373,19 +1373,22 @@ export const codeEnvironmentUserConfigSchema = z
       })
       .strict()
       .superRefine((limits, context) => {
+        const budgetMs = Math.min(
+          limits.maxRequestTimeoutMs ?? Infinity,
+          limits.maxRunTimeoutMs ?? Infinity,
+        );
         if (
-          limits.maxRequestTimeoutMs == null ||
-          limits.maxRequestTimeoutMs >
-            (limits.minCommandAdmissionMs ?? CODE_ENVIRONMENT_COMMAND_ADMISSION_DEFAULT_MS) +
-              CODE_ENVIRONMENT_COMMAND_BUDGET_GRACE_MS
+          budgetMs >
+          (limits.minCommandAdmissionMs ?? CODE_ENVIRONMENT_COMMAND_ADMISSION_DEFAULT_MS) +
+            CODE_ENVIRONMENT_COMMAND_BUDGET_GRACE_MS
         ) {
           return;
         }
+        const field =
+          limits.maxRunTimeoutMs === budgetMs ? 'maxRunTimeoutMs' : 'maxRequestTimeoutMs';
         context.addIssue({
           code: z.ZodIssueCode.custom,
-          path: [
-            limits.minCommandAdmissionMs == null ? 'maxRequestTimeoutMs' : 'minCommandAdmissionMs',
-          ],
+          path: [limits.minCommandAdmissionMs == null ? field : 'minCommandAdmissionMs'],
           message: 'Command admission and settlement reserves must leave time for execution',
         });
       })

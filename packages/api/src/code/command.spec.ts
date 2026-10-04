@@ -1310,6 +1310,18 @@ describe('createAttachedWorkspaceBashTool', () => {
 });
 
 describe('attached command admission configuration', () => {
+  test('bounds the advertised command ceiling by the shorter overall run budget', () => {
+    expect(
+      resolveAttachedWorkspaceCommandTimeoutMax({
+        limits: {
+          maxCommandTimeoutMs: 100_000,
+          maxRequestTimeoutMs: 100_000,
+          maxRunTimeoutMs: 65_000,
+        },
+      }),
+    ).toBe(45_000);
+  });
+
   test('passes separate run and retry policies through the actual tool invocation', async () => {
     const admission = {
       queueWaitMs: 60_000,
