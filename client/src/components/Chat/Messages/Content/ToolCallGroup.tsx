@@ -31,6 +31,7 @@ import {
 import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
 import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
+import { LoneGroupContext, SoleToolContext } from './disclosure';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
@@ -38,7 +39,6 @@ import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from './rows';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { parseToolName } from '~/utils/toolLabels';
 import { StackedToolIcons } from './ToolOutput';
-import { LoneGroupContext, SoleToolContext } from './disclosure';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
 import SearchVerticals from './verticals';
@@ -491,10 +491,22 @@ export default function ToolCallGroup({
          *  handle, a stopped or failed call did not run to the end, and a
          *  legacy record that was cut off has no output to show for it. */
         const only = toolMetadata[0];
+        const rawCall = parts.find(({ part }) => part.type === ContentTypes.TOOL_CALL)?.part;
+        const legacyCall =
+          rawCall?.type === ContentTypes.TOOL_CALL
+            ? (rawCall[ContentTypes.TOOL_CALL] as { runStepStatus?: unknown; progress?: number })
+            : undefined;
+        /** The card infers a stop from a legacy record with no step status whose
+         *  progress never reached 1 once the stream is over; the metadata does not. */
+        const interrupted =
+          !isSubmitting &&
+          legacyCall?.runStepStatus == null &&
+          typeof legacyCall?.progress === 'number' &&
+          legacyCall.progress < 1;
         if (only?.failed) {
           return localize('com_ui_failed_subject', { 0: singleToolLabel });
         }
-        if (only?.cancelled) {
+        if (only?.cancelled || interrupted) {
           return localize('com_ui_cancelled');
         }
         if (!groupDone || only?.background === 'running') {

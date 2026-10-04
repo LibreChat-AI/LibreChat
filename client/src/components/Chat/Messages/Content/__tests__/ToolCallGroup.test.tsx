@@ -1058,6 +1058,54 @@ describe('ToolCallGroup image hoisting', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('does not claim a lone code call ran when an interrupted legacy record kept partial output', () => {
+    const interrupted = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-partial',
+        name: 'execute_code',
+        args: '{}',
+        output: 'partial',
+        progress: 0.5,
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: interrupted, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('calls a lone legacy code call ran once its progress reaches 1', () => {
+    const finished = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-legacy-ok',
+        name: 'execute_code',
+        args: '{}',
+        output: 'done',
+        progress: 1,
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: finished, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).toBeInTheDocument();
+  });
+
   it('does not call a stopped lone code call "ran"', () => {
     const cancelled = {
       type: ContentTypes.TOOL_CALL,
