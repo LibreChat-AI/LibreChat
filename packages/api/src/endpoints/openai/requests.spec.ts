@@ -1,7 +1,9 @@
-import { Providers, initializeModel } from '@librechat/agents';
 import { EModelEndpoint, ReasoningEffort } from 'librechat-data-provider';
+import { Providers, initializeModel, type AgentInputs } from '@librechat/agents';
 import type { OpenAI } from 'openai';
 import type { OpenAIConfiguration } from '~/types';
+import type * as t from '~/types';
+import { buildPromptCacheKey } from './promptCache';
 import { getOpenAIConfig } from './config';
 
 describe('Azure Astra requests', () => {
@@ -224,4 +226,150 @@ describe('Azure full-hostname instances', () => {
       `https://test-instance.cognitiveservices.azure.com${target.path}`,
     );
   });
+});
+
+describe('prompt cache parameters', () => {
+  const azure: t.AzureOptions = {
+    azureOpenAIApiInstanceName: 'test-instance',
+    azureOpenAIApiDeploymentName: 'gpt-5-6',
+    azureOpenAIApiVersion: '2025-04-01-preview',
+    azureOpenAIApiKey: 'test-azure-key',
+  };
+  const instructions = 'You are a helpful assistant with a long, stable preamble.';
+  const toolDefinitions = [
+    {
+      type: 'function',
+      function: {
+        name: 'calculator',
+        description: 'Compute arithmetic',
+        parameters: { type: 'object', properties: { input: { type: 'string' } } },
+      },
+    },
+  ];
+
+  /**
+   * Mirrors what `createRun` does once the stable prefix and the final tool
+   * schemas exist: consume the endpoint's decision and turn it into the key.
+   */
+  function buildClientOptions(
+    surface: { endpoint: string; azure?: t.AzureOptions; useResponsesApi?: boolean },
+    fetch: NonNullable<NonNullable<OpenAIConfiguration>['fetch']>,
+  ) {
+    const { llmConfig, configOptions } = getOpenAIConfig(
+      'test-key',
+      {
+        streaming: false,
+        azure: surface.azure,
+        modelOptions: { model: 'gpt-5.6' },
+        promptCacheRetention: '24h',
+        ...(surface.useResponsesApi === true ? { addParams: { useResponsesApi: true } } : {}),
+      },
+      surface.endpoint,
+    );
+    const options = llmConfig as t.OAIClientOptions;
+    expect(options.promptCacheKeyEnabled).toBe(true);
+    options.promptCacheKey = buildPromptCacheKey({
+      agentId: 'request-test-agent',
+      provider: Providers.OPENAI,
+      clientOptions: options,
+      instructions,
+      toolDefinitions: toolDefinitions as unknown as AgentInputs['toolDefinitions'],
+    });
+    /** `createRun` drops the markers once it has consumed them, so neither can reach the wire. */
+    delete options.promptCacheKeyEnabled;
+    delete options.promptCacheScope;
+    delete options.promptCacheScopeId;
+    return {
+      ...options,
+      verbosity: undefined,
+      configuration: { ...configOptions, fetch },
+    };
+  }
+
+  it.each([
+    {
+      surface: 'OpenAI Chat Completions',
+      endpoint: EModelEndpoint.openAI,
+      provider: Providers.OPENAI,
+    },
+    {
+      surface: 'OpenAI Responses',
+      endpoint: EModelEndpoint.openAI,
+      provider: Providers.OPENAI,
+      useResponsesApi: true,
+    },
+    {
+      /** Azure serves the deployment, so the deployment alias is the cached identity. */
+      surface: 'Azure Chat Completions',
+      endpoint: EModelEndpoint.azureOpenAI,
+      provider: Providers.AZURE,
+      azure,
+    },
+    {
+      surface: 'Azure Responses',
+      endpoint: EModelEndpoint.azureOpenAI,
+      provider: Providers.OPENAI,
+      azure,
+      useResponsesApi: true,
+    },
+  ])(
+    'reuses one cache identity across differing user turns on $surface',
+    async ({ provider, ...surface }) => {
+      const bodies: Record<string, unknown>[] = [];
+      const fetch: NonNullable<NonNullable<OpenAIConfiguration>['fetch']> = async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        const text = 'Four.';
+        return Response.json({
+          id: 'resp_test',
+          object: 'response',
+          status: 'completed',
+          model: 'gpt-5.6',
+          choices: [
+            { index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' },
+          ],
+          output: [
+            {
+              type: 'message',
+              id: 'msg_test',
+              role: 'assistant',
+              status: 'completed',
+              content: [{ type: 'output_text', text, annotations: [] }],
+            },
+          ],
+          usage: { prompt_tokens: 5, completion_tokens: 1, input_tokens: 5, output_tokens: 1 },
+        });
+      };
+      const clientOptions = buildClientOptions(surface, fetch);
+      const model = initializeModel({
+        provider,
+        clientOptions,
+      });
+
+      await model.invoke('What is 2 + 2?');
+      await model.invoke('What is the capital of France?');
+
+      expect(bodies).toHaveLength(2);
+      const [first, second] = bodies;
+      expect(first.prompt_cache_key).toBe(
+        buildPromptCacheKey({
+          agentId: 'request-test-agent',
+          provider,
+          clientOptions,
+          instructions,
+          toolDefinitions: toolDefinitions as unknown as AgentInputs['toolDefinitions'],
+        }),
+      );
+      expect(second.prompt_cache_key).toBe(first.prompt_cache_key);
+      expect(first.prompt_cache_retention).toBe('24h');
+      for (const key of [
+        'promptCacheKey',
+        'promptCacheKeyEnabled',
+        'promptCacheScope',
+        'promptCacheScopeId',
+        'promptCacheRetention',
+      ]) {
+        expect(first).not.toHaveProperty(key);
+      }
+    },
+  );
 });

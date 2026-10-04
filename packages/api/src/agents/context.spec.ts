@@ -10,6 +10,9 @@ import {
   buildAgentInstructions,
   buildAgentAdditionalInstructions,
   applyContextToAgent,
+  appendAgentInstructionTail,
+  captureConfiguredAdditionalInstructions,
+  prependAgentInstructionTail,
 } from './context';
 
 // Test schema for DynamicStructuredTool
@@ -312,6 +315,120 @@ describe('Agent Context Utilities', () => {
         debug: jest.fn(),
         error: jest.fn(),
       } as unknown as Logger;
+    });
+
+    it('places a relocated block first on the wire and first in the identity', () => {
+      const agent: { additional_instructions: string; configuredAdditionalInstructions?: string } =
+        {
+          additional_instructions: 'Use company terminology',
+        };
+
+      prependAgentInstructionTail(agent, 'Today is September 18', {
+        configured: 'Answer as of {{current_date}}',
+      });
+
+      /**
+       * Same end, both halves. The digest is a join of the recorded text, so a
+       * block sent first and recorded last would let two different prefixes
+       * read as one identity.
+       */
+      expect(agent.additional_instructions).toBe(
+        'Today is September 18\n\nUse company terminology',
+      );
+      expect(agent.configuredAdditionalInstructions).toBe(
+        'Answer as of {{current_date}}\n\nUse company terminology',
+      );
+    });
+
+    it('records the resolved text nowhere when no configured form is given', () => {
+      const agent: { additional_instructions: string; configuredAdditionalInstructions?: string } =
+        {
+          additional_instructions: 'Use company terminology',
+        };
+
+      prependAgentInstructionTail(agent, 'Today is September 18');
+
+      expect(agent.additional_instructions).toBe(
+        'Today is September 18\n\nUse company terminology',
+      );
+      expect(agent.configuredAdditionalInstructions).toBe('Use company terminology');
+    });
+
+    it('records a configuration-derived addition to the tail by default', () => {
+      const agent = {
+        additional_instructions: 'Use company terminology',
+        configuredAdditionalInstructions: 'Use company terminology',
+      };
+
+      appendAgentInstructionTail(agent, '# Skills\nreports: Create weekly reports');
+
+      expect(agent.additional_instructions).toContain('Create weekly reports');
+      /** A catalog edit has to retire the cache identity. */
+      expect(agent.configuredAdditionalInstructions).toContain('Create weekly reports');
+    });
+
+    it('leaves a request-scoped addition out of the recorded configuration', () => {
+      const agent = {
+        additional_instructions: 'Use company terminology',
+        configuredAdditionalInstructions: 'Use company terminology',
+      };
+
+      appendAgentInstructionTail(agent, 'Today is September 18', { stable: false });
+
+      expect(agent.additional_instructions).toContain('Today is September 18');
+      expect(agent.configuredAdditionalInstructions).toBe('Use company terminology');
+    });
+
+    it('keeps an earlier capture when temporally resolved instructions moved into the tail', async () => {
+      const agent: AgentWithTools & { configuredAdditionalInstructions?: string } = {
+        id: 'test-agent',
+        instructions: undefined,
+        additional_instructions: 'Today is September 17',
+        tools: [],
+      };
+      /** `initializeAgent` captures before it moves resolved instructions here. */
+      captureConfiguredAdditionalInstructions({ ...agent, additional_instructions: undefined });
+      agent.configuredAdditionalInstructions = undefined;
+
+      mockMCPManager.formatInstructionsForContext.mockResolvedValue('');
+
+      await applyContextToAgent({
+        agent,
+        sharedRunContext: 'Memory: the user prefers brevity',
+        mcpManager: mockMCPManager,
+      });
+
+      expect(agent.configuredAdditionalInstructions).toBeUndefined();
+    });
+
+    it('keeps the author\u2019s additional instructions apart from the run context', async () => {
+      const agent: AgentWithTools = {
+        id: 'test-agent',
+        instructions: 'Original instructions',
+        additional_instructions: 'Use company terminology',
+        tools: [],
+      };
+
+      mockMCPManager.formatInstructionsForContext.mockResolvedValue('');
+
+      await applyContextToAgent({
+        agent,
+        sharedRunContext: 'Memory: the user prefers brevity',
+        mcpManager: mockMCPManager,
+        agentId: 'test-agent',
+      });
+
+      expect(agent.additional_instructions).toBe(
+        'Use company terminology\n\nMemory: the user prefers brevity',
+      );
+      /**
+       * The prompt cache identity follows the configured half, which is
+       * unrecoverable from the joined string every caller sees afterwards.
+       */
+      expect(
+        (agent as AgentWithTools & { configuredAdditionalInstructions?: string })
+          .configuredAdditionalInstructions,
+      ).toBe('Use company terminology');
     });
 
     it('should apply context successfully with all components', async () => {

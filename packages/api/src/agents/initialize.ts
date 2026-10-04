@@ -105,6 +105,11 @@ import {
   isFileAuthoringToolDefinition,
 } from './tools';
 import {
+  appendAgentInstructionTail,
+  prependAgentInstructionTail,
+  captureConfiguredAdditionalInstructions,
+} from './context';
+import {
   normalizeServerName,
   requiresEphemeralUserConnection,
   splitMCPToolKey,
@@ -280,13 +285,16 @@ function hasTemporalSpecialVars(text: string): boolean {
   return temporalSpecialVarRegex.test(text);
 }
 
-function appendAdditionalInstructions(agent: Agent, text?: string | null): void {
-  if (text == null || text === '') {
-    return;
-  }
-  agent.additional_instructions = [agent.additional_instructions ?? '', text]
-    .filter(Boolean)
-    .join('\n\n');
+function appendAdditionalInstructions(
+  agent: Agent,
+  text?: string | null,
+  options: { stable?: boolean } = {},
+): void {
+  appendAgentInstructionTail(
+    agent as Agent & { configuredAdditionalInstructions?: string },
+    text,
+    options,
+  );
 }
 
 function appendProjectContextInstructions(
@@ -1189,6 +1197,12 @@ export async function initializeAgent(
   const shouldUseChatProjectContext =
     useChatProjectContext ?? params.req?.chatProjectContextEnabled === true;
   const agent = shouldUseChatProjectContext ? { ...inputAgent } : inputAgent;
+  /**
+   * Before anything appends to the instruction tail: the author's text is the
+   * identity's starting point, and every configuration-derived addition below
+   * accumulates onto it while request-scoped ones opt out.
+   */
+  captureConfiguredAdditionalInstructions(agent);
   const { user, appConfig } = runtime;
   const requestFileOwnerId = user?.id;
   const requestFileOwnerScope: FileOwnerScope | undefined = requestFileOwnerId
@@ -2463,6 +2477,16 @@ export async function initializeAgent(
     (agent.model_parameters as Record<string, unknown>).configuration = options.configOptions;
   }
 
+  /**
+   * Resolved here, relocated once the repository block has been joined. Moving
+   * the resolved text into the dynamic tail is what keeps today's date out of
+   * the cached prefix, but the tail is sent after everything the instructions
+   * field carries: relocating the agent's own prompt while a repository block
+   * stayed behind would send that block first and reverse the precedence the
+   * agent was saved with. They travel together instead, ahead of the tail.
+   */
+  let temporalInstructions: string | undefined;
+  let instructionTemplate: string | undefined;
   if (agent.instructions && agent.instructions !== '') {
     const resolvedInstructions = replaceSpecialVars({
       text: agent.instructions,
@@ -2471,8 +2495,27 @@ export async function initializeAgent(
       timezone: runtime.requestBody.timezone,
     });
     if (hasTemporalSpecialVars(agent.instructions)) {
+      /**
+       * The template, before resolution. The instructions are still
+       * configuration: recording the unresolved form means editing them
+       * retires the identity while the clock does not move it.
+       *
+       * Resolved against a fixed instant in a fixed zone, so the temporal
+       * placeholders collapse to one constant while every other substitution
+       * — the user's name, for one — resolves as the model will see it.
+       * Recording the raw template would give two users one identity for
+       * different text under `promptCacheScope: shared`; resolving with the
+       * request's timezone would make the identity follow a per-request
+       * setting whose effect is excluded from the cached prefix anyway.
+       */
+      instructionTemplate = replaceSpecialVars({
+        text: agent.instructions,
+        user: user ? (user as unknown as TUser) : null,
+        now: new Date(0),
+        timezone: 'UTC',
+      });
+      temporalInstructions = resolvedInstructions;
       agent.instructions = undefined;
-      appendAdditionalInstructions(agent, resolvedInstructions);
     } else {
       agent.instructions = resolvedInstructions;
     }
@@ -2495,6 +2538,25 @@ export async function initializeAgent(
     agent.instructions = [agent.instructions, repositoryInstructionBlock]
       .filter(Boolean)
       .join('\n\n');
+  }
+
+  if (temporalInstructions != null) {
+    /**
+     * The stable blocks leave the prefix together and in their own order, at
+     * the front of the tail, so what the model reads is what it read before
+     * the prefix was made cacheable. Recorded at the same end is the
+     * configured form: the unresolved template, joined to the repository
+     * block that traveled with it, because the identity has to follow both and
+     * has to read them in the order the model does.
+     */
+    prependAgentInstructionTail(
+      agent,
+      [temporalInstructions, agent.instructions].filter(Boolean).join('\n\n'),
+      {
+        configured: [instructionTemplate, repositoryInstructionBlock].filter(Boolean).join('\n\n'),
+      },
+    );
+    agent.instructions = undefined;
   }
 
   if (typeof agent.artifacts === 'string' && agent.artifacts !== '') {

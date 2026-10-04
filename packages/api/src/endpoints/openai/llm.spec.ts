@@ -1918,3 +1918,507 @@ describe('applyDefaultParams', () => {
     });
   });
 });
+
+describe('prompt caching', () => {
+  const azure: t.AzureOptions = {
+    azureOpenAIApiInstanceName: 'test-instance',
+    azureOpenAIApiDeploymentName: 'gpt-5-6',
+    azureOpenAIApiVersion: '2025-04-01-preview',
+    azureOpenAIApiKey: 'test-azure-key',
+  };
+
+  it.each([
+    {
+      surface: 'OpenAI',
+      options: { endpoint: EModelEndpoint.openAI },
+    },
+    {
+      surface: 'Azure OpenAI',
+      options: { endpoint: EModelEndpoint.azureOpenAI, azure },
+    },
+  ])('allows a cache key on first-party $surface by default', ({ options }) => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      modelOptions: { model: 'gpt-5.6' },
+      ...options,
+    });
+
+    expect(result.llmConfig.promptCacheKeyEnabled).toBe(true);
+  });
+
+  it.each([
+    {
+      surface: 'OpenRouter',
+      options: { endpoint: EModelEndpoint.openAI, useOpenRouter: true },
+    },
+    {
+      surface: 'a custom endpoint',
+      options: { endpoint: 'my-gateway' },
+    },
+    {
+      surface: 'an OpenAI-shaped proxy',
+      options: { endpoint: EModelEndpoint.openAI, baseURL: 'https://gateway.example.com/v1' },
+    },
+    {
+      surface: 'an Azure-shaped proxy',
+      options: {
+        endpoint: EModelEndpoint.azureOpenAI,
+        azure,
+        baseURL: 'https://gateway.example.com/v1',
+      },
+    },
+  ])('leaves $surface untouched', ({ options }) => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      modelOptions: { model: 'gpt-5.6' },
+      promptCacheRetention: '24h',
+      ...options,
+    });
+
+    expect(result.llmConfig).not.toHaveProperty('promptCacheKeyEnabled');
+    expect(result.llmConfig).not.toHaveProperty('promptCacheRetention');
+  });
+
+  it('honors an administrator opting out of the cache key', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+      promptCacheKeyEnabled: false,
+    });
+
+    expect(result.llmConfig).not.toHaveProperty('promptCacheKeyEnabled');
+  });
+
+  it('defaults to per-user cache accounting by saying nothing', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+    });
+
+    expect(result.llmConfig).not.toHaveProperty('promptCacheScope');
+  });
+
+  it('carries an administrator opting into a shared cache entry', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+      promptCacheScope: 'shared',
+    });
+
+    expect(result.llmConfig.promptCacheScope).toBe('shared');
+  });
+
+  it('withholds the scope when no key is coming', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+      promptCacheKeyEnabled: false,
+      promptCacheScope: 'shared',
+    });
+
+    expect(result.llmConfig).not.toHaveProperty('promptCacheScope');
+  });
+
+  it('opts into a cache key but leaves partition identity to createRun when dropParams removes the user field', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6', user: 'user-abc' },
+      dropParams: ['user'],
+    });
+
+    /** Dropping the wire field must not collapse every user onto one entry. */
+    expect(result.llmConfig).not.toHaveProperty('user');
+    expect(result.llmConfig.promptCacheKeyEnabled).toBe(true);
+    expect(result.llmConfig).not.toHaveProperty('promptCacheScopeId');
+  });
+
+  it('opts into a cache key but leaves partition identity to createRun for a search model that drops the user field', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-4o-search-preview', user: 'user-abc' },
+    });
+
+    expect(result.llmConfig).not.toHaveProperty('user');
+    expect(result.llmConfig.promptCacheKeyEnabled).toBe(true);
+    expect(result.llmConfig).not.toHaveProperty('promptCacheScopeId');
+  });
+
+  it('leaves a raw administrator-supplied cache key for createRun to honor', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+      addParams: { prompt_cache_key: 'tenant-fixed-key' },
+    });
+
+    const kwargs = (result.llmConfig.modelKwargs ?? {}) as Record<string, unknown>;
+    /**
+     * Moved onto the constructor field: LangChain spreads the kwargs first and
+     * would overwrite a raw key with its own undefined, sending nothing.
+     */
+    expect(result.llmConfig.promptCacheKey).toBe('tenant-fixed-key');
+    expect(kwargs).not.toHaveProperty('prompt_cache_key');
+    /** Withholding the marker is what stops createRun synthesizing over it. */
+    expect(result.llmConfig).not.toHaveProperty('promptCacheKeyEnabled');
+  });
+
+  it.each([['prompt_cache_key'], ['promptCacheKey']])(
+    'drops a raw pinned key that promotion moved, under dropParams %s',
+    (dropped) => {
+      /**
+       * The promotion above moves the raw key onto the constructor field so the
+       * serializer cannot overwrite it, and the generic drop cascade then looks
+       * for a name that is no longer there. Either spelling has to remove both.
+       */
+      const result = getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        endpoint: EModelEndpoint.openAI,
+        modelOptions: { model: 'gpt-5.6' },
+        addParams: { prompt_cache_key: 'tenant-fixed-key' },
+        dropParams: [dropped],
+      });
+
+      const kwargs = (result.llmConfig.modelKwargs ?? {}) as Record<string, unknown>;
+      expect(result.llmConfig).not.toHaveProperty('promptCacheKey');
+      expect(kwargs).not.toHaveProperty('prompt_cache_key');
+      expect(result.llmConfig).not.toHaveProperty('promptCacheKeyEnabled');
+    },
+  );
+
+  it.each([['prompt_cache_retention'], ['promptCacheRetention']])(
+    'drops raw pinned retention that promotion moved, under dropParams %s',
+    (dropped) => {
+      const result = getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        endpoint: EModelEndpoint.openAI,
+        modelOptions: { model: 'gpt-5.6' },
+        promptCacheRetention: '24h',
+        addParams: { prompt_cache_retention: '24h' },
+        dropParams: [dropped],
+      });
+
+      const kwargs = (result.llmConfig.modelKwargs ?? {}) as Record<string, unknown>;
+      expect(result.llmConfig).not.toHaveProperty('promptCacheRetention');
+      expect(kwargs).not.toHaveProperty('prompt_cache_retention');
+    },
+  );
+
+  it.each([['prompt_cache_key'], ['promptCacheKey']])(
+    'drops a raw pinned key on first-party Azure too, under dropParams %s',
+    (dropped) => {
+      /**
+       * The Azure branch reaches the same enforcement through its own call
+       * site, after the deployment name is resolved: `firstPartyEndpoint` is
+       * `firstPartyOpenAI || firstPartyAzure`, so a canonical Azure resource
+       * is on this policy path exactly as OpenAI is.
+       */
+      const result = getOpenAILLMConfig({
+        azure: {
+          azureOpenAIApiInstanceName: 'test-instance',
+          azureOpenAIApiDeploymentName: 'production-deployment',
+          azureOpenAIApiVersion: '2025-04-01-preview',
+          azureOpenAIApiKey: 'test-api-key',
+        },
+        apiKey: 'test-api-key',
+        streaming: true,
+        endpoint: EModelEndpoint.azureOpenAI,
+        modelOptions: { model: 'gpt-5.6' },
+        addParams: { prompt_cache_key: 'tenant-fixed-key' },
+        dropParams: [dropped],
+      });
+
+      const kwargs = (result.llmConfig.modelKwargs ?? {}) as Record<string, unknown>;
+      expect(result.llmConfig).not.toHaveProperty('promptCacheKey');
+      expect(kwargs).not.toHaveProperty('prompt_cache_key');
+      expect(result.llmConfig).not.toHaveProperty('promptCacheKeyEnabled');
+    },
+  );
+
+  it('sends no key at all when an endpoint opts out over a raw pinned one', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+      promptCacheKeyEnabled: false,
+      addParams: { prompt_cache_key: 'tenant-fixed-key' },
+    });
+
+    const kwargs = (result.llmConfig.modelKwargs ?? {}) as Record<string, unknown>;
+    expect(result.llmConfig).not.toHaveProperty('promptCacheKey');
+    /** `addParams` routes the raw spelling into the kwargs the request forwards. */
+    expect(kwargs).not.toHaveProperty('prompt_cache_key');
+  });
+
+  it('keeps a group-scoped cache scope off the request body', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+      promptCacheScope: 'user',
+      addParams: { promptCacheScope: 'shared' },
+    });
+
+    const kwargs = (result.llmConfig.modelKwargs ?? {}) as Record<string, unknown>;
+    /** A host-only control no request body accepts, and the group's value wins. */
+    expect(kwargs).not.toHaveProperty('promptCacheScope');
+    expect(result.llmConfig.promptCacheScope).toBe('shared');
+  });
+
+  it('lets a model group override the endpoint retention', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+      promptCacheRetention: '24h',
+      addParams: { promptCacheRetention: 'in-memory' },
+    });
+
+    /** The endpoint value is a default; the group's own is the instruction. */
+    expect(result.llmConfig.promptCacheRetention).toBe('in-memory');
+  });
+
+  it('honors a wire-spelled explicit-cache drop', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+      addParams: { promptCacheExplicit: true },
+      dropParams: ['prompt_cache_options'],
+    });
+
+    expect(result.llmConfig).not.toHaveProperty('promptCacheExplicit');
+  });
+
+  it('honors a wire-spelled retention drop', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+      promptCacheRetention: '24h',
+      dropParams: ['prompt_cache_retention'],
+    });
+
+    /** LangChain serializes the constructor field back to the excluded name. */
+    expect(result.llmConfig).not.toHaveProperty('promptCacheRetention');
+  });
+
+  it('leaves retention alone when only the key is switched off', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+      promptCacheKeyEnabled: false,
+      addParams: { prompt_cache_key: 'tenant-fixed-key', prompt_cache_retention: '24h' },
+    });
+
+    const kwargs = (result.llmConfig.modelKwargs ?? {}) as Record<string, unknown>;
+    expect(kwargs).not.toHaveProperty('prompt_cache_key');
+    /**
+     * `promptCacheKey: false` disables the key, not the other two levers — and
+     * retention rides on the constructor field, which is what the request
+     * serializer writes last.
+     */
+    expect(result.llmConfig.promptCacheRetention).toBe('24h');
+  });
+
+  it('ignores cache controls an agent author nested in modelKwargs in either spelling', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: {
+        model: 'gpt-5.6',
+        modelKwargs: {
+          promptCacheScopeId: 'someone-else',
+          promptCacheKey: 'author-chosen-key',
+          prompt_cache_retention: '24h',
+        },
+      } as unknown as Parameters<typeof getOpenAILLMConfig>[0]['modelOptions'],
+    });
+
+    const kwargs = (result.llmConfig.modelKwargs ?? {}) as Record<string, unknown>;
+    /** These are forwarded verbatim, so an unknown one fails the request outright. */
+    expect(kwargs).not.toHaveProperty('promptCacheScopeId');
+    expect(kwargs).not.toHaveProperty('promptCacheKey');
+    expect(kwargs).not.toHaveProperty('prompt_cache_retention');
+  });
+
+  it('ignores raw wire cache controls an agent author put in modelKwargs', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: {
+        model: 'gpt-5.6',
+        modelKwargs: {
+          prompt_cache_key: 'author-chosen-key',
+          prompt_cache_retention: '24h',
+          prompt_cache_options: { enabled: true },
+        },
+      } as unknown as Parameters<typeof getOpenAILLMConfig>[0]['modelOptions'],
+    });
+
+    const kwargs = (result.llmConfig.modelKwargs ?? {}) as Record<string, unknown>;
+    /** `modelKwargs` is forwarded to the request body verbatim. */
+    expect(kwargs).not.toHaveProperty('prompt_cache_key');
+    expect(kwargs).not.toHaveProperty('prompt_cache_retention');
+    expect(kwargs).not.toHaveProperty('prompt_cache_options');
+  });
+
+  it('ignores cache controls an agent author hid in a fallback client', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: {
+        model: 'gpt-5.6',
+        fallbacks: [
+          {
+            provider: 'openAI',
+            clientOptions: {
+              model: 'gpt-5.6',
+              promptCacheKey: 'author-chosen-key',
+              promptCacheRetention: '24h',
+              promptCacheScope: 'shared',
+            },
+          },
+        ],
+      } as unknown as Parameters<typeof getOpenAILLMConfig>[0]['modelOptions'],
+    });
+
+    const fallback = (
+      result.llmConfig as unknown as {
+        fallbacks?: Array<{ clientOptions?: Record<string, unknown> }>;
+      }
+    ).fallbacks?.[0]?.clientOptions;
+    /** A fallback client is built from these, so the policy has to reach them too. */
+    expect(fallback).not.toHaveProperty('promptCacheKey');
+    expect(fallback).not.toHaveProperty('promptCacheRetention');
+    expect(fallback).not.toHaveProperty('promptCacheScope');
+    expect(fallback).toHaveProperty('model', 'gpt-5.6');
+  });
+
+  it('sends no key at all when an endpoint opts out over a pinned one', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+      promptCacheKeyEnabled: false,
+      addParams: { promptCacheKey: 'tenant-fixed-key' },
+    });
+
+    expect(result.llmConfig).not.toHaveProperty('promptCacheKey');
+    expect(result.llmConfig).not.toHaveProperty('promptCacheKeyEnabled');
+  });
+
+  it('ignores cache controls an agent author put in model parameters', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: {
+        model: 'gpt-5.6',
+        user: 'user-abc',
+        promptCacheScope: 'shared',
+        promptCacheScopeId: 'someone-else',
+        promptCacheKey: 'author-chosen-key',
+        promptCacheRetention: '24h',
+        promptCacheExplicit: true,
+      } as unknown as Parameters<typeof getOpenAILLMConfig>[0]['modelOptions'],
+    });
+
+    /** The endpoint said nothing, so the run keys per user as it would without the agent. */
+    expect(result.llmConfig).not.toHaveProperty('promptCacheScope');
+    expect(result.llmConfig).not.toHaveProperty('promptCacheScopeId');
+    expect(result.llmConfig).not.toHaveProperty('promptCacheKey');
+    expect(result.llmConfig).not.toHaveProperty('promptCacheRetention');
+    expect(result.llmConfig).not.toHaveProperty('promptCacheExplicit');
+    expect(result.llmConfig.promptCacheKeyEnabled).toBe(true);
+  });
+
+  it('still honors the same controls from endpoint configuration', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6', promptCacheScope: 'shared' } as unknown as Parameters<
+        typeof getOpenAILLMConfig
+      >[0]['modelOptions'],
+      promptCacheScope: 'user',
+      promptCacheRetention: '24h',
+    });
+
+    expect(result.llmConfig.promptCacheScope).toBe('user');
+    expect(result.llmConfig.promptCacheRetention).toBe('24h');
+  });
+
+  it('keeps explicit cache controls off unless asked for', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+    });
+
+    expect(result.llmConfig).not.toHaveProperty('promptCacheExplicit');
+    expect(result.llmConfig).not.toHaveProperty('promptCacheRetention');
+  });
+
+  it('leaves an administrator-supplied cache key untouched by later synthesis', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+      addParams: { promptCacheKey: 'tenant-fixed-key', promptCacheRetention: '24h' },
+    });
+
+    expect(result.llmConfig.promptCacheKey).toBe('tenant-fixed-key');
+    expect(result.llmConfig.promptCacheRetention).toBe('24h');
+    expect(result.llmConfig.modelKwargs).toBeUndefined();
+    /** `createRun` synthesizes only on this marker, so the pinned key survives. */
+    expect(result.llmConfig).not.toHaveProperty('promptCacheKeyEnabled');
+  });
+
+  it('lets dropParams remove the cache controls it added', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: { model: 'gpt-5.6' },
+      promptCacheRetention: '24h',
+      addParams: { promptCacheKey: 'tenant-fixed-key', promptCacheExplicit: true },
+      dropParams: ['promptCacheKey', 'promptCacheRetention', 'promptCacheExplicit'],
+    });
+
+    expect(result.llmConfig).not.toHaveProperty('promptCacheKey');
+    expect(result.llmConfig).not.toHaveProperty('promptCacheRetention');
+    expect(result.llmConfig).not.toHaveProperty('promptCacheExplicit');
+    /** Dropping the key must also withhold the marker, or `createRun` recreates it. */
+    expect(result.llmConfig).not.toHaveProperty('promptCacheKeyEnabled');
+  });
+});

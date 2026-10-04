@@ -320,3 +320,55 @@ describe('initializeOpenAI – custom headers', () => {
     expect(options.headers).toEqual({ 'X-Global': '{{LIBRECHAT_USER_ID}}' });
   });
 });
+
+describe('initializeOpenAI – prompt-cache levers', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('lets the endpoint override the deployment-wide default', async () => {
+    const params = createParams({ OPENAI_API_KEY: 'sk-test' });
+    /** `createParams` builds a minimal request whose config this spec owns. */
+    const config = params.req.config as { endpoints: Record<string, unknown> };
+    config.endpoints = {
+      all: { promptCacheScope: 'shared', promptCacheRetention: '24h' },
+      [EModelEndpoint.openAI]: { promptCacheScope: 'user', promptCacheKey: false },
+    };
+
+    try {
+      await initializeOpenAI(params);
+    } finally {
+      (params as unknown as { _restore: () => void })._restore();
+    }
+
+    const options = mockGetOpenAIConfig.mock.calls[0][1] as {
+      promptCacheScope?: string;
+      promptCacheKeyEnabled?: boolean;
+      promptCacheRetention?: string;
+    };
+    expect(options.promptCacheScope).toBe('user');
+    expect(options.promptCacheKeyEnabled).toBe(false);
+    /** Unset on the endpoint, so the deployment-wide default still applies. */
+    expect(options.promptCacheRetention).toBe('24h');
+  });
+
+  it('applies the deployment-wide default to Azure when its own block says nothing', async () => {
+    (getAzureCredentials as jest.Mock).mockReturnValueOnce({ azureOpenAIApiKey: 'az-key' });
+    const params = createParams({ AZURE_API_KEY: 'az-key' });
+    params.endpoint = EModelEndpoint.azureOpenAI;
+    /** `createParams` builds a minimal request whose config this spec owns. */
+    const config = params.req.config as { endpoints: Record<string, unknown> };
+    config.endpoints = {
+      all: { promptCacheScope: 'shared' },
+    };
+
+    try {
+      await initializeOpenAI(params);
+    } finally {
+      (params as unknown as { _restore: () => void })._restore();
+    }
+
+    const options = mockGetOpenAIConfig.mock.calls[0][1] as { promptCacheScope?: string };
+    expect(options.promptCacheScope).toBe('shared');
+  });
+});

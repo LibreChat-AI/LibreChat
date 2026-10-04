@@ -24,6 +24,7 @@ import type {
   StreamPreemption,
   LCToolRegistry,
   SubagentConfig,
+  GraphEdge,
   SubagentResolveContext,
   SubagentConfigEntry,
   HookCallback,
@@ -109,6 +110,7 @@ import {
 } from './files/runtime';
 import { resolveToolApprovalPolicy, exemptAskUserQuestionFromApproval } from '~/agents/hitl/policy';
 import { applyCustomHandoffPromptKeyCompatibility } from '~/agents/handoffPromptKeyCompatibility';
+import { buildPromptCacheKey, PROMPT_CACHE_MARKER_FIELDS } from '~/endpoints/openai/promptCache';
 import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/agents/intent';
 import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils/headers';
 import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
@@ -441,6 +443,12 @@ type RunAgent = Omit<Agent, 'tools'> & {
   imageDetail?: ImageDetail;
   toolContextMap?: Record<string, unknown>;
   dynamicToolContextMap?: Record<string, unknown>;
+  /**
+   * The author's `additional_instructions`, captured before the host appended
+   * this run's memory, file and tool context to the same field. Stable, so it
+   * belongs in the prompt cache identity; the appended remainder does not.
+   */
+  configuredAdditionalInstructions?: string;
   toolRegistry?: LCToolRegistry;
   /** Serializable tool definitions for event-driven execution */
   toolDefinitions?: LCTool[];
@@ -1309,14 +1317,18 @@ function resolveSummarizationProvider(
     const provider = detectedProvider ?? overrideProvider;
     /**
      * On the agent's provider the SDK layers these over the agent's own client options, so this
-     * different endpoint replaces the agent's API mode, first-party declaration, reasoning and
-     * request kwargs (an Azure Astra agent's Responses routing, for one) instead of inheriting them.
+     * different endpoint replaces the agent's API mode, first-party declaration, reasoning,
+     * request kwargs (an Azure Astra agent's Responses routing, for one) and prompt-cache
+     * identity instead of inheriting them. The cache key in particular names the agent's stable
+     * prefix, which a summarization request does not send.
      */
     if (provider === target.agentProvider) {
       clientOverrides.useResponsesApi ??= false;
       clientOverrides.firstPartyEndpoint ??= false;
       clientOverrides.modelKwargs ??= {};
       clientOverrides.reasoning ??= undefined;
+      clientOverrides.promptCacheKey ??= undefined;
+      clientOverrides.promptCacheExplicit ??= false;
     }
     return { provider, clientOverrides };
   } catch (error) {
@@ -1469,6 +1481,73 @@ function shapeSummarizationConfig(
       ...kwargs
     } = effectiveKwargs;
     parameters = { ...parameters, modelKwargs: kwargs };
+  }
+
+  /**
+   * A summarization request that reuses the agent's client options inherits the
+   * `prompt_cache_key` `createRun` synthesizes for the agent's stable
+   * instruction prefix — a prefix this request does not send, so leaving the
+   * key on would file unrelated prompts under one cache identity.
+   *
+   * Only the inherited key is cleared. One the summarization config supplies
+   * itself, like one an administrator pins through `addParams`, is a
+   * deliberate choice about this request's own routing and survives; the merge
+   * above already establishes that explicit user parameters win.
+   */
+  const agentParameters = agent?.model_parameters as
+    | {
+        promptCacheKeyEnabled?: boolean;
+        promptCacheKey?: string;
+        modelKwargs?: Record<string, unknown>;
+      }
+    | undefined;
+  /**
+   * The target's own request kwargs, from both layers that can carry one.
+   *
+   * `summarization.parameters` is the operator's explicit layer, and
+   * `clientOverrides` is the endpoint configuration resolved for the target,
+   * whose `addParams` are merged into `parameters` above. A custom endpoint
+   * keeps a raw key there rather than on the constructor field, because the
+   * promotion that moves it is first-party only — so reading the yaml layer
+   * alone mistook the target's own key for the agent's inherited one and
+   * cleared it, on a surface whose contract is to keep what it is configured
+   * with.
+   */
+  const targetKwargs = isPlainObject(clientOverrides?.modelKwargs)
+    ? clientOverrides.modelKwargs
+    : undefined;
+  const ownKwargs =
+    targetKwargs != null || isPlainObject(userParameters?.modelKwargs)
+      ? { ...targetKwargs, ...(userParameters?.modelKwargs as Record<string, unknown> | undefined) }
+      : undefined;
+  if (provider === fallbackProvider && parameters?.promptCacheKey == null) {
+    /**
+     * Whether `createRun` is going to synthesize one or an administrator
+     * already pinned it: either way the value names the agent's stable prefix,
+     * which this request does not send.
+     */
+    if (
+      agentParameters?.promptCacheKeyEnabled === true ||
+      agentParameters?.promptCacheKey != null
+    ) {
+      parameters = { ...parameters, promptCacheKey: undefined };
+    }
+    /**
+     * And the wire spelling of it, which an administrator can pin through
+     * `addParams`: the agent's request kwargs are inherited whole, so that key
+     * arrives on a request that does not send the prefix it names. A key the
+     * summarization config pinned for itself is a decision about this
+     * request's own routing and stays.
+     */
+    if (inheritedKwargs?.prompt_cache_key != null && ownKwargs?.prompt_cache_key == null) {
+      parameters = {
+        ...parameters,
+        modelKwargs: {
+          ...(isPlainObject(parameters?.modelKwargs) ? parameters.modelKwargs : {}),
+          prompt_cache_key: undefined,
+        },
+      };
+    }
   }
 
   return {
@@ -1651,10 +1730,7 @@ function createLazySubagentConfig(
         false,
         onResolvedAgent,
       );
-      if (grandchildConfigs.length > 0) {
-        childInputs.subagentConfigs = grandchildConfigs;
-      }
-      return childInputs;
+      return sealSubagentInputs(childInputs, grandchildConfigs);
     },
   };
 }
@@ -1836,6 +1912,97 @@ export function anyAgentReplaysReasoningContent(
 }
 
 /**
+ * Stamps the deterministic `prompt_cache_key` onto one finished `AgentInputs`.
+ *
+ * `getOpenAILLMConfig` resolved whether the endpoint allows a key and withheld
+ * the marker when an administrator already settled one. The value can only be
+ * built here, and only once the input is final: the key names the prefix that
+ * is actually sent, and tools are still added and stripped after an input is
+ * first assembled — background-task tools are registered on the parent, and
+ * isolated children drop background and intent definitions they inherited.
+ * Hashing earlier would let two different wire prefixes share one identity.
+ *
+ * *What* enters the digest is not decided here. `buildPromptCacheKey` derives
+ * it from the finished input, field by field, against a total disposition map;
+ * this function decides only *when* an input is final and which of the graph's
+ * handoff edges leave the agent it belongs to. The distinction is the point:
+ * every miss this key has had was a model-facing surface absent from a list
+ * written at a call site, so there is no longer a list at a call site.
+ */
+function finalizePromptCacheKey(input: AgentInputs, handoffEdges?: readonly unknown[]): void {
+  const options = input.clientOptions as Partial<t.OAIClientOptions> | undefined;
+  if (options == null) {
+    return;
+  }
+  if (options.promptCacheKeyEnabled === true && options.promptCacheKey == null) {
+    options.promptCacheKey = buildPromptCacheKey(input, { handoffEdges });
+  }
+  for (const field of PROMPT_CACHE_MARKER_FIELDS) {
+    delete options[field];
+  }
+}
+
+/**
+ * Projects one outgoing handoff edge onto what the model actually sees of it.
+ *
+ * The SDK turns each edge into an `lc_transfer_to_*` tool, so the target, the
+ * description and the input parameter's name and description are all part of
+ * the wire prefix. `condition` is deliberately absent: it routes inside the
+ * graph and never reaches the model.
+ */
+function handoffEdgeIdentity(edge: GraphEdge): unknown {
+  /**
+   * The generated transfer tool takes its input parameter only from a string
+   * prompt (`MultiAgentGraph` builds the schema when `typeof edge.prompt ===
+   * 'string'`), so a callback prompt reaches the model in no form at all: no
+   * parameter, no description, nothing to name. It hashes like an edge with no
+   * prompt, and the parameter name comes along only when the parameter exists.
+   */
+  const prompt = typeof edge.prompt === 'string' ? edge.prompt : undefined;
+  return {
+    /**
+     * The tool the model sees is `lc_transfer_to_<to>`, and its description
+     * falls back to a template over the same value, so the target id is the
+     * whole of the destination's contribution — renaming the destination agent
+     * changes nothing in this tool.
+     */
+    /**
+     * One `lc_transfer_to_<destination>` tool per target, pushed in the order
+     * the targets are listed — so the order is part of the serialized tool
+     * prefix and stays in the identity, while a single target and a
+     * one-element list, which advertise the same tool, hash alike.
+     */
+    to: Array.isArray(edge.to) ? [...edge.to] : [edge.to],
+    ...(typeof edge.description === 'string' ? { description: edge.description } : {}),
+    /** Absent means `handoff`, so both spellings must hash alike. */
+    edgeType: edge.edgeType ?? 'handoff',
+    ...(prompt != null
+      ? {
+          prompt,
+          promptKey: typeof edge.promptKey === 'string' ? edge.promptKey : 'instructions',
+        }
+      : {}),
+  };
+}
+
+/**
+ * The handoff tools that leave one agent.
+ *
+ * Only a `handoff` edge becomes an `lc_transfer_to_*` tool; a `direct` edge is
+ * automatic routing the model never sees, which is why the production tool
+ * allowlist skips it too (`agents/tools.ts`). Hashing one would give two saved
+ * teams that differ only in their routing separate identities for an identical
+ * prefix — a miss, where the whole point is reuse. A grouped `from` waits on
+ * all of its sources, so any member of the group carries the edge.
+ */
+function outgoingHandoffEdges(edges: readonly GraphEdge[] | undefined, agentId: string): unknown[] {
+  return (edges ?? [])
+    .filter((edge) => edge.edgeType !== 'direct')
+    .filter((edge) => (Array.isArray(edge.from) ? edge.from : [edge.from]).includes(agentId))
+    .map(handoffEdgeIdentity);
+}
+
+/**
  * Builds SubagentConfig entries for an agent: optional self-spawn plus any
  * explicit eager children and inert lazy descriptors. Returns an empty array
  * when subagents are disabled or no spawn targets are available.
@@ -1853,6 +2020,23 @@ function buildIsolatedAgentInputs(
     childInputs.additional_instructions = [childInputs.additional_instructions, skillInstructions]
       .filter((value): value is string => typeof value === 'string' && value.length > 0)
       .join('\n\n');
+    /**
+     * These bodies are configuration, not conversation, but they land in the
+     * same string as memory and file context, where nothing downstream can
+     * tell the two apart again. Record them for the cache identity here, the
+     * only place that knows which half of that string is stable: editing a
+     * skill an agent always applies changes the system prefix the model
+     * reads, and has to retire the key.
+     */
+    const childOptions = childInputs.clientOptions as Partial<t.OAIClientOptions> | undefined;
+    if (childOptions != null) {
+      childOptions.promptCacheStableInstructions = [
+        childOptions.promptCacheStableInstructions,
+        skillInstructions,
+      ]
+        .filter((value): value is string => typeof value === 'string' && value.length > 0)
+        .join('\n\n');
+    }
   }
   if ((child.backgroundToolNames?.length ?? 0) > 0) {
     childInputs.toolDefinitions = stripBackgroundFromToolDefinitions(
@@ -1874,6 +2058,50 @@ function buildIsolatedAgentInputs(
       child.intentToolNames,
     );
   }
+  /**
+   * Deliberately not finalized here. The delegation tool a child advertises is
+   * generated from `subagentConfigs`, which only exist after recursing through
+   * this child, so its cache identity can only be sealed by the caller that
+   * attaches them — see `sealSubagentInputs`.
+   */
+  return childInputs;
+}
+
+/**
+ * Gives one occurrence of an input its own mutable shell before it is sealed.
+ *
+ * Sealing writes the key onto `clientOptions` and removes the marker that
+ * allowed it, so an input object that reaches two occurrences keeps the first
+ * one's identity. That happens on two paths: `prebuiltGraphInputs` builds each
+ * saved-team member once and hands the same object to every team listing it,
+ * and the self-spawn entry starts as a shallow spread of its parent. Copying
+ * the shell — not the built tool arrays or registry under it — keeps the build
+ * shared while making the identity per occurrence.
+ */
+function ownSealableInputs(input: AgentInputs): AgentInputs {
+  return {
+    ...input,
+    clientOptions: { ...(input.clientOptions ?? {}) },
+  } as AgentInputs;
+}
+
+/**
+ * Attaches a child's resolved descendants and seals its cache identity.
+ *
+ * Both the eager and the lazily resolved path build a child, recurse for its
+ * own spawn targets, then attach them; the key has to be computed after that
+ * attachment or the child would advertise a delegation tool its key does not
+ * describe.
+ */
+function sealSubagentInputs(
+  childInputs: AgentInputs,
+  descendants: SubagentConfigEntry[],
+  handoffEdges?: readonly unknown[],
+): AgentInputs {
+  if (descendants.length > 0) {
+    childInputs.subagentConfigs = descendants;
+  }
+  finalizePromptCacheKey(childInputs, handoffEdges);
   return childInputs;
 }
 
@@ -1901,12 +2129,18 @@ function buildSubagentConfigs(
     countSubagentConfig(state);
     /**
      * Self-spawn reuses the parent's AgentInputs. When the parent has
-     * background or host-injected intent tools, provide a sanitized copy so
-     * the isolated child — which runs the direct/child-graph path rather
-     * than the host interceptors — doesn't advertise `run_in_background` /
+     * background or host-injected intent tools, the copy is sanitized so
+     * the isolated child (which runs the direct/child-graph path rather
+     * than the host interceptors) doesn't advertise `run_in_background` /
      * `check_background_task` or an injected `intent` param its direct tool
      * invocations would forward to tools that never declared it. The
      * resolver keeps a provided `agentInputs` even with `self: true`.
+     *
+     * The copy is provided even when nothing needs sanitizing, so the child
+     * is sealed under its own key: left to the SDK, it would spread the
+     * parent's finished inputs and send the parent's key with a prefix that
+     * lacks the delegation tool and `graphTools`, both of which the SDK
+     * strips from a self child.
      */
     const hasBackground = detachedTasksEnabled || (agent.backgroundToolNames?.length ?? 0) > 0;
     const hasInjectedIntent = (agent.intentToolNames?.length ?? 0) > 0;
@@ -1914,6 +2148,29 @@ function buildSubagentConfigs(
       stripBackgroundFromToolRegistry(agentInput.toolRegistry, agent.backgroundToolNames),
       agent.intentToolNames,
     );
+    const selfChildInputs = ownSealableInputs(
+      hasBackground || hasInjectedIntent
+        ? {
+            ...agentInput,
+            toolDefinitions: stripIntentFromToolDefinitions(
+              stripBackgroundFromToolDefinitions(
+                agentInput.toolDefinitions,
+                agent.backgroundToolNames,
+              ),
+              agent.intentToolNames,
+            ),
+            /** `registerBackgroundTaskTool` mutates the parent registry after
+             * configs are built. Detach its self-child snapshot so the host
+             * poll tool cannot appear there through that shared Map. */
+            toolRegistry:
+              detachedTasksEnabled && sanitizedToolRegistry != null
+                ? new Map(sanitizedToolRegistry)
+                : sanitizedToolRegistry,
+          }
+        : agentInput,
+    );
+    delete (selfChildInputs as AgentInputs & { graphTools?: unknown }).graphTools;
+    finalizePromptCacheKey(selfChildInputs);
     configs.push({
       self: true,
       type: SELF_SUBAGENT_TYPE,
@@ -1921,27 +2178,7 @@ function buildSubagentConfigs(
       description: `Spawn ${selfName} in an isolated context to handle a focused subtask. Verbose tool output stays in the child's context; only a summary returns.`,
       /** Self-spawn reuses the parent's config, so mirror the parent's recursion limit. */
       maxTurns: resolveSubagentMaxTurns(agentsEConfig, agent),
-      ...(hasBackground || hasInjectedIntent
-        ? {
-            agentInputs: {
-              ...agentInput,
-              toolDefinitions: stripIntentFromToolDefinitions(
-                stripBackgroundFromToolDefinitions(
-                  agentInput.toolDefinitions,
-                  agent.backgroundToolNames,
-                ),
-                agent.intentToolNames,
-              ),
-              /** `registerBackgroundTaskTool` mutates the parent registry after
-               * configs are built. Detach its self-child snapshot so the host
-               * poll tool cannot appear there through that shared Map. */
-              toolRegistry:
-                detachedTasksEnabled && sanitizedToolRegistry != null
-                  ? new Map(sanitizedToolRegistry)
-                  : sanitizedToolRegistry,
-            },
-          }
-        : {}),
+      agentInputs: selfChildInputs,
     });
   }
 
@@ -1984,9 +2221,7 @@ function buildSubagentConfigs(
       detachedTasksEnabled,
       onResolvedAgent,
     );
-    if (grandchildConfigs.length > 0) {
-      childInputs.subagentConfigs = grandchildConfigs;
-    }
+    sealSubagentInputs(childInputs, grandchildConfigs);
     configs.push({
       type: child.id,
       name: child.name ?? child.id,
@@ -2034,9 +2269,22 @@ function buildSubagentConfigs(
       type: definition.type,
       name: definition.name,
       description: definition.description,
-      agents: memberConfigs.map(
-        (member) =>
-          prebuiltGraphInputs?.get(member.id) ?? buildIsolatedAgentInputs(member, toInput),
+      /**
+       * A graph member attaches no descendants — it delegates through the
+       * graph's edges rather than through a delegation tool of its own — but
+       * those edges are exactly what the SDK turns into its handoff tools, so
+       * each member is sealed with the ones that leave it. One occurrence per
+       * team, because the same member in two teams leaves through different
+       * edges and `prebuiltGraphInputs` hands both the same object.
+       */
+      agents: memberConfigs.map((member) =>
+        sealSubagentInputs(
+          ownSealableInputs(
+            prebuiltGraphInputs?.get(member.id) ?? buildIsolatedAgentInputs(member, toInput),
+          ),
+          [],
+          outgoingHandoffEdges(definition.edges, member.id),
+        ),
       ),
       /**
        * The persisted API accepts `excludeResults: false` as the explicit
@@ -2448,6 +2696,48 @@ export async function createRun({
       ) as t.RunLLMConfig,
       modelCallbacks,
     );
+    /**
+     * The cache partition identity, taken from the authenticated user of this
+     * run rather than from the `user` field the request happens to carry.
+     * That field is not an identity: `addParams.user` pins it to a constant,
+     * `dropParams: ['user']` removes it, and the `gpt-4o*search` models drop
+     * it unconditionally — each of which merges every user of an agent onto
+     * one cache entry, which is exactly what the per-user default exists to
+     * prevent. Travels as a marker and is deleted before the request is sent.
+     */
+    const cacheOptions = llmConfig as Partial<t.OAIClientOptions>;
+    /**
+     * `_id` as well as `id`: a caller that took its user from a lean query or
+     * a token payload has only the document id, and dropping the partition
+     * there would merge every user of an agent onto one entry — the failure
+     * this scope exists to prevent, arrived at from the other direction.
+     */
+    const scopeUserId =
+      typeof user?.id === 'string' && user.id.length > 0
+        ? user.id
+        : ((user as { _id?: unknown } | undefined)?._id?.toString() ?? undefined);
+    if (cacheOptions.promptCacheKeyEnabled === true) {
+      if (isNonEmptyString(scopeUserId)) {
+        cacheOptions.promptCacheScopeId = scopeUserId;
+      } else if (cacheOptions.promptCacheScope !== 'shared') {
+        /**
+         * No identity, no key. The per-user default cannot be honored without
+         * one, and falling back to an unscoped identity would file every such
+         * run under a single entry — the boundary this scope exists to keep.
+         * Only an administrator who asked for one shared entry gets one.
+         */
+        delete cacheOptions.promptCacheKeyEnabled;
+      }
+    }
+    /**
+     * The stable half of the dynamic tail. `additional_instructions` reaches
+     * this point already joined with the run's memory, file and dynamic tool
+     * context, so the configured text is captured by the host before that
+     * append and hashed from here instead.
+     */
+    if (typeof agent.configuredAdditionalInstructions === 'string') {
+      cacheOptions.promptCacheStableInstructions = agent.configuredAdditionalInstructions;
+    }
 
     const joinInstructionMap = (map?: Record<string, unknown>) =>
       Object.values(map ?? {})
@@ -2491,11 +2781,45 @@ export async function createRun({
      */
     let toolDefinitions = agent.toolDefinitions ?? [];
     let toolRegistry = agent.toolRegistry;
+    /**
+     * Definitions this conversation discovered through `tool_search` must not
+     * reach the cache identity: hashing them would give every conversation its
+     * own entry, which is the reuse the key exists for. They are recorded by
+     * name rather than withheld from the request — the model does receive
+     * them, they are simply not part of the prefix the agent is configured to
+     * send.
+     *
+     * Recorded whether or not the definition is appended below. `toolRegistry`
+     * and `toolDefinitions` are the same objects (`classification.ts` builds
+     * the array from the registry's values), so `overrideDeferLoading` flips
+     * `defer_loading` on definitions that are already bound, which moves the
+     * digest just as an appended definition would.
+     */
+    /** Null-prototype, so a tool named `__proto__` records an entry rather than a prototype. */
+    const configuredToolState: Record<string, { appended?: true; deferLoading?: boolean }> =
+      Object.create(null) as Record<string, { appended?: true; deferLoading?: boolean }>;
     if (!isSubagent && discoveredTools.size > 0 && agent.toolRegistry) {
+      const existingToolNames = new Set(toolDefinitions.map((d) => d.name));
+      /**
+       * Read before the override below, which rewrites `defer_loading` on the
+       * definitions themselves — `toolDefinitions` is built from the
+       * registry's own values, so those are the same objects the identity
+       * hashes. The recorded value may be `false` or absent when an
+       * administrator has since made the tool eager.
+       */
+      for (const toolName of discoveredTools) {
+        const toolDef = agent.toolRegistry.get(toolName);
+        if (!toolDef) {
+          continue;
+        }
+        configuredToolState[toolName] = existingToolNames.has(toolName)
+          ? { deferLoading: toolDef.defer_loading }
+          : { appended: true };
+      }
+
       overrideDeferLoadingForDiscoveredTools(agent.toolRegistry, discoveredTools);
 
       /** Add discovered tools' definitions so the LLM can see their schemas */
-      const existingToolNames = new Set(toolDefinitions.map((d) => d.name));
       for (const toolName of discoveredTools) {
         if (existingToolNames.has(toolName)) {
           continue;
@@ -2622,6 +2946,9 @@ export async function createRun({
        */
       (agentInput as AgentInputs & { graphTools?: GenericTool[] }).graphTools = graphTools;
     }
+    if (Object.keys(configuredToolState).length > 0) {
+      cacheOptions.promptCacheConfiguredToolState = configuredToolState;
+    }
     return agentInput;
   };
 
@@ -2668,6 +2995,11 @@ export async function createRun({
     }
     enqueueSubagentChildren(config, pendingConfigs, visitedConfigIds, false, false);
   }
+  /**
+   * The run's handoff edges, which live on the first agent and become
+   * `lc_transfer_to_*` tools on whichever agent they leave from.
+   */
+  const runEdges = agents[0].edges ?? [];
   for (const agent of agents) {
     const agentInput = buildAgentInput(agent);
     if (summarizeOnly && agent === agents[0]) {
@@ -2700,6 +3032,12 @@ export async function createRun({
         ),
       }).toolDefinitions;
     }
+    /**
+     * Last, so the background-task tools registered just above are named, and
+     * carrying this agent's own outgoing handoff edges — the tools the graph
+     * generates for it are as much of its prefix as its own tool arrays.
+     */
+    finalizePromptCacheKey(agentInput, outgoingHandoffEdges(runEdges, agent.id));
     agentInputs.push(agentInput);
   }
 

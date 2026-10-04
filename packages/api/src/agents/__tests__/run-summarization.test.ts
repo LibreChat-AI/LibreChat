@@ -1470,13 +1470,44 @@ describe('Azure deployment alias', () => {
     },
   );
 
+  it("withholds the agent's synthesized cache key from a different summary model", async () => {
+    const { llmConfig, configOptions } = getOpenAIConfig(
+      'test-openai-key',
+      {
+        modelOptions: { model: 'gpt-5.6' },
+      },
+      EModelEndpoint.openAI,
+    );
+    expect(llmConfig.promptCacheKeyEnabled).toBe(true);
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: EModelEndpoint.openAI,
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-5.6',
+          model_parameters: { ...llmConfig, configuration: configOptions },
+        }),
+      ],
+      summarizationConfig: { model: 'gpt-4o', parameters: { streaming: false } },
+    });
+
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    const parameters = summaryConfig.parameters as Record<string, unknown>;
+    /** The key names the agent's stable prefix, which a summary request does not send. */
+    expect(parameters).toHaveProperty('promptCacheKey', undefined);
+  });
+
   it('keeps the deployment alias when the summarizer runs the agent model', async () => {
     const agents = await callAndCapture({ agents: [azureAstraAgent()] });
 
     const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
     const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
 
-    expect(summaryConfig.parameters).toBeUndefined();
+    /**
+     * The only override a plain self-summary carries: the agent's synthesized
+     * `prompt_cache_key` names an instruction prefix this request never sends.
+     */
+    expect(summaryConfig.parameters).toEqual({ promptCacheKey: undefined });
     expect(summaryRequestModel(mainClientOptions, summaryConfig)).toBe('production-deployment');
   });
 
@@ -2126,6 +2157,42 @@ describe('custom-endpoint provider resolution', () => {
       configuration: { baseURL: 'http://localhost:11434/v1' },
       apiKey: 'ollama-key',
     });
+  });
+
+  it("keeps a custom summary endpoint's own raw cache key while clearing the inherited one", async () => {
+    /**
+     * Both endpoints normalize to `openAI`, so the inherited-key guard runs.
+     * The target's own `addParams.prompt_cache_key` reaches `parameters`
+     * through `clientOverrides`, and a custom endpoint keeps it there rather
+     * than on the constructor field, because the promotion that moves it is
+     * first-party only. Reading the yaml layer alone mistook it for the
+     * agent's inherited key and cleared it.
+     */
+    const appConfig = makeAppConfig([
+      {
+        name: 'Together',
+        baseURL: 'https://api.together.ai/v1',
+        apiKey: 'together-key',
+        addParams: { prompt_cache_key: 'target-owned-key' },
+      } as TestCustomEndpoint,
+    ]);
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          model_parameters: {
+            model: 'gpt-4o',
+            modelKwargs: { prompt_cache_key: 'agent-inherited-key' },
+          },
+        }),
+      ],
+      summarizationConfig: { provider: 'Together', model: 'mixtral' },
+      appConfig,
+    });
+
+    const config = agents[0].summarizationConfig as Record<string, unknown>;
+    const parameters = config.parameters as Record<string, unknown>;
+    const kwargs = (parameters.modelKwargs ?? {}) as Record<string, unknown>;
+    expect(kwargs.prompt_cache_key).toBe('target-owned-key');
   });
 
   it('matches Ollama case-insensitively (via normalizeEndpointName)', async () => {

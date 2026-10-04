@@ -954,6 +954,30 @@ endpoints:
   # openAI:
   #   headers:
   #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
+  #   # (optional) Prompt caching on first-party OpenAI. The same four options are
+  #   # available under `azureOpenAI` and, as a global default, under `endpoints.all`.
+  #   # A gateway or `custom` OpenAI-compatible endpoint ignores them: it shares the
+  #   # request shape but not the caching contract.
+  #   #
+  #   # Send a deterministic `prompt_cache_key` derived from everything that decides
+  #   # what the model reads before the conversation — the stable instruction prefix,
+  #   # the bound tool schemas, the delegation and handoff tools an agent generates,
+  #   # the output schema and the API mode. Changing an agent's instructions or tools
+  #   # yields a new key, so nothing needs invalidating, and models before GPT-5.6 get
+  #   # a stable key to route cache lookups on. What varies per conversation stays out,
+  #   # so a new chat reuses the prefix the last one wrote.
+  #   # Enabled by default; set false to send no key at all.
+  #   promptCacheKey: true
+  #   # What that key partitions by. `user` (the default) gives every user their own
+  #   # cache accounting, matching the per-user split the `user` field already
+  #   # produces. `shared` drops the user from the key so everyone running the same
+  #   # agent reuses one cached prefix — one cache write instead of one per user —
+  #   # at the cost of shared accounting, and of letting a user learn from a cache
+  #   # hit that someone else already sent a prompt they can guess.
+  #   # promptCacheScope: user
+  #   # `prompt_cache_retention`. Omit for the provider's own in-memory lifetime;
+  #   # `24h` opts into extended retention and is billed for it.
+  #   # promptCacheRetention: 24h
   # google:
   #   headers:
   #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
