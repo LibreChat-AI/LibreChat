@@ -316,7 +316,7 @@ export class LiaEngine {
     this.lastFrame = now;
     const platform = this.host.platform();
     if (!platform) {
-      this.pauseRun(prev, now);
+      this.pause(prev, now);
       return;
     }
     this.place(platform);
@@ -420,16 +420,24 @@ export class LiaEngine {
     }
   }
 
-  /** Holds the current step while there is no layout, so a step nobody saw is not skipped. */
-  private pauseRun(prev: number, now: number) {
+  /**
+   * Holds every clock Lia is drawn from while there is no layout, so a step nobody saw is not
+   * skipped and its screen and face resume where they left off.
+   */
+  private pause(prev: number, now: number) {
     const run = this.run;
-    if (!run) {
+    const paused = now - Math.max(prev, run?.stepStart ?? prev);
+    if (paused <= 0) {
       return;
     }
-    const paused = now - Math.max(prev, run.stepStart);
-    if (paused > 0) {
+    if (run) {
       run.stepStart += paused;
       run.poseStart += paused;
+    }
+    this.screen.start += paused;
+    this.expression.start += paused;
+    if (this.move) {
+      this.move.start += paused;
     }
   }
 

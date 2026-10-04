@@ -1,6 +1,7 @@
 import type { Bubble } from '../engine/types';
 import { ACTION_BY_ID } from '../engine/catalog';
 import { LiaEngine } from '../engine/engine';
+import * as body from '../engine/body';
 
 const PLATFORM = { y: 400, x0: 100, x1: 700 };
 
@@ -130,6 +131,33 @@ describe('LiaEngine', () => {
     /* Its first step lasts at least 1.5 s; a clock that kept running would end it at once. */
     run(engine, 3016, 4000);
     expect(engine.current?.id).toBe('feel-happy');
+  });
+
+  it('resumes the screen where it was after layout comes back', () => {
+    const progress: number[] = [];
+    const draw = jest.spyOn(body, 'drawScreen');
+    draw.mockImplementation((_c, name, _t, p) => {
+      if (name === 'boot') {
+        progress.push(p);
+      }
+    });
+    let platform: typeof PLATFORM | null = PLATFORM;
+    const engine = new LiaEngine(
+      document.createElement('canvas'),
+      { platform: () => platform, onBubble: () => undefined },
+      0,
+    );
+    engine.life = false;
+    engine.play('intro', 4, 0);
+    run(engine, 0, 1104);
+    const before = progress[progress.length - 1];
+    platform = null;
+    run(engine, 1120, 5000);
+    platform = PLATFORM;
+    run(engine, 5008, 5008);
+    draw.mockRestore();
+    expect(before).toBeLessThan(0.2);
+    expect(progress[progress.length - 1]).toBeLessThan(0.2);
   });
 
   it('replaces an action without reporting a gap the host could fill', () => {
