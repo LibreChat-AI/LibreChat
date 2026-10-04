@@ -174,7 +174,9 @@ export function resolveAttachedWorkspaceCommandTimeoutMax(
   return fitCommandTimeoutMaxToBudget(
     Math.min(requested, upstream),
     Math.min(
-      resolveAttachedWorkspaceRequestTimeoutMs(configSchema) ?? Infinity,
+      configSchema?.admission?.durableRequests === true
+        ? Infinity
+        : (resolveAttachedWorkspaceRequestTimeoutMs(configSchema) ?? Infinity),
       configSchema?.limits?.maxRunTimeoutMs ?? Infinity,
     ),
     configSchema?.limits?.minCommandAdmissionMs,
@@ -485,7 +487,10 @@ export function createAttachedWorkspaceBashTool({
 } & WorkspaceAdmissionOptions): DynamicStructuredTool {
   const effectiveMaxTimeoutMs = fitCommandTimeoutMaxToBudget(
     normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs),
-    Math.min(maxRequestTimeoutMs ?? Infinity, maxRunTimeoutMs ?? Infinity),
+    Math.min(
+      admission?.durableRequests === true ? Infinity : (maxRequestTimeoutMs ?? Infinity),
+      maxRunTimeoutMs ?? Infinity,
+    ),
     minCommandAdmissionMs,
   );
   const effectiveDefaultTimeoutMs = resolveAttachedWorkspaceCommandTimeoutDefault(

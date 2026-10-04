@@ -14,6 +14,7 @@ import type { CodeEnvironmentUserConfigSchema } from 'librechat-data-provider';
 import type { WorkspaceEditMatch, WorkspaceEditMatching } from './edits';
 import type { CodeBridgeFetch } from './bridge';
 import { CODE_API_RATE_LIMIT_WAIT_DEFAULT_MS } from './limits';
+import { executeDurableWorkspaceRequest } from './requests';
 import { WORKSPACE_EDIT_MATCH_STRATEGIES } from './edits';
 
 const WORKSPACE_TOOL_TIMEOUT_MS = 30_000;
@@ -1145,8 +1146,10 @@ export async function executeWorkspaceTool({
   admission,
   deadlineAtMs,
   linkedWorktrees = false,
+  requestId,
 }: {
   baseURL: string;
+  requestId?: string;
   authHeaders: WorkspaceToolAuthHeaders;
   request: WorkspaceToolRequest;
   signal?: AbortSignal;
@@ -1200,6 +1203,45 @@ export async function executeWorkspaceTool({
   const queueDeadlineAt = startedAt + maxQueueWaitMs;
   const callerRetryDeadlineAt = callerDeadlineAt - completionReserveMs;
   const body = JSON.stringify(wireRequest);
+  if (policy.durableRequests === true) {
+    const durableDeadlineAt = Math.min(
+      deadlineAtMs ?? Infinity,
+      maxRunTimeoutMs == null ? Infinity : startedAt + maxRunTimeoutMs,
+      startedAt + maxQueueWaitMs + completionReserveMs,
+    );
+    if (durableDeadlineAt - Date.now() <= completionReserveMs) {
+      throw new WorkspaceToolHttpError('insufficient_time');
+    }
+    const durable = await executeDurableWorkspaceRequest({
+      baseURL,
+      request: wireRequest,
+      requestId,
+      fetchImpl,
+      signal,
+      authHeaders: async (requestSignal) =>
+        typeof authHeaders === 'function'
+          ? await getWorkspaceAuthHeaders(authHeaders, requestSignal)
+          : authHeaders,
+      deadlineAtMs: durableDeadlineAt,
+      transportTimeoutMs: Math.min(perAttemptTimeoutMs, policy.transportTimeoutMs ?? 10000),
+      queueWaitMs: Math.max(
+        1,
+        Math.min(maxQueueWaitMs, policy.queueWaitMs ?? CODE_ENVIRONMENT_ADMISSION_MAX_MS),
+      ),
+      pollIntervalMs: policy.pollIntervalMs ?? 500,
+      readJson: readBoundedJson,
+      validateResult: isValidResult,
+      rejected: async (response, requestSignal) => {
+        const error = await readErrorBody(response, requestSignal);
+        return new WorkspaceToolHttpError('rejected', response.status, error.body, error.truncated);
+      },
+      invalid: () => new WorkspaceToolHttpError('invalid'),
+      timeout: () => new WorkspaceToolHttpError('timeout'),
+      wait: waitForWorkspaceAdmission,
+    });
+    if (durable.supported)
+      return lane ? fromLinkedWorktreeResult(durable.result, lane.worktree) : durable.result;
+  }
   let lastAdmissionRejection: WorkspaceToolHttpError | undefined;
   let lastRetryDeadlineAt = Infinity;
   let rateLimitWaitedMs = 0;
