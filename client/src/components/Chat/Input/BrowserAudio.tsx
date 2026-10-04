@@ -38,7 +38,7 @@ export default function BrowserAudio({ index = 0 }) {
 
     const text =
       Array.isArray(latestMessage.content) && latestMessage.content.length > 0
-        ? parseTextParts(latestMessage.content)
+        ? parseTextParts(latestMessage.content, true) // skipReasoning: thoughts are never spoken
         : (latestMessage.text ?? '');
 
     if (!text) {
