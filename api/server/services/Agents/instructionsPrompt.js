@@ -1,4 +1,4 @@
-const { logger } = require('@librechat/data-schemas');
+const { logger, SystemCapabilities } = require('@librechat/data-schemas');
 const {
   checkAccess,
   createPromptService,
@@ -10,11 +10,13 @@ const {
   grantPermission,
   getResourcePermissionsMap,
 } = require('~/server/services/PermissionService');
+const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const db = require('~/models');
 
 /** Wiring only: the write/present decision logic lives in `@librechat/api` (`createInstructionsPromptAccess`, `checkInstructionsPromptWrite`). */
 const instructionsPromptAccess = createInstructionsPromptAccess({
   getResourcePermissionsMap,
+  canManagePrompts: (user) => hasCapability(user, SystemCapabilities.MANAGE_PROMPTS),
   promptService: createPromptService({ db, grantPermission }),
   assertAgentInstructionsContent: ({ instructions, filters }) =>
     assertModelBoundContent({ filters, agents: [{ instructions }] }),

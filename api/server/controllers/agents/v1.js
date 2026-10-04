@@ -835,7 +835,7 @@ const createAgentHandler = async (req, res) => {
     const instructionsPromptError = await checkInstructionsPromptWrite({
       access: instructionsPromptAccess,
       operation: 'create',
-      user: { id: req.user.id, role: req.user.role },
+      user: req.user,
       previous: undefined,
       next: agentData.instructionsPrompt,
       filters: req.config?.filters,
@@ -1001,7 +1001,7 @@ const getAgentHandler = async (req, res, expandProperties = false) => {
 
     // EDIT permission: Full agent details including sensitive configuration
     const presentedAgent = await instructionsPromptAccess.presentForEditor({
-      user: { id: req.user.id, role: req.user.role },
+      user: req.user,
       agent,
     });
     return res.status(200).json(presentedAgent);
@@ -1037,7 +1037,7 @@ const getAgentVersionsHandler = async (req, res) => {
 
     // Each snapshot carries its own independently-authorized instructionsPrompt link.
     const presentedVersions = await instructionsPromptAccess.presentVersionsForEditor({
-      user: { id: req.user.id, role: req.user.role },
+      user: req.user,
       versions,
       currentLink: currentAgent?.instructionsPrompt ?? null,
     });
@@ -1240,7 +1240,7 @@ const updateAgentHandler = async (req, res) => {
     const instructionsPromptError = await checkInstructionsPromptWrite({
       access: instructionsPromptAccess,
       operation: 'update',
-      user: { id: req.user.id, role: req.user.role },
+      user: req.user,
       previous: existingAgent.instructionsPrompt,
       next: instructionsPromptField,
       filters: req.config?.filters,
@@ -1405,7 +1405,7 @@ const updateAgentHandler = async (req, res) => {
 
     // Same EDIT-scoped restricted-stub treatment as the GET handler.
     const presentedAgent = await instructionsPromptAccess.presentForEditor({
-      user: { id: req.user.id, role: req.user.role },
+      user: req.user,
       agent: updatedAgent,
     });
 
@@ -1705,7 +1705,7 @@ const duplicateAgentHandler = async (req, res) => {
 
     // The link copies verbatim; same EDIT-scoped restricted-stub treatment as GET and update.
     const presentedAgent = await instructionsPromptAccess.presentForEditor({
-      user: { id: userId, role: userRole },
+      user: req.user,
       agent: newAgent,
     });
 
@@ -2008,7 +2008,7 @@ const uploadAgentAvatarHandler = async (req, res) => {
 
     // Same EDIT-scoped restricted-stub treatment as the other write handlers.
     const presentedAgent = await instructionsPromptAccess.presentForEditor({
-      user: { id: req.user.id, role: req.user.role },
+      user: req.user,
       agent: updatedAgent,
     });
 
@@ -2215,7 +2215,7 @@ const revertAgentVersionHandler = async (req, res) => {
 
     // Same EDIT-scoped restricted-stub treatment as GET and update.
     const presentedAgent = await instructionsPromptAccess.presentForEditor({
-      user: { id: req.user.id, role: req.user.role },
+      user: req.user,
       agent: updatedAgent,
     });
 

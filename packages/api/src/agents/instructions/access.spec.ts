@@ -42,6 +42,7 @@ function buildAccess({
   resolvePrompt,
   assertAgentInstructionsContent,
   canUsePrompts,
+  canManagePrompts,
 }: {
   visibleGroupIds?: Set<string>;
   resolvePromptOk?: boolean;
@@ -52,6 +53,7 @@ function buildAccess({
   resolvePrompt?: jest.Mock;
   assertAgentInstructionsContent?: jest.Mock;
   canUsePrompts?: jest.Mock;
+  canManagePrompts?: jest.Mock;
 } = {}) {
   const logger = { warn: jest.fn(), error: jest.fn() };
   const map = jest.fn(async ({ resourceIds }: { resourceIds: string[] }) => {
@@ -78,6 +80,7 @@ function buildAccess({
     promptService: { resolvePrompt: resolvePrompt ?? resolve },
     assertAgentInstructionsContent: assertContent,
     canUsePrompts: canUse,
+    canManagePrompts: canManagePrompts ?? jest.fn().mockResolvedValue(false),
     logger,
   });
   return {
@@ -135,6 +138,75 @@ describe('createInstructionsPromptAccess', () => {
       await expect(
         access.canViewGroup({ userId: user.id, role: user.role, groupId }),
       ).rejects.toThrow('db down');
+    });
+  });
+
+  describe('prompt-management capability', () => {
+    const manager = { ...user, tenantId: 'tenant-1', idOnTheSource: 'external-1' };
+    const canManagePrompts = jest.fn().mockResolvedValue(true);
+
+    it('allows VIEW without an ACL and preserves capability identity', async () => {
+      const { access, map } = buildAccess({ canManagePrompts });
+      await expect(
+        access.canViewGroup({
+          userId: manager.id,
+          role: manager.role,
+          tenantId: manager.tenantId,
+          idOnTheSource: manager.idOnTheSource,
+          groupId,
+        }),
+      ).resolves.toBe(true);
+      expect(canManagePrompts).toHaveBeenCalledWith(manager);
+      expect(map).not.toHaveBeenCalled();
+    });
+
+    it.each([productionLink, exactLink])(
+      'allows selecting $selection.type without an ACL',
+      async (next) => {
+        const { access, map } = buildAccess({ canManagePrompts });
+        await expect(
+          access.validateLinkWrite({ user: manager, previous: null, next }),
+        ).resolves.toEqual({ ok: true });
+        expect(canManagePrompts).toHaveBeenCalledWith(manager);
+        expect(map).not.toHaveBeenCalled();
+      },
+    );
+
+    it('still requires PROMPTS USE', async () => {
+      const { access } = buildAccess({ canManagePrompts, canUsePromptsResult: false });
+      await expect(
+        access.validateLinkWrite({ user: manager, previous: null, next: productionLink }),
+      ).resolves.toEqual({
+        ok: false,
+        status: 403,
+        code: InstructionsPromptErrorCode.FORBIDDEN,
+      });
+    });
+
+    it('preserves links in the agent and every version without ACL lookups', async () => {
+      const { access, map } = buildAccess({ canManagePrompts });
+      const agent = {
+        instructionsPrompt: productionLink,
+        versions: [{ instructionsPrompt: otherGroupLink }],
+      };
+      await expect(access.presentForEditor({ user: manager, agent })).resolves.toBe(agent);
+      await expect(
+        access.presentVersionsForEditor({ user: manager, versions: agent.versions }),
+      ).resolves.toEqual(agent.versions);
+      expect(map).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when capability lookup fails', async () => {
+      const { access, map } = buildAccess({
+        canManagePrompts: jest.fn().mockRejectedValue(new Error('capability outage')),
+      });
+      await expect(
+        access.validateLinkWrite({ user: manager, previous: null, next: productionLink }),
+      ).rejects.toThrow('capability outage');
+      await expect(
+        access.presentForEditor({ user: manager, agent: { instructionsPrompt: productionLink } }),
+      ).resolves.toEqual({ instructionsPrompt: { source: 'native', restricted: true } });
+      expect(map).not.toHaveBeenCalled();
     });
   });
 
@@ -443,6 +515,8 @@ describe('createInstructionsPromptAccess', () => {
         const { access } = buildAccess({ canUsePrompts: canUse, getResourcePermissionsMap: map });
 
         const pending = access.validateLinkWrite({ user, previous: null, next: productionLink });
+
+        await Promise.resolve(); // Let the capability check fall through to ACLs.
 
         // Both lookups must already have been called — neither awaited the other.
         expect(canUse).toHaveBeenCalledTimes(1);

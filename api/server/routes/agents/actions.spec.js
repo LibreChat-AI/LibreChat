@@ -27,6 +27,8 @@ jest.mock('~/server/services/Agents/ownerContact', () => ({
 }));
 jest.mock('~/models', () => ({
   getRoleByName: jest.fn(),
+  getUserPrincipals: jest.fn().mockResolvedValue([]),
+  hasCapabilityForPrincipals: jest.fn().mockResolvedValue(false),
   deleteTokens: jest.fn(),
   getListAgentsByAccess: jest.fn(),
   getActions: jest.fn(),

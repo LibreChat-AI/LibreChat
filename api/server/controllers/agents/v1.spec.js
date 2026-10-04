@@ -5432,6 +5432,57 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       getResourcePermissionsMap.mockReset().mockResolvedValue(new Map());
     });
 
+    describe('prompt-management capability', () => {
+      test.each(['ADMIN', 'PROMPT_MANAGER_TEST'])(
+        'allows %s to link, revise, and view prompts without group ACLs',
+        async (role) => {
+          mockReq.user.role = role;
+          mockReq.user.idOnTheSource = null;
+          if (role !== 'ADMIN') {
+            await db.grantCapability({
+              principalType: PrincipalType.ROLE,
+              principalId: role,
+              capability: SystemCapabilities.MANAGE_PROMPTS,
+            });
+          }
+          const { groupId, promptId } = await createPromptGroupFixture();
+          const productionLink = { source: 'native', groupId, selection: { type: 'production' } };
+          mockReq.body = {
+            name: 'Manager Linked Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            instructionsPrompt: productionLink,
+          };
+          await createAgentHandler(mockReq, mockRes);
+          expect(mockRes.status).toHaveBeenCalledWith(201);
+          const created = mockRes.json.mock.calls[0][0];
+          expect(created.instructionsPrompt).toEqual(productionLink);
+          mockRes.json.mockClear();
+          mockRes.status.mockClear();
+          mockReq.params = { id: created.id };
+          const exactLink = { source: 'native', groupId, selection: { type: 'exact', promptId } };
+          mockReq.body = { instructionsPrompt: exactLink };
+          await updateAgentHandler(mockReq, mockRes);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const updated = mockRes.json.mock.calls[0][0];
+          expect(updated.instructionsPrompt).toEqual(exactLink);
+          expect(
+            updated.versions.every((version) => version.instructionsPrompt?.restricted !== true),
+          ).toBe(true);
+          mockRes.json.mockClear();
+          await getAgentVersionsHandler(mockReq, mockRes);
+          const versions = mockRes.json.mock.calls[0][0];
+          expect(versions.some((version) => version.instructionsPrompt?.groupId === groupId)).toBe(
+            true,
+          );
+          expect(versions.every((version) => version.instructionsPrompt?.restricted !== true)).toBe(
+            true,
+          );
+          expect(getResourcePermissionsMap).not.toHaveBeenCalled();
+        },
+      );
+    });
+
     describe('createAgentHandler', () => {
       test('persists the agent when the linked prompt group is viewable', async () => {
         const { groupId } = await createPromptGroupFixture();

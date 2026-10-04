@@ -269,7 +269,7 @@ router.post(
        *  into the expanded agent cache — an unrelated action edit must not leak a link the
        *  caller cannot VIEW. */
       const presentedAgent = await instructionsPromptAccess.presentForEditor({
-        user: { id: req.user.id, role: req.user.role },
+        user: req.user,
         agent: updatedAgent,
       });
 

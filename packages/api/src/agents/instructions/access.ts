@@ -19,6 +19,8 @@ export interface InstructionsPromptAccessLogger {
 export interface InstructionsPromptAccessUser {
   readonly id: string;
   readonly role: string;
+  readonly tenantId?: string;
+  readonly idOnTheSource?: string | null;
 }
 
 /** Matches `PermissionService.getResourcePermissionsMap`, injected rather than imported. */
@@ -70,8 +72,10 @@ export type AgentWithVersionsCarrier = AgentInstructionsPromptCarrier & {
 };
 
 export interface InstructionsPromptAccess {
-  /** PROMPTGROUP `VIEW` bit test for `groupId` against the given identity. */
-  canViewGroup(input: { userId: string; role: string; groupId: string }): Promise<boolean>;
+  /** Effective PROMPTGROUP VIEW, including the management-capability bypass. */
+  canViewGroup(
+    input: Omit<InstructionsPromptAccessUser, 'id'> & { userId: string; groupId: string },
+  ): Promise<boolean>;
   /**
    * Validates a create/update write of `instructionsPrompt` against the stored link.
    * `next === undefined` means the field is absent from the payload (no change
@@ -192,6 +196,7 @@ export function createInstructionsPromptAccess(deps: {
   promptService: Pick<PromptService, 'resolvePrompt'>;
   assertAgentInstructionsContent: AssertAgentInstructionsContent;
   canUsePrompts: CanUsePrompts;
+  canManagePrompts: (user: InstructionsPromptAccessUser) => Promise<boolean>;
   logger: InstructionsPromptAccessLogger;
 }): InstructionsPromptAccess {
   const {
@@ -199,21 +204,24 @@ export function createInstructionsPromptAccess(deps: {
     promptService,
     assertAgentInstructionsContent,
     canUsePrompts,
+    canManagePrompts,
     logger,
   } = deps;
 
   async function canViewGroup({
     userId,
-    role,
     groupId,
-  }: {
+    ...identity
+  }: Omit<InstructionsPromptAccessUser, 'id'> & {
     userId: string;
-    role: string;
     groupId: string;
   }): Promise<boolean> {
+    if (await canManagePrompts({ id: userId, ...identity })) {
+      return true;
+    }
     const permissionsMap = await getResourcePermissionsMap({
       userId,
-      role,
+      role: identity.role,
       resourceType: ResourceType.PROMPTGROUP,
       resourceIds: [groupId],
     });
@@ -231,7 +239,7 @@ export function createInstructionsPromptAccess(deps: {
     user: InstructionsPromptAccessUser,
     groupIds: readonly string[],
   ): Promise<ReadonlySet<string>> {
-    if (groupIds.length === 0) {
+    if (groupIds.length === 0 || (await canManagePrompts(user))) {
       return new Set();
     }
     const permissionsMap = await getResourcePermissionsMap({
@@ -327,7 +335,13 @@ export function createInstructionsPromptAccess(deps: {
     // a role failure takes precedence over a VIEW failure.
     const [usable, nextVisible] = await Promise.all([
       canUsePrompts(user, req),
-      canViewGroup({ userId: user.id, role: user.role, groupId: next.groupId }),
+      canViewGroup({
+        userId: user.id,
+        role: user.role,
+        tenantId: user.tenantId,
+        idOnTheSource: user.idOnTheSource,
+        groupId: next.groupId,
+      }),
     ]);
     if (!usable) {
       return { ok: false, status: 403, code: InstructionsPromptErrorCode.FORBIDDEN };
