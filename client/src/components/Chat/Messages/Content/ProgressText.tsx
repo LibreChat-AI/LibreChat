@@ -14,7 +14,7 @@ import { ROW_GLYPH_SLOT } from './rows';
 import { useLocalize } from '~/hooks';
 
 const wrapperClass =
-  'progress-text-wrapper text-text-secondary relative -mt-[0.75px] h-5 w-full leading-5';
+  'progress-text-wrapper text-text-secondary relative -mt-[0.046875rem] h-5 w-full leading-5';
 
 /** `right-0` and `max-w-full` cap the absolutely-positioned line at the message
  *  column; the label span truncates itself, so overflow stays visible for the
@@ -263,7 +263,7 @@ export default function ProgressText({
           <ChevronDown
             className={cn(
               disclosureChevronVariants({ expanded: isExpanded }),
-              'size-4 shrink-0 translate-y-[1px]',
+              'size-4 shrink-0 translate-y-[0.0625rem]',
             )}
             aria-hidden="true"
           />

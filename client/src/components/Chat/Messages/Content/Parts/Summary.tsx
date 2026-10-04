@@ -45,7 +45,7 @@ const SummaryContent = memo(({ children, meta }: { children: React.ReactNode; me
   return (
     <div className="border-border-medium bg-surface-tertiary text-text-secondary relative rounded-3xl border p-4 pb-10">
       {meta && <span className="text-text-secondary mb-1 block text-xs">{meta}</span>}
-      <p className={cn('leading-[26px] whitespace-pre-wrap', fontSize)}>{children}</p>
+      <p className={cn('leading-6.5 whitespace-pre-wrap', fontSize)}>{children}</p>
     </div>
   );
 });
@@ -86,7 +86,7 @@ const SummaryButton = memo(
             fontSize,
           )}
         >
-          <span className="relative mr-1.5 inline-flex h-[18px] w-[18px] items-center justify-center">
+          <span className="relative mr-1.5 inline-flex h-[1.125rem] w-[1.125rem] items-center justify-center">
             <ScrollText
               className="icon-sm text-text-secondary absolute opacity-100 transition-opacity group-hover/button:opacity-0"
               aria-hidden="true"
@@ -121,7 +121,7 @@ const SummaryButton = memo(
             <span className="sr-only">
               {isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_summary')}
             </span>
-            <MorphIcon icon={isCopied ? Check : Copy} size={18} />
+            <MorphIcon icon={isCopied ? Check : Copy} className="h-[1.125rem] w-[1.125rem]" />
           </Button>
         )}
       </div>
@@ -174,7 +174,7 @@ const FloatingSummaryBar = memo(
                 'focus-visible:ring-border-heavy focus-visible:ring-2 focus-visible:outline-hidden',
               )}
             >
-              <ChevronUp className="h-[18px] w-[18px]" aria-hidden="true" />
+              <ChevronUp className="h-[1.125rem] w-[1.125rem]" aria-hidden="true" />
             </button>
           }
         />
@@ -193,7 +193,7 @@ const FloatingSummaryBar = memo(
                   'focus-visible:ring-border-heavy focus-visible:ring-2 focus-visible:outline-hidden',
                 )}
               >
-                <MorphIcon icon={isCopied ? Check : Copy} size={18} />
+                <MorphIcon icon={isCopied ? Check : Copy} className="h-[1.125rem] w-[1.125rem]" />
               </button>
             }
           />

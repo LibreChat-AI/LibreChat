@@ -17,7 +17,7 @@ export default function WeekStartSelector() {
   const labelId = 'week-start-selector-label';
 
   return (
-    <div className="flex w-full items-center justify-between">
+    <div className="flex w-full flex-wrap items-center justify-between gap-2">
       <div id={labelId}>{localize('com_nav_week_start')}</div>
       <Dropdown
         value={weekStart}

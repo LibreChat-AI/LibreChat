@@ -114,7 +114,7 @@ export default function Instructions({
                 onBlur={field.onBlur}
                 inputRef={field.ref}
                 placeholder={localize('com_agents_instructions_placeholder')}
-                className="min-h-[88px] resize-y"
+                className="min-h-[5.5rem] resize-y"
                 labelClassName="sr-only"
                 rows={3}
                 required={!isPromptMode}

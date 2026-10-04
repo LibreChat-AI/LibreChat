@@ -148,7 +148,7 @@
   },
   "client/src/components/Chat/Footer.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/Chat/Input/AddedConvo.tsx": {
@@ -163,7 +163,7 @@
   },
   "client/src/components/Chat/Input/ChatForm.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 4
+      "count": 3
     },
     "shadcn/no-inline-styles": {
       "count": 3
@@ -265,9 +265,6 @@
     }
   },
   "client/src/components/Chat/Input/OptionsPopover.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 5
     }
@@ -577,7 +574,7 @@
   },
   "client/src/components/Chat/Messages/Content/Parts/Summary.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 2
+      "count": 1
     },
     "shadcn/no-inline-styles": {
       "count": 1
@@ -595,9 +592,6 @@
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/Thinking.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-inline-styles": {
       "count": 1
     }
@@ -816,9 +810,6 @@
     }
   },
   "client/src/components/Chat/Subagents/SubagentActivity.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 13
     },
@@ -1411,9 +1402,6 @@
     }
   },
   "client/src/components/Prompts/sidebar/GroupSidePanel.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 11
     }

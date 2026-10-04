@@ -2,6 +2,7 @@ import React, { useState, useMemo, useCallback } from 'react';
 import type { TUser } from 'librechat-data-provider';
 import { Skeleton } from './Skeleton';
 import { useAvatar } from '~/hooks';
+import { pxToRem } from '~/utils';
 import { UserIcon } from '~/svgs';
 
 export interface AvatarProps {
@@ -51,8 +52,8 @@ const Avatar: React.FC<AvatarProps> = ({
     () => (
       <div
         style={{
-          width: `${size}px`,
-          height: `${size}px`,
+          width: pxToRem(size),
+          height: pxToRem(size),
         }}
         className={`bg-avatar-fill text-avatar-text ring-avatar-edge/10 relative flex items-center justify-center rounded-full p-1 ring-1 ${className}`}
         aria-hidden="true"
@@ -69,15 +70,18 @@ const Avatar: React.FC<AvatarProps> = ({
 
   if (avatarSeed.length > 0 && !imageError) {
     return (
-      <div className="relative" style={{ width: `${size}px`, height: `${size}px` }}>
+      <div className="relative" style={{ width: pxToRem(size), height: pxToRem(size) }}>
         {!imageLoaded && (
-          <Skeleton className="rounded-full" style={{ width: `${size}px`, height: `${size}px` }} />
+          <Skeleton
+            className="rounded-full"
+            style={{ width: pxToRem(size), height: pxToRem(size) }}
+          />
         )}
 
         <img
           style={{
-            width: `${size}px`,
-            height: `${size}px`,
+            width: pxToRem(size),
+            height: pxToRem(size),
             display: imageLoaded ? 'block' : 'none',
           }}
           className={`rounded-full ${className}`}

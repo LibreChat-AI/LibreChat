@@ -161,7 +161,7 @@ const Dropdown: React.FC<DropdownProps> = ({
   );
 
   return (
-    <div className={cn('relative', variant === 'field' && 'w-full', className)}>
+    <div className={cn('relative max-w-full min-w-0', variant === 'field' && 'w-full', className)}>
       <Select.Select
         store={selectProps}
         disabled={disabled}
@@ -177,7 +177,7 @@ const Dropdown: React.FC<DropdownProps> = ({
           /** Horizontal padding would squeeze the icon, which flex-shrinks to fit */
           iconOnly
             ? 'size-theme-button min-h-theme-target min-w-theme-target justify-center px-0'
-            : 'w-fit gap-2 px-3',
+            : 'w-fit max-w-full gap-2 px-3',
           variant === 'field' && fieldControl,
           variant === 'compact' && 'h-theme-button-compact px-2.5 py-0 text-xs transition-none',
           triggerClassName,
@@ -193,7 +193,7 @@ const Dropdown: React.FC<DropdownProps> = ({
           ariaLabelledBy == null || iconOnly ? ariaLabelledBy : `${ariaLabelledBy} ${valueId}`
         }
       >
-        <div className={cn('flex items-center gap-2', iconOnly ? 'shrink-0' : 'w-full')}>
+        <div className={cn('flex min-w-0 items-center gap-2', iconOnly ? 'shrink-0' : 'w-full')}>
           {icon}
           {!iconOnly && (
             <span id={valueId} className="block truncate">
@@ -208,7 +208,7 @@ const Dropdown: React.FC<DropdownProps> = ({
             </span>
           )}
         </div>
-        {!iconOnly && <Select.SelectArrow />}
+        {!iconOnly && <Select.SelectArrow className="shrink-0" />}
       </Select.Select>
       <Select.SelectPopover
         portal={portal}

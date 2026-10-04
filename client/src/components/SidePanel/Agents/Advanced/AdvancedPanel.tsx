@@ -82,7 +82,9 @@ export default function AdvancedPanel() {
                   aria-label={localize('com_ui_agent_id_copy')}
                   className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-text-primary h-auto gap-1.5 rounded-lg px-2 py-1 focus-visible:ring-2"
                 >
-                  <code className="max-w-[150px] truncate font-mono text-xs">{currentAgentId}</code>
+                  <code className="max-w-[9.375rem] truncate font-mono text-xs">
+                    {currentAgentId}
+                  </code>
                   <span className="t-icon-swap" data-state={copied ? 'b' : 'a'} aria-hidden="true">
                     <span className="t-icon" data-icon="a">
                       <Copy className="h-3.5 w-3.5" aria-hidden="true" />

@@ -2,7 +2,7 @@ import { memo, useState, useRef, useEffect } from 'react';
 import { AutoSizer, List } from 'react-virtualized';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
-import { Input, Spinner, useCombobox } from '@librechat/client';
+import { Input, Spinner, useCombobox, useRemScale } from '@librechat/client';
 import type { RecoilState } from 'recoil';
 import type { MentionOption, ConvoGenerator } from '~/common';
 import { useGetConversation, useLocalize, TranslationKeys } from '~/hooks';
@@ -34,6 +34,7 @@ function MentionContent({
   includeAssistants = true,
 }: Omit<MentionProps, 'index'>) {
   const localize = useLocalize();
+  const remScale = useRemScale();
   const getConversation = useGetConversation(0);
   const assistantsMap = useAssistantsMapContext();
   const setShowPopover = useSetRecoilState(popoverAtom);
@@ -246,11 +247,11 @@ function MentionContent({
                 <List
                   width={width}
                   overscanRowCount={5}
-                  rowHeight={ROW_HEIGHT}
+                  rowHeight={ROW_HEIGHT * remScale}
                   rowCount={matches.length}
                   rowRenderer={rowRenderer}
                   scrollToIndex={activeIndex}
-                  height={Math.min(matches.length * ROW_HEIGHT, 160)}
+                  height={Math.min(matches.length * ROW_HEIGHT, 160) * remScale}
                 />
               )}
             </AutoSizer>

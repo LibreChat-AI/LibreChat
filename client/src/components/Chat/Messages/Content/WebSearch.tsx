@@ -48,7 +48,7 @@ function SourceFaviconStack({ sources }: { sources: ValidSource[] }) {
           key={source.link}
           className={cn(
             'border-border-medium bg-surface-secondary relative flex items-center justify-center rounded-full border',
-            'h-[22px] w-[22px]',
+            'h-[1.375rem] w-[1.375rem]',
             i > 0 && '-ml-2.5',
           )}
           style={{ zIndex: MAX_VISIBLE_FAVICONS - i }}
@@ -351,7 +351,7 @@ export default function WebSearch({
                 <div
                   className={cn(
                     toolPanelSpacingClassName,
-                    'border-border-light mt-1.5 max-h-[280px] overflow-y-auto rounded-lg border',
+                    'border-border-light mt-1.5 max-h-[17.5rem] overflow-y-auto rounded-lg border',
                   )}
                 >
                   {allSources.map((source, i) => {

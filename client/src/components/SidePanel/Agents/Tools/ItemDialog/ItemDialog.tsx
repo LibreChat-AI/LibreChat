@@ -23,7 +23,7 @@ export default function ItemDialog({ item, agentId, onClose }: Props) {
         className={cn(
           'w-11/12 gap-0 rounded-2xl p-0 md:max-h-[85dvh]',
           isOrchestration ? 'overflow-visible' : 'overflow-hidden',
-          isAction ? 'max-w-5xl' : 'max-w-[560px]',
+          isAction ? 'max-w-5xl' : 'max-w-[35rem]',
         )}
         data-testid="item-dialog"
       >
