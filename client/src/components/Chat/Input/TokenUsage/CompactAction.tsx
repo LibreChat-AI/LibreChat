@@ -20,7 +20,7 @@ function CompactAction({ compact, canCompact, isCompacting }: CompactActionProps
   const description = localize('com_ui_context_compact_info');
 
   return (
-    <>
+    <div>
       <TooltipAnchor
         side="bottom"
         description={description}
@@ -50,7 +50,7 @@ function CompactAction({ compact, canCompact, isCompacting }: CompactActionProps
       <span id={descriptionId} className="sr-only">
         {description}
       </span>
-    </>
+    </div>
   );
 }
 

@@ -89,15 +89,20 @@ describe('collapsing a live ask_user_question', () => {
     it('locks the composer only while the popover is up', () => {
       renderPause();
       expect(screen.getByTestId('composer-locked').textContent).toBe('true');
-      /** The popover owns the question, so the card stays out of the way. */
-      expect(screen.queryByText('North star or full funnel?')).toBeNull();
+      /** The popover owns the question; the card only holds its place in the
+       *  thread, hidden, so moving the batch back reflows nothing. */
+      expect(
+        screen.getByText('North star or full funnel?').closest('[aria-hidden="true"]'),
+      ).not.toBeNull();
 
       fireEvent.click(screen.getByTestId('collapse-from-popover'));
 
       expect(screen.getByTestId('popover-visible').textContent).toBe('false');
       /** The pause is still live, but the card owns it outside answer mode. */
       expect(screen.getByTestId('active').textContent).toBe('false');
-      expect(screen.getByText('North star or full funnel?')).toBeInTheDocument();
+      expect(
+        screen.getByText('North star or full funnel?').closest('[aria-hidden="true"]'),
+      ).toBeNull();
       /** The composer is a normal composer again. */
       expect(screen.getByTestId('composer-locked').textContent).toBe('false');
       expect(screen.getByTestId('composer-answers').textContent).toBe('false');
@@ -107,12 +112,12 @@ describe('collapsing a live ask_user_question', () => {
       renderPause();
       fireEvent.click(screen.getByTestId('collapse-from-popover'));
 
-      fireEvent.click(screen.getByLabelText('Expand'));
+      fireEvent.click(screen.getByLabelText('Answer from the message box'));
 
       expect(screen.getByTestId('active').textContent).toBe('true');
       expect(screen.getByTestId('popover-visible').textContent).toBe('true');
       expect(screen.getByTestId('composer-locked').textContent).toBe('true');
-      expect(screen.queryByLabelText('Expand')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Answer from the message box')).not.toBeInTheDocument();
     });
   });
 

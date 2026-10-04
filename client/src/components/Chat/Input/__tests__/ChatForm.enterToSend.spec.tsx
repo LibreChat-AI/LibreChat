@@ -75,7 +75,6 @@ function Harness({ enterToSend }: { enterToSend: boolean }) {
         <ChatForm
           index={0}
           isLandingPage={false}
-          showComposerTips
           enterToSend={enterToSend}
           footerBelow={false}
           centerFormOnLanding={false}
@@ -118,7 +117,7 @@ describe('ChatForm enterToSend prop', () => {
     const textarea = await screen.findByTestId('text-input');
     await userEvent.type(textarea, 'hi');
 
-    const hint = await screen.findByTestId('composer-hints');
+    const hint = document.getElementById('composer-hint-0') as HTMLElement;
     expect(hint).toHaveTextContent('to send');
     expect(hint).toHaveTextContent('for newline');
     expect(hint).not.toHaveTextContent('Enter to send');
@@ -130,7 +129,7 @@ describe('ChatForm enterToSend prop', () => {
     const textarea = await screen.findByTestId('text-input');
     await userEvent.type(textarea, 'hi');
 
-    const hint = await screen.findByTestId('composer-hints');
+    const hint = document.getElementById('composer-hint-0') as HTMLElement;
     expect(hint).toHaveTextContent('Enter to send');
   }, 20000);
 });

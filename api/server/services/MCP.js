@@ -51,6 +51,8 @@ const {
   resolveMCPClientCapabilityProfile,
   getMCPConnectionPoolKey,
   getMCPUserConnectionPoolKey,
+  bindScheduledMCPInvocation,
+  ScheduledMCPPolicyError,
 } = require('@librechat/api');
 const {
   Time,
@@ -897,6 +899,7 @@ async function reconnectServer({
  * @returns { Promise<Array<typeof tool | { _call: (toolInput: Object | string) => unknown}>> } An object with `_call` method to execute the tool input.
  */
 async function createMCPTools({
+  agentId,
   res,
   mcpPermissionContext,
   user,
@@ -980,6 +983,7 @@ async function createMCPTools({
   );
   for (const tool of result.tools) {
     const toolInstance = await createMCPTool({
+      agentId,
       res,
       mcpPermissionContext,
       user,
@@ -1037,6 +1041,7 @@ async function createMCPTools({
  * @returns { Promise<typeof tool | { _call: (toolInput: Object | string) => unknown}> } An object with `_call` method to execute the tool input.
  */
 async function createMCPTool({
+  agentId,
   res,
   mcpPermissionContext,
   user,
@@ -1213,6 +1218,7 @@ async function createMCPTool({
   }
 
   return createToolInstance({
+    scheduledMCPInvocation: bindScheduledMCPInvocation(requestScopedConnections, agentId, toolName),
     res,
     mcpPermissionContext,
     user,
@@ -1244,6 +1250,7 @@ async function createMCPTool({
 }
 
 function createToolInstance({
+  scheduledMCPInvocation,
   res,
   mcpPermissionContext,
   user: capturedUser = null,
@@ -1351,6 +1358,7 @@ function createToolInstance({
        * as the jwt-bearer assertion.
        */
       const result = await mcpManager.callTool({
+        scheduledMCPInvocation,
         serverName,
         serverConfig: capturedServerConfig,
         /** The upstream server never sees stripped names — a key that dropped
@@ -1419,6 +1427,7 @@ function createToolInstance({
       // recording a durable tool failure; other tool errors are a cheap no-op.
       await require('~/server/services/Schedules').recordMCPToolAuthFailure({
         error,
+        identity: scheduledMCPInvocation?.identity,
         streamId,
         jobCreatedAt,
         userId,
@@ -1427,6 +1436,7 @@ function createToolInstance({
 
       /** Carries the actionable re-auth message; the substring heuristic below would misreport it as an OAuth configuration problem */
       if (
+        error instanceof ScheduledMCPPolicyError ||
         error instanceof OpenIDReauthRequiredError ||
         error instanceof MCPAuthenticationRefreshError ||
         error instanceof MCPAuthenticationRejectedError

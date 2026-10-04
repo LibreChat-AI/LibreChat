@@ -9,6 +9,7 @@ jest.mock('@librechat/agents', () => ({
 jest.mock('@librechat/api', () => ({
   unescapeLaTeX: jest.fn((value) => value),
   countTokens: jest.fn().mockResolvedValue(2),
+  createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
   createContentFilter: jest.fn(() => (_req, _res, next) => next()),
   sendFeedbackScore: jest.fn().mockResolvedValue(undefined),
   traceIdForMessage: jest.fn((messageId) => `trace-${messageId}`),

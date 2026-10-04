@@ -66,6 +66,18 @@ export const chatSortAtom = atom(
   },
 );
 
+const storedShowProjectChatsAtom = createStorageAtom<boolean>('chatListShowProjectChats', true);
+
+/** Whether chats filed in a project also list under Chats, where recent work is looked
+ *  for first. A display preference, so it is kept like the sort; anything but an explicit
+ *  `false` reads as the default. */
+export const showProjectChatsAtom = atom(
+  (get) => get(storedShowProjectChatsAtom) !== false,
+  (_get, set, next: boolean) => {
+    set(storedShowProjectChatsAtom, next);
+  },
+);
+
 /** Read by conversation rows to offer restoring instead of archiving. */
 export const isArchivedChatViewAtom = atom((get) => get(chatFilterStatusAtom) === 'archived');
 
@@ -81,6 +93,9 @@ export const chatFilterCountAtom = atom((get) => {
   if (sort.field !== DEFAULT_CHAT_SORT.field || sort.direction !== DEFAULT_CHAT_SORT.direction) {
     count += 1;
   }
+  if (!get(showProjectChatsAtom)) {
+    count += 1;
+  }
   return count;
 });
 
@@ -88,6 +103,7 @@ export const resetChatFiltersAtom = atom(null, (_get, set) => {
   set(chatFilterStatusAtom, 'active');
   set(chatFilterTagsAtom, []);
   set(storedChatSortAtom, DEFAULT_CHAT_SORT);
+  set(storedShowProjectChatsAtom, true);
 });
 
 /**

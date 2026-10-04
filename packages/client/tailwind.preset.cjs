@@ -48,6 +48,12 @@ module.exports = {
         'theme-target': '24px',
         /** The narrowest a tab trigger draws. */
         'theme-tab': 'var(--theme-tab-min-width, 100px)',
+        /** The narrowest a Select's list draws. */
+        'theme-list': 'var(--theme-list-min-width, 8rem)',
+      },
+      maxHeight: {
+        /** The tallest a Select's list draws before it scrolls. */
+        'theme-list': 'var(--theme-list-max-height, 24rem)',
       },
       width: {
         /** Never narrower than the track is tall, so the knob always has somewhere to travel. */

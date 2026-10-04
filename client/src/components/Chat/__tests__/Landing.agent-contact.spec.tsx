@@ -126,6 +126,29 @@ describe('Landing agent contact', () => {
     expect(screen.queryByRole('link', { name: 'Owner User' })).not.toBeInTheDocument();
   });
 
+  it('renders the email link without inline baseline space beside the contact label', () => {
+    mockConversation = {
+      endpoint: 'agents',
+      agent_id: 'agent-1',
+    };
+    mockAgentsMap = {
+      'agent-1': {
+        id: 'agent-1',
+        name: 'LibreChat',
+        description: 'Contact Danny if you see any errors',
+        support_contact: { email: 'messagedaniel@pm.me' },
+      },
+    };
+
+    renderLanding();
+
+    const link = screen.getByRole('link', { name: 'messagedaniel@pm.me' });
+    expect(link).toHaveAttribute('href', 'mailto:messagedaniel@pm.me');
+    expect(link).toHaveClass('block');
+    expect(link).not.toHaveClass('inline-block');
+    expect(screen.getByText('Contact:').parentElement).toHaveClass('items-center');
+  });
+
   it('does not show contact when the selected agent is missing from agentsMap', () => {
     mockConversation = {
       endpoint: 'agents',

@@ -3062,7 +3062,15 @@ describe('ToolService - Action Capability Gating', () => {
             defaultCommandTimeoutMs: 60_000,
             maxQueueWaitMs: 0,
             maxRequestTimeoutMs: 90_000,
+            maxRunTimeoutMs: 180_000,
             minCommandAdmissionMs: 15_000,
+          },
+          admission: {
+            queueWaitMs: 60_000,
+            initialDelayMs: 1_000,
+            maxDelayMs: 30_000,
+            multiplier: 2,
+            jitterRatio: 0.2,
           },
         },
       });
@@ -3095,12 +3103,70 @@ describe('ToolService - Action Capability Gating', () => {
         maxQueueWaitMs: 0,
         codeApiMaxRetryWaitMs: 0,
         maxRequestTimeoutMs: 90_000,
+        maxRunTimeoutMs: 180_000,
+        admission: {
+          queueWaitMs: 60_000,
+          initialDelayMs: 1_000,
+          maxDelayMs: 30_000,
+          multiplier: 2,
+          jitterRatio: 0.2,
+        },
         minCommandAdmissionMs: 15_000,
       });
       expect(mockResolveCodeExecutionWorkspaceContext).toHaveBeenCalledWith(
         expect.objectContaining({ requestedSelections: req.body.codeWorkspaces }),
       );
       expect(result.loadedTools).toContainEqual({ name: AgentConstants.BASH_TOOL });
+    });
+
+    it('passes negotiated lane and native sandbox capabilities to the attached bash tool', async () => {
+      const capabilities = [
+        AgentCapabilities.tools,
+        AgentCapabilities.execute_code,
+        AgentCapabilities.stateful_code_sessions,
+      ];
+      const req = createMockReq(capabilities);
+      req.body = {
+        codeWorkspaces: [{ environmentId: 'personal-machine', workspaceId: 'project-a' }],
+      };
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+      mockResolveCodeExecutionContext.mockReturnValueOnce({
+        baseUrl: 'http://attached-code.test/v1',
+        codeSessionKey: 'execute_code:stateful:attached',
+        executionProfile: 'stateful',
+        statefulSessions: true,
+        environmentType: 'attached',
+        environmentId: 'personal-machine',
+        bridgeWorkerId: 'worker-abc',
+      });
+      mockResolveCodeExecutionWorkspaceContext.mockImplementationOnce(async ({ context }) => ({
+        ...context,
+        codeWorkspace: {
+          environmentId: 'personal-machine',
+          workspaceId: 'project-a',
+          operations: attachedWorkspaceOperations,
+          linkedWorktrees: true,
+          nativeSandbox: true,
+        },
+      }));
+
+      await loadToolsForExecution({
+        req,
+        res: {},
+        agent: {
+          id: 'attached-agent',
+          tools: [Tools.execute_code],
+          stateful_code_sessions: true,
+          stateful_code_environment: 'agent-user',
+        },
+        toolNames: [AgentConstants.BASH_TOOL],
+        toolRegistry: new Map([[AgentConstants.BASH_TOOL, { name: AgentConstants.BASH_TOOL }]]),
+        actionsEnabled: false,
+      });
+
+      expect(mockCreateAttachedWorkspaceBashTool).toHaveBeenLastCalledWith(
+        expect.objectContaining({ linkedWorktrees: true, nativeSandbox: true }),
+      );
     });
 
     it('resolves stateful routing when handle_skill is the only requested tool', async () => {

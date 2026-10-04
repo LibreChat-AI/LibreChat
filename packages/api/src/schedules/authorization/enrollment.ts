@@ -1,9 +1,11 @@
-import { createHash } from 'node:crypto';
 import {
   Constants,
   buildServerNameAliases,
   splitMCPToolKey,
+  normalizeServerName,
+  stripServerNamePrefix,
   scheduledMCPResourceBindingSchema,
+  scheduledMCPReadOnlyPolicySchema,
 } from 'librechat-data-provider';
 import type {
   AgentGraphAccessContext,
@@ -15,6 +17,7 @@ import type { ScheduledMCPTarget, TModelsConfig } from 'librechat-data-provider'
 import type { ScheduleMCPEnrollmentResolver } from './service';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { ParsedServerConfig } from '~/mcp/types';
+import { getScheduledMCPPolicyRevision, isScheduledMCPCandidate } from './policy';
 import { getScheduledMCPConfigurationRevision } from './configuration';
 import { resolveScheduledMCPRequirements } from '../requirements';
 import { getAppConfigOptionsFromUser } from '~/app/service';
@@ -45,10 +48,10 @@ export function createScheduleMCPEnrollmentResolver(
     user.id = identity.ownerId;
     if (!(await deps.canUseRoot(identity.agentId, user)))
       throw new ScheduleMCPConsentError('consent_forbidden');
-    const appConfig = await deps.getAppConfig({
-      ...getAppConfigOptionsFromUser(user),
-      failClosed: true,
-    });
+    const [appConfig, baseConfig] = await Promise.all([
+      deps.getAppConfig({ ...getAppConfigOptionsFromUser(user), failClosed: true }),
+      deps.getAppConfig({ baseOnly: true, failClosed: true }),
+    ]);
     const schedules = appConfig?.interfaceConfig?.schedules;
     const bindings = typeof schedules === 'object' ? schedules?.mcpConsent?.resources : undefined;
     if (!bindings || !Object.keys(bindings).length) return [];
@@ -59,7 +62,7 @@ export function createScheduleMCPEnrollmentResolver(
     const names = Object.keys(servers);
     const aliases = buildServerNameAliases(names);
     const candidates = [...names, ...aliases.keys()];
-    const { tools } = await resolveScheduledMCPRequirements(
+    const { tools, candidates: candidateTools } = await resolveScheduledMCPRequirements(
       identity.agentId,
       user,
       {
@@ -70,6 +73,8 @@ export function createScheduleMCPEnrollmentResolver(
       async () => appConfig,
       signal,
     );
+    if (candidateTools.some(({ name }) => !isScheduledMCPCandidate(name)))
+      throw new ScheduleMCPConsentError('consent_unavailable');
     const selected = new Map<string, Map<string, Set<string>>>();
     for (const { name: key, agentId } of tools) {
       if (
@@ -120,10 +125,34 @@ export function createScheduleMCPEnrollmentResolver(
     signal?.throwIfAborted();
     for (const target of targets.values()) {
       target.permittedTools.sort((a, b) => a.agentId.localeCompare(b.agentId));
-      // Selection revision is not read-only certification; invocation still requires trusted policy.
-      target.policyRevision = createHash('sha256')
-        .update(JSON.stringify(target.permittedTools))
-        .digest('hex');
+      const baseSchedules = baseConfig?.interfaceConfig?.schedules;
+      const declaration =
+        typeof baseSchedules === 'object'
+          ? baseSchedules.mcpConsent?.readOnlyPolicy?.[target.resource.serverName]
+          : undefined;
+      const effective =
+        typeof schedules === 'object'
+          ? schedules.mcpConsent?.readOnlyPolicy?.[target.resource.serverName]
+          : undefined;
+      if (effective != null && JSON.stringify(effective) !== JSON.stringify(declaration))
+        throw new ScheduleMCPConsentError('consent_unavailable');
+      const policy = scheduledMCPReadOnlyPolicySchema.safeParse(declaration);
+      if (
+        !policy.success ||
+        target.permittedTools.some(({ tools }) =>
+          tools.some(
+            (selection) =>
+              Object.keys(policy.data.tools).filter(
+                (name) =>
+                  name === selection ||
+                  stripServerNamePrefix(name, normalizeServerName(target.resource.serverName)) ===
+                    selection,
+              ).length !== 1,
+          ),
+        )
+      )
+        throw new ScheduleMCPConsentError('consent_unavailable');
+      target.policyRevision = getScheduledMCPPolicyRevision(target.permittedTools, policy.data);
     }
     return [...targets.values()];
   };

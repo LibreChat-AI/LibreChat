@@ -2,15 +2,30 @@ import { memo, useId, useRef, useMemo, useState, useCallback } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { createPortal } from 'react-dom';
+import * as Ariakit from '@ariakit/react';
 import { useDrag, useDrop } from 'react-dnd';
-import { X, Pencil, TextQuote, TriangleAlert, GripVertical, Clock } from 'lucide-react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import {
   Button,
   IconButton,
   TooltipAnchor,
+  DropdownPopup,
   useMediaQuery,
   useToastContext,
 } from '@librechat/client';
+import {
+  Clock,
+  Trash2,
+  Pencil,
+  Ellipsis,
+  TextQuote,
+  CirclePlay,
+  CirclePause,
+  GripVertical,
+  TriangleAlert,
+  MessageSquarePlus,
+} from 'lucide-react';
+import type { MenuItemProps } from '@librechat/client';
 import type { RestoreToComposer } from '~/Providers/ComposerRestoreContext';
 import type { SteeringControls } from '~/hooks/Chat/useSteering';
 import type { QueuedMessage } from '~/hooks/Chat/queue';
@@ -24,6 +39,13 @@ import { cn } from '~/utils';
 import store from '~/store';
 
 const DRAG_TYPE = 'queued-message';
+
+/** One timing for a row entering or leaving the rail, so a message that sends reads as
+ *  the rail closing up behind it rather than a row vanishing. */
+const ROW_TRANSITION = {
+  height: { duration: 0.26, ease: [0.4, 0, 0.2, 1] },
+  opacity: { duration: 0.16, ease: 'easeOut' },
+} as const;
 
 interface DragItem {
   id: string;
@@ -40,6 +62,8 @@ interface QueueProps {
   onRestoreToComposer: RestoreToComposer;
   /** Whether the composer would take this conversation's words right now. */
   canRestoreToComposer: (conversationId: string) => boolean;
+  /** Owned by the composer host: opens a fresh chat that starts with these words. */
+  onStartNewChat: (text: string) => void;
 }
 
 interface QueueRowProps {
@@ -60,6 +84,7 @@ interface QueueRowProps {
   reorderHintId: string;
   onRestoreToComposer: RestoreToComposer;
   canRestoreToComposer: (conversationId: string) => boolean;
+  onStartNewChat: (text: string) => void;
   /** The server has revealed this row as the next user turn; only removal remains meaningful. */
   revealed?: boolean;
   /** The matching user turn owns this row's actions when its bubble is visible. */
@@ -103,6 +128,7 @@ function QueueRow({
   reorderHintId,
   onRestoreToComposer,
   canRestoreToComposer,
+  onStartNewChat,
   onAnnounce,
   revealed = false,
   portalElement,
@@ -369,6 +395,7 @@ function QueueRow({
 
   drop(rowRef);
   drag(gripRef);
+  const reduceMotion = useReducedMotion();
 
   const fileCount = message.files?.length ?? 0;
   const quoteCount = message.quotes?.length ?? 0;
@@ -394,32 +421,134 @@ function QueueRow({
    *  short enough that appearing and vanishing again just reads as a flicker. */
   const showEscalate = !isRecovered && (steering.pausedOnApproval || steering.duringRunActive);
 
+  /** The user's own hold keeps a row out of the run-end drain; a hold placed by a
+   *  rejected steer belongs to its failure surface and is not released from here. */
+  const held = message.needsExplicitSend === true;
+  const heldByUser = message.heldByUser === true;
+  const hasExtras = fileCount > 0 || quoteCount > 0 || (message.manualSkills?.length ?? 0) > 0;
+  const toggleHold = useCallback(() => {
+    steering.toggleQueuedHold(message.id, !heldByUser);
+    /* Releasing after the run already ended would otherwise sit until some
+       later generation finishes: nothing is left to wake the drain. */
+    if (heldByUser) {
+      steering.rewakeDrain(conversationId);
+    }
+  }, [steering, message.id, heldByUser, conversationId]);
+  const startInNewChat = useCallback(
+    () =>
+      handOff(async () => {
+        if (!(await steering.discardQueued(message))) {
+          return false;
+        }
+        steering.removeQueued(message.id);
+        onStartNewChat(message.text);
+        return true;
+      }),
+    [handOff, steering, message, onStartNewChat],
+  );
+
+  const menuId = useId();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuItems: MenuItemProps[] = [
+    {
+      id: `${menuId}-edit`,
+      label: localize('com_ui_edit_message'),
+      icon: <Pencil className="h-4 w-4" aria-hidden="true" />,
+      disabled: actionPending || !serverActionable || hasQueuedIntent(message.id),
+      onClick: () => void editToComposer(),
+    },
+    {
+      id: `${menuId}-new-chat`,
+      label: localize('com_ui_queue_start_new_chat'),
+      icon: <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />,
+      show: portalElement == null,
+      disabled:
+        actionPending ||
+        !serverActionable ||
+        isRecovered ||
+        hasExtras ||
+        hasQueuedIntent(message.id),
+      onClick: () => void startInNewChat(),
+    },
+    {
+      id: `${menuId}-hold`,
+      label: localize(heldByUser ? 'com_ui_queue_enable' : 'com_ui_queue_disable'),
+      icon: heldByUser ? (
+        <CirclePlay className="h-4 w-4" aria-hidden="true" />
+      ) : (
+        <CirclePause className="h-4 w-4" aria-hidden="true" />
+      ),
+      show: portalElement == null,
+      disabled: actionPending || message.server != null || (held && !heldByUser),
+      onClick: toggleHold,
+    },
+  ];
+  const optionsMenu = (
+    <DropdownPopup
+      portal
+      focusLoop
+      unmountOnHide
+      menuId={menuId}
+      isOpen={menuOpen}
+      setIsOpen={setMenuOpen}
+      items={menuItems}
+      className="z-50"
+      trigger={
+        <Ariakit.MenuButton
+          render={
+            <IconButton
+              label={localize('com_ui_more_options')}
+              size="lg"
+              shape="control"
+              data-testid="queued-message-options"
+              disabled={actionPending}
+            />
+          }
+        >
+          <Ellipsis className="text-text-secondary h-4 w-4" aria-hidden="true" />
+        </Ariakit.MenuButton>
+      }
+    />
+  );
+  const removeDisabled =
+    portalElement != null
+      ? actionPending ||
+        hasQueuedIntent(message.id) ||
+        (!serverActionable && !(message.server?.id != null && message.server.status === 'claimed'))
+      : actionPending ||
+        (!serverActionable &&
+          !isUnconfirmed &&
+          !(message.server?.id != null && message.server.status === 'claimed' && revealed));
+  const removeButton = (
+    <IconButton
+      label={localize(
+        isUnconfirmed && portalElement == null
+          ? 'com_ui_dismiss_unconfirmed_delivery'
+          : 'com_ui_remove_queued',
+      )}
+      size="lg"
+      shape="control"
+      disabled={removeDisabled}
+      onClick={
+        isUnconfirmed && portalElement == null
+          ? () => steering.removeQueued(message.id)
+          : removeToComposer
+      }
+      className="group"
+      data-testid="queued-message-remove"
+    >
+      <Trash2
+        className="text-text-secondary group-hover:text-text-destructive h-4 w-4 transition-colors"
+        aria-hidden="true"
+      />
+    </IconButton>
+  );
+
   if (portalElement != null) {
     return createPortal(
       <span className="flex items-center gap-1">
-        {serverActionable && (
-          <IconButton
-            label={localize('com_ui_edit_message')}
-            size="xs"
-            disabled={actionPending || hasQueuedIntent(message.id)}
-            onClick={editToComposer}
-          >
-            <Pencil className="h-4 w-4" aria-hidden="true" />
-          </IconButton>
-        )}
-        <IconButton
-          label={localize('com_ui_remove_queued')}
-          size="xs"
-          disabled={
-            actionPending ||
-            hasQueuedIntent(message.id) ||
-            (!serverActionable &&
-              !(message.server?.id != null && message.server.status === 'claimed'))
-          }
-          onClick={removeToComposer}
-        >
-          <X className="h-4 w-4" aria-hidden="true" />
-        </IconButton>
+        {removeButton}
+        {serverActionable && optionsMenu}
       </span>,
       portalElement,
       message.id,
@@ -427,158 +556,143 @@ function QueueRow({
   }
 
   return (
-    <div
+    <motion.div
       ref={rowRef}
       role="listitem"
       data-testid="queued-message-row"
-      className={cn(
-        'border-border-light flex items-center gap-2 border-b px-3 py-1.5 text-sm last:border-b-0',
-        isDragging && 'opacity-40',
-      )}
+      layout="position"
+      initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+      animate={{ height: 'auto', opacity: isDragging ? 0.4 : 1 }}
+      exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+      transition={reduceMotion ? { duration: 0 } : ROW_TRANSITION}
+      className="border-border-light overflow-hidden border-b text-sm last:border-b-0"
     >
-      <IconButton
-        ref={gripRef}
-        label={localize('com_ui_queue_reorder', {
-          0: String(index + 1),
-          1: String(total),
-        })}
-        size="xs"
-        data-testid="queued-message-grip"
-        /* Kept even when there is nowhere to move to, rather than swapped for
+      <div className="flex min-h-14 items-center gap-2 px-3 py-2">
+        <IconButton
+          ref={gripRef}
+          label={localize('com_ui_queue_reorder', {
+            0: String(index + 1),
+            1: String(total),
+          })}
+          size="xs"
+          data-testid="queued-message-grip"
+          /* Kept even when there is nowhere to move to, rather than swapped for
            an icon: a queue that drains to one message would otherwise unmount
            the handle a keyboard user was holding, dropping focus to the top of
            the page. */
-        aria-disabled={!reorderable}
-        /* A handle announces what it is but not how to work it, and the keys
+          aria-disabled={!reorderable}
+          /* A handle announces what it is but not how to work it, and the keys
            are the only way through it without a pointer. */
-        aria-describedby={reorderable ? reorderHintId : undefined}
-        onKeyDown={(event) => {
-          if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
-            return;
-          }
-          /* Both keys scroll the rail's container otherwise, which would
-             chase the row the press just moved. */
-          event.preventDefault();
-          move(event.key === 'ArrowUp' ? -1 : 1);
-        }}
-        className={cn(
-          'group',
-          reorderable ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
-          canDrag && reorderable && 'touch-none',
-        )}
-      >
-        <GripVertical
-          className={cn(
-            'text-text-secondary group-hover:text-text-primary h-4 w-4 transition-colors',
-            !reorderable && 'opacity-40',
-          )}
-          aria-hidden="true"
-        />
-      </IconButton>
-      <QueuedIcon
-        warning={isRejected || isUnconfirmed || isIndeterminate}
-        hint={steering.duringRunActive ? localize('com_ui_steer_queued_info') : undefined}
-      />
-      <span className="text-text-primary min-w-0 flex-1 truncate" title={message.text}>
-        {message.text}
-      </span>
-      {quoteCount > 0 && (
-        <span className="text-text-secondary flex shrink-0 items-center gap-0.5 text-xs">
-          <TextQuote className="h-3.5 w-3.5" aria-hidden="true" />
-          <span aria-hidden="true">{quoteCount}</span>
-          <span className="sr-only">
-            {localize('com_ui_queued_quote_count', { 0: String(quoteCount) })}
-          </span>
-        </span>
-      )}
-      {fileCount > 0 && (
-        <span
-          className="text-text-secondary shrink-0 text-xs"
-          title={localize('com_ui_queued_attachment_count', { 0: String(fileCount) })}
-        >
-          <span className="sr-only">
-            {localize('com_ui_queued_attachment_count', { 0: String(fileCount) })}
-          </span>
-          <span aria-hidden="true">
-            {localize(fileCount === 1 ? 'com_ui_attachment_count_one' : 'com_ui_attachment_count', {
-              count: fileCount,
-            })}
-          </span>
-        </span>
-      )}
-      {(isRejected || isUnconfirmed || isIndeterminate) && (
-        <span className="text-status-warning shrink-0 text-xs">{localize(statusLabel)}</span>
-      )}
-      {revealed && (
-        <span className="text-text-secondary shrink-0 text-xs">
-          {localize('com_ui_queued_turn_starting')}
-        </span>
-      )}
-      {!revealed && (
-        <>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={sendDisabled}
-            aria-disabled={sendDisabled}
-            title={
-              !steering.canSendQueuedNow || reasoningRequiresNewGeneration
-                ? localize('com_ui_send_now_paused')
-                : undefined
+          aria-describedby={reorderable ? reorderHintId : undefined}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
+              return;
             }
-            onClick={() => steering.sendQueuedNow(message)}
-            className="h-auto shrink-0 disabled:pointer-events-auto disabled:cursor-not-allowed"
-          >
-            <span className="text-text-primary">{localize('com_ui_send_now')}</span>
-          </Button>
-          {showEscalate && (
-            <EscalateNowButton
-              surface="queued"
-              messageText={message.text}
-              disabled={
-                !steering.canSteer ||
-                interruptPending ||
-                actionPending ||
-                reasoningRequiresNewGeneration ||
-                !serverActionable
-              }
-              onClick={() => steering.sendQueuedNow(message, { preempt: true })}
-            />
+            /* Both keys scroll the rail's container otherwise, which would
+             chase the row the press just moved. */
+            event.preventDefault();
+            move(event.key === 'ArrowUp' ? -1 : 1);
+          }}
+          className={cn(
+            'group',
+            reorderable ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
+            canDrag && reorderable && 'touch-none',
           )}
-          <IconButton
-            label={localize('com_ui_edit_message')}
-            size="xs"
-            disabled={actionPending || !serverActionable}
-            onClick={editToComposer}
-            className="group"
-          >
-            <Pencil
-              className="text-text-secondary group-hover:text-text-primary h-4 w-4 transition-colors"
-              aria-hidden="true"
-            />
-          </IconButton>
-        </>
-      )}
-      <IconButton
-        label={localize(
-          isUnconfirmed ? 'com_ui_dismiss_unconfirmed_delivery' : 'com_ui_remove_queued',
-        )}
-        size="xs"
-        disabled={
-          actionPending ||
-          (!serverActionable &&
-            !isUnconfirmed &&
-            !(message.server?.id != null && message.server.status === 'claimed' && revealed))
-        }
-        onClick={isUnconfirmed ? () => steering.removeQueued(message.id) : removeToComposer}
-        className="group"
-      >
-        <X
-          className="text-text-secondary group-hover:text-text-primary h-4 w-4 transition-colors"
-          aria-hidden="true"
+        >
+          <GripVertical
+            className={cn(
+              'text-text-secondary group-hover:text-text-primary h-4 w-4 transition-colors',
+              !reorderable && 'opacity-40',
+            )}
+            aria-hidden="true"
+          />
+        </IconButton>
+        <QueuedIcon
+          warning={isRejected || isUnconfirmed || isIndeterminate}
+          hint={steering.duringRunActive ? localize('com_ui_steer_queued_info') : undefined}
         />
-      </IconButton>
-    </div>
+        <span className="text-text-primary min-w-0 flex-1 truncate" title={message.text}>
+          {message.text}
+        </span>
+        {quoteCount > 0 && (
+          <span className="text-text-secondary flex shrink-0 items-center gap-0.5 text-xs">
+            <TextQuote className="h-3.5 w-3.5" aria-hidden="true" />
+            <span aria-hidden="true">{quoteCount}</span>
+            <span className="sr-only">
+              {localize('com_ui_queued_quote_count', { 0: String(quoteCount) })}
+            </span>
+          </span>
+        )}
+        {fileCount > 0 && (
+          <span
+            className="text-text-secondary shrink-0 text-xs"
+            title={localize('com_ui_queued_attachment_count', { 0: String(fileCount) })}
+          >
+            <span className="sr-only">
+              {localize('com_ui_queued_attachment_count', { 0: String(fileCount) })}
+            </span>
+            <span aria-hidden="true">
+              {localize(
+                fileCount === 1 ? 'com_ui_attachment_count_one' : 'com_ui_attachment_count',
+                {
+                  count: fileCount,
+                },
+              )}
+            </span>
+          </span>
+        )}
+        {(isRejected || isUnconfirmed || isIndeterminate) && (
+          <span className="text-status-warning shrink-0 text-xs">{localize(statusLabel)}</span>
+        )}
+        {heldByUser && !revealed && (
+          <span className="text-text-secondary shrink-0 text-xs">
+            {localize('com_ui_queue_held')}
+          </span>
+        )}
+        {revealed && (
+          <span className="text-text-secondary shrink-0 text-xs">
+            {localize('com_ui_queued_turn_starting')}
+          </span>
+        )}
+        {!revealed && (
+          <>
+            <Button
+              variant="outline"
+              shape="theme"
+              disabled={sendDisabled}
+              aria-disabled={sendDisabled}
+              title={
+                !steering.canSendQueuedNow || reasoningRequiresNewGeneration
+                  ? localize('com_ui_send_now_paused')
+                  : undefined
+              }
+              onClick={() => steering.sendQueuedNow(message)}
+              className="shrink-0 disabled:pointer-events-auto disabled:cursor-not-allowed"
+            >
+              <span className="text-text-primary">{localize('com_ui_send_now')}</span>
+            </Button>
+            {showEscalate && (
+              <EscalateNowButton
+                surface="queued"
+                size="lg"
+                shape="control"
+                messageText={message.text}
+                disabled={
+                  !steering.canSteer ||
+                  interruptPending ||
+                  actionPending ||
+                  reasoningRequiresNewGeneration ||
+                  !serverActionable
+                }
+                onClick={() => steering.sendQueuedNow(message, { preempt: true })}
+              />
+            )}
+          </>
+        )}
+        {removeButton}
+        {!revealed && optionsMenu}
+      </div>
+    </motion.div>
   );
 }
 
@@ -607,6 +721,7 @@ function Queue({
   conversationId,
   onRestoreToComposer,
   canRestoreToComposer,
+  onStartNewChat,
 }: QueueProps) {
   const localize = useLocalize();
   /* A revealed server turn is already shown in the live thread. Keep its
@@ -654,9 +769,8 @@ function Queue({
       ? queued.findIndex((message) => message.clientRequestId === target.clientRequestId)
       : -1;
 
-  if (queued.length === 0) {
-    return null;
-  }
+  const reduceMotion = useReducedMotion();
+  const showRail = queued.length > (portaledIndex >= 0 ? 1 : 0);
 
   const renderRow = (message: QueuedMessage, index: number, portalElement?: HTMLSpanElement) => (
     <QueueRow
@@ -672,6 +786,7 @@ function Queue({
       reorderHintId={reorderHintId}
       onRestoreToComposer={onRestoreToComposer}
       canRestoreToComposer={canRestoreToComposer}
+      onStartNewChat={onStartNewChat}
       revealed={
         revealed != null &&
         message.clientRequestId != null &&
@@ -684,28 +799,45 @@ function Queue({
 
   return (
     <>
-      {queued.length > (portaledIndex >= 0 ? 1 : 0) && (
-        <div className="border-border-light bg-surface-secondary mx-3 overflow-hidden rounded-t-2xl border border-b-0">
-          <div
-            role="list"
-            aria-label={localize('com_ui_queued_messages')}
-            data-testid="composer-queue"
-            className="flex flex-col"
+      <AnimatePresence initial={false}>
+        {showRail && (
+          /* Inset by the composer's corner radius (`mx-6`, 1.5rem) so the rail's sides land
+             on the straight part of the composer's top edge instead of running down into
+             its curved corners, and overlapping that edge by its 1px border so the two
+             surfaces meet in one clean joint. */
+          <motion.div
+            key="queue-rail"
+            initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            transition={reduceMotion ? { duration: 0 } : ROW_TRANSITION}
+            className="mx-6 -mb-px overflow-hidden"
           >
-            {queued.map((message, index) =>
-              index === portaledIndex ? null : renderRow(message, index),
-            )}
-          </div>
-          {queued.length > 1 && (
-            <span id={reorderHintId} className="sr-only">
-              {localize('com_ui_queue_reorder_hint')}
-            </span>
-          )}
-          <span role="status" aria-live="polite" className="sr-only">
-            {announcement}
-          </span>
-        </div>
-      )}
+            <div className="border-border-light bg-surface-secondary rounded-t-2xl border border-b-0">
+              <div
+                role="list"
+                aria-label={localize('com_ui_queued_messages')}
+                data-testid="composer-queue"
+                className="flex flex-col"
+              >
+                <AnimatePresence initial={false}>
+                  {queued.map((message, index) =>
+                    index === portaledIndex ? null : renderRow(message, index),
+                  )}
+                </AnimatePresence>
+              </div>
+              {queued.length > 1 && (
+                <span id={reorderHintId} className="sr-only">
+                  {localize('com_ui_queue_reorder_hint')}
+                </span>
+              )}
+              <span role="status" aria-live="polite" className="sr-only">
+                {announcement}
+              </span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       {portaledIndex >= 0 &&
         target != null &&
         renderRow(queued[portaledIndex], portaledIndex, target.element)}

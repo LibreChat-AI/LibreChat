@@ -7,6 +7,7 @@ const mockCache = {
   delete: jest.fn((key) => mockCacheStore.delete(key)),
 };
 const mockSaveConvo = jest.fn();
+const mockGetConvo = jest.fn();
 
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
@@ -22,6 +23,7 @@ jest.mock('~/cache/getLogStores', () => jest.fn(() => mockCache));
 
 jest.mock('~/models', () => ({
   saveConvo: (...args) => mockSaveConvo(...args),
+  getConvo: (...args) => mockGetConvo(...args),
 }));
 
 const addTitle = require('./title');
@@ -39,6 +41,11 @@ describe('agents addTitle', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockCacheStore.clear();
+    mockCache.get.mockReset().mockImplementation((key) => mockCacheStore.get(key));
+    mockCache.set.mockReset().mockImplementation((key, value) => mockCacheStore.set(key, value));
+    mockCache.delete.mockReset().mockImplementation((key) => mockCacheStore.delete(key));
+    mockSaveConvo.mockReset().mockImplementation(async (_ctx, data) => data);
+    mockGetConvo.mockReset().mockResolvedValue(null);
   });
 
   it('uses the explicit conversationId for the cache key and saveConvo (immediate mode)', async () => {
@@ -100,13 +107,17 @@ describe('agents addTitle', () => {
     expect(client.titleConvo).toHaveBeenCalledWith(expect.objectContaining({ immediate: false }));
   });
 
-  it('caches the title immediately but defers saveConvo until convoReady resolves', async () => {
+  it('caches eagerly but waits for readiness before persisting', async () => {
     const client = makeClient('Deferred Title');
     let resolveConvo;
     const convoReady = new Promise((resolve) => {
       resolveConvo = resolve;
     });
 
+    mockSaveConvo.mockImplementationOnce(async (_ctx, data) => {
+      await convoReady;
+      return data;
+    });
     const pending = addTitle(makeReq(), {
       text: 'hello',
       client,
@@ -117,12 +128,7 @@ describe('agents addTitle', () => {
 
     await flush();
 
-    // Title is cached for the live UI, but persistence waits for the row to exist.
-    expect(mockCache.set).toHaveBeenCalledWith(
-      'user-1-cid-defer',
-      'Deferred Title',
-      expect.any(Number),
-    );
+    expect(mockCacheStore.get('user-1-cid-defer')).toBe('Deferred Title');
     expect(mockSaveConvo).not.toHaveBeenCalled();
 
     resolveConvo();
@@ -135,7 +141,7 @@ describe('agents addTitle', () => {
     );
   });
 
-  it('notifies when the title is cached before waiting for convoReady', async () => {
+  it('emits eagerly but waits for readiness before committing', async () => {
     const order = [];
     const client = makeClient('Streamed Title');
     const onTitleGenerated = jest.fn(async () => {
@@ -150,8 +156,10 @@ describe('agents addTitle', () => {
       order.push('cache');
       mockCacheStore.set(key, value);
     });
-    mockSaveConvo.mockImplementationOnce(async () => {
+    mockSaveConvo.mockImplementationOnce(async (_ctx, data) => {
+      await convoReady;
       order.push('save');
+      return data;
     });
 
     const pending = addTitle(makeReq(), {
@@ -279,27 +287,30 @@ describe('agents addTitle', () => {
 
     expect(onTitleGenerated).not.toHaveBeenCalled();
     expect(mockSaveConvo).not.toHaveBeenCalled();
-    expect(mockCache.delete).toHaveBeenCalledWith('user-1-cid');
+    expect(mockCache.set).not.toHaveBeenCalled();
   });
 
   it("does not delete a replacement stream's cached title when superseded", async () => {
     const client = makeClient('Stale Title');
     const ac = new AbortController();
-    ac.abort();
-    // Simulate a replacement stream having cached its own (newer) title under the
-    // shared `userId-conversationId` key by the time this stale task re-reads it.
-    mockCache.get.mockImplementationOnce(() => 'Newer Title');
-
-    await addTitle(makeReq(), {
+    let resolveConvo;
+    const convoReady = new Promise((resolve) => {
+      resolveConvo = resolve;
+    });
+    const pending = addTitle(makeReq(), {
       text: 'hi',
       client,
       conversationId: 'cid',
       immediate: true,
-      convoReady: Promise.resolve(),
-      signal: ac.signal,
+      convoReady,
       discardSignal: ac.signal,
     });
-
+    await flush();
+    mockCacheStore.set('user-1-cid', 'Newer Title');
+    ac.abort();
+    resolveConvo();
+    await pending;
+    expect(mockCacheStore.get('user-1-cid')).toBe('Newer Title');
     expect(mockCache.delete).not.toHaveBeenCalled();
     expect(mockSaveConvo).not.toHaveBeenCalled();
   });
@@ -315,6 +326,10 @@ describe('agents addTitle', () => {
       resolveConvo = resolve;
     });
 
+    mockSaveConvo.mockImplementationOnce(async (_ctx, data) => {
+      await convoReady;
+      return data;
+    });
     const pending = addTitle(makeReq(), {
       text: 'hi',
       client,
@@ -326,7 +341,7 @@ describe('agents addTitle', () => {
     });
 
     await flush();
-    expect(onTitleGenerated).toHaveBeenCalledWith({ conversationId: 'cid', title: 'Kept Title' });
+    expect(onTitleGenerated).toHaveBeenCalledTimes(1);
 
     // User stops mid-response, then the conversation row is persisted.
     ac.abort();
@@ -338,7 +353,8 @@ describe('agents addTitle', () => {
       expect.objectContaining({ conversationId: 'cid', title: 'Kept Title' }),
       expect.objectContaining({ noUpsert: true }),
     );
-    expect(mockCache.delete).not.toHaveBeenCalled();
+    expect(mockCache.set).toHaveBeenCalledWith('user-1-cid', 'Kept Title', 120000);
+    expect(onTitleGenerated).toHaveBeenCalledTimes(1);
   });
 
   /** An immediate-mode title saves while the turn is still running, so its write can
@@ -361,5 +377,94 @@ describe('agents addTitle', () => {
       expect.objectContaining({ conversationId: 'cid-metadata', title: 'Metadata Only' }),
       expect.objectContaining({ noUpsert: true, appendMessageIds: [] }),
     );
+  });
+  it('caches the committed manual title instead of a rejected automatic title', async () => {
+    mockSaveConvo.mockResolvedValueOnce(null);
+    mockGetConvo.mockResolvedValueOnce({ conversationId: 'cid', title: 'Renamed' });
+    const onTitleGenerated = jest.fn();
+    await addTitle(makeReq(), {
+      text: 'hi',
+      client: makeClient(),
+      conversationId: 'cid',
+      onTitleGenerated,
+    });
+    expect(mockSaveConvo).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ titleSource: 'generated' }),
+    );
+    expect(mockCache.set).toHaveBeenCalledWith('user-1-cid', 'Renamed', 120000);
+    expect(onTitleGenerated).not.toHaveBeenCalled();
+  });
+  it('publishes eagerly while a new row is still absent, then fences persistence', async () => {
+    let resolveConvo;
+    const convoReady = new Promise((resolve) => {
+      resolveConvo = resolve;
+    });
+    const onTitleGenerated = jest.fn();
+    const pending = addTitle(makeReq(), {
+      text: 'hello',
+      client: makeClient('Eager Title'),
+      conversationId: 'new-row',
+      immediate: true,
+      convoReady,
+      onTitleGenerated,
+    });
+    await flush();
+    expect(onTitleGenerated).toHaveBeenCalledWith({
+      conversationId: 'new-row',
+      title: 'Eager Title',
+    });
+    mockSaveConvo.mockResolvedValueOnce(null);
+    mockGetConvo.mockResolvedValueOnce({ conversationId: 'new-row', title: 'Renamed' });
+    resolveConvo();
+    await pending;
+    expect(mockCacheStore.get('user-1-new-row')).toBe('Renamed');
+    expect(onTitleGenerated).toHaveBeenCalledTimes(1);
+  });
+  it('retries a missed immediate write when the following read sees the new row', async () => {
+    mockSaveConvo.mockResolvedValueOnce(null);
+    mockGetConvo
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ conversationId: 'insert-race', title: 'New Chat' });
+    const onTitleGenerated = jest.fn();
+    await addTitle(makeReq(), {
+      text: 'hello',
+      client: makeClient('Generated title'),
+      conversationId: 'insert-race',
+      immediate: true,
+      convoReady: Promise.resolve(),
+      onTitleGenerated,
+    });
+    expect(mockSaveConvo).toHaveBeenCalledTimes(2);
+    expect(mockCacheStore.get('user-1-insert-race')).toBe('Generated title');
+    expect(onTitleGenerated).toHaveBeenCalledWith({
+      conversationId: 'insert-race',
+      title: 'Generated title',
+    });
+  });
+  it('discards an eager title for a seeded chat before its message is ready', async () => {
+    let resolveConvo;
+    const convoReady = new Promise((resolve) => {
+      resolveConvo = resolve;
+    });
+    const discard = new AbortController();
+    mockGetConvo.mockResolvedValueOnce({ conversationId: 'seeded-chat', title: 'New Chat' });
+    const pending = addTitle(makeReq(), {
+      text: 'attachment',
+      client: makeClient('Seeded title'),
+      conversationId: 'seeded-chat',
+      immediate: true,
+      convoReady,
+      discardSignal: discard.signal,
+    });
+    await flush();
+    expect(mockCacheStore.get('user-1-seeded-chat')).toBe('Seeded title');
+    expect(mockSaveConvo).not.toHaveBeenCalled();
+    discard.abort();
+    resolveConvo();
+    await pending;
+    expect(mockSaveConvo).not.toHaveBeenCalled();
+    expect(mockCacheStore.has('user-1-seeded-chat')).toBe(false);
   });
 });

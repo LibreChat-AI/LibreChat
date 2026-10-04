@@ -23,6 +23,7 @@ export default function AskOptions({
   multiSelect,
   checked,
   selected,
+  selectedIsAnswer = false,
   locked,
   onActivate,
   optionRefs,
@@ -33,6 +34,9 @@ export default function AskOptions({
   multiSelect: boolean;
   checked: number[];
   selected?: number | null;
+  /** `selected` is the recorded answer rather than a keyboard highlight, so a
+   *  single-select row announces it as pressed. */
+  selectedIsAnswer?: boolean;
   locked: boolean;
   onActivate: (index: number) => void;
   optionRefs?: React.MutableRefObject<(HTMLButtonElement | null)[]>;
@@ -42,7 +46,11 @@ export default function AskOptions({
   return (
     <div ref={listRef} className={className}>
       {options.map((option, index) => {
-        const isChecked = multiSelect && checked.includes(index);
+        /** A recorded single-select answer wears the same check as a ticked
+         *  multi-select row; a keyboard highlight keeps its number. */
+        const isChecked = multiSelect
+          ? checked.includes(index)
+          : selectedIsAnswer && selected === index;
         return (
           <Button
             key={option.value}
@@ -51,19 +59,17 @@ export default function AskOptions({
                 optionRefs.current[index] = el;
               }
             }}
-            variant="ghost"
+            variant="option"
+            data-selected={selected === index || undefined}
             role={multiSelect ? 'checkbox' : undefined}
             aria-checked={multiSelect ? isChecked : undefined}
+            aria-pressed={!multiSelect && selectedIsAnswer ? selected === index : undefined}
             disabled={locked}
-            className={cn(
-              'flex h-auto w-full justify-start gap-2.5 whitespace-normal px-2.5 py-2 text-left text-sm font-normal text-text-primary',
-              selected === index && 'bg-surface-active hover:bg-surface-active',
-            )}
             onClick={() => onActivate(index)}
           >
             <span
               className={cn(
-                'flex size-5 shrink-0 items-center justify-center rounded-md text-[11px] font-medium tabular-nums transition-colors',
+                'flex size-5 shrink-0 items-center justify-center rounded-md text-[11px] font-medium tabular-nums',
                 isChecked
                   ? 'bg-surface-submit text-text-on-status'
                   : 'bg-surface-tertiary text-text-secondary',

@@ -16,6 +16,7 @@ import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
+import { PrivateText } from '~/components/Chat/Messages/PrivateText';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
@@ -158,6 +159,8 @@ const MessageRender = memo(function MessageRender({
     return null;
   }
 
+  const showOwnerText = !edit && msg.isCreatedByUser && Boolean(msg.privacyRevision);
+
   return (
     <MessageRow
       id={msg.messageId}
@@ -225,24 +228,26 @@ const MessageRender = memo(function MessageRender({
       }
     >
       <MessageContext.Provider value={messageContextValue}>
-        {wakeupDisplay != null && !edit ? (
-          <Wakeup display={wakeupDisplay} conversationId={conversation?.conversationId} />
-        ) : (
-          <MessageContent
-            ask={ask}
-            edit={edit}
-            isLast={isLast}
-            text={msg.text || ''}
-            message={msg}
-            enterEdit={enterEdit}
-            error={!!(msg.error ?? false)}
-            isSubmitting={isSubmitting}
-            unfinished={msg.unfinished ?? false}
-            isCreatedByUser={msg.isCreatedByUser ?? true}
-            siblingIdx={siblingIdx ?? 0}
-            setSiblingIdx={setSiblingIdx ?? (() => ({}))}
-          />
-        )}
+        {showOwnerText && <PrivateText message={msg} />}
+        {!showOwnerText &&
+          (wakeupDisplay != null && !edit ? (
+            <Wakeup display={wakeupDisplay} conversationId={conversation?.conversationId} />
+          ) : (
+            <MessageContent
+              ask={ask}
+              edit={edit}
+              isLast={isLast}
+              text={msg.text || ''}
+              message={msg}
+              enterEdit={enterEdit}
+              error={!!(msg.error ?? false)}
+              isSubmitting={isSubmitting}
+              unfinished={msg.unfinished ?? false}
+              isCreatedByUser={msg.isCreatedByUser ?? true}
+              siblingIdx={siblingIdx ?? 0}
+              setSiblingIdx={setSiblingIdx ?? (() => ({}))}
+            />
+          ))}
       </MessageContext.Provider>
     </MessageRow>
   );

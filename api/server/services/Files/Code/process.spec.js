@@ -2153,6 +2153,14 @@ describe('Code Process', () => {
           signal: controller.signal,
           maxQueueWaitMs: 0,
           maxRequestTimeoutMs: 125_000,
+          maxRunTimeoutMs: 180_000,
+          admission: {
+            queueWaitMs: 60_000,
+            initialDelayMs: 1_000,
+            maxDelayMs: 30_000,
+            multiplier: 2,
+            jitterRatio: 0.2,
+          },
           deadlineAtMs: 160_000,
         }),
       ).resolves.toBe(result);
@@ -2176,6 +2184,14 @@ describe('Code Process', () => {
         maxQueueWaitMs: 0,
         codeApiMaxRetryWaitMs: undefined,
         maxRequestTimeoutMs: 125_000,
+        maxRunTimeoutMs: 180_000,
+        admission: {
+          queueWaitMs: 60_000,
+          initialDelayMs: 1_000,
+          maxDelayMs: 30_000,
+          multiplier: 2,
+          jitterRatio: 0.2,
+        },
         deadlineAtMs: 160_000,
         request: {
           protocolVersion: 1,
