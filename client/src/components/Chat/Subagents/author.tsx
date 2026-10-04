@@ -169,22 +169,28 @@ export function useParentAuthor(
 ): TurnAuthor {
   const queryClient = useQueryClient();
   const agentsMap = useAgentsMapContext();
+  /** A different dispatch must read the latest message snapshot, even when
+   *  both children belong to the same streamed parent turn. */
+  const source = useMemo(
+    () => ({ conversationId, messageId, toolCallId }),
+    [conversationId, messageId, toolCallId],
+  );
   const store = useMemo(() => {
     let message: TMessage | undefined;
     const getSnapshot = () => {
       message ??= findAgentAuthorMessage(
-        queryClient.getQueryData<TMessage[]>([QueryKeys.messages, conversationId]),
-        messageId,
+        queryClient.getQueryData<TMessage[]>([QueryKeys.messages, source.conversationId]),
+        source.messageId,
       );
       return message;
     };
     return {
       getSnapshot,
       subscribe: (onChange: () => void) => {
-        if (messageId === '' || getSnapshot() != null) return () => {};
+        if (source.messageId === '' || getSnapshot() != null) return () => {};
         const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
           const key = event.query.queryKey;
-          if (key[0] !== QueryKeys.messages || key[1] !== conversationId) return;
+          if (key[0] !== QueryKeys.messages || key[1] !== source.conversationId) return;
           if (getSnapshot() == null) return;
           unsubscribe();
           onChange();
@@ -192,7 +198,7 @@ export function useParentAuthor(
         return unsubscribe;
       },
     };
-  }, [conversationId, messageId, queryClient]);
+  }, [queryClient, source]);
   const message = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   return useMemo(
     () => messageAuthor(message, agentsMap, fallbackName, findAgentLaneId(message, toolCallId)),

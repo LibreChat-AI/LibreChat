@@ -726,6 +726,78 @@ describe('SubagentThreadPanel', () => {
     },
   );
 
+  it('refreshes dispatch-lane attribution when switching streamed tool calls in one parent turn', async () => {
+    const first: TMessage = {
+      messageId: 'parent-message',
+      parentMessageId: null,
+      conversationId: 'parent-conversation',
+      isCreatedByUser: false,
+      text: '',
+      endpoint: EModelEndpoint.agents,
+      model: 'agent-2',
+      sender: 'Analyst Two',
+      content: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          agentId: 'agent-2',
+          tool_call: { id: 'first-call', name: 'subagent', args: {} },
+        },
+      ],
+    };
+    queryClient.setQueryData([QueryKeys.messages, 'parent-conversation'], [first]);
+    mockUseSubagentThreadQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: { ...completedView, turns: completedTurns },
+    });
+    const { rerender } = render(
+      <Root>
+        <SubagentThreadPanel selection={{ ...selection, toolCallId: 'first-call' }} />
+      </Root>,
+    );
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'Analyst Two',
+    );
+    await act(async () => {
+      queryClient.setQueryData(
+        [QueryKeys.messages, 'parent-conversation'],
+        [
+          {
+            ...first,
+            content: [
+              ...(first.content ?? []),
+              {
+                type: ContentTypes.TOOL_CALL,
+                agentId: 'agent-1',
+                tool_call: { id: 'second-call', name: 'subagent', args: {} },
+              },
+            ],
+          },
+        ],
+      );
+    });
+    rerender(
+      <Root>
+        <SubagentThreadPanel selection={{ ...selection, toolCallId: 'second-call' }} />
+      </Root>,
+    );
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'Analyst One',
+    );
+    await act(async () => {
+      queryClient.setQueryData(
+        [QueryKeys.messages, 'parent-conversation'],
+        [{ ...first, sender: 'Changed snapshot', text: 'Later chunk' }],
+      );
+    });
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'Analyst One',
+    );
+  });
+
   it('attributes restored parallel-lane self turns to the validated spawning agent', () => {
     queryClient.setQueryData<TMessage[]>(
       [QueryKeys.messages, 'parent-conversation'],
