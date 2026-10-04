@@ -133,36 +133,37 @@ export async function backfillSearchTokens(
  * a database whose documents all received tokens from the schema middleware
  * still never builds them until the backfill runs.
  *
- * Probes for one such document rather than counting them: before the backfill
- * the token indexes may not exist, but a document without tokens is found at
- * once; after it, the backfill has built the indexes and the probe seeks them.
- * `maxTimeMS` bounds the case in between.
+ * The indexes are checked first, so the probe for a token-less document only
+ * runs once they exist and it can seek them; `maxTimeMS` bounds it regardless.
  */
 export async function warnOnMissingSearchTokens(connection: Connection): Promise<void> {
   try {
     const pending = await Promise.all(
       SEARCH_TOKEN_COLLECTIONS.map(async ({ name, fields }) => {
         const collection = connection.db!.collection(name);
-        const [indexes, unmigrated] = await Promise.all([
-          collection.indexes().catch((error: { codeName?: string }) => {
-            /** No collection yet: nothing to search, nothing to migrate. */
-            if (error?.codeName === 'NamespaceNotFound') {
-              return null;
-            }
-            throw error;
-          }),
-          collection.findOne(missingTokens(fields), {
-            projection: { _id: 1 },
-            maxTimeMS: STARTUP_PROBE_MAX_TIME_MS,
-          }),
-        ]);
-        const built = new Set(indexes?.map((index) => JSON.stringify(index.key)));
-        const unindexed =
-          indexes != null &&
-          fields.some((field) =>
-            searchTokenIndexes(field).some((index) => !built.has(JSON.stringify(index))),
-          );
-        return unmigrated != null || unindexed ? name : null;
+        const indexes = await collection.indexes().catch((error: { codeName?: string }) => {
+          /** No collection yet: nothing to search, nothing to migrate. */
+          if (error?.codeName === 'NamespaceNotFound') {
+            return null;
+          }
+          throw error;
+        });
+        if (indexes == null) {
+          return null;
+        }
+        const built = new Set(indexes.map((index) => JSON.stringify(index.key)));
+        const unindexed = fields.some((field) =>
+          searchTokenIndexes(field).some((index) => !built.has(JSON.stringify(index))),
+        );
+        /** Without the indexes the probe below would scan; the warning is already due. */
+        if (unindexed) {
+          return name;
+        }
+        const unmigrated = await collection.findOne(missingTokens(fields), {
+          projection: { _id: 1 },
+          maxTimeMS: STARTUP_PROBE_MAX_TIME_MS,
+        });
+        return unmigrated != null ? name : null;
       }),
     );
     const names = pending.filter((name): name is string => name != null);

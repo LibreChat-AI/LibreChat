@@ -171,13 +171,21 @@ describe('warnOnMissingSearchTokens', () => {
     }
   };
 
-  it('stops at the first document without tokens when the token indexes do not exist', async () => {
+  it('warns without probing documents while the token indexes do not exist', async () => {
     await users().insertMany(
       Array.from({ length: 200 }, (_, i) => ({ name: `Old ${i}`, email: `old${i}@x.io` })),
     );
-    const explain = await explainUserProbe();
-    expect(explain.executionStats.totalDocsExamined).toBe(1);
-    expect(logger.warn).toHaveBeenCalled();
+    const findOne = jest.spyOn(Collection.prototype, 'findOne');
+    try {
+      await warnOnMissingSearchTokens(mongoose.connection);
+      const probed = findOne.mock.contexts.some(
+        (collection) => collection.collectionName === 'users',
+      );
+      expect(probed).toBe(false);
+    } finally {
+      findOne.mockRestore();
+    }
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Some users'));
   });
 
   it('examines no documents once the backfill has built the indexes and filled every token', async () => {
