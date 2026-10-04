@@ -2,13 +2,14 @@ import zlib from 'zlib';
 import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
 import type { APIRequestContext } from '@playwright/test';
+import type { RequestResult } from '../content-filters.helpers';
 import {
   deleteConversations,
   deleteMessagesByConversation,
   seedConversations,
   seedMessages,
 } from '../db';
-import { expectSuccess, loginAdmin, requestResult } from '../content-filters.helpers';
+import { loginAdmin, requestResult } from '../content-filters.helpers';
 import { getPrimaryE2EUser } from '../../../setup/users.mock';
 import { MOCK_ENDPOINTS } from '../helpers';
 
@@ -23,6 +24,13 @@ const NO_PARENT = '00000000-0000-0000-0000-000000000000';
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 type JsonObject = Record<string, unknown>;
+
+function expectSuccess(result: RequestResult, status?: number): void {
+  expect(result.ok, result.text).toBe(true);
+  if (status != null) {
+    expect(result.status, result.text).toBe(status);
+  }
+}
 
 function asObject(value: unknown): JsonObject {
   return value != null && typeof value === 'object' && !Array.isArray(value)
