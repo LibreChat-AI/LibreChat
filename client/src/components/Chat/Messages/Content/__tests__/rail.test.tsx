@@ -287,7 +287,7 @@ describe('useFoldPath', () => {
     flush = true,
   ) => {
     const event = new Event(type, { bubbles: type !== 'pointerleave' });
-    Object.assign(event, { clientY, pointerType });
+    Object.assign(event, { clientX: 100, clientY, pointerType });
     target.dispatchEvent(event);
     if (flush) {
       flushFrames();
@@ -430,6 +430,51 @@ describe('useFoldPath', () => {
     window.dispatchEvent(new Event('resize'));
     expect(b.rail.dataset.foldLit).toBeUndefined();
   });
+
+  it('re-hit-tests one queued paint after scrolling instead of discarding a fresh move', () => {
+    const { root, a, b, rows } = foldFixture();
+    rows.a2.getBoundingClientRect = () => ({ top: 140, height: 20 }) as DOMRect;
+    const hit = jest.fn(() => rows.a2);
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: hit });
+    try {
+      renderHook(() => useFoldPath({ current: root }, true));
+      pointer('pointermove', rows.b2, 150, 'mouse', false);
+      root.dispatchEvent(new Event('scroll'));
+      root.dispatchEvent(new Event('scroll'));
+      expect(frames).toHaveLength(1);
+      expect(hit).not.toHaveBeenCalled();
+      flushFrames();
+      expect(hit).toHaveBeenCalledTimes(1);
+      expect(hit).toHaveBeenCalledWith(100, 150);
+      expect(b.rail.dataset.foldLit).toBeUndefined();
+      expect(a.rail.dataset.foldLit).toBe('end');
+      expect(a.rail.style.getPropertyValue('--fold-lit')).toBe('108px');
+    } finally {
+      Reflect.deleteProperty(document, 'elementFromPoint');
+    }
+  });
+
+  it.each([null, document.body])(
+    'clears a queued path when scrolling moves the pointer outside the fold (%p)',
+    (target) => {
+      const { root, a, b, rows } = foldFixture();
+      Object.defineProperty(document, 'elementFromPoint', {
+        configurable: true,
+        value: jest.fn(() => target),
+      });
+      try {
+        renderHook(() => useFoldPath({ current: root }, true));
+        pointer('pointermove', rows.b2, 150);
+        pointer('pointermove', rows.b3, 180, 'mouse', false);
+        root.dispatchEvent(new Event('scroll'));
+        flushFrames();
+        expect(a.rail.dataset.foldLit).toBeUndefined();
+        expect(b.rail.dataset.foldLit).toBeUndefined();
+      } finally {
+        Reflect.deleteProperty(document, 'elementFromPoint');
+      }
+    },
+  );
 
   it('disconnects observers and cancels pending work on unmount', async () => {
     const { root, b, rows } = foldFixture();

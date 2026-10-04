@@ -237,18 +237,26 @@ export function useFoldPath(rootRef: RefObject<HTMLElement>, hasBody: boolean) {
     let glyphsByPanel = new WeakMap<Element, Element[]>();
     let lit: LitRail[] = [];
     let frame = 0;
-    let pointer: { target: Element; y: number } | null = null;
+    let rehit = false;
+    let pointer: { target: Element; x: number; y: number } | null = null;
     const paint = () => {
       frame = 0;
       if (pointer == null) {
         return;
       }
-      const next = litFoldPath(root, pointer.target, pointer.y, glyphsByPanel);
+      const target = rehit ? document.elementFromPoint(pointer.x, pointer.y) : pointer.target;
+      rehit = false;
+      if (target == null || !root.contains(target)) {
+        clear();
+        return;
+      }
+      const next = litFoldPath(root, target, pointer.y, glyphsByPanel);
       paintFoldPath(lit, next);
       lit = next;
     };
     const clear = () => {
       pointer = null;
+      rehit = false;
       cancelAnimationFrame(frame);
       frame = 0;
       paintFoldPath(lit, []);
@@ -259,10 +267,18 @@ export function useFoldPath(rootRef: RefObject<HTMLElement>, hasBody: boolean) {
       if (event.pointerType === 'touch' || !(event.target instanceof Element)) {
         return;
       }
-      pointer = { target: event.target, y: event.clientY };
+      pointer = { target: event.target, x: event.clientX, y: event.clientY };
       if (frame === 0) {
         frame = requestAnimationFrame(paint);
       }
+    };
+    const onScroll = () => {
+      /** Scroll events can arrive after a fresh move but before its queued paint. */
+      if (frame !== 0) {
+        rehit = true;
+        return;
+      }
+      clear();
     };
     const mutations = new MutationObserver((records) => {
       let changed = false;
@@ -303,13 +319,13 @@ export function useFoldPath(rootRef: RefObject<HTMLElement>, hasBody: boolean) {
     root.addEventListener('pointermove', onMove);
     root.addEventListener('pointerleave', clear);
     root.addEventListener('pointerdown', clear);
-    window.addEventListener('scroll', clear, true);
+    window.addEventListener('scroll', onScroll, true);
     window.addEventListener('resize', clear);
     return () => {
       root.removeEventListener('pointermove', onMove);
       root.removeEventListener('pointerleave', clear);
       root.removeEventListener('pointerdown', clear);
-      window.removeEventListener('scroll', clear, true);
+      window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', clear);
       mutations.disconnect();
       resize.disconnect();

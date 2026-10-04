@@ -162,6 +162,7 @@ test.describe('activity fold', () => {
     const failedCall = groupPanel.getByTestId('tool-call').filter({ hasText: /^Failed:/ });
     const litLength = (railLocator: typeof groupRail) =>
       railLocator.evaluate((rail) => parseFloat(rail.style.getPropertyValue('--fold-lit')));
+    await failedCall.scrollIntoViewIfNeeded();
     await failedCall.hover();
     await expect(groupRail).toHaveAttribute('data-fold-lit', 'end');
     await expect(phaseRail).toHaveAttribute('data-fold-lit', 'through');
@@ -178,18 +179,22 @@ test.describe('activity fold', () => {
     await shot(page, 'lit-path');
 
     await failedCall.evaluate((row) => {
-      const { top, height } = row.getBoundingClientRect();
-      row.dispatchEvent(
-        new PointerEvent('pointermove', {
-          bubbles: true,
-          pointerType: 'mouse',
-          clientY: top + height / 2,
-        }),
-      );
-      row.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      const { left, top, width, height } = row.getBoundingClientRect();
+      const pointer = {
+        bubbles: true,
+        pointerType: 'mouse',
+        pointerId: 1,
+        isPrimary: true,
+        clientX: left + width / 2,
+        clientY: top + height / 2,
+      };
+      row.dispatchEvent(new PointerEvent('pointermove', pointer));
+      row.dispatchEvent(new PointerEvent('pointerdown', { ...pointer, buttons: 1 }));
+      row.dispatchEvent(new PointerEvent('pointerup', pointer));
     });
     await expect(groupRail).not.toHaveAttribute('data-fold-lit');
     await expect(phaseRail).not.toHaveAttribute('data-fold-lit');
+    await failedCall.scrollIntoViewIfNeeded();
     await failedCall.hover();
     await expect(groupRail).toHaveAttribute('data-fold-lit', 'end');
     await groupPanel.locator('> div > div').evaluate((rows) => {
