@@ -131,7 +131,7 @@ const AgentCard = memo(
                 size: 'sm',
                 showBorder: false,
                 className:
-                  'rounded-full bg-surface-tertiary ring-1 ring-border-chrome transition-colors duration-150 group-hover:ring-border-medium',
+                  'rounded-full bg-surface-tertiary ring-1 ring-border-chrome transition-colors duration-150 group-hover:ring-border-chrome-medium',
               })}
             </motion.div>
             {agent.category != null && agent.category !== '' && (

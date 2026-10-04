@@ -7,7 +7,7 @@ describe('Chip', () => {
     render(<Chip tone="surface">Context</Chip>);
 
     expect(screen.getByText('Context').parentElement).toHaveClass(
-      'border-border-light',
+      'border-border-chrome',
       'bg-surface-secondary',
       'text-text-secondary',
     );

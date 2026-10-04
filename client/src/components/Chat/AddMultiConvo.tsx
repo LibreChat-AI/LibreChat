@@ -17,6 +17,7 @@ function AddMultiConvo() {
       render={
         <Button
           size="icon"
+          className="size-9"
           variant="header-action"
           aria-label={localize('com_ui_add_multi_conversation')}
           onClick={addConversation}

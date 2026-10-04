@@ -125,6 +125,14 @@ describe('theme color tokens', () => {
     );
   });
 
+  it('draws the chrome medium border as border-medium at the chrome share', async () => {
+    const css = await generate(['border-border-chrome-medium']);
+
+    expect(css).toContain(
+      'rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-chrome-alpha, 1)))',
+    );
+  });
+
   it.each(['./theme.css', '../../../../client/src/style.css'])(
     '%s preserves closed compatibility palettes without declaring them as semantic tokens',
     async (repositoryEntry) => {

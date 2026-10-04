@@ -212,7 +212,7 @@ const buttonVariantRecipe = cva(
     compoundVariants: [
       /* An outlined icon button is chrome: a theme that draws no chrome outline leaves it ghost-shaped. */
       {
-        variant: 'outline',
+        variant: ['outline', 'subtle'],
         size: ['icon', 'icon-sm', 'icon-xs', 'icon-theme'],
         class: 'border-border-chrome',
       },

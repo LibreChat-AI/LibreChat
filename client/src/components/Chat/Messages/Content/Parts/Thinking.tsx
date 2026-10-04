@@ -92,7 +92,7 @@ export const ThinkingContent: FC<{
     animate && typeof children === 'string' ? <AnimatedText text={children} /> : children;
 
   return (
-    <div className="border-border-inset bg-surface-secondary text-text-secondary relative rounded-lg border p-3">
+    <div className="border-border-light bg-surface-secondary text-text-secondary relative rounded-lg border p-3">
       <p className={cn('leading-6.5 whitespace-pre-wrap', fontSize)}>{content}</p>
     </div>
   );

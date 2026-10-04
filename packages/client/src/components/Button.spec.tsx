@@ -20,6 +20,15 @@ describe('Button', () => {
     expect(text).not.toContain('border-border-chrome');
   });
 
+  it('outlines a subtle icon button in the chrome border as well', () => {
+    expect(cn(buttonVariants({ variant: 'subtle', size: 'icon' }))).toContain(
+      'border-border-chrome',
+    );
+    expect(cn(buttonVariants({ variant: 'subtle', size: 'dense' }))).toContain(
+      'border-border-light',
+    );
+  });
+
   it('owns dense action padding without changing the default-height recipe', () => {
     render(
       <Button variant="outline" size="dense">
