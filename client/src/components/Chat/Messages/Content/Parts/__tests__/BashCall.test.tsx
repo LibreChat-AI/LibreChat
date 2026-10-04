@@ -363,6 +363,56 @@ describe('BashCall sole tool disclosure', () => {
     expect(screen.getByTestId('progress-text')).toBeInTheDocument();
   });
 
+  it('keeps its row while the only call is still running', () => {
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value>
+          <BashCall initialProgress={0.5} isSubmitting args={{ command: 'sleep 5' }} output="" />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Running command');
+  });
+
+  it('keeps its row when the only call failed, so the failure stays reachable', () => {
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value>
+          <BashCall
+            initialProgress={1}
+            isSubmitting={false}
+            executor="attached_workspace"
+            args={{ command: 'false' }}
+            output={'stderr:\nboom\n\n[exit code: 1]'}
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('tool failed');
+  });
+
+  it('keeps its row for a detached task whose dispatch step has closed', () => {
+    const handle = JSON.stringify({
+      background_task_id: 'task-1',
+      tool: 'bash_tool',
+      status: 'running',
+      message: 'Use check_background_task to follow it',
+    });
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value>
+          <BashCall
+            initialProgress={1}
+            isSubmitting={false}
+            args={{ command: 'sleep 600' }}
+            output={handle}
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Running in background');
+  });
+
   it('closes the card again when its group gains a second call', () => {
     const { container, rerender } = renderCall(true);
     expect(panel(container).style.gridTemplateRows).toBe('1fr');

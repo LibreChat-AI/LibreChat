@@ -36,9 +36,9 @@ import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from './rows';
 import { MCPAppViews } from '~/components/MCPUIResource';
+import { parseToolName } from '~/utils/toolLabels';
 import { StackedToolIcons } from './ToolOutput';
 import { SoleToolContext } from './disclosure';
-import { parseToolName } from '~/utils/toolLabels';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
 import SearchVerticals from './verticals';
@@ -487,8 +487,11 @@ export default function ToolCallGroup({
        *  the code tool says the verb its live row says. Other tools already
        *  name an action ("Create File"). */
       if (singleToolLabel && singleToolIsCode) {
+        /** A detached task's output is its handle, so `groupDone` is true while
+         *  the work is still going. */
+        const settled = groupDone && toolMetadata[0]?.background !== 'running';
         return localize(
-          groupDone ? 'com_assistants_completed_function' : 'com_assistants_running_var',
+          settled ? 'com_assistants_completed_function' : 'com_assistants_running_var',
           { 0: singleToolLabel },
         );
       }

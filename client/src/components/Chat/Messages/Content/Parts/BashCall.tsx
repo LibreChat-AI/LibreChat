@@ -130,6 +130,7 @@ export default function BashCall({
       runStepStatus,
       extraError: backgroundFailed || result?.failed === true,
       extraCancelled: cancelledInBackground,
+      keepRow: backgroundHandle != null,
     },
   );
 

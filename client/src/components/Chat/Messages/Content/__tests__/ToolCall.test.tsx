@@ -987,6 +987,52 @@ describe('ToolCall failure fast path', () => {
 });
 
 describe('ToolCall sole tool disclosure', () => {
+  it('keeps the row of an only MCP call, the one place its function name shows', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value>
+            <ToolCall
+              args='{"query":"weather"}'
+              name="search_documents_mcp_Workspace"
+              output="sunny"
+              initialProgress={1}
+              isSubmitting={false}
+            />
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  });
+
+  it('keeps the row of an only call that is still running', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value>
+            <ToolCall
+              args='{"query":"weather"}'
+              name="lookup"
+              output=""
+              initialProgress={0.5}
+              isSubmitting
+            />
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  });
+
   it('drops its own row once the only call has settled, leaving the info panel', () => {
     render(
       <RecoilRoot>

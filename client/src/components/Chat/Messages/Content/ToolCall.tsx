@@ -193,16 +193,6 @@ export default function ToolCall({
   /** The preference opens a card once it has output; a sole call opens on
    *  its arguments too, so a call that returned nothing still shows them. */
   const soleTool = useContext(SoleToolContext) === true;
-  const [expandedInfo, setShowInfo] = useToolExpansion(
-    soleTool ? hasInfo : (output?.length ?? 0) > 0,
-  );
-  /** The only call of its group, with something to show: the group header is
-   *  the row, so the panel stands alone and stays open. */
-  const bare = soleTool && hasInfo;
-  const showInfo = bare || expandedInfo;
-  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
-  const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
-
   const authDomain = useMemo(() => {
     return parsedAuthUrl?.hostname ?? '';
   }, [parsedAuthUrl]);
@@ -227,6 +217,17 @@ export default function ToolCall({
     hasError,
   });
   const showOAuth = Boolean(auth) && phase === 'running';
+
+  const [expandedInfo, setShowInfo] = useToolExpansion(
+    soleTool ? hasInfo : (output?.length ?? 0) > 0,
+  );
+  /** The only call of its group, settled successfully: the group header is the
+   *  row, so the panel stands alone and stays open. An MCP call keeps its row,
+   *  which is the only place its function name appears. */
+  const bare = soleTool && hasInfo && phase === 'completed' && !isMCPToolCall;
+  const showInfo = bare || expandedInfo;
+  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
+  const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
 
   /**
    * Binds when the sign-in prompt appears instead of on tap, so the tap opens the provider

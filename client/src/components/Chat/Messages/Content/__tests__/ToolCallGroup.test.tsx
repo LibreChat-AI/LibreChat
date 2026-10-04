@@ -964,6 +964,30 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toBeInTheDocument();
   });
 
+  it('keeps a lone code call in the running tense while its detached task runs', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: makePart(
+            'code-1',
+            JSON.stringify({
+              background_task_id: 'task-1',
+              tool: 'bash_tool',
+              status: 'running',
+              message: 'Use check_background_task to follow it',
+            }),
+            'bash_tool',
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toBeInTheDocument();
+  });
+
   it('keeps repeated action counts and failed-call status in the compact summary', () => {
     renderGroup({
       ...baseProps,
