@@ -178,6 +178,18 @@ describe('ActivityRecorder', () => {
     expect(findActiveLeaf(tree.root)).toBeUndefined();
   });
 
+  it('measures single-part message deltas as well as part arrays', () => {
+    const recorder = new ActivityRecorder(0);
+    recorder.record(
+      event('message_delta', { id: 'msg', delta: { content: { type: 'text', text: 'Hello' } } }),
+      1,
+    );
+    recorder.record(text('msg', ' there'), 2);
+    expect(recorder.snapshot().root.turns[0].children).toEqual([
+      expect.objectContaining({ kind: 'text', status: 'running', chars: 11 }),
+    ]);
+  });
+
   it('records a failed reply step and a schema-rejected call as errors', () => {
     const recorder = new ActivityRecorder(0);
     recorder.record(text('msg-1', 'partial answer'), 1);

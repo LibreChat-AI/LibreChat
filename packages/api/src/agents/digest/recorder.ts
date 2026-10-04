@@ -43,19 +43,19 @@ const toolCalls = (value: unknown): ToolCallShape[] =>
 const nonEmpty = (value: unknown): string | undefined =>
   typeof value === 'string' && value !== '' ? value : undefined;
 
-/** Text characters in one message delta; content is measured, never retained. */
+const textPartChars = (part: unknown): number =>
+  isRecord(part) && part.type === 'text' && typeof part.text === 'string' ? part.text.length : 0;
+
+/**
+ * Text characters in one message delta; content is measured, never retained.
+ * Providers send either a part array or a single part object.
+ */
 function deltaChars(data: Record<string, unknown>): number {
-  const delta = isRecord(data.delta) ? data.delta : undefined;
-  if (!Array.isArray(delta?.content)) {
-    return 0;
+  const content = isRecord(data.delta) ? data.delta.content : undefined;
+  if (!Array.isArray(content)) {
+    return textPartChars(content);
   }
-  let chars = 0;
-  for (const part of delta.content) {
-    if (isRecord(part) && part.type === 'text' && typeof part.text === 'string') {
-      chars += part.text.length;
-    }
-  }
-  return chars;
+  return content.reduce((total: number, part: unknown) => total + textPartChars(part), 0);
 }
 
 function closedStatus(status: unknown): SubagentDigestStatus {
