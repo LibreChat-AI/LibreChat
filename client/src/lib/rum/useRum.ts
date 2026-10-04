@@ -19,7 +19,6 @@ const PROXY_API_KEY = 'librechat-rum-proxy';
 
 let rumProxyToken: string | undefined;
 let rumProxyFetchPatched = false;
-let hyperDxClient: HyperDXBrowser | undefined;
 
 type HyperDXBrowser = HyperDXActionClient & {
   init: (config: {
@@ -66,7 +65,7 @@ function isProxyRumWaitingForToken(
  * Client logs ride the authenticated proxy only: the browser never holds a collector URL or
  * ingestion key for them, so public-token deployments keep just the RUM SDK's own signals.
  */
-function syncClientLogs(config: TRumConfig): void {
+function syncClientLogs(config: TRumConfig, getSessionId: () => string | undefined): void {
   if (config.authMode !== 'proxy' || !config.clientLogs) {
     stopClientLogs();
     return;
@@ -78,7 +77,7 @@ function syncClientLogs(config: TRumConfig): void {
     environment: config.environment,
     buildId: getClientBuildId() ?? 'unknown',
     getToken: () => rumProxyToken,
-    getSessionId: () => hyperDxClient?.getSessionId?.(),
+    getSessionId,
   });
   forwardQueuedAssetEvents();
 }
@@ -184,7 +183,14 @@ export default function useRum(): void {
   }, [route, shouldBufferRoutes]);
 
   /** Leaving the authenticated layout (e.g. for a share link) ends this session's log export. */
-  useEffect(() => stopClientLogs, []);
+  useEffect(
+    () => () => {
+      stopClientLogs();
+      hyperDxRef.current = undefined;
+      initializedKeyRef.current = undefined;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!rumConfig) {
@@ -199,6 +205,8 @@ export default function useRum(): void {
       stopClientLogs();
       if (rumConfig?.authMode === 'proxy') {
         rumProxyToken = undefined;
+        hyperDxRef.current = undefined;
+        initializedKeyRef.current = undefined;
       }
       if (!isProxyRumWaitingForToken(rumConfig, token)) {
         discardEarlyRumQueue();
@@ -213,17 +221,23 @@ export default function useRum(): void {
       ensureRumProxyAuth(config.url);
     }
 
-    const initKey = [config.url, config.serviceName, config.authMode, apiKey].join(':');
+    const identity = config.authMode === 'proxy' ? JSON.stringify([user?.tenantId, user?.id]) : '';
+    const initKey = [config.url, config.serviceName, config.authMode, apiKey, identity].join(':');
+    const getSessionId = () => hyperDxRef.current?.getSessionId?.();
 
     if (initializedKeyRef.current === initKey) {
       if (hyperDxRef.current) {
         restoreRumEmitter(hyperDxRef.current);
       }
-      syncClientLogs(config);
+      syncClientLogs(config, getSessionId);
       return;
     }
 
     if (sampledInitKeyRef.current !== initKey) {
+      /* Retire the previous account's queue and correlation before accepting new records. */
+      stopClientLogs();
+      hyperDxRef.current = undefined;
+      initializedKeyRef.current = undefined;
       sampledInitKeyRef.current = initKey;
       sampledInRef.current =
         typeof config.sampleRate === 'number' ? Math.random() < config.sampleRate : true;
@@ -235,7 +249,7 @@ export default function useRum(): void {
       return;
     }
 
-    syncClientLogs(config);
+    syncClientLogs(config, getSessionId);
 
     let cancelled = false;
 
@@ -256,7 +270,6 @@ export default function useRum(): void {
         });
 
         hyperDxRef.current = HyperDX;
-        hyperDxClient = HyperDX;
         initializedKeyRef.current = initKey;
         HyperDX.setGlobalAttributes(buildGlobalAttributes(user, config, routeRef.current));
         startRumDiagnostics(HyperDX, () => routeRef.current);
