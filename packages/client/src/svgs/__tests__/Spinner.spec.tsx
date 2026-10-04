@@ -1,5 +1,5 @@
 import React from 'react';
-import { render } from '@testing-library/react';
+import { render, fireEvent, createEvent } from '@testing-library/react';
 import Spinner from '../Spinner';
 
 type FakeAnimation = { startTime: number | null; animationName: string };
@@ -21,6 +21,13 @@ const mockGetAnimations = (impl: () => FakeAnimation[]) => {
 };
 
 const flushMicrotasks = () => Promise.resolve();
+
+/** jsdom has no AnimationEvent, so its events carry no `animationName`. */
+const startAnimation = (element: Element, animationName: string) => {
+  const event = createEvent.animationStart(element);
+  Object.defineProperty(event, 'animationName', { value: animationName });
+  fireEvent(element, event);
+};
 
 describe('Spinner', () => {
   const originalMatchMedia = window.matchMedia;
@@ -135,6 +142,52 @@ describe('Spinner', () => {
     await flushMicrotasks();
 
     expect(started.startTime).toBe(0);
+  });
+
+  it('pins a rotation the browser recreates after the spinner was hidden and shown', async () => {
+    let current: FakeAnimation[] = [rotation(1)];
+    mockGetAnimations(() => current);
+
+    const { container } = render(<Spinner />);
+    await flushMicrotasks();
+
+    const recreated = rotation(42);
+    current = [recreated];
+    startAnimation(container.querySelector('svg') as SVGElement, ROTATE);
+    await flushMicrotasks();
+
+    expect(recreated.startTime).toBe(0);
+  });
+
+  it('ignores animationstart events from animations the caller added', async () => {
+    const callerFade: FakeAnimation = { startTime: 7, animationName: 'caller-fade' };
+    mockGetAnimations(() => [callerFade]);
+
+    const { container } = render(<Spinner />);
+    await flushMicrotasks();
+    const getAnimations = SVGElement.prototype.getAnimations as jest.Mock;
+    getAnimations.mockClear();
+
+    startAnimation(container.querySelector('svg') as SVGElement, 'caller-fade');
+    await flushMicrotasks();
+
+    expect(getAnimations).not.toHaveBeenCalled();
+  });
+
+  it('pins on engines without queueMicrotask', async () => {
+    const original = globalThis.queueMicrotask;
+    Object.defineProperty(globalThis, 'queueMicrotask', { configurable: true, value: undefined });
+    try {
+      const animation = rotation(1234);
+      mockGetAnimations(() => [animation]);
+
+      render(<Spinner />);
+      await flushMicrotasks();
+
+      expect(animation.startTime).toBe(0);
+    } finally {
+      Object.defineProperty(globalThis, 'queueMicrotask', { configurable: true, value: original });
+    }
   });
 
   it('reads every animation before writing any start time when spinners mount together', async () => {

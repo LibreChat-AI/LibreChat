@@ -7,6 +7,7 @@ const ROTATION_NAME = 'librechat-spinner-rotate';
 const REDUCED_MOTION = '(prefers-reduced-motion: reduce)';
 
 const pending = new Set<SVGSVGElement>();
+let scheduled = false;
 
 /** Only the spinner's own rotation is pinned: `className` can add other animations. */
 const isRotation = (animation: Animation): boolean =>
@@ -15,7 +16,10 @@ const isRotation = (animation: Animation): boolean =>
 /** Reads every pending animation before writing any start time: a write dirties style, so
  *  interleaving them would force one style recalculation per spinner. */
 function pinPending() {
-  const animations = [...pending].flatMap((svg) => svg.getAnimations?.().filter(isRotation) ?? []);
+  scheduled = false;
+  const animations = [...pending].flatMap(
+    (svg) => svg.getAnimations?.().filter((a) => isRotation(a) && a.startTime !== 0) ?? [],
+  );
   pending.clear();
   animations.forEach((animation) => {
     animation.startTime = 0;
@@ -32,10 +36,20 @@ function observeMediaQuery(query: MediaQueryList, onChange: () => void): () => v
   return () => query.removeListener(onChange);
 }
 
+/** `queueMicrotask` is missing on older engines (iOS Safari before 12.2). */
+function defer(callback: () => void) {
+  if (typeof queueMicrotask === 'function') {
+    queueMicrotask(callback);
+    return;
+  }
+  void Promise.resolve().then(callback);
+}
+
 function schedulePin(svg: SVGSVGElement) {
   pending.add(svg);
-  if (pending.size === 1) {
-    queueMicrotask(pinPending);
+  if (!scheduled) {
+    scheduled = true;
+    defer(pinPending);
   }
 }
 
@@ -85,6 +99,14 @@ export default function Spinner({
     };
   }, [speed]);
 
+  /** The browser starts a new rotation when a hidden ancestor is shown again, so a spinner
+   *  revealed later restarts at zero unless it is pinned again. */
+  const handleAnimationStart = (event: React.AnimationEvent<SVGSVGElement>) => {
+    if (event.animationName === ROTATION_NAME) {
+      schedulePin(event.currentTarget);
+    }
+  };
+
   const cssVars = {
     '--spinner-speed': `${speed}s`,
   } as React.CSSProperties;
@@ -92,6 +114,7 @@ export default function Spinner({
   return (
     <svg
       ref={svgRef}
+      onAnimationStart={handleAnimationStart}
       className={cn(className, 'spinner')}
       width={size}
       height={size}
