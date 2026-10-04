@@ -382,16 +382,26 @@ export function createAgentToolApprovalSession({
       const owner = invocation.agentId == null ? undefined : owners.get(invocation.agentId);
       if (
         !owner &&
-        Array.from(owners.values()).some((agent) =>
-          ['ask', 'chat', 'always'].includes(agent.tool_options?.[tool.name]?.approval_mode ?? ''),
-        )
+        (reviewedBindings.size > 0 ||
+          Array.from(owners.values()).some((agent) =>
+            ['ask', 'chat', 'always'].includes(
+              agent.tool_options?.[tool.name]?.approval_mode ?? '',
+            ),
+          ))
       ) {
         throw new Error('MCP approval requires the executing agent identity.');
       }
       const options = owner?.tool_options?.[tool.name];
-      if (options?.approval_mode == null) return;
       const callId = invocation.toolCallId;
       const key = approvalCallKey(invocation.agentId, callId ?? '', invocation.executionScope);
+      if (options?.approval_mode == null) {
+        if (reviewedBindings.has(key)) {
+          throw new Error(
+            'The reviewed tool approval configuration changed. Request approval again.',
+          );
+        }
+        return;
+      }
       const check = callId && policyChecks.get(key);
       if (!check || check.agentId !== owner?.id || check.toolName !== tool.name) {
         throw new Error('Tool policy could not be verified. Run this tool in the foreground.');
@@ -506,7 +516,12 @@ export function createAgentToolApprovalSession({
     async validateTransport(serverName, oauthEpoch, invocation, checkStorage) {
       const witness = invocation.ownership && transportWitnesses.get(invocation.ownership);
       if (!witness) {
-        if (invocation.ownership) {
+        const key = approvalCallKey(
+          invocation.agentId,
+          invocation.toolCallId ?? '',
+          invocation.executionScope,
+        );
+        if (invocation.ownership || reviewedBindings.has(key)) {
           throw new Error(
             'Tool approval invocation could not be verified before transport dispatch.',
           );
@@ -577,11 +592,19 @@ export function createAgentToolApprovalSession({
     async hook(input) {
       const agent = input.executingAgentId == null ? undefined : owners.get(input.executingAgentId);
       const mode = agent?.tool_options?.[input.toolName]?.approval_mode;
-      if (!agent || mode == null) return {};
       const executionScope = getToolApprovalExecutionScope(input.executionContext);
-      const key = approvalCallKey(agent.id, input.toolUseId, executionScope);
+      const key = approvalCallKey(input.executingAgentId, input.toolUseId, executionScope);
       const previous = proposals.get(key);
       if (previous?.dispatched) retireCall(key, previous.ownership, dispositions.get(key) === true);
+      if (!agent || mode == null) {
+        if (reviewedBindings.has(key))
+          return {
+            decision: 'deny',
+            reason:
+              'The reviewed tool approval configuration changed. Please request approval again.',
+          };
+        return {};
+      }
       const ownership =
         previous?.dispatched === false ? previous.ownership : Symbol('toolInvocation');
       const target = scope && resolveToolReviewBinding(agent, input.toolName, scope);

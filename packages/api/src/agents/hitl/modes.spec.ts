@@ -924,3 +924,113 @@ test('a late successful execution cannot learn over a replacement consent bindin
   );
   expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
 });
+
+for (const mode of ['ask', 'allow', 'chat', 'always'] as const) {
+  test.each(['unchanged', 'connection', 'schema', 'account'])(
+    `${mode} captured approval cannot lose its fences by switching to inheritance; change=%s`,
+    async (change) => {
+      const original = agent(mode);
+      const storage = store();
+      const first = createAgentToolApprovalSession({ agents: [original], scope, storage });
+      await first.hook(input(), new AbortController().signal);
+      const bindings = first.bindingsFor(
+        buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+      );
+      let definition = original.toolDefinitions![0];
+      if (change === 'connection') {
+        definition = bindFixture(
+          { name, serverName: 'db', parameters: { type: 'object' } },
+          'source-b',
+        );
+      } else if (change === 'schema') {
+        definition = bindFixture(
+          { name, serverName: 'db', parameters: { type: 'object', description: 'changed schema' } },
+          'source-a',
+        );
+      }
+      const inherited = {
+        ...original,
+        tool_options: { [name]: { defer_loading: true } },
+        toolDefinitions: [definition],
+      };
+      if (change === 'account')
+        jest
+          .spyOn(storage, 'getToolApprovalGrants')
+          .mockResolvedValue([
+            { binding: bindings['call-a'].binding, approved: false, oauthEpoch: 'account-b' },
+          ]);
+      const session = createAgentToolApprovalSession({
+        agents: [inherited],
+        scope,
+        storage,
+        reviewed: { bindings, decisions: [{ tool_call_id: 'call-a', decision: 'approve' }] },
+      });
+      expect(await session.hook(input(), new AbortController().signal)).toMatchObject({
+        decision: 'deny',
+      });
+      await expect(
+        session.validateExecution(definition, { agentId: original.id, toolCallId: 'call-a' }),
+      ).rejects.toThrow('configuration changed');
+      await expect(session.validateExecution(definition, { toolCallId: 'call-a' })).rejects.toThrow(
+        'executing agent identity',
+      );
+      await expect(
+        session.validateTransport!(
+          'db',
+          'account-b',
+          { agentId: original.id, toolCallId: 'call-a' },
+          false,
+        ),
+      ).rejects.toThrow('invocation could not be verified');
+      expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+    },
+  );
+}
+
+test('fresh inherited calls without captured approvals preserve the baseline', async () => {
+  const inherited = { ...agent('ask'), tool_options: undefined };
+  const session = createAgentToolApprovalSession({ agents: [inherited], scope, storage: store() });
+  expect(await session.hook(input(), new AbortController().signal)).toEqual({});
+  await expect(
+    session.validateExecution(inherited.toolDefinitions![0], {
+      agentId: inherited.id,
+      toolCallId: 'fresh',
+    }),
+  ).resolves.toBeUndefined();
+  await expect(
+    session.validateTransport!('db', null, { agentId: inherited.id, toolCallId: 'fresh' }, false),
+  ).resolves.toBeUndefined();
+});
+
+test('a fresh inherited call with a reused ID retires only the old detached proposal', async () => {
+  const original = agent('chat');
+  const storage = store();
+  const first = createAgentToolApprovalSession({ agents: [original], scope, storage });
+  await first.hook(input(), new AbortController().signal);
+  const bindings = first.bindingsFor(
+    buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+  );
+  const session = createAgentToolApprovalSession({
+    agents: [original],
+    scope,
+    storage,
+    reviewed: { bindings, decisions: [{ tool_call_id: 'call-a', decision: 'approve' }] },
+  });
+  await session.hook(input(), new AbortController().signal);
+  const detached = { agentId: original.id, toolCallId: 'call-a', background: true };
+  await session.validateExecution(original.toolDefinitions![0], detached);
+  session.addAgent({ ...original, tool_options: undefined });
+  expect(await session.hook(input(), new AbortController().signal)).toEqual({});
+  const fresh = { agentId: original.id, toolCallId: 'call-a' };
+  await expect(
+    session.validateExecution(original.toolDefinitions![0], fresh),
+  ).resolves.toBeUndefined();
+  await expect(session.validateTransport!('db', null, detached, true)).resolves.toBeUndefined();
+  await expect(session.validateTransport!('db', null, fresh, true)).resolves.toBeUndefined();
+  session.finishDispatch!(detached);
+  await expect(session.validateTransport!('db', null, detached, false)).rejects.toThrow(
+    'invocation could not be verified',
+  );
+  await expect(session.validateTransport!('db', null, fresh, false)).resolves.toBeUndefined();
+  expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+});

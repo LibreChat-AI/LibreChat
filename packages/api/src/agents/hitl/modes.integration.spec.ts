@@ -2141,3 +2141,103 @@ for (const mode of ['ask', 'chat', 'always'] as const) {
     );
   }
 }
+
+for (const mode of ['ask', 'chat', 'always'] as const) {
+  for (const eventDriven of [false, true]) {
+    test.each(['unchanged', 'connection', 'schema', 'account'] as const)(
+      `${mode} pending approval stays fenced after mode removal; event-driven=${eventDriven}, change=%s`,
+      async (change) => {
+        const token = await oauthCredential('account-a');
+        const original: AgentApprovalSource = {
+          id: 'agent-a',
+          tool_options: {
+            [name]: {
+              approval_mode: mode,
+              approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+            },
+          },
+          toolDefinitions: [definition()],
+        };
+        const chat = `inherit-resume-${mode}-${eventDriven}-${change}`;
+        const saver = new MemorySaver();
+        try {
+          const first = await build({
+            source: original,
+            chat,
+            saver,
+            eventDriven,
+            callId: 'pending-call',
+          });
+          await first.processStream({ messages: [new HumanMessage('review')] }, config(chat));
+          const bindings = captureRunToolApprovalBindings(
+            first,
+            first.getInterrupt()!.payload as Agents.ToolApprovalInterruptPayload,
+          )!;
+          const parameters =
+            change === 'schema'
+              ? { type: 'object', description: 'changed schema' }
+              : { type: 'object' };
+          const sourceBinding =
+            change === 'connection' ? 'replacement-endpoint-authority' : 'source-one';
+          const currentDefinition = bindToolApprovalIdentity(
+            bindToolApproval({ name, serverName: 'fixture', parameters }, sourceBinding),
+            'echo',
+            parameters,
+          );
+          const probe = bindToolApprovalIdentity(
+            Object.assign(
+              createMCPStructuredTool(
+                async () => {
+                  await assertToolApprovalTransportEpoch(
+                    'fixture',
+                    change === 'account' ? 'account-b' : 'account-a',
+                    true,
+                  );
+                  executions++;
+                  return formatToolContent(
+                    { content: [{ type: 'text', text: 'unexpected inherited resume' }] },
+                    'openai',
+                  );
+                },
+                {
+                  name,
+                  description: 'Inheritance resume probe',
+                  schema: fixtureSchema,
+                  responseFormat: 'content_and_artifact',
+                },
+              ),
+              { schema: fixtureSchema },
+            ),
+            'echo',
+            parameters,
+          );
+          bindToolApproval(probe, sourceBinding);
+          if (change === 'account')
+            await mongoose.models.Token.updateOne(
+              { _id: token._id },
+              { $set: { 'metadata.credential_set_id': 'account-b' } },
+            );
+          const resumed = await build({
+            source: { ...original, tool_options: undefined, toolDefinitions: [currentDefinition] },
+            chat,
+            saver,
+            eventDriven,
+            executionTool: probe,
+            reviewed: {
+              bindings,
+              decisions: [{ tool_call_id: 'pending-call', decision: 'approve' }],
+            },
+          });
+          await resumed.resume({ 'pending-call': { type: 'approve' } }, config(chat));
+          expect(executions).toBe(0);
+          expect(JSON.stringify(resumed.getRunMessages())).toContain(
+            'approval configuration changed',
+          );
+          expect(await mongoose.models.ToolApprovalGrant.countDocuments()).toBe(0);
+        } finally {
+          await mongoose.models.Token.deleteOne({ _id: token._id });
+        }
+      },
+    );
+  }
+}
