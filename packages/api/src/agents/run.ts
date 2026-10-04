@@ -2135,11 +2135,11 @@ export async function createRun({
   eventActorCheckpointing = false,
   hitlCapable = false,
   resolvedToolApprovalHooks,
+  toolApprovalStorage,
+  reviewedToolApprovals,
   scheduledMCPExecution,
   recordScheduledMCPDenial,
   toolApprovalAllows,
-  toolApprovalStorage,
-  reviewedToolApprovals,
   toolInputValidationErrors,
   sessionStartSource,
   streaming = true,
@@ -2286,10 +2286,10 @@ export async function createRun({
    * Reuse them here so a context-aware factory is evaluated exactly once for the run.
    */
   resolvedToolApprovalHooks?: readonly ResolvedToolApprovalHook[];
-  scheduledMCPExecution?: ScheduleMCPExecution;
-  recordScheduledMCPDenial?: (error: ScheduledMCPPolicyError) => Promise<boolean>;
   toolApprovalStorage?: ToolApprovalGrantStorage;
   reviewedToolApprovals?: ReviewedToolApprovals;
+  scheduledMCPExecution?: ScheduleMCPExecution;
+  recordScheduledMCPDenial?: (error: ScheduledMCPPolicyError) => Promise<boolean>;
   /** Plugin-hook SessionStart lifecycle source: 'startup' (default) or 'resume' on HITL-rebuild paths. */
   sessionStartSource?: string;
   /** Request-scoped tool input failures consumed by the completion handler. */
@@ -2838,8 +2838,8 @@ export async function createRun({
       )
     : undefined;
   registerResolvedMCPToolAliases = (resolvedAgent) => {
-    scheduledPolicy?.registerAgent(resolvedAgent);
     agentApprovalSession.addAgent(resolvedAgent);
+    scheduledPolicy?.registerAgent(resolvedAgent);
     for (const agentId of collectNativeEditFileAgentIds([resolvedAgent])) {
       nativeEditFileAgentIds.add(agentId);
     }
@@ -3098,8 +3098,8 @@ export async function createRun({
     ...(streamLimits && { streamLimits }),
   };
   const run = await Run.create(runConfig);
-  runMCPToolAliases.set(run, mcpToolAliases);
   if (approvalWiring != null) bindRunToolApprovalSession(run, agentApprovalSession);
+  runMCPToolAliases.set(run, mcpToolAliases);
 
   applyCustomHandoffPromptKeyCompatibility(run, runConfig.graphConfig);
   applyTestRunHook(run, {

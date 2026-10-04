@@ -9,7 +9,9 @@ import {
 } from './modes';
 import { bindToolApproval, bindToolApprovalIdentity } from '~/tools/approval';
 import { buildToolApprovalPayload, toClientPendingAction } from './policy';
+import { buildEffectiveToolApprovalPolicy } from './allow';
 import { bindToolReviewAuthority } from '~/tools/approval';
+import { buildHITLRunWiring } from './runtime';
 
 const scope = { userId: 'user-a', tenantId: 'tenant-a', conversationId: 'chat-a' };
 const name = 'query_mcp_db';

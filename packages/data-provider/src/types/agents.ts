@@ -138,10 +138,10 @@ export namespace Agents {
       actionId: string;
       allowed_decisions: ToolApprovalDecisionType[];
       description?: string;
-      /** Server-authored: an `approve` may carry `scope: 'session'` for this call. */
-      allow_always?: boolean;
       remember_scope?: 'chat' | 'always';
       remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
+      /** Server-authored: an `approve` may carry `scope: 'session'` for this call. */
+      allow_always?: boolean;
     };
   };
 
@@ -608,13 +608,13 @@ export namespace Agents {
      * tool execution so an approval cannot migrate to another VM or workspace.
      */
     codeExecutionBinding?: CodeExecutionApprovalBinding;
+    toolApprovalBindings?: Record<string, ToolApprovalGrantBinding>;
     /**
      * Server-only MCP key-spelling pairs the paused run knew for the tools it offered
      * "Always allow", including pairs lazily resolved subagents reported. Resume rechecks
      * eligibility against them before remembering a tool.
      */
     toolApprovalAliases?: Array<{ name: string; aliasName: string }>;
-    toolApprovalBindings?: Record<string, ToolApprovalGrantBinding>;
   }
 
   export interface CodeExecutionApprovalTargetBinding {

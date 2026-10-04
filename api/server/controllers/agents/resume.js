@@ -2013,6 +2013,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           code: 'RUN_REPLACED',
         });
       }
+
       await recordToolApprovalAllows({
         userId,
         conversationId,
