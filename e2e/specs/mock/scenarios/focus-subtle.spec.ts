@@ -62,7 +62,7 @@ async function openChat(page: Page, mode: Mode, definition?: { name: string }) {
 function subtleFocus(page: Page): Promise<string> {
   return page.evaluate(() => {
     const node = document.createElement('div');
-    node.className = 'outline-2 outline-solid outline-focus-subtle';
+    node.style.cssText = 'outline: 2px solid var(--color-focus-subtle)';
     document.body.append(node);
     const color = getComputedStyle(node).outlineColor;
     node.remove();
