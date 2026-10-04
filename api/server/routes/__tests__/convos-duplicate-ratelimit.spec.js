@@ -44,6 +44,12 @@ jest.mock('~/server/middleware', () => {
 jest.mock('~/server/services/Config', () => require(MOCKS).appConfig());
 jest.mock('~/server/utils/import/fork', () => require(MOCKS).forkUtils());
 jest.mock('~/server/utils/import', () => require(MOCKS).importUtils());
+jest.mock('~/server/utils/import/defaults', () => require(MOCKS).importDefaults());
+jest.mock('~/server/utils/import/importBatchBuilder', () =>
+  require(MOCKS).importBatchBuilderUtil(),
+);
+jest.mock('~/server/services/Files/strategies', () => require(MOCKS).filesStrategies());
+jest.mock('~/server/utils/getFileStrategy', () => require(MOCKS).getFileStrategyUtil());
 jest.mock('~/server/routes/files/multer', () => require(MOCKS).multerSetup());
 jest.mock('multer', () => require(MOCKS).multerLib());
 jest.mock('~/server/services/Endpoints/azureAssistants', () => require(MOCKS).assistantEndpoint());

@@ -126,7 +126,16 @@ export function resolveUploadErrorMessage(
  * Sanitize a filename by removing any directory components, replacing unsafe characters
  * @param inputName
  */
-export function sanitizeFilename(inputName: string): string {
+/**
+ * @param maxBytes - Byte budget for the returned name. Callers that prepend
+ * their own prefix (an upload id, say) must reduce this by the prefix's length,
+ * or the combined path component exceeds `NAME_MAX` and the write fails with
+ * `ENAMETOOLONG`, precisely the failure this function exists to prevent.
+ */
+export function sanitizeFilename(
+  inputName: string,
+  maxBytes: number = FILENAME_SEGMENT_MAX_BYTES,
+): string {
   // Remove any directory components
   let name = path.basename(inputName);
 
@@ -139,11 +148,7 @@ export function sanitizeFilename(inputName: string): string {
   }
 
   // Limit the filename to filesystem NAME_MAX, which is byte-based on Linux/APFS.
-  name = truncateLeafWithSuffix(
-    name,
-    '-' + crypto.randomBytes(3).toString('hex'),
-    FILENAME_SEGMENT_MAX_BYTES,
-  );
+  name = truncateLeafWithSuffix(name, '-' + crypto.randomBytes(3).toString('hex'), maxBytes);
 
   return name;
 }

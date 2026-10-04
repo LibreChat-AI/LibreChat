@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import {
   FileSources,
   EModelEndpoint,
@@ -11,6 +13,12 @@ const DEFAULT_FILE_RETENTION_MAX_ATTEMPTS = 10;
 const MIN_FILE_RETENTION_RETRY_BASE_MS = 60 * 1000;
 const FILE_RETENTION_RETRY_MAX_MS = 24 * 60 * 60 * 1000;
 const FILE_RETENTION_PARK_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Matches `ImportJobStore`'s default TTL: an uploaded-but-unconfirmed import
+ * (or one whose job record already expired from the cache) is no more useful
+ * than the job it belongs to, so its temp upload is swept on the same clock. */
+const DEFAULT_STALE_UPLOAD_AGE_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_STALE_UPLOAD_SWEEP_INTERVAL_MS = DEFAULT_FILE_RETENTION_SWEEP_INTERVAL_MS;
 
 type ExpiredFile = {
   file_id: string;
@@ -62,6 +70,7 @@ type SweepDependencies = {
 
 type StartSweepDependencies = {
   sweepExpiredFiles: (options?: ExpiredFileSweepOptions) => Promise<ExpiredFileSweepResult>;
+  sweepStaleTempUploads?: typeof sweepStaleTempUploads;
   runAsSystem: <T>(fn: () => Promise<T>) => Promise<T>;
   isLeader: () => Promise<boolean>;
   logger: SweepLogger;
@@ -265,6 +274,76 @@ export async function resolveExpiredFileSweepConfig({
   return (await loadAppConfig()) ?? appConfig;
 }
 
+/**
+ * Deletes upload-temp files and abandoned legacy extraction directories (e.g.
+ * conversation import archives left behind by an inspected-but-never-started or
+ * never-cancelled import job) older than `maxAgeMs`. Unlike the rest of this
+ * module, these paths never become a `File` document, so they are invisible to
+ * `getExpiredFiles`/`processDeleteRequest` and need their own filesystem-level
+ * sweep.
+ * @param uploadsPath - `appConfig.paths.uploads`; a no-op when unset.
+ */
+export async function sweepStaleTempUploads(
+  uploadsPath: string | undefined,
+  { maxAgeMs = DEFAULT_STALE_UPLOAD_AGE_MS, logger }: { maxAgeMs?: number; logger: SweepLogger },
+): Promise<ExpiredFileSweepResult> {
+  const result: ExpiredFileSweepResult = { scanned: 0, deleted: 0, failed: 0 };
+  if (!uploadsPath) {
+    return result;
+  }
+
+  const tempDir = path.join(uploadsPath, 'temp');
+  let userDirs: string[];
+  try {
+    userDirs = await fs.promises.readdir(tempDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.error('[sweepStaleTempUploads] Failed to read the temp uploads directory:', error);
+    }
+    return result;
+  }
+
+  const cutoff = Date.now() - maxAgeMs;
+  for (const userDir of userDirs) {
+    const userDirPath = path.join(tempDir, userDir);
+    let entries: string[];
+    try {
+      entries = await fs.promises.readdir(userDirPath);
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const entryPath = path.join(userDirPath, entry);
+      result.scanned += 1;
+      try {
+        const stats = await fs.promises.stat(entryPath);
+        const isLegacyExtractionDirectory = stats.isDirectory() && entry.startsWith('legacy-');
+        if (stats.mtimeMs > cutoff || (!stats.isFile() && !isLegacyExtractionDirectory)) {
+          continue;
+        }
+        if (isLegacyExtractionDirectory) {
+          await fs.promises.rm(entryPath, { recursive: true, force: true });
+        } else {
+          await fs.promises.unlink(entryPath);
+        }
+        result.deleted += 1;
+      } catch (error) {
+        result.failed += 1;
+        logger.error(`[sweepStaleTempUploads] Failed to remove stale upload ${entryPath}:`, error);
+      }
+    }
+  }
+
+  if (result.deleted > 0 || result.failed > 0) {
+    logger.info(
+      `[sweepStaleTempUploads] Processed ${result.scanned} temp uploads: ${result.deleted} deleted, ${result.failed} failed`,
+    );
+  }
+
+  return result;
+}
+
 export async function sweepExpiredFiles(
   { appConfig, limit = 100, loadAppConfig }: ExpiredFileSweepOptions | undefined = {},
   {
@@ -366,7 +445,11 @@ export async function sweepExpiredFiles(
     );
   }
 
-  return { scanned: files.length, deleted, failed };
+  return {
+    scanned: files.length,
+    deleted,
+    failed,
+  };
 }
 
 /** Joins configuration readiness with distributed or primary-assigned ownership. */
@@ -396,8 +479,46 @@ export function createClusteredFileSweep(
 
 export function startExpiredFileSweep(
   options: ExpiredFileSweepOptions | undefined = {},
-  { sweepExpiredFiles, runAsSystem, isLeader, logger }: StartSweepDependencies,
+  {
+    sweepExpiredFiles,
+    sweepStaleTempUploads: sweepStaleTempUploadsWithDeps = sweepStaleTempUploads,
+    runAsSystem,
+    isLeader,
+    logger,
+  }: StartSweepDependencies,
 ): NodeJS.Timeout | null {
+  let isSweepingStaleUploads = false;
+  const runStaleUploadSweep = async () => {
+    if (isSweepingStaleUploads) {
+      return;
+    }
+
+    isSweepingStaleUploads = true;
+    try {
+      let uploadsPath = options.appConfig?.paths?.uploads;
+      if (!uploadsPath && options.loadAppConfig) {
+        uploadsPath = (await options.loadAppConfig())?.paths?.uploads;
+      }
+      await runAsSystem(() => sweepStaleTempUploadsWithDeps(uploadsPath, { logger }));
+    } catch (error) {
+      logger.error('[sweepStaleTempUploads] Background sweep failed:', error);
+    } finally {
+      isSweepingStaleUploads = false;
+    }
+  };
+
+  /*
+   * Temporary imports are stored on the upload-serving process's local disk,
+   * so their cleanup must continue even when the database file-retention sweep
+   * is disabled.
+   */
+  runStaleUploadSweep();
+  const staleUploadsInterval = setInterval(
+    runStaleUploadSweep,
+    DEFAULT_STALE_UPLOAD_SWEEP_INTERVAL_MS,
+  );
+  staleUploadsInterval.unref?.();
+
   const intervalMs = getFileRetentionSweepInterval();
   if (intervalMs === 0) {
     logger.info('[sweepExpiredFiles] Disabled by FILE_RETENTION_SWEEP_INTERVAL_MS=0');

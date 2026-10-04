@@ -1087,15 +1087,134 @@ export type TRequestPasswordResetResponse = {
   message?: string;
 };
 
+export type TImportCounter = {
+  done: number;
+  total: number;
+};
+
+export type TImportProgress = {
+  conversations: TImportCounter;
+  messages: TImportCounter;
+  assets: TImportCounter;
+};
+
+export type TImportSummary = {
+  source: 'chatgpt' | 'chatgpt-legacy' | 'claude' | 'grok' | 'chatbotui' | 'librechat';
+  manifestVersion: number | null;
+  conversations: number;
+  shards: number;
+  assets: number;
+  assetBytes: number;
+  archived: number;
+  starred: number;
+};
+
 /**
- * Represents the response from the import endpoint.
+ * How a thrown import failure was classified. Every raw error is reduced to
+ * one of these before it leaves the server, because `fs` errors embed the
+ * upload's absolute path and archive errors embed attacker-controlled entry
+ * names.
  */
-export type TImportResponse = {
+export type TImportFailureCode =
+  | 'unsupported_type'
+  | 'archive_too_large'
+  | 'file_too_large'
+  | 'archive_corrupt'
+  | 'storage_error'
+  | 'failed';
+
+/**
+ * Why one item of an import failed. A code rather than prose because these
+ * entries are rendered to the user, who may not read English, and the server
+ * has no locale to render in.
+ */
+export type TImportErrorCode =
+  | TImportFailureCode
+  | 'shard_not_array'
+  | 'shard_wrong_shape'
+  | 'shard_missing'
+  | 'record_malformed'
+  | 'asset_pointer_invalid'
+  | 'errors_truncated';
+
+export type TImportError = {
+  code: TImportErrorCode;
   /**
-   * The message associated with the response.
+   * Which part of the export failed: a shard filename, a conversation's
+   * external id, or an asset entry name. An identifier the export itself
+   * supplied, never prose, so it is shown verbatim in every locale.
    */
+  location?: string;
+  /** Interpolation values for the code's message, currently only `count`. */
+  params?: Record<string, string | number>;
+};
+
+export type TImportReport = {
+  imported: number;
+  skipped: number;
+  assetsImported: number;
+  assetsUnavailable: number;
+  errors: TImportError[];
+};
+
+export type TImportPhase =
+  | 'queued'
+  | 'awaiting_confirmation'
+  | 'assets'
+  | 'conversations'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type TImportJobStatus = 'active' | 'completed' | 'failed' | 'cancelled';
+
+/**
+ * A job record for an in-progress or finished import, as returned by the
+ * job status endpoint. `filepath` and `userId` are server-only fields the
+ * API strips before responding and must never be declared here.
+ */
+export type TImportJob = {
+  jobId: string;
+  filename: string;
+  phase: TImportPhase;
+  status: TImportJobStatus;
+  summary: TImportSummary | null;
+  progress: TImportProgress;
+  report: TImportReport | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/**
+ * Returned when the upload is a ChatGPT, Claude, or Grok export (zip or bare
+ * JSON): the archive has been inspected and a job created, but nothing is
+ * imported until the job is confirmed via the start endpoint.
+ */
+export type TImportJobStarted = {
+  jobId: string;
+  summary: TImportSummary;
+};
+
+/**
+ * Returned when the upload is a ChatbotUI or LibreChat export: these formats
+ * import synchronously and never produce a job.
+ */
+export type TImportCompleted = {
   message: string;
 };
+
+/**
+ * Response from the import endpoint. The upload is inspected by content,
+ * not extension, so the same route can either start a background job
+ * (ChatGPT, Claude, and Grok exports) or complete synchronously (every other
+ * supported format). Narrow with `isImportJobStarted` rather than assuming
+ * shape.
+ */
+export type TImportResponse = TImportJobStarted | TImportCompleted;
+
+export const isImportJobStarted = (response: TImportResponse): response is TImportJobStarted =>
+  'jobId' in response;
 
 /** Prompts */
 

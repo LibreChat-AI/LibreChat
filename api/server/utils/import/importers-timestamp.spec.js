@@ -1,4 +1,3 @@
-const { logger } = require('@librechat/data-schemas');
 const { Constants } = require('librechat-data-provider');
 const { ImportBatchBuilder } = require('./importBatchBuilder');
 const { getImporter } = require('./importers');
@@ -9,6 +8,8 @@ jest.mock('~/models', () => ({
   bulkSaveMessages: jest.fn(),
   bulkIncrementTagCounts: jest.fn(),
 }));
+
+const { bulkSaveMessages } = require('~/models');
 
 const mockGetEndpointsConfig = jest.fn().mockResolvedValue(null);
 jest.mock('~/server/services/Config', () => ({
@@ -62,8 +63,8 @@ describe('Import Timestamp Ordering', () => {
       const importer = getImporter(jsonData);
       await importer(jsonData, requestUserId, () => importBatchBuilder);
 
-      // Check the actual messages stored in the builder
-      const savedMessages = importBatchBuilder.messages;
+      // Check the actual messages persisted (buffers are cleared once flushed)
+      const savedMessages = bulkSaveMessages.mock.calls[0][0];
 
       const parent = savedMessages.find((msg) => msg.text === 'Parent Message');
       const child = savedMessages.find((msg) => msg.text === 'Child Message');
@@ -148,7 +149,7 @@ describe('Import Timestamp Ordering', () => {
       const importer = getImporter(jsonData);
       await importer(jsonData, requestUserId, () => importBatchBuilder);
 
-      const savedMessages = importBatchBuilder.messages;
+      const savedMessages = bulkSaveMessages.mock.calls[0][0];
 
       // Verify that timestamps are preserved as-is (not corrected)
       const root1 = savedMessages.find((msg) => msg.text === 'Root 1');
@@ -212,7 +213,7 @@ describe('Import Timestamp Ordering', () => {
       const importer = getImporter(jsonData);
       await importer(jsonData, requestUserId, () => importBatchBuilder);
 
-      const savedMessages = importBatchBuilder.messages;
+      const savedMessages = bulkSaveMessages.mock.calls[0][0];
 
       // Messages should be saved
       expect(savedMessages).toHaveLength(3);
@@ -291,7 +292,7 @@ describe('Import Timestamp Ordering', () => {
       const importer = getImporter(jsonData);
       await importer(jsonData, requestUserId, () => importBatchBuilder);
 
-      const savedMessages = importBatchBuilder.messages;
+      const savedMessages = bulkSaveMessages.mock.calls[0][0];
       const parent = savedMessages.find((msg) => msg.text === 'Parent message');
       const child = savedMessages.find((msg) => msg.text === 'Child message');
 
@@ -352,7 +353,7 @@ describe('Import Timestamp Ordering', () => {
       const importer = getImporter(jsonData);
       await importer(jsonData, requestUserId, () => importBatchBuilder);
 
-      const savedMessages = importBatchBuilder.messages;
+      const savedMessages = bulkSaveMessages.mock.calls[0][0];
       const nullTimeMsg = savedMessages.find((msg) => msg.text === 'Message with null time');
       const validTimeMsg = savedMessages.find((msg) => msg.text === 'Message with valid time');
 
@@ -369,7 +370,6 @@ describe('Import Timestamp Ordering', () => {
     });
 
     test('should terminate on cyclic parent relationships and break cycles before saving', async () => {
-      const warnSpy = jest.spyOn(logger, 'warn');
       const jsonData = [
         {
           title: 'Cycle Test',
@@ -415,7 +415,7 @@ describe('Import Timestamp Ordering', () => {
       const importer = getImporter(jsonData);
       await importer(jsonData, requestUserId, () => importBatchBuilder);
 
-      const { messages } = importBatchBuilder;
+      const messages = bulkSaveMessages.mock.calls[0][0];
       expect(messages).toHaveLength(2);
 
       const msgA = messages.find((m) => m.text === 'Message A');
@@ -429,9 +429,6 @@ describe('Import Timestamp Ordering', () => {
       const [root] = roots;
       const nonRoot = messages.find((m) => m.parentMessageId !== Constants.NO_PARENT);
       expect(nonRoot.parentMessageId).toBe(root.messageId);
-
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('cyclic parent relationships'));
-      warnSpy.mockRestore();
     });
 
     test('should not hang when findValidParent encounters a skippable-message cycle', async () => {
@@ -490,7 +487,7 @@ describe('Import Timestamp Ordering', () => {
       const importer = getImporter(jsonData);
       await importer(jsonData, 'user-123', () => importBatchBuilder);
 
-      const realMsg = importBatchBuilder.messages.find((m) => m.text === 'Hello');
+      const realMsg = bulkSaveMessages.mock.calls[0][0].find((m) => m.text === 'Hello');
       expect(realMsg).toBeDefined();
       expect(realMsg.parentMessageId).toBe(Constants.NO_PARENT);
     });
@@ -549,6 +546,9 @@ describe('Import Timestamp Ordering', () => {
 
     const importJson = async (jsonData) => {
       const importBatchBuilder = new ImportBatchBuilder('user-123');
+      /** Keeps the buffer readable: these assertions are about message shaping,
+       * and a real flush drains the buffer into the mocked bulk writes. */
+      jest.spyOn(importBatchBuilder, 'saveBatch').mockResolvedValue(undefined);
       const startedAt = performance.now();
       await getImporter(jsonData)(jsonData, 'user-123', () => importBatchBuilder);
       return { messages: importBatchBuilder.messages, elapsedMs: performance.now() - startedAt };

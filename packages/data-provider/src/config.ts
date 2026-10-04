@@ -4463,6 +4463,10 @@ export enum CacheKeys {
    * Key for pending WebAuthn (passkey) ceremony challenges (one-time-use, short TTL).
    */
   PASSKEY_CHALLENGE = 'PASSKEY_CHALLENGE',
+  /**
+   * Key for cached ChatGPT import job state.
+   */
+  IMPORT_JOBS = 'IMPORT_JOBS',
 }
 
 export const AUTH_USER_DOC_BY_ID_PREFIX = 'auth-user-doc-byid';
@@ -5200,6 +5204,8 @@ export enum LocalStorageKeys {
   LAST_SPEC = 'lastSelectedSpec',
   /** Key for temporary files to delete */
   FILES_TO_DELETE = 'filesToDelete',
+  /** Key for the import job the settings panel should rejoin */
+  IMPORT_JOB_ID = 'importJobId',
   /** Prefix key for the last selected assistant ID by index */
   ASST_ID_PREFIX = 'assistant_id__',
   /** Prefix key for the last selected agent ID by index */
