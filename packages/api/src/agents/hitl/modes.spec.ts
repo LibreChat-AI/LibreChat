@@ -1263,3 +1263,205 @@ for (const mode of ['chat', 'always'] as const) {
     },
   );
 }
+
+for (const mode of ['ask', 'chat', 'always', 'allow'] as const) {
+  test.each(['approve', 'edit'] as const)(
+    `${mode} verified manual %s transport outage downgrades once and never learns after recovery`,
+    async (decision) => {
+      const source = agent(mode);
+      const tool = source.toolDefinitions![0];
+      bindToolApproval(tool, 'source-a', undefined, undefined, undefined, 'other');
+      const storage = store();
+      const lookup = storage.getToolApprovalGrants;
+      let unavailable = false;
+      storage.getToolApprovalGrants = jest.fn(async (...args) => {
+        if (unavailable) throw new Error('synthetic before-send outage');
+        return lookup(...args);
+      });
+      const first = createAgentToolApprovalSession({ agents: [source], scope, storage });
+      await first.hook(input(), new AbortController().signal);
+      const bindings = first.bindingsFor(
+        buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+      );
+      const session = createAgentToolApprovalSession({
+        agents: [source],
+        scope,
+        storage,
+        reviewed: { bindings, decisions: [{ tool_call_id: 'call-a', decision }] },
+      });
+      await session.hook(input(), new AbortController().signal);
+      const invocation = { agentId: source.id, toolCallId: 'call-a' };
+      await session.validateExecution(tool, invocation);
+      await session.validateTransport!('db', null, invocation, true);
+      unavailable = true;
+      await expect(
+        session.validateTransport!('db', null, invocation, true),
+      ).resolves.toBeUndefined();
+      await expect(session.validateTransport!('other', null, invocation, true)).rejects.toThrow(
+        'authorization changed',
+      );
+      await expect(
+        session.validateTransport!('db', 'replacement-account', invocation, true),
+      ).rejects.toThrow('authorization changed');
+      unavailable = false;
+      const lookups = (storage.getToolApprovalGrants as jest.Mock).mock.calls.length;
+      await session.validateTransport!('db', null, invocation, true);
+      expect(storage.getToolApprovalGrants).toHaveBeenCalledTimes(lookups);
+      await session.rememberHook(
+        { ...input(), hook_event_name: 'PostToolUse', toolOutput: 'success' },
+        new AbortController().signal,
+      );
+      expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+      expect(
+        await session.hook(input('agent-a', 'later'), new AbortController().signal),
+      ).toMatchObject({ decision: mode === 'allow' ? 'allow' : 'ask' });
+    },
+  );
+}
+
+for (const mode of ['chat', 'always'] as const) {
+  test.each(['oauth', 'unknown', 'background', 'automatic'] as const)(
+    `${mode} transport storage failure cannot downgrade %s authority`,
+    async (kind) => {
+      const source = agent(mode);
+      const tool = source.toolDefinitions![0];
+      if (kind !== 'unknown')
+        bindToolApproval(
+          tool,
+          'source-a',
+          undefined,
+          undefined,
+          undefined,
+          kind === 'oauth' ? 'oauth' : 'other',
+        );
+      const storage = store();
+      const lookup = storage.getToolApprovalGrants;
+      let unavailable = false;
+      storage.getToolApprovalGrants = async (...args) => {
+        if (unavailable) throw new Error('synthetic transport outage');
+        return lookup(...args);
+      };
+      const first = createAgentToolApprovalSession({ agents: [source], scope, storage });
+      await first.hook(input(), new AbortController().signal);
+      const bindings = first.bindingsFor(
+        buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+      );
+      if (kind === 'automatic')
+        await storage.rememberToolApprovalGrants(scope, [bindings['call-a']]);
+      const session = createAgentToolApprovalSession({
+        agents: [source],
+        scope,
+        storage,
+        reviewed:
+          kind === 'automatic'
+            ? undefined
+            : { bindings, decisions: [{ tool_call_id: 'call-a', decision: 'approve' }] },
+      });
+      await session.hook(input(), new AbortController().signal);
+      const invocation = {
+        agentId: source.id,
+        toolCallId: 'call-a',
+        background: kind === 'background',
+      };
+      await session.validateExecution(tool, invocation);
+      unavailable = true;
+      await expect(session.validateTransport!('db', null, invocation, true)).rejects.toThrow(
+        'authorization changed',
+      );
+    },
+  );
+}
+
+test('transport-time outage cannot restore a retired manual foreground witness', async () => {
+  const source = agent('chat');
+  const tool = source.toolDefinitions![0];
+  bindToolApproval(tool, 'source-a', undefined, undefined, undefined, 'other');
+  const storage = store();
+  const first = createAgentToolApprovalSession({ agents: [source], scope, storage });
+  await first.hook(input(), new AbortController().signal);
+  const bindings = first.bindingsFor(
+    buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+  );
+  const session = createAgentToolApprovalSession({
+    agents: [source],
+    scope,
+    storage,
+    reviewed: { bindings, decisions: [{ tool_call_id: 'call-a', decision: 'approve' }] },
+  });
+  await session.hook(input(), new AbortController().signal);
+  const invocation = { agentId: source.id, toolCallId: 'call-a' };
+  await session.validateExecution(tool, invocation);
+  let release!: () => void;
+  let started!: () => void;
+  const began = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  storage.getToolApprovalGrants = async () => {
+    started();
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    throw new Error('synthetic late transport outage');
+  };
+  const result = session.validateTransport!('db', null, invocation, true).then(
+    () => null,
+    (error: Error) => error,
+  );
+  await began;
+  await session.settleBatchHook(
+    {
+      hook_event_name: 'PostToolBatch',
+      runId: 'test',
+      executingAgentId: source.id,
+      entries: [
+        {
+          toolName: name,
+          toolUseId: 'call-a',
+          toolInput: {},
+          toolOutput: 'settled',
+          status: 'success',
+        },
+      ],
+    },
+    new AbortController().signal,
+  );
+  release();
+  expect(await result).toMatchObject({ message: expect.stringContaining('invocation changed') });
+  expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+});
+
+test('verified one-time transport consent survives a bounded grant lookup timeout without learning', async () => {
+  const source = agent('chat');
+  const tool = source.toolDefinitions![0];
+  bindToolApproval(tool, 'source-a', undefined, undefined, undefined, 'other');
+  const storage = store();
+  const first = createAgentToolApprovalSession({ agents: [source], scope, storage });
+  await first.hook(input(), new AbortController().signal);
+  const bindings = first.bindingsFor(
+    buildToolApprovalPayload([{ name, tool_call_id: 'call-a', arguments: {} }]),
+  );
+  const session = createAgentToolApprovalSession({
+    agents: [source],
+    scope,
+    storage,
+    lookupTimeoutMs: 20,
+    reviewed: { bindings, decisions: [{ tool_call_id: 'call-a', decision: 'approve' }] },
+  });
+  await session.hook(input(), new AbortController().signal);
+  const invocation = { agentId: source.id, toolCallId: 'call-a' };
+  await session.validateExecution(tool, invocation);
+  storage.getToolApprovalGrants = async () => new Promise(() => {});
+  jest.useFakeTimers();
+  try {
+    const result = session.validateTransport!('db', null, invocation, true);
+    await jest.advanceTimersByTimeAsync(20);
+    await expect(result).resolves.toBeUndefined();
+    await session.rememberHook(
+      { ...input(), hook_event_name: 'PostToolUse', toolOutput: 'success' },
+      new AbortController().signal,
+    );
+    expect(storage.rememberToolApprovalGrants).not.toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+  }
+});

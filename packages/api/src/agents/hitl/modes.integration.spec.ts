@@ -2365,15 +2365,28 @@ for (const eventDriven of [false, true]) {
 
 for (const eventDriven of [false, true]) {
   for (const mode of ['ask', 'chat', 'always'] as const) {
-    test.each(['unavailable', 'recovered', 'invoke-outage', 'resume-recovered'] as const)(
+    test.each([
+      'unavailable',
+      'recovered',
+      'invoke-outage',
+      'resume-recovered',
+      'transport-outage',
+      'transport-recovered',
+      'retry-outage',
+    ] as const)(
       `${mode} reviewed non-OAuth SDK execution remains once-only during %s; event-driven=${eventDriven}`,
       async (stage) => {
         const chat = `outage-${mode}-${stage}-${eventDriven}`;
         const toolDefinition = definition();
         bindToolApproval(toolDefinition, 'source-one', undefined, undefined, undefined, 'other');
         const probe = createProbe('source-one', 'echo', undefined, async () => {
+          if (stage === 'transport-outage' || stage === 'transport-recovered') unavailable = true;
           await assertToolApprovalTransportEpoch('fixture', null, true);
+          if (stage === 'transport-recovered') unavailable = false;
+          if (stage === 'retry-outage') unavailable = true;
           await assertToolApprovalTransportEpoch('fixture', null, true);
+          // Recovery before successful completion must not restore learning eligibility.
+          unavailable = false;
         });
         bindToolApproval(probe, 'source-one', undefined, undefined, undefined, 'other');
         const source: AgentApprovalSource = {

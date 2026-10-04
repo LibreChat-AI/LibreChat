@@ -138,6 +138,42 @@ export interface ToolApprovalAdmissionInput {
   readonly toolApprovalAllows?: readonly string[];
 }
 
+/** Possible catalog spellings are admission hints, never authorization aliases. */
+function unresolvedHookSpellings(name: string, rawServerNames: readonly string[]): string[] {
+  if (isActionTool(name) || isMCPAllPlaceholder(name)) return [name];
+  const aliases = buildServerNameAliases(rawServerNames);
+  const known = [...rawServerNames, ...aliases.keys()];
+  const spellings = new Set([name]);
+  const add = (tool: string, server: string): void => {
+    const raw = rawServerNames.includes(server) ? server : (aliases.get(server) ?? server);
+    const normalized = normalizeServerName(raw);
+    const suffixes =
+      aliases.get(normalized) == null || aliases.get(normalized) === raw
+        ? new Set([server, raw, normalized])
+        : new Set([server]);
+    const stripped = stripServerNamePrefix(tool, normalized);
+    const tools = new Set([tool, stripped]);
+    for (const prefix of new Set([normalized, normalized.toLowerCase()])) {
+      const legacy = `${prefix}_${stripped}`;
+      if (stripServerNamePrefix(legacy, normalized) === stripped) tools.add(legacy);
+    }
+    for (const suffix of suffixes)
+      for (const candidate of tools)
+        spellings.add(`${candidate}${Constants.mcp_delimiter}${suffix}`);
+  };
+  const [tool, server] = splitMCPToolKey(name, known);
+  if (server != null && known.includes(server)) add(tool, server);
+  else {
+    let delimiter = name.indexOf(Constants.mcp_delimiter);
+    while (delimiter >= 0) {
+      const suffix = name.slice(delimiter + Constants.mcp_delimiter.length);
+      if (suffix) add(name.slice(0, delimiter), suffix);
+      delimiter = name.indexOf(Constants.mcp_delimiter, delimiter + Constants.mcp_delimiter.length);
+    }
+  }
+  return [...spellings];
+}
+
 /** Unresolved spellings predict review only; they never establish tool identity. */
 function createUnresolvedReviewMatcher(
   options: AgentToolOptions,
@@ -388,28 +424,82 @@ export function canAgentGraphPause({
       effectivePolicy?.mode === 'dontAsk' && exceptions.every((name) => !name.includes('*'))
         ? exceptions
         : undefined;
-    const unresolvedHookCanAsk = Array.from(approvalGraph.lazyAgentIds).some(
-      (agentId) =>
+    const unresolvedHookCanAsk = Array.from(approvalGraph.lazyAgents).some((agent) => {
+      const surface = readAdmissionSurface(agent);
+      const knownCatalog = surface.toolRegistry != null || surface.toolDefinitions != null;
+      const rawNames = surface.rawMcpServerNames ?? [];
+      const cache = new Map<string, string[]>();
+      const spellings = (name: string): string[] => {
+        let names = cache.get(name);
+        if (!names) {
+          names = knownCatalog ? [name] : unresolvedHookSpellings(name, rawNames);
+          cache.set(name, names);
+        }
+        return names;
+      };
+      const canAskAs = (name: string, matches: (names: readonly string[]) => boolean): boolean =>
+        spellings(name).some((aliasName) => {
+          const possible = name === aliasName ? [name] : [name, aliasName];
+          const predictedPolicy = healToolApprovalPolicy(effectivePolicy, [{ name, aliasName }]);
+          return !isToolBlockedByApprovalPolicy(predictedPolicy, name) && matches(possible);
+        });
+      const selected: string[] | undefined = surface.tools
+        ?.map((tool) => (typeof tool === 'string' ? tool : (tool.name ?? '')))
+        .filter(Boolean);
+      const rawAliases = buildServerNameAliases(rawNames);
+      const resolveServer = (server: string) =>
+        rawNames.includes(server) ? server : (rawAliases.get(server) ?? server);
+      const wildcardServers = new Set(
+        (selected ?? [])
+          .filter(isMCPAllPlaceholder)
+          .map((name) =>
+            resolveServer(name.slice(`${Constants.mcp_all}${Constants.mcp_delimiter}`.length)),
+          ),
+      );
+      const candidates = (names: readonly string[]): readonly string[] => {
+        if (knownCatalog) return [];
+        if (selected == null) return names;
+        const concrete = selected.filter((name) => !isMCPAllPlaceholder(name));
+        if (wildcardServers.size === 0) return concrete;
+        return [
+          ...new Set([
+            ...concrete,
+            ...names.filter((name) => {
+              const [, server] = splitMCPToolKey(name, [
+                ...rawNames,
+                ...rawAliases.keys(),
+                ...wildcardServers,
+              ]);
+              return server != null && wildcardServers.has(resolveServer(server));
+            }),
+          ]),
+        ];
+      };
+      return (
         resolvedProgrammaticHooks.some((hook) => {
-          if (hook.agentIds != null && (agentId == null || !hook.agentIds.has(agentId)))
+          if (hook.agentIds != null && (agent.id == null || !hook.agentIds.has(agent.id)))
             return false;
+          if (knownCatalog) return false;
           const names = hook.toolNames ?? finitePolicyNames;
           if (names == null) return unboundedHookCanAsk;
-          return names.some(
-            (name) =>
-              !isToolBlockedByApprovalPolicy(effectivePolicy, name) &&
-              resolvedToolApprovalHooksCanMatch([hook], [name], agentId),
+          return (hook.toolNames ?? candidates(names)).some((name) =>
+            canAskAs(name, (possible) =>
+              resolvedToolApprovalHooksCanMatch([hook], possible, agent.id),
+            ),
           );
         }) ||
         (pluginHookCanAsk &&
+          !knownCatalog &&
           (finitePolicyNames == null
             ? unboundedHookCanAsk
-            : finitePolicyNames.some(
-                (name) =>
-                  !isToolBlockedByApprovalPolicy(effectivePolicy, name) &&
-                  pluginHookSource?.hasToolApprovalHooks?.([name]) === true,
-              ))),
-    );
+            : candidates(finitePolicyNames).some((name) =>
+                canAskAs(
+                  name,
+                  (possible) => pluginHookSource?.hasToolApprovalHooks?.(possible) === true,
+                ),
+              )))
+      );
+    });
     const staticPolicyCanAsk = isToolApprovalPauseCapable(effectivePolicy);
     if (staticPolicyCanAsk || unresolvedHookCanAsk || unresolvedModeCanAsk) {
       return true;

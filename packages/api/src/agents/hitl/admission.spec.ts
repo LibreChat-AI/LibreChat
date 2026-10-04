@@ -1055,3 +1055,183 @@ test('lazy plugin prediction uses eligible literal exceptions instead of denied 
     }),
   ).toBe(false);
 });
+
+for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
+  test.each([
+    {
+      selected: 'db_query_mcp_db',
+      permitted: 'query_mcp_db',
+      matched: 'db_query_mcp_db',
+      server: 'db',
+    },
+    {
+      selected: 'query_mcp_db',
+      permitted: 'query_mcp_db',
+      matched: 'db_query_mcp_db',
+      server: 'db',
+    },
+    {
+      selected: 'query_mcp_DB',
+      permitted: 'query_mcp_DB',
+      matched: 'db_query_mcp_DB',
+      server: 'DB',
+    },
+    {
+      selected: 'db_ops_query_mcp_db ops',
+      permitted: 'query_mcp_db_ops',
+      matched: 'db_ops_query_mcp_db_ops',
+      server: 'db ops',
+    },
+    {
+      selected: 'get_mcp_version_mcp_db',
+      permitted: 'get_mcp_version_mcp_db',
+      matched: 'db_get_mcp_version_mcp_db',
+      server: 'db',
+    },
+  ])(
+    `${placement} preserves possible lazy alias hook scope without assigning identity ($selected)`,
+    ({ selected, permitted, matched, server }) => {
+      const child = copyToolApprovalAdmissionMetadata(
+        { id: 'child' },
+        { tools: [selected] },
+        { rawMcpServerNames: [server] },
+      );
+      const agents = [{ id: 'root', tools: ['subagent'], [placement]: [child] }];
+      const policy = { enabled: true, mode: 'dontAsk' as const, allow: [permitted, 'subagent'] };
+      const hook = { hook: askHook, matcher: `^${matched}$`, agentIds: new Set(['child']) };
+      expect(canAgentGraphPause({ policy, agents, resolvedProgrammaticHooks: [hook] })).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy,
+          agents,
+          resolvedProgrammaticHooks: [{ ...hook, toolNames: [matched] }],
+        }),
+      ).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy,
+          agents,
+          pluginHookSource: pluginSource((names) => names == null || names.includes(matched)),
+        }),
+      ).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy: { ...policy, deny: ['*_mcp_*'] },
+          agents,
+          resolvedProgrammaticHooks: [hook],
+        }),
+      ).toBe(false);
+      expect(
+        canAgentGraphPause({
+          policy: { ...policy, allow: ['subagent'] },
+          agents,
+          resolvedProgrammaticHooks: [hook],
+        }),
+      ).toBe(false);
+      expect(
+        canAgentGraphPause({
+          policy,
+          agents,
+          resolvedProgrammaticHooks: [{ ...hook, agentIds: new Set(['other']) }],
+        }),
+      ).toBe(false);
+      expect(child).not.toHaveProperty('mcpToolAliases');
+      expect(child).not.toHaveProperty('tools');
+    },
+  );
+}
+
+test.each(['query_mcp_db', 'db_query_mcp_db', `${Constants.mcp_all}${Constants.mcp_delimiter}db`])(
+  'lazy hook admission matches the actual catalog alias for %s',
+  async (selected) => {
+    const policy = { enabled: true, mode: 'dontAsk' as const, allow: ['query_mcp_db', 'subagent'] };
+    const hook = { hook: askHook, matcher: '^db_query_mcp_db$', agentIds: new Set(['child']) };
+    const catalog = formatMCPServerTools('db', [
+      { name: 'db_query', inputSchema: { type: 'object', properties: {} } },
+    ]);
+    const loaded = await loadToolDefinitions(
+      {
+        userId: 'user',
+        agentId: 'child',
+        tools: [selected],
+        rawServerNames: ['db'],
+        mcpServerNames: ['db'],
+      },
+      { getOrFetchMCPServerTools: async () => catalog, isBuiltInTool: () => false },
+    );
+    const resolved = {
+      id: 'child',
+      toolDefinitions: loaded.toolDefinitions,
+      mcpToolAliases: loaded.mcpToolAliases,
+    };
+    expect(
+      canAgentGraphPause({ policy, agents: [resolved], resolvedProgrammaticHooks: [hook] }),
+    ).toBe(true);
+    const descriptor = copyToolApprovalAdmissionMetadata(
+      { id: 'child' },
+      { tools: [selected] },
+      { rawMcpServerNames: ['db'] },
+    );
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [{ tools: ['subagent'], lazySubagentConfigs: [descriptor] }],
+        resolvedProgrammaticHooks: [hook],
+      }),
+    ).toBe(true);
+  },
+);
+
+test('lazy alias predictions preserve direct-name denial, closed catalogs and wildcard exact-server boundaries', () => {
+  const policy = { enabled: true, mode: 'dontAsk' as const, allow: ['query_mcp_db', 'subagent'] };
+  const hook = { hook: askHook, matcher: '^db_query_mcp_db$', agentIds: new Set(['child']) };
+  const lazy = (source: ToolApprovalAdmissionAgent) => [
+    {
+      tools: ['subagent'],
+      lazySubagentConfigs: [
+        copyToolApprovalAdmissionMetadata({ id: 'child' }, source, {
+          rawMcpServerNames: ['db', 'other', 'other_mcp_db'],
+        }),
+      ],
+    },
+  ];
+  expect(
+    canAgentGraphPause({
+      policy,
+      agents: lazy({ tools: ['query_mcp_db'], toolDefinitions: [{ name: 'query_mcp_db' }] }),
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy,
+      agents: lazy({ tools: [`${Constants.mcp_all}${Constants.mcp_delimiter}other`] }),
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy,
+      agents: lazy({ tools: ['read_mcp_other'] }),
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, deny: ['db_query_mcp_db'] },
+      agents: lazy({ tools: ['db_query_mcp_db'] }),
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(false);
+  const currentHook = { ...hook, matcher: '^query_mcp_db$' };
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, deny: ['db_query_mcp_db'] },
+      agents: lazy({ tools: ['query_mcp_db'] }),
+      resolvedProgrammaticHooks: [currentHook],
+    }),
+  ).toBe(true);
+  expect(
+    canAgentGraphPause({ policy, agents: lazy({ tools: [] }), resolvedProgrammaticHooks: [hook] }),
+  ).toBe(false);
+});

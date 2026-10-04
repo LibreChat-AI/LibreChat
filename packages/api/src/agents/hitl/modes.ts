@@ -238,7 +238,12 @@ export function createAgentToolApprovalSession({
   const dispositions = new Map<string, boolean>();
   const transportWitnesses = new Map<
     symbol,
-    { consent?: ToolApprovalGrantBinding; automatic: boolean; reviewOnly?: boolean }
+    {
+      consent?: ToolApprovalGrantBinding;
+      automatic: boolean;
+      reviewOnly?: boolean;
+      oneTimeFallback?: boolean;
+    }
   >();
   const retireCall = (key: string, ownership?: symbol, keepTransport = false): void => {
     const proposal = proposals.get(key);
@@ -426,6 +431,7 @@ export function createAgentToolApprovalSession({
         consent?: ToolApprovalGrantBinding,
         automatic = false,
         reviewOnly = false,
+        oneTimeFallback = false,
       ) => {
         if (proposals.get(key)?.ownership !== invocation.ownership) {
           throw new Error('Tool approval invocation ownership changed. Request approval again.');
@@ -435,6 +441,7 @@ export function createAgentToolApprovalSession({
           consent: consent && { ...consent },
           automatic,
           reviewOnly,
+          oneTimeFallback,
         });
       };
       policyChecks.delete(key);
@@ -491,7 +498,7 @@ export function createAgentToolApprovalSession({
       )
         disableLearning(key);
       // Grant-store availability is not one-time authority for verified non-OAuth calls.
-      const reviewOnly =
+      const oneTimeFallback =
         invocation.background !== true &&
         manual?.authKind === 'other' &&
         consent?.authKind === 'other' &&
@@ -501,8 +508,8 @@ export function createAgentToolApprovalSession({
         manual.binding === consent.binding &&
         manual.oauthEpoch === null &&
         consent.oauthEpoch === null &&
-        permittedDecisions.has(key) &&
-        learningDisabled.has(key);
+        permittedDecisions.has(key);
+      const reviewOnly = oneTimeFallback && learningDisabled.has(key);
       if (
         !reviewOnly &&
         (!current ||
@@ -523,7 +530,7 @@ export function createAgentToolApprovalSession({
         const reviewTarget = owner && scope && resolveToolReviewBinding(owner, tool.name, scope);
         if (callId && reviewTarget && calls.has(key) && permittedDecisions.has(key)) {
           permittedDecisions.delete(key);
-          pinTransport(consent ?? undefined, false, reviewOnly);
+          pinTransport(consent ?? undefined, false, reviewOnly, oneTimeFallback);
           return;
         }
         throw new Error('Tool approval is required. Run this tool in the foreground for review.');
@@ -542,7 +549,7 @@ export function createAgentToolApprovalSession({
           approvedDecisions.has(key)
         )
           executed.add(key);
-        pinTransport(consent ?? undefined, false, reviewOnly);
+        pinTransport(consent ?? undefined, false, reviewOnly, oneTimeFallback);
         return;
       }
       if (expected.scope === 'once' || baseline?.decision === 'ask') {
@@ -580,6 +587,11 @@ export function createAgentToolApprovalSession({
       }
       if (checkStorage && !witness.reviewOnly) {
         const current = await approved(consent);
+        if (!invocation.ownership || transportWitnesses.get(invocation.ownership) !== witness) {
+          throw new Error(
+            'Tool approval invocation changed before transport dispatch. Request approval again.',
+          );
+        }
         if (
           current.available === false ||
           current.oauthEpoch === undefined ||
@@ -591,6 +603,16 @@ export function createAgentToolApprovalSession({
             invocation.executionScope,
           );
           if (proposals.get(key)?.ownership === invocation.ownership) disableLearning(key);
+          if (
+            witness.oneTimeFallback &&
+            consent.authKind === 'other' &&
+            consent.oauthEpoch === null &&
+            invocation.background !== true &&
+            (current.available === false || current.oauthEpoch === undefined)
+          ) {
+            witness.reviewOnly = true;
+            return;
+          }
           throw new Error(
             'The approved MCP OAuth authorization changed before transport retry. Request approval again.',
           );
