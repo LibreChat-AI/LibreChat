@@ -117,6 +117,8 @@
   --color-border-medium: rgb(var(--border-medium) / var(--border-medium-alpha, 1));
   /* border-light, at the share the theme keeps for chrome outlines and inset hairlines. */
   --color-border-chrome: rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  /* border-heavy, at the chrome share: the pressed or selected outline of a control that is chrome. */
+  --color-border-chrome-heavy: rgb(var(--border-heavy) / calc(var(--border-heavy-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
   --color-border-inset: rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-inset-alpha, 1)));
   --color-border-medium-alt: rgb(var(--border-medium-alt));
   --color-border-heavy: rgb(var(--border-heavy) / var(--border-heavy-alpha, 1));

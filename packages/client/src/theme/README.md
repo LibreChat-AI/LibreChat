@@ -442,7 +442,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   default, so they draw as `border-light`). Chrome is the outline of an icon
   button, pill, chip or avatar ring on the shell; inset is a hairline inside a
   surface that is already stroked. A theme sets 0 to separate them by fill; the
-  1px box stays so layout does not shift.
+  1px box stays so layout does not shift. `border-border-chrome-heavy` is
+  `border-heavy` at the chrome share, for the selected state of a chrome control.
 - `ring-focus-control` - The keyboard focus ring of the shared primitives
   (`Checkbox`, `Switch`, `Field`, `IconButton` and their siblings). Defaults to
   the primary text ink; a theme that names only `rgb-text-primary` rings its

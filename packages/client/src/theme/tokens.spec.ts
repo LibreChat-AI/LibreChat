@@ -117,6 +117,14 @@ describe('theme color tokens', () => {
     );
   });
 
+  it('draws the chrome heavy border as border-heavy at the chrome share', async () => {
+    const css = await generate(['border-border-chrome-heavy']);
+
+    expect(css).toContain(
+      'rgb(var(--border-heavy) / calc(var(--border-heavy-alpha, 1) * var(--theme-border-chrome-alpha, 1)))',
+    );
+  });
+
   it.each(['./theme.css', '../../../../client/src/style.css'])(
     '%s preserves closed compatibility palettes without declaring them as semantic tokens',
     async (repositoryEntry) => {
