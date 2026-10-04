@@ -161,7 +161,7 @@ function DigestBranch({
   return (
     <li className="min-w-0">
       <details open={isOnPath(entry.node.path, active)} className="group">
-        <summary className="focus-visible:ring-border-heavy flex min-w-0 cursor-pointer items-center rounded py-0.5 focus-visible:ring-2 focus-visible:outline-none">
+        <summary className="focus-visible:ring-focus-subtle flex min-w-0 cursor-pointer items-center rounded py-0.5 focus-visible:ring-2 focus-visible:outline-none">
           <NodeRow node={entry.node} serverNames={serverNames} />
         </summary>
         <ul className="border-border-light ms-1.5 border-s ps-2">
