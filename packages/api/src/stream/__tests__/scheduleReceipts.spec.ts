@@ -1,4 +1,6 @@
 import Redis from 'ioredis';
+import { once } from 'node:events';
+import { spawn } from 'node:child_process';
 import { readScheduleMCPReceipts } from 'librechat-data-provider';
 import type { IJobStoreV2 } from '~/stream/interfaces/IJobStore';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
@@ -511,4 +513,93 @@ redisDescribe('real Redis receipt retention', () => {
       await redis.quit();
     }
   });
+});
+
+(process.env.B2_REDIS_SOCKET ? describe : describe.skip)('retention re-arm writer loss', () => {
+  it.each(['update', 'transition'] as const)(
+    'repairs %s discovery after the writer exits between CAS and confirmation',
+    async (mode) => {
+      const redis = new Redis({ path: process.env.B2_REDIS_SOCKET!, lazyConnect: true });
+      await redis.connect();
+      const store = new RedisJobStore(redis);
+      const stream = `rearmed-writer-loss-${mode}`;
+      const key = `stream:{${stream}}:job`;
+      const job = await store.createJob(stream, 'owner', stream, undefined, {
+        preserveForScheduleReconcile: true,
+      });
+      const member = JSON.stringify([stream, job.createdAt]);
+      let worker: ReturnType<typeof spawn> | undefined;
+      try {
+        await store.transitionStatus(stream, {
+          from: 'running',
+          to: 'complete',
+          expectCreatedAt: job.createdAt,
+        });
+        await store.getJob(stream);
+        expect(await redis.hget(key, '__scheduleMembershipEpoch')).toBe(String(job.createdAt));
+        await store.updateJob(stream, { preserveForScheduleReconcile: false }, job.createdAt);
+        expect(await redis.sismember('stream:schedule_reconcile:v1', member)).toBe(0);
+        worker = spawn(
+          process.execPath,
+          [
+            '-e',
+            `const Redis=require('ioredis');const {RedisJobStore}=require('./dist/index.cjs');
+        const redis=new Redis({path:process.argv[1]});const store=new RedisJobStore(redis);
+        const evaluate=redis.eval.bind(redis);let announced=false;
+        redis.eval=async(...args)=>{const retain=args.slice(2).some((v,i,a)=>v==='preserveForScheduleReconcile'&&a[i+1]==='1');
+          if(retain&&!announced){announced=true;process.stdout.write('prearm\\n');await new Promise(r=>process.stdin.once('data',r));
+            await evaluate(...args);process.stdout.write('committed\\n');await new Promise(()=>{});}
+          return evaluate(...args);};
+        const id=process.argv[2],epoch=Number(process.argv[3]);
+        const work=process.argv[4]==='update'?store.updateJob(id,{preserveForScheduleReconcile:true},epoch):
+          store.transitionStatus(id,{from:'complete',to:'complete',expectCreatedAt:epoch,patch:{preserveForScheduleReconcile:true}});
+        work.catch(()=>process.exit(2));setInterval(()=>{},1000);`,
+            process.env.B2_REDIS_SOCKET!,
+            stream,
+            String(job.createdAt),
+            mode,
+          ],
+          { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] },
+        );
+        const next = () =>
+          new Promise<string>((resolve, reject) => {
+            worker!.stdout!.once('data', (chunk) => resolve(chunk.toString()));
+            worker!.once('error', reject);
+            worker!.once('exit', () =>
+              reject(new Error('Writer exited before the controlled commit')),
+            );
+          });
+        expect(await next()).toContain('prearm');
+        await new RedisJobStore(redis).getScheduleReconcileJobs(100);
+        expect(await redis.sismember('stream:schedule_reconcile:v1', member)).toBe(0);
+        const committed = next();
+        worker.stdin!.write('commit');
+        expect(await committed).toContain('committed');
+        const exited = once(worker, 'exit');
+        worker.kill('SIGKILL');
+        await exited;
+        expect(await redis.hget(key, 'preserveForScheduleReconcile')).toBe('1');
+        expect(await redis.sismember('stream:schedule_reconcile:v1', member)).toBe(0);
+        // A surviving exact-identity read must repair even though this epoch was confirmed before acknowledgement.
+        const restarted = new RedisJobStore(redis);
+        await restarted.getJob(stream);
+        expect(await redis.sismember('stream:schedule_reconcile:v1', member)).toBe(1);
+        expect(await restarted.getScheduleReconcileJobs(100)).toEqual([
+          expect.objectContaining({ streamId: stream, createdAt: job.createdAt }),
+        ]);
+        expect(await redis.hget(key, '__scheduleMembershipEpoch')).toBe(String(job.createdAt));
+        await restarted.updateJob(stream, { preserveForScheduleReconcile: false }, job.createdAt);
+        expect(await restarted.createJob(stream, 'owner')).toMatchObject({ status: 'running' });
+      } finally {
+        if (worker && worker.exitCode == null && worker.signalCode == null) {
+          const exited = once(worker, 'exit');
+          worker.kill('SIGKILL');
+          await exited;
+        }
+        await store.deleteJob(stream);
+        await redis.quit();
+      }
+    },
+    30_000,
+  );
 });

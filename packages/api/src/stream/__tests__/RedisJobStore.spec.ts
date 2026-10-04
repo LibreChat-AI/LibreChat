@@ -1449,7 +1449,7 @@ describe('retained creation read repair', () => {
     const commit = redis.eval.mock.calls.find((call) =>
       String(call[0]).includes('__scheduleMembershipEpoch'),
     );
-    expect(commit?.slice(1)).toEqual([1, 'stream:{unindexed}:job', '100']);
+    expect(commit?.slice(1)).toEqual([1, 'stream:{unindexed}:job', '100', '']);
     expect(commit?.[0]).toContain('"createdAt") ~= ARGV[1]');
   });
   it('keeps an unavailable index retryable without marking discovery confirmed', async () => {
@@ -1481,7 +1481,18 @@ describe('retained creation read repair', () => {
       String(call[0]).includes('__scheduleMembershipEpoch'),
     );
     expect(commits).toHaveLength(1);
-    expect(commits[0]?.slice(1)).toEqual([1, 'stream:{unindexed}:job', '200']);
+    expect(commits[0]?.slice(1)).toEqual([1, 'stream:{unindexed}:job', '200', '']);
+  });
+  it('does not confirm a newer same-epoch re-arm with an older repair snapshot', async () => {
+    const older = { ...hash, __scheduleMembershipRevision: '2' };
+    const redis = client(jest.fn().mockResolvedValue(older));
+    const store = new RedisJobStore(redis as unknown as Cluster);
+    await store.getJob('unindexed');
+    const commit = redis.eval.mock.calls.find((call) =>
+      String(call[0]).includes('__scheduleMembershipEpoch'),
+    );
+    expect(commit?.slice(1)).toEqual([1, 'stream:{unindexed}:job', '100', '2']);
+    expect(commit?.[0]).toContain('"__scheduleMembershipRevision") or "") ~= ARGV[2]');
   });
   it('adds no index round trip to already-confirmed retained reads', async () => {
     const redis = client(
