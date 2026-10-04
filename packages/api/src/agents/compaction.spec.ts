@@ -1528,6 +1528,16 @@ describe('resolveDisconnectSnapshotMode', () => {
     await expect(resolveDisconnectSnapshotMode(true, reconciled(), 1000)).resolves.toBe('terminal');
   });
 
+  it('keeps the live snapshot for another epoch reconciliation frame', async () => {
+    const anchorExists = jest.fn(async () => true);
+    await expect(
+      resolveDisconnectSnapshotMode(true, { ...reconciled(), createdAt: 2000 }, 1000, {
+        anchorExists,
+      }),
+    ).resolves.toBe('live');
+    expect(anchorExists).not.toHaveBeenCalled();
+  });
+
   /** The promotion must not recreate the orphan an absent-anchor abort
    *  deliberately withheld: without a persisted anchor there is nothing to
    *  hang the terminal row on. */
@@ -1541,9 +1551,11 @@ describe('resolveDisconnectSnapshotMode', () => {
 });
 
 describe('resolveReconciledSnapshotEnvelope', () => {
-  it('keeps the abort row shape for an aborted claim', () => {
+  /** The abort route writes a stopped compaction settled, so its
+   *  reconciled fallback must not reopen it as a live row. */
+  it('settles an aborted claim like the abort route writes a stopped compaction', () => {
     expect(resolveReconciledSnapshotEnvelope('aborted')).toEqual({
-      unfinished: true,
+      unfinished: false,
       error: false,
     });
   });
