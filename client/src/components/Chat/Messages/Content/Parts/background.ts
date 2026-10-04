@@ -1,4 +1,8 @@
-import type { BackgroundTaskDelivery } from 'librechat-data-provider';
+import type {
+  SubagentDigest,
+  SubagentDigestNode,
+  BackgroundTaskDelivery,
+} from 'librechat-data-provider';
 import type { WakeupTaskStatus } from './wakeup';
 
 export function formatBackgroundCodeOutput(output: string): string {
@@ -60,6 +64,10 @@ export type BackgroundTaskView = {
   resultAvailable?: boolean;
   resultClaimed?: boolean;
   delivery?: BackgroundTaskDelivery;
+  /** Durable child thread of a subagent task, for opening its activity panel. */
+  threadId?: string;
+  /** Folded progress tree of a subagent task. */
+  activity?: SubagentDigest;
 };
 
 export type BackgroundTaskDisplay =
@@ -135,6 +143,77 @@ const taskStatus = (value: unknown): BackgroundTaskStatus | null => {
 const deliveryStatus = (value: unknown): value is BackgroundTaskDelivery | undefined =>
   value === undefined || value === 'pending' || value === 'failed' || value === 'delivered';
 
+const DIGEST_KINDS = new Set(['turn', 'range', 'tool', 'text']);
+const DIGEST_STATUSES = new Set(['running', 'ok', 'error', 'cancelled']);
+const DIGEST_PATH = /^\d+(?:\.\d+)*(?:-\d+)?$/;
+const MAX_DIGEST_NODES = 200;
+
+const count = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0;
+
+const boundedText = (value: unknown, maxChars: number): string | undefined =>
+  typeof value === 'string' && value !== '' ? value.slice(0, maxChars) : undefined;
+
+function parseDigestNode(value: unknown): SubagentDigestNode | null {
+  if (
+    !isRecord(value) ||
+    typeof value.path !== 'string' ||
+    value.path.length > 64 ||
+    !DIGEST_PATH.test(value.path) ||
+    typeof value.kind !== 'string' ||
+    !DIGEST_KINDS.has(value.kind)
+  ) {
+    return null;
+  }
+  const name = boundedText(value.name, 128);
+  const label = boundedText(value.label, 256);
+  const summary = boundedText(value.summary, 512);
+  return {
+    path: value.path,
+    kind: value.kind as SubagentDigestNode['kind'],
+    ...(typeof value.status === 'string' && DIGEST_STATUSES.has(value.status)
+      ? { status: value.status as SubagentDigestNode['status'] }
+      : {}),
+    ...(name == null ? {} : { name }),
+    ...(label == null ? {} : { label }),
+    ...(summary == null ? {} : { summary }),
+    ...(count(value.ms) ? { ms: value.ms } : {}),
+    ...(count(value.chars) ? { chars: value.chars } : {}),
+    ...(count(value.errors) && value.errors > 0 ? { errors: value.errors } : {}),
+    ...(value.folded === true ? { folded: true as const } : {}),
+    ...(value.evicted === true ? { evicted: true as const } : {}),
+  };
+}
+
+/** Progress is optional decoration: a malformed digest is dropped, never the card. */
+function parseDigest(value: unknown): SubagentDigest | undefined {
+  if (
+    !isRecord(value) ||
+    !count(value.turns) ||
+    !count(value.tools) ||
+    !count(value.errors) ||
+    !Array.isArray(value.nodes) ||
+    value.nodes.length > MAX_DIGEST_NODES
+  ) {
+    return undefined;
+  }
+  const nodes = value.nodes.map(parseDigestNode);
+  if (nodes.some((node) => node == null)) {
+    return undefined;
+  }
+  const active = boundedText(value.active, 64);
+  return {
+    turns: value.turns,
+    tools: value.tools,
+    errors: value.errors,
+    nodes: nodes as SubagentDigestNode[],
+    ...(active != null && DIGEST_PATH.test(active) ? { active } : {}),
+    ...(value.phase === 'thinking' ? { phase: 'thinking' as const } : {}),
+    ...(count(value.idle_ms) ? { idle_ms: value.idle_ms } : {}),
+    ...(value.truncated === true ? { truncated: true as const } : {}),
+  };
+}
+
 function parseTask(value: unknown): BackgroundTaskView | null {
   if (!isRecord(value)) {
     return null;
@@ -169,7 +248,16 @@ function parseTask(value: unknown): BackgroundTaskView | null {
     ...(value.result_available === true ? { resultAvailable: true } : {}),
     ...(value.result_claimed === true ? { resultClaimed: true } : {}),
     ...(value.delivery != null ? { delivery: value.delivery } : {}),
+    ...(typeof value.subagent_thread_id === 'string' && value.subagent_thread_id !== ''
+      ? { threadId: value.subagent_thread_id }
+      : {}),
+    ...withDigest(value.activity),
   };
+}
+
+function withDigest(value: unknown): Pick<BackgroundTaskView, 'activity'> {
+  const activity = value == null ? undefined : parseDigest(value);
+  return activity == null ? {} : { activity };
 }
 
 /** Only host-shaped results become cards. Unknown or partial output stays visible as raw tool output. */
