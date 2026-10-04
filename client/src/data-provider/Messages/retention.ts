@@ -1,3 +1,4 @@
+import { QueryObserver } from '@tanstack/react-query';
 import {
   Constants,
   QueryKeys,
@@ -8,6 +9,8 @@ import type { Query, QueryClient } from '@tanstack/react-query';
 
 /** Gives a route change time to mount the next view before anything unobserved is judged. */
 export const RELEASE_SETTLE_MS = 1_000;
+/** How soon a history kept only because it is pinned or fetching is judged again. */
+export const PIN_RECHECK_MS = 5_000;
 
 export type MessagesRetentionOptions = {
   /** Conversations whose history must stay regardless of age, such as the routed conversation
@@ -45,6 +48,14 @@ function historyConversationId(query: Query): string | null {
   return conversationId;
 }
 
+/** React Query only reschedules a query's collection when its observers change, so a history
+ *  already counting down keeps its old timer. A momentary observer re-arms it under the new
+ *  `cacheTime`, which for `Infinity` cancels it. */
+function rearmCollection(queryClient: QueryClient, query: Query): void {
+  const observer = new QueryObserver(queryClient, { queryKey: query.queryKey, enabled: false });
+  observer.subscribe(() => undefined)();
+}
+
 const isUnobservedHistory = (query: Query): boolean =>
   historyConversationId(query) != null && query.getObserversCount() === 0;
 
@@ -76,12 +87,15 @@ export function retainMessages(
 ): () => void {
   const cache = queryClient.getQueryCache();
   const leftAt = new Map<string, number>();
-  const recheckMs = Math.max(ttlMs, RELEASE_SETTLE_MS);
   const previousDefaults = queryClient.getQueryDefaults([QueryKeys.messages]);
   queryClient.setQueryDefaults([QueryKeys.messages], { ...previousDefaults, cacheTime: Infinity });
   cache.findAll([QueryKeys.messages]).forEach((query) => {
-    if (historyConversationId(query) != null) {
-      query.cacheTime = Infinity;
+    if (historyConversationId(query) == null) {
+      return;
+    }
+    query.cacheTime = Infinity;
+    if (query.getObserversCount() === 0) {
+      rearmCollection(queryClient, query);
     }
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -125,7 +139,7 @@ export function retainMessages(
       if (entry.query.state.fetchStatus === 'idle' && !isPinned(entry.conversationId)) {
         return true;
       }
-      schedule(recheckMs);
+      schedule(PIN_RECHECK_MS);
       return false;
     });
     candidates.sort(newestFirst).forEach((entry, index) => {

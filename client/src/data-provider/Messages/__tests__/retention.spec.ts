@@ -1,7 +1,7 @@
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { Constants, QueryKeys, DEFAULT_HISTORY_CACHE_TTL_MS } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
-import { retainMessages, RELEASE_SETTLE_MS } from '../retention';
+import { retainMessages, PIN_RECHECK_MS, RELEASE_SETTLE_MS } from '../retention';
 
 const TTL = DEFAULT_HISTORY_CACHE_TTL_MS;
 /** React Query's own default `cacheTime`, which a retained history must outlive. */
@@ -153,14 +153,16 @@ describe('retainMessages', () => {
     queryClient.clear();
     seed(queryClient, 'mounted-first');
     const unmount = observe(queryClient, 'mounted-first');
+    visit(queryClient, 'left-first');
     stop = retainMessages(queryClient, { isPinned: (id) => pinned.has(id) });
-    pinned.add('mounted-first').add('running');
+    pinned.add('mounted-first').add('left-first').add('running');
     unmount();
     visit(queryClient, 'running');
 
     jest.advanceTimersByTime(NATIVE_CACHE_TIME * 2);
 
     expect(isCached(queryClient, 'mounted-first')).toBe(true);
+    expect(isCached(queryClient, 'left-first')).toBe(true);
     expect(isCached(queryClient, 'running')).toBe(true);
   });
 
@@ -190,6 +192,24 @@ describe('retainMessages', () => {
     jest.advanceTimersByTime(10_000);
     expect(isCached(queryClient, 'b')).toBe(false);
     expect(isCached(queryClient, 'c')).toBe(false);
+  });
+
+  it('rechecks a pinned history soon after its pin clears, whatever the TTL', () => {
+    stop();
+    stop = retainMessages(queryClient, {
+      isPinned: (id) => pinned.has(id),
+      recent: 0,
+      ttlMs: 60 * 60_000,
+    });
+    pinned.add('running');
+    visit(queryClient, 'running');
+    jest.advanceTimersByTime(RELEASE_SETTLE_MS);
+    expect(isCached(queryClient, 'running')).toBe(true);
+
+    pinned.delete('running');
+    jest.advanceTimersByTime(PIN_RECHECK_MS);
+
+    expect(isCached(queryClient, 'running')).toBe(false);
   });
 
   it('restores the messages query defaults on cleanup', () => {
