@@ -2967,6 +2967,93 @@ describe('initializeClient — subagent loading', () => {
       }
     });
 
+    it('does not reuse the config of a resolution whose graph failed', async () => {
+      const req = await setup();
+      const member = await createAgent({
+        id: 'agent_graph_member',
+        name: 'Graph member',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: new mongoose.Types.ObjectId(),
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        stateful_code_environment: 'user',
+        code_environment_id: LIA_RAG,
+        code_environment_ids: [SKYNET],
+      });
+      await grantView(member);
+      const fetchSpy = mockWorkerStatus();
+      try {
+        await initializeClient({
+          req,
+          res: {},
+          signal: new AbortController().signal,
+          endpointOption: makeEndpointOption(),
+        });
+        const descriptor = agentClientArgs.agent.lazySubagentConfigs[0];
+        let memberStarted;
+        const started = new Promise((resolve) => {
+          memberStarted = resolve;
+        });
+        let memberLoads = 0;
+        mockInitializeAgent.mockImplementation(async (params) => {
+          if (params.agent.id === member.id && memberLoads++ === 0) {
+            memberStarted();
+            await new Promise(() => {});
+          }
+          return {
+            ...makeSubagentConfig(params.agent.id),
+            ...(params.agent.id === SUBAGENT_ID
+              ? {
+                  subagents: {
+                    enabled: true,
+                    allowSelf: false,
+                    agent_ids: [],
+                    graphs: [
+                      {
+                        type: 'review_team',
+                        name: 'Review team',
+                        description: 'Reviews together.',
+                        agent_ids: [SUBAGENT_ID, member.id],
+                        edges: [],
+                        entryAgentId: SUBAGENT_ID,
+                        resultAgentId: member.id,
+                      },
+                    ],
+                  },
+                }
+              : {}),
+            codeExecutionContext: {
+              environmentId: params.agent.code_environment_id,
+              environmentType: 'attached',
+            },
+          };
+        });
+        const controller = new AbortController();
+
+        const canceled = descriptor.resolve({
+          signal: controller.signal,
+          executionId: 'run-canceled',
+        });
+        await started;
+        controller.abort();
+        await expect(canceled).rejects.toBeDefined();
+        const config = await descriptor.resolve({
+          signal: new AbortController().signal,
+          executionId: 'run-retry',
+          hostArgs: { machine: LIA_RAG },
+        });
+        const graphReviewer = config.subagentGraphConfigs?.[0]?.memberConfigs?.find(
+          (memberConfig) => memberConfig.id === SUBAGENT_ID,
+        );
+
+        expect(config.codeExecutionContext.environmentId).toBe(LIA_RAG);
+        expect(graphReviewer?.codeExecutionContext.environmentId).toBe(LIA_RAG);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
     it("holds a graph member's default machine while it initializes", async () => {
       const req = await setup();
       const member = await createAgent({

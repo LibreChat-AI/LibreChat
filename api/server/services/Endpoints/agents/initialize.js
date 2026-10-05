@@ -1623,16 +1623,25 @@ const initializeClientWithProvider = async ({
                     codeWorkspaceUnavailable: metadata.codeWorkspaceUnavailable,
                   });
                   config.subagentAgentConfigs = eagerChildren;
-                  if (!subagentCodeRouting.isRouted(context.executionId)) {
+                  const shared = !subagentCodeRouting.isRouted(context.executionId);
+                  if (shared) {
                     graphMemberConfigsById.set(config.id, config);
                   }
-                  await resolveGraphSubagentsFor(
-                    config,
-                    context.signal,
-                    subagentCodeRouting.routesChildren(context.executionId)
-                      ? context.executionId
-                      : undefined,
-                  );
+                  try {
+                    await resolveGraphSubagentsFor(
+                      config,
+                      context.signal,
+                      subagentCodeRouting.routesChildren(context.executionId)
+                        ? context.executionId
+                        : undefined,
+                    );
+                  } catch (error) {
+                    /** A failed resolution gives its route back, so its config must not be reused. */
+                    if (shared && graphMemberConfigsById.get(config.id) === config) {
+                      graphMemberConfigsById.delete(config.id);
+                    }
+                    throw error;
+                  }
                   return config;
                 }),
             }),
