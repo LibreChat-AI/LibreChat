@@ -18,12 +18,61 @@ type MessageRowProps = {
   hasParallelContent?: boolean;
   fullWidth?: boolean;
   isEditing?: boolean;
-  /** Marks a host-authored turn (wake-up results, subagent triggers): it keeps
-   *  the user's position and bubble shape, outlined instead of filled, under
-   *  this visible heading in place of the author's name. */
+  /** Marks a host-authored turn with no author to name (background-tool
+   *  wake-ups, external events): it keeps the user's position and bubble shape,
+   *  outlined instead of filled, under this visible heading. */
   systemLabel?: string;
+  /** A user-side turn written by someone other than the reader — a parent agent
+   *  briefing its subagent, a subagent reporting back. It keeps the user's
+   *  position and bubble, under the same avatar-and-name header an agent turn
+   *  carries. */
+  showAuthor?: boolean;
+  /** Outline the user-side bubble instead of filling it: content the host
+   *  delivered rather than words someone typed. Implied by `systemLabel`. */
+  outlined?: boolean;
   className?: string;
 };
+
+/** `mb-1` keeps the name off its own first line of body text. Static per side:
+ *  every agent row in a thread renders one, so it is never merged at runtime. */
+const authorHeaderClasses = {
+  start:
+    'text-text-primary mb-1 flex min-h-7 w-full items-center gap-2 text-sm font-semibold select-none',
+  end: 'text-text-primary mb-1 flex min-h-7 items-center justify-end gap-2 text-sm font-semibold select-none',
+} as const;
+
+/** The author line every visible-author turn shares, so an agent's turn and an
+ *  agent-written user-side turn cannot drift apart. A render helper rather than
+ *  a component, so a main chat row's tree stays exactly as deep as before. */
+function renderAuthorHeader({
+  icon,
+  label,
+  hoverLabel,
+  headerPrefix,
+  timestamp,
+  align,
+}: Pick<MessageRowProps, 'icon' | 'label' | 'hoverLabel' | 'headerPrefix' | 'timestamp'> & {
+  align: 'start' | 'end';
+}) {
+  return (
+    <h2 className={authorHeaderClasses[align]}>
+      {align === 'end' && (
+        <MessageTimestamp value={timestamp} className="mr-auto shrink-0 font-normal" />
+      )}
+      <span
+        aria-hidden="true"
+        className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full"
+      >
+        {icon}
+      </span>
+      <span className="sr-only">{headerPrefix}</span>
+      <HeaderLabel label={label} hoverLabel={hoverLabel} />
+      {align === 'start' && (
+        <MessageTimestamp value={timestamp} className="ml-auto shrink-0 font-normal" />
+      )}
+    </h2>
+  );
+}
 
 export function getMessageRowWidthClass({
   fullWidth = false,
@@ -53,6 +102,8 @@ export default function MessageRow({
   fullWidth = false,
   isEditing = false,
   systemLabel,
+  showAuthor = false,
+  outlined = false,
 }: MessageRowProps) {
   // Same column as ChatForm: max-width plus `sm:px-2`, so the body lines
   // up with the composer surface rather than the form's outer box.
@@ -93,28 +144,24 @@ export default function MessageRow({
             </span>
           </h2>
         )}
+        {!hasParallelContent && !isSystem && isCreatedByUser && !showAuthor && (
+          <h2 className="sr-only">
+            {headerPrefix}
+            {label}
+            <MessageTimestamp value={timestamp} />
+          </h2>
+        )}
         {!hasParallelContent &&
           !isSystem &&
-          (isCreatedByUser ? (
-            <h2 className="sr-only">
-              {headerPrefix}
-              {label}
-              <MessageTimestamp value={timestamp} />
-            </h2>
-          ) : (
-            /** `mb-1` keeps the name off its own first line of body text. */
-            <h2 className="text-text-primary mb-1 flex min-h-7 w-full items-center gap-2 text-sm font-semibold select-none">
-              <span
-                aria-hidden="true"
-                className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full"
-              >
-                {icon}
-              </span>
-              <span className="sr-only">{headerPrefix}</span>
-              <HeaderLabel label={label} hoverLabel={hoverLabel} />
-              <MessageTimestamp value={timestamp} className="ml-auto shrink-0 font-normal" />
-            </h2>
-          ))}
+          (!isCreatedByUser || showAuthor) &&
+          renderAuthorHeader({
+            icon,
+            label,
+            hoverLabel,
+            headerPrefix,
+            timestamp,
+            align: isCreatedByUser ? 'end' : 'start',
+          })}
 
         <div className={cn('flex w-full flex-col gap-1', isUserSide && 'items-end')}>
           <div
@@ -123,7 +170,9 @@ export default function MessageRow({
               isUserSide && !isEditing
                 ? cn(
                     'rounded-theme-surface rounded-br-theme-control px-theme-normal w-fit',
-                    isSystem ? 'border-border-medium border py-1.5' : 'bg-surface-tertiary py-2.5',
+                    isSystem || outlined
+                      ? 'border-border-medium border py-1.5'
+                      : 'bg-surface-tertiary py-2.5',
                   )
                 : 'w-full',
             )}

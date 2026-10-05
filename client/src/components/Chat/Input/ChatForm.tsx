@@ -430,6 +430,7 @@ const ChatForm = memo(function ChatForm({
     index,
     conversationId,
     conversation,
+    codeEnvironmentMode: codeWorkspace.mode,
     isSubmitting,
     answerModeActive: composerReserved,
     composerDisabled: isPreparingFromUrl,
@@ -448,18 +449,16 @@ const ChatForm = memo(function ChatForm({
     return () => publishRewake(null);
   }, [publishRewake, steeringRewakeDrain]);
 
-  /** ⌘/Ctrl+Enter = the non-default during-run action, ⌥/Alt+Enter =
-   *  interrupt & send (discards the answer), ⌘/Ctrl+Shift+Enter = interrupt &
-   *  steer (keeps it): all counterparts of Enter's `submitDuringRun`. */
+  /** Ctrl/Cmd+Enter selects the alternate; both interrupt chords use the same mode. */
   const handleDuringRunModifier = useCallback(
     (kind: 'other' | 'interrupt' | 'preempt') => {
       const text = methods.getValues('text');
       let consumed = false;
       if (kind === 'interrupt') {
-        consumed = steering.interruptAndSend(text);
+        consumed = steering.interruptSteer(text);
       } else if (kind === 'preempt') {
         consumed = steering.interruptSteer(text);
-      } else if (steering.effectiveAction === 'steer') {
+      } else if (steering.effectiveAction !== 'queue') {
         consumed = steering.queueFromComposer(text);
       } else {
         consumed = steering.steerFromComposer(text);
@@ -793,14 +792,14 @@ const ChatForm = memo(function ChatForm({
             <div
               data-testid="composer-context-rail"
               className={cn(
-                'mx-4 -mb-3 flex min-w-0 flex-wrap items-center gap-1 rounded-t-2xl',
-                'border-border-light bg-surface-secondary border px-2 pt-1 pb-4',
+                'mx-4 -mb-3 flex min-w-0 flex-wrap items-center gap-1.5 rounded-t-2xl',
+                'border-border-light bg-surface-secondary border px-2 pt-2 pb-5',
                 isRTL && 'flex-row-reverse',
               )}
             >
               {project ? <ProjectLandingChip project={project} /> : null}
               {codeWorkspace.visible ? (
-                <div className="min-w-0 px-1 pt-1">
+                <div className="min-w-0">
                   <CodeWorkspaceMenu
                     setConversation={setConversation}
                     workspace={codeWorkspace}
@@ -1027,6 +1026,7 @@ const ChatForm = memo(function ChatForm({
                       <CodeApprovalMenu
                         conversation={conversation}
                         addedConversation={addedConvo}
+                        codeEnvironmentMode={codeWorkspace.mode}
                         setConversation={setConversation}
                         disabled={disableInputs}
                       />
@@ -1052,7 +1052,6 @@ const ChatForm = memo(function ChatForm({
             isSubmitting={isSubmitting}
             duringRunActive={steering.duringRunActive}
             canControlGeneration={steering.canControlGeneration}
-            steerInterruptsByDefault={steering.steerInterruptsByDefault}
             duringRunAction={steering.effectiveAction}
             /* A staged reasoning choice forces the message to queue, and the
                send-now chord then queues too; do not advertise it. */

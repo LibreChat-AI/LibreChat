@@ -202,6 +202,36 @@ describe('token index', () => {
     expect(totals.estTokens).toBe(5);
   });
 
+  it('estimates a previewed tool call from its stored lengths, not the preview', () => {
+    buildIndex(CONVO, [
+      msg('u1', Constants.NO_PARENT, true, 12),
+      {
+        messageId: 'a1',
+        parentMessageId: 'u1',
+        isCreatedByUser: false,
+        conversationId: CONVO,
+        text: '',
+        content: [
+          {
+            type: 'tool_call',
+            tool_call: {
+              name: 'run',
+              args: 'aa',
+              argsTruncated: true,
+              argsLength: 17,
+              output: 'o…o',
+              outputTruncated: true,
+              outputLength: 20,
+            },
+          },
+        ],
+      } as unknown as TMessage,
+    ]);
+
+    /** name 3 + stored args 17 + stored output 20 = 40 chars / 4 = 10. */
+    expect(sumBranch(CONVO, 'a1').estTokens).toBe(10);
+  });
+
   it('exposes the count-less tail estimate so live output is not double-counted', () => {
     buildIndex(CONVO, [
       msg('u1', Constants.NO_PARENT, true, 12),

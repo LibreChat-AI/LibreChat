@@ -1,6 +1,7 @@
 import React from 'react';
 import copy from 'copy-to-clipboard';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { ToolContentPendingContext } from '../../disclosure';
 import OutputRenderer, { isError } from '../OutputRenderer';
 
 jest.mock('copy-to-clipboard', () => jest.fn());
@@ -11,12 +12,30 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/components/Messages/Content/CopyButton', () => ({
   __esModule: true,
-  default: ({ onClick, className }: { onClick: () => void; className?: string }) => (
-    <button type="button" data-testid="copy-output" className={className} onClick={onClick} />
+  default: ({
+    onClick,
+    className,
+    disabled,
+  }: {
+    onClick: () => void;
+    className?: string;
+    disabled?: boolean;
+  }) => (
+    <button
+      type="button"
+      data-testid="copy-output"
+      className={className}
+      onClick={onClick}
+      disabled={disabled}
+    />
   ),
 }));
 
 describe('OutputRenderer', () => {
+  beforeEach(() => {
+    (copy as jest.Mock).mockClear();
+  });
+
   it('lays the copy control over the bottom right of the output without reserving width', () => {
     render(<OutputRenderer text={'First line\nSecond line'} />);
 
@@ -32,6 +51,18 @@ describe('OutputRenderer', () => {
     render(<OutputRenderer text={'stdout:\n{\n  "ok": true\n}'} copyText={raw} />);
     fireEvent.click(screen.getByTestId('copy-output'));
     expect(copy).toHaveBeenCalledWith(raw, { format: 'text/plain' });
+  });
+
+  it('will not copy a server preview before the stored output arrives', () => {
+    render(
+      <ToolContentPendingContext.Provider value={true}>
+        <OutputRenderer text={'head\n…\ntail'} copyText={'head\n…\ntail'} />
+      </ToolContentPendingContext.Provider>,
+    );
+    const button = screen.getByTestId('copy-output');
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(copy).not.toHaveBeenCalled();
   });
 
   it('renders long output in full with no show more toggle', () => {

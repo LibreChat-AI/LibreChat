@@ -1,11 +1,6 @@
 import { Fragment, useId, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import {
-  CheckboxGlyph,
-  TooltipAnchor,
-  composerControlClasses,
-  useToastContext,
-} from '@librechat/client';
+import { CheckboxGlyph, TooltipAnchor, useToastContext } from '@librechat/client';
 import {
   isCodeWorkspaceCheckoutAvailable,
   isLinkedWorktreeRoutingAllowed,
@@ -41,6 +36,7 @@ import {
   getCodeWorkspaceErrorReason,
   getResponseStatus,
 } from '~/utils';
+import { chipClasses, infoChipClasses } from './chip';
 import { useLocalize } from '~/hooks';
 
 const stateLabels: Partial<Record<CodeWorkspaceResult['state'], TranslationKeys>> = {
@@ -53,10 +49,10 @@ const stateLabels: Partial<Record<CodeWorkspaceResult['state'], TranslationKeys>
   without_attached: 'com_ui_code_workspace_without_attached',
 };
 
-const headingClasses = 'px-2.5 py-1.5 text-xs font-medium text-text-secondary';
+const headingClasses = 'px-2.5 pt-2 pb-1 text-xs font-semibold text-text-secondary';
 const menuClasses = cn(
-  'z-50 flex max-w-[min(360px,calc(100vw-2rem))] min-w-[280px] flex-col rounded-xl',
-  'border-border-light bg-presentation max-h-[var(--popover-available-height)] overflow-y-auto border p-1.5 shadow-lg',
+  'z-50 flex max-w-[min(360px,calc(100vw-2rem))] min-w-[260px] flex-col rounded-2xl',
+  'border-border-light bg-presentation max-h-[var(--popover-available-height)] overflow-y-auto border p-1 shadow-lg',
   'origin-bottom opacity-0 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none',
   'data-[enter]:scale-100 data-[enter]:opacity-100',
   'scale-95 data-[leave]:scale-95 data-[leave]:opacity-0',
@@ -64,7 +60,7 @@ const menuClasses = cn(
 
 const menuItemClasses = (selected = false) =>
   cn(
-    'group flex w-full cursor-pointer items-start gap-3 rounded-lg px-2.5 py-2',
+    'group flex w-full cursor-pointer items-start gap-2.5 rounded-lg px-2.5 py-1.5',
     'outline-hidden transition-colors duration-theme-fast',
     'hover:bg-surface-hover data-[active-item]:bg-surface-hover',
     selected && 'bg-surface-active-alt',
@@ -321,7 +317,7 @@ function GitContext({
       {descriptor.environment?.ref && (
         <TooltipAnchor
           description={localize('com_ui_code_branch_info')}
-          render={<span className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')} />}
+          render={<span className={cn(infoChipClasses, 'max-w-full min-w-0')} />}
         >
           <GitBranch className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
           <span
@@ -344,10 +340,7 @@ function GitContext({
               aria-label={localize('com_ui_code_worktree')}
               aria-checked={checkout == null ? 'mixed' : checkout === 'isolated'}
               disabled={disabled || !checkoutEditable}
-              className={cn(
-                composerControlClasses(),
-                'px-2.5 disabled:cursor-not-allowed disabled:opacity-50',
-              )}
+              className={cn(chipClasses, 'disabled:cursor-not-allowed disabled:opacity-50')}
               onClick={() => {
                 if (target.selected == null || !checkoutEditable) return;
                 onSelect?.({
@@ -370,7 +363,7 @@ function GitContext({
       {showLinkedWorktrees && (
         <TooltipAnchor
           description={localize('com_ui_code_linked_worktrees_info')}
-          render={<span className={cn(composerControlClasses(), 'px-2.5')} />}
+          render={<span className={chipClasses} />}
         >
           <GitFork className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
           <span>{localize('com_ui_code_linked_worktrees')}</span>
@@ -461,7 +454,7 @@ export default function CodeWorkspaceMenu({
         </span>
         <button
           type="button"
-          className={composerControlClasses()}
+          className={chipClasses}
           disabled={disabled || pending || reconcileMutation.isLoading}
           onClick={() => reconcileMutation.mutate(request)}
         >
@@ -680,10 +673,7 @@ export default function CodeWorkspaceMenu({
     return (
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         {onlyEnvironment != null && workspace.mode !== 'without_attached' && (
-          <span
-            data-testid="code-machine-status"
-            className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')}
-          >
+          <span data-testid="code-machine-status" className={cn(chipClasses, 'max-w-full min-w-0')}>
             <Monitor className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
             <span className="max-w-[12rem] min-w-0 truncate">
               {onlyEnvironment.environment.name ?? onlyEnvironment.environment.id}
@@ -705,7 +695,7 @@ export default function CodeWorkspaceMenu({
                 aria-label={`${label}. ${recovery}. ${localize('com_ui_retry')}`}
                 aria-describedby={requirements.length > 0 ? requirementsId : undefined}
                 aria-busy={isRefreshing}
-                className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')}
+                className={cn(chipClasses, 'max-w-full min-w-0')}
               />
             }
           >
@@ -752,10 +742,7 @@ export default function CodeWorkspaceMenu({
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       {workspace.locked && onlyEnvironment != null && workspace.mode !== 'without_attached' && (
-        <span
-          data-testid="code-machine-status"
-          className={cn(composerControlClasses(), 'max-w-full min-w-0 px-2.5')}
-        >
+        <span data-testid="code-machine-status" className={cn(chipClasses, 'max-w-full min-w-0')}>
           <Monitor className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
           <span className="max-w-[12rem] min-w-0 truncate">
             {onlyEnvironment.environment.name ?? onlyEnvironment.environment.id}
@@ -772,8 +759,8 @@ export default function CodeWorkspaceMenu({
                 disabled={buttonDisabled}
                 aria-label={`${localize('com_ui_code_machine')}: ${machineLabel}`}
                 className={cn(
-                  composerControlClasses(),
-                  'max-w-full min-w-0 px-2.5',
+                  chipClasses,
+                  'max-w-full min-w-0',
                   machineMenuOpen && 'bg-surface-hover',
                 )}
               />
@@ -843,8 +830,8 @@ export default function CodeWorkspaceMenu({
                     : `${buttonLabel}. ${transitionText.info}`
                 }
                 className={cn(
-                  composerControlClasses(),
-                  'md:px-theme-control-x max-w-full min-w-0 px-2.5',
+                  chipClasses,
+                  'max-w-full min-w-0',
                   isOpen && 'bg-surface-hover',
                   buttonDisabled && 'cursor-not-allowed opacity-50',
                 )}

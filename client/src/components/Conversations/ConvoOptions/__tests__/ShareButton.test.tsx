@@ -41,6 +41,8 @@ jest.mock('librechat-data-provider/react-query', () => ({
 
 jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => ({ data: { sharedLinksSnapshotFilesEnabled: true } }),
+  fetchConversationMessages: jest.requireActual('~/data-provider/Messages/queries')
+    .fetchConversationMessages,
 }));
 
 jest.mock('~/hooks/Messages/useLatestMessage', () => ({
@@ -249,7 +251,9 @@ describe('ShareButton', () => {
     renderShareButton();
 
     await expect(mockResolveTargetMessageId?.()).resolves.toBe('persisted-message');
-    expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(ACTIVE_CONVERSATION_ID);
+    expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(ACTIVE_CONVERSATION_ID, {
+      toolPreviews: true,
+    });
     expect(mockGetMessageById).toHaveBeenCalledWith(ACTIVE_CONVERSATION_ID, 'persisted-message');
   });
 
@@ -261,7 +265,9 @@ describe('ShareButton', () => {
     await expect(mockResolveTargetMessageId?.()).rejects.toMatchObject({
       code: 'NO_MESSAGES',
     });
-    expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(ACTIVE_CONVERSATION_ID);
+    expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(ACTIVE_CONVERSATION_ID, {
+      toolPreviews: true,
+    });
     expect(mockGetMessageById).not.toHaveBeenCalled();
   });
 

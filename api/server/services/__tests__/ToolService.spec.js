@@ -2801,6 +2801,62 @@ describe('ToolService - Action Capability Gating', () => {
     });
   });
 
+  describe('GitHub comparison loader policy', () => {
+    it.each([false, true])(
+      'threads explicit deployment opt-in into definition loading (%p)',
+      async (enabled) => {
+        const req = createMockReq([AgentCapabilities.tools]);
+        req.config.githubCompare = { enabled };
+        mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig([AgentCapabilities.tools]));
+        await loadAgentTools({
+          req,
+          res: {},
+          agent: { id: 'reviewer', tools: ['github_compare'] },
+        });
+        expect(mockLoadToolDefinitions).toHaveBeenCalledWith(
+          expect.objectContaining({ tools: ['github_compare'], githubCompareEnabled: enabled }),
+          expect.any(Object),
+        );
+      },
+    );
+    it('passes the executing registry unchanged instead of manufacturing compare authority', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.config.githubCompare = { enabled: true };
+      const toolRegistry = new Map([['calculator', { name: 'calculator' }]]);
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig([AgentCapabilities.tools]));
+      await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'reviewer', tools: ['calculator'] },
+        toolNames: ['github_compare'],
+        toolRegistry,
+        actionsEnabled: false,
+      });
+      expect(mockLoadToolsUtil).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tools: ['github_compare'],
+          options: expect.objectContaining({ toolRegistry }),
+        }),
+      );
+      expect(mockLoadToolsUtil.mock.calls[0][0].options.toolRegistry).toBe(toolRegistry);
+      expect(toolRegistry.has('github_compare')).toBe(false);
+    });
+    it('builds compare authority only from the legacy initialization selection', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.config.githubCompare = { enabled: true };
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig([AgentCapabilities.tools]));
+      await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'reviewer', tools: ['github_compare'] },
+        definitionsOnly: false,
+      });
+      expect(mockLoadToolsUtil.mock.calls[0][0].options.toolRegistry.has('github_compare')).toBe(
+        true,
+      );
+    });
+  });
+
   describe('loadToolsForExecution — action tool gating', () => {
     it('should preserve the remote-agent permission boundary for deferred tool loading', async () => {
       const capabilities = [AgentCapabilities.tools, AgentCapabilities.file_search];
