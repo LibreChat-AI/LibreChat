@@ -49,12 +49,32 @@ describe('loadCustomEndpointsConfig: host-implied reasoning support', () => {
       { ...baseEndpoint, name: 'Gateway', ...endpoint },
     ] as unknown as TCustomEndpoints)?.Gateway?.customParams;
 
-  it.each(['https://openrouter.ai/api/v1', 'https://api.x.ai/v1', 'https://api.openai.com/v1'])(
-    'declares effort-style reasoning for the known host %s',
+  it('declares effort-style reasoning for OpenRouter', () => {
+    expect(load({ baseURL: 'https://openrouter.ai/api/v1' })?.reasoningFormat).toBe(
+      ReasoningParameterFormat.reasoningEffort,
+    );
+  });
+
+  it.each(['https://api.openai.com/v1', 'https://api.x.ai/v1'])(
+    'leaves %s to explicit config: its capability depends on the model',
     (baseURL) => {
-      expect(load({ baseURL })?.reasoningFormat).toBe(ReasoningParameterFormat.reasoningEffort);
+      expect(load({ baseURL })).toBeUndefined();
     },
   );
+
+  it.each([['reasoning_effort'], ['reasoning']])(
+    'does not advertise reasoning that dropParams %j removes',
+    (...dropParams) => {
+      expect(load({ baseURL: 'https://openrouter.ai/api/v1', dropParams })).toBeUndefined();
+    },
+  );
+
+  it('still advertises reasoning when dropParams removes something else', () => {
+    expect(
+      load({ baseURL: 'https://openrouter.ai/api/v1', dropParams: ['temperature'] })
+        ?.reasoningFormat,
+    ).toBe(ReasoningParameterFormat.reasoningEffort);
+  });
 
   it('does not infer reasoning from the endpoint name alone', () => {
     expect(load({ name: 'Gateway', baseURL: 'http://localhost:8080/v1', iconURL: 'xai' })).toBe(
@@ -80,7 +100,7 @@ describe('loadCustomEndpointsConfig: host-implied reasoning support', () => {
 
   it('defers to explicit reasoning parameter definitions', () => {
     const customParams = load({
-      baseURL: 'https://api.x.ai/v1',
+      baseURL: 'https://openrouter.ai/api/v1',
       customParams: { paramDefinitions: [{ key: 'thinkingLevel' }] },
     });
     expect(customParams?.reasoningFormat).toBeUndefined();
@@ -90,7 +110,7 @@ describe('loadCustomEndpointsConfig: host-implied reasoning support', () => {
   it('defers to an explicit non-default params endpoint', () => {
     expect(
       load({
-        baseURL: 'https://api.x.ai/v1',
+        baseURL: 'https://openrouter.ai/api/v1',
         customParams: { defaultParamsEndpoint: EModelEndpoint.anthropic },
       })?.reasoningFormat,
     ).toBeUndefined();
